@@ -36,7 +36,7 @@ type PackageViolation = {
   packageName: string;
   importer: string;
   path: string;
-  location: Partial<esbuild.Location>;
+  location: Partial<esbuild.Location> | undefined;
 };
 
 /**
@@ -242,44 +242,48 @@ export async function getViolationLocation(
     const contents = await readFile(absolutePath, 'utf8');
     const lines = contents.split(/\r?\n/);
 
+    // Match against the whole file so imports spanning several lines are
+    // found. The specifier excludes `;` and quotes so a match can't start at
+    // an earlier import statement and run on into this one.
     const importRegex = new RegExp(
-      `import\\s+(.+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`
+      `import\\s+([^;'"]+?)\\s+from\\s+['"]${escapeRegExp(packageName)}(?:/[^'"]*)?['"]`
     );
+    const importMatch = contents.match(importRegex);
 
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-      const importMatch = line.match(importRegex);
+    if (importMatch && importMatch.index !== undefined) {
+      const startLine =
+        contents.slice(0, importMatch.index).split(/\r?\n/).length - 1;
+      const endLine = startLine + importMatch[0].split(/\r?\n/).length - 1;
 
-      if (importMatch && importMatch.index !== undefined) {
-        const specifier = importMatch[1].trim();
-        const identifier = getImportedIdentifier(specifier);
-        if (identifier) {
-          const usage = findIdentifierUsage(lines, i + 1, identifier);
-          if (usage) {
-            return {
-              file: relativePath,
-              line: usage.line + 1,
-              column: usage.column,
-              lineText: usage.lineText,
-              length: identifier.length,
-            };
-          }
-
-          // Identifier exists but is never referenced; surface no location
-          return undefined;
-        }
-
-        // Fallback: if we can't extract identifier, point to package name
-        const columnIndex = line.indexOf(packageName);
-        if (columnIndex !== -1) {
+      const specifier = importMatch[1].trim();
+      const identifier = getImportedIdentifier(specifier);
+      if (identifier) {
+        const usage = findIdentifierUsage(lines, endLine + 1, identifier);
+        if (usage) {
           return {
             file: relativePath,
-            line: i + 1,
-            column: columnIndex,
-            lineText: line,
-            length: packageName.length,
+            line: usage.line + 1,
+            column: usage.column,
+            lineText: usage.lineText,
+            length: identifier.length,
           };
         }
+
+        // Identifier exists but is never referenced; surface no location
+        return undefined;
+      }
+
+      // Fallback: if we can't extract identifier, point to package name
+      const line = lines[endLine];
+      const columnIndex = line.indexOf(packageName);
+      if (columnIndex !== -1) {
+        return {
+          file: relativePath,
+          line: endLine + 1,
+          column: columnIndex,
+          lineText: line,
+          length: packageName.length,
+        };
       }
     }
   } catch {
@@ -430,18 +434,17 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
             relativeWorkflowFile,
             packageName
           );
-          // Only report violations where we can find the import location.
-          // If we can't find it, the package is likely a transitive dependency
-          // that the user didn't directly import - we'll report the top-level
-          // package they did import instead.
-          if (location) {
-            packageViolations.push({
-              path: args.path,
-              importer: relativeWorkflowFile,
-              packageName,
-              location,
-            });
-          }
+          // Always record the violation. The location only improves the
+          // message: it is missing when the import can't be found in user
+          // code (e.g. a transitive dependency, or an import whose first
+          // binding is never referenced), and dropping the violation then
+          // would let a bundle that fails at load time build cleanly.
+          packageViolations.push({
+            path: args.path,
+            importer: relativeWorkflowFile,
+            packageName,
+            location,
+          });
         }
 
         // Mark builtin imports as side-effect-free so esbuild can tree-shake
@@ -502,10 +505,16 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
             );
             const moduleType = getModuleTypeLabel(violation.path);
 
+            // Without a location, esbuild can't show where the import is, so
+            // name the user file it was traced back to.
+            const via = violation.location
+              ? ''
+              : ` (reached from "${violation.importer}")`;
+
             // Different messages for built-in modules vs npm packages that use them
             const text = isBuiltinModule
-              ? `You are attempting to use "${violation.packageName}" which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
-              : `You are attempting to use "${violation.packageName}" which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
+              ? `You are attempting to use "${violation.packageName}"${via} which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
+              : `You are attempting to use "${violation.packageName}"${via} which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
 
             return {
               text,
