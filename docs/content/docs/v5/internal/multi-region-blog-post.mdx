@@ -1,0 +1,376 @@
+---
+title: "Blog draft: The ID is the routing table"
+description: How Vercel made Workflow multi-region with 11 bits of run ID metadata, zero configuration, and a failover model built on data layout.
+type: overview
+---
+
+# The ID is the routing table: how Workflow went multi-region
+
+{/* INTERNAL DRAFT — blog post for iteration. Not a docs page. Server-side
+    details are described abstractly on purpose (workflow-server is a private
+    repo); SDK details are concrete because vercel/workflow is public. */}
+
+<Callout type="warn">
+Internal draft. This page exists to iterate on a public blog post. It is only
+visible on preview deployments and local development.
+</Callout>
+
+Workflows are long-lived by design. A run might sleep for thirty days waiting
+for a trial to expire, or pause indefinitely waiting for a human to click
+"approve." Infrastructure fails on much shorter timescales than that, so a
+durable execution engine pinned to one region is a single point of failure
+with a comfortable API.
+
+When we took [Workflow](https://vercel.com/docs/workflow) multi-region, one
+constraint shaped everything else. It had to be zero-config, and it had to
+stay backwards compatible with every run ID ever issued. That ruled out a
+schema migration, a new API surface, and a lookup table on the hot path. The
+solution ended up being 11 bits wide.
+
+Those 11 bits encode a run's home region directly into its ID. That one
+decision makes every component of the system self-routing, and it determines
+what happens in the two failure scenarios that matter most: a Vercel region
+going down, and an entire cloud provider region going down.
+
+## The constraints that shaped the design
+
+Every workflow run on Vercel is identified by a run ID like
+`wrun_4QK4WJP4E9V2R7NHZ63FGT8SM2`. The part after the prefix is a
+[ULID](https://github.com/ulid/spec): 48 bits of millisecond timestamp plus 80
+bits of randomness, encoded as 26 characters of Crockford Base32. ULIDs sort
+lexicographically by creation time, a property the system relies on, and our
+ID generator guarantees strict monotonicity even for IDs minted in the same
+millisecond.
+
+Going multi-region means every request that touches a run (an event write, a
+state read, a queue message, a stream consumer) needs to know which region
+that run's data lives in. Each familiar design for answering that question had
+a disqualifying problem:
+
+- **A region lookup table** puts a cross-region read on the hot path of every
+  request, which is exactly the round trip multi-region exists to eliminate.
+  It's also a new global dependency, because the service you consult to
+  survive a regional outage can't itself live in one region.
+- **A new ID format** (say, `wrun_sfo1_...`) breaks every existing run ID,
+  every stored reference to one, and every consumer that validates the format.
+- **A region field on the API** pushes the problem onto every caller, and does
+  nothing for the millions of IDs already in the wild.
+
+We wanted the run ID itself to answer the question, since the ID is already
+the one value that every request carries.
+
+## Hiding 11 bits inside a ULID
+
+The scheme, implemented in
+[`@workflow/world-vercel/run-id`](https://github.com/vercel/workflow/tree/main/packages/world-vercel/src/run-id),
+steals 11 bits from a standard ULID without breaking any of its properties:
+
+| Field | Location | Size |
+| --- | --- | --- |
+| Tag bit | MSB of the 48-bit timestamp (byte 0, bit 7) | 1 bit |
+| Region ID | Top 6 bits of byte 6 (top of the randomness section) | 6 bits |
+| Version | Bottom 2 bits of byte 6 + top 3 bits of byte 7 | 5 bits |
+
+The **tag bit** marks an ID as carrying metadata. Setting the most significant
+bit of the timestamp shifts the ULID's first character into the range `4`–`7`,
+which is how you can spot a tagged ID at a glance. Untagged IDs (every run ID
+minted before this scheme existed) decode as exactly what they are: legacy IDs
+with no metadata.
+
+The **region ID** is a 6-bit index into a frozen, append-only table:
+
+```ts
+export const REGION_IDS = {
+  unknown: 0,
+  iad1: 1,
+  sfo1: 2,
+  pdx1: 3,
+  // ... 21 deployed Vercel regions, plus two reserved
+  // for future rollout so they can be assigned without
+  // a version bump
+  syd1: 23,
+} as const;
+```
+
+The comment above this table in the source is emphatic: **DO NOT REORDER OR
+REUSE IDS.** Once a region has an ID, that ID is part of the on-the-wire
+encoding of every run ID ever issued for that region. Six bits gives us 63
+regions, and Vercel currently deploys to 21.
+
+The **version** field is insurance. Five bits of format version mean we can
+revise what the metadata means up to 30 more times (version 0 is reserved as a
+"no metadata" sentinel) without touching the ID format again.
+
+The cost of all this is measured and acceptable. Randomness drops from 80 bits
+to 69 (still ~5.9 × 10²⁰ distinct values per millisecond), and the maximum
+representable timestamp drops from the year ~10895 to the year ~5429. We
+decided we were comfortable shipping a breaking change sometime in the next
+3,400 years.
+
+### Why the bit placement matters
+
+The metadata lives at the **top** of the randomness section, and that
+placement is load-bearing.
+
+Our ID generator uses a monotonic ULID factory. For IDs minted in the same
+millisecond, it increments the randomness from the bottom, and because the
+metadata occupies the top 11 bits, those same-millisecond increments pass
+through encoding untouched. Consecutive IDs with the same region still sort in
+mint order, and lexicographic ordering is preserved across millisecond
+boundaries. Put the metadata at the bottom instead, and every encode would
+stomp the monotonic counter.
+
+One edge remains: the metadata changing between two same-millisecond mints. A
+run created for `sfo1` (region 2) immediately after a run created for `fra1`
+(region 10) would sort *below* it, because the region bits sit above the
+counter bits. The generator handles this by remembering the last ID it emitted
+and, on a would-be inversion, bumping the candidate's timestamp by the bit
+immediately above the metadata window, which effectively re-mints it one
+millisecond later:
+
+```ts
+let candidate = encode(ulid(), regionId);
+while (candidate <= lastRunId) {
+  candidate = encode(bumpAboveMetadata(lastRunId), regionId);
+}
+```
+
+The result is a tagged ULID that is still, by every external measure, a ULID.
+It sorts, round-trips, and passes any off-the-shelf validator, so existing
+tooling that stores, compares, or indexes run IDs never noticed the change.
+
+## Zero configuration, by resolution order
+
+A run's region is decided once, at mint time, and never again. The resolution
+order is:
+
+1. An explicit `region` passed to `start()`
+2. `VERCEL_REGION`, the region the current function is executing in
+3. `iad1`, the default region
+
+The middle rule is what makes multi-region zero-config. Deploy your app to
+`fra1`, and every run your functions create is born tagged `fra1`. Its event
+log, queue dispatch, and streams are all region-local to your users, with no
+setting anywhere. Deploy to five regions, and each run is pinned to whichever
+region served the user who triggered it.
+
+The escape hatch is explicit pinning:
+
+```ts
+import { start } from "workflow/api";
+import { myWorkflow } from "@/workflows/my-workflow";
+
+const run = await start(myWorkflow, [input], { region: "sfo1" });
+```
+
+The `unknown` sentinel (region 0) is deliberately never minted. If neither an
+explicit region nor `VERCEL_REGION` yields a recognized region code, the ID is
+tagged with a concrete `iad1` rather than "unknown," so every run ID in
+existence is self-describing and routable. Every *legacy* untagged ID resolves
+to `iad1` too, because that's where all pre-multi-region data lives. Backwards
+compatibility came down to a decode rule rather than a migration.
+
+## The ID is the routing table
+
+Once the region is in the ID, routing stops being a coordination problem.
+There is no registry to consult and no service that "knows" where runs live.
+Every component decodes the destination from the value it was already holding.
+
+The clearest example is queue dispatch. Workflow progress is driven by queue
+messages (a run advances when a message wakes it), so every message must land
+in the run's home region. The SDK resolves the target per-send:
+
+```ts
+// Resolve the region the message should be sent to, in order:
+//   1. Explicit override.
+//   2. Region embedded in the payload's tagged run ID.
+//   3. VERCEL_REGION environment variable.
+//   4. iad1 (preserves pre-regional behavior).
+function resolveTargetRegion(payload, opts) {
+  if (isKnownRegionCode(opts?.region)) return opts.region;
+  const fromRunId = regionFromTaggedRunId(getRunIdFromPayload(payload));
+  if (fromRunId) return fromRunId;
+  const fromEnv = process.env.VERCEL_REGION;
+  if (isKnownRegionCode(fromEnv)) return fromEnv;
+  return FALLBACK_REGION;
+}
+```
+
+Rule 2 is the one doing the work. A message produced anywhere (a step
+completion from a function in `hnd1`, a hook resume from a request handler in
+`lhr1`) carries a run ID, and the run ID carries the destination. The string
+sources (the override and the env var) are validated against the known-region
+table and ignored if they don't match, so a typo like
+`start({ region: "xyz9" })` can't clobber a payload-derived region with an
+undeliverable destination.
+
+The backend applies the same principle to storage. Requests arrive at a single
+API surface from anywhere in the world, and the server decodes the region from
+the run ID in the path to route reads and writes to that region's storage
+cluster. Reads, hook resumes, and stream consumers don't need to know where a
+run lives. They name the run, and naming it is enough.
+
+Even our internal health checks follow the pattern. The probe that precedes a
+cross-deployment `start()` carries the run ID it's about to create, so the
+probe exercises the exact region the run will live in.
+
+## Data placement is not code placement
+
+The `region` option pins the run's **data**, not your **code**. This
+distinction confuses everyone at first, so we're careful about it.
+
+Your workflow and step functions execute wherever your application is
+deployed. If you `start(myWorkflow, [input], { region: "sfo1" })` but your app
+is only deployed to `iad1`, the run's event log lives in `sfo1` while its
+steps execute in `iad1`, reaching across regions for state. That's a supported
+configuration. It's slower on the hot path, but correct.
+
+The whole failover story rests on this separation.
+
+## Failure model A: a Vercel region goes down
+
+When a Vercel region becomes unhealthy, the platform fails compute over to the
+nearest healthy region. Functions that were pinned to `sfo1` start executing
+in, say, `pdx1`. For most stateless applications that's the end of the story.
+For a stateful system it's where the story usually goes wrong: compute moved,
+and the state didn't.
+
+One invariant makes this a non-event for Workflow: **the region encoded in the
+run ID is the routing key for durable state, and the region the code happens
+to be executing in is observational only.** The serving region is never used
+to decide where a run's data lives.
+
+So when a `sfo1`-homed workflow's step executes in `pdx1` during a failover,
+nothing about its data routing changes. The run ID still says `sfo1`, so event
+writes, state reads, and queue dispatch still target `sfo1`'s storage. That
+storage runs on regional cloud infrastructure reachable from anywhere with the
+right credentials, which means an outage of Vercel's compute in a region does
+not take the underlying data plane with it. The workflow keeps progressing.
+Latency goes up by a cross-region round trip; correctness doesn't change at
+all.
+
+If data routing instead followed the serving region, a failover would scatter
+one run's writes across two regions' storage, and the run would become
+unreadable the moment traffic shifted. We reject that configuration
+statically. The serving region is never consulted for data placement, failover
+or not.
+
+A supporting design rule sits underneath this. Region-local infrastructure
+(caches, and the pub/sub channels that wake long-polls and stream readers) is
+treated strictly as a *signal*, never as a source of truth. Every answer the
+system gives comes from a durable read; the fast path only tells it when to
+look. Lose a region's caches in a failover and you lose some latency. You
+cannot lose an answer.
+
+## Failure model B: an entire cloud region goes down
+
+Now the harder scenario. Vercel's regional storage runs on cloud provider
+infrastructure in a corresponding region (`sfo1` on `us-west-1`, `fra1` on
+`eu-central-1`, and so on), so the failure mode above it is the provider's
+region going dark outright, taking compute and storage with it.
+
+The honest answer is that **runs homed in that region stop progressing.**
+Their event logs are unreachable, and a workflow that cannot read or append to
+its log cannot safely advance. Durability and availability are different
+promises, and when a whole cloud region is dark, the one we keep is
+durability.
+
+Concretely, a workflow run at rest is two things: an **event log** (what has
+happened) and **pending queue messages** (what will wake it next). Compute
+holds nothing, because the runtime deterministically replays the event log to
+reconstruct a run's state from scratch on every invocation. That's the core
+durable-execution trick, and it has a sharp corollary for disaster analysis:
+losing compute is always harmless, and the only way to lose a workflow is to
+lose its data.
+
+The event log sits on durable regional storage with the durability guarantees
+you'd expect from the cloud provider's storage services. The interesting
+failure surface is the queue messages, the wake-ups scheduled *during* the
+outage. A step in a healthy region finishes and enqueues "wake run X" toward
+the dead region. If that message is dropped, the run is orphaned. When the
+region recovers, nothing arrives to nudge it, and it sleeps forever.
+
+This is where [Vercel Queues](https://vercel.com/docs/queues)' failover model
+carries the design. When a send targets a region whose queue infrastructure is
+unavailable, ingestion fails over, meaning the message is durably accepted in
+another region and delivered onward when the target recovers. The SDK carries
+a small scar from this design:
+
+```ts
+return {
+  // messageId may be null when the queue fails over to a different
+  // region: the event is ingested but the responding region cannot
+  // return an ID.
+  messageId: messageId ? MessageId.parse(messageId) : null,
+};
+```
+
+A `null` message ID is the type system remembering that cross-region failover
+exists. The send succeeded and the message is durable, but the region that
+accepted it can't hand back the identifier the home region would have.
+
+Delivery is at-least-once, and that's the final piece. Redelivery, duplicate
+wake-ups, and messages arriving late and out of order after a region recovers
+are all safe, because waking a workflow is idempotent by construction. A wake
+triggers a replay of the event log; the log, with its append-time conflict
+checks, is the single arbiter of what actually happened. A duplicate wake
+replays to the same position and finds nothing new to do.
+
+Recovery from a full regional outage therefore requires no runbook and no
+operator. The region comes back, queued messages deliver, each one triggers a
+replay, and every run picks up exactly where its event log says it left off,
+whether the outage lasted four minutes or four hours. The failure was
+invisible to the workflow's own logic. From the code's perspective, it was a
+longer-than-usual pause between two steps, and pausing is the thing workflows
+are best at.
+
+## Three edges we hit along the way
+
+A few things bit us, and they're instructive:
+
+**The year-6400 bug.** The tag bit lives in the timestamp's most significant
+bit, and one code path decoded a run ID's creation time without clearing it
+first. Every tagged run ID decoded to a timestamp a few millennia in the
+future. The fix was one mask, and the lesson stuck: overload bits in a
+timestamp, and every consumer of that timestamp becomes a consumer of your
+encoding.
+
+**Health checks needed tagging too.** Our readiness probes mint a correlation
+ID and read back a response stream under that ID's name, and the prober and
+the responder can be in different regions. Untagged correlation IDs meant the
+two sides could resolve different regional backends and never meet. The fix
+was to mint correlation IDs through the same region-tagged generator as run
+IDs. Once IDs are routable, every ID that crosses a region boundary needs to
+be one.
+
+**One thing still has a home region.** Hook tokens (the opaque strings used to
+resume a paused workflow from the outside) are deliberately not region-tagged.
+A token carries no region hint, so resolving one needs a single authoritative
+table, and token lookups are pinned to one region today. Hook *payloads* land
+on the run's event log in the run's region like everything else. It's a
+documented tradeoff and a candidate for the same treatment later. The general
+lesson stands: any identifier that can't carry its own routing information
+will cost you a home region.
+
+## Lessons for your own systems
+
+- **Encode routing into identifiers.** An ID that says where its data lives
+  eliminates a lookup service, a configuration surface, and a class of
+  coordination failures in one move. The run ID was already on every request;
+  we taught it to answer the question every request was asking.
+- **Steal bits carefully.** Placement inside the ULID was the difference
+  between preserving monotonic ordering and destroying it. Version your
+  encoding, freeze your tables, and never mint an ambiguous value.
+- **Make failover a property of data layout, not runbooks.** Compute location
+  is observational; data location is authoritative. That one rule means a
+  compute failover changes latency instead of correctness.
+- **Durability is the event log plus the queue, so protect both.** Replay
+  makes compute loss free. Queue ingest failover makes wake-up loss
+  survivable. Between them, a full regional outage becomes a pause, not a
+  loss.
+
+Multi-region is available now on every [Vercel Function
+region](https://vercel.com/docs/regions) with `workflow` 5.0.0 or later, and
+it requires zero configuration. Your runs are already pinned to the regions
+your users are closest to. Read more in the [Vercel World
+docs](/worlds/vercel#multi-region).
