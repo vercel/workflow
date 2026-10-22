@@ -45,9 +45,9 @@ import {
  * - A retention beyond the World's limit is refused with
  *   `START_HOOK_ADMISSION_REJECTED`.
  * - Past the 24h orphan bound, a candidate with no run is refused with
- *   `START_HOOK_ADMISSION_REJECTED` through either copy, and a staged
- *   orphan (an accepted candidate whose run was never created) no longer
- *   holds its token.
+ *   `START_HOOK_ADMISSION_REJECTED` through either copy. A staged orphan
+ *   (an accepted candidate whose run was never created) holds its token for
+ *   the World's hold and releases it after.
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
@@ -85,11 +85,13 @@ export interface AtomicStartHookConformanceOptions {
    */
   stageOrphan?: (runId: string, token: string) => Promise<void>;
   /**
-   * Whether a staged orphan keeps its token until the 24h bound passes. A
-   * World may release earlier when the orphan was never observed as
-   * admitted (no caller saw its run): world-local does.
+   * How long a staged orphan keeps its token before a contender may take it:
+   * the 24h bound for a World that records an acceptance before the run
+   * (the Vercel backend), or a shorter grace for one whose acceptance is the
+   * run itself (world-local holds for its claim lock's lease plus margin, in
+   * case the writer is stalled rather than dead). Defaults to 24h.
    */
-  orphanHoldsWithinWindow?: boolean;
+  orphanHoldMs?: number;
 }
 
 const SPEC = SPEC_VERSION_CURRENT;
@@ -603,20 +605,19 @@ export function atomicStartHookConformance(
       );
 
       stagedOrphanTest(
-        options.orphanHoldsWithinWindow
-          ? 'an orphan holds its token within the bound and releases it after'
-          : 'an orphan never seen as admitted does not hold its token',
+        'an orphan holds its token for its hold, and a contender owns it after',
         async () => {
           const events = setup();
           const token = newToken();
           const orphan = options.newRunId();
+          const holdMs = options.orphanHoldMs ?? DAY_MS;
           await options.stageOrphan?.(orphan, token);
 
-          if (options.orphanHoldsWithinWindow) {
-            await expectRefused(admit(events, { token }), token, orphan);
-            advance?.(DAY_MS + 60_000);
-          }
-          // A contender owns the token now.
+          // Just inside the hold: refused, naming the orphan.
+          advance?.(holdMs - 5_000);
+          await expectRefused(admit(events, { token }), token, orphan);
+          // Just past it: a contender owns the token.
+          advance?.(10_000);
           const contender = await admit(events, { token });
           expect(await runExists(contender)).toBe(true);
           expect(await runExists(orphan)).toBe(false);
