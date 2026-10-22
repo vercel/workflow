@@ -64,6 +64,7 @@ import {
   stepDies as startHookInStepStartStepDies,
 } from './start-hook-in-step-start.ts';
 import { scenario as startHookLostRunCreatedResponse } from './start-hook-lost-run-created-response.ts';
+import { scenario as startHookLostStartMessage } from './start-hook-lost-start-message.ts';
 import {
   inFlight as startHookOrphanInFlight,
   late as startHookOrphanLate,
@@ -244,6 +245,7 @@ export const scenarios: ScenarioSpec[] = [
   startHookStartDiesAfterEnqueueRetryWins,
   startHookStartDiesAfterEnqueueQueuedWins,
   startHookLostRunCreatedResponse,
+  startHookLostStartMessage,
   startHookConcurrentCandidates,
   // A refused candidate runs nothing, however it is delivered.
   startHookRefusedUnderTurbo,
