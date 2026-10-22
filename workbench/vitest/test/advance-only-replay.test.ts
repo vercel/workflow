@@ -11,8 +11,10 @@ import {
   duplicateProbe,
   fastFirstParallelChains,
   oneStepFanoutBenchmark,
+  queuedRaceLoserWithDetachedTerminalDrain,
   raceLoser,
   raceThenNext,
+  retryingRaceLoserWithDetachedTerminalDrain,
   slowFirstParallelChains,
   threeParallelChains,
   twoDifferentLeafBenchmark,
@@ -125,6 +127,42 @@ async function runDetachedAfterAdvanceOnlyReplay(
     ].sort((a, b) => a.at - b.at);
     return { markers, timeline: formatTimeline(tag, markers) };
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function terminalDrainRaceCompletes(
+  workflow:
+    | typeof retryingRaceLoserWithDetachedTerminalDrain
+    | typeof queuedRaceLoserWithDetachedTerminalDrain,
+  tag: string,
+  maxInlineSteps?: string
+): Promise<boolean> {
+  const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-terminal-drain-'));
+  const markerPath = join(dir, `${tag}.log`);
+  const originalMaxInlineSteps = process.env.WORKFLOW_MAX_INLINE_STEPS;
+  if (maxInlineSteps === undefined) {
+    delete process.env.WORKFLOW_MAX_INLINE_STEPS;
+  } else {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = maxInlineSteps;
+  }
+  try {
+    const run = await start(workflow, [markerPath]);
+    const completed = await Promise.race([
+      run.returnValue.then(
+        () => true,
+        () => false
+      ),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 15_000)),
+    ]);
+    if (!completed) await run.cancel({ cancelReason: 'repro timeout' });
+    return completed;
+  } finally {
+    if (originalMaxInlineSteps === undefined) {
+      delete process.env.WORKFLOW_MAX_INLINE_STEPS;
+    } else {
+      process.env.WORKFLOW_MAX_INLINE_STEPS = originalMaxInlineSteps;
+    }
     await rm(dir, { recursive: true, force: true });
   }
 }
@@ -295,6 +333,35 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         ).toBeLessThanOrEqual(markerAt(markers, 'workflow', 'return'));
       }
     }, 30_000);
+
+    it.each([
+      [
+        'retrying race loser',
+        retryingRaceLoserWithDetachedTerminalDrain,
+        undefined,
+      ],
+      ['queued race loser', queuedRaceLoserWithDetachedTerminalDrain, '1'],
+    ] as const)(
+      'does not hang after a %s creates detached terminal-drain steps',
+      async (_tag, workflow, maxInlineSteps) => {
+        const runs = Number(
+          process.env.WORKFLOW_ADVANCE_ONLY_HANG_REPRO_RUNS ?? '20'
+        );
+        for (let index = 0; index < runs; index++) {
+          expect
+            .soft(
+              await terminalDrainRaceCompletes(
+                workflow,
+                `terminal-drain-${index}`,
+                maxInlineSteps
+              ),
+              `run ${index + 1}/${runs} did not complete within 15 seconds`
+            )
+            .toBe(true);
+        }
+      },
+      330_000
+    );
 
     it('does not execute a step twice across repeated early replays', async () => {
       for (let run = 0; run < 10; run++) {

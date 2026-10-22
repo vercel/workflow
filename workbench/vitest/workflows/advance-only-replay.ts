@@ -1,5 +1,5 @@
 import { appendFile } from 'node:fs/promises';
-import { getWorkflowMetadata } from 'workflow';
+import { getStepMetadata, getWorkflowMetadata, RetryableError } from 'workflow';
 
 async function markerStep(markerPath: string, label: string, delayMs: number) {
   'use step';
@@ -157,6 +157,56 @@ export async function raceLoser(markerPath: string, loserMs: number) {
     markerStep(markerPath, 'race-loser', loserMs),
   ]);
   return 'done';
+}
+
+async function flakySlowRaceLoser(markerPath: string) {
+  'use step';
+  const { attempt } = getStepMetadata();
+  await appendFile(
+    markerPath,
+    `flaky-race-loser-${attempt} start ${Date.now()}\n`
+  );
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  if (attempt === 1) {
+    throw new RetryableError('once', { retryAfter: 200 });
+  }
+  await appendFile(
+    markerPath,
+    `flaky-race-loser-${attempt} end ${Date.now()}\n`
+  );
+}
+
+function startDetachedTerminalDrain(markerPath: string, prefix: string) {
+  const detached = Promise.all(
+    Array.from({ length: 4 }, (_, index) =>
+      markerStep(markerPath, `${prefix}-${index + 1}`, 50)
+    )
+  );
+  detached.catch(() => {});
+}
+
+export async function retryingRaceLoserWithDetachedTerminalDrain(
+  markerPath: string
+) {
+  'use workflow';
+  const winner = await Promise.race([
+    markerStep(markerPath, 'flaky-race-winner', 100),
+    flakySlowRaceLoser(markerPath),
+  ]);
+  startDetachedTerminalDrain(markerPath, 'flaky-terminal-drain');
+  return winner;
+}
+
+export async function queuedRaceLoserWithDetachedTerminalDrain(
+  markerPath: string
+) {
+  'use workflow';
+  const winner = await Promise.race([
+    markerStep(markerPath, 'queued-race-winner', 100),
+    markerStep(markerPath, 'queued-race-loser', 800),
+  ]);
+  startDetachedTerminalDrain(markerPath, 'queued-terminal-drain');
+  return winner;
 }
 
 export async function duplicateProbe(markerPath: string) {
