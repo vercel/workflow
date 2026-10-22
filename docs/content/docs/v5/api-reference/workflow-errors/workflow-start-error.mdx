@@ -33,7 +33,7 @@ async function startOrder() {
 }
 ```
 
-`WorkflowStartError` is retryable (`retryable` is always `true`). Retrying with the same token is safe: it can never admit a second owner. If the first candidate was admitted, the retry throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with `conflictingRunId` set to it; otherwise the retry's run becomes the owner. Inside a workflow, the `start()` step retries it on its own.
+`WorkflowStartError` is only thrown by a start that passes `hook`, and retrying it with the same token is safe: it can never admit a second owner. If the first candidate was admitted, the retry throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with `conflictingRunId` set to it; otherwise the retry's run becomes the owner. Inside a workflow, the `start()` step retries it on its own. It extends `WorkflowError`, not `WorkflowWorldError`: it is not a World response, so World error checks never classify it as permanent.
 
 ## API Signature
 

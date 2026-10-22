@@ -15,6 +15,7 @@ import {
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
@@ -52,7 +53,15 @@ type Decision = 'accept' | 'refuse' | 'reject' | 'finished';
  * the `run_started` the delivery writes. `accept` is a candidate the direct
  * `run_created` already admitted.
  */
-async function candidate(decision: Decision, holdRunStartedMs = 0) {
+async function candidate(
+  decision: Decision,
+  holdRunStartedMs = 0,
+  /**
+   * Answer the first `run_started` without its run, as a backend did for a
+   * `run_started` that overtook `run_created`: before or after committing it.
+   */
+  runlessOnce?: 'before-commit' | 'after-commit'
+) {
   const runId = `wrun_${ulid()}`;
   const input = await dehydrateWorkflowArguments([1], runId, undefined, []);
   const runStartedData: Record<string, unknown>[] = [];
@@ -92,7 +101,20 @@ async function candidate(decision: Decision, holdRunStartedMs = 0) {
       updatedAt: new Date(),
     } as any);
   }
-  setWorld(world.asWorld());
+  const asWorld = world.asWorld();
+  if (runlessOnce) {
+    const create = asWorld.events.create.bind(asWorld.events);
+    let answered = false;
+    asWorld.events.create = (async (...args: Parameters<typeof create>) => {
+      const first = args[1].eventType === 'run_started' && !answered;
+      if (first) answered = true;
+      if (first && runlessOnce === 'before-commit') throw runlessResponse();
+      const result = await create(...args);
+      if (first) throw runlessResponse();
+      return result;
+    }) as typeof create;
+  }
+  setWorld(asWorld);
   await workflowEntrypoint(oneStep)(new Request('https://example.test'));
   const start = world.enqueue(QUEUE, {
     runId,
@@ -108,6 +130,18 @@ async function candidate(decision: Decision, holdRunStartedMs = 0) {
     },
   });
   return { world, start, runStartedData };
+}
+
+/** A `run_started` response that failed its schema at `run` alone. */
+function runlessResponse() {
+  const parsed = z
+    .object({ run: z.object({ startedAt: z.coerce.date() }) })
+    .safeParse({ event: {} });
+  if (parsed.success) throw new Error('unreachable');
+  return new WorkflowWorldError('v4 createEvent: invalid response body', {
+    code: 'SCHEMA_VALIDATION',
+    cause: parsed.error,
+  });
 }
 
 /** The non-first deliveries a candidate's message can take. */
@@ -199,6 +233,28 @@ describe.each([
       'Run already finished during setup, skipping',
       expect.anything()
     );
+  });
+
+  it.each([
+    'before-commit',
+    'after-commit',
+  ] as const)('retries a run_started answered without its run (%s) by redelivery, which admits and completes', async (when) => {
+    const { world, start } = await candidate('accept', 0, when);
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+
+    await expect(world.deliver(start)).rejects.toSatisfy(WorkflowWorldError.is);
+    // No fatal run_failed: the queue redelivers instead.
+    expect(world.events.map((e) => e.eventType)).not.toContain('run_failed');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/answered without the run/),
+      expect.anything()
+    );
+
+    await world.runUntilIdle();
+    const types = world.events.map((e) => e.eventType);
+    expect(types).toContain('run_completed');
+    expect(types).not.toContain('run_failed');
+    expect(types.filter((t) => t === 'run_started')).toHaveLength(1);
   });
 
   describe.each(nonFirst)('on %s of an undecided candidate', (_label, as) => {

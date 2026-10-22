@@ -6,6 +6,7 @@ import {
   START_HOOK_ADMISSION_REJECTED,
   ThrottleError,
   WorkflowRunNotFoundError,
+  WorkflowError,
   WorkflowRuntimeError,
   WorkflowStartError,
   WorkflowWorldError,
@@ -268,7 +269,6 @@ describe('start({ hook })', () => {
       );
 
       expect(WorkflowStartError.is(error)).toBe(true);
-      expect((error as WorkflowStartError).retryable).toBe(true);
       expect(FatalError.is(error)).toBe(false);
     });
 
@@ -515,6 +515,46 @@ describe('start({ hook })', () => {
     expect(error).toMatchObject({ stage: 'queue', cause });
     expect((error as WorkflowStartError).runId).toMatch(/^wrun_/);
     expect(eventsCreate).not.toHaveBeenCalled();
+  });
+
+  it('is a WorkflowError, never a World error a caller would call permanent', async () => {
+    admittingWorld();
+    queue.mockRejectedValue(new WorkflowWorldError('down', { status: 503 }));
+
+    const error = await rejection(
+      start(workflow, [], { hook: { token: TOKEN } })
+    );
+
+    expect(WorkflowStartError.is(error)).toBe(true);
+    expect(error).toBeInstanceOf(WorkflowError);
+    expect(error).not.toBeInstanceOf(WorkflowWorldError);
+    expect(WorkflowWorldError.is(error)).toBe(false);
+  });
+
+  it.each([
+    ['queue', 'a 5xx', () => new WorkflowWorldError('down', { status: 503 })],
+    ['queue', 'a non-World error', () => new Error('socket hang up')],
+    [
+      'run_created',
+      'a 5xx',
+      () => new WorkflowWorldError('down', { status: 500 }),
+    ],
+    [
+      'run_created',
+      'a timeout',
+      () => new WorkflowWorldError('slow', { code: 'TIMEOUT' }),
+    ],
+  ])('never throws it from a start without a hook (%s fails with %s)', async (failing, _label, makeError) => {
+    admittingWorld();
+    if (failing === 'queue') queue.mockRejectedValue(makeError());
+    else eventsCreate.mockRejectedValue(makeError());
+
+    const outcome = await start(workflow, []).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(WorkflowStartError.is(outcome)).toBe(false);
   });
 
   it('rethrows a permanent queue refusal as-is', async () => {

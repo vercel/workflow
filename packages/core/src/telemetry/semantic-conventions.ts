@@ -109,6 +109,14 @@ export const WorkflowStartHookOutcome = SemanticConvention<
 >('workflow.start_hook.outcome');
 
 /**
+ * Set when setup's `run_started` was answered without the run and the
+ * delivery is retried instead of failing the run.
+ */
+export const WorkflowRunStartedRunlessResponse = SemanticConvention<boolean>(
+  'workflow.run_started.runless_response'
+);
+
+/**
  * On a `rejected` `start({ hook })`: whether the holder was found stuck
  * `pending` and its orchestrator message re-published.
  */

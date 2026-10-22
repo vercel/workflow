@@ -50,3 +50,52 @@ export function ackRefusedStartHookCandidate(
   }
   return false;
 }
+
+/**
+ * A `run_started` answered without its `run`: the response failed its schema
+ * at `run`, and only there. It is a contract violation (the World must return
+ * the run it started), but a backend has produced it transiently, for a
+ * resilient `run_started` that overtook the `run_created` still being written
+ * by `start()`, which the queue-first order of `start({ hook })` makes
+ * reachable. A redelivery finds the run whole, so the delivery retries
+ * instead of failing the run. Every other schema violation stays fatal.
+ */
+export function isRunlessRunStartedResponse(err: unknown): boolean {
+  if (!WorkflowWorldError.is(err) || err.status !== undefined) return false;
+  const cause = (err as { cause?: unknown }).cause;
+  if (
+    typeof cause !== 'object' ||
+    cause === null ||
+    (cause as { name?: unknown }).name !== 'ZodError'
+  ) {
+    return false;
+  }
+  const issues = (cause as { issues?: unknown }).issues;
+  return (
+    Array.isArray(issues) &&
+    issues.length > 0 &&
+    issues.every(
+      (issue) =>
+        typeof issue === 'object' &&
+        issue !== null &&
+        issue.code === 'invalid_type' &&
+        Array.isArray(issue.path) &&
+        issue.path.length === 1 &&
+        issue.path[0] === 'run'
+    )
+  );
+}
+
+/**
+ * Setup's check before recording a fatal run error: a run-less `run_started`
+ * response is retried by redelivery (the caller rethrows), with a warning.
+ * Returns whether it applied.
+ */
+export function retriesRunlessRunStarted(err: unknown, runId: string): boolean {
+  if (!isRunlessRunStartedResponse(err)) return false;
+  runtimeLogger.warn(
+    'run_started was answered without the run; retrying the delivery instead of failing the run',
+    { workflowRunId: runId, error: (err as Error).message }
+  );
+  return true;
+}

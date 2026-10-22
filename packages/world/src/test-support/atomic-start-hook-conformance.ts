@@ -35,7 +35,8 @@ import {
  *   retention passes.
  * - The owner's own `createHook()` with the token adopts the reservation; any
  *   other run's conflicts with the owner; disposing the adopted Hook does not
- *   release the token while the owner runs.
+ *   release the token while the owner runs, and an adoption without its
+ *   own retention keeps the start's, whether or not the run disposed it.
  * - A by-token lookup before adoption throws `HookReservedError` naming the
  *   owner, and answers not found once the owner ended without adopting, or
  *   after the adopted Hook was disposed.
@@ -455,6 +456,34 @@ export function atomicStartHookConformance(
         hookCreated(token, newHookId())
       );
       expect(second.event?.eventType).toBe('hook_created');
+
+      await finish(events, owner);
+      await expectRefused(admit(events, { token }), token, owner);
+      await sleep(retentionMs + 250);
+      await admit(events, { token });
+    });
+
+    // The runtime omits `hook_disposed` at run termination for a Hook whose
+    // own `hook_created` carried no retention, so an adopted Hook's run can
+    // end with or without the disposal: neither may shorten the start's.
+    test.each([
+      ['ends with the adopted Hook still open', false],
+      ['disposed the adopted Hook early', true],
+    ])("an adoption without its own retention keeps the start's after the owner %s", async (_label, disposeEarly) => {
+      const events = setup();
+      const token = newToken();
+      const retentionMs = 2_000;
+      const owner = await admit(events, {
+        token,
+        tokenRetentionUntil: new Date(Date.now() + retentionMs),
+      });
+      await create(events, owner, runStarted({ token }));
+      const hookId = newHookId();
+      await create(events, owner, hookCreated(token, hookId));
+      if (disposeEarly) {
+        await create(events, owner, hookDisposed(token, hookId));
+        await expectRefused(admit(events, { token }), token, owner);
+      }
 
       await finish(events, owner);
       await expectRefused(admit(events, { token }), token, owner);
