@@ -208,6 +208,22 @@ export const QuickJSSnapshotRestoreMs = SemanticConvention<number>(
   'workflow.quickjs.snapshot.restore_ms'
 );
 
+/**
+ * Whether the snapshot read was started at handler entry, overlapping the
+ * setup request, instead of after it
+ */
+export const QuickJSSnapshotPrefetched = SemanticConvention<boolean>(
+  'workflow.quickjs.snapshot.prefetched'
+);
+
+/**
+ * Where a restored snapshot's delta came from: sliced out of the setup
+ * request's preload, or a separate `events.list` from the snapshot's cursor
+ */
+export const QuickJSSnapshotDeltaSource = SemanticConvention<
+  'preload' | 'list'
+>('workflow.quickjs.snapshot.delta_source');
+
 /** Why a stored snapshot was not restored (the invocation replayed in full) */
 export const QuickJSSnapshotFallbackReason = SemanticConvention<string>(
   'workflow.quickjs.snapshot.fallback_reason'
