@@ -1,0 +1,54 @@
+---
+title: WorkflowStartError
+description: Thrown when start with a hook cannot confirm whether its run was queued or admitted.
+type: reference
+summary: Catch WorkflowStartError to identify a start({ hook }) candidate whose outcome is unknown, then retry with the same token.
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/idempotency
+---
+
+`WorkflowStartError` is thrown when [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) cannot confirm whether its candidate run was queued or admitted, for example because the World timed out. The outcome is unknown, not failed: the candidate may still become the run that owns the token.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { WorkflowStartError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+declare const orderId: string; // @setup
+
+async function startOrder() {
+  try {
+    return await start(processOrder, [orderId], {
+      hook: { token: `order:${orderId}` },
+    });
+  } catch (error) {
+    if (WorkflowStartError.is(error)) { // [!code highlight]
+      console.warn(`Unconfirmed start ${error.runId} (${error.stage}); retrying`);
+      return await start(processOrder, [orderId], {
+        hook: { token: `order:${orderId}` },
+      });
+    }
+    throw error;
+  }
+}
+```
+
+`WorkflowStartError` is retryable (`retryable` is always `true`). Retrying with the same token is safe: it can never admit a second owner. If the first candidate was admitted, the retry throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with `conflictingRunId` set to it; otherwise the retry's run becomes the owner. Inside a workflow, the `start()` step retries it on its own.
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+import { WorkflowStartError } from "workflow/errors";
+export default WorkflowStartError;`}
+/>
+
+`stage` is `"queue"` when the SDK could not confirm that the run was queued, and `"admission"` when it was queued but the SDK could not confirm the World's admission decision. `runId` is the candidate's run ID, for inspection.
+
+### Static Methods
+
+#### `WorkflowStartError.is(value)`
+
+Type-safe check for `WorkflowStartError` instances across module boundaries and VM contexts.

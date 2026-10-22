@@ -378,6 +378,10 @@ Custom base URL for the Vercel workflow API proxy. Default: `https://api.vercel.
 
 Custom workflow-server URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
 
+### `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK`
+
+Set to `1` (or `true`) to enable [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) on the Vercel World. Off by default while the backend support rolls out; without it, `start({ hook })` throws before it enqueues anything. Set it on the deployment that starts runs and on any deployment those runs target.
+
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 
 Runs at spec version 9 (the default for new runs) already run one orchestrator invocation at a time: their orchestrator messages carry the run's id as a [Vercel Queues](https://vercel.com/docs/queues) concurrency key on the shared flow topic, and the world-vercel backend fences the orchestrator's writes. This variable matters for runs of earlier spec versions (for example runs created under `WORKFLOW_SPEC_VERSION=8`).

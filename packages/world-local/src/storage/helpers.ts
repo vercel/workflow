@@ -16,6 +16,7 @@ import {
   resolveWithinBase,
   runEntityDir,
   stripTag,
+  taggedPath,
   ulidToDate,
   withWindowsRetry,
 } from '../fs.js';
@@ -409,6 +410,15 @@ export const HookTokenClaimSchema = z.compile(
     // canonical hook_created event before concurrent retries publish it.
     eventId: z.string().optional(),
     tokenRetentionUntil: z.coerce.date().optional(),
+    // Set when the claim holds a `start({ hook })` reservation for `runId`
+    // (see `start-hook.ts` in @workflow/world). A reservation outlives the
+    // claim's Hook: it holds the token until `runId` ends and its retention
+    // passes, and the run's own `createHook()` adopts it by filling in
+    // `hookId`/`eventId`. A forced creation that takes the Hook carries it to
+    // the claimer.
+    reservation: z
+      .object({ tokenRetentionUntil: z.coerce.date().optional() })
+      .optional(),
     // Set when this claim took the token from another run
     // (`experimental_force`), so a retry that adopts the claim can still
     // report — and wake — the run it came from.
@@ -499,6 +509,45 @@ export async function withHookTokenClaimLock<T>(
 }
 
 /**
+ * Path of the record of a refused `start({ hook })` candidate. Only refusals
+ * are recorded: an accepted candidate's decision is its run record, which is
+ * written under the token claim lock right after the reservation.
+ */
+export function startHookRejectionPath(
+  basedir: string,
+  runId: string,
+  tag?: string
+): string {
+  return taggedPath(basedir, path.join('hooks', 'admissions'), runId, tag);
+}
+
+export const StartHookRejectionSchema = z.object({
+  runId: z.string(),
+  token: z.string(),
+  conflictingRunId: z.string(),
+});
+
+export type StartHookRejection = z.infer<typeof StartHookRejectionSchema>;
+
+export async function readStartHookRejection(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<StartHookRejection | null> {
+  try {
+    return await readJSON(
+      startHookRejectionPath(basedir, runId, tag),
+      StartHookRejectionSchema
+    );
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+/**
  * Path of the exclusive-create claim file that reserves a hook resume,
  * keyed on `(runId, resumeId)`. This is world-local's analogue of the
  * server's `(runId, resumeId)` constraint: `resumeHook()`'s parallel fast
@@ -522,7 +571,12 @@ export function hookResumeClaimPath(
   return path.join(basedir, 'hooks', 'resumes', `${key}.json`);
 }
 
-/** Deletes a claim only while it still belongs to this Hook. */
+/**
+ * Deletes a claim only while it still belongs to this Hook. A claim that also
+ * carries a start reservation is left in place: the reservation outlives its
+ * Hook, and the next claimant releases it once its run has ended and its
+ * retention has passed (see `isHookTokenClaimReleasable`).
+ */
 export async function releaseHookTokenClaimIfOwnedBy(
   basedir: string,
   token: string,
@@ -532,7 +586,7 @@ export async function releaseHookTokenClaimIfOwnedBy(
   await withHookTokenClaimLock(basedir, token, async (signal) => {
     const claimPath = hookTokenClaimPath(basedir, token);
     const claim = await readHookTokenClaim(claimPath);
-    if (!claim) return;
+    if (!claim || claim.reservation) return;
     if (claim.runId === runId && claim.hookId === hookId) {
       signal.throwIfAborted();
       await deleteJSON(claimPath);
