@@ -31,9 +31,11 @@ import {
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import {
+  type HookTokenClaim,
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
+  isWithinStartHookOrphanGrace,
   readHookDisposeLock,
   readHookTokenClaim,
   releaseHookTokenClaimIfOwnedBy,
@@ -247,22 +249,28 @@ export function createHooksStorage(
     // A start reservation its run has not adopted yet: the token has an
     // owner, just no Hook. Retryable until the run adopts it; not found once
     // the run has ended without doing so.
-    const throwIfReservedByLiveRun = async (runId: string) => {
+    const throwIfReserved = async (reserved: HookTokenClaim) => {
       const owner = await readJSONWithFallback(
         basedir,
         'runs',
-        runId,
+        reserved.runId,
         WorkflowRunSchema,
         tag
       );
-      if (owner && !isTerminalWorkflowRunStatus(owner.status)) {
-        throw new HookReservedError(token, runId, {
+      // Reserved while its run is live, or, before the run is written,
+      // while its admission may still be in flight (the orphan grace).
+      if (
+        owner
+          ? !isTerminalWorkflowRunStatus(owner.status)
+          : isWithinStartHookOrphanGrace(reserved)
+      ) {
+        throw new HookReservedError(token, reserved.runId, {
           retryAfter: HOOK_RESERVED_RETRY_AFTER_SECONDS,
         });
       }
     };
     if (claim?.reservation && !claim.hookId) {
-      await throwIfReservedByLiveRun(claim.runId);
+      await throwIfReserved(claim);
       return null;
     }
     if (claim?.hookId) {
@@ -302,7 +310,7 @@ export function createHooksStorage(
           if (recovered) {
             return { ...recovered, isWebhook: recovered.isWebhook ?? true };
           }
-          await throwIfReservedByLiveRun(claim.runId);
+          await throwIfReserved(claim);
         }
       } catch (error) {
         if (!UnsafeEntityIdError.is(error)) {

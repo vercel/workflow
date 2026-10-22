@@ -29,7 +29,7 @@ import * as fsModule from '../fs.js';
 import { writeExclusive } from '../fs.js';
 import { createWorld } from '../index.js';
 import { createStorage } from '../storage.js';
-import { hookTokenClaimPath } from './helpers.js';
+import { hookTokenClaimPath, START_HOOK_ORPHAN_GRACE_MS } from './helpers.js';
 
 const SPEC = SPEC_VERSION_CURRENT;
 const conformanceDirs: string[] = [];
@@ -81,11 +81,14 @@ atomicStartHookConformance({
     if (!dir) throw new Error('no storage set up');
     const claimPath = hookTokenClaimPath(dir, token);
     await fs.mkdir(path.dirname(claimPath), { recursive: true });
-    await writeExclusive(claimPath, JSON.stringify({ runId, reservation: {} }));
+    await writeExclusive(
+      claimPath,
+      JSON.stringify({ runId, reservation: { reservedAt: Date.now() } })
+    );
   },
   // Accepted means the run record exists, so a claim whose run was never
-  // written was never reported admitted, and is released at once.
-  orphanHoldsWithinWindow: false,
+  // written was never reported admitted; it holds only for the lock grace.
+  orphanHoldMs: START_HOOK_ORPHAN_GRACE_MS,
 });
 
 describe('atomic start Hook (world-local)', () => {
@@ -131,7 +134,13 @@ describe('atomic start Hook (world-local)', () => {
     });
     await writeExclusive(
       hookTokenClaimPath(testDir, token),
-      JSON.stringify({ runId: orphan, reservation: {} })
+      // Claimed long enough ago that the orphan grace has passed.
+      JSON.stringify({
+        runId: orphan,
+        reservation: {
+          reservedAt: Date.now() - START_HOOK_ORPHAN_GRACE_MS - 1,
+        },
+      })
     );
 
     const next = `wrun_${ulid()}`;
@@ -258,22 +267,33 @@ describe('atomic start Hook (world-local)', () => {
       )
     ).toBe(false);
 
-    // No caller was told the orphan was admitted, so a contender may own
-    // the token at once.
-    const contender = `wrun_${ulid()}`;
-    expect(
-      (await create(contender, creating('run_created', token))).run?.runId
-    ).toBe(contender);
-
-    // The orphan's own late copies are refused: naming the contender within
-    // the bound, permanently past it.
-    const within = await create(orphan, creating('run_started', token)).catch(
-      (e: unknown) => e
-    );
-    expect(HookConflictError.is(within)).toBe(true);
-    expect(within).toMatchObject({ conflictingRunId: contender });
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     try {
+      // Just inside the orphan grace: the writer may be stalled, not dead,
+      // so the claim still holds and a contender is refused naming it.
+      vi.setSystemTime(Date.now() + START_HOOK_ORPHAN_GRACE_MS - 5_000);
+      const early = `wrun_${ulid()}`;
+      const refused = await create(early, creating('run_created', token)).catch(
+        (e: unknown) => e
+      );
+      expect(HookConflictError.is(refused)).toBe(true);
+      expect(refused).toMatchObject({ conflictingRunId: orphan });
+
+      // Just past it: no caller was ever told the orphan was admitted, so a
+      // contender owns the token.
+      vi.setSystemTime(Date.now() + 10_000);
+      const contender = `wrun_${ulid()}`;
+      expect(
+        (await create(contender, creating('run_created', token))).run?.runId
+      ).toBe(contender);
+
+      // The orphan's own late copies are refused: naming the contender
+      // within the 24h bound, permanently past it.
+      const within = await create(orphan, creating('run_started', token)).catch(
+        (e: unknown) => e
+      );
+      expect(HookConflictError.is(within)).toBe(true);
+      expect(within).toMatchObject({ conflictingRunId: contender });
       vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000);
       const past = await create(orphan, creating('run_created', token)).catch(
         (e: unknown) => e

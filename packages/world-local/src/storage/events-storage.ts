@@ -99,6 +99,7 @@ import {
   hookTokenClaimPath,
   isHookDisposalCommitted,
   isRunTerminalCommitted,
+  isWithinStartHookOrphanGrace,
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
@@ -305,8 +306,10 @@ async function isHookTokenClaimReleasable(
     // A start reservation ignores its Hook's disposal: it holds the token
     // until its run ends and the later of the two retentions passes. It is
     // written under the claim lock immediately before its run, so a claim
-    // with no run is a reservation whose writer died before creating it (no
-    // caller was told it was admitted) or whose run was deleted.
+    // with no run is a reservation whose writer died (or stalled) before
+    // creating it, or whose run was deleted. No caller was told it was
+    // admitted, but a stalled writer could still write the run, so it holds
+    // for the orphan grace first.
     const run = await readJSONWithFallback(
       basedir,
       'runs',
@@ -314,7 +317,7 @@ async function isHookTokenClaimReleasable(
       WorkflowRunSchema,
       tag
     );
-    if (!run) return true;
+    if (!run) return !isWithinStartHookOrphanGrace(claim);
     if (!isTerminalWorkflowRunStatus(run.status)) return false;
     const until = Math.max(
       claim.reservation.tokenRetentionUntil?.getTime() ?? 0,
@@ -485,6 +488,7 @@ async function admitStartHook({
         ...(startHook.tokenRetentionUntil
           ? { tokenRetentionUntil: startHook.tokenRetentionUntil }
           : {}),
+        reservedAt: Date.now(),
       },
     };
     if (ownReservation) {
@@ -2938,9 +2942,10 @@ export function createEventsStorage(
                   existingClaim.tokenRetentionUntil,
                   hookData.tokenRetentionUntil
                 );
-                carriedReservation = until
-                  ? { tokenRetentionUntil: until }
-                  : {};
+                carriedReservation = {
+                  ...existingClaim.reservation,
+                  ...(until ? { tokenRetentionUntil: until } : {}),
+                };
                 if (hookData.metadata === undefined) {
                   const ownRun = await readJSONWithFallback(
                     basedir,
@@ -3134,6 +3139,7 @@ export function createEventsStorage(
                 // the claimer with it, so the token follows the Hook instead of
                 // staying pinned to a run that may never end.
                 carriedReservation = existingClaim.reservation && {
+                  ...existingClaim.reservation,
                   tokenRetentionUntil: maxDate(
                     existingClaim.reservation.tokenRetentionUntil,
                     existingClaim.tokenRetentionUntil

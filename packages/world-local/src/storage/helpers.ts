@@ -417,7 +417,12 @@ export const HookTokenClaimSchema = z.compile(
     // `hookId`/`eventId`. A forced creation that takes the Hook carries it to
     // the claimer.
     reservation: z
-      .object({ tokenRetentionUntil: z.coerce.date().optional() })
+      .object({
+        tokenRetentionUntil: z.coerce.date().optional(),
+        // When the reservation was claimed (ms since the epoch), for the
+        // orphan grace (`START_HOOK_ORPHAN_GRACE_MS`).
+        reservedAt: z.number().optional(),
+      })
       .optional(),
     // Set when this claim took the token from another run
     // (`experimental_force`), so a retry that adopts the claim can still
@@ -436,6 +441,19 @@ export const HookTokenClaimSchema = z.compile(
 
 export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
 
+/**
+ * Whether a run-less start reservation is still inside its orphan grace
+ * (see `START_HOOK_ORPHAN_GRACE_MS`). A reservation without `reservedAt`
+ * predates the grace and is not.
+ */
+export function isWithinStartHookOrphanGrace(claim: HookTokenClaim): boolean {
+  const reservedAt = claim.reservation?.reservedAt;
+  return (
+    reservedAt !== undefined &&
+    Date.now() - reservedAt <= START_HOOK_ORPHAN_GRACE_MS
+  );
+}
+
 export async function readHookTokenClaim(
   claimPath: string
 ): Promise<HookTokenClaim | null> {
@@ -448,6 +466,22 @@ export async function readHookTokenClaim(
     throw error;
   }
 }
+
+/**
+ * How long the token claim lock is a lease for: a holder that stalls past it
+ * loses the lock to the next claimant (`proper-lockfile`'s `stale`).
+ */
+export const HOOK_TOKEN_CLAIM_LOCK_STALE_MS = 30_000;
+
+/**
+ * How long a start reservation whose run record was never written keeps its
+ * token. Its writer may only be stalled past the lock's lease, not dead, and
+ * could still write the run when it resumes, so the claim holds for the
+ * lease plus as long again before a contender may take the token. After
+ * that, no caller was ever told it was admitted (that is the run record), so
+ * releasing it is safe.
+ */
+export const START_HOOK_ORPHAN_GRACE_MS = 2 * HOOK_TOKEN_CLAIM_LOCK_STALE_MS;
 
 /**
  * Serializes claim handoffs. Exclusive writes admit the first owner, but
@@ -465,7 +499,7 @@ export async function withHookTokenClaimLock<T>(
   try {
     release = await lock(claimPath, {
       realpath: false,
-      stale: 30_000,
+      stale: HOOK_TOKEN_CLAIM_LOCK_STALE_MS,
       update: 1_000,
       retries: {
         retries: 350,
