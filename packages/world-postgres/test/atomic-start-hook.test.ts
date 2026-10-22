@@ -102,9 +102,12 @@ describe('atomic start Hook (world-postgres)', () => {
           },
         } as AnyEventRequest)
         .catch((e: unknown) => e);
-      expect(String((error as Error)?.message ?? error)).toMatch(
-        /injected failure/
-      );
+      // drizzle wraps the database error ("Failed query: …") with it as cause.
+      const causes: string[] = [];
+      for (let e: unknown = error; e instanceof Error; e = e.cause) {
+        causes.push(e.message);
+      }
+      expect(causes.join('\n')).toMatch(/injected failure/);
     } finally {
       await pool.query(`
         DROP TRIGGER IF EXISTS fail_doomed_run ON workflow.workflow_runs;
