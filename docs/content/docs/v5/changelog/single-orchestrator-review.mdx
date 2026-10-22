@@ -166,7 +166,7 @@ This PR keeps all of that for spec 8 runs: the shared unkeyed topic, the new-mes
 - **Keyed vs unkeyed.** Orchestrator messages carry the run id as the concurrency key. Step messages and health checks carry none. A spec 9 run's step dispatches now share one topic, so a fan-out batches into one request again.
 - **One delivery per run.** Vercel Queues keeps at most one delivery per key active. A keyed message claimed while another delivery holds the key is **coalesced**: it is never delivered, and it is counted on the holder.
 - **Coalesced re-runs.** The holder's acknowledgment is refused while coalesced messages it has not covered are pending. The client then runs the handler again within the same delivery, with the lease still held (`experimental_maxCoalescedReruns`, 32 in world-vercel), and acknowledges again covering the reported count. world-vercel reports each re-run with the next `deliveryCount` and the same `attempt`, so the runtime treats it as a redelivery: turbo is off and the log is read.
-- **Which runs are spec 9.** world-vercel decides from the payload alone, at send and at delivery alike: `runInput.specVersion`, `runContext.specVersion` or the `runSpecVersion` hint, which every runtime that creates spec 9 runs stamps. A message without a stamp is treated as spec 8 (unkeyed, new-message continuation). An unstamped spec 9 orchestrator message is then fenced but not serialized; no runtime producer sends one.
+- **Which runs are spec 9.** world-vercel decides from the payload alone, at send and at delivery alike: `runInput.specVersion`, `runContext.specVersion` or the `runSpecVersion` hint, which every runtime that creates spec 9 runs stamps. A message without a stamp is treated as spec 8 (unkeyed, new-message continuation). An unstamped spec 9 orchestrator message is then fenced but not serialized. Every spec 9 send site in this runtime names the run's spec version itself; producers outside it do not (section 7, "Spec detection").
 
 **Example: a fan-out whose completions coalesce.**
 
@@ -181,7 +181,7 @@ export async function resizeAll(urls: string[]) {
 
 The 50 step invocations finish over a few seconds, and each one wakes the orchestrator. While the orchestrator is running, every wake is coalesced into it. When it finishes a pass and tries to acknowledge, it is told how many wakes arrived, reads the log once, and sees all the outcomes that landed. The run is woken a few times instead of 50, and there is never a second orchestrator to refuse.
 
-Coalescing is safe because every producer commits what the wake is for (a step outcome, a `hook_received`) before it sends the wake, so the holder's next read sees it. The one exception is `run.wakeUp()`, which is best-effort (section 7).
+Coalescing is safe because every producer commits what the wake is for (a step outcome, a `hook_received`) before it sends the wake, so the holder's next read sees it. The exceptions are `run.wakeUp()`, which is best-effort (section 7), and a timer, which names its wait ("Timers" below).
 
 ### Handoffs
 
@@ -232,25 +232,40 @@ Some rules depend on whether a delivery is a redelivery of the message that crea
 
 ### No orchestrator message carries state the log needs
 
-A coalesced message is never delivered, and its holder only re-reads the log, so every orchestrator message is keyed and may be coalesced. Earlier heads of this PR sent three kinds unkeyed (`QueueOptions.coalesce: false`), because they carried state that existed only on the message. All three are gone or demoted:
+A coalesced message is never delivered, and its holder only re-reads the log, so a message may be coalesced only if losing its payload loses nothing the log does not hold. Every orchestrator message is keyed except an intermediate hop of a long wait's timer. Earlier heads of this PR sent three kinds unkeyed (`QueueOptions.coalesce: false`), because they carried state that existed only on the message. All three are gone or demoted, and timers are the fourth row:
 
 | Message | Message-only state | Now |
 |---|---|---|
-| Replacement after a fence refusal or a run-ahead stop | `replacesMessage`: the creator identity of the replaced message | Removed. A fence-refused delivery sends the messages its own writes owe and acknowledges. A run-ahead stop continues in place. |
+| Replacement after a fence refusal or a run-ahead stop | `replacesMessage`: the creator identity of the replaced message | Removed. A fence-refused delivery sends the messages its own writes owe and one plain keyed wake, and acknowledges. A run-ahead stop continues in place. |
 | Replay-divergence recovery | `replayDivergence`: the divergence history | Removed for spec 9. The delivery replays again in place and counts divergences in memory. Spec 8 still sends it. |
 | `run.wakeUp()` | `completeWaits`: the waits to complete now | Keyed, best-effort (section 7). |
+| Timer | `waitContinuation`: the wait it is for | A final timer (due with its wait) is keyed: coalesced, the holder's re-run sees the wait due, and the delivery that completes a wait arms its chain's next timer. An intermediate hop of a wait longer than one queue delay is unkeyed and never coalesced ("Timers" below). |
 
 `QueueOptions.coalesce` and the payload's `replacesMessage` are removed from `@workflow/world`, with `MAX_MESSAGE_REPLACEMENTS` and `WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`.
 
-**Fence refusal.** A delivery whose in-band write is refused keeps, from its writer's accepted events, what those writes owe the queue: the message of each background step whose `step_created` it committed (trailing fan-out batches included), the message of each inline step whose retry it moved to the background with a committed `step_retrying`, and a timer for each open wait it owns (its own `wait_created`, or the wait a timer delivery is for). It sends exactly the ones it has not sent, with their usual idempotency keys, then acknowledges. On a redelivery of its message it also sends what the creator rules re-send for an earlier delivery of it. It sends no wake: the winner's fenced write came after every write the loser committed, so the winner holds them, and whatever the loser read below them reached the winner too, through its load or its write's skipped-slot report. If the loser dies before those sends, its message is redelivered (attempt 2), and the creator rules re-send them; both paths have tests.
+**Fence refusal.** A delivery whose in-band write is refused keeps, from its writer's accepted events, what those writes owe the queue: the message of each background step whose `step_created` it committed (trailing fan-out batches included), the message of each inline step whose retry it moved to the background with a committed `step_retrying`, and the timers of the wait chains it owns ("Timers" below). It sends exactly the ones it has not sent, with their usual idempotency keys. On a redelivery of its message it also sends what the creator rules re-send for an earlier delivery of it. If it dies before those sends, its message is redelivered (attempt 2), and the creator rules re-send them; both paths have tests.
+
+Then it sends one plain orchestrator wake (run id, trace carrier, spec stamp; no delay, no message-only state) and acknowledges. A refusal does not prove that another orchestrator is running. The world-vercel backend also answers 412 `in-band-superseded` when it sealed the writer's own position (its put outlived the staleness bound, `appendEventRow`), and a 409 it returns after it allocated the position moves `seqInBand` past the writer's count, so the writer's next write gets the 412. In both cases nothing else is queued for the run (section 7, "A refused write with no other orchestrator stranded the run"). What the wake costs:
+
+- **world-vercel, a live winner holds the key:** coalesced into the winner, which reads the log anyway. Free.
+- **world-vercel, this delivery holds the key:** coalesced into itself, so its acknowledgment is refused and it runs again from a fresh load in the same invocation. A delivery refused on every pass is bounded by the client's 32 re-runs (`MAX_COALESCED_RERUNS`), after which `@vercel/queue` throws `ConcurrencyCoalescedPendingError` and world-vercel hands the message off (checked in `@vercel/queue`'s `acknowledgeCoveringCoalesced` and world-vercel's `retry` hook).
+- **world-vercel, no holder:** delivered as a new orchestrator delivery.
+- **world-local, world-postgres:** delivered after the running delivery.
+
+The wake is keyed, so it cannot reintroduce the replacement storm (section 7): it never runs next to a keyed holder, and a refusal sends at most one of it.
 
 **Run-ahead stop.** The delivery lets the outcomes a hazard stop still allows commit, sends what its writes owe (as above), takes a fresh writer, reloads the log and replays from cold in the same delivery, with run-ahead off for the rest of the delivery. With run-ahead off a second stop cannot occur; `MAX_RUN_AHEAD_RESTARTS` (1) still bounds the restarts, and a stop past it hands the message off. The inline deadline applies to the restarted pass as to any other.
 
 **Replay divergence.** The delivery discards the VM, reloads the log and replays from cold in a fresh VM, up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` times, then fails the run with the same `CORRUPTED_EVENT_LOG` error and message as before. The first natural write after a recovered divergence still carries `replayDivergenceCount`. Across crashes and redeliveries the count starts again, and the delivery cap bounds it. The QuickJS engine had no divergence recovery before this change and has none after it.
 
-### Timers stay keyed
+### Timers
 
-A sleep's timer is a delayed keyed message. If it comes due while the orchestrator is running, it is coalesced into it, and the orchestrator's re-run sees the wait due. If the lock was released before the timer came due, Vercel Queues compares the timer's due time, not its send time, with the release, so the timer is delivered normally.
+A sleep's timer is a delayed message carrying `waitContinuation` (the wait it is for). Two rules keep a timer that Vercel Queues coalesces from losing anything:
+
+- **The delivery that completes a wait arms the next one.** A delivery arms the earliest open wait of each wait chain it owns: the waits its own message created, and the waits created with any wait whose `wait_completed` it committed (`ownedWaitChains`, `waitTimersToArm` in `spec9/creator-rules.ts`), plus its own wait when it is a timer delivered before its wait is due. It arms a completed wait's chain right after the completion, not at suspend, because the delivery may end in a handoff first and the next delivery does not know what this one completed. A redelivery of a timer message (a crash) also owns its timer's chain.
+- **Hops before the last are unkeyed.** A wait longer than one queue delay (`WAIT_CONTINUATION_MAX_DELAY_SECONDS`, 23 hours) is reached in hops. Every hop but the last carries the wait's deadline (`waitContinuation.resumeAtMs`), which `isIntermediateWaitHop` in `@workflow/world` reads, and `orchestratorRunIdOf` leaves out, so world-vercel sends it with no concurrency key and world-local and world-postgres do not hold it behind the running delivery. Its delivery reads only the run's status, writes nothing, sends the next hop and acknowledges, so it is safe next to a live orchestrator. The last hop is an ordinary keyed timer: coalesced, the holder's re-run sees the wait due and completes it, and the rule above arms the next.
+
+If the lock was released before a keyed timer came due, Vercel Queues compares the timer's due time, not its send time, with the release, so the timer is delivered normally.
 
 ## 6. Decisions and tradeoffs
 
@@ -309,11 +324,19 @@ If the `wait_completed` committed below `fetchUpdates`'s outcome, the live run s
 
 Callers of `run.wakeUp()`: the public API (`Run.wakeUp()`), `@workflow/vitest`'s `waitForSleep()` pattern, the local observability UI (`packages/web`), and the Vercel dashboard's wake-up action. The dashboard calls `wakeUpRun` from a pinned `@workflow/core` release that writes `wait_completed` out-of-band, which the backend refuses on spec 9 runs. Its wake-up therefore does not work on spec 9 runs until it moves to a release with this change.
 
-### A second concurrent sleep lost its timer (fixed)
+### A second concurrent sleep lost its timer (fixed twice)
 
-A spec 9 delivery arms one timer, for the earliest open wait it owns (`armTimers`), and a timer delivery used to own only its own wait (`schedulesWaitTimer`). So in `await Promise.all([sleep("1h"), sleep("2h")])`, the first timer delivery completed the first sleep and armed nothing for the second, and the run stayed suspended until something else woke it. Reproduced on both engines with the test harness. e2e did not catch it: its only parallel sleeps have equal durations, which one timer covers.
+A spec 9 delivery arms one timer per wait chain, for its earliest open wait. In `await Promise.all([sleep("1h"), sleep("2h")])`, a timer delivery used to own only its own wait, so the first timer completed the first sleep and armed nothing for the second, and the run stayed suspended until something else woke it. e2e did not catch it: its only parallel sleeps have equal durations, which one timer covers.
 
-A timer delivery now also owns the open waits created by the message that created its own wait, so each timer arms the next one once its own completes. There is still one timer per creating message at a time, so timers do not pile up across suspensions.
+The first fix let a timer delivery own the waits created with its own wait. That still failed on world-vercel, as a reviewer showed with scratch tests on both engines: a timer is keyed, so one that comes due while a hook or step wake holds the run is coalesced into that delivery, which completes the first sleep and, not being the timer, armed nothing. The same loss hit a sleep longer than one queue hop when an intermediate hop was coalesced: the holder found the wait not yet due and did not re-arm it.
+
+Now the delivery that completes a wait owns its chain, whatever message it is, and intermediate hops are unkeyed ("Timers", section 5). The harness's `coalesce` mode can now coalesce a delayed message that comes due while a delivery holds the key (`AppendOnlyWorld.comeDue`), and `spec9/wait-chains.runtime.test.ts` covers both cases on both engines; each fails with the earlier rule or with keyed hops. While fixing it, a second gap showed up and is fixed too: a delivery that owned waits of two chains armed only the earliest of all of them, so the other chain was left without a timer once that one completed. Timers are now armed per chain.
+
+Residual risks: a delivery that commits a `wait_completed` and dies before its next send leaves that chain without a timer unless it was the timer's own delivery (whose redelivery owns the chain); and if world-vercel's `VERCEL_QUEUE_MAX_DELAY_SECONDS` is set below the runtime's hop length, a final hop is clamped and arrives early, and a coalesced early final hop is not re-armed. Neither is covered by a test.
+
+### A refused write with no other orchestrator stranded the run (fixed)
+
+A fence-refused delivery used to send what its writes owed and acknowledge with no wake, on the premise that the refusal meant a live winner. The world-vercel backend also refuses a write whose own position it sealed (`appendEventRow`, when the put outlived the staleness bound) and, after a 409 that allocated, the writer's next write; then no other orchestrator exists and nothing is queued, so the run stopped until an outside event woke it. A reviewer reproduced it on both engines. The delivery now sends one plain keyed wake before acknowledging (section 5, "Fence refusal"). Tests in `spec9/fenced-overlap.runtime.test.ts`, both engines: a self-refused write completes the run on a serializing queue and, on a coalescing queue, within the same delivery; a delivery refused on every pass hands off once its coalesced re-runs run out; the existing overlap tests still have one orchestrator doing the work, with the loser's wake finding the run done.
 
 ### Step bodies a run-ahead stop can run twice
 
@@ -338,7 +361,23 @@ An earlier version of this PR redelivered the same message for every `{ timeoutS
 
 ### Spec detection rests on the payload stamp
 
-Topic, key and continuation are chosen from the spec version the message carries. A spec 9 message without one would be sent unkeyed and continue on new messages; a spec 9 step message continuing on a new message would lose its same-message retry and arrive as a plain first delivery, which skips the log read the at-most-once rule of `maxRetries: 0` steps depends on. Every runtime producer stamps spec 9 messages (`queueMessage`/`queueMessages` and the direct `world.queue` call sites; a step message carries `runContext`). I do not know of an unstamped producer, but nothing enforces it at the World boundary.
+Topic, key and continuation are chosen from the spec version the message carries. A spec 9 message without one would be sent unkeyed and continue on new messages; a spec 9 step message continuing on a new message would lose its same-message retry and arrive as a plain first delivery, which skips the log read the at-most-once rule of `maxRetries: 0` steps depends on.
+
+Every spec 9 send site in this runtime now names the run's spec version (`specVersion` on the queue options, which `withRunSpecVersion` stamps as `runSpecVersion`; a step message carries `runContext`): the orchestrator's wakes, timers and fence-refusal wake (from the routed spec, `WorkflowDelivery.runSpecVersion`), the QuickJS engine's wakes and timers, and the step handler's wakes. They used to fall back to a 10,000-entry per-process memory of run spec versions, so after 10,000 other runs in one process their messages went out unstamped. `spec9/spec-stamp.runtime.test.ts` forgets the run before every write and step body, on both engines, and checks every message is stamped.
+
+Unstamped producers outside this runtime remain: `resumeHook()` and `cancel()` callers in deployments on an older SDK, the Vercel dashboard's pinned `@workflow/core`, and the admin re-enqueue path. Their messages to a spec 9 run are treated as spec 8: sent unkeyed, so they run next to the keyed orchestrator, where the in-band fence keeps them safe (the loser stands down with one keyed wake) at the cost of an overlapping invocation.
+
+### Long step retries cost an invocation every 900 seconds on Vercel
+
+A spec 9 step retries in place: its message is redelivered after `retryAfter` (`{ timeoutSeconds: n }`). Vercel Queues caps a redelivery's delay at 900 seconds, so a retry more than 15 minutes out is reached in 900-second redeliveries, each an invocation that reads the log and asks again: about 96 a day for a day-long backoff, where `main` sends a new message of up to 23 hours (about 2 a day). Not measured.
+
+### world-postgres resets `attempt` on every reschedule
+
+Verified with a scratch test against Docker Postgres (graphile-worker, a spec 9 payload). world-postgres computes `attempt` from the Graphile job's own attempt counter, and every `{ timeoutSeconds }` result, a handoff or not, reschedules on a new job (`packages/world-postgres/src/queue.ts`, the reschedule path), so `attempt` drops back to 1 while `deliveryCount` keeps counting. Observed sequences (`attempt/deliveryCount`): reject then handoff then acknowledge gave `1/1`, `2/2`, `1/3`, where the contract asks for `1/1`, `2/2`, `2/3`; a `{ timeoutSeconds: 1 }` result does not raise `attempt` either. The narrow consequence: a crash redelivery (attempt 2) that then hands off loses its creator re-send right on the next delivery (`creatorDeliveryCount = min(deliveryCount, attempt)` becomes 1), so a step message lost in the crash window is not re-sent and the run can strand. Whether a redelivery can hand off before it reaches its re-send point I do not know. A reschedule also resets what the delivery cap counts. Not fixed here.
+
+### An inline step's retry can run twice after 24 hours
+
+When an inline step's retry moves to the background with a `retryAfter` beyond 24 hours, its retry message can be re-sent after Vercel Queues' 24-hour idempotency window has passed, and then two messages own one step's body. Reported by a reviewer, predates this PR; I have not verified it.
 
 ### Rollout coupling between builders and world-vercel (resolved)
 
@@ -357,7 +396,7 @@ Measured on Vercel for heads `16f7001` and `5d51` from the world-vercel backend'
 - **Chain root.** In the one run where it is visible, a keyed holder sent its own unkeyed replacement (a run-ahead stop, by elimination) and kept running as a coalesced re-run in the same invocation.
 - **Cost.** 46 to 162 extra orchestrator invocations and 120 to 225 extra function-seconds per cascade run (4 to 6 times a clean run), and 7 to 19 seconds more wall time. Each wasted replacement loads 300 to 760 events and replays before it is refused. Open inline steps can be re-run by each overlapping orchestrator; how often is not known.
 
-The first two candidate fixes are implemented (section 5): a run-ahead stop restarts in place, and a fence refusal sends the loser's own committed-but-unsent messages and acknowledges, with no wake. No unkeyed orchestrator message is left, so a refused delivery starts no chain. The other two (never overlap a replacement with a coalesced re-run, back replacements off by count) have nothing left to apply to. The storm runs have not been re-measured on Vercel since.
+The first two candidate fixes are implemented (section 5): a run-ahead stop restarts in place, and a fence refusal sends the loser's own committed-but-unsent messages and one keyed wake, and acknowledges. The only unkeyed orchestrator-topic messages left are intermediate wait hops, which write nothing, so a refused delivery starts no chain: its wake is keyed and cannot run next to a keyed holder. The other two (never overlap a replacement with a coalesced re-run, back replacements off by count) have nothing left to apply to. The storm runs have not been re-measured on Vercel since.
 
 ### Handoffs verified live, and a long sequential run rarely reaches one
 
