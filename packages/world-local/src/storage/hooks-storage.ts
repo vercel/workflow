@@ -247,19 +247,22 @@ export function createHooksStorage(
     // A start reservation its run has not adopted yet: the token has an
     // owner, just no Hook. Retryable until the run adopts it; not found once
     // the run has ended without doing so.
-    if (claim?.reservation && !claim.hookId) {
+    const throwIfReservedByLiveRun = async (runId: string) => {
       const owner = await readJSONWithFallback(
         basedir,
         'runs',
-        claim.runId,
+        runId,
         WorkflowRunSchema,
         tag
       );
       if (owner && !isTerminalWorkflowRunStatus(owner.status)) {
-        throw new HookReservedError(token, claim.runId, {
+        throw new HookReservedError(token, runId, {
           retryAfter: HOOK_RESERVED_RETRY_AFTER_SECONDS,
         });
       }
+    };
+    if (claim?.reservation && !claim.hookId) {
+      await throwIfReservedByLiveRun(claim.runId);
       return null;
     }
     if (claim?.hookId) {
@@ -282,6 +285,14 @@ export function createHooksStorage(
           // an instant. Resolve to whoever holds the token now (below).
         } else if (hook) {
           return null;
+        } else if (
+          claim.reservation &&
+          !(await isHookDisposalCommitted(basedir, claim.hookId, tag))
+        ) {
+          // Mid-adoption: the claim already names the adopting Hook, whose
+          // entity is written once its `hook_created` is published. The
+          // token is still the run's reservation in between.
+          await throwIfReservedByLiveRun(claim.runId);
         }
       } catch (error) {
         if (!UnsafeEntityIdError.is(error)) {

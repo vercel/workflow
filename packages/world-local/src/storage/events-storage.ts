@@ -2892,6 +2892,22 @@ export function createEventsStorage(
                 existingClaim.runId === effectiveRunId &&
                 existingClaim.hookId === data.correlationId
               ) {
+                // A retry of this Hook's own creation. If it is adopting a
+                // start reservation and its first attempt died before
+                // publishing, it still owes the reservation's metadata.
+                if (
+                  existingClaim.reservation &&
+                  hookData.metadata === undefined
+                ) {
+                  const ownRun = await readJSONWithFallback(
+                    basedir,
+                    'runs',
+                    effectiveRunId,
+                    WorkflowRunSchema,
+                    tag
+                  );
+                  adoptedMetadata = ownRun?.startHook?.metadata;
+                }
                 return { status: 'owned' as const, claim: existingClaim };
               }
               // The run's own start reservation: adopt it rather than

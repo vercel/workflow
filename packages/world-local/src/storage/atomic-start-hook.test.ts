@@ -10,6 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   HookConflictError,
+  HookReservedError,
   START_HOOK_ADMISSION_REJECTED,
 } from '@workflow/errors';
 import { type AnyEventRequest, SPEC_VERSION_CURRENT } from '@workflow/world';
@@ -126,6 +127,54 @@ describe('atomic start Hook (world-local)', () => {
     const result = await create(runId, creating('run_created', token));
     expect(result.run?.runId).toBe(runId);
     expect(result.run?.startHook).toEqual({ token });
+  });
+
+  /** A reserved, started run, and its claim rewritten as if mid-adoption. */
+  async function midAdoption(token: string, metadata?: Uint8Array) {
+    const runId = `wrun_${ulid()}`;
+    await create(runId, {
+      ...creating('run_created', token),
+      eventData: {
+        ...(creating('run_created', token) as any).eventData,
+        startHook: { token, ...(metadata ? { metadata } : {}) },
+      },
+    } as AnyEventRequest);
+    await create(runId, { eventType: 'run_started', specVersion: SPEC } as any);
+    // The adopting createHook wrote the claim and died before publishing.
+    const hookId = `hook_${ulid()}`;
+    await fs.writeFile(
+      hookTokenClaimPath(testDir, token),
+      JSON.stringify({ runId, hookId, eventId: 'evnt_x', reservation: {} })
+    );
+    return { runId, hookId };
+  }
+
+  it('answers HookReservedError, not not-found, while an adoption is in flight', async () => {
+    const token = 'order:mid-adoption';
+    const { runId } = await midAdoption(token);
+
+    const error = await storage.hooks
+      .getByToken(token)
+      .catch((e: unknown) => e);
+    expect(HookReservedError.is(error)).toBe(true);
+    expect(error).toMatchObject({ runId });
+  });
+
+  it('keeps the start Hook metadata when an interrupted adoption is retried', async () => {
+    const token = 'order:retried-adoption';
+    const metadata = new Uint8Array([4, 5, 6]);
+    const { runId, hookId } = await midAdoption(token, metadata);
+
+    const retried = await create(runId, {
+      eventType: 'hook_created',
+      correlationId: hookId,
+      specVersion: SPEC,
+      eventData: { token },
+    } as AnyEventRequest);
+    expect(retried.event?.eventType).toBe('hook_created');
+
+    const hook = await storage.hooks.getByToken(token);
+    expect(hook.metadata).toEqual(metadata);
   });
 
   it('refuses a queued candidate older than the orphan bound with a permanent code', async () => {

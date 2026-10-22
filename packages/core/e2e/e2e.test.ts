@@ -2596,7 +2596,7 @@ describe.concurrent('e2e', () => {
         const startOrRoute = async (message: string) => {
           try {
             const run = await startHooked(workflow, [token, 2], {
-              hook: { token },
+              hook: { token, metadata: { sessionId: 'session-1' } },
             });
             return { started: run };
           } catch (error) {
