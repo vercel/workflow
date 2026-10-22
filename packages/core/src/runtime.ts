@@ -558,6 +558,7 @@ export function workflowEntrypoint(
                     nextTraceCarrier,
                     replayBudget,
                     prefetchedRun: runSpec.run,
+                    runSpecVersion: runSpec.specVersion,
                   });
                 }
               );

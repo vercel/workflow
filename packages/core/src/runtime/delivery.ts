@@ -98,6 +98,13 @@ export interface WorkflowDelivery {
    * it; a read that wants the same view uses it instead of reading again.
    */
   readonly prefetchedRun: WorkflowRun | undefined;
+  /**
+   * The spec version of the run, as routing resolved it (the message's
+   * stamp, this process's memory of the run, or the run itself). Every
+   * orchestrator message the delivery sends carries it, so a World that
+   * reads the run's spec off the payload never sees an unstamped one.
+   */
+  readonly runSpecVersion: number;
 }
 
 /** What the shared entrypoint needs from the orchestrator of a run's spec. */

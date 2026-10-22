@@ -8,7 +8,7 @@ import {
 import { getWorld } from './world.js';
 
 /** How many runs' spec versions a process remembers. */
-const RUN_SPEC_VERSION_CACHE_SIZE = 10_000;
+export const RUN_SPEC_VERSION_CACHE_SIZE = 10_000;
 
 // A run's spec version is fixed at its creation, so a remembered one never
 // goes stale. On `globalThis` so every bundled copy of the runtime shares it.

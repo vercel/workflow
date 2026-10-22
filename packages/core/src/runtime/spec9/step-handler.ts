@@ -98,6 +98,8 @@ export async function handleStepMessage(
 
   const runIdentity = await resolveRunIdentity(ctx);
   if (runIdentity === 'terminal') return undefined;
+  // Every wake names the run's spec version itself (see `wakeOrchestrator`).
+  const wakeCtx = { ...ctx, specVersion: runIdentity.specVersion };
   span?.setAttributes(
     Attribute.StepDispatchPrologue(
       payload.runContext ? 'run_context' : 'runs_get'
@@ -168,7 +170,7 @@ export async function handleStepMessage(
         encryptionKey: await getEncryptionKey(),
         runSpecVersion: runIdentity.specVersion,
       });
-      if (failed.type !== 'gone') await wakeOrchestrator(ctx);
+      if (failed.type !== 'gone') await wakeOrchestrator(wakeCtx);
       return undefined;
     }
     case 'run':
@@ -211,14 +213,14 @@ export async function handleStepMessage(
     case 'throttled':
       return { timeoutSeconds: result.timeoutSeconds };
     case 'retry':
-      await wakeOrchestrator(ctx);
+      await wakeOrchestrator(wakeCtx);
       return { timeoutSeconds: result.timeoutSeconds };
     case 'completed':
-      await wakeAfterCompletion(ctx, stepId);
+      await wakeAfterCompletion(wakeCtx, stepId);
       return undefined;
     case 'failed':
       // A failed step can fail the run whatever else is pending: wake now.
-      await wakeOrchestrator(ctx);
+      await wakeOrchestrator(wakeCtx);
       return undefined;
   }
 }
@@ -293,6 +295,7 @@ export async function wakeAfterCompletion(
       requestedAt: new Date(),
     },
     {
+      ...(ctx.specVersion !== undefined && { specVersion: ctx.specVersion }),
       idempotencyKey: `wake:${ctx.runId}:${window}`,
       delaySeconds:
         Math.ceil((windowEndMs - now) / 1000) + WAKE_COALESCE_MARGIN_SECONDS,
@@ -333,6 +336,11 @@ export function hasOtherPendingStep(
  * Wakes the run's orchestrator after an out-of-band write. No idempotency
  * key: a key could be absorbed by a delivery that is already exiting and lose
  * the wakeup, while a duplicate wake only costs a cheap delivery.
+ *
+ * `specVersion` is the run's: the wake carries it, so a World that reads the
+ * run's spec off the payload (world-vercel keys and continues spec 9 runs'
+ * messages differently) never has to guess. Without it the wake carries only
+ * what this process remembers about the run (`withRunSpecVersion`).
  */
 export async function wakeOrchestrator(ctx: {
   world: World;
@@ -340,6 +348,7 @@ export async function wakeOrchestrator(ctx: {
   workflowName: string;
   namespace: string | undefined;
   nextTraceCarrier: () => Promise<Record<string, string>>;
+  specVersion?: number;
 }): Promise<void> {
   await queueMessage(
     ctx.world,
@@ -348,7 +357,8 @@ export async function wakeOrchestrator(ctx: {
       runId: ctx.runId,
       traceCarrier: await ctx.nextTraceCarrier(),
       requestedAt: new Date(),
-    }
+    },
+    ctx.specVersion !== undefined ? { specVersion: ctx.specVersion } : undefined
   );
 }
 

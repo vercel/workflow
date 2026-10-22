@@ -2324,7 +2324,10 @@ export async function runWorkflowWithQuickJS(params: {
           traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
         },
-        { delaySeconds: throttledReplaySeconds }
+        {
+          specVersion: workflowRun.specVersion,
+          delaySeconds: throttledReplaySeconds,
+        }
       );
       return;
     }
@@ -2349,7 +2352,8 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
-        }
+        },
+        { specVersion: workflowRun.specVersion }
       );
     };
 

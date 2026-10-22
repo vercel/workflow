@@ -296,7 +296,10 @@ export async function dispatchPendingOps(params: {
                 traceCarrier: await params.nextTraceCarrier(),
                 requestedAt: new Date(),
               },
-              { idempotencyKey: `hook_conflict_${hook.correlationId}` }
+              {
+                specVersion: workflowRun.specVersion,
+                idempotencyKey: `hook_conflict_${hook.correlationId}`,
+              }
             );
           }
         }

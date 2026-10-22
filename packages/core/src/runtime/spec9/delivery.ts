@@ -310,6 +310,7 @@ async function runDelivery(
     nextTraceCarrier,
     replayBudget,
     prefetchedRun,
+    runSpecVersion,
   } = delivery;
   let { resumeTracking } = delivery;
   const {
@@ -807,7 +808,10 @@ async function runDelivery(
       world,
       getWorkflowQueueName(workflowName, namespace),
       { ...(await replayMessage()), ...extra },
-      delayed ? { delaySeconds } : undefined
+      {
+        specVersion: runSpecVersion,
+        ...(delayed ? { delaySeconds } : {}),
+      }
     );
   };
 
@@ -841,7 +845,11 @@ async function runDelivery(
             ...(await reenqueuePayload()),
             deploymentMismatchRetryCount: retryCount,
           },
-          { deploymentId, specVersion, delaySeconds }
+          {
+            deploymentId,
+            specVersion: specVersion ?? runSpecVersion,
+            delaySeconds,
+          }
         );
       },
     });
