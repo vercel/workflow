@@ -32,7 +32,8 @@
       "!**/.nitro",
       "!**/.output",
       "!**/.tanstack",
-      "!**/routeTree.gen.ts"
+      "!**/routeTree.gen.ts",
+      "!idl/world/generated"
     ],
     "ignoreUnknown": true
   },
