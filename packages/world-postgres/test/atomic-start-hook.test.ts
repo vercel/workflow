@@ -1,7 +1,8 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { type AnyEventRequest, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { ulid } from 'ulid';
-import { afterAll, beforeAll, describe, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { atomicStartHookConformance } from '../../world/src/test-support/atomic-start-hook-conformance.js';
 import { createClient } from '../src/drizzle/index.js';
 import { createWorld } from '../src/index.js';
@@ -59,5 +60,75 @@ describe('atomic start Hook (world-postgres)', () => {
     capabilities: () => createWorld({ pool }).capabilities,
     newRunId: () => `wrun_${ulid()}`,
     concurrentCandidates: 12,
+    // Admission reads the candidate's age off the JS clock; retention is
+    // compared in SQL and is exercised in real time.
+    advanceClock: (ms) => {
+      if (ms === 0) {
+        vi.useRealTimers();
+        return;
+      }
+      const target = Date.now() + ms;
+      vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+      vi.setSystemTime(target);
+    },
+    // No `stageOrphan`: the reservation and the run commit in one
+    // transaction, so the orphan state cannot exist (asserted below).
+  });
+
+  test('a failure mid-admission leaves no reservation: decision and run commit together', async () => {
+    const token = `orphan-${ulid()}`;
+    const doomed = `wrun_${ulid()}`;
+    // Fail the run insert inside the admission transaction, after the
+    // decision row was written in it.
+    await pool.query(`
+      CREATE OR REPLACE FUNCTION workflow.fail_doomed_run() RETURNS trigger AS $$
+      BEGIN
+        IF NEW.id = '${doomed}' THEN RAISE EXCEPTION 'injected failure'; END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_doomed_run BEFORE INSERT ON workflow.workflow_runs
+        FOR EACH ROW EXECUTE FUNCTION workflow.fail_doomed_run();
+    `);
+    try {
+      const error = await events
+        .create(doomed, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'wf',
+            input: new Uint8Array([1]),
+            startHook: { token },
+          },
+        } as AnyEventRequest)
+        .catch((e: unknown) => e);
+      expect(String((error as Error)?.message ?? error)).toMatch(
+        /injected failure/
+      );
+    } finally {
+      await pool.query(`
+        DROP TRIGGER IF EXISTS fail_doomed_run ON workflow.workflow_runs;
+        DROP FUNCTION IF EXISTS workflow.fail_doomed_run();
+      `);
+    }
+
+    const { rows } = await pool.query(
+      'SELECT run_id FROM workflow.workflow_start_hook_admissions WHERE token = $1',
+      [token]
+    );
+    expect(rows).toEqual([]);
+    // Nothing holds the token: a contender owns it at once.
+    const contender = `wrun_${ulid()}`;
+    const admitted = await events.create(contender, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        input: new Uint8Array([1]),
+        startHook: { token },
+      },
+    } as AnyEventRequest);
+    expect(admitted.run?.runId).toBe(contender);
   });
 });

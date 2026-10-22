@@ -15,8 +15,17 @@ import {
 } from '@workflow/errors';
 import { type AnyEventRequest, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { monotonicFactory, ulid } from 'ulid';
-import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { atomicStartHookConformance } from '../../../world/src/test-support/atomic-start-hook-conformance.js';
+import * as fsModule from '../fs.js';
 import { writeExclusive } from '../fs.js';
 import { createWorld } from '../index.js';
 import { createStorage } from '../storage.js';
@@ -25,6 +34,8 @@ import { hookTokenClaimPath } from './helpers.js';
 const SPEC = SPEC_VERSION_CURRENT;
 const conformanceDirs: string[] = [];
 const storageDirs = new WeakMap<object, string>();
+/** The data directory of the storage the current conformance test uses. */
+let currentDir: string | undefined;
 
 afterAll(() => {
   for (const dir of conformanceDirs) {
@@ -39,6 +50,7 @@ atomicStartHookConformance({
     conformanceDirs.push(dir);
     const storage = createStorage(dir);
     storageDirs.set(storage.events, dir);
+    currentDir = dir;
     return storage;
   },
   secondEvents: (first) => {
@@ -53,6 +65,27 @@ atomicStartHookConformance({
     return createWorld({ dataDir: dir }).capabilities;
   },
   newRunId: () => `wrun_${ulid()}`,
+  advanceClock: (ms) => {
+    if (ms === 0) {
+      vi.useRealTimers();
+      return;
+    }
+    const target = Date.now() + ms;
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(target);
+  },
+  // The state a process killed between its token claim and its run write
+  // leaves: the claim, and no run.
+  stageOrphan: async (runId, token) => {
+    const dir = currentDir;
+    if (!dir) throw new Error('no storage set up');
+    const claimPath = hookTokenClaimPath(dir, token);
+    await fs.mkdir(path.dirname(claimPath), { recursive: true });
+    await writeExclusive(claimPath, JSON.stringify({ runId, reservation: {} }));
+  },
+  // Accepted means the run record exists, so a claim whose run was never
+  // written was never reported admitted, and is released at once.
+  orphanHoldsWithinWindow: false,
 });
 
 describe('atomic start Hook (world-local)', () => {
@@ -194,6 +227,72 @@ describe('atomic start Hook (world-local)', () => {
 
     const hook = await storage.hooks.getByToken(token);
     expect(hook.metadata).toEqual(metadata);
+  });
+
+  it('recovers from a crash between the token claim and the run write', async () => {
+    // Kill the admission at the one point world-local leaves an orphan: the
+    // reservation is claimed, the run record never written.
+    const token = 'order:crash';
+    const orphan = `wrun_${ulid()}`;
+    const realWriteExclusive = fsModule.writeExclusive;
+    const crash = vi
+      .spyOn(fsModule, 'writeExclusive')
+      .mockImplementation(async (filePath, data) => {
+        if (filePath.includes(`${path.sep}runs${path.sep}${orphan}`)) {
+          throw new Error('process killed');
+        }
+        return realWriteExclusive(filePath, data);
+      });
+    const died = await create(orphan, creating('run_created', token)).catch(
+      (e: unknown) => e
+    );
+    crash.mockRestore();
+    expect((died as Error).message).toBe('process killed');
+    expect(
+      JSON.parse(await fs.readFile(hookTokenClaimPath(testDir, token), 'utf8'))
+    ).toMatchObject({ runId: orphan, reservation: {} });
+    expect(
+      await storage.runs.get(orphan).then(
+        () => true,
+        () => false
+      )
+    ).toBe(false);
+
+    // No caller was told the orphan was admitted, so a contender may own
+    // the token at once.
+    const contender = `wrun_${ulid()}`;
+    expect(
+      (await create(contender, creating('run_created', token))).run?.runId
+    ).toBe(contender);
+
+    // The orphan's own late copies are refused: naming the contender within
+    // the bound, permanently past it.
+    const within = await create(orphan, creating('run_started', token)).catch(
+      (e: unknown) => e
+    );
+    expect(HookConflictError.is(within)).toBe(true);
+    expect(within).toMatchObject({ conflictingRunId: contender });
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    try {
+      vi.setSystemTime(Date.now() + 25 * 60 * 60 * 1000);
+      const past = await create(orphan, creating('run_created', token)).catch(
+        (e: unknown) => e
+      );
+      // Already decided (refused) for this candidate, so the refusal replays
+      // unless the World answers the bound first; both are final.
+      expect(
+        HookConflictError.is(past) ||
+          (past as { code?: string }).code === START_HOOK_ADMISSION_REJECTED
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(
+      await storage.runs.get(orphan).then(
+        () => true,
+        () => false
+      )
+    ).toBe(false);
   });
 
   it('refuses a queued candidate older than the orphan bound with a permanent code', async () => {

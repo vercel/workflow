@@ -1402,7 +1402,13 @@ function createUnfencedEventsStorage(
       if (data.eventType === 'run_created' && runId && runId !== '') {
         const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
         if (validationError) {
-          throw new WorkflowWorldError(validationError);
+          // A start Hook candidate this old can never be created (the orphan
+          // bound), so its refusal is permanent for both of its copies.
+          throw new WorkflowWorldError(validationError, {
+            ...(data.eventData.startHook
+              ? { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+              : {}),
+          });
         }
       }
 
