@@ -26,6 +26,7 @@ import {
   HookConflictError,
   HookNotFoundError,
   HookReservedError,
+  RUN_ERROR_CODES,
   WorkflowStartError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -816,6 +817,23 @@ export async function runScenario(
   };
 }
 
+/**
+ * `isRetryableWorldError` in `@workflow/core`'s `classify-error.ts`, which it
+ * does not export: a throttle, a 5xx, or one of its retryable codes.
+ */
+const RETRYABLE_WORLD_ERROR_CODES = new Set([
+  'TRANSPORT',
+  'TIMEOUT',
+  RUN_ERROR_CODES.STREAM_ERROR,
+]);
+function isTransientWorldError(error: WorkflowWorldError): boolean {
+  if (error.name === 'ThrottleError') return true;
+  if (error.status !== undefined && error.status >= 500) return true;
+  return (
+    error.code !== undefined && RETRYABLE_WORLD_ERROR_CODES.has(error.code)
+  );
+}
+
 /** The first run the World created, or `''`. */
 function firstRunId(world: SimWorld): string {
   return world.store.allRuns()[0]?.runId ?? '';
@@ -839,7 +857,10 @@ function classifyStartError(error: unknown): StartOutcome {
       message: error.message,
     };
   }
-  if (WorkflowWorldError.is(error)) {
+  // Only a World error the runtime would not retry is an answer. A transient
+  // one (a 5xx, a timeout, a throttle) leaves the request unresolved, so
+  // `starthook.every-request-resolves` holds it to retrying.
+  if (WorkflowWorldError.is(error) && !isTransientWorldError(error)) {
     return {
       kind: 'rejected',
       ...(error.code ? { code: error.code } : {}),

@@ -914,7 +914,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
           'start Hook admission is not enabled in this Sim World (start-hook-disabled)'
         );
       }
-      const admission = await startHooks.admit(runId, startHook);
+      // Re-checked in the turn that creates the run: see `confirmCreation`.
+      const admission =
+        (await startHooks.admit(runId, startHook)) === 'existing'
+          ? 'existing'
+          : startHooks.confirmCreation(runId);
       now = new Date(nowMs());
       if (admission === 'existing' && data.eventType === 'run_created') {
         // Every later attempt for an accepted candidate gets its run, with

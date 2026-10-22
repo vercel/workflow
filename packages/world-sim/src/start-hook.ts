@@ -118,6 +118,13 @@ export interface StartHookTable {
    * a candidate that can never be admitted.
    */
   admit(runId: string, startHook: StartHook): Promise<AdmissionOutcome>;
+  /**
+   * The same last check `admit` makes, again, for the caller to run in the
+   * same turn it creates the run in. `admit` resolving is itself a turn
+   * boundary, and another attempt for the candidate (or the fence of an
+   * orphan release) can land in it.
+   */
+  confirmCreation(runId: string): AdmissionOutcome;
   /** The claim on a token, whether or not it still holds. */
   claim(token: string): TokenClaim | undefined;
   /** Whether a claim still holds its token at `nowMs`. */
@@ -282,6 +289,7 @@ export function createStartHookTable(deps: StartHookTableDeps): StartHookTable {
       return finishCreation(runId, token);
     },
 
+    confirmCreation: (runId) => confirmCreation(runId),
     claim: (token) => claims.get(token),
     holds,
     release,
@@ -349,6 +357,10 @@ export function createStartHookTable(deps: StartHookTableDeps): StartHookTable {
     token: string
   ): Promise<AdmissionOutcome> {
     await deps.checkpoint(START_HOOK_ACCEPTED_CHECKPOINT, { runId, token });
+    return confirmCreation(runId);
+  }
+
+  function confirmCreation(runId: string): AdmissionOutcome {
     // Another attempt for the candidate may have created the run meanwhile.
     if (deps.getRun(runId)) return 'existing';
     if (fences.has(runId)) {

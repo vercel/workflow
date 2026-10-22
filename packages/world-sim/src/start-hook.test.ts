@@ -154,6 +154,56 @@ describe('start Hook admission (world-sim)', () => {
     expect(created.run?.runId).toBe(owner);
   });
 
+  it('two attempts for one accepted candidate, both past the checkpoint, create one run', async () => {
+    const t = setup();
+    const candidate = t.ids.runId();
+    t.holdNextCheckpoint();
+    const direct = t.create(candidate, t.creating('run_created', 'order:6'));
+    await Promise.resolve();
+    t.holdNextCheckpoint();
+    const retry = t.create(candidate, t.creating('run_created', 'order:6'));
+    t.holdNextCheckpoint();
+    const queued = t.create(candidate, t.creating('run_started', 'order:6'));
+    await Promise.resolve();
+    expect(t.held).toHaveLength(3);
+
+    for (const h of t.held) h.release();
+    const answers = await Promise.allSettled([direct, retry, queued]);
+    expect(answers.map((a) => a.status)).toEqual([
+      'fulfilled',
+      'fulfilled',
+      'fulfilled',
+    ]);
+    expect(
+      t.store.allEvents(candidate).filter((e) => e.eventType === 'run_created')
+    ).toHaveLength(1);
+  });
+
+  it('a fence written while an accepted attempt resumes still refuses it', async () => {
+    const t = setup();
+    const orphan = t.ids.runId();
+    t.holdNextCheckpoint();
+    void t.create(orphan, t.creating('run_created', 'order:7'));
+    await Promise.resolve();
+    t.advance(START_HOOK_CANDIDATE_MAX_AGE_MS - 1);
+    t.holdNextCheckpoint();
+    const late = t
+      .create(orphan, t.creating('run_started', 'order:7'))
+      .catch((e: unknown) => e);
+    await Promise.resolve();
+    t.advance(2);
+    // The release and the contender land in the same turn as the stalled
+    // write resumes.
+    t.held[1].release();
+    const contender = t.create(
+      t.ids.runId(),
+      t.creating('run_created', 'order:7')
+    );
+    expect(await late).toMatchObject({ code: START_HOOK_ADMISSION_REJECTED });
+    expect((await contender).run).toBeDefined();
+    expect(t.store.allRuns()).toHaveLength(1);
+  });
+
   it('the queued copy finishes a creation the direct write died before', async () => {
     const t = setup();
     const candidate = t.ids.runId();

@@ -622,7 +622,8 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     };
     record(ctx);
     const verdict = await fireWatches(ctx);
-    if (verdict?.kind === 'die') return never();
+    // Held here while a sibling killed the process: it does not resume.
+    if (verdict?.kind === 'die' || currentLife()?.dead) return never();
     if (verdict?.kind === 'throw') throw verdict.error;
   }
 
@@ -798,7 +799,9 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
       record(base);
       const entering = await fireWatches(base);
-      if (entering?.kind === 'die') return never();
+      // A call held at a point is still part of its process: if a sibling
+      // writer killed the process while it was held, it never resumes.
+      if (entering?.kind === 'die' || currentLife()?.dead) return never();
       if (entering?.kind === 'throw') throw entering.error;
 
       let callArgs = args;
@@ -901,7 +904,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
       record(after);
       const leaving = await fireWatches(after);
-      if (leaving?.kind === 'die') return never();
+      if (leaving?.kind === 'die' || currentLife()?.dead) return never();
       if (leaving?.kind === 'throw') throw leaving.error;
 
       if (threw) throw error;

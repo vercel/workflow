@@ -84,13 +84,14 @@ export function checkStartHookInvariants(
       endedAt.set(e.runId, e.createdAt.getTime());
     }
   }
-  const endedBy = (runId: string, atMs: number) => {
-    const end = endedAt.get(runId);
-    return end !== undefined && end <= atMs;
-  };
+  // Whether a run has ended is read in commit order, as the walk below
+  // reaches its terminal event, never from its timestamp: under a virtual
+  // clock many writes share a millisecond, and an end committed after a
+  // competing admission in that same millisecond did not precede it.
+  const ended = new Set<string>();
   const holds = (h: LoggedHolder, atMs: number): boolean => {
-    if (h.reservation && !endedBy(h.runId, atMs)) return true;
-    if (!h.reservation && h.hookLive && !endedBy(h.runId, atMs)) return true;
+    if (h.reservation && !ended.has(h.runId)) return true;
+    if (!h.reservation && h.hookLive && !ended.has(h.runId)) return true;
     return (h.retentionUntilMs ?? 0) > atMs;
   };
 
@@ -98,6 +99,10 @@ export function checkStartHookInvariants(
   for (const e of events) {
     const at = e.createdAt.getTime();
     const data = (e as { eventData?: Record<string, unknown> }).eventData;
+    if (isTerminalRunEventType(e.eventType)) {
+      ended.add(e.runId);
+      continue;
+    }
     if (e.eventType === 'run_created' && data?.startHook) {
       const startHook = data.startHook as {
         token: string;
