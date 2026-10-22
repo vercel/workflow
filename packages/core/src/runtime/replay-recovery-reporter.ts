@@ -11,8 +11,24 @@ import type { CreateEventParams } from '@workflow/world';
 export class ReplayRecoveryReporter {
   private active = false;
   private reported = false;
+  private recovered = false;
 
   constructor(private readonly divergenceCount: number) {}
+
+  /**
+   * The count a divergence raised by this invocation belongs to.
+   *
+   * Until a natural write has carried the recovery telemetry, the invocation
+   * is still inside the episode it was enqueued to recover, so the count
+   * continues from the incoming one. A committed write after a clean replay
+   * proves that episode over (the divergence was not reproducible against
+   * this log), so a later divergence in the same invocation opens a new
+   * episode at 1 instead of spending the old one's budget. An inert reporter
+   * has no incoming episode and always answers 1.
+   */
+  nextDivergenceCount(): number {
+    return this.recovered ? 1 : this.divergenceCount + 1;
+  }
 
   /**
    * A reporter for an invocation that never diverged: `activate()` cannot arm
@@ -47,10 +63,12 @@ export class ReplayRecoveryReporter {
 
     this.reported = true;
     try {
-      return await create({
+      const result = await create({
         ...params,
         replayDivergenceCount: this.divergenceCount,
       });
+      this.recovered = true;
+      return result;
     } catch (error) {
       this.reported = false;
       throw error;
