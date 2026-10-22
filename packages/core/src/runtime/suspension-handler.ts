@@ -214,12 +214,16 @@ export interface SuspensionHandlerResult {
    * the step on the fly), saving one world round-trip per inline step. Up to
    * `getMaxInlineSteps()` steps are deferred; the caller runs them inline in
    * parallel and queues the rest. Empty when no step was deferred (nothing
-   * pending, or a `hook.getConflict()` awaiter is present so nothing is
-   * executed inline). The caller passes each `dehydratedInput` straight to
+   * pending). The caller passes each `dehydratedInput` straight to
    * `executeStep`, which sends it as the `step_started` payload. The atomic
    * create-claim inside each `step_started` is the exactly-one-owner gate that
    * the standalone `step_created` provided before: the loser of the race gets
    * `EntityConflictError` → `skipped` and does not run the body.
+   *
+   * When {@link hasAwaitedHookCreation} is also set, these steps are deferred
+   * but HELD: the caller advances the workflow over the `hook_created` that
+   * settles the awaiter first, and runs them on the pass after it. Nothing was
+   * written for them, so holding costs nothing and dangles nothing.
    */
   lazyInlineSteps: Array<{
     correlationId: string;
@@ -237,8 +241,9 @@ export interface SuspensionHandlerResult {
    * `owned: false` lost the pair's atomic create-claim to a concurrent
    * writer, and executeStep returns `skipped` without running the body,
    * the same outcome as losing the lazy claim. Empty whenever the fold did
-   * not engage (batching off, no `ownerMessageId`, or the lone-inline case,
-   * which keeps the optimistic lazy path and its claim/body overlap).
+   * not engage (batching off, no `ownerMessageId`, a `hook.getConflict()`
+   * awaiter whose continuation may hold the bodies back, or the lone-inline
+   * case, which keeps the optimistic lazy path and its claim/body overlap).
    *
    * Crash window: the pair commits before the caller runs the body, so a
    * crash between them leaves a started step stamped with this message's
@@ -283,7 +288,11 @@ export interface SuspensionHandlerResult {
    * started concurrently with the hook is not held back by its conflict.
    */
   hasHookConflict: boolean;
-  /** Whether a `hook.getConflict()` awaiter needs the workflow to continue immediately */
+  /**
+   * Whether a `hook.getConflict()` awaiter needs the workflow to continue
+   * immediately. Any {@link lazyInlineSteps} this suspension deferred are
+   * HELD for that continuation rather than run before it; see their docs.
+   */
   hasAwaitedHookCreation: boolean;
   /**
    * Correlation ids of the hooks this suspension committed a `hook_created`
@@ -491,7 +500,11 @@ async function createHookEvent({
  * started in the same suspension as a hook can therefore run before that hook
  * is registered; a workflow that needs the hook registered first (say, a step
  * that hands the token to something that resumes it at once) awaits
- * `hook.getConflict()` before calling the step.
+ * `hook.getConflict()` before calling the step. That awaiter also orders the
+ * steps this suspension DEFERRED (`lazyInlineSteps`) after the registration,
+ * because the caller continues the workflow over the `hook_created` before it
+ * runs them — the ordering costs a queue hop only for the steps that overflow
+ * the inline cap and were therefore created eagerly here.
  */
 export async function handleSuspension({
   suspension,
@@ -1112,24 +1125,33 @@ export async function handleSuspension({
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
   // step is created on the fly by the lazy `step_started` executeStep sends
-  // (saving a round-trip per step). We never defer when a `hook.getConflict()`
-  // awaiter is present, because in that case the caller executes nothing inline
-  // (it continues the workflow to resolve the awaiter instead), so deferring
-  // would leave the steps uncreated and unqueued. That is decided from the
-  // queue rather than from the creates' outcomes, which are still in flight
-  // while the steps are written. We pick the first N uncreated steps —
+  // (saving a round-trip per step). We pick the first N uncreated steps —
   // matching the caller's inline-candidate selection — and dehydrate their
   // input here so executeStep can ship it as the step_started payload.
+  //
+  // A `hook.getConflict()` awaiter does not change WHICH steps are deferred,
+  // only WHEN the caller runs them. The awaiter is settled by the
+  // `hook_created` this suspension commits, so the caller advances the
+  // workflow over that event first (`continueOverHookWrite`) and runs the
+  // deferred batch on the pass after it — the deferral is what makes that
+  // ordering free, since a deferred step has written nothing the caller must
+  // answer for before continuing. Eagerly creating them instead, as this used
+  // to, hands every step beside an awaited hook to the queue: a publish, a
+  // second invocation, and a replay, to run a step this invocation was about
+  // to run itself. (`heldForHookContinuationIds` in the replay loop bounds
+  // the hold to one pass per step, so a workflow that awaits one hook
+  // registration after another cannot park a step behind all of them.)
+  //
+  // Decided from the queue's awaiters rather than from the creates'
+  // outcomes, which are still in flight while the steps are written.
   const hasHookConflictAwaiter = hooksNeedingCreation.some(
     (item) => item.hasConflictAwaiter === true
   );
   const lazyInlineCorrelationIds = new Set<string>(
-    !hasHookConflictAwaiter
-      ? stepItems
-          .filter((item) => stepsNeedingCreation.has(item.correlationId))
-          .slice(0, getMaxInlineSteps())
-          .map((item) => item.correlationId)
-      : []
+    stepItems
+      .filter((item) => stepsNeedingCreation.has(item.correlationId))
+      .slice(0, getMaxInlineSteps())
+      .map((item) => item.correlationId)
   );
   // Collected by correlationId because the per-step ops below run concurrently
   // and settle out of order. We rebuild the array in deterministic
@@ -1231,9 +1253,19 @@ export async function handleSuspension({
   // Also requires the caller's `ownerMessageId`: the started row must stamp
   // ownership exactly like the lazy claim it replaces (and a caller that does
   // not inline-execute never provides one).
+  //
+  // Never folded when a `hook.getConflict()` awaiter is present. A pair
+  // pre-claims the step, committing a `step_started` this invocation owns,
+  // while the caller may hold that step back for the hook-write continuation
+  // and run its body on a later pass. The claim would then be a started step
+  // with no running body, recovered through owned recovery — the crash path,
+  // for a pass where nothing crashed. The deferral itself still applies: the
+  // held step keeps its lazy `step_started`, which claims and runs in the
+  // same moment.
   const inlinePairFoldEligible =
     batchFanoutEligible &&
     ownerMessageId !== undefined &&
+    !hasHookConflictAwaiter &&
     (lazyInlineCorrelationIds.size >= 2 ||
       (lazyInlineCorrelationIds.size === 1 && hooksNeedingCreation.length > 0));
   const inlineClaims: SuspensionHandlerResult['inlineClaims'] = new Map();

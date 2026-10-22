@@ -19,6 +19,8 @@ import { scenario as attrFromStepBody } from './attr-from-step-body.ts';
 import { scenario as attrHookAfterStep } from './attr-hook-after-step.ts';
 import { scenario as attrHookBeforeStep } from './attr-hook-before-step.ts';
 import { scenario as cancelMidStep } from './cancel-mid-step.ts';
+import { scenario as claimHookAtRegistration } from './claim-hook-at-registration.ts';
+import { scenario as claimHookAtStepStarted } from './claim-hook-at-step-started.ts';
 import { scenario as claimedPayloadUnderFork } from './claimed-payload-under-fork.ts';
 import { scenario as countHookAfterTimeout } from './count-hook-after-timeout.ts';
 import { scenario as countHookBeforeTimeout } from './count-hook-before-timeout.ts';
@@ -77,6 +79,19 @@ export const scenarios: ScenarioSpec[] = [
   hookAtStepStarted,
   hookAtStepCompleted,
   hookAtHookCreated,
+
+  // -------------------------------------------------------------------------
+  // The same hook and step, with the registration AWAITED.
+  //
+  // `hook.getConflict()` beside the step moves the step's own rows behind the
+  // registration: the runtime commits the hook create, settles the awaiter off
+  // it, and only then claims the step it deferred. So where the three above
+  // place one payload against a step whose create may precede the hook's,
+  // these place it against a claim that cannot — before the step exists at
+  // all, and between its claim and its result.
+  // -------------------------------------------------------------------------
+  claimHookAtRegistration,
+  claimHookAtStepStarted,
 
   // -------------------------------------------------------------------------
   // Racing a hook against a timer — both branches, on demand.

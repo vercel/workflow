@@ -402,6 +402,54 @@ const hookConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STE
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// The same awaiter, with a step started BESIDE it rather than after it. Both
+// are in one suspension, so the handler writes the hook create and defers the
+// step; the awaiter's continuation has to run before the batch and the step
+// has to run inline on the pass after it, all in this one delivery. The
+// harness never delivers a queue message, so a step handed to the queue here
+// never runs and the run never completes.
+const parallelGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const hook = createHook({ token: "retained-parallel-token" });
+    const [conflict, a] = await Promise.all([hook.getConflict(), s1()]);
+    return conflict === null ? a : -1;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// The shape the hold exists to protect: a step racing an awaiter whose
+// continuation starts a SECOND step. Holding the first step for one pass lets
+// the awaiter settle off the hook write, so both steps are pending at the same
+// suspension and run inline together instead of one going to the queue.
+const racedBranchGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const hook = createHook({ token: "retained-raced-token" });
+    const branch = hook.getConflict().then(function (conflict) {
+      return conflict === null ? s2() : -1;
+    });
+    const [a, b] = await Promise.all([s1(), branch]);
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// Two awaited hook registrations created one after the other, each in its own
+// suspension, with a step racing both. The step is held for the first
+// continuation only; the second pass runs it inline rather than parking it
+// behind another hook write (see `heldForHookContinuationIds`).
+const chainedGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const step = s1();
+    const first = createHook({ token: "retained-chained-token-1" });
+    await first.getConflict();
+    const second = createHook({ token: "retained-chained-token-2" });
+    await second.getConflict();
+    return await step;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 /** The token `drive({ conflictToken })` answers with a `hook_conflict`. */
 const CONFLICTING_TOKEN = 'retained-taken-token';
 
@@ -423,6 +471,27 @@ const conflictingGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFL
     }
     const a = await s1();
     return observed + ":" + a;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// A taken token with a step started BESIDE the awaiter, which the workflow
+// abandons on the conflict. The step's create was deferred for the
+// continuation, so the conflict branch — which returns before any dispatch or
+// inline execution — reaches the workflow with the step never created, and a
+// run that ends over the conflict leaves nothing behind.
+const conflictingParallelGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
+    const work = s1();
+    let conflict;
+    try {
+      conflict = await hook.getConflict();
+    } catch {
+      conflict = "rejected";
+    }
+    if (conflict) return "deduped";
+    return await work;
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
@@ -1509,6 +1578,114 @@ describe('retained VM through the inline replay loop', () => {
       expect(queueSends).toBe(0);
     });
 
+    it('runs a step started beside the awaiter inline, after the continuation', async () => {
+      // The regression this covers: an awaiter used to empty the suspension's
+      // inline batch, so the step beside it was created eagerly and handed to
+      // the queue — a publish, a second invocation and a replay, to run a step
+      // this delivery was about to run itself. Deferred and held instead, it
+      // runs here, on the pass the continuation drives.
+      const { result, durableLog, listCalls, queueSends, createParams } =
+        await drive(
+          'wrun_retained_parallel_get_conflict',
+          parallelGetConflictWorkflow
+        );
+
+      expect(result).toBe(10);
+      // The hook create is the suspension's ONLY write (the step's create was
+      // deferred), so its delta carried the log forward and the continuation
+      // read nothing. Nothing was enqueued either.
+      expect(listCalls).toBe(1);
+      expect(queueSends).toBe(0);
+      expect(
+        createParams.find((p) => p.eventType === 'hook_created')?.sinceCursor
+      ).toEqual(expect.any(String));
+      // What the RUNTIME wrote: no standalone `step_created`, and the
+      // registration ahead of the claim. The step was claimed by a lazy
+      // `step_started` carrying its input; a real World answers that by
+      // synthesizing the `step_created` itself, which this harness does not
+      // model, so the absence here is the runtime's own write set.
+      expect(durableLog.map((e) => e.eventType)).toEqual([
+        'hook_created',
+        'step_started',
+        'step_completed',
+        'run_completed',
+      ]);
+    });
+
+    it('still runs the step inline under the kill switch, with no queue hop', async () => {
+      // No retained session to resume, so the awaiter settles on the cold
+      // replay that follows the step's terminal write instead of on a
+      // continuation — still this one delivery, still nothing enqueued.
+      process.env.WORKFLOW_RETAINED_VM = '0';
+      const { result, queueSends, vmBuilds } = await drive(
+        'wrun_retained_parallel_get_conflict_off',
+        parallelGetConflictWorkflow
+      );
+
+      expect(result).toBe(10);
+      expect(queueSends).toBe(0);
+      expect(vmBuilds).toBeGreaterThan(1);
+    });
+
+    it('runs a held step and the branch the settled awaiter started in one batch', async () => {
+      // `hook.getConflict().then(() => s2())` racing `await s1()`. Holding s1
+      // for the continuation is what lets s2 exist by the time the batch runs,
+      // so both run inline together — where queueing s1 would have split them
+      // across two invocations.
+      const { result, durableLog, queueSends } = await drive(
+        'wrun_retained_raced_branch',
+        racedBranchGetConflictWorkflow
+      );
+
+      expect(result).toBe(30);
+      expect(queueSends).toBe(0);
+      // Two starts, two completions, no standalone creates: both steps took
+      // the lazy inline claim in the same batch.
+      expect(
+        durableLog.filter((e) => e.eventType === 'step_started')
+      ).toHaveLength(2);
+      expect(
+        durableLog.filter((e) => e.eventType === 'step_created')
+      ).toHaveLength(0);
+    });
+
+    it('holds a step for one continuation only, across chained awaited hooks', async () => {
+      // Two awaited registrations in separate suspensions, each committing a
+      // hook write the step could be parked behind. The step is held for the
+      // FIRST continuation only; the second pass commits that hook's create
+      // and then runs the body rather than holding it again, so the second
+      // awaiter settles on the pass after the body — still this one delivery,
+      // still nothing enqueued.
+      const debugSpy = vi
+        .spyOn(runtimeLogger, 'debug')
+        .mockImplementation(() => {});
+      try {
+        const { result, durableLog, queueSends } = await drive(
+          'wrun_retained_chained_get_conflict',
+          chainedGetConflictWorkflow
+        );
+
+        expect(result).toBe(10);
+        expect(queueSends).toBe(0);
+        // One continuation, not one per awaited hook: the second pass had the
+        // held step to run instead.
+        expect(
+          debugSpy.mock.calls.filter(
+            ([message]) => message === 'Continuing over a hook write in-process'
+          )
+        ).toHaveLength(1);
+        expect(durableLog.map((e) => e.eventType)).toEqual([
+          'hook_created',
+          'hook_created',
+          'step_started',
+          'step_completed',
+          'run_completed',
+        ]);
+      } finally {
+        debugSpy.mockRestore();
+      }
+    });
+
     it('hands the awaiter back to the queue under the kill switch', async () => {
       // With retention off there is no parked VM to resume, so the awaiter
       // falls back to the re-invocation this path has always used: the
@@ -1555,6 +1732,23 @@ describe('retained VM through the inline replay loop', () => {
         // carried the log forward from there, so the continuation read
         // nothing and nothing was enqueued.
         expect(listCalls).toBe(1);
+        expect(queueSends).toBe(0);
+      });
+
+      it('never creates a step held beside an awaiter the conflict settles', async () => {
+        // The ordering `await hook.getConflict()` is for, now available to a
+        // step started beside the awaiter rather than only after it: the
+        // deferral means the conflict reaches the workflow before the step
+        // exists, so a run that dedupes on it leaves no orphaned step behind.
+        const { result, committedTypes, queueSends } = await drive(
+          'wrun_retained_taken_parallel',
+          conflictingParallelGetConflictWorkflow,
+          { type: 'normal' },
+          { conflictToken: CONFLICTING_TOKEN }
+        );
+
+        expect(result).toBe('deduped');
+        expect(committedTypes).toEqual(['hook_conflict', 'run_completed']);
         expect(queueSends).toBe(0);
       });
 

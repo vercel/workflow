@@ -114,6 +114,8 @@ export async function orderWorkflow(orderId: string) {
 
 Calling `createHook()` on its own does not register the hook; registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, `getConflict()` rejects with `HookConflictError` instead of resolving with an incomplete handle. The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()`. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.
 
+Awaiting the registration costs one write, not a round trip through the queue: the invocation that commits the registration is the one that carries on past the awaiter, and it runs the steps the workflow started beside the awaiter — as in `await Promise.all([hook.getConflict(), prepare()])` — in that same invocation, once the registration is recorded.
+
 ### Custom tokens for deterministic hooks
 
 By default, hooks generate their own token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.

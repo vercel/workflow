@@ -190,7 +190,7 @@ describe('handleSuspension', () => {
     expect(result.timeoutSeconds).toBeUndefined();
   });
 
-  it('still returns owned pending steps when an awaited hook is created with a step', async () => {
+  it('still returns pending steps when an awaited hook is created with a step', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',
@@ -227,7 +227,14 @@ describe('handleSuspension', () => {
     expect(result.hasAwaitedHookCreation).toBe(true);
     expect(result.timeoutSeconds).toBeUndefined();
     expect(result.pendingSteps).toHaveLength(1);
-    expect(result.createdStepCorrelationIds).toContain('step_parallel');
+    // Deferred, not created: the caller holds it for the hook-write
+    // continuation and runs it inline on the pass after it, so the only write
+    // this suspension makes is the hook create the awaiter is parked on.
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+      'step_parallel',
+    ]);
+    expect(result.createdStepCorrelationIds).not.toContain('step_parallel');
+    expect(eventsCreate).toHaveBeenCalledTimes(1);
   });
 
   it('defers up to getMaxInlineSteps() uncreated steps and eagerly creates the rest', async () => {
@@ -305,31 +312,27 @@ describe('handleSuspension', () => {
     }
   });
 
-  it('defers no inline steps when a hook.getConflict() awaiter is present', async () => {
+  it('still defers inline steps when a hook.getConflict() awaiter is present, only up to the cap', async () => {
+    // Default getMaxInlineSteps() is 3. An awaiter does not change WHICH steps
+    // are deferred, only when the caller runs them: the first three are
+    // deferred (and held for the hook-write continuation), the fourth keeps
+    // its eager step_created and is queued, exactly as without an awaiter.
     const eventsCreate = vi.fn().mockResolvedValue({
       event: { eventType: 'hook_created' },
     });
     const world = createWorld(eventsCreate);
-    const pending = new Map([
-      [
-        's1',
-        {
-          type: 'step' as const,
-          correlationId: 's1',
-          stepName: 's1',
-          args: [],
-        },
-      ],
-      [
-        'hook_awaited',
-        {
-          type: 'hook' as const,
-          correlationId: 'hook_awaited',
-          token: 'claim-token',
-          hasConflictAwaiter: true,
-        },
-      ],
-    ]);
+    const pending = new Map<string, any>(
+      ['s1', 's2', 's3', 's4'].map((id) => [
+        id,
+        { type: 'step' as const, correlationId: id, stepName: id, args: [] },
+      ])
+    );
+    pending.set('hook_awaited', {
+      type: 'hook' as const,
+      correlationId: 'hook_awaited',
+      token: 'claim-token',
+      hasConflictAwaiter: true,
+    });
 
     const result = await handleSuspension({
       suspension: new WorkflowSuspension(pending, globalThis),
@@ -337,10 +340,14 @@ describe('handleSuspension', () => {
       run,
     });
 
-    // Nothing runs inline: the step keeps its eager step_created (owned) and is
-    // queued; the caller re-invokes immediately to resolve the awaiter.
-    expect(result.lazyInlineSteps).toEqual([]);
-    expect(result.createdStepCorrelationIds).toContain('s1');
+    expect(result.hasAwaitedHookCreation).toBe(true);
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+      's1',
+      's2',
+      's3',
+    ]);
+    expect(result.createdStepCorrelationIds).not.toContain('s1');
+    expect(result.createdStepCorrelationIds).toContain('s4');
   });
 
   it('does not immediately continue after creating a hook without a getConflict awaiter', async () => {
@@ -1519,9 +1526,10 @@ describe('handleSuspension', () => {
       expect(result.hookConflictCorrelationIds).toEqual(['hook_taken']);
     });
 
-    it('does not carry the log forward when a step also wrote', async () => {
-      // The step_created lands above the delta the hook write returned, so the
-      // log is short of it and the caller has to read before continuing.
+    it('carries the log forward for an awaiter whose steps are all deferred', async () => {
+      // The awaiter's step is deferred and held for the continuation, so the
+      // hook create is the suspension's only write and its delta accounts for
+      // everything: the caller resumes over this log with no read at all.
       const eventLog = {
         events: [slotEvent(1, 'run_started')],
         cursor: 'eid:cursor_1',
@@ -1548,10 +1556,40 @@ describe('handleSuspension', () => {
         eventLog,
       });
 
-      // An awaiter still means nothing runs inline, so the step keeps its
-      // eager step_created and is queued by the caller.
-      expect(result.lazyInlineSteps).toEqual([]);
-      expect(result.createdStepCorrelationIds).toContain('s1');
+      expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+        's1',
+      ]);
+      expect(result.createdStepCorrelationIds).not.toContain('s1');
+      expect(result.hasAwaitedHookCreation).toBe(true);
+      expect(result.eventLogCarriedForward).toBe(true);
+    });
+
+    it('does not carry the log forward when a step beyond the inline cap also wrote', async () => {
+      // Four steps, three inline slots: the fourth keeps its eager
+      // step_created, which lands above the delta the hook write returned, so
+      // the log is short of it and the caller has to read before continuing.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+      const pending = new Map<string, any>([awaitedHook()]);
+      for (const id of ['s1', 's2', 's3', 's4']) {
+        pending.set(id, {
+          type: 'step' as const,
+          correlationId: id,
+          stepName: id,
+          args: [],
+        });
+      }
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(pending, globalThis),
+        world: createWorld(deltaWorld()),
+        run,
+        eventLog,
+      });
+
+      expect(result.createdStepCorrelationIds).toContain('s4');
       expect(result.hasAwaitedHookCreation).toBe(true);
       expect(result.eventLogCarriedForward).toBe(false);
     });
@@ -2389,15 +2427,18 @@ describe('handleSuspension batched fan-out', () => {
   });
 
   it('pre-claims nothing beside a hook with a getConflict() awaiter', async () => {
-    // The caller continues the workflow to resolve the awaiter instead of
-    // running anything inline, so the steps are created eagerly (batched
-    // beside the hook create) and none is claimed for this invocation.
+    // The caller holds the deferred step back for the hook-write continuation
+    // and runs its body on the pass after it, so a pre-claimed pair would be a
+    // committed `step_started` with no body behind it — recoverable only
+    // through owned recovery, the crash path. The deferral still applies (the
+    // held step keeps its lazy claim, which claims and runs together); only
+    // the fold is off. The steps beyond the inline cap batch as plain creates.
     const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
       event,
     }));
     const createBatch = successfulCreateBatch();
     const world = createBatchWorld(eventsCreate, createBatch);
-    const pending = stepsAndWait(['s1', 's2']) as Map<string, unknown>;
+    const pending = stepsAndWait(['s1', 's2', 's3']) as Map<string, unknown>;
     pending.set('hook_awaited', {
       type: 'hook' as const,
       correlationId: 'hook_awaited',
@@ -2415,14 +2456,15 @@ describe('handleSuspension batched fan-out', () => {
       ownerMessageId: 'msg_owner_1',
     });
 
+    // No `step_started:s1` pair: the batch carries only the eager creates.
     expect(
       createBatch.mock.calls[0][1].map(
         (e: { event: { eventType: string; correlationId: string } }) =>
           `${e.event.eventType}:${e.event.correlationId}`
       )
-    ).toEqual(['step_created:s1', 'step_created:s2']);
+    ).toEqual(['step_created:s2', 'step_created:s3']);
     expect(result.inlineClaims.size).toBe(0);
-    expect(result.lazyInlineSteps).toEqual([]);
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual(['s1']);
     expect(result.hasAwaitedHookCreation).toBe(true);
   });
 
