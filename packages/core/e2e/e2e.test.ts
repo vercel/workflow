@@ -1471,9 +1471,18 @@ describe.concurrent('e2e', () => {
               expect(result.stack).toContain('99_e2e.ts');
             }
 
-            // Verify step failed via CLI (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
+            // Verify step failed via CLI (--withData needed to resolve errorRef).
+            // Polled: on world-vercel a single-orchestrator run's step list
+            // is built from analytics rows that lag the run's events, so a
+            // step written moments ago can still be missing.
+            const steps = await cliInspectJsonUntil(
+              `steps --runId ${run.runId} --withData`,
+              (json) =>
+                json.some(
+                  (s: any) =>
+                    s.stepName.includes('errorStepFn') && s.status === 'failed'
+                ),
+              { timeoutMs: 45_000 }
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('errorStepFn')
@@ -1529,9 +1538,17 @@ describe.concurrent('e2e', () => {
               expect(result.stack).toContain('helpers.ts');
             }
 
-            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
+            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef).
+            // Polled for the reason given in the previous test.
+            const steps = await cliInspectJsonUntil(
+              `steps --runId ${run.runId} --withData`,
+              (json) =>
+                json.some(
+                  (s: any) =>
+                    s.stepName.includes('stepThatThrowsFromHelper') &&
+                    s.status === 'failed'
+                ),
+              { timeoutMs: 45_000 }
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('stepThatThrowsFromHelper')
