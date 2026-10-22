@@ -46,11 +46,14 @@ const StubbedWorldCachePromise = Symbol.for(
   '@workflow/world//stubbedCachePromise'
 );
 
+const WorldStartPromises = Symbol.for('@workflow/world//startPromises');
+
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
+  [WorldStartPromises]?: WeakMap<World, Promise<void>>;
 } = globalThis;
 
 export type WorldFactoryModule = {
@@ -252,6 +255,59 @@ export const getWorld = async (): Promise<World> => {
   assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
   return globalSymbols[WorldCache];
 };
+
+/**
+ * Start the World returned by {@link getWorld} once per process.
+ *
+ * `World.start()` launches a self-hosted World's background workers and
+ * re-enqueues the runs it finds `pending` or `running` in storage, which is how
+ * a run that was sleeping, waiting on a hook or between steps when the server
+ * stopped resumes after a restart. Nothing else triggers that recovery, so a
+ * self-hosted server calls this once at boot: a Next.js `instrumentation.ts`
+ * `register()`, a SvelteKit `init` hook, or a Nitro server plugin (which
+ * `workflow/nitro` registers automatically for production builds).
+ *
+ * Calls are deduplicated per World instance through a map on `globalThis`, so
+ * the separate module copies a bundler creates per layer share one start, and
+ * a World injected later with `setWorld()` is started by the next call. For
+ * the Vercel World, which has no `start()`, this does nothing.
+ *
+ * It never rejects. Recovery is best-effort: runs stay durable in storage, so
+ * a failed start (a database unreachable at boot, for example) is logged and
+ * forgotten, and the next call tries again. A queue-backed World also starts
+ * its workers on the next enqueue regardless.
+ */
+export const ensureWorldStarted = async (): Promise<void> => {
+  let world: World;
+  try {
+    world = await getWorld();
+  } catch (err) {
+    logWorldStartFailure(err);
+    return;
+  }
+  if (!world.start) return;
+  globalSymbols[WorldStartPromises] ??= new WeakMap();
+  const started = globalSymbols[WorldStartPromises];
+  let promise = started.get(world);
+  if (!promise) {
+    promise = Promise.resolve()
+      .then(() => world.start?.())
+      .catch((err) => {
+        started.delete(world);
+        logWorldStartFailure(err);
+      });
+    started.set(world, promise);
+  }
+  await promise;
+};
+
+function logWorldStartFailure(err: unknown): void {
+  console.error(
+    '[workflow] Failed to start the World. Runs that were in flight when the ' +
+      'server last stopped resume on the next successful start.',
+    err
+  );
+}
 
 /**
  * Reset the cached world instance. This should be called when environment

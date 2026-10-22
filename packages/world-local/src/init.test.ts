@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  BUNDLED_VERSION,
   DataDirAccessError,
   DataDirLayoutError,
   DataDirVersionError,
@@ -420,6 +421,31 @@ describe('initDataDir', () => {
     const content = readFileSync(versionPath, 'utf-8');
     const packageInfo = await getPackageInfo();
     expect(content).toBe(`${packageInfo.name}@${packageInfo.version}`);
+  });
+
+  it('skips the version check when the package version is the bundled sentinel', async () => {
+    const dataDir = path.join(testBaseDir, 'bundled-data');
+    mkdirSync(dataDir, { recursive: true });
+    const versionPath = path.join(dataDir, 'version.txt');
+    writeFileSync(versionPath, '@workflow/world-local@3.0.0');
+
+    const cache = (
+      globalThis as unknown as Record<
+        symbol,
+        { cached: { name: string; version: string } | null }
+      >
+    )[Symbol.for('@workflow/world-local//packageInfo/v1')];
+    const real = await getPackageInfo();
+    cache.cached = { name: real.name, version: BUNDLED_VERSION };
+    try {
+      await expect(initDataDir(dataDir)).resolves.toBeUndefined();
+    } finally {
+      cache.cached = real;
+    }
+
+    expect(readFileSync(versionPath, 'utf-8')).toBe(
+      '@workflow/world-local@3.0.0'
+    );
   });
 
   it('should handle data directory with newer version', async () => {

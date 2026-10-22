@@ -142,14 +142,17 @@ routing requests across incompatible worker versions remain unimplemented.
 
 ### Server startup
 
-To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
+Your app starts the World when the server boots by calling [`ensureWorldStarted()`](/docs/api-reference/workflow-runtime/ensure-world-started). This subscribes the process to the graphile-worker queue and re-enqueues the runs that were in flight when the server last stopped, so a run that was sleeping, waiting on a hook, or between steps resumes after a restart instead of waiting for the next workflow operation.
+
+`workflow/nitro` does this itself for production builds, which covers Nitro, Nuxt, and Express, Hono, and Fastify on Nitro (see [`startWorld`](/docs/configuration/framework-options#workflowstartworld)). For other frameworks, add it to a server-startup hook:
 
 <Callout type="warn">
 This step is specific to worlds that run a background worker, such as Postgres
 World. Worlds whose queue delivers work over HTTP, including the Vercel World,
-have no worker to subscribe, so `start()` does nothing there while the import
-still adds overhead. Pulling in `workflow/runtime` from a server-startup hook puts
-the whole runtime into the cold-start path before the first request is served.
+have no worker to subscribe, so `ensureWorldStarted()` does nothing there while
+the import still adds overhead. Pulling in `workflow/runtime` from a
+server-startup hook puts the whole runtime into the cold-start path before the
+first request is served.
 </Callout>
 
 <TabsWithChildren tabs={["Next.js","SvelteKit","Nitro"]}>
@@ -160,10 +163,9 @@ Create an `instrumentation.ts` file in your project root:
 
 ```ts title="instrumentation.ts" lineNumbers
 export async function register() {
-  if (process.env.NEXT_RUNTIME !== "edge") {
-    const { getWorld } = await import("workflow/runtime");
-    const world = await getWorld();
-    await world.start?.();
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { ensureWorldStarted } = await import("workflow/runtime");
+    await ensureWorldStarted();
   }
 }
 ```
@@ -182,9 +184,8 @@ Create a `src/hooks.server.ts` file:
 import type { ServerInit } from "@sveltejs/kit";
 
 export const init: ServerInit = async () => {
-  const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
+  const { ensureWorldStarted } = await import("workflow/runtime");
+  await ensureWorldStarted();
 };
 ```
 
@@ -196,36 +197,24 @@ Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
 
 <TabContent order={3}>
 
-Create a plugin to start the world on server initialization:
-
-```ts title="plugins/start-pg-world.ts" lineNumbers
-import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
-
-export default defineNitroPlugin(async () => {
-  const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
-});
-```
-
-Register the plugin in your config:
+Production builds need no setup. To also start the World under `nitro dev`, enable `startWorld`:
 
 ```ts title="nitro.config.ts"
 import { defineNitroConfig } from "nitropack";
 
 export default defineNitroConfig({
   modules: ["workflow/nitro"],
-  plugins: ["plugins/start-pg-world.ts"],
+  workflow: { startWorld: true },
 });
 ```
 
-<Callout type="info">
-Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
-</Callout>
+In development the in-flight runs from before a restart usually belong to code you have since edited, and replaying them against the new code fails with a [replay divergence](/docs/errors/replay-divergence), which is why `startWorld` is off in dev by default.
 
 </TabContent>
 
 </TabsWithChildren>
+
+Every instance that calls `ensureWorldStarted()` re-enqueues every active run in the database. With several instances, each boot repeats that scan; see [`ensureWorldStarted()`](/docs/api-reference/workflow-runtime/ensure-world-started#behavior) for running recovery from one instance only.
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
