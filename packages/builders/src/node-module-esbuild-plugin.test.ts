@@ -927,5 +927,61 @@ export const second = b;
         rmSync(tempDir, { recursive: true, force: true });
       }
     });
+
+    it.each([
+      ['a line comment', '// import order matters here'],
+      ['a JSDoc block', '/**\n * Helpers we import for the workflow\n */'],
+    ])('should not start the match in %s that mentions import', async (_, comment) => {
+      // Without anchoring the match to a statement start, it would begin at the
+      // `import` in the comment and capture `order matters here\nimport fs` as
+      // the specifier, losing the location of the default import.
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `${comment}\nimport fs from "node:fs";\n\nexport const read = fs.readFile;\n`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toMatchObject({
+          lineText: 'export const read = fs.readFile;',
+          column: 'export const read = '.length,
+          length: 'fs'.length,
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('should find a multi-line import that follows another statement on the same line', async () => {
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `const x = 1; import {
+  readFile,
+} from "node:fs";
+
+export const read = readFile;
+`
+      );
+
+      try {
+        const location = await getViolationLocation(
+          tempDir,
+          'file.ts',
+          'node:fs'
+        );
+        expect(location).toMatchObject({
+          line: 5,
+          lineText: 'export const read = readFile;',
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
   });
 });
