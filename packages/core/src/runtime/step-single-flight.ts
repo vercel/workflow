@@ -37,9 +37,49 @@ import type { StepExecutionResult } from './step-executor.js';
 // residual the doc above scopes out.
 const singleFlight = globalSingleton(
   '@workflow/core//stepSingleFlight',
-  1,
-  () => ({ inFlight: new Map<string, Promise<StepExecutionResult>>() })
+  2,
+  () => ({ inFlight: new Map<string, InFlightStepExecution>() })
 );
+
+interface InFlightStepExecution {
+  settlement: Promise<StepExecutionResult>;
+  retryPublishedUnderDispatchKeyAfter: Promise<unknown> | undefined;
+  retryCarried: boolean;
+}
+
+export interface StepSingleFlightOptions {
+  /**
+   * Level of the contention log when this call loses. Fresh inline claims
+   * overlap during ordinary wake replays, so they log at `debug`; recovery
+   * callers keep `warn`, since repeated overlap can indicate expiring leases.
+   */
+  logLevel?: 'debug' | 'warn';
+  /**
+   * Set by a winner that publishes its own `retry` under the step's dispatch
+   * key (stepDispatchIdempotencyKey) once this promise settles: the node
+   * engine's inline executions, which publish after their whole inline batch
+   * settles. A queued delivery of the same step that is waiting on it was
+   * published under that same key and is still in flight, so the queue folds
+   * the retry into it (world-local returns the in-flight message's id, queues
+   * dedupe a key while its message is in flight, and world-postgres replaces
+   * an unlocked job with the same key or drops a later job whose key it has
+   * already completed). The QuickJS engine publishes its retries under their
+   * own keys, so its winners leave this unset.
+   */
+  retryPublishedUnderDispatchKeyAfter?: Promise<unknown>;
+  /**
+   * Set by the queued-step delivery. When it loses to a winner that sets
+   * `retryPublishedUnderDispatchKeyAfter` and that winner returns `retry`, it
+   * waits for that promise and then returns the `retry` instead of `skipped`,
+   * so its message redelivers after the backoff and runs the attempt the
+   * folded publish can no longer drive (workflow#4728). Waiting keeps the
+   * message in flight until the publish is out, so the publish never lands on
+   * a key the message already spent by acking (a sibling of the winner that
+   * outlasts the backoff would otherwise let the carried attempt finish and
+   * ack first). At most one loser carries a given retry.
+   */
+  carryFoldedRetry?: boolean;
+}
 
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
@@ -48,36 +88,51 @@ const singleFlight = globalSingleton(
  * then returns `{ type: 'skipped' }` so its caller acks without running the
  * body. A winner failure is not propagated to the loser: the winner's own
  * queue message redelivers and drives the retry, so exactly one message
- * keeps owning the outcome.
+ * keeps owning the outcome. The one exception is a winner's `retry` that was
+ * folded into the loser's own message: see `carryFoldedRetry`.
  */
 export async function runStepSingleFlight(
   runId: string,
   correlationId: string,
   execute: () => Promise<StepExecutionResult>,
-  logLevel: 'debug' | 'warn' = 'warn'
+  options: StepSingleFlightOptions = {}
 ): Promise<StepExecutionResult> {
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
   if (existing) {
-    // Fresh inline claims can overlap during ordinary wake replays. Recovery
-    // callers keep warning: repeated overlap can indicate expiring leases.
-    runtimeLogger[logLevel](
+    runtimeLogger[options.logLevel ?? 'warn'](
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
     );
+    let settled: StepExecutionResult | undefined;
     try {
-      await existing;
+      settled = await existing.settlement;
     } catch {
       // The winner failed (typically a transient world error). Its own queue
       // message redelivers and retries; this loser still skips.
     }
+    if (
+      settled?.type === 'retry' &&
+      options.carryFoldedRetry &&
+      existing.retryPublishedUnderDispatchKeyAfter &&
+      !existing.retryCarried
+    ) {
+      existing.retryCarried = true;
+      await existing.retryPublishedUnderDispatchKeyAfter;
+      return settled;
+    }
     return { type: 'skipped' };
   }
 
-  const promise = execute();
-  singleFlight.inFlight.set(key, promise);
+  const execution: InFlightStepExecution = {
+    settlement: execute(),
+    retryPublishedUnderDispatchKeyAfter:
+      options.retryPublishedUnderDispatchKeyAfter,
+    retryCarried: false,
+  };
+  singleFlight.inFlight.set(key, execution);
   try {
-    return await promise;
+    return await execution.settlement;
   } finally {
     singleFlight.inFlight.delete(key);
   }

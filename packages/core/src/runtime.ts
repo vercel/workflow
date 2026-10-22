@@ -1980,7 +1980,10 @@ export function workflowEntrypoint(
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
-                          executeQueuedStep
+                          executeQueuedStep,
+                          // This message may be the one an inline winner's
+                          // retry was folded into; if so, carry it.
+                          { carryFoldedRetry: true }
                         );
                       } finally {
                         replayBudget.resume();
@@ -4910,6 +4913,15 @@ export function workflowEntrypoint(
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
+                        // Settles once every body in this batch has. A
+                        // `retry` below is published only after that, so a
+                        // queued delivery carrying it waits this long.
+                        let markInlineBatchSettled!: () => void;
+                        const inlineBatchSettled = new Promise<void>(
+                          (resolve) => {
+                            markInlineBatchSettled = resolve;
+                          }
+                        );
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
                             const run = () => {
@@ -5033,7 +5045,13 @@ export function workflowEntrypoint(
                               runId,
                               s.correlationId,
                               run,
-                              isFreshClaim ? 'debug' : 'warn'
+                              {
+                                logLevel: isFreshClaim ? 'debug' : 'warn',
+                                // A `retry` is published below (toRetry)
+                                // under the step's dispatch key.
+                                retryPublishedUnderDispatchKeyAfter:
+                                  inlineBatchSettled,
+                              }
                             );
                             return executed.finally(() =>
                               inFlightOwnedSteps.delete(s.correlationId)
@@ -5052,6 +5070,9 @@ export function workflowEntrypoint(
                         for (const promise of stepExecutionPromises) {
                           promise.catch(() => {});
                         }
+                        void Promise.allSettled(stepExecutionPromises).then(
+                          markInlineBatchSettled
+                        );
                         try {
                           // Join the dispatch publishes launched above and
                           // the fold's deferred batch work (trailing chunk
