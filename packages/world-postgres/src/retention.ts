@@ -97,7 +97,9 @@ export async function purgeRunUserData(
 
     // Hooks that outlive the run (token retention) keep their row, and a hook
     // read is not gated on the run's `expired_at` at all, so their metadata
-    // has to be cleared in place or it stays readable.
+    // has to be cleared in place or it stays readable. That includes a start
+    // reservation's placeholder row and the start's metadata on it (the run
+    // row keeps its start Hook without metadata).
     await tx
       .update(hooks)
       .set({ metadata: NULL, metadataJson: NULL, resumeContext: NULL })
