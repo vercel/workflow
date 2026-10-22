@@ -233,6 +233,16 @@ describe('runRowFromCreation', () => {
         ...eventData,
       },
     }) as unknown as Event;
+  const persistedStartedAt = new Date('2026-01-02T03:04:06.000Z');
+  const runStarted = () =>
+    ({
+      eventId: 'evnt_2',
+      runId,
+      createdAt: persistedStartedAt,
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {},
+    }) as unknown as Event;
   const runContext = {
     deploymentId: 'dpl_carried',
     specVersion: SPEC_VERSION_CURRENT,
@@ -241,7 +251,12 @@ describe('runRowFromCreation', () => {
   };
 
   it('builds a running row from the carried identity and run_created', () => {
-    const row = runRowFromCreation(runId, runCreated(), runContext);
+    const row = runRowFromCreation(
+      runId,
+      runCreated(),
+      runStarted(),
+      runContext
+    );
     expect(row).toEqual({
       runId,
       status: 'running',
@@ -252,18 +267,38 @@ describe('runRowFromCreation', () => {
       executionContext: { workflowVm: 'node' },
       input,
       attributes: { team: 'core' },
-      startedAt: new Date(runContext.startedAt),
+      // The persisted event is canonical even when turbo dispatched a local
+      // synthesized timestamp in the message.
+      startedAt: persistedStartedAt,
       // The time the run id encodes, which is what seeds the VM clock.
       createdAt: new Date(runIdCreatedAt(runId) as number),
-      updatedAt: new Date(runContext.startedAt),
+      updatedAt: persistedStartedAt,
     });
   });
 
+  it('uses the same workflowStartedAt as an ordinary stored-row replay', () => {
+    const ordinaryReplayRow = { startedAt: persistedStartedAt };
+    const advanceOnlyReplayRow = runRowFromCreation(
+      runId,
+      runCreated(),
+      runStarted(),
+      runContext
+    );
+    expect(advanceOnlyReplayRow?.startedAt).toEqual(
+      ordinaryReplayRow.startedAt
+    );
+  });
+
   it('carries the lineage root of a child run', () => {
-    const row = runRowFromCreation(runId, runCreated({ attributes: {} }), {
-      ...runContext,
-      rootRunId: 'wrun_parent',
-    });
+    const row = runRowFromCreation(
+      runId,
+      runCreated({ attributes: {} }),
+      runStarted(),
+      {
+        ...runContext,
+        rootRunId: 'wrun_parent',
+      }
+    );
     expect(row?.attributes).toEqual({
       [ROOT_RUN_ID_ATTRIBUTE]: 'wrun_parent',
     });
@@ -273,6 +308,7 @@ describe('runRowFromCreation', () => {
     const row = runRowFromCreation(
       runId,
       runCreated({ encryptionPublicKey: 'cHVibGlj' }),
+      runStarted(),
       runContext
     );
     expect(row?.encryptionPublicKey).toBe('cHVibGlj');
@@ -282,14 +318,29 @@ describe('runRowFromCreation', () => {
     // The VM clock would then come from the stored row's createdAt, which
     // only a read can supply.
     expect(
-      runRowFromCreation('wrun_not_a_ulid', runCreated(), runContext)
+      runRowFromCreation(
+        'wrun_not_a_ulid',
+        runCreated(),
+        runStarted(),
+        runContext
+      )
     ).toBeUndefined();
   });
 
-  it('declines a message without the run start time', () => {
-    const { startedAt: _, ...withoutStart } = runContext;
+  it('declines a log without run_started', () => {
     expect(
-      runRowFromCreation(runId, runCreated(), withoutStart)
+      runRowFromCreation(runId, runCreated(), undefined, runContext)
+    ).toBeUndefined();
+  });
+
+  it('declines a corrupt run_started timestamp', () => {
+    expect(
+      runRowFromCreation(
+        runId,
+        runCreated(),
+        { ...runStarted(), createdAt: new Date('invalid') },
+        runContext
+      )
     ).toBeUndefined();
   });
 
@@ -298,6 +349,7 @@ describe('runRowFromCreation', () => {
       runRowFromCreation(
         runId,
         { ...runCreated(), eventType: 'run_started' } as unknown as Event,
+        runStarted(),
         runContext
       )
     ).toBeUndefined();

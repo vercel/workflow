@@ -1,7 +1,7 @@
 /**
  * Helpers behind advance-only replays: the replays that let one branch of a
  * fan-out move on while sibling steps are still in flight elsewhere
- * (vercel/workflow#4457, `isAdvanceOnlyReplayEnabled`).
+ * (`isAdvanceOnlyReplayEnabled`).
  */
 import {
   type Event,
@@ -189,15 +189,17 @@ export function settlesBranch(result: StepExecutionResult): boolean {
 /**
  * The run row an advance-only replay of a queued step's run replays against,
  * built from the run identity its message carries and the run's own
- * `run_created` instead of read back with `runs.get`. Turbo builds the row it
- * replays its first delivery against from the start payload the same way.
+ * `run_created` and `run_started` events instead of read back with `runs.get`.
+ * Turbo builds the row it replays its first delivery against from the start
+ * payload the same way.
  *
  * Every field the replay reads comes from one of the two, and the ones the
  * workflow VM is seeded from match the stored row exactly: the seed is the run
- * id, workflow name and deployment, and the VM clock starts at the time the
- * run id encodes. That is why a run id that encodes no time gets `undefined`
- * here, as does a message without the run's start time: the caller then reads
- * the row as before.
+ * id, workflow name and deployment, the VM clock starts at the time the run id
+ * encodes, and `workflowStartedAt` comes from the persisted `run_started`
+ * timestamp. That is why a run id that encodes no time or a log without either
+ * required event gets `undefined` here: the caller then reads the row as
+ * before.
  *
  * The status is always `running`. The caller does not rely on it: a replay
  * returns before running the workflow when its log holds a terminal run event,
@@ -206,11 +208,18 @@ export function settlesBranch(result: StepExecutionResult): boolean {
 export function runRowFromCreation(
   runId: string,
   runCreated: Event,
+  runStarted: Event | undefined,
   runContext: RunDispatchContext
 ): WorkflowRun | undefined {
-  if (runCreated.eventType !== 'run_created') return undefined;
+  if (
+    runCreated.eventType !== 'run_created' ||
+    runStarted?.eventType !== 'run_started'
+  ) {
+    return undefined;
+  }
   const createdAtMs = runIdCreatedAt(runId);
-  if (createdAtMs === undefined || runContext.startedAt === undefined) {
+  const startedAtMs = +runStarted.createdAt;
+  if (createdAtMs === undefined || !Number.isFinite(startedAtMs)) {
     return undefined;
   }
   const { eventData } = runCreated;
@@ -234,8 +243,8 @@ export function runRowFromCreation(
     ...(eventData.encryptionPublicKey !== undefined
       ? { encryptionPublicKey: eventData.encryptionPublicKey }
       : {}),
-    startedAt: new Date(runContext.startedAt),
+    startedAt: new Date(startedAtMs),
     createdAt: new Date(createdAtMs),
-    updatedAt: new Date(runContext.startedAt),
+    updatedAt: new Date(startedAtMs),
   };
 }

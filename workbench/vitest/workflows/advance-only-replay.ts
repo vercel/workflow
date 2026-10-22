@@ -56,6 +56,71 @@ export async function caughtSlowPromiseChain(
   await t;
 }
 
+export async function twoLeafPromiseAll(markerPath: string, delayMs: number) {
+  'use workflow';
+  await Promise.all([
+    markerStep(markerPath, 'leaf1', delayMs),
+    markerStep(markerPath, 'leaf2', delayMs),
+  ]);
+}
+
+export async function raceThenNext(
+  markerPath: string,
+  fastMs: number,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.race([
+    markerStep(markerPath, 'race-fast', fastMs),
+    markerStep(markerPath, 'race-slow', slowMs),
+  ]);
+  await markerStep(markerPath, 'race-next', 0);
+}
+
+async function namedChain(markerPath: string, prefix: string, delayMs: number) {
+  for (let index = 1; index <= 3; index++) {
+    await markerStep(markerPath, `${prefix}${index}`, delayMs);
+  }
+}
+
+export async function threeParallelChains(
+  markerPath: string,
+  fastMs: number,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    namedChain(markerPath, 'three-fast-', fastMs),
+    namedChain(markerPath, 'three-slow-a-', slowMs),
+    namedChain(markerPath, 'three-slow-b-', slowMs),
+  ]);
+}
+
+export async function detachedStep(markerPath: string, delayMs: number) {
+  'use workflow';
+  const detached = markerStep(markerPath, 'detached', delayMs);
+  detached.catch(() => {});
+  await markerStep(markerPath, 'detached-awaited', 0);
+  return 'done';
+}
+
+export async function raceLoser(markerPath: string, loserMs: number) {
+  'use workflow';
+  await Promise.race([
+    markerStep(markerPath, 'race-winner', 0),
+    markerStep(markerPath, 'race-loser', loserMs),
+  ]);
+  return 'done';
+}
+
+export async function duplicateProbe(markerPath: string) {
+  'use workflow';
+  await Promise.all([
+    namedChain(markerPath, 'probe-fast-', 10),
+    markerStep(markerPath, 'probe-slow', 40),
+  ]);
+}
+
 async function benchmarkStep(delayMs: number) {
   'use step';
   await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -79,4 +144,9 @@ export async function oneStepFanoutBenchmark(width: number) {
       benchmarkStep(50 + (branch % 6) * 10)
     )
   );
+}
+
+export async function twoLeafBenchmark(delayMs: number) {
+  'use workflow';
+  await Promise.all([benchmarkStep(delayMs), benchmarkStep(delayMs)]);
 }

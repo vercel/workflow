@@ -1846,7 +1846,7 @@ export function workflowEntrypoint(
                   // replay this run concurrently, which ends the
                   // single-handler guarantee turbo's forced optimistic start
                   // rests on, so later batches here claim before they run.
-                  let branchHandedOff = false;
+                  let concurrentBranchReplayPossible = false;
 
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
@@ -2084,6 +2084,9 @@ export function workflowEntrypoint(
                         const runCreatedEvent = loaded.events.find(
                           (event) => event.eventType === 'run_created'
                         );
+                        const runStartedEvent = loaded.events.find(
+                          (event) => event.eventType === 'run_started'
+                        );
 
                         // Check for pending steps: any created step without
                         // a matching step_completed or step_failed.
@@ -2201,6 +2204,7 @@ export function workflowEntrypoint(
                             ? runRowFromCreation(
                                 runId,
                                 runCreatedEvent,
+                                runStartedEvent,
                                 runContext
                               )
                             : undefined) ??
@@ -2256,7 +2260,9 @@ export function workflowEntrypoint(
                           error: undefined,
                           completedAt: undefined,
                         };
-                        workflowStartedAt = bgStartedAt;
+                        workflowStartedAt = replayRunRow.startedAt
+                          ? +replayRunRow.startedAt
+                          : bgStartedAt;
                       } else {
                         return;
                       }
@@ -3609,6 +3615,30 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
+                      // An advance-only replay may resolve a Promise.race (or
+                      // reach the end after a detached step) while a sibling
+                      // from the original batch is still executing. Main's
+                      // inline loop joins that sibling before replaying and
+                      // sealing the run. Preserve that contract: this pass may
+                      // create downstream work, but only the last sibling's
+                      // ordinary replay may commit the terminal event.
+                      if (
+                        advanceOnly &&
+                        pendingStepIdsIn(eventLog.events).size > 0
+                      ) {
+                        runtimeLogger.debug(
+                          'Advance-only replay reached workflow completion with sibling steps pending; returning',
+                          {
+                            workflowRunId: runId,
+                            loopIteration,
+                          }
+                        );
+                        span?.setAttributes({
+                          'workflow.advance_only.terminal_exit': true,
+                        });
+                        return;
+                      }
+
                       // Workflow completed. Do NOT reload-and-retry the create
                       // in place: `result` was computed by this replay, so a
                       // stale (412) rejection must force a *fresh replay* (which
@@ -3761,18 +3791,6 @@ export function workflowEntrypoint(
                             runReadyBarrier,
                             replayRecoveryReporter,
                             forceClaimVictimWakes,
-                            // For an eligible two-branch boundary, keep one
-                            // body inline and dispatch its sibling. Whichever
-                            // settles first can replay in its own warm handler,
-                            // avoiding a separate inline hand-off invocation.
-                            ...(isAdvanceOnlyReplayEnabled() &&
-                            !world.capabilities?.invoke &&
-                            err.stepCount > 1 &&
-                            getAdvanceOnlyReplayMaxPending() === 1 &&
-                            err.stepCount - 1 <=
-                              getAdvanceOnlyReplayMaxPending()
-                              ? { maxInlineSteps: 1 }
-                              : {}),
                             // Lets the batched fan-out publish each eagerly
                             // created step's execution message after its
                             // chunk commits. Steps queued there are reported
@@ -5026,20 +5044,27 @@ export function workflowEntrypoint(
                         // A branch hand-off (below) latches it off the same
                         // way: the invocation it wakes replays this run
                         // concurrently and may race this one for a step's
-                        // claim.
-                        // A dispatched sibling can also replay before this
-                        // batch's lazy claims land, or race a later batch once
-                        // it settles. Latch off forced optimistic starts just
-                        // as for an explicit branch hand-off.
+                        // claim. A lazy (not batch-preclaimed) inline start
+                        // beside a dispatched step has the same race once the
+                        // queued sibling settles. Keep that second latch
+                        // scoped to advance-only mode so the kill switch
+                        // restores main's optimistic-start behavior exactly.
                         if (
+                          isAdvanceOnlyReplayEnabled() &&
                           outOfBandObservation &&
-                          outOfBandObservation.externalStepCount > 0
+                          outOfBandObservation.externalStepCount > 0 &&
+                          lazyInlineSteps.some(
+                            (step) =>
+                              !suspensionResult.inlineClaims.has(
+                                step.correlationId
+                              )
+                          )
                         ) {
-                          branchHandedOff = true;
+                          concurrentBranchReplayPossible = true;
                         }
                         const forceOptimisticStart =
                           turbo &&
-                          !branchHandedOff &&
+                          !concurrentBranchReplayPossible &&
                           !suspensionResult.hasAttributeEvents &&
                           !suspensionResult.waitTimeout &&
                           !suspensionResult.hasHookEvents &&
@@ -5283,6 +5308,9 @@ export function workflowEntrypoint(
                             getAdvanceOnlyReplayMaxPending() &&
                           !world.capabilities?.invoke
                         ) {
+                          const batchSettled = Promise.allSettled(
+                            stepExecutionPromises
+                          );
                           const batchClaimedAndDurable = Promise.all([
                             runReadyBarrier,
                             dispatchesSettled,
@@ -5304,8 +5332,35 @@ export function workflowEntrypoint(
                                 ) {
                                   return;
                                 }
-                                branchHandedOff = true;
                                 await batchClaimedAndDurable;
+                                // A sibling may have settled while this early
+                                // result was waiting for claims, writes, and
+                                // run startup to become durable. In that case
+                                // the batch replay below is ready immediately,
+                                // so publishing another invocation would be a
+                                // pure idle replay on the common near-together
+                                // leaf case.
+                                if (stillRunning === 0) return;
+                                // Give terminal writes already in flight one
+                                // short coalescing window to join the batch.
+                                // Racing the
+                                // raw executions means this adds no delay when
+                                // they do: their settlement resolves this wait
+                                // immediately. A genuinely slow sibling loses
+                                // the race and the hand-off still goes out.
+                                const siblingStillRunning = await Promise.race([
+                                  batchSettled.then(() => false),
+                                  new Promise<true>((resolve) =>
+                                    setTimeout(() => resolve(true), 10)
+                                  ),
+                                ]);
+                                if (
+                                  !siblingStillRunning ||
+                                  stillRunning === 0
+                                ) {
+                                  return;
+                                }
+                                concurrentBranchReplayPossible = true;
                                 await queueMessage(
                                   world,
                                   getWorkflowQueueName(workflowName, namespace),

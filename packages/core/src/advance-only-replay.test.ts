@@ -253,6 +253,12 @@ async function setupHarness(
   const create = vi.fn(async (_runId: string, data: any) => {
     if (data.eventType === 'run_started') {
       await options.runStartedGate?.promise;
+      if (!events.some((event) => event.eventType === 'run_started')) {
+        record({
+          ...data,
+          createdAt: workflowRun.startedAt,
+        });
+      }
       return { run: workflowRun, events: [...events] };
     }
     if (data.eventType === 'step_created') {
@@ -632,11 +638,6 @@ describe('background path: a queued step settling beside pending siblings', () =
 });
 
 describe('inline path: an inline step settling while its batch is still running', () => {
-  beforeEach(() => {
-    // Exercise the multi-inline hand-off path. The default two-branch policy
-    // dispatches one sibling so both branches advance in their warm handlers.
-    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = '8';
-  });
   // Both first-round steps run inline in the flow delivery; `slow` parks.
   async function startInlineBatch(
     runId: string,
@@ -738,8 +739,34 @@ describe('inline path: an inline step settling while its batch is still running'
     await flow;
   });
 
+  it('skips a hand-off when the batch settles while its durability barrier is pending', async () => {
+    const runStarted = gate();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(newRunId(), CHAIN_BESIDE_SLOW, {
+      runStartedGate: runStarted,
+    });
+    const flow = h.deliver(h.startMessage, 'msg_flow');
+
+    await vi.waitFor(() => {
+      expect(bodyFinishes.has('fast1')).toBe(true);
+    });
+    slow.open();
+    await vi.waitFor(() => {
+      expect(bodyFinishes.has('slow')).toBe(true);
+    });
+    expect(handOffs(h)).toEqual([]);
+
+    runStarted.open();
+    await flow;
+    expect(handOffs(h)).toEqual([]);
+    expect(h.stepHas('fast2', 'step_completed')).toBe(true);
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
   it('does not publish the hand-off until sibling dispatches are durable', async () => {
     process.env.WORKFLOW_MAX_INLINE_STEPS = '2';
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = '8';
     const runId = newRunId();
     const dispatch = gate();
     const slow = gate();

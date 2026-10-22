@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -6,9 +6,16 @@ import { start } from 'workflow/api';
 import {
   caughtSlowPromiseChain,
   chainedFanoutBenchmark,
+  detachedStep,
+  duplicateProbe,
   fastFirstParallelChains,
   oneStepFanoutBenchmark,
+  raceLoser,
+  raceThenNext,
   slowFirstParallelChains,
+  threeParallelChains,
+  twoLeafBenchmark,
+  twoLeafPromiseAll,
 } from '../workflows/advance-only-replay.js';
 
 const FAST_MS = 200;
@@ -54,17 +61,25 @@ async function runWithTimeline(
   workflow:
     | typeof fastFirstParallelChains
     | typeof slowFirstParallelChains
-    | typeof caughtSlowPromiseChain,
-  args: [number, number],
+    | typeof caughtSlowPromiseChain
+    | typeof twoLeafPromiseAll
+    | typeof raceThenNext
+    | typeof threeParallelChains
+    | typeof detachedStep
+    | typeof raceLoser
+    | typeof duplicateProbe,
+  args: number[],
   tag: string
-): Promise<{ markers: Marker[]; timeline: string }> {
+): Promise<{ markers: Marker[]; timeline: string; wallMs: number }> {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-'));
   const markerPath = join(dir, 'timeline.log');
   try {
-    const run = await start(workflow, [markerPath, ...args]);
+    const wallStart = performance.now();
+    const run = await start(workflow, [markerPath, ...args] as never);
     await run.returnValue;
+    const wallMs = performance.now() - wallStart;
     const markers = parseMarkers(await readFile(markerPath, 'utf8'));
-    return { markers, timeline: formatTimeline(tag, markers) };
+    return { markers, timeline: formatTimeline(tag, markers), wallMs };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -118,13 +133,140 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
           .toBeLessThanOrEqual(120);
       }
     });
+
+    it.each([
+      ['no-op', 0, 300],
+      ['200 ms', 200, 500],
+    ] as const)('keeps a two-step Promise.all on the inline timing path (%s)', async (tag, delayMs, maxWallMs) => {
+      const { markers, timeline, wallMs } = await runWithTimeline(
+        twoLeafPromiseAll,
+        [delayMs, 0],
+        `two-leaf-${tag}`
+      );
+      expect(
+        wallMs,
+        `two-leaf workflow took ${Math.round(wallMs)}ms\n${timeline}`
+      ).toBeLessThan(maxWallMs);
+      expect(
+        Math.abs(
+          markerAt(markers, 'leaf1', 'start') -
+            markerAt(markers, 'leaf2', 'start')
+        ),
+        timeline
+      ).toBeLessThan(100);
+    });
+
+    it('advances after a Promise.race winner without waiting for the loser', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        raceThenNext,
+        [200, 2_000],
+        'race-then-next'
+      );
+      const gap =
+        markerAt(markers, 'race-next', 'start') -
+        markerAt(markers, 'race-fast', 'end');
+      expect(
+        gap,
+        `race continuation gap was ${gap}ms\n${timeline}`
+      ).toBeLessThanOrEqual(150);
+    });
+
+    it('keeps three chains in lockstep at the default pending limit', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        threeParallelChains,
+        [100, 500],
+        'three-chains-default'
+      );
+      const fast2 = markerAt(markers, 'three-fast-2', 'start');
+      expect(fast2, timeline).toBeGreaterThanOrEqual(
+        markerAt(markers, 'three-slow-a-1', 'end')
+      );
+      expect(fast2, timeline).toBeGreaterThanOrEqual(
+        markerAt(markers, 'three-slow-b-1', 'end')
+      );
+    });
+
+    it('advances three chains through the hand-off path when the pending limit is 2', async () => {
+      const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
+      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = '2';
+      try {
+        const { markers, timeline } = await runWithTimeline(
+          threeParallelChains,
+          [100, 500],
+          'three-chains-limit-2'
+        );
+        const fast2 = markerAt(markers, 'three-fast-2', 'start');
+        expect(fast2, timeline).toBeLessThan(
+          markerAt(markers, 'three-slow-a-1', 'end')
+        );
+        expect(fast2, timeline).toBeLessThan(
+          markerAt(markers, 'three-slow-b-1', 'end')
+        );
+      } finally {
+        if (original === undefined) {
+          delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
+        } else {
+          process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = original;
+        }
+      }
+    });
+
+    it.each([
+      ['detached step', detachedStep, 'detached'],
+      ['Promise.race loser', raceLoser, 'race-loser'],
+    ] as const)('lets a %s finish before the run returns', async (tag, workflow, label) => {
+      const { markers, timeline } = await runWithTimeline(
+        workflow,
+        [150, 0],
+        tag
+      );
+      expect(markerAt(markers, label, 'end'), timeline).toBeGreaterThanOrEqual(
+        markerAt(markers, label, 'start')
+      );
+    });
+
+    it('does not execute a step twice across repeated early replays', async () => {
+      for (let run = 0; run < 10; run++) {
+        const { markers, timeline } = await runWithTimeline(
+          duplicateProbe,
+          [0, 0],
+          `duplicate-probe-${run}`
+        );
+        for (const label of [
+          'probe-fast-1',
+          'probe-fast-2',
+          'probe-fast-3',
+          'probe-slow',
+        ]) {
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'start'
+            ),
+            timeline
+          ).toHaveLength(1);
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'end'
+            ),
+            timeline
+          ).toHaveLength(1);
+        }
+      }
+    });
   }
 );
 
-type Measurement = { wallMs: number; cpuMs: number };
+type Measurement = {
+  wallMs: number;
+  cpuMs: number;
+  advanceGapMs?: number;
+};
 
 async function measure(
-  workflow: typeof chainedFanoutBenchmark | typeof oneStepFanoutBenchmark,
+  workflow:
+    | typeof chainedFanoutBenchmark
+    | typeof oneStepFanoutBenchmark
+    | typeof twoLeafBenchmark,
   args: number[]
 ): Promise<Measurement> {
   const cpuStart = process.cpuUsage();
@@ -138,23 +280,133 @@ async function measure(
   };
 }
 
+async function measureAdvanceGap(
+  workflow:
+    | typeof fastFirstParallelChains
+    | typeof raceThenNext
+    | typeof threeParallelChains,
+  args: number[],
+  tag: string,
+  from: [string, Marker['phase']],
+  to: [string, Marker['phase']]
+): Promise<Measurement> {
+  const cpuStart = process.cpuUsage();
+  const { markers, wallMs } = await runWithTimeline(workflow, args, tag);
+  const cpu = process.cpuUsage(cpuStart);
+  return {
+    wallMs: Math.round(wallMs),
+    cpuMs: Math.round((cpu.user + cpu.system) / 1_000),
+    advanceGapMs:
+      markerAt(markers, to[0], to[1]) - markerAt(markers, from[0], from[1]),
+  };
+}
+
 async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
   const results: Record<string, Measurement[]> = {};
   const selectedMode = process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_MODE;
   const selectedShape = process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_SHAPE;
+  const rounds = Number(
+    process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_ROUNDS ?? '2'
+  );
+  const warmups = Number(
+    process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_WARMUPS ?? '0'
+  );
+  if (!Number.isInteger(rounds) || rounds < 1) {
+    throw new Error('WORKFLOW_ADVANCE_ONLY_BENCHMARK_ROUNDS must be positive');
+  }
+  if (!Number.isInteger(warmups) || warmups < 0) {
+    throw new Error(
+      'WORKFLOW_ADVANCE_ONLY_BENCHMARK_WARMUPS must be non-negative'
+    );
+  }
   for (const mode of ['old', 'new'] as const) {
     if (selectedMode && selectedMode !== mode) continue;
     process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = mode === 'old' ? '0' : '1';
     for (const [shape, workflow, args] of [
+      ['2x1-noop', twoLeafBenchmark, [0]],
+      ['2x1-200ms', twoLeafBenchmark, [200]],
       ['8x4', chainedFanoutBenchmark, [8, 4]],
       ['64x1', oneStepFanoutBenchmark, [64]],
       ['256x1', oneStepFanoutBenchmark, [256]],
     ] as const) {
       if (selectedShape && selectedShape !== shape) continue;
-      results[`${mode}-${shape}`] = [
-        await measure(workflow, [...args]),
-        await measure(workflow, [...args]),
-      ];
+      for (let warmup = 0; warmup < warmups; warmup++) {
+        await measure(workflow, [...args]);
+      }
+      results[`${mode}-${shape}`] = [];
+      for (let round = 0; round < rounds; round++) {
+        results[`${mode}-${shape}`].push(await measure(workflow, [...args]));
+      }
+      console.log(
+        `${mode}-${shape}: ${JSON.stringify(results[`${mode}-${shape}`])}`
+      );
+    }
+
+    for (const [shape, workflow, args, from, to, pendingLimit] of [
+      [
+        'two-chains',
+        fastFirstParallelChains,
+        [200, 2_000],
+        ['fast1', 'end'],
+        ['fast2', 'start'],
+        '1',
+      ],
+      [
+        'race-then-next',
+        raceThenNext,
+        [200, 2_000],
+        ['race-fast', 'end'],
+        ['race-next', 'start'],
+        '1',
+      ],
+      [
+        'three-chains-limit-1',
+        threeParallelChains,
+        [100, 500],
+        ['three-fast-1', 'end'],
+        ['three-fast-2', 'start'],
+        '1',
+      ],
+      [
+        'three-chains-limit-2',
+        threeParallelChains,
+        [100, 500],
+        ['three-fast-1', 'end'],
+        ['three-fast-2', 'start'],
+        '2',
+      ],
+      [
+        'three-chains-limit-4',
+        threeParallelChains,
+        [100, 500],
+        ['three-fast-1', 'end'],
+        ['three-fast-2', 'start'],
+        '4',
+      ],
+    ] as const) {
+      if (selectedShape && selectedShape !== shape) continue;
+      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = pendingLimit;
+      for (let warmup = 0; warmup < warmups; warmup++) {
+        await measureAdvanceGap(
+          workflow,
+          [...args],
+          `${mode}-${shape}-warmup-${warmup}`,
+          from,
+          to
+        );
+      }
+      results[`${mode}-${shape}`] = [];
+      for (let round = 0; round < rounds; round++) {
+        results[`${mode}-${shape}`].push(
+          await measureAdvanceGap(
+            workflow,
+            [...args],
+            `${mode}-${shape}-${round}`,
+            from,
+            to
+          )
+        );
+      }
       console.log(
         `${mode}-${shape}: ${JSON.stringify(results[`${mode}-${shape}`])}`
       );
@@ -169,6 +421,8 @@ describe.runIf(
 )('advance-only replay benchmark', () => {
   it('compares two rounds of chained and one-step fan-outs', async () => {
     const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+    const originalPendingLimit =
+      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
     let results: Record<string, Measurement[]>;
     try {
       results = await runBenchmarks();
@@ -178,8 +432,20 @@ describe.runIf(
       } else {
         process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = original;
       }
+      if (originalPendingLimit === undefined) {
+        delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
+      } else {
+        process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING =
+          originalPendingLimit;
+      }
     }
     console.log(JSON.stringify(results, null, 2));
+    if (process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_OUTPUT) {
+      await writeFile(
+        process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_OUTPUT,
+        `${JSON.stringify(results, null, 2)}\n`
+      );
+    }
     expect(Object.keys(results).length).toBeGreaterThan(0);
   }, 300_000);
 });

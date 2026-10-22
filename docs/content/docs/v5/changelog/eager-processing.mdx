@@ -83,17 +83,30 @@ Each background step message is handled by a separate function invocation of the
 A branch of a `Promise.all` doesn't wait for its slowest sibling before starting its next step. Two places could hold it back, and both replay early instead, within the limits described below:
 
 - **A background step** whose siblings are still pending replays as described above.
-- **An inline step** in the default two-branch case advances in its current handler: the directly awaited, last-scheduled step stays inline and its sibling is dispatched. When a raised pending limit admits a wider multi-inline batch, a step that settles early hands the run to another invocation through a continuation marked `advanceOnly`. That hand-off waits until `run_started`, every claim, dispatch, and deferred write is durable, and its send is joined before the delivery acknowledges.
+- **An inline step** that settles early hands the run to another invocation through a continuation marked `advanceOnly`. That hand-off waits until `run_started`, every claim, dispatch, and deferred write is durable, and its send is joined before the delivery acknowledges.
 
-Both replays are **advance-only**: they act on the work their own replay creates (a branch's next step, hook, or wait) and leave the steps still in flight to the invocations running them, which replay when those settle. A pass that reaches nothing new returns without writing or sending anything, so a settlement whose branch has nothing left to do costs one replay and no extra queue traffic. A background step's advance-only replay also builds the run row from the message's run identity and the run's `run_created` instead of reading it back.
+Both replays are **advance-only**: they act on the work their own replay creates (a branch's next step, hook, or wait) and leave the steps still in flight to the invocations running them, which replay when those settle. A pass that reaches nothing new returns without writing or sending anything. A pass that reaches workflow completion while a detached step or `Promise.race` loser is pending also returns without sealing the run; the last sibling's ordinary replay completes it, preserving the existing inline execution contract. A background step's advance-only replay builds the run row from the message's run identity and the persisted `run_created` and `run_started` events instead of reading it back.
 
 An advance-only replay still drives the steps no one else would: one its own message claimed inline (owned recovery), and, on a redelivery, any step created but never started, which the delivery being retried may have created before it crashed.
 
 A replay can't know ahead of time whether the settled branch has another step, and in a wide fan-out of one-step branches none does until the last. So a branch advances early only when at most `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` (default 1) other steps were pending when its attempt started. Eligibility does not change as a wide batch drains, so its tail does not add replays.
 
-The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and `run_created`. A widened multi-inline batch may add one deduplicated continuation per settled branch. An advance-only pass that creates no work performs no writes or sends.
+The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and persisted creation/start events. An eligible multi-inline batch may add one deduplicated continuation per settled branch, but suppresses it when every sibling finishes before its durability barriers resolve. An advance-only pass that creates no work performs no writes or sends.
 
 Before this, each round of a fan-out took as long as its slowest step: a branch of 1-second steps next to a branch of 30-second steps waited 30 seconds before each of its own. `WORKFLOW_ADVANCE_ONLY_REPLAY=0` restores that behavior, and fan-outs wider than the bound keep it. So does the QuickJS engine (`WORKFLOW_VM=quickjs`) for now.
+
+The default pending limit of 1 covers two-branch `Promise.all` and `Promise.race` shapes. Three or more branches remain in lockstep unless `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` is raised; with a limit of 2, the three-chain regression advances independently. Invoke-capable Worlds already serialize run continuations and therefore skip the inline hand-off.
+
+Measured through `workbench/vitest` on world-local (Node.js VM, median and range of 12 runs after warm-up):
+
+| Case | `main` | Fix disabled | Fix enabled |
+| --- | ---: | ---: | ---: |
+| Two no-op steps in `Promise.all` (workflow wall time) | 77 ms (71–88) | 79.5 ms (72–97) | 73 ms (70–80) |
+| Two 200 ms steps in `Promise.all` (workflow wall time) | 287.5 ms (273–305) | 277.5 ms (273–288) | 273 ms (269–280) |
+| Three-step fast chain beside a slow chain (next-step gap) | 1,810 ms (1,809–1,828) | 1,809 ms (1,808–1,811) | 89.5 ms (84–98) |
+| `Promise.race` winner followed by another step (next-step gap) | 1,811 ms (1,809–1,813) | 1,809 ms (1,808–1,811) | 83 ms (80–123) |
+
+The deterministic Sim World scenario book also passes all 42 scenarios with no consistency violations.
 
 ### Convergence after parallel steps
 
