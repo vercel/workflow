@@ -4045,40 +4045,94 @@ export function createEventsStorage(
     }
   }
 
+  /**
+   * Renames the lock directory to a unique claim path. Returns the claim
+   * paths, or null if the lock dir disappeared (ENOENT — someone else
+   * reclaimed it first).
+   */
+  async function renameLockToClaim(
+    lockDir: string,
+    metaPath: string
+  ): Promise<{ claimDir: string; claimMeta: string } | null> {
+    const claimDir = `${lockDir}.claim-${monotonicUlid()}`;
+    const claimMeta = `${claimDir}-meta`;
+    try {
+      await fs.rename(lockDir, claimDir);
+      return { claimDir, claimMeta };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        await safeUnlinkFile(metaPath);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Moves the meta sidecar to the claim path. If the meta doesn't exist
+   * (process died between mkdir and writeFenceLockMeta), returns null
+   * without error — there's nothing to verify.
+   */
+  async function renameMetaToClaim(
+    metaPath: string,
+    claimMeta: string
+  ): Promise<FenceLockMeta | null> {
+    try {
+      await fs.rename(metaPath, claimMeta);
+      return await readFenceLockMeta(claimMeta);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        // metaPath disappeared between read and rename — treat as missing
+        return null;
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Restores a claim back to the original lock paths. Used when a
+   * concurrent acquirer replaced the lock between our read and rename.
+   */
+  async function restoreClaim(
+    claimDir: string,
+    claimMeta: string,
+    lockDir: string,
+    metaPath: string
+  ): Promise<void> {
+    await fs.rename(claimMeta, metaPath).catch(() => {});
+    await fs.rename(claimDir, lockDir).catch(() => {});
+  }
+
   async function reclaimDeadInBandLock(countPath: string): Promise<void> {
     const lockDir = `${countPath}.lock`;
     const metaPath = `${countPath}.lock-meta`;
 
     if (!(await isLockReclaimable(lockDir, metaPath))) return;
 
-    const claimDir = `${lockDir}.claim-${monotonicUlid()}`;
-    const claimMeta = `${claimDir}-meta`;
+    const originalMeta = await readFenceLockMeta(metaPath);
+    const claim = await renameLockToClaim(lockDir, metaPath);
+    if (claim === null) return;
 
+    let claimedMeta: FenceLockMeta | null = null;
     try {
-      await fs.rename(lockDir, claimDir);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        await safeUnlinkFile(metaPath);
+      if (originalMeta !== null) {
+        claimedMeta = await renameMetaToClaim(metaPath, claim.claimMeta);
       }
-      return;
-    }
-    try {
-      await fs.rename(metaPath, claimMeta);
     } catch {
-      await fs.rename(claimDir, lockDir).catch(() => {});
+      await restoreClaim(claim.claimDir, claim.claimMeta, lockDir, metaPath);
       return;
     }
 
-    const meta = await readFenceLockMeta(metaPath);
-    const claimedMeta = await readFenceLockMeta(claimMeta);
-    if (claimedMeta?.token !== meta?.token) {
-      await fs.rename(claimMeta, metaPath).catch(() => {});
-      await fs.rename(claimDir, lockDir).catch(() => {});
+    if (
+      originalMeta !== null &&
+      claimedMeta !== null &&
+      claimedMeta.token !== originalMeta.token
+    ) {
+      await restoreClaim(claim.claimDir, claim.claimMeta, lockDir, metaPath);
       return;
     }
 
-    await safeUnlinkFile(claimMeta);
-    await safeRmDir(claimDir);
+    await safeUnlinkFile(claim.claimMeta);
+    await safeRmDir(claim.claimDir);
   }
 
   async function writeFenceLockMeta(
@@ -4133,6 +4187,7 @@ export function createEventsStorage(
 
         if (await isLockReclaimable(lockDir, metaPath)) {
           await reclaimDeadInBandLock(countPath);
+          await new Promise((r) => setTimeout(r, 10));
           continue;
         }
 
