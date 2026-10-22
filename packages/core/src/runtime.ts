@@ -1836,6 +1836,9 @@ export function workflowEntrypoint(
                     isAdvanceOnlyReplayEnabled();
                   span?.setAttributes({
                     'workflow.advance_only': advanceOnly,
+                    ...(advanceOnly
+                      ? { 'workflow.advance_only.ran': true }
+                      : {}),
                   });
                   const advanceOnlyDelivery: AdvanceOnlyDelivery = {
                     messageId: metadata.messageId,
@@ -2162,6 +2165,7 @@ export function workflowEntrypoint(
                             advanceOnly = true;
                             span?.setAttributes({
                               'workflow.advance_only': true,
+                              'workflow.advance_only.ran': true,
                             });
                           } else {
                             // Other steps still in progress. Return without
@@ -2260,9 +2264,10 @@ export function workflowEntrypoint(
                           error: undefined,
                           completedAt: undefined,
                         };
-                        workflowStartedAt = replayRunRow.startedAt
-                          ? +replayRunRow.startedAt
-                          : bgStartedAt;
+                        workflowStartedAt =
+                          isAdvanceOnlyReplayEnabled() && replayRunRow.startedAt
+                            ? +replayRunRow.startedAt
+                            : bgStartedAt;
                       } else {
                         return;
                       }
@@ -3615,19 +3620,22 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
-                      // An advance-only replay may resolve a Promise.race (or
-                      // reach the end after a detached step) while a sibling
-                      // from the original batch is still executing. Main's
-                      // inline loop joins that sibling before replaying and
-                      // sealing the run. Preserve that contract: this pass may
-                      // create downstream work, but only the last sibling's
-                      // ordinary replay may commit the terminal event.
+                      // An advance-only replay may start downstream work that
+                      // the original batch does not await (a detached step or
+                      // Promise.race loser). Both invocations know that work
+                      // can exist: the replay carries `advanceOnly`, and the
+                      // batch sets `concurrentBranchReplayPossible` after it
+                      // publishes the hand-off. Either must leave terminal
+                      // completion to the pending step's replay. Do not apply
+                      // this to unrelated ordinary continuations: main allows,
+                      // for example, a timer winner to seal a run while its
+                      // losing step finishes independently.
                       if (
-                        advanceOnly &&
+                        (advanceOnly || concurrentBranchReplayPossible) &&
                         pendingStepIdsIn(eventLog.events).size > 0
                       ) {
                         runtimeLogger.debug(
-                          'Advance-only replay reached workflow completion with sibling steps pending; returning',
+                          'Workflow reached completion with advance-only work still pending; returning',
                           {
                             workflowRunId: runId,
                             loopIteration,
@@ -5343,11 +5351,11 @@ export function workflowEntrypoint(
                                 if (stillRunning === 0) return;
                                 // Give terminal writes already in flight one
                                 // short coalescing window to join the batch.
-                                // Racing the
-                                // raw executions means this adds no delay when
-                                // they do: their settlement resolves this wait
-                                // immediately. A genuinely slow sibling loses
-                                // the race and the hand-off still goes out.
+                                // Racing the raw executions means this adds no
+                                // delay when they do: their settlement resolves
+                                // this wait immediately. A genuinely slow
+                                // sibling loses the race and the hand-off still
+                                // goes out.
                                 const siblingStillRunning = await Promise.race([
                                   batchSettled.then(() => false),
                                   new Promise<true>((resolve) =>
@@ -5376,6 +5384,9 @@ export function workflowEntrypoint(
                                       ),
                                   }
                                 );
+                                span?.setAttributes({
+                                  'workflow.advance_only.handoff_sent': true,
+                                });
                                 runtimeLogger.debug(
                                   'Inline step settled with siblings still running; handed its branch to an advance-only replay',
                                   {

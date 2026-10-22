@@ -1188,18 +1188,16 @@ export async function handleSuspension({
   // (it continues the workflow to resolve the awaiter instead), so deferring
   // would leave the steps uncreated and unqueued. That is decided from the
   // queue rather than from the creates' outcomes, which are still in flight
-  // while the steps are written. Ordinarily we pick the first N uncreated
-  // steps. Inputs are dehydrated here so executeStep can ship them as the
-  // step_started payload.
+  // while the steps are written. We pick the first N uncreated steps —
+  // matching the caller's inline-candidate selection — and dehydrate their
+  // input here so executeStep can ship it as the step_started payload.
   const hasHookConflictAwaiter = hooksNeedingCreation.some(
     (item) => item.hasConflictAwaiter === true
   );
-  const inlineCandidates = stepItems.filter((item) =>
-    stepsNeedingCreation.has(item.correlationId)
-  );
   const lazyInlineCorrelationIds = new Set<string>(
     !hasHookConflictAwaiter
-      ? inlineCandidates
+      ? stepItems
+          .filter((item) => stepsNeedingCreation.has(item.correlationId))
           .slice(0, getMaxInlineSteps())
           .map((item) => item.correlationId)
       : []

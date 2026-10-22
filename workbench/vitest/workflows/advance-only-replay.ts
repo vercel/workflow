@@ -1,10 +1,26 @@
 import { appendFile } from 'node:fs/promises';
+import { getWorkflowMetadata } from 'workflow';
 
 async function markerStep(markerPath: string, label: string, delayMs: number) {
   'use step';
   await appendFile(markerPath, `${label} start ${Date.now()}\n`);
   await new Promise((resolve) => setTimeout(resolve, delayMs));
   await appendFile(markerPath, `${label} end ${Date.now()}\n`);
+}
+
+async function keepStartedAt(startedAt: number) {
+  'use step';
+  return startedAt;
+}
+
+export async function workflowStartedAtAcrossBackgroundReplay() {
+  'use workflow';
+  const firstInvocation = +getWorkflowMetadata().workflowStartedAt;
+  const persistedFirstInvocation = await keepStartedAt(firstInvocation);
+  return {
+    firstInvocation: persistedFirstInvocation,
+    replay: +getWorkflowMetadata().workflowStartedAt,
+  };
 }
 
 async function fastChain(markerPath: string, delayMs: number) {
@@ -64,6 +80,18 @@ export async function twoLeafPromiseAll(markerPath: string, delayMs: number) {
   ]);
 }
 
+export async function twoDifferentLeafDurations(
+  markerPath: string,
+  firstMs: number,
+  secondMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    markerStep(markerPath, 'different-leaf-1', firstMs),
+    markerStep(markerPath, 'different-leaf-2', secondMs),
+  ]);
+}
+
 export async function raceThenNext(
   markerPath: string,
   fastMs: number,
@@ -101,6 +129,24 @@ export async function detachedStep(markerPath: string, delayMs: number) {
   const detached = markerStep(markerPath, 'detached', delayMs);
   detached.catch(() => {});
   await markerStep(markerPath, 'detached-awaited', 0);
+  return 'done';
+}
+
+export async function detachedAfterAdvanceOnlyReplay(
+  markerPath: string,
+  firstMs: number,
+  detachedMs: number,
+  siblingMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    (async () => {
+      await markerStep(markerPath, 'detached-race-a1', firstMs);
+      const detached = markerStep(markerPath, 'detached-race-d', detachedMs);
+      detached.catch(() => {});
+    })(),
+    markerStep(markerPath, 'detached-race-b', siblingMs),
+  ]);
   return 'done';
 }
 
@@ -149,4 +195,12 @@ export async function oneStepFanoutBenchmark(width: number) {
 export async function twoLeafBenchmark(delayMs: number) {
   'use workflow';
   await Promise.all([benchmarkStep(delayMs), benchmarkStep(delayMs)]);
+}
+
+export async function twoDifferentLeafBenchmark(
+  firstMs: number,
+  secondMs: number
+) {
+  'use workflow';
+  await Promise.all([benchmarkStep(firstMs), benchmarkStep(secondMs)]);
 }

@@ -7,6 +7,13 @@
  * bodies park on gates, so a sibling can be held in flight while another
  * branch's step settles.
  */
+
+import { trace as otelTrace } from '@opentelemetry/api';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -14,7 +21,16 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { ulid } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { registerStepFunction } from './private.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
@@ -24,6 +40,25 @@ import {
 } from './serialization.js';
 
 type Gate = { promise: Promise<void>; open: () => void };
+
+const spanExporter = new InMemorySpanExporter();
+const tracerProvider = new BasicTracerProvider();
+
+beforeAll(() => {
+  tracerProvider.addSpanProcessor(new SimpleSpanProcessor(spanExporter));
+  otelTrace.setGlobalTracerProvider(tracerProvider);
+});
+
+afterAll(async () => {
+  await tracerProvider.shutdown();
+  otelTrace.disable();
+});
+
+const hasExecutionAttribute = (key: string, value: unknown) =>
+  spanExporter
+    .getFinishedSpans()
+    .filter((span) => span.name.startsWith('workflow.execute '))
+    .some((span) => span.attributes[key] === value);
 const gate = (): Gate => {
   let open!: () => void;
   const promise = new Promise<void>((resolve) => {
@@ -93,6 +128,18 @@ const CHAIN_BESIDE_SLOW = workflowSource(`
   return 'done';
 `);
 
+const DETACHED_AFTER_FAST_BESIDE_SLOW = workflowSource(`
+  await Promise.all([
+    (async () => {
+      await branchStep('fast1');
+      const detached = branchStep('detached');
+      detached.catch(() => {});
+    })(),
+    branchStep('slow'),
+  ]);
+  return 'done';
+`);
+
 const INLINE_BATCH_WITH_QUEUED_SIBLING = workflowSource(`
   await Promise.all([
     (async () => {
@@ -147,6 +194,7 @@ interface Harness {
     messageId: string,
     attempt?: number
   ) => Promise<unknown>;
+  deliveryCount: () => number;
   events: Event[];
   queued: Array<Record<string, unknown>>;
   /** Hold the `step_started` claim response of the step with this label. */
@@ -274,6 +322,7 @@ async function setupHarness(
   const queued: Array<Record<string, unknown>> = [];
   const runsGet = vi.fn(async () => workflowRun);
   let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
+  let deliveryCount = 0;
   const queue = vi.fn(async (_queueName: string, message: any) => {
     if (options.failAdvanceOnlySend && message.advanceOnly === true) {
       throw new Error('advance-only continuation unavailable');
@@ -309,13 +358,16 @@ async function setupHarness(
     labels.get(e.correlationId) === label;
 
   return {
-    deliver: (message, messageId, attempt = 1) =>
-      handler(message, {
+    deliver: (message, messageId, attempt = 1) => {
+      deliveryCount++;
+      return handler(message, {
         requestId: `req_${messageId}`,
         attempt,
         queueName: '__wkf_workflow_workflow',
         messageId,
-      }),
+      });
+    },
+    deliveryCount: () => deliveryCount,
     events,
     queued,
     claimGates,
@@ -365,6 +417,7 @@ afterEach(() => {
   delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
   delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
   setWorld(undefined);
+  spanExporter.reset();
   vi.clearAllMocks();
 });
 
@@ -420,6 +473,9 @@ describe('background path: a queued step settling beside pending siblings', () =
     expect(h.writtenAfterCompletionOf('fast1')).toEqual([]);
     expect(sentByStepDelivery).toEqual([]);
     expect(h.runsGet).not.toHaveBeenCalled();
+    expect(hasExecutionAttribute('workflow.advance_only.idle_exit', true)).toBe(
+      true
+    );
 
     slow.open();
     await flow;
@@ -658,6 +714,35 @@ describe('inline path: an inline step settling while its batch is still running'
   const handOffs = (h: Harness) =>
     h.queued.filter((m) => m.advanceOnly === true);
 
+  it.each([
+    ['disabled', '0', 0, 1],
+    ['enabled', '1', 1, 2],
+  ] as const)('counts idle two-leaf hand-off cost with advance-only %s', async (_label, enabled, expectedSends, expectedInvocations) => {
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = enabled;
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(newRunId(), TWO_LEAVES);
+    const flow = h.deliver(
+      { runId: h.startMessage.runId, requestedAt: new Date() },
+      'msg_flow'
+    );
+
+    if (enabled === '1') {
+      await vi.waitFor(() => {
+        expect(handOffs(h)).toHaveLength(1);
+      });
+      await h.deliver(handOffs(h)[0], 'msg_handoff');
+    } else {
+      await settle();
+      expect(handOffs(h)).toEqual([]);
+    }
+
+    slow.open();
+    await flow;
+    expect(h.queue).toHaveBeenCalledTimes(expectedSends);
+    expect(h.deliveryCount()).toBe(expectedInvocations);
+  });
+
   it('hands the settled branch to an advance-only replay that advances it', async () => {
     const runId = newRunId();
     const { h, slow, flow } = await startInlineBatch(runId);
@@ -686,10 +771,14 @@ describe('inline path: an inline step settling while its batch is still running'
     expect(h.stepHas('fast2', 'step_completed')).toBe(true);
     expect(h.stepHas('slow', 'step_completed')).toBe(false);
     expect(h.queued.slice(queuedBefore)).toEqual([]);
+    expect(hasExecutionAttribute('workflow.advance_only.ran', true)).toBe(true);
 
     slow.open();
     await flow;
     expect(h.events.map((e) => e.eventType)).toContain('run_completed');
+    expect(
+      hasExecutionAttribute('workflow.advance_only.handoff_sent', true)
+    ).toBe(true);
     // The step that settled last hands nothing off: the loop replays next.
     expect(handOffs(h)).toHaveLength(1);
   });
@@ -832,6 +921,55 @@ describe('inline path: an inline step settling while its batch is still running'
     await Promise.all([handedOff, flow]);
 
     expect(bodyStarts.get('fast2')).toBe(1);
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('does not let the ordinary batch replay seal the run while handed-off detached work is running', async () => {
+    const runId = newRunId();
+    const slow = gate();
+    const detached = gate();
+    bodyGates.set('slow', slow);
+    bodyGates.set('detached', detached);
+    const h = await setupHarness(runId, DETACHED_AFTER_FAST_BESIDE_SLOW);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    await vi.waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    const handedOff = h.deliver(handOffs(h)[0], 'msg_handoff');
+    await vi.waitFor(() => {
+      expect(bodyStarts.get('detached')).toBe(1);
+    });
+
+    slow.open();
+    await flow;
+    expect(h.events.map((event) => event.eventType)).not.toContain(
+      'run_completed'
+    );
+
+    detached.open();
+    await handedOff;
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('restores main detached-step completion behavior with the kill switch off', async () => {
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(newRunId(), DETACHED_AFTER_FAST_BESIDE_SLOW);
+    const flow = h.deliver(
+      { runId: h.startMessage.runId, requestedAt: new Date() },
+      'msg_flow'
+    );
+
+    await vi.waitFor(() => {
+      expect(bodyFinishes.has('fast1')).toBe(true);
+    });
+    expect(handOffs(h)).toEqual([]);
+    slow.open();
+    await flow;
+
+    expect(bodyStarts.get('detached')).toBeUndefined();
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
   });
 

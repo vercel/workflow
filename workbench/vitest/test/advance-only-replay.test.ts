@@ -6,6 +6,7 @@ import { start } from 'workflow/api';
 import {
   caughtSlowPromiseChain,
   chainedFanoutBenchmark,
+  detachedAfterAdvanceOnlyReplay,
   detachedStep,
   duplicateProbe,
   fastFirstParallelChains,
@@ -14,15 +15,22 @@ import {
   raceThenNext,
   slowFirstParallelChains,
   threeParallelChains,
+  twoDifferentLeafBenchmark,
+  twoDifferentLeafDurations,
   twoLeafBenchmark,
   twoLeafPromiseAll,
+  workflowStartedAtAcrossBackgroundReplay,
 } from '../workflows/advance-only-replay.js';
 
 const FAST_MS = 200;
 const SLOW_MS = 3_000;
 const SHORT_MS = 100;
 
-type Marker = { label: string; phase: 'start' | 'end'; at: number };
+type Marker = {
+  label: string;
+  phase: 'start' | 'end' | 'return';
+  at: number;
+};
 
 function parseMarkers(contents: string): Marker[] {
   return contents
@@ -65,6 +73,8 @@ async function runWithTimeline(
     | typeof twoLeafPromiseAll
     | typeof raceThenNext
     | typeof threeParallelChains
+    | typeof twoDifferentLeafDurations
+    | typeof detachedAfterAdvanceOnlyReplay
     | typeof detachedStep
     | typeof raceLoser
     | typeof duplicateProbe,
@@ -80,6 +90,40 @@ async function runWithTimeline(
     const wallMs = performance.now() - wallStart;
     const markers = parseMarkers(await readFile(markerPath, 'utf8'));
     return { markers, timeline: formatTimeline(tag, markers), wallMs };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function runDetachedAfterAdvanceOnlyReplay(
+  tag: string,
+  observeAfterReturnMs = 0
+): Promise<{
+  markers: Marker[];
+  timeline: string;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-detached-'));
+  const markerPath = join(dir, 'timeline.log');
+  try {
+    const run = await start(detachedAfterAdvanceOnlyReplay, [
+      markerPath,
+      100,
+      1_500,
+      600,
+    ]);
+    await run.returnValue;
+    const returnedAt = Date.now();
+    if (observeAfterReturnMs > 0) {
+      // Observe a detached body that may still be running after the workflow
+      // returns. This wait is outside workflow execution and does not affect
+      // the ordering under test.
+      await new Promise((resolve) => setTimeout(resolve, observeAfterReturnMs));
+    }
+    const markers = [
+      ...parseMarkers(await readFile(markerPath, 'utf8')),
+      { label: 'workflow', phase: 'return' as const, at: returnedAt },
+    ].sort((a, b) => a.at - b.at);
+    return { markers, timeline: formatTimeline(tag, markers) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -156,6 +200,18 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       ).toBeLessThan(100);
     });
 
+    it('finishes both unequal leaf steps before returning', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        twoDifferentLeafDurations,
+        [200, 800],
+        'two-leaf-200-800'
+      );
+      expect(
+        markerAt(markers, 'different-leaf-2', 'end'),
+        timeline
+      ).toBeGreaterThan(markerAt(markers, 'different-leaf-1', 'end'));
+    });
+
     it('advances after a Promise.race winner without waiting for the loser', async () => {
       const { markers, timeline } = await runWithTimeline(
         raceThenNext,
@@ -225,6 +281,21 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       );
     });
 
+    it('does not seal the run while a step started by an advance-only replay is running', async () => {
+      for (let run = 0; run < 5; run++) {
+        const { markers, timeline } = await runDetachedAfterAdvanceOnlyReplay(
+          `detached-race-${run}`
+        );
+        expect(markerAt(markers, 'detached-race-d', 'start'), timeline).toBe(
+          markerAt(markers, 'detached-race-d', 'start')
+        );
+        expect(
+          markerAt(markers, 'detached-race-d', 'end'),
+          timeline
+        ).toBeLessThanOrEqual(markerAt(markers, 'workflow', 'return'));
+      }
+    }, 30_000);
+
     it('does not execute a step twice across repeated early replays', async () => {
       for (let run = 0; run < 10; run++) {
         const { markers, timeline } = await runWithTimeline(
@@ -253,6 +324,22 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         }
       }
     });
+
+    it('keeps workflowStartedAt stable from turbo through a background replay', async () => {
+      const original = process.env.WORKFLOW_MAX_INLINE_STEPS;
+      process.env.WORKFLOW_MAX_INLINE_STEPS = '0';
+      try {
+        const run = await start(workflowStartedAtAcrossBackgroundReplay, []);
+        const timestamps = await run.returnValue;
+        expect(timestamps.replay).toBe(timestamps.firstInvocation);
+      } finally {
+        if (original === undefined) {
+          delete process.env.WORKFLOW_MAX_INLINE_STEPS;
+        } else {
+          process.env.WORKFLOW_MAX_INLINE_STEPS = original;
+        }
+      }
+    });
   }
 );
 
@@ -260,12 +347,16 @@ type Measurement = {
   wallMs: number;
   cpuMs: number;
   advanceGapMs?: number;
+  detachedStartMs?: number;
+  detachedEndMs?: number;
+  returnMs?: number;
 };
 
 async function measure(
   workflow:
     | typeof chainedFanoutBenchmark
     | typeof oneStepFanoutBenchmark
+    | typeof twoDifferentLeafBenchmark
     | typeof twoLeafBenchmark,
   args: number[]
 ): Promise<Measurement> {
@@ -301,6 +392,27 @@ async function measureAdvanceGap(
   };
 }
 
+async function measureDetached(tag: string): Promise<Measurement> {
+  const cpuStart = process.cpuUsage();
+  const { markers } = await runDetachedAfterAdvanceOnlyReplay(tag, 1_700);
+  const cpu = process.cpuUsage(cpuStart);
+  const firstAt = markers[0]?.at ?? 0;
+  const detachedStart = markers.find(
+    (marker) => marker.label === 'detached-race-d' && marker.phase === 'start'
+  );
+  const detachedEnd = markers.find(
+    (marker) => marker.label === 'detached-race-d' && marker.phase === 'end'
+  );
+  const returnedAt = markerAt(markers, 'workflow', 'return');
+  return {
+    wallMs: returnedAt - firstAt,
+    cpuMs: Math.round((cpu.user + cpu.system) / 1_000),
+    ...(detachedStart ? { detachedStartMs: detachedStart.at - firstAt } : {}),
+    ...(detachedEnd ? { detachedEndMs: detachedEnd.at - firstAt } : {}),
+    returnMs: returnedAt - firstAt,
+  };
+}
+
 async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
   const results: Record<string, Measurement[]> = {};
   const selectedMode = process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_MODE;
@@ -325,11 +437,21 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
     for (const [shape, workflow, args] of [
       ['2x1-noop', twoLeafBenchmark, [0]],
       ['2x1-200ms', twoLeafBenchmark, [200]],
+      ['2x1-200-800ms', twoDifferentLeafBenchmark, [200, 800]],
       ['8x4', chainedFanoutBenchmark, [8, 4]],
       ['64x1', oneStepFanoutBenchmark, [64]],
       ['256x1', oneStepFanoutBenchmark, [256]],
     ] as const) {
-      if (selectedShape && selectedShape !== shape) continue;
+      if (
+        selectedShape &&
+        selectedShape !== shape &&
+        !(
+          selectedShape === 'two-leaf-all' &&
+          (shape === '2x1-noop' || shape === '2x1-200ms')
+        )
+      ) {
+        continue;
+      }
       for (let warmup = 0; warmup < warmups; warmup++) {
         await measure(workflow, [...args]);
       }
@@ -359,6 +481,17 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         ['race-next', 'start'],
         '1',
       ],
+      ...([300, 600, 1_500] as const).map(
+        (slowMs) =>
+          [
+            `short-beside-${slowMs}`,
+            caughtSlowPromiseChain,
+            [slowMs, 100],
+            ['short', 'end'],
+            ['next', 'start'],
+            '1',
+          ] as const
+      ),
       [
         'three-chains-limit-1',
         threeParallelChains,
@@ -384,7 +517,16 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         '4',
       ],
     ] as const) {
-      if (selectedShape && selectedShape !== shape) continue;
+      if (
+        selectedShape &&
+        selectedShape !== shape &&
+        !(
+          selectedShape === 'short-beside-all' &&
+          shape.startsWith('short-beside-')
+        )
+      ) {
+        continue;
+      }
       process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = pendingLimit;
       for (let warmup = 0; warmup < warmups; warmup++) {
         await measureAdvanceGap(
@@ -409,6 +551,21 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
       }
       console.log(
         `${mode}-${shape}: ${JSON.stringify(results[`${mode}-${shape}`])}`
+      );
+    }
+
+    if (!selectedShape || selectedShape === 'detached-race') {
+      for (let warmup = 0; warmup < warmups; warmup++) {
+        await measureDetached(`${mode}-detached-race-warmup-${warmup}`);
+      }
+      results[`${mode}-detached-race`] = [];
+      for (let round = 0; round < rounds; round++) {
+        results[`${mode}-detached-race`].push(
+          await measureDetached(`${mode}-detached-race-${round}`)
+        );
+      }
+      console.log(
+        `${mode}-detached-race: ${JSON.stringify(results[`${mode}-detached-race`])}`
       );
     }
   }
