@@ -1613,9 +1613,10 @@ describe('retained VM through the inline replay loop', () => {
     });
 
     it('still runs the step inline under the kill switch, with no queue hop', async () => {
-      // No retained session to resume, so the awaiter settles on the cold
-      // replay that follows the step's terminal write instead of on a
-      // continuation — still this one delivery, still nothing enqueued.
+      // No retained session to resume, so the continuation is a cold replay
+      // over the reloaded log rather than a VM resume — the ordering is the
+      // same, and so is the delivery: the step still runs here, and nothing
+      // is enqueued.
       process.env.WORKFLOW_RETAINED_VM = '0';
       const { result, queueSends, vmBuilds } = await drive(
         'wrun_retained_parallel_get_conflict_off',
@@ -1650,6 +1651,13 @@ describe('retained VM through the inline replay loop', () => {
     });
 
     it('does not block the hook continuation behind a step when retention is off', async () => {
+      // The hold has to come BEFORE the bodies, not just before the queue: a
+      // held body can be waiting on work the settled awaiter's branch starts,
+      // and running it first stalls the invocation until its inline budget
+      // runs out. With no session to resume the continuation is a cold replay
+      // instead of a refusal, so the ordering survives the kill switch. s1
+      // parks until s2 (which only exists once the awaiter settles) releases
+      // it, so this deadlocks outright if the batch runs first.
       process.env.WORKFLOW_RETAINED_VM = '0';
       const firstStarted = withResolvers<void>();
       const secondStarted = withResolvers<void>();
@@ -1669,7 +1677,14 @@ describe('retained VM through the inline replay loop', () => {
         .replace('r_s2', 'r_hook_releasing_second');
       const driving = drive('wrun_hook_continuation_cold_parallel', code);
       try {
-        await firstStarted.promise;
+        // Raced against the drive rather than awaited, so a delivery that
+        // queues s1 instead of running it fails here rather than hanging.
+        expect(
+          await Promise.race([
+            firstStarted.promise.then(() => true),
+            driving.then(() => false),
+          ])
+        ).toBe(true);
         const continued = await Promise.race([
           secondStarted.promise.then(() => true),
           new Promise<boolean>((resolve) =>
@@ -1678,18 +1693,20 @@ describe('retained VM through the inline replay loop', () => {
         ]);
         expect(continued).toBe(true);
       } finally {
+        // Unblock s1 whichever way the race went, so a failure reports the
+        // assertion rather than hanging the suite.
         releaseFirst.resolve();
         await driving;
       }
     });
 
-    it('holds a step for one continuation only, across chained awaited hooks', async () => {
+    it('holds a step across every awaited registration, one continuation each', async () => {
       // Two awaited registrations in separate suspensions, each committing a
-      // hook write the step could be parked behind. The step is held for the
-      // FIRST continuation only; the second pass commits that hook's create
-      // and then runs the body rather than holding it again, so the second
-      // awaiter settles on the pass after the body — still this one delivery,
-      // still nothing enqueued.
+      // hook write the step is held behind, and one continuation per hook —
+      // not one per pass. The step runs only once no registration is
+      // outstanding, which is what keeps a body that waits on an awaiter's
+      // branch from deadlocking; the whole run still finishes in this one
+      // delivery with nothing enqueued.
       const debugSpy = vi
         .spyOn(runtimeLogger, 'debug')
         .mockImplementation(() => {});
@@ -1701,13 +1718,11 @@ describe('retained VM through the inline replay loop', () => {
 
         expect(result).toBe(10);
         expect(queueSends).toBe(0);
-        // One continuation, not one per awaited hook: the second pass had the
-        // held step to run instead.
         expect(
           debugSpy.mock.calls.filter(
             ([message]) => message === 'Continuing over a hook write in-process'
           )
-        ).toHaveLength(1);
+        ).toHaveLength(2);
         expect(durableLog.map((e) => e.eventType)).toEqual([
           'hook_created',
           'hook_created',
@@ -1718,6 +1733,29 @@ describe('retained VM through the inline replay loop', () => {
       } finally {
         debugSpy.mockRestore();
       }
+    });
+
+    it('stops holding and runs the step when a repeat pass cannot see the registration', async () => {
+      // The repeat guard, from the held-step side. With no delta AND a read
+      // that has not caught up, the continuation runs over a log that still
+      // lacks the `hook_created`, so the same hook comes back wanting the same
+      // continuation — which `continuedHookIds` refuses. Rather than spin or
+      // hand the run to the queue, the pass runs the step it was holding, and
+      // the registration is observed on the pass after it.
+      const { result, queueSends, createParams } = await drive(
+        'wrun_retained_parallel_stale_read',
+        parallelGetConflictWorkflow,
+        { type: 'normal' },
+        { withholdDelta: true, staleFirstReload: true }
+      );
+
+      expect(result).toBe(10);
+      expect(queueSends).toBe(0);
+      // Two create attempts for the hook: the first pass, and the repeat the
+      // guard then refuses to continue over.
+      expect(
+        createParams.filter((p) => p.eventType === 'hook_created')
+      ).toHaveLength(2);
     });
 
     it('hands the awaiter back to the queue under the kill switch', async () => {

@@ -1209,9 +1209,10 @@ export async function handleSuspension({
   // answer for before continuing. Eagerly creating them instead, as this used
   // to, hands every step beside an awaited hook to the queue: a publish, a
   // second invocation, and a replay, to run a step this invocation was about
-  // to run itself. (`heldForHookContinuationIds` in the replay loop bounds
-  // the hold to one pass per step, so a workflow that awaits one hook
-  // registration after another cannot park a step behind all of them.)
+  // to run itself. (The hold lasts exactly as long as the registrations do:
+  // the replay loop grants one continuation per awaited hook, so a workflow
+  // that awaits one registration after another holds the step for each, and
+  // nothing else.)
   //
   // Decided from the queue's awaiters rather than from the creates'
   // outcomes, which are still in flight while the steps are written.

@@ -2992,20 +2992,6 @@ export function workflowEntrypoint(
                   // continuing in-process for each.
                   const continuedHookIds = new Set<string>();
 
-                  // Steps this delivery has already held back once for a
-                  // hook-write continuation (see `holdInlineStepsForHook`).
-                  // A held step has written nothing, so holding it is free —
-                  // but the hold has to end, or a workflow that awaits one
-                  // hook registration after another would park a step behind
-                  // every one of them, each pass paying a hook write while
-                  // the body it could have been running sat still. One hold
-                  // per step is enough for the shape this exists for (hooks
-                  // created together with the step, settled by one
-                  // continuation); past that the step runs inline and the
-                  // awaiter settles on the pass after its body, which is
-                  // still this invocation and still no queue hop.
-                  const heldForHookContinuationIds = new Set<string>();
-
                   // Steps THIS delivery has already published a
                   // step-execution message for, across its replay passes:
                   // the suspension handler's batched fan-out publishes
@@ -3885,10 +3871,9 @@ export function workflowEntrypoint(
                          * returns before any inline execution at all, and the
                          * awaited-creation path holds this suspension's
                          * deferred `lazyInlineSteps` for the pass this
-                         * continuation drives (see `heldForHookContinuationIds`
-                         * for the bound on that hold). Steps the handler
-                         * created eagerly, beyond the inline cap, were
-                         * dispatched before this and race the continuation.
+                         * continuation drives. Steps the handler created
+                         * eagerly, beyond the inline cap, were dispatched
+                         * before this and race the continuation.
                          *
                          * The suspension's writes carried the log forward only
                          * if the hook create's delta accounted for all of
@@ -3909,9 +3894,32 @@ export function workflowEntrypoint(
                          */
                         const continueOverHookWrite = (
                           hookIds: readonly string[],
-                          settles: 'hook_conflict' | 'hook_created'
+                          settles: 'hook_conflict' | 'hook_created',
+                          options?: {
+                            /**
+                             * Accept a cold replay when there is no session to
+                             * resume, instead of refusing the continuation.
+                             *
+                             * Passed only when something this invocation would
+                             * otherwise do next must not come first — an
+                             * awaited creation holding deferred step bodies
+                             * back, one of which may be waiting on work the
+                             * settled awaiter starts. A cold replay over the
+                             * reloaded log advances the workflow just as well,
+                             * for the cost of the replay this boundary used to
+                             * pay in the next delivery anyway. Callers with
+                             * nothing to protect (a conflict, an awaiter whose
+                             * suspension scheduled no inline work) keep
+                             * refusing, so the kill switch hands those back to
+                             * the queue exactly as before.
+                             */
+                            allowColdReplay?: boolean;
+                          }
                         ): boolean => {
-                          if (!retainedSession) return false;
+                          const coldReplay =
+                            !retainedSession &&
+                            options?.allowColdReplay === true;
+                          if (!retainedSession && !coldReplay) return false;
                           const fresh = hookIds.filter(
                             (id) => !continuedHookIds.has(id)
                           );
@@ -3920,6 +3928,7 @@ export function workflowEntrypoint(
                             continuedHookIds.add(id);
                           }
                           const resumeWithoutRead =
+                            !coldReplay &&
                             suspensionResult.eventLogCarriedForward &&
                             !openHookWait.value.openWait;
                           if (!resumeWithoutRead) {
@@ -3939,6 +3948,7 @@ export function workflowEntrypoint(
                               carriedForward:
                                 suspensionResult.eventLogCarriedForward,
                               readBeforeResume: !resumeWithoutRead,
+                              coldReplay,
                             }
                           );
                           span?.setAttributes({
@@ -4582,15 +4592,26 @@ export function workflowEntrypoint(
                          * an awaiter used to force, bought the same ordering
                          * for a publish, a second invocation and a replay.
                          *
-                         * `heldForHookContinuationIds` bounds the hold to one
-                         * pass per step. Past that, fall through: the bodies
-                         * run inline here and the awaiter settles on the pass
-                         * after them, still in this invocation.
+                         * The hold ends when the registrations do, and is
+                         * bounded by nothing else: `continuedHookIds` grants
+                         * one continuation per awaited hook, so another pass
+                         * may only hold again by presenting a hook the
+                         * workflow has newly created and awaited. Each of
+                         * those costs the workflow its own hook write anyway,
+                         * which is time it asked to spend; what matters more
+                         * is that a held body never runs while a registration
+                         * the workflow is awaiting is still unsettled, because
+                         * that body may be waiting on work the settled
+                         * awaiter's branch starts. Once the continuation is
+                         * refused — a repeat for the same hook, which cannot
+                         * get anywhere — the bodies run here and the awaiter
+                         * settles on the pass after them, still in this
+                         * invocation.
                          *
-                         * Owned-recovery steps ride whichever way the deferred
-                         * batch goes. A pass carrying only recovery steps has
-                         * nothing to hold and runs them, as it always has; one
-                         * carrying both delays them by the same single pass,
+                         * Owned-recovery steps ride along with the deferred
+                         * batch. A pass carrying only recovery steps has
+                         * nothing deferred and runs them, as it always has;
+                         * one carrying both delays them by the continuation,
                          * which a step whose previous delivery already died
                          * mid-body can afford.
                          */
@@ -4604,46 +4625,19 @@ export function workflowEntrypoint(
                             dispatchesSettled,
                             suspensionResult.deferredBatchWork,
                           ]);
-                          const holdInlineStepsForHook = lazyInlineSteps.some(
-                            (step) =>
-                              !heldForHookContinuationIds.has(
-                                step.correlationId
-                              )
-                          );
-                          // Without a retained VM, advance by cold replay before
-                          // running the held batch too: a body may depend on
-                          // work started by the registration's continuation.
                           if (
-                            holdInlineStepsForHook &&
-                            !retainedSession &&
-                            suspensionResult.awaitedHookCorrelationIds.some(
-                              (id) => !continuedHookIds.has(id)
-                            )
-                          ) {
-                            for (const id of suspensionResult.awaitedHookCorrelationIds) {
-                              continuedHookIds.add(id);
-                            }
-                            for (const step of lazyInlineSteps) {
-                              heldForHookContinuationIds.add(
-                                step.correlationId
-                              );
-                            }
-                            eventLog = nextEventLogLoad(eventLog);
-                            continue;
-                          }
-                          if (
-                            (holdInlineStepsForHook ||
-                              inlineExecutions.length === 0) &&
                             continueOverHookWrite(
                               suspensionResult.awaitedHookCorrelationIds,
-                              'hook_created'
+                              'hook_created',
+                              // With bodies to hold back, a cold replay beats
+                              // running them first even with no session to
+                              // resume: one of them may be waiting on work the
+                              // settled awaiter starts, which running it first
+                              // would stall until this invocation's inline
+                              // budget ran out. See `allowColdReplay`.
+                              { allowColdReplay: lazyInlineSteps.length > 0 }
                             )
                           ) {
-                            for (const step of lazyInlineSteps) {
-                              heldForHookContinuationIds.add(
-                                step.correlationId
-                              );
-                            }
                             continue;
                           }
                           if (inlineExecutions.length === 0) {
