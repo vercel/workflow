@@ -4356,3 +4356,83 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
   const child = await startDisallowedDynamicRun(value);
   return { childRunId: child.runId };
 }
+
+//////////////////////////////////////////////////////////
+// start({ hook }) chaos drill (packages/core/e2e/e2e-start-hook-drill.test.ts)
+
+/**
+ * A start Hook drill owner: adopts its reserved token, records one side
+ * effect keyed by its own run id, and collects the messages routed to it by
+ * duplicate starts until it is sent `stop`.
+ */
+export async function startHookDrillOwnerWorkflow(token: string) {
+  'use workflow';
+  const { workflowRunId } = getWorkflowMetadata();
+  using hook = createHook<{ message: string }>({ token });
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return {
+      runId: workflowRunId,
+      conflictRunId: conflict.runId,
+      sideEffectRunId: null,
+      messages: [] as string[],
+    };
+  }
+  const sideEffectRunId = await recordStartHookDrillSideEffect();
+  const messages: string[] = [];
+  for await (const payload of hook) {
+    if (payload.message === 'stop') break;
+    messages.push(payload.message);
+  }
+  return {
+    runId: workflowRunId,
+    conflictRunId: null,
+    sideEffectRunId,
+    messages,
+  };
+}
+
+async function recordStartHookDrillSideEffect() {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  await setAttributes({ drillSideEffect: workflowRunId });
+  return workflowRunId;
+}
+
+/**
+ * Starts a drill owner from inside a step, then fails that attempt so the
+ * step retries the start with the same token: the retry must be refused
+ * naming the child the first attempt admitted.
+ */
+async function startStartHookDrillChild(token: string, region: string) {
+  'use step';
+  const { attempt } = getStepMetadata();
+  try {
+    const run = await start(startHookDrillOwnerWorkflow, [token], {
+      hook: { token },
+      region,
+    });
+    if (attempt === 1) {
+      throw new Error('start Hook drill: forcing a retry after the start');
+    }
+    return { childRunId: run.runId, attempt, via: 'started' as const };
+  } catch (error) {
+    if (HookConflictError.is(error)) {
+      return {
+        childRunId: error.conflictingRunId as string,
+        attempt,
+        via: 'conflict' as const,
+      };
+    }
+    throw error;
+  }
+}
+startStartHookDrillChild.maxRetries = 8;
+
+export async function startHookDrillParentWorkflow(
+  token: string,
+  region: string
+) {
+  'use workflow';
+  return startStartHookDrillChild(token, region);
+}
