@@ -3629,10 +3629,22 @@ export function workflowEntrypoint(
                       // completion to the pending step's replay. Do not apply
                       // this to unrelated ordinary continuations: main allows,
                       // for example, a timer winner to seal a run while its
-                      // losing step finishes independently.
+                      // losing step finishes independently. Never-started
+                      // steps recorded only by the terminal drain have no
+                      // executor to wake the ordinary replay, so they must not
+                      // prevent that replay from completing.
+                      const pendingCompletionStepIds =
+                        advanceOnly || concurrentBranchReplayPossible
+                          ? pendingStepIdsIn(eventLog.events)
+                          : new Set<string | undefined>();
                       if (
-                        (advanceOnly || concurrentBranchReplayPossible) &&
-                        pendingStepIdsIn(eventLog.events).size > 0
+                        pendingCompletionStepIds.size > 0 &&
+                        (advanceOnly ||
+                          eventLog.events.some(
+                            (event) =>
+                              event.eventType === 'step_started' &&
+                              pendingCompletionStepIds.has(event.correlationId)
+                          ))
                       ) {
                         runtimeLogger.debug(
                           'Workflow reached completion with advance-only work still pending; returning',
