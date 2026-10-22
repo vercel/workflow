@@ -21,6 +21,7 @@
 // only wants to *play* scenarios should not drag a compiler into its module
 // graph. It is exported from `@workflow/world-sim/build` instead.
 export type { SelectNext } from './drive.js';
+export { SIM_EFFECTS_KEY } from './effects.js';
 export { loadFlowHandler } from './load.js';
 export {
   type MarkdownSummaryOptions,
@@ -30,6 +31,7 @@ export {
   renderSummary,
 } from './report.js';
 export {
+  describeStartOutcome,
   type RunScenarioOptions,
   runScenario,
   type ScenarioExpectation,
@@ -37,11 +39,13 @@ export {
   type ScenarioResult,
   type ScenarioSpec,
 } from './scenario.js';
+export type { StartHookDecision, TokenClaim } from './start-hook.js';
 export { ScenarioAborted } from './tempo.js';
 export type {
   CallContext,
   CallMatch,
   CallPhase,
+  Faults,
   Held,
   InFlightWrite,
   InvariantViolation,
@@ -49,9 +53,15 @@ export type {
   Parked,
   PendingMessageView,
   RejectedCall,
+  ResumeOutcome,
   RunToOptions,
   ScenarioApi,
   ScenarioScript,
+  SimEffect,
+  StartCall,
+  StartOutcome,
+  StartRequest,
+  StartRequestRecord,
   Tempo,
   TraceEntry,
   WorldCallName,

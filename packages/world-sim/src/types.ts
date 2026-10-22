@@ -1,3 +1,4 @@
+import type { StartHookOptions } from '@workflow/core/runtime';
 import type {
   AnyEventRequest,
   Event,
@@ -38,13 +39,18 @@ export type WorldCallName =
   | 'streams.list';
 
 /**
- * The two points a world call can be caught at: entering it, and returning
- * from it.
+ * The points a world call can be caught at: entering it, returning from it,
+ * and (for the few writes that commit in two halves) between its halves.
  *
  * A held `'before'` has decided nothing durable. A write that commits during
  * the hold sorts ahead of it because event positions are assigned at commit.
+ *
+ * `'inside'` is a named checkpoint the store awaits partway through a write
+ * (`CallContext.checkpoint`). Today there is one: `start-hook:accepted`,
+ * after a start Hook candidate's claim and decision commit and before its run
+ * does, the window workflow-server's cross-region admission has.
  */
-export type CallPhase = 'before' | 'after';
+export type CallPhase = 'before' | 'after' | 'inside';
 
 /**
  * Who made a world call.
@@ -63,6 +69,11 @@ export type CallPhase = 'before' | 'after';
  *  - `'external'`: the scenario itself, standing in for everything a real
  *    deployment does out of band: a webhook receiver calling `resumeHook`, an
  *    operator cancelling a run.
+ *  - `` `caller:${name}` ``: a client calling `start()` from outside any run,
+ *    started by the script with `sim.start({ caller: name })`. Unlike
+ *    `external`, its calls are call points: a script can hold a caller, kill
+ *    it, or lose its responses, because the window between `start()`'s
+ *    enqueue and its `run_created` is the subject of the start Hook book.
  *
  * Two steps sharing a function name share a writer id. That is a real
  * limitation and not worth fixing: a scenario that needs to tell them apart
@@ -105,6 +116,8 @@ export interface CallContext {
   message?: QueuePayload;
   /** Present in the `after` phase of a call that threw. */
   error?: unknown;
+  /** For `phase: 'inside'`: which checkpoint. */
+  checkpoint?: string;
 }
 
 /**
@@ -131,6 +144,10 @@ export interface ObservedPoint {
   stepName?: string;
   token?: string;
   correlationId?: string;
+  /** For `phase: 'inside'`: which checkpoint. */
+  checkpoint?: string;
+  /** The run the call concerns, when it can be determined. */
+  runId?: string;
   /**
    * Nesting depth at which the point occurred. Depth > 0 means it happened
    * inside another call the scenario was already inside, where a hold is not
@@ -224,6 +241,8 @@ export interface CallMatch {
   writer?: WriterId | ((writer: WriterId) => boolean);
   /** Only match calls that threw (`true`) or succeeded (`false`). */
   failed?: boolean;
+  /** For `phase: 'inside'`: only this checkpoint. */
+  checkpoint?: string;
   where?: (ctx: CallContext, world: WorldSnapshot) => boolean;
 }
 
@@ -330,6 +349,8 @@ export interface WriterHandles {
   anyStep(): Writer;
   /** Any writer at all. */
   any(): Writer;
+  /** A script caller, by the name given to `sim.start({ caller })`. */
+  caller(name: string): Writer;
   /** Writer ids seen so far, in first-appearance order. */
   seen(): WriterId[];
 }
@@ -362,7 +383,10 @@ export interface ScenarioApi {
    * separate process from the run's invocation.
    */
   beginHookDelivery(token: string, payload: unknown): Promise<InFlightWrite>;
-  /** Cancel the run under test, as an operator would. */
+  /**
+   * Cancel the run under test, as an operator would. With `startedBy:
+   * 'script'`, that is the first run the World created.
+   */
   cancelRun(reason?: string): Promise<void>;
   /** Jump virtual time forward. */
   advanceTime(ms: number): void;
@@ -406,12 +430,134 @@ export interface ScenarioApi {
    * load", the precondition a real deployment reaches through concurrency.
    */
   withholdNextEvent(reads?: number): void;
+  /**
+   * Call the real `start()` as a client from outside any run, attributed to
+   * the writer `caller:<name>`. Returns at once: `outcome` settles when
+   * `start()` does, and never settles if the script killed the caller (see
+   * `Tempo.fault.die`), which is what a client that died looks like.
+   *
+   * While a caller is running and not held, the scheduler delivers nothing,
+   * so `start()`'s own enqueue and `run_created` happen back to back unless
+   * the script holds the caller between them to ask for something else.
+   *
+   * Requires `ScenarioSpec.startedBy: 'script'` to be useful as the run under
+   * test, and `startHooks: true` for `hook`.
+   */
+  start(request?: StartRequest): StartCall;
+  /**
+   * `start()` retried while its answer is `uncertain`
+   * (`WorkflowStartError`), each retry a new candidate on a caller named
+   * `<caller>/2`, `<caller>/3`, …, all one logical request. Resolves with the
+   * last answer; `EveryRequestResolves` holds it to an owner or a refusal.
+   */
+  startUntilResolved(
+    request: StartRequest,
+    options?: { attempts?: number }
+  ): Promise<StartOutcome>;
+  /**
+   * Run the real `resumeHook()` out of band and report how it was answered,
+   * rather than throwing: `reserved` is `HookReservedError` (the owner has
+   * not adopted its start Hook yet).
+   */
+  resume(token: string, payload: unknown): Promise<ResumeOutcome>;
+  /**
+   * Remove a pending message for good: the queue gave up on it (its
+   * retention expired). Resolves `false` when nothing matched.
+   */
+  dropQueued(
+    select: (pending: PendingMessageView[]) => string | undefined
+  ): boolean;
+  /**
+   * Stop the scheduler from taking another message until the returned
+   * function is called (a delivery already running carries on). The scheduler
+   * otherwise moves the moment a script awaits anything, jumping virtual time
+   * to the next pending message, so a script that needs several clients to
+   * act before any delivery, or a clock it moved by hand to stay put, pauses
+   * it first. Released automatically when the script finishes.
+   */
+  pauseDeliveries(): () => void;
+  /** Push a pending message `ms` further out, as a redelivery backoff would. */
+  delayQueued(
+    select: (pending: PendingMessageView[]) => string | undefined,
+    ms: number
+  ): boolean;
+  /**
+   * Side effects step bodies recorded through `SIM_EFFECTS_KEY`, oldest
+   * first: what user code actually ran, which no event log can show for a
+   * candidate that never became a run.
+   */
+  effects(): readonly SimEffect[];
+  /** Every logical start request so far, with each attempt's answer. */
+  requests(): readonly StartRequestRecord[];
   /** Record a free-text marker in the scenario trace. */
   note(message: string): void;
   /** Record a named assertion in the trace; a false value fails the scenario. */
   check(name: string, condition: boolean): void;
   /** The run under test. */
   runId: string;
+}
+
+/** What `sim.start` is asked to do. */
+export interface StartRequest {
+  /** Names the writer (`caller:<caller>`). Defaults to `c1`, `c2`, … */
+  caller?: string;
+  /**
+   * The logical request this attempt belongs to, for `EveryRequestResolves`.
+   * Defaults to the caller name with any `/<n>` attempt suffix removed.
+   */
+  request?: string;
+  /** Workflow function name; defaults to the spec's `workflow`. */
+  workflow?: string;
+  /** Arguments; default to the spec's `input`. */
+  input?: unknown[];
+  hook?: StartHookOptions;
+}
+
+/** How one `start()` was answered. */
+export type StartOutcome =
+  | { kind: 'run'; runId: string }
+  | { kind: 'conflict'; token: string; conflictingRunId?: string }
+  /** `WorkflowStartError`: retry with the same token. */
+  | { kind: 'uncertain'; runId: string; stage: string; message: string }
+  /** A permanent `WorkflowWorldError`, e.g. `START_HOOK_ADMISSION_REJECTED`. */
+  | { kind: 'rejected'; code?: string; message: string }
+  | { kind: 'error'; name: string; message: string };
+
+export interface StartCall {
+  caller: string;
+  outcome: Promise<StartOutcome>;
+  /** Resolves with where the caller died, if a fault killed it. */
+  died: Promise<string>;
+}
+
+/** One logical start request and its attempts, for the ledger. */
+export interface StartRequestRecord {
+  request: string;
+  token?: string;
+  attempts: {
+    caller: string;
+    /** Virtual time the attempt began. */
+    atMs: number;
+    /** Absent while running, or forever when the caller died. */
+    outcome?: StartOutcome;
+    /** Where the caller died, when it did. */
+    died?: string;
+  }[];
+}
+
+/** How one `resumeHook()` was answered. */
+export type ResumeOutcome =
+  | { kind: 'delivered'; runId: string }
+  | { kind: 'reserved'; runId: string; retryAfter?: number }
+  | { kind: 'not-found' }
+  | { kind: 'error'; name: string; message: string };
+
+/** One side effect a step body recorded; see `SIM_EFFECTS_KEY`. */
+export interface SimEffect {
+  runId: string;
+  label: string;
+  /** Step attempt, when the step recorded it. */
+  attempt?: number;
 }
 
 /** An out-of-band write that has not committed. */
@@ -446,6 +592,8 @@ export interface Parked {
 export interface Tempo extends ScenarioApi {
   /** Handles onto the writers this scenario can steer. */
   writer: WriterHandles;
+  /** Crash points: kill a writer, or lose a response. */
+  fault: Faults;
   /**
    * Wait until a world call reaches a matching point, and hold it there.
    *
@@ -466,6 +614,40 @@ export interface Tempo extends ScenarioApi {
     body: (parked: Parked) => T | Promise<T>,
     label?: string
   ): Promise<T>;
+}
+
+/**
+ * Fault injection. Each arms one edge-triggered fault on the next matching
+ * call and resolves with that call once it fires. Arm it before the call
+ * happens. See DESIGN.md §Fault injection.
+ */
+export interface Faults {
+  /**
+   * The writer making the next matching call dies there. `match.phase`
+   * defaults to `after` (the effect committed, the writer never resumed);
+   * `before` dies without the call running; `inside` dies at a store
+   * checkpoint, between a write's two commits.
+   *
+   * A writer inside a queue delivery takes the whole delivery with it: every
+   * later call from that delivery is dropped, and the queue redelivers the
+   * message after its visibility timeout. A script caller is abandoned: its
+   * `outcome` never settles.
+   */
+  die(match: CallMatch, label?: string): Promise<CallContext>;
+  /**
+   * The next matching call commits, and its caller sees a transport error
+   * instead of the response: a retryable `WorkflowWorldError` (503) unless
+   * `error` says otherwise.
+   */
+  loseResponse(
+    match: CallMatch,
+    options?: { error?: unknown; label?: string }
+  ): Promise<CallContext>;
+  /** The next matching call fails before it runs, with the same default error. */
+  fail(
+    match: CallMatch,
+    options?: { error?: unknown; label?: string }
+  ): Promise<CallContext>;
 }
 
 /**

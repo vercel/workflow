@@ -162,3 +162,37 @@ describe('writer runTo', () => {
     expect(seen).toContain('orchestrator');
   });
 });
+
+describe('sim.cancelRun', () => {
+  it("cancels the first run a script started under startedBy: 'script'", async () => {
+    let types: string[] = [];
+    await runScenario(
+      scenario({
+        startedBy: 'script',
+        script: async (sim) => {
+          await sim.start().outcome;
+          await sim.cancelRun('operator');
+          types = sim.world
+            .events()
+            .map((e: { eventType: string }) => e.eventType);
+        },
+      }),
+      { handler: inertHandler }
+    );
+    expect(types).toContain('run_cancelled');
+  });
+
+  it('names the problem when the script has not started a run', async () => {
+    let error: unknown;
+    await runScenario(
+      scenario({
+        startedBy: 'script',
+        script: async (sim) => {
+          error = await sim.cancelRun().catch((e: unknown) => e);
+        },
+      }),
+      { handler: inertHandler }
+    );
+    expect(String(error)).toContain('no run exists yet');
+  });
+});
