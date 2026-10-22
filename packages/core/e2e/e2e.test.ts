@@ -1,3 +1,6 @@
+// Baseline probe (not for merge): comment-only change to trigger a full E2E
+// run against current main after the queue-service incident, establishing
+// which tests still fail once the platform is healthy.
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
