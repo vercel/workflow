@@ -371,7 +371,9 @@ const wsEventsChannelForInvocation = (
     /**
      * Awaited, unlike the open: work scheduled after the handler returns is not
      * guaranteed to run, and an open socket is not `unref`'d, so skipping this
-     * stops the process exiting and keeps a server invocation pinned.
+     * stops the process exiting and keeps a server invocation pinned. The
+     * release lets the socket linger unref'd, so the next delivery for this
+     * run on this instance can reclaim it.
      *
      * Releases the claim the open returned rather than re-resolving the run,
      * which is what keeps a channel this invocation never opened (a later

@@ -65,6 +65,8 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     >();
     /** Set by the fixture server: called with each frame the client sends. */
     onFrame: ((raw: Uint8Array) => void) | null = null;
+    /** Lets the transport unref the socket, so a release lingers. */
+    _socket = { ref() {}, unref() {} };
 
     constructor(_url: string, _opts?: unknown) {
       sockets.push(this);
@@ -91,6 +93,11 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     open(): void {
       this.readyState = 1;
       this.emit('open');
+    }
+    /** Answered on the next microtask, as a live server's `ws` would. */
+    ping(data: Buffer, _mask?: boolean, cb?: (err?: Error) => void): void {
+      cb?.();
+      queueMicrotask(() => this.emit('pong', data));
     }
     deliver(frame: Uint8Array): void {
       this.emit('message', Buffer.from(frame));
@@ -406,6 +413,82 @@ describe('per-write client span', () => {
     expect(spans).toHaveLength(1);
     expect(spans[0].attributes['workflow.events.transport']).toBe('http');
     expect(sockets).toHaveLength(0);
+  });
+});
+
+describe('writes the socket was not ready for', () => {
+  it('go over HTTP mid-handshake, tagged with why', async () => {
+    // Waiting on the handshake would put DNS + TCP + TLS + the upgrade on the
+    // write's critical path; the pooled HTTP route is already warm.
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, materializedBody(), {
+        headers: { 'x-wf-event-id': 'evnt_1' },
+      });
+    openWsChannel(input.runId, { token: 'test-token' });
+
+    await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes['workflow.events.ws.fallback']).toBe('connecting');
+    // The socket keeps warming for the writes after this one.
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0].sent).toHaveLength(0);
+  });
+
+  it('carry no fallback reason when the run has no channel', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, materializedBody(), {
+        headers: { 'x-wf-event-id': 'evnt_1' },
+      });
+
+    await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(
+      writeSpan().attributes['workflow.events.ws.fallback']
+    ).toBeUndefined();
+  });
+});
+
+describe('reclaimed socket', () => {
+  it("carries the next invocation's writes with no second handshake", async () => {
+    const { release } = await withOpenChannel();
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+    release?.();
+    exporter.reset();
+
+    // The next invocation for the same run on this instance.
+    const releaseNext = openWsChannel(input.runId, { token: 'test-token' });
+    // Let the verification pong land.
+    await new Promise((resolve) => setImmediate(resolve));
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+    releaseNext?.();
+
+    expect(sockets).toHaveLength(1);
+    expect(spansNamed('workflow.events.ws.connect')).toHaveLength(0);
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('ws');
+    expect(span.attributes['workflow.events.ws.connection_reused']).toBe(true);
   });
 });
 
