@@ -33,7 +33,8 @@ describe('startRun', () => {
     await startRun(world, 'wrun_source', {}, ['1']);
 
     expect(start).toHaveBeenCalledOnce();
-    const opts = vi.mocked(start).mock.calls[0][2] as Record<string, unknown>;
+    const call = vi.mocked(start).mock.calls[0] as unknown[];
+    const opts = call[2] as Record<string, unknown>;
     expect(opts).toMatchObject({ deploymentId: 'dpl_source' });
     expect(opts).not.toHaveProperty('hook');
     expect(JSON.stringify(opts)).not.toContain('order:1');
