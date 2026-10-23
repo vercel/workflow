@@ -372,18 +372,39 @@ What coalescing needs there: drop an orchestrator message claimed while the run'
 
 durabench's fan-out TTLS is measured to the last branch's body start, not its end. On a 64-branch fan-out on world-vercel, this PR measured a p50 of 1654 ms against 1096 ms on `main`, before the fixes below. Causes found:
 
-- **Serialized creation chunks.** The in-band writer sends one write at a time, and the 61 background `step_created` went out in 4 batches of 16, about 200 to 250 ms apart. Now up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and `MAX_IN_BAND_CREATION_BATCH_BYTES` (512 KiB) per creation batch (#5030, commit `3c7440e344`, node engine).
+- **Serialized creation chunks.** The in-band writer sends one write at a time, and the 61 background `step_created` went out in 4 batches of 16. Now up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and `MAX_IN_BAND_CREATION_BATCH_BYTES` (512 KiB) per creation batch (#5030, commit `3c7440e344`, node engine).
 - **The inline starts' own batch.** They went out in a first batch of their own, one more round trip in front of every background creation. Now they share the first creation batch, so a 64-wide fan-out is one creation batch (commit `5b53481478`, node engine).
 - **Inline outcome writes between creation chunks.** An inline step that finished early queued its outcome on the writer between two creation batches and held up the background creations behind it. Now an inline outcome waits until every creation batch is queued on the writer (`commitInChunks().queued`, commit `5b53481478`, node engine).
 - **One 61-message queue batch.** All step messages went out in one queue request, whose latency grows with its size. Now parallel batches of up to `STEP_DISPATCH_QUEUE_BATCH_SIZE` (16) (commit `e277334dbc`, node engine).
 - **The awaited background `step_started`.** Each branch waited for its start to commit before its body began. Now the body starts while the start is in flight (commit `83ee22003e`, above).
+- **Inline bodies waited for the background dispatch.** The inline bodies started only once every background step message was sent, which since `5b53481478` is the whole fan-out's dispatch. Now the dispatch runs next to the inline bodies and joins `creationsInFlight`, so no pass decides and the delivery does not end before it settled; a failed dispatch fails the delivery, whose redelivery re-sends the steps that have not started (commit `670ea7bdfe`, node engine). This also fixes a `maxRetries: 0` inline sibling of a failed dispatch failing at attempt 2 without running. QuickJS keeps the old order.
 - **Batch payload resolution.** Not a measured cause of TTLS, fixed in the same series: the in-band writer no longer escalates a write batch to `resolveData: 'all'` when a write in it asked for `skip-step-inputs` (#5034, commit `2cd65d5af2`).
 
-Cold world-vercel backend instances behind the step invocations' events WebSockets explain the p90 outliers of about 4 s: 5 of 25 runs on this PR, 0 of 25 on `main`. Why only this PR hits them is not verified.
+Re-measured on durabench at `f1d403fae5`, before `670ea7bdfe`: 20 runs per width per version, 100 ms of work per step, 1 KB JSON payloads, against `main` at `4f8e5ba` (spec 8). p50 in milliseconds, p90 in parentheses:
 
-Considered and not done: dispatching each creation batch's step messages as soon as that batch commits. Its risks: the early branches' out-of-band writes would contend with the later creation batches, the orchestrator would see more coalesced re-runs, and it would need a test of `Promise.race` over a wide fan-out. With one 64-event batch per 64-wide fan-out it would gain nothing at that width.
+| Branches | First branch, PR | First branch, `main` | TTLS, PR | TTLS, `main` | Join, PR | Join, `main` |
+|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 428 (580) | 434 (523) | 630 (2478) | 956 (2587) | 120 (214) | 333 (552) |
+| 64 | 705 (803) | 459 (606) | 916 (1258) | 1030 (1161) | 264 (1952) | 306 (482) |
+| 256 | 882 (1288) | 676 (852) | 3232 (4822) | 19322 (73419) | 770 (6299) | 737 (1432) |
+| 1024 | 3194 (3459) | 2603 (5426) | 11789 (159975) | 91390 (146354) | 84530 (114219) | 2753 (44680) |
 
-Not yet re-measured on durabench after these fixes.
+What the numbers show:
+
+- **TTLS** is below `main` at every width, by about 6x at 256 branches and 8x at 1024. The 64-branch regression is gone.
+- **First branch** is 200 to 600 ms behind `main` from 64 branches up. Two causes, from the run timelines:
+  - The inline bodies waited for the dispatch, about 85 to 135 ms of it, which `670ea7bdfe` removes. Estimated first branch after it: about 590 ms at 64 branches. Not re-measured.
+  - The rest is the single 64-event first creation batch. world-vercel's commit time grows with the batch size, about 5 to 6 ms per event: 60 to 100 ms for 16 events and 300 to 420 ms for 64. The inline starts ride that batch, so the inline bodies wait for the whole fan-out's creations. `main` commits about 13 events per chunk in parallel and starts its inline steps after the first.
+- **Join at 1024 branches** regressed: p50 84.5 s against 2.8 s. In half of the runs every branch started within 13 s and the join took 80 to 105 s; in the others, late branch starts took the same time out of the join instead, so E2E is close to `main` (p50 113 s against 96 s). Under investigation.
+- **Dispatch itself** is not slow: the 4 parallel queue requests for 61 messages take 44 to 141 ms each, start within 2 ms of each other, and the first queued step is invoked 60 to 85 ms after its request returns.
+
+Cold world-vercel backend instances behind the step invocations' events WebSockets explain the p90 outliers of about 4 s seen earlier: 5 of 25 runs on this PR, 0 of 25 on `main`. Why only this PR hits them is not verified. 5 of 61 step messages of one 64-branch run were also delivered twice about 6 ms apart; the losing invocation got a 409 and exited, and when the winner was a cold instance that branch started 1.3 s late.
+
+Not done yet, in order of expected gain:
+
+- **A small first creation batch, and each batch's step messages sent as soon as it commits.** The inline starts and about 16 creations first, so the inline bodies and the first background steps start after a 60 to 100 ms commit instead of a 300 to 420 ms one. Estimated 200 to 320 ms off the first branch from 64 branches up, and 0.4 to 1.2 s off the median branch start at 256. Partly reverts `5b53481478`; the reason not to do it before, that a 64-wide fan-out would gain nothing at one 64-event batch, does not hold once the commit cost is per event. Risks: the early branches' out-of-band writes contend with the later creation batches, and the orchestrator sees more coalesced re-runs.
+- **Trailing batches dispatched one by one.** The later creation batches' messages go out only once every later batch committed (`chunks.rest`), so at 256 branches 192 messages left about 1.8 s in, after the 4th commit.
+- **A lower per-event commit cost in world-vercel**, which would help every width.
 
 ### Spec 8 retries and sleeps on Vercel (fixed)
 
