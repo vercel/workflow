@@ -367,6 +367,33 @@ describe('InBandWriter', () => {
       expect(writer.expectedSeqInBand).toBe(5);
     });
 
+    it('asks a batch for resolved data only when a write asked for all of it', async () => {
+      const { world, writer, releaseAll } = await ready();
+      const replay = { resolveData: 'skip-step-inputs' as const };
+      const writes = [
+        writer.createAhead(waitCreated('w1'), replay, () => {}),
+        writer.createAhead(waitCreated('w2'), replay, () => {}),
+        writer.createAhead(waitCreated('w3'), replay, () => {}),
+      ];
+      await releaseAll();
+      await Promise.all(writes);
+      const batched = (cids: string[]) =>
+        world.creates
+          .filter((c) => cids.includes(c.event.correlationId as string))
+          .map((c) => c.params?.resolveData);
+      expect(world.batches.length).toBeGreaterThan(0);
+      expect(batched(['w2', 'w3'])).toEqual([undefined, undefined]);
+
+      const all = [
+        writer.createAhead(waitCreated('a1'), {}, () => {}),
+        writer.createAhead(waitCreated('a2'), {}, () => {}),
+        writer.createAhead(waitCreated('a3'), { resolveData: 'all' }, () => {}),
+      ];
+      await releaseAll();
+      await Promise.all(all);
+      expect(batched(['a2', 'a3'])).toEqual(['all', 'all']);
+    });
+
     it('starts a new batch rather than send more than MAX_BATCH_EVENTS events in one', async () => {
       const { world, writer, releaseAll } = await ready();
       const writes = Array.from({ length: MAX_BATCH_EVENTS + 2 }, (_, i) =>

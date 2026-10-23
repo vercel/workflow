@@ -529,12 +529,14 @@ export class InBandWriter {
         return;
       }
       const events = group.flatMap((write) => write.events);
-      // A batch resolves all or nothing; a write that asked for any resolved
-      // data (a replay's `skip-step-inputs`) gets all of it.
+      // A batch resolves all or nothing, and only a write that asked for
+      // `'all'` makes it resolve. Every committed event is answered with the
+      // payload this writer sent (`withWrittenEventData`), so resolved bytes
+      // would be sent back only to be dropped. A replay's `skip-step-inputs`
+      // names how the event-log page of a single write is read; it asks for
+      // nothing on the created event, and a batch returns no such page.
       const resolveData = group.some(
-        (write) =>
-          write.params.resolveData !== undefined &&
-          write.params.resolveData !== 'none'
+        (write) => write.params.resolveData === 'all'
       )
         ? ('all' as const)
         : undefined;
