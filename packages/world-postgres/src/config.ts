@@ -14,6 +14,15 @@ export type PostgresWorldConfig = PgConnectionConfig & {
   queueConcurrency?: number;
   /** Milliseconds between idle job fetches per worker. Defaults to 500. */
   pollInterval?: number;
+  /**
+   * The build this process runs. When set, runs this process starts record it,
+   * this process consumes only jobs for it, and the World declares deployment
+   * affinity. Every process running the same build must use the same id.
+   * When unset, the World is one logical deployment, `'postgres'`. The
+   * package's default configuration reads `WORKFLOW_DEPLOYMENT_ID` when
+   * `WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING` is `1`.
+   */
+  deploymentId?: string;
   /** Enable experimental invoke() delivery with one Graphile execution queue per run. */
   enableInvoke?: boolean;
   /**

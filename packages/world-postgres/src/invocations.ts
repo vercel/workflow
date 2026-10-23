@@ -46,7 +46,8 @@ async function runState(
   runId: string
 ): Promise<InvocationRunState> {
   const { rows } = await client.query<InvocationRunState>(
-    `SELECT status, attributes, expired_at AS "expiredAt", name AS "workflowName"
+    `SELECT status, attributes, expired_at AS "expiredAt", name AS "workflowName",
+       deployment_id AS "deploymentId"
      FROM workflow.workflow_runs WHERE id = $1 FOR SHARE`,
     [runId]
   );

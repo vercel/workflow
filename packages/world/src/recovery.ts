@@ -22,13 +22,17 @@ import {
  * @param enqueue - Queue's enqueue method
  * @param label - Log prefix for identifying the world implementation (e.g. "world-local")
  * @param namespace - Optional queue namespace. Defaults to WORKFLOW_QUEUE_NAMESPACE.
+ * @param options.deploymentId - Recover only runs pinned to this deployment,
+ *   for Worlds where each deployment's processes recover their own runs.
  */
 export async function reenqueueActiveRuns(
   runs: Storage['runs'],
   enqueue: Queue['queue'],
   label: string,
-  namespace?: string
+  namespace?: string,
+  options?: { deploymentId?: string }
 ): Promise<void> {
+  const deploymentId = options?.deploymentId;
   const defaultNamespace = resolveQueueNamespace(namespace);
   // Validates the default up front, as before: a bad WORKFLOW_QUEUE_NAMESPACE
   // fails recovery once instead of once per run.
@@ -46,13 +50,19 @@ export async function reenqueueActiveRuns(
       pagination: { cursor },
     });
     for (const run of page.data) {
+      if (deploymentId !== undefined && run.deploymentId !== deploymentId) {
+        continue;
+      }
       try {
         const prefix = getQueueTopicPrefix(
           'workflow',
           getRunQueueNamespace(run.executionContext) ?? defaultNamespace
         );
         const queueName: ValidQueueName = `${prefix}${run.workflowName}`;
-        await enqueue(queueName, { runId: run.runId });
+        const payload = { runId: run.runId };
+        await (deploymentId === undefined
+          ? enqueue(queueName, payload)
+          : enqueue(queueName, payload, { deploymentId }));
         reenqueued++;
       } catch (err) {
         console.warn(

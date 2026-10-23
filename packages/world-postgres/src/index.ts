@@ -3,6 +3,11 @@ import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
+import {
+  assertRoutingCompatible,
+  assertValidDeploymentId,
+  getDeploymentIdFromEnv,
+} from './deployment.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
 import {
@@ -56,11 +61,16 @@ export function createWorld(
     applicationManagedShutdown:
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
+    deploymentId: getDeploymentIdFromEnv(),
   }
 ): World &
   Required<Pick<Queue, 'registerHandler' | 'registerRoute'>> & {
     start(): Promise<void>;
   } {
+  if (config.deploymentId !== undefined) {
+    assertValidDeploymentId(config.deploymentId);
+  }
+  assertRoutingCompatible(config);
   const maxPoolSize =
     config.maxPoolSize ?? getPositiveIntEnv('WORKFLOW_POSTGRES_MAX_POOL_SIZE');
   let closing = false;
@@ -90,6 +100,12 @@ export function createWorld(
       hookForceClaim: true,
       // The events storage fences in-band writes; see storage.ts.
       inBandFence: true,
+      // Only a configured id names one immutable build. `'postgres'` has
+      // named every build of the app, so a run's id cannot say which build
+      // may replay it.
+      ...(config.deploymentId !== undefined
+        ? { deploymentAffinity: true }
+        : {}),
     },
     ...storage,
     ...streamer,
@@ -99,11 +115,14 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Another deployment's runs are its own processes' to recover; queued
+      // here they would wait on a task this process does not consume.
       await reenqueueActiveRuns(
         storage.runs,
         queue.queue,
         'world-postgres',
-        config.namespace
+        config.namespace,
+        { deploymentId: await queue.getDeploymentId() }
       );
     },
     async close() {
