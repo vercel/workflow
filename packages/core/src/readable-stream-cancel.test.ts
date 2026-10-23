@@ -1,7 +1,14 @@
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { setWorld } from './runtime/world.js';
 import { WorkflowServerReadableStream } from './serialization.js';
+
+vi.mock('./runtime/get-world-lazy.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('./runtime/get-world-lazy.js')>();
+  return { ...actual, getWorldLazy: vi.fn(actual.getWorldLazy) };
+});
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -61,6 +68,24 @@ describe('WorkflowServerReadableStream cancel', () => {
 
     await vi.waitFor(() => expect(tail.cancel).toHaveBeenCalledTimes(1));
     await expect(read).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it('does not open a World stream when cancelled while the World loads', async () => {
+    const get = vi.fn();
+    const world = deferred<any>();
+    vi.mocked(getWorldLazy).mockReturnValueOnce(world.promise);
+
+    const stream = new WorkflowServerReadableStream('run-1', 'strm_a');
+    const reader = stream.getReader();
+    const read = reader.read();
+    await vi.waitFor(() => expect(getWorldLazy).toHaveBeenCalledTimes(1));
+
+    await reader.cancel();
+    world.resolve({ specVersion: SPEC_VERSION_CURRENT, streams: { get } });
+
+    await expect(read).resolves.toEqual({ done: true, value: undefined });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(get).not.toHaveBeenCalled();
   });
 
   it('does not open a World stream when cancelled before the first pull connects', async () => {
