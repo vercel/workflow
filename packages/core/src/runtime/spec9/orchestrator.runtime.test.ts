@@ -213,6 +213,33 @@ describe.each([
     expect(calls.so_add).toBe(2);
   });
 
+  it('replays a batched fan-out when the create responses carry no payload bytes', async () => {
+    const n = 6;
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    const { world } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(n) {
+         const sums = await Promise.all(Array.from({ length: n }, (_, i) => add(i, 1)));
+         const total = sums.reduce((a, b) => a + b, 0);
+         if (total !== (n * (n + 1)) / 2) throw new Error("wrong total " + total);
+         return total;
+       }${transform('workflow')}`,
+      [n],
+      { lazyCreatePayloads: true }
+    );
+    try {
+      await world.runUntilIdle();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    // The node engine commits the fan-out's creations in batches.
+    if (engine === 'node') expect(world.batches.length).toBeGreaterThan(0);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(calls.so_add).toBe(n);
+  });
+
   it('fails a step whose arguments cannot be serialized, observably to the workflow', async () => {
     const { world } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
