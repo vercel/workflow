@@ -22,26 +22,18 @@ import path from 'node:path';
  * A placer remembers the last chunk it landed in each stream and tries the
  * next name first. A writer elsewhere that landed there makes the link fail,
  * and the placer then lists the stream. The names stay contiguous only while
- * every writer of a stream names chunks this way. On a file system that
- * makes no hard links, every writer renames a chunk into place under a name
- * minted as it lands, which narrows the window to the moment between the two.
+ * every writer of a stream names chunks this way.
+ *
+ * There is no fallback for a file system that makes no hard links: a rename
+ * there could replace a chunk another process landed under the same name,
+ * and world-local already needs hard links for every event it writes (see
+ * `writeExclusive` in fs.ts). A link that fails for any reason other than its
+ * name being taken, or its directory having gone, fails the write.
  */
 
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const CHUNK_FILE = /^chnk_([0-9A-HJKMNP-TV-Z]{26})(?![0-9A-Za-z])/;
 const FIRST_CHUNK_ID = `${'0'.repeat(25)}1`;
-/**
- * What `link()` fails with on a file system that makes no hard links. On
- * Windows, EPERM can also mean a file is busy for a moment, which `retry`
- * waits out, so there it stays an error.
- */
-const NO_HARD_LINKS = new Set([
-  'ENOTSUP',
-  'EOPNOTSUPP',
-  'ENOSYS',
-  'EXDEV',
-  ...(process.platform === 'win32' ? [] : ['EPERM']),
-]);
 
 /** The 26-character ULID right after `id` in name order. */
 export function chunkSuccessor(id: string): string {
@@ -85,8 +77,6 @@ export interface ChunkPlacerOptions {
   writeFile: (filePath: string, data: Buffer) => Promise<void>;
   /** Retries a file operation the platform can fail for a moment. */
   retry: <T>(fn: () => Promise<T>) => Promise<T>;
-  /** A new ULID, for a file system without hard links. */
-  mint: () => string;
 }
 
 export interface ChunkTurn {
@@ -108,7 +98,6 @@ export function createChunkPlacer({
   tagSuffix,
   writeFile,
   retry,
-  mint,
 }: ChunkPlacerOptions): {
   /**
    * Takes a write's turn in its stream. Called when the write is, before any
@@ -127,7 +116,6 @@ export function createChunkPlacer({
   const turns = new Map<string, Promise<void>>();
   // The newest chunk this placer landed in each directory.
   const newest = new Map<string, string | null>();
-  let hardLinks = true;
 
   const fileOf = (dir: string, id: string) =>
     path.join(dir, `chnk_${id}${tagSuffix}.bin`);
@@ -148,20 +136,12 @@ export function createChunkPlacer({
     return listed !== null && listed > taken ? listed : taken;
   }
 
-  // A link that failed for a reason other than its name being taken.
-  function linkFailed(error: NodeJS.ErrnoException) {
-    if (error.code === undefined || !NO_HARD_LINKS.has(error.code)) {
-      throw error;
-    }
-    hardLinks = false;
-  }
-
   async function place(dir: string, temp: string, data: Buffer) {
     let id = newest.has(dir)
       ? (newest.get(dir) as string | null)
       : await newestChunkId(dir);
     let rewritten = false;
-    while (hardLinks) {
+    for (;;) {
       const next = successorOf(id);
       const error = await linkInto(temp, fileOf(dir, next));
       if (error === null) {
@@ -176,22 +156,9 @@ export function createChunkPlacer({
         rewritten = true;
         await writeFile(temp, data);
       } else {
-        linkFailed(error);
+        throw error;
       }
     }
-    return renamedInto(dir, temp);
-  }
-
-  // Without hard links a rename may replace a chunk of the same name, so the
-  // name is a new ULID unless the stream's newest is later.
-  async function renamedInto(dir: string, temp: string) {
-    const listed = await newestChunkId(dir);
-    const minted = mint();
-    const id =
-      listed === null || minted > listed ? minted : chunkSuccessor(listed);
-    await retry(() => fs.rename(temp, fileOf(dir, id)));
-    newest.set(dir, id);
-    return `chnk_${id}`;
   }
 
   async function land(

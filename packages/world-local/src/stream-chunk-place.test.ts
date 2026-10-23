@@ -276,36 +276,28 @@ describe('where a stream chunk lands', () => {
     expect(await replayOf(streamer, name)).toEqual(['one', 'three']);
   });
 
-  it('chunks land in order on a file system that makes no hard links, and a writer with links goes on after them', async () => {
+  it('a write whose link fails for another reason fails, leaves no temporary file, and the stream goes on', async () => {
     const dir = await tempDir();
-    const name = 'no-links';
-    await createStreamer(dir).streams.write(TEST_RUN_ID, name, 'linked');
+    const name = 'link-fails';
+    const streamer = createStreamer(dir);
+    await streamer.streams.write(TEST_RUN_ID, name, 'one');
+    // As on a file system that makes no hard links: there is no fallback,
+    // since a rename there could replace a chunk another writer landed.
     const unsupported: NodeJS.ErrnoException = new Error(
       'operation not supported'
     );
     unsupported.code = 'ENOTSUP';
-    const link = vi.spyOn(fs, 'link').mockRejectedValue(unsupported);
-    const writers = [createStreamer(dir), createStreamer(dir)];
-    for (const [index, text] of ['a', 'b', 'c', 'd'].entries()) {
-      await writers[index % 2].streams.write(TEST_RUN_ID, name, text);
-    }
-    // Each writer stopped trying links after the first.
-    expect(link).toHaveBeenCalledTimes(2);
+    const link = vi.spyOn(fs, 'link').mockRejectedValueOnce(unsupported);
+    await expect(
+      streamer.streams.write(TEST_RUN_ID, name, 'lost')
+    ).rejects.toThrow('operation not supported');
     link.mockRestore();
-    const after = createStreamer(dir);
-    await after.streams.write(TEST_RUN_ID, name, 'linked again');
-    expect(await replayOf(after, name)).toEqual([
-      'linked',
-      'a',
-      'b',
-      'c',
-      'd',
-      'linked again',
-    ]);
+    await streamer.streams.write(TEST_RUN_ID, name, 'two');
+    expect(await replayOf(streamer, name)).toEqual(['one', 'two']);
     const files = await fs.readdir(path.join(dir, 'streams', 'chunks', name));
-    expect(
-      files.filter((file) => !/^chnk_[0-9A-Z]{26}\.bin$/.test(file))
-    ).toEqual([]);
-    expect(files).toHaveLength(6);
+    expect(files.sort()).toEqual([
+      `chnk_${'0'.repeat(25)}1.bin`,
+      `chnk_${'0'.repeat(25)}2.bin`,
+    ]);
   });
 });
