@@ -97,9 +97,9 @@ describe('slot event ids', () => {
       )
     );
 
-    // Every writer starts from the same view of the log, so all but one lose
-    // the publish and bump. Bump-and-report means none of them fail, and the
-    // log they produce is still gapless.
+    // Every writer starts from the same view of the log. Publication rebases
+    // stale candidates without reserving slots, so every write succeeds and
+    // the log stays gapless.
     const slots = slotsOf(await listEventIds(runId));
     expect(slots).toEqual(
       Array.from({ length: width + 2 }, (_, i) => FIRST_EVENT_SLOT + i)
