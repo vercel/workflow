@@ -4,6 +4,7 @@
     "index",
     "single-orchestrator",
     "single-orchestrator-review",
+    "single-orchestrator-diagrams",
     "lazy-hook-resume",
     "eager-processing",
     "resilient-resume",

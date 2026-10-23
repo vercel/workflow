@@ -340,20 +340,11 @@ A fence-refused delivery used to send what its writes owed and acknowledge with 
 
 ### Step bodies a run-ahead stop can run twice
 
-When a hazard stops run-ahead, a step whose body started ahead of its creation, and whose creation the stop then refused, has no committed start, so the restarted pass runs its body again. Per-entity batch order is now part of the spec 9 contract, so one refused speculative batch can carry up to `WORKFLOW_RUN_AHEAD_DEPTH` such steps (2 by default): up to that many bodies can run twice per stop, where earlier heads of this PR ran at most one. A hazard needs another writer (a hook payload for an awaited hook, an out-of-band step event, a cancellation) to land below the speculative writes.
+When a hazard stops run-ahead, a step whose body started ahead of its creation, and whose creation the stop then refused, has no committed start, so the restarted pass runs its body again. Per-entity batch order is now part of the spec 9 contract, so one refused speculative batch can carry up to `WORKFLOW_RUN_AHEAD_DEPTH` such steps (10 by default): up to that many bodies can run twice per stop, where earlier heads of this PR ran at most one. A stop needs the speculative writes to fail or be overtaken: a refused entry in a speculative batch, a World that did not store a write at its `occurredAt`, or another writer's path-changing event landing below them (`spec9/delivery.ts`, `runAheadHazard` in `spec9/run-ahead.ts`). An awaited hook is not one of them: it makes the boundary path-changing, so the orchestrator waits for its writes instead of running ahead. Which real-world writers can still produce a stop is not verified; see [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo). A step declared with `maxRetries: 0` never starts before its start commits (`mayRunBeforeItsStart` in `spec9/step-executor.ts`), so it is never one of the steps run twice.
 
-{/* @skip-typecheck - illustrative workflow */}
-```typescript
-export async function moderate(postId: string) {
-  "use workflow";
-  const hook = createHook<{ approved: boolean }>();
-  const score = await classify(postId);  // run-ahead: outcome handed over early
-  await notifyModerators(postId, score); // may start ahead of its creation
-  return await hook;
-}
-```
+### An inline `maxRetries: 0` step could run twice after an orchestrator crash (fixed)
 
-If the hook's payload lands below `classify`'s speculative outcome, the stop refuses the batch that creates `notifyModerators`, and the restarted pass runs it again. A step declared with `maxRetries: 0` never starts before its start commits, under run-ahead or turbo (`mayRunBeforeItsStart` in `spec9/step-executor.ts`), so it is never one of them.
+A redelivered orchestrator re-runs an open inline step with the next attempt. Only a background step's own message checked the retry budget before running the body (`failStepForExhaustedRetries` in `spec9/step-handler.ts`), so an inline `maxRetries: 0` step whose orchestrator died between its `step_started` and its outcome ran its body a second time on the redelivery. Reproduced on both engines with the test harness. `executeStep` now fails an attempt past `maxRetries + 1` without running the body, for inline and background steps alike, which also covers a winner re-running a refused overlap's open inline step.
 
 ### Spec 8 retries and sleeps on Vercel (fixed)
 

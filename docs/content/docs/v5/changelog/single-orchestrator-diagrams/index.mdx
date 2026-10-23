@@ -1,0 +1,26 @@
+---
+title: "Single orchestrator diagrams"
+description: Temporary diagrams of every larger part of the spec 9 single-orchestrator change, for reviewers.
+---
+
+# Single orchestrator diagrams
+
+<Callout type="warn">
+These pages are temporary review material for the pull request that introduces spec version 9, and are removed before merge. The written review is [Review: single orchestrator](/docs/changelog/single-orchestrator-review), and the user-facing description is [Single orchestrator](/docs/changelog/single-orchestrator).
+</Callout>
+
+Each page shows one part of the change with diagrams, then lists the edge cases that part has to handle.
+
+| Page | What it shows |
+|---|---|
+| [Run lifecycle](/docs/changelog/single-orchestrator-diagrams/run-lifecycle) | One run end to end: deliveries, inline and background steps, suspension, completion |
+| [Event posting](/docs/changelog/single-orchestrator-diagrams/event-posting) | The in-band writer: ordering, batches, `occurredAt`, allocated counts, the skipped-slot report, consume after commit, the live feed |
+| [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) | Counters, what makes the World refuse a write, and what a refused delivery does |
+| [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership) | Inline and background steps, what each event records, creator rules, retries, `maxRetries: 0`, how the backend serves steps |
+| [Fan-out](/docs/changelog/single-orchestrator-diagrams/fan-out) | `Promise.all` over many steps: inline limit, chunked creation, batched dispatch, coalesced completions |
+| [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo) | Speculative outcomes, hazards, the in-place restart, turbo's first delivery |
+| [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology) | Topics and concurrency keys for spec 8 and spec 9, coalescing, re-runs, handoffs, `attempt` |
+| [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits) | Sleep timers, timer chains, long-sleep hops, `run.wakeUp()` |
+| [Hooks](/docs/changelog/single-orchestrator-diagrams/hooks) | Out-of-band resumes, wakes, linger and the live feed, conflicts |
+| [Spec routing](/docs/changelog/single-orchestrator-diagrams/spec-routing) | Spec 8 and spec 9 side by side, the spec stamp, older SDKs |
+| [Edge cases](/docs/changelog/single-orchestrator-diagrams/edge-cases) | The failure and overlap scenarios, each with its timeline |
