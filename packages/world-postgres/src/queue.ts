@@ -24,6 +24,7 @@ import {
   QueuePayloadSchema,
   QueuePrefix,
   resolveQueueNamespace,
+  singleOrchestratorRunIdOf,
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
@@ -285,6 +286,22 @@ export function createQueue(
   const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
+  /**
+   * The Graphile named queue of one run's orchestrator deliveries.
+   *
+   * Graphile runs the jobs of a named queue one at a time, across every
+   * worker and process sharing the database, so a single-orchestrator run's
+   * (spec >= 9) orchestrator deliveries never overlap: the queue half of the
+   * single-writer guarantee (the in-band fence in storage.ts is the other).
+   * Step messages, health checks and the messages of earlier runs carry no
+   * queue name and keep full parallelism (see `singleOrchestratorRunIdOf`).
+   * A delayed job (a timer, a `{ timeoutSeconds }` redelivery) does not hold
+   * the queue: only a running job locks it.
+   *
+   * The invoke executor lane uses the same name, so a run's ordinary and
+   * executor deliveries serialize with each other too, including while a
+   * deployment switches `enableInvoke`.
+   */
   const executorQueueName = (runId: string) =>
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
@@ -436,6 +453,7 @@ export function createQueue(
     delaySeconds,
     jobKey,
     executorRunId,
+    serialRunId,
     attemptOffset,
     deliveryOffset,
     createdAt,
@@ -452,7 +470,10 @@ export function createQueue(
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
+    /** Run the job on the invoke executor task, in this run's named queue. */
     executorRunId?: string;
+    /** An orchestrator delivery for this run: run it in the run's named queue. */
+    serialRunId?: string;
     attemptOffset?: number;
     deliveryOffset?: number;
     maxAttempts?: number;
@@ -467,6 +488,7 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
+    const runQueue = executorRunId ?? serialRunId;
     await utils.addJob(
       executorRunId ? executorTask() : getJobQueueName(),
       MessageData.encode({
@@ -486,9 +508,7 @@ export function createQueue(
         ...(jobKey ? { jobKey } : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts,
-        ...(executorRunId
-          ? { queueName: executorQueueName(executorRunId) }
-          : {}),
+        ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
       }
     );
   }
@@ -884,7 +904,13 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
-      ...(input ? { executorRunId: input.runId } : {}),
+      // Only the SDK's own prefix carries workflow runs; a queue consumer's
+      // own messages are never serialized by run.
+      ...(input
+        ? { executorRunId: input.runId }
+        : prefix === ownPrefix()
+          ? { serialRunId: singleOrchestratorRunIdOf(message) }
+          : {}),
     });
     return { messageId };
   };
@@ -1029,7 +1055,11 @@ export function createQueue(
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
             jobKey: messageData.idempotencyKey ?? messageData.messageId,
-            ...(orchestration ? { executorRunId: orchestration.runId } : {}),
+            ...(orchestration
+              ? { executorRunId: orchestration.runId }
+              : prefix === queue
+                ? { serialRunId: singleOrchestratorRunIdOf(body) }
+                : {}),
           });
           return 'rescheduled';
         }
@@ -1041,8 +1071,12 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
-        // A delivery can hold an inline step until another wake aborts it.
-        // Run-level exclusion here would also exclude that required wake.
+        // Wakes carry no key, and get no run-level exclusion here. A
+        // single-orchestrator run's orchestrator deliveries are serialized by
+        // its named queue (see `executorQueueName`), and its orchestrator
+        // reads new events from the log itself while it runs an inline step.
+        // An earlier run's delivery can hold an inline step until another
+        // wake aborts it, and run-level exclusion would exclude that wake.
         await executeTask();
         return;
       }

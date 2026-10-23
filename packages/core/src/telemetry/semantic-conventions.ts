@@ -236,6 +236,16 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
 /** Whether this workflow invocation is using the turbo first-delivery path */
 export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
 
+/** The delivery found nothing new since the last consumed position. */
+export const WorkflowNoopDelivery = SemanticConvention<boolean>(
+  'workflow.noop_delivery'
+);
+
+/** The in-band fence refused this orchestrator delivery's write. */
+export const WorkflowSuperseded = SemanticConvention<boolean>(
+  'workflow.superseded'
+);
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'

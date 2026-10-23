@@ -53,6 +53,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
@@ -504,7 +505,6 @@ async function pinCanonicalEventIdForLegacyClaim(
   return existing?.eventId ?? null;
 }
 
-/**
 /**
  * Whether `error` is a refusal this World raises before it writes anything:
  * the conflict, not-found, expired and too-early errors of the event
@@ -1199,7 +1199,14 @@ export function createEventsStorage(
         // free to land somewhere else, and the claim is the fast path other
         // writers read first, so it is corrected once the append commits.
         let resumeClaimRecordedId: string | null = null;
-        const now = new Date();
+        // An in-band write's time is the one its orchestrator chose
+        // (`occurredAt`), as on world-vercel's slot-identity runs: an
+        // orchestrator that runs ahead of its writes has already handed the
+        // event to the workflow with that time, and replay must read the same.
+        const now =
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
         let effectiveRunId: string;
@@ -1451,6 +1458,12 @@ export function createEventsStorage(
         const createsChildEntity = isChildEntityCreationEvent(data);
         const lazyStepStart =
           createsChildEntity && data.eventType === 'step_started';
+        // A single-orchestrator run (spec >= 9) records an inline step's
+        // creation on its `step_started` alone: no synthetic `step_created`,
+        // and the start keeps its input.
+        const creationOnStart = (): boolean =>
+          lazyStepStart &&
+          (currentRun?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR;
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
@@ -1841,6 +1854,7 @@ export function createEventsStorage(
         // check (packages/core/src/step.ts).
         if (
           lazyStepStart &&
+          !creationOnStart() &&
           event.eventType === 'step_started' &&
           event.eventData
         ) {
@@ -2372,7 +2386,7 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
-              await storeEvent(stepCreatedEvent);
+              if (!creationOnStart()) await storeEvent(stepCreatedEvent);
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }

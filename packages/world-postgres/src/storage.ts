@@ -56,6 +56,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
@@ -330,6 +331,12 @@ const NOT_NULL_VIOLATION = '23502';
 interface PendingFence {
   runId: string;
   expected: number;
+  /**
+   * The write's `occurredAt`, stored as the event's `createdAt`: an in-band
+   * write's time is the one its orchestrator chose, which a workflow that ran
+   * ahead of the write has already read (see `Storage.events`).
+   */
+  occurredAt?: Date;
   /** Set once the fenced insert committed; later inserts are unfenced. */
   consumed: boolean;
 }
@@ -387,6 +394,7 @@ async function fencedInsertAttempt(
       .insert(Schema.events)
       .values({
         ...values,
+        ...(fence.occurredAt ? { createdAt: fence.occurredAt } : {}),
         eventId: sql<string>`(select ${values.eventId} from ${advanced})`,
       } as unknown as typeof Schema.events.$inferInsert)
       .onConflictDoNothing({
@@ -1190,8 +1198,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           data: AnyEventRequest,
           params?: CreateEventParams
         ) => Promise<EventResult>;
-        return pendingFence.run({ runId, expected, consumed: false }, () =>
-          inTransaction(runId, data, params)
+        const occurredAt =
+          params?.occurredAt !== undefined
+            ? new Date(params.occurredAt)
+            : undefined;
+        return pendingFence.run(
+          {
+            runId,
+            expected,
+            consumed: false,
+            ...(occurredAt && !Number.isNaN(+occurredAt) ? { occurredAt } : {}),
+          },
+          () => inTransaction(runId, data, params)
         );
       }, SLOT_INSERT_TRANSACTION);
       for (const terminalRunId of terminalRuns) {
@@ -1861,12 +1879,19 @@ function createUnfencedEventsStorage(
       // (it belongs on the synthetic step_created written below); `stepName`
       // is preserved for the client replay consumer's step-name divergence
       // check.
+      // A single-orchestrator run (spec >= 9) records an inline step's
+      // creation on its `step_started` alone: no synthetic `step_created`,
+      // and the start keeps its input.
+      const creationOnStart =
+        lazyStepStart &&
+        (currentRun?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR;
       let storedEventData: unknown;
       if (data.eventType === 'run_started') {
         storedEventData = undefined;
       } else if ('eventData' in data && data.eventData) {
         if (
           data.eventType === 'step_started' &&
+          !creationOnStart &&
           'input' in (data.eventData as Record<string, unknown>)
         ) {
           const { input: _strippedInput, ...rest } = data.eventData as {
@@ -2183,29 +2208,31 @@ function createUnfencedEventsStorage(
             // step_started. Because this synthetic event is in the same
             // transaction as the lazy step row and step_started event, we
             // cannot leave behind only one side of that materialization.
-            try {
-              await insertEventRow(tx, {
-                runId: effectiveRunId,
-                eventId: await allocateEventId(tx, effectiveRunId),
-                correlationId: data.correlationId,
-                eventType: 'step_created',
-                eventData: {
-                  stepName: lazyData.stepName,
-                  input: lazyData.input,
-                },
-                specVersion: effectiveSpecVersion,
-              });
-            } catch (err) {
-              // A concurrent writer already published this run's
-              // step_created for the same step. The event exists either way,
-              // which is all this synthetic write was for.
-              if (
-                pgErrorOf(err).constraint !==
-                'workflow_events_entity_creation_unique'
-              ) {
-                throw err;
+            // On spec >= 9 the start itself is the creation.
+            if (!creationOnStart)
+              try {
+                await insertEventRow(tx, {
+                  runId: effectiveRunId,
+                  eventId: await allocateEventId(tx, effectiveRunId),
+                  correlationId: data.correlationId,
+                  eventType: 'step_created',
+                  eventData: {
+                    stepName: lazyData.stepName,
+                    input: lazyData.input,
+                  },
+                  specVersion: effectiveSpecVersion,
+                });
+              } catch (err) {
+                // A concurrent writer already published this run's
+                // step_created for the same step. The event exists either way,
+                // which is all this synthetic write was for.
+                if (
+                  pgErrorOf(err).constraint !==
+                  'workflow_events_entity_creation_unique'
+                ) {
+                  throw err;
+                }
               }
-            }
             stepCreatedLazily = true;
           }
 

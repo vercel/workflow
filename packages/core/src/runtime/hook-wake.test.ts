@@ -1,4 +1,8 @@
-import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  type World,
+} from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { publishForceClaimVictimWake } from './hook-wake.js';
 
@@ -33,10 +37,35 @@ describe('publishForceClaimVictimWake', () => {
     expect(queue).toHaveBeenCalledTimes(1);
     const [queueName, message, options] = queue.mock.calls[0];
     expect(queueName).toContain('victimWorkflow');
-    expect(message).toEqual({ runId: 'wrun_victim' });
+    expect(message).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    });
     expect(options).toMatchObject({
       deploymentId: 'dpl_victim',
       specVersion: SPEC_VERSION_CURRENT,
+    });
+    // A wake carries no idempotency key.
+    expect(options).not.toHaveProperty('idempotencyKey');
+  });
+
+  it("keys the wake by the claimer's hook when the victim is an older run", async () => {
+    const queue = vi.fn().mockResolvedValue(undefined);
+    await publishForceClaimVictimWake(worldWithQueue(queue), 'wrun_claimer', {
+      ...hook,
+      claimedFrom: {
+        ...hook.claimedFrom,
+        runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      },
+    });
+    const [, message, options] = queue.mock.calls[0];
+    expect(message).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+    });
+    // An older run replays in full on every delivery, so the claimer's
+    // republishes collapse into one wake.
+    expect(options).toMatchObject({
       idempotencyKey: 'hook-force-claim-hook_claimer',
     });
   });

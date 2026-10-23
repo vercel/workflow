@@ -826,6 +826,29 @@ describe('settleEventSlotGap', () => {
     expect(eventsListMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the events the caller held that the re-read came back without', async () => {
+    // The orchestrator's log holds its own writes from their responses (and,
+    // with run-ahead, an outcome consumed before its write committed). The
+    // re-read fills the hole below such an event but may not carry the event
+    // itself yet; dropping it would lose a position this delivery took.
+    eventsListMock.mockResolvedValueOnce({
+      data: slotLog(1, 2, 3),
+      cursor: 'eid:filled',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 2, 4),
+      cursor: 'eid:stale',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    expect(settled.log.events.map((e) => e.eventId)).toEqual(
+      slotLog(1, 2, 3, 4).map((e) => e.eventId)
+    );
+    expect(settled.log.cursor).toBe('eid:filled');
+  });
+
   it('reports a hole that survives every re-read', async () => {
     eventsListMock.mockResolvedValue({
       data: slotLog(1, 4),

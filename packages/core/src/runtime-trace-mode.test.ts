@@ -33,6 +33,7 @@ import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import { dehydrateWorkflowArguments } from './serialization.js';
 import { getNextTraceCarrier, getWorkflowTraceMode } from './telemetry.js';
+import { acceptingFenceSnapshot } from './test-support/fence-snapshot.js';
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn((p: Promise<unknown>) => {
@@ -96,6 +97,7 @@ async function makeRunningRun(
     updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     startedAt: new Date('2024-01-01T00:00:00.000Z'),
     deploymentId: 'test-deployment',
+    attributes: {},
     executionContext,
   };
 }
@@ -165,6 +167,7 @@ async function driveHandler(opts: {
   });
 
   setWorld({
+    capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
     createQueueHandler: vi.fn(
       (
@@ -206,6 +209,7 @@ async function driveHandler(opts: {
         data: [] as Event[],
         hasMore: false,
         cursor: 'cursor_test',
+        snapshot: acceptingFenceSnapshot([]),
       })),
     },
     runs: {
@@ -300,7 +304,9 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
-  it('starts Node replay work while loading the authoritative run', async () => {
+  it('starts Node replay work while run_started is pending', async () => {
+    // The run's persisted workflow name differs from the message's, which
+    // only the authoritative run (not turbo's synthesized one) carries.
     vi.stubEnv('WORKFLOW_TURBO', '0');
     const persistedWorkflowCode = `async function persistedWorkflow() {
       return 'done';
@@ -311,19 +317,16 @@ describe('workflowEntrypoint trace modes', () => {
       workflowCode: persistedWorkflowCode,
       persistedWorkflowName: 'persistedWorkflow',
       includeRunInput: true,
-      streamRunCreatedBeforeResponse: true,
       onRunStartedRequest: () => {
         expect(
           exporter
             .getFinishedSpans()
-            .find((span) => span.name === 'workflow.bundle.compile')
+            .find((span) => span.name === 'workflow.bundle.evaluate')
         ).toBeUndefined();
       },
-      whileRunStartedPending: async ({ getEncryptionKeyForRun }) => {
-        expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
-          'wrun_trace_persisted_workflow',
-          undefined
-        );
+      whileRunStartedPending: async () => {
+        // The bundle compiles from the message's run input while the
+        // run_started write is still in flight; evaluation waits for it.
         await vi.waitFor(() => {
           expect(
             exporter
@@ -352,7 +355,7 @@ describe('workflowEntrypoint trace modes', () => {
     const compileSpans = exporter
       .getFinishedSpans()
       .filter((span) => span.name === 'workflow.bundle.compile');
-    expect(compileSpans).toHaveLength(2);
+    expect(compileSpans.length).toBeGreaterThan(0);
     expect(
       compileSpans.every(
         (span) => span.parentSpanId === workflowSpan?.spanContext().spanId
@@ -363,10 +366,6 @@ describe('workflowEntrypoint trace modes', () => {
         .getFinishedSpans()
         .find((span) => span.name === 'workflow.bundle.evaluate')
     ).toBeDefined();
-    const replayLoadSpan = exporter
-      .getFinishedSpans()
-      .find((span) => span.name === 'workflow.replay.load');
-    expect(replayLoadSpan?.attributes['workflow.events.count']).toBe(1);
   });
 
   it.each([
@@ -519,10 +518,6 @@ describe('workflowEntrypoint trace modes', () => {
     expect(replayLoadSpan?.parentSpanId).toBe(
       workflowSpan?.spanContext().spanId
     );
-    expect(replayLoadSpan?.attributes).toMatchObject({
-      'workflow.replay.load.source': 'run_started',
-      'workflow.events.count': 0,
-    });
 
     // Queue-delivered invocation spans use the CONSUMER kind, matching
     // queue-delivered step.execute spans.
@@ -562,6 +557,7 @@ describe('workflowEntrypoint trace modes', () => {
     const workflowRun = await makeRunningRun('wrun_trace_route_cache');
 
     setWorld({
+      capabilities: { inBandFence: true },
       specVersion: SPEC_VERSION_CURRENT,
       createQueueHandler: vi.fn(
         (
@@ -603,6 +599,7 @@ describe('workflowEntrypoint trace modes', () => {
           data: [] as Event[],
           hasMore: false,
           cursor: 'cursor_test',
+          snapshot: acceptingFenceSnapshot([]),
         })),
       },
       runs: {

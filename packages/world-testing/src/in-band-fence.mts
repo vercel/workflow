@@ -3,31 +3,37 @@ import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
- * The optional in-band writer fence (`WorldCapabilities.inBandFence`), which
- * keeps a run to one orchestrator writer when two orchestrator deliveries
- * overlap. A World can run every workflow in this suite without the fence
- * ever refusing anything, so the fence is checked directly here. Skipped for
- * a World that does not declare it. See the in-band writer fence section of
- * the building-a-world guide.
+ * The in-band writer fence every World implements: the runtime refuses a World
+ * that does not declare it, and relies on it to keep a run to one writer when
+ * two orchestrator deliveries overlap. A World can run every workflow in this
+ * suite without the fence ever refusing anything, because the queue rarely
+ * lets two deliveries of a run overlap, so the fence is checked directly here.
+ * See the single-writer section of the building-a-world guide.
  */
 export function inBandFence(world: string) {
   test(
     "declares the in-band fence and reports a run's counters",
     { timeout: 30_000 },
-    async (ctx) => {
+    async () => {
       const server = await startServer({ world }).then(createFetcher);
-      if ((await server.getCapabilities()).inBandFence !== true) {
-        ctx.skip();
-      }
+      expect(await server.getCapabilities()).toMatchObject({
+        inBandFence: true,
+      });
 
       const result = await server.invoke(
         'workflows/addition.ts',
         'addition',
         [1, 2]
       );
+      // Settled once `run_completed` is in the log. The run's status alone is
+      // not enough: a World may show the terminal status before the terminal
+      // event is listable.
       await vi.waitFor(
         async () => {
-          expect((await server.getRun(result.runId)).status).toBe('completed');
+          const listed = await server.getEvents(result.runId);
+          expect(listed.map((event) => event.eventType)).toContain(
+            'run_completed'
+          );
         },
         { interval: 200, timeout: 25_000 }
       );
@@ -52,11 +58,8 @@ export function inBandFence(world: string) {
   test(
     'refuses a stale in-band write before writing anything',
     { timeout: 30_000 },
-    async (ctx) => {
+    async () => {
       const server = await startServer({ world }).then(createFetcher);
-      if ((await server.getCapabilities()).inBandFence !== true) {
-        ctx.skip();
-      }
       const probe = await server.probeFence();
 
       expect(probe.atCreation).not.toBeNull();

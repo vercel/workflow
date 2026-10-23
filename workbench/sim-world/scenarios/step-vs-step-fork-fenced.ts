@@ -2,57 +2,93 @@ import type { ScenarioSpec } from '@workflow/world-sim';
 
 export const scenario: ScenarioSpec = {
   id: 'step-vs-step-fork-fenced',
-  name: 'two racing STEPS, WITH the precondition fence on',
+  name: 'two racing STEPS, two orchestrators: the successor writes first',
   description:
-    "Tests the fence's predicate, and is green: a green regression test now " +
-    'rather than an open reproduction. Slot-numbered event ids closed the ' +
-    'fault — a read missing an event the log already holds is a gap in a ' +
-    'numbered sequence, so the runtime re-reads and decides the fork the way ' +
-    'the log records it, without anything having to be refused. ' +
-    'What the scenario still pins is the predicate, which does NOT catch this ' +
-    'shape. The watermark half compares the write against a high-water mark of ' +
-    'the newest out-of-band write, and refuses only a snapshot strictly below ' +
-    'it. Here the newest such write is the one the reader CAN see (`fast`); ' +
-    'the withheld one is older, a hole in the middle of the log, so the ' +
-    "reader's snapshot is never strictly older than the mark. Separating the " +
-    'two completions in virtual time does not change it — the miss is ' +
-    'structural, not a millisecond-granularity tie. Contrast the hook/wait ' +
-    'variant above, where the withheld hook IS the newest out-of-band write ' +
-    'and the orchestrator carries a pre-sleep snapshot. ' +
-    'To be precise about which fence: this scenario arms the watermark half ' +
-    'ALONE, which is why `countGuard` is switched off below against the ' +
-    'default. The count half is aimed at exactly this hole and does catch it. ' +
-    'Neither half models a shipped World: none of them refuses a stale write ' +
-    'at all, because a reader holds a prefix rather than a hole and its next ' +
-    'write comes back carrying what it was pushed past. What arming the fence ' +
-    'still buys is coverage of the 412 reception path the runtime keeps for a ' +
-    'World that would rather refuse than report.',
+    'The overlap the queue cannot rule out. The orchestrator stalls with its ' +
+    'first `step_created` produced but not committed, its lease expires, and ' +
+    'the queue redelivers the same message to a second orchestrator alongside ' +
+    'it. The successor loads a log with no steps in it, creates and runs both ' +
+    'steps inline itself, decides the fork and finishes the run. When the ' +
+    'stalled predecessor resumes, its write carries the in-band count it ' +
+    'loaded, which the successor has moved past, so the in-band fence refuses ' +
+    'it (412 `in-band-superseded`, never a 409 for the step the successor ' +
+    'created): the predecessor stops before it runs a step body, and does not ' +
+    'acknowledge its message. Every step in the log has one start and one ' +
+    'outcome, all the successor’s, and the branch the run took is the one the ' +
+    'log records. (The stall is placed before the steps start because two ' +
+    'deliveries in one process share the runtime’s per-process step single ' +
+    'flight: a successor would wait for a stalled inline body rather than run ' +
+    'it.) This used to be the shape the watermark guard could not see (two ' +
+    'writers deciding one fork from different views); the fence needs no view ' +
+    'of the log at all. `fence-catches-benign-direction` below is the other ' +
+    'order: the predecessor writes first.',
   workflow: 'stepVsStepForkWorkflow',
   input: ['doc-27'],
-  preconditionGuard: true,
-  // The subject is the watermark predicate on its own. Production arms both
-  // halves, so the count guard now follows the fence by default; a scenario
-  // that exists to show what the watermark alone misses has to opt out of it.
-  countGuard: false,
+  // The stall must come before the steps start (see above). Turbo's first
+  // delivery starts inline bodies before their `step_created` commits, so it
+  // keeps them waiting for their start here.
+  env: { WORKFLOW_OPTIMISTIC_INLINE_START: '0' },
   script: async (sim) => {
-    const fast = sim.writer.step('fast');
-    const slow = sim.writer.step('slow');
-    const atFast = fast.runToEventProduced('step_completed');
-    const atSlow = slow.runToEventProduced('step_completed');
-    await atFast;
-    await atSlow;
-    // Who this withheld reader is in production: not this invocation. With
-    // strongly-consistent reads a single invocation cannot miss its own
-    // committed write, so the reader that misses one of these two step
-    // writes is a *concurrent second invocation* of the same run — the storm
-    // shape, which the sim cannot model directly (DESIGN §10). The withhold
-    // stands in for that reader; it is not a claim that a single-invocation
-    // read can be stale.
-    sim.withholdNextEvent(1);
-    await slow.release();
-    await fast.release();
+    const wf = sim.writer.orchestrator();
+    await wf.runToEventProduced('step_created');
+
+    sim.check(
+      'the stalled delivery’s lease expired and its message is pending again',
+      sim.expireLease({ redeliver: true }) === 1
+    );
+    const successorDone = sim.until({ eventType: 'run_completed' });
+    const redelivered = sim.deliverQueued();
+    await successorDone;
+    sim.check(
+      'the successor finished the run while the predecessor was stalled',
+      sim.world.run(sim.runId)?.status === 'completed' && wf.isHeld()
+    );
+
+    const refused = sim.until({ eventType: 'step_created', failed: true });
+    await wf.release();
+    const refusal = await refused;
+    sim.check(
+      'the fence refused the stalled predecessor’s write',
+      (refusal.error as { name?: string } | undefined)?.name ===
+        'InBandSupersededError'
+    );
+    sim.check('the redelivery ran', await redelivered);
+
+    const events = sim.world.events();
+    const shortName = (stepId: string | undefined) =>
+      sim.world
+        .steps()
+        .find((s) => s.stepId === stepId)
+        ?.stepName.split('//')
+        .at(-1);
+    const outcomes = events
+      .filter((e) => e.eventType === 'step_completed')
+      .map((e) => shortName(e.correlationId));
+    const winner = outcomes.find((name) => name === 'fast' || name === 'slow');
+    const branch = outcomes.find(
+      (name) => name === 'afterFast' || name === 'afterSlow'
+    );
+    sim.note(`the log records ${winner} completing first, then ${branch}`);
+    sim.check(
+      'the run took the branch of the outcome the log records first',
+      branch === (winner === 'fast' ? 'afterFast' : 'afterSlow')
+    );
+    sim.check(
+      'every step has exactly one outcome and one start in the log',
+      sim.world
+        .steps()
+        .every(
+          (s) =>
+            events.filter(
+              (e) =>
+                e.eventType === 'step_completed' && e.correlationId === s.stepId
+            ).length === 1 &&
+            events.filter(
+              (e) =>
+                e.eventType === 'step_started' && e.correlationId === s.stepId
+            ).length === 1
+        )
+    );
   },
-  // FAILS TODAY, identically to the unfenced scenario above — which is the
-  // finding. Turning the watermark on changes nothing here.
-  expect: { status: 'completed', output: 'afterSlow:doc-27' },
+  expect: { status: 'completed' },
 };

@@ -143,6 +143,28 @@ export enum EventConsumerResult {
 
 type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
+/** A registered callback, in the order {@link EventsConsumer.offer} tries it. */
+interface CallbackRegistration {
+  fn: EventConsumerCallback;
+  /** See `SubscribeOptions.correlationId`. */
+  correlationId: string | undefined;
+  /** Registration order; offers try callbacks in increasing `seq`. */
+  seq: number;
+}
+
+/** Options of {@link EventsConsumer.subscribe}. */
+export interface SubscribeOptions {
+  /**
+   * The only correlation id whose events the callback can consume. A keyed
+   * callback is a promise that, for any event with another correlation id
+   * (or none), it returns `NotConsumed` and does nothing else, so the walk
+   * skips it for those events instead of calling it. It is still offered the
+   * end-of-log `null`, and every event of its own correlation id, in its
+   * registration position among all callbacks.
+   */
+  correlationId?: string;
+}
+
 export interface EventsConsumerOptions {
   /**
    * Observation callback invoked after an event has been consumed (not for one
@@ -205,6 +227,16 @@ export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[];
   readonly callbacks: EventConsumerCallback[] = [];
+  /**
+   * {@link callbacks}' registrations, index for index, with the correlation
+   * id each one was keyed to (see {@link EventsConsumer.subscribe}).
+   */
+  private readonly registrations: CallbackRegistration[] = [];
+  /** Unkeyed registrations, in registration order. */
+  private readonly unkeyed: CallbackRegistration[] = [];
+  /** Keyed registrations by correlation id, each in registration order. */
+  private readonly keyed = new Map<string, CallbackRegistration[]>();
+  private nextRegistrationSeq = 0;
   /**
    * Events the ordered walk stepped over because nobody claimed them and their
    * type carries no ordering claim. Each keeps the index it held in the log:
@@ -332,9 +364,38 @@ export class EventsConsumer {
    *  - `EventConsumerResult.Finished` the event is considered consumed and the callback is removed from the callbacks list
    *
    * @param fn - The callback function to register.
+   * @param options - See {@link SubscribeOptions}.
    */
-  subscribe(fn: EventConsumerCallback) {
+  subscribe(fn: EventConsumerCallback, options: SubscribeOptions = {}) {
+    this.register(fn, options.correlationId);
+  }
+
+  /**
+   * {@link subscribe} keyed to `correlationId` (see
+   * `SubscribeOptions.correlationId`).
+   */
+  subscribeFor(correlationId: string, fn: EventConsumerCallback) {
+    this.register(fn, correlationId);
+  }
+
+  private register(
+    fn: EventConsumerCallback,
+    correlationId: string | undefined
+  ) {
+    const registration: CallbackRegistration = {
+      fn,
+      correlationId,
+      seq: this.nextRegistrationSeq++,
+    };
     this.callbacks.push(fn);
+    this.registrations.push(registration);
+    if (registration.correlationId === undefined) {
+      this.unkeyed.push(registration);
+    } else {
+      const list = this.keyed.get(registration.correlationId);
+      if (list) list.push(registration);
+      else this.keyed.set(registration.correlationId, [registration]);
+    }
     // Cancel any pending unconsumed check since a new callback may consume the event.
     // Incrementing the version causes any in-flight promise chain check to no-op.
     // Also clear the pending setTimeout if it hasn't fired yet.
@@ -428,11 +489,16 @@ export class EventsConsumer {
    * walk and the parked drain advance differently, so each does its own.
    */
   private offer(currentEvent: Event | null): boolean {
-    for (let i = 0; i < this.callbacks.length; i++) {
-      const callback = this.callbacks[i];
+    // The end-of-log `null`, and any event while nothing is keyed, goes to
+    // every callback. Otherwise only the unkeyed callbacks and those keyed to
+    // the event's correlation id can consume it (`SubscribeOptions`), tried
+    // in the same registration order a full walk would use.
+    const candidates = this.candidatesFor(currentEvent);
+    for (let i = 0; i < candidates.length; i++) {
+      const registration = candidates[i];
       let handled = EventConsumerResult.NotConsumed;
       try {
-        handled = callback(currentEvent);
+        handled = registration.fn(currentEvent);
       } catch (error) {
         eventsLogger.error('EventConsumer callback threw an error', { error });
       }
@@ -457,11 +523,40 @@ export class EventsConsumer {
       }
       // remove the callback if it has finished
       if (handled === EventConsumerResult.Finished) {
-        this.callbacks.splice(i, 1);
+        this.unregister(registration);
       }
       return true;
     }
     return false;
+  }
+
+  /** The registrations that may consume `event`, in registration order. */
+  private candidatesFor(event: Event | null): readonly CallbackRegistration[] {
+    if (event === null || this.keyed.size === 0) return this.registrations;
+    const keyed =
+      event.correlationId === undefined
+        ? undefined
+        : this.keyed.get(event.correlationId);
+    return mergeBySeq(this.unkeyed, keyed ?? []);
+  }
+
+  /** Removes a finished callback from every index. */
+  private unregister(registration: CallbackRegistration): void {
+    const index = this.registrations.indexOf(registration);
+    if (index !== -1) {
+      this.registrations.splice(index, 1);
+      this.callbacks.splice(index, 1);
+    }
+    const list =
+      registration.correlationId === undefined
+        ? this.unkeyed
+        : this.keyed.get(registration.correlationId);
+    if (!list) return;
+    const at = list.indexOf(registration);
+    if (at !== -1) list.splice(at, 1);
+    if (list.length === 0 && registration.correlationId !== undefined) {
+      this.keyed.delete(registration.correlationId);
+    }
   }
 
   /**
@@ -883,4 +978,22 @@ export class EventsConsumer {
     };
     poll();
   }
+}
+
+/** Two registration lists, each in `seq` order, merged in `seq` order. */
+function mergeBySeq(
+  a: readonly CallbackRegistration[],
+  b: readonly CallbackRegistration[]
+): readonly CallbackRegistration[] {
+  if (b.length === 0) return a;
+  if (a.length === 0) return b;
+  const merged: CallbackRegistration[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    merged.push(a[i].seq < b[j].seq ? a[i++] : b[j++]);
+  }
+  while (i < a.length) merged.push(a[i++]);
+  while (j < b.length) merged.push(b[j++]);
+  return merged;
 }

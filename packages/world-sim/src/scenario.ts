@@ -127,17 +127,12 @@ export interface ScenarioSpec {
    */
   expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
-  /** Enforce (and advertise) the optimistic-concurrency fence. */
-  preconditionGuard?: boolean;
   /**
-   * Also enforce the count half of the fence: reject a write whose caller loaded
-   * fewer events at or below its watermark than the log now holds.
-   *
-   * Defaults to `preconditionGuard`, because that is production: a world that
-   * fences at all fences with both halves. Set it to `false` alongside
-   * `preconditionGuard: true` to model the watermark alone.
+   * Runtime environment variables set for this scenario only (for example a
+   * runtime fast path the scenario's premise rules out), restored when it
+   * ends.
    */
-  countGuard?: boolean;
+  env?: Record<string, string>;
 }
 
 export interface ScenarioExpectation {
@@ -190,22 +185,22 @@ export interface RunScenarioOptions {
   handler: (req: Request) => Promise<Response>;
   /** Workflow function name → machine workflow id, from `buildSimBundle`. */
   workflowIds?: Record<string, string>;
-  /**
-   * Force `SimStoreOptions.preconditionGuard` on or off for this run,
-   * overriding whatever the spec asked for.
-   *
-   * The fence exists to reject a write whose snapshot predates an out-of-band
-   * event, that is, a write an extended prefix invalidated. So turning it off
-   * across the whole book answers a question the book cannot otherwise ask: is
-   * any scenario relying on it? If none is, then no emitter here is
-   * prefix-sensitive and the fence guards against nothing; if one goes red that
-   * was not red before, that scenario names the exception.
-   *
-   * Disabling it takes the count half with it: `countGuard` is evaluated inside
-   * the same predicate, and the marker bookkeeping that both halves read is
-   * gated on the same flag.
-   */
-  preconditionGuard?: boolean;
+}
+
+/** Sets `env` on `process.env`; returns what puts the previous values back. */
+function applyEnv(env: Record<string, string> | undefined): () => void {
+  if (!env) return () => {};
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(env)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
 }
 
 export async function runScenario(
@@ -217,16 +212,7 @@ export async function runScenario(
   // One expectation, whichever world this is. Aliased rather than read inline
   // so the outcome check and the output check below cannot drift apart.
   const expected = spec.expect;
-  // Production arms both halves of the fence, so the count follows it unless a
-  // scenario says otherwise. Resolved once: reading `options ?? spec` twice
-  // would let a `--no-fence` run keep a count guard the fence no longer backs.
-  const preconditionGuard =
-    options.preconditionGuard ?? spec.preconditionGuard ?? false;
-  const world = createSimWorld({
-    clock,
-    preconditionGuard,
-    countGuard: spec.countGuard ?? preconditionGuard,
-  });
+  const world = createSimWorld({ clock });
 
   const workflowId =
     typeof spec.workflow === 'string'
@@ -261,6 +247,7 @@ export async function runScenario(
   let runId = '';
   let thrown: unknown;
 
+  const restoreEnv = applyEnv(spec.env);
   let uninstallClock = clock.install();
   const wallStart = performanceNow();
 
@@ -308,6 +295,17 @@ export async function runScenario(
         kind: 'note',
         message: `advanced virtual time by ${ms}ms`,
       });
+    },
+    expireLease(options) {
+      const expired = world.simQueue.expireLeases(runId, options);
+      world.pushTrace({
+        kind: 'note',
+        message:
+          expired.length > 0
+            ? `lease expired: ${expired.map((l) => l.messageId).join(', ')} keeps running, and the queue treats the run as free${options?.redeliver ? '; the message is pending again' : ''}`
+            : 'expireLease: no orchestrator delivery of the run is in flight',
+      });
+      return expired.length;
     },
     async deliverQueued(select) {
       const pending = world.simQueue.view();
@@ -451,6 +449,7 @@ export async function runScenario(
       `scenario threw: ${err instanceof Error ? err.message : String(err)}`
     );
   } finally {
+    restoreEnv();
     // The loop is done, so nothing can satisfy a script still waiting on the
     // world. Report what it wanted before tearing its waits down.
     const stillWaiting = controller.describeWaiting();

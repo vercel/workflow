@@ -171,7 +171,7 @@ const names = listWorkflowRefs().map((ref) => ref.name); // [!code highlight]
 
 ### `waitForSleep()`
 
-Polls the event log until the workflow has a pending `sleep()` call, one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
+Polls the event log until the workflow has a pending `sleep()` call, one with a `wait_created` event but no corresponding `wait_completed` event. A sleep that `wakeUp()` already named in this process is skipped while the run completes it. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
 
 
 ```typescript

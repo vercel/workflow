@@ -5,6 +5,9 @@ description: An optional World API (events.createBatch) that appends an ordered 
 
 # Batched event writes (`events.createBatch`)
 
+> Superseded by the [single orchestrator](/docs/changelog/single-orchestrator) model: runs at spec version 9 no longer use this mechanism.
+
+
 ## Motivation
 
 A workflow suspension that schedules several steps and waits previously wrote one event per entity: one `world.events.create` call per `step_created` and `wait_created`. Against a remote World each write is its own network round trip and its own crash boundary. Batching folds a suspension's schedule into **one durable write** with per-event outcomes, cutting request count and making the whole fan-out land atomically per attempt.

@@ -1,0 +1,141 @@
+---
+title: "Fan-out"
+description: What a spec 9 orchestrator does with Promise.all over many steps, with the numbers the constants give for a 100-step fan-out.
+---
+
+# Fan-out
+
+<Callout type="warn">
+Temporary review material for the spec 9 pull request, removed before merge. See [Review: single orchestrator](/docs/changelog/single-orchestrator-review).
+</Callout>
+
+{/* @skip-typecheck - illustrative workflow */}
+```typescript
+export async function resizeAll(urls: string[]) {
+  "use workflow";
+  return await Promise.all(urls.map((url) => resize(url))); // 100 urls
+}
+```
+
+## The constants
+
+| Constant | Value | Where |
+|---|---|---|
+| `WORKFLOW_MAX_INLINE_STEPS` | 3 by default, clamped to 0..16 | `packages/core/src/runtime/constants.ts:191`, `constants.ts:210` |
+| `MAX_IN_BAND_CREATION_BATCH_EVENTS` | 64 events per creation `createBatch` | `constants.ts:506` |
+| `MAX_IN_BAND_CREATION_BATCH_BYTES` | 512 KiB per creation batch, payload bytes plus 1 KiB per event | `constants.ts:515` |
+| `MAX_BATCH_EVENTS` | 16: run-ahead's write groups and speculative creation batch, not the fan-out's creation batches | `constants.ts:486` |
+| `STEP_DISPATCH_QUEUE_BATCH_SIZE` | 16 step messages per queue batch request, requests sent in parallel (node engine) | `constants.ts:533` |
+| Step messages per Vercel Queues batch request | 100, world-vercel's ceiling | `packages/world-vercel/src/queue.ts:38` |
+| Inline window | 2 min, or 5 min when the function may run 10 min or more, or 10 min at 25 min or more; `WORKFLOW_V2_TIMEOUT_MS` overrides | `packages/core/src/runtime/delivery.ts:319` |
+| `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` | 60 s: no inline step starts this close to the window's end | `packages/core/src/runtime/spec9/deadline.ts:2` |
+| `WORKFLOW_ORCHESTRATOR_LINGER_MS` | 30 s, only on a World with a live feed | `packages/core/src/runtime/spec9/live-feed.ts:28` |
+| Coalesced re-runs per delivery | 32 | `packages/world-vercel/src/queue.ts:328` |
+
+## How the creations are split
+
+The suspension's events are the inline steps' creation-bearing `step_started` events first, then the background steps' `step_created` (`packages/core/src/runtime/spec9/step-wait-creation.ts`). They go out in batches of up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and 512 KiB, in order, so the inline starts share the first batch with background creations (`batchChunks`). The inline bodies start once that first batch commits. This is the node engine's path (`spec9/delivery.ts`); the QuickJS engine writes a suspension's creations through its own code in `spec9/quickjs-entrypoint.ts`, which these numbers were not checked against.
+
+| `WORKFLOW_MAX_INLINE_STEPS` | Events | Batches | First batch | Later batches | Step-message sends |
+|---|---|---|---|---|---|
+| 3 (default) | 3 starts + 97 `step_created` | 2 | 3 starts + 61 `step_created` | 1 of 36 | 61 after batch 1, 36 after batch 2 |
+| 16 | 16 starts + 84 `step_created` | 2 | 16 starts + 48 `step_created` | 1 of 36 | 48 after batch 1, 36 after batch 2 |
+| 0 | 100 `step_created` | 2 | 64 `step_created` | 1 of 36 | 64 after batch 1, 36 after batch 2 |
+
+Step messages go out in parallel queue batch requests of at most `STEP_DISPATCH_QUEUE_BATCH_SIZE` (16) messages (`enqueueStepMessages`, `delivery.ts`).
+
+All batches are in-band writes, so they go out one at a time (`packages/core/src/runtime/spec9/in-band-writer.ts`). The later batches run in the background of the delivery (`commitInChunks`); their background steps' messages go out once they committed. An inline step's outcome is queued on the writer only after the last creation batch, so it never holds up a creation batch behind it. No pass decides while a creation batch is in flight.
+
+A background step's first delivery starts its body while its out-of-band `step_started` is in flight, for a step that allows retries; the outcome is written only once that start committed (`spec9/step-handler.ts`).
+
+A fan-out boundary with background steps is never run ahead: a step outside the delivery's inline slots runs elsewhere, so the boundary is not inert (`packages/core/src/runtime/out-of-band-observation.ts:172`).
+
+## Sequence, default settings, world-vercel
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as "Orchestrator delivery"
+    participant W as "World"
+    participant Q as "Vercel Queues"
+    participant S as "97 step invocations"
+
+    O->>O: replay, suspension with 100 new steps
+    O->>W: batch 1: 3 step_started inline true, 61 step_created
+    W-->>O: committed
+    par inline bodies
+        O->>O: 3 bodies run in this process
+        O->>W: 3 step_completed, in-band, queued behind batch 2
+    and step messages and later creations
+        O->>Q: 61 step messages, 4 parallel batch requests
+        O->>W: batch 2: 36 step_created
+        O->>Q: 36 step messages, 3 parallel batch requests
+    end
+    Q->>S: 97 deliveries
+    S->>W: step_started, step_completed, out-of-band
+    S->>Q: one plain wake per outcome, no key, no delay
+    Note over Q: O holds the run's key, wakes are coalesced
+    W--)O: live feed: each outcome, a pass per batch of events
+    O->>O: suspend with nothing to run, linger up to 30 s
+    W--)O: the last outcome
+    O->>W: run_completed
+    O->>Q: acknowledge
+    Q-->>O: refused, coalesced wakes pending
+    Q->>O: coalesced re-run: full load, run terminal, return
+    O->>Q: acknowledge covering the count
+```
+
+## Timeline with the default numbers
+
+Times below are positions in the delivery, not measurements. Measurements on record: the review page's benchmark, where a 100-step fan-out's last step finished at a p75 of 2213 ms on an earlier head against `main`'s production baseline, and the durabench numbers under "Latency on durabench" below.
+
+| Order | What happens | Count |
+|---|---|---|
+| 1 | Replay reaches `Promise.all`; 100 steps, 3 inline slots | 1 replay |
+| 2 | Batch 1 commits; 3 inline bodies start; its 61 step messages go out | 1 `createBatch`, 64 events; 4 queue requests |
+| 3 | Batch 2 commits while the bodies run; its 36 step messages go out | 1 `createBatch`, 36 events; 3 queue requests |
+| 4 | Background steps start their bodies while their `step_started` is in flight | 97 invocations |
+| 5 | Inline outcomes commit behind the last creation batch | 3 `step_completed`, in-band |
+| 6 | Background steps run; each writes start and outcome and sends a wake, without reading the log | 97 invocations, 194 out-of-band writes, 97 wakes |
+| 7 | The orchestrator takes outcomes from the live feed, lingering while steps are open | up to 30 s per idle stretch, never past 60 s after the invocation started with a 2 min window |
+| 8 | The last outcome lands; the workflow returns | 1 `run_completed` |
+| 9 | Coalesced wakes re-run the handler in the same invocation | 1 or more re-runs, at most 32 |
+
+Function invocations, if every background step finishes while the orchestrator lingers: 1 orchestrator invocation plus 97 step invocations. A wake that arrives after the orchestrator acknowledged is one more short orchestrator delivery that finds the run finished; wakes that arrive while that delivery runs are coalesced into it. Not measured.
+
+If the steps take longer than the linger allows, the delivery acknowledges and the next wake starts a new delivery, into which the following ones are coalesced. Each one loads the log, takes in the outcomes since the last pass, and lingers again.
+
+## Latency on durabench
+
+durabench's fan-out TTLS is measured to the last branch's body start. On a 64-branch fan-out on world-vercel this PR measured a p50 of 1654 ms against 1096 ms on `main`, before the fixes below. What sat in front of the last branch's start, before and now, for 64 branches with 3 inline slots:
+
+| Cause | Before | Now |
+|---|---|---|
+| Inline starts | A first batch of their own, one round trip | Share the first creation batch (`5b53481478`) |
+| Background creations | 4 batches of 16, one round trip each, about 200 to 250 ms apart | The same first batch: 3 starts and 61 `step_created`, one round trip (#5030, `3c7440e344`) |
+| Inline outcomes | Could be queued on the writer between two creation batches | Queued only after the last creation batch is queued (`5b53481478`) |
+| Step messages | One queue request of 61 messages | 4 parallel requests of at most 16 (`e277334dbc`) |
+| Background `step_started` | Awaited before the body | In flight while the body starts (`83ee22003e`) |
+
+Cold world-vercel backend instances behind the step invocations' events WebSockets explain the p90 outliers of about 4 s: 5 of 25 runs on this PR, 0 of 25 on `main`. Why only this PR hits them is not verified.
+
+Considered and not done: dispatching each creation batch's step messages as soon as that batch commits. The early branches' out-of-band writes would contend with the later creation batches, the orchestrator would see more coalesced re-runs, and it would need a test of `Promise.race` over a wide fan-out. At 64 branches there is one creation batch, so it would change nothing there.
+
+Not yet re-measured on durabench after these fixes.
+
+## On world-local
+
+world-local has no `createBatch`, so the 100 creations are 100 single in-band writes, all committed before the inline bodies start (`delivery.ts:3146`). It has no `queueBatch` either, so the 97 messages are sent as parallel single sends (`packages/core/src/runtime/helpers.ts:1458`). It has no live-feed push, so the orchestrator polls every 2 s while bodies run, and it never lingers. It does not coalesce, so each of the 97 completion wakes is its own orchestrator delivery, delivered after the running one, one at a time: a delivery that finds nothing new since the last consumed position acknowledges after one tail read, the others load the log and replay. world-postgres behaves the same through its per-run Graphile queue, and so does world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1`. Coalescing there is an open follow-up (review page, section 7, "world-local and world-postgres do not coalesce").
+
+## Edge cases
+
+- **Inline slots already taken.** Open inline steps and running bodies count against `WORKFLOW_MAX_INLINE_STEPS`, so a second fan-out while the first runs gets fewer inline slots (`packages/core/src/runtime/spec9/delivery.ts:2968`).
+- **Inside the margin.** A fan-out created within 60 s of the window's end gets no inline slots, and every step is a background step (`delivery.ts:2961`).
+- **Window end with bodies running.** A pass that starts after the window's end hands off; running bodies settle first (`delivery.ts:2418`, `delivery.ts:2743`).
+- **A later batch fails.** The delivery fails with that error once the bodies settled, and its redelivery writes the missing creations (`delivery.ts:3137`, `delivery.ts:1748`).
+- **A batch item refused.** A refused item leaves a sealed hole; the next replay creates that step again (`packages/core/src/runtime/spec9/step-wait-creation.ts:513`).
+- **Fence refusal mid fan-out.** The writer's accepted events record every background step created so far, including later batches, and a refused delivery sends exactly those messages (`delivery.ts:464`, `delivery.ts:3854`).
+- **Busy fan-out runs out of re-runs.** Past 32 coalesced re-runs world-vercel hands the message off instead of counting an attempt (`packages/world-vercel/src/queue.ts:1039`).
+- **Completion wakes.** Every background outcome, completed or failed, sends one unkeyed, undelayed wake and reads nothing first; a delivery that finds nothing new since the position this process last consumed acknowledges after one tail read (`packages/core/src/runtime/spec9/step-handler.ts:225`, `consumed-position.ts`).
+- **A completion wake that failed to send.** The step message is redelivered, finds the step terminal, and sends the wake again before acknowledging (commit `76643fe621`; `packages/core/src/runtime/spec9/step-handler.ts:167`).
+- **Feed echo.** The live feed's copy of the delivery's own writes does not start a pass (`delivery.ts:1600`).

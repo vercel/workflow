@@ -7,6 +7,8 @@ import {
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type SpecVersion,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SORT_KEY_CURSOR_PREFIX } from '../fs.js';
@@ -32,10 +34,16 @@ function slotId(slot: number): string {
   return `${EVENT_ID_PREFIX}${String(slot).padStart(EVENT_ID_BODY_LENGTH, '0')}`;
 }
 
-async function startRun(): Promise<string> {
+/** A run before the single orchestrator, whose lazy starts the World splits. */
+const PRE_SINGLE_ORCHESTRATOR = (SPEC_VERSION_SINGLE_ORCHESTRATOR -
+  1) as SpecVersion;
+
+async function startRun(
+  specVersion: SpecVersion = SPEC_VERSION_CURRENT
+): Promise<string> {
   const created = await storage.events.create('', {
     eventType: 'run_created',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion,
     eventData: {
       deploymentId: 'dpl_slot',
       workflowName: 'slotWorkflow',
@@ -45,7 +53,7 @@ async function startRun(): Promise<string> {
   const { runId } = created.event;
   await storage.events.create(runId, {
     eventType: 'run_started',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion,
   } as any);
   return runId;
 }
@@ -185,11 +193,11 @@ describe('slot event ids', () => {
       eventData: { stepName: 'after', input: serialized([]) },
     } as any);
 
-    // run_created, run_started, a step_created + step_started per step, and
-    // the write that followed the rejections.
+    // run_created, run_started, a creation-bearing step_started per step,
+    // and the write that followed the rejections.
     const slots = slotsOf(await listEventIds(runId));
     expect(slots).toEqual(
-      Array.from({ length: width * 2 + 3 }, (_, i) => FIRST_EVENT_SLOT + i)
+      Array.from({ length: width + 3 }, (_, i) => FIRST_EVENT_SLOT + i)
     );
   });
 
@@ -212,7 +220,7 @@ describe('slot event ids', () => {
   });
 
   it('numbers a lazily created step_created from the same allocator', async () => {
-    const runId = await startRun();
+    const runId = await startRun(PRE_SINGLE_ORCHESTRATOR);
     // A step_started carrying the creation payload with no step_created ahead
     // of it makes the World synthesize one. That synthetic event is the only
     // event the World writes without a caller asking for it by name, so it is
@@ -220,7 +228,7 @@ describe('slot event ids', () => {
     await storage.events.create(runId, {
       eventType: 'step_started',
       correlationId: 'step_lazy',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: PRE_SINGLE_ORCHESTRATOR,
       eventData: { stepName: 'lazy', input: serialized([]) },
     } as any);
 
@@ -247,12 +255,12 @@ describe('slot event ids', () => {
   });
 
   it('paginates a run whose step_created events were created lazily', async () => {
-    const runId = await startRun();
+    const runId = await startRun(PRE_SINGLE_ORCHESTRATOR);
     for (let i = 0; i < 6; i++) {
       await storage.events.create(runId, {
         eventType: 'step_started',
         correlationId: `step_lazy_${i}`,
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: PRE_SINGLE_ORCHESTRATOR,
         eventData: { stepName: `lazy${i}`, input: serialized([]) },
       } as any);
     }

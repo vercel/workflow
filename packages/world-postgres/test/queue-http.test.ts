@@ -2,7 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { getQueueTopicPrefix } from '@workflow/world';
+import {
+  getQueueTopicPrefix,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue } from '../src/queue.js';
@@ -29,7 +32,8 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   let pool: TestPool;
   let connectionString: string;
   let server: Server;
-  let phase: 'headers' | 'body' | 'abort' | 'hook' | 'reschedule';
+  let phase: 'headers' | 'body' | 'abort' | 'hook' | 'serial' | 'reschedule';
+  let serialStarts: string[] = [];
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
   let disconnected = Promise.withResolvers<void>();
@@ -41,7 +45,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     connectionString = container.getConnectionUri();
     pool = new TestPool({ connectionString, max: 4 });
     server = createServer(async (request, response) => {
-      await request.toArray();
+      const body = (await request.toArray()) as Buffer[];
       attempts.push(String(request.headers['x-vqs-message-attempt']));
       deliveryCounts.push(
         String(request.headers['x-vqs-message-delivery-count'])
@@ -59,6 +63,17 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       if (phase === 'hook') {
         if (attempts.length === 1) await releaseInlineStep.promise;
         else releaseInlineStep.resolve();
+        response.end('{}');
+        return;
+      }
+      if (phase === 'serial') {
+        const { stepId } = JSON.parse(Buffer.concat(body).toString()) as {
+          stepId?: string;
+        };
+        serialStarts.push(stepId ?? 'orchestrator');
+        // The first orchestrator delivery holds until the test releases it,
+        // as one running an inline step would.
+        if (serialStarts.length === 1) await releaseInlineStep.promise;
         response.end('{}');
         return;
       }
@@ -137,7 +152,9 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     }
   });
 
-  test('a { timeoutSeconds } redelivery reports the next delivery count', async () => {
+  // `{ timeoutSeconds: 0 }` on a spec 9 run is a handoff: redelivered at
+  // once, and not counted as an attempt.
+  test('a { timeoutSeconds: 0 } handoff reports the next delivery count and leaves attempt alone', async () => {
     phase = 'reschedule';
     attempts = [];
     deliveryCounts = [];
@@ -152,6 +169,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     try {
       await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
         runId: `run_${randomUUID()}`,
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       });
       // Each replacement job is a new Graphile job whose own attempt count
       // starts over. `deliveryCount` keeps counting the message's
@@ -167,7 +185,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     }
   });
 
-  test('a same-run wake can release an inline step before its delivery finishes', async () => {
+  test('a same-run wake of a spec 8 run can release an inline step before its delivery finishes', async () => {
     phase = 'hook';
     attempts = [];
     accepted = Promise.withResolvers<void>();
@@ -200,6 +218,65 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         )
         .toBe(0);
       expect(attempts).toEqual(['1', '1']);
+    } finally {
+      releaseInlineStep.resolve();
+      await queue.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  });
+
+  test('a same-run wake of a spec 9 run waits for the in-flight orchestrator delivery while its steps run', async () => {
+    phase = 'serial';
+    attempts = [];
+    serialStarts = [];
+    accepted = Promise.withResolvers<void>();
+    releaseInlineStep = Promise.withResolvers<void>();
+    const queue = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 4,
+        pollInterval: 50,
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+    const runId = `run_${randomUUID()}`;
+    const topic = `${getQueueTopicPrefix('workflow')}test` as const;
+    try {
+      const runSpecVersion = SPEC_VERSION_SINGLE_ORCHESTRATOR;
+      await queue.queue(topic, { runId, runSpecVersion });
+      await accepted.promise;
+      // A wake (no idempotency key) and a step message for the same run,
+      // while the first delivery is still running.
+      await queue.queue(topic, { runId, runSpecVersion });
+      await queue.queue(topic, {
+        runId,
+        stepId: 'step_1',
+        stepName: 'add',
+        runSpecVersion,
+      });
+      // The step message runs; the wake does not, with free worker slots.
+      await expect
+        .poll(() => serialStarts, { timeout: 2_500 })
+        .toEqual(['orchestrator', 'step_1']);
+      await sleep(500);
+      expect(serialStarts).toEqual(['orchestrator', 'step_1']);
+
+      releaseInlineStep.resolve();
+      await expect
+        .poll(() => serialStarts, { timeout: 2_500 })
+        .toEqual(['orchestrator', 'step_1', 'orchestrator']);
+      await expect
+        .poll(
+          async () => {
+            const jobs = await pool.query(
+              'SELECT count(*)::int AS count FROM graphile_worker._private_jobs'
+            );
+            return jobs.rows[0].count;
+          },
+          { timeout: 2_500 }
+        )
+        .toBe(0);
     } finally {
       releaseInlineStep.resolve();
       await queue.close();

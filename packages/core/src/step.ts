@@ -53,7 +53,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         stepName,
         args,
       });
-      ctx.eventsConsumer.subscribe((event) => {
+      // Keyed to the step: for another entity's event the consumer only
+      // declines, so the walk does not offer it those events.
+      ctx.eventsConsumer.subscribeFor(correlationId, (event) => {
         if (!event) {
           // We've reached the end of the events, so this step has either not been run or is currently running.
           // Crucially, if we got here, then this step Promise does
@@ -63,19 +65,18 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
-        stepLogger.debug('Step consumer event processing', {
-          correlationId,
-          stepName,
-          args: args.join(', '),
-          incomingCorrelationId: event.correlationId,
-          isMatch: correlationId === event.correlationId,
-          eventType: event.eventType,
-        });
-
         if (event.correlationId !== correlationId) {
           // We're not interested in this event - the correlationId belongs to a different entity
           return EventConsumerResult.NotConsumed;
         }
+
+        // Logged for this step's own events only, so the line costs one
+        // call per event rather than one per pending step per event.
+        stepLogger.debug('Step consumer event processing', {
+          correlationId,
+          stepName,
+          eventType: event.eventType,
+        });
 
         const eventStepName =
           'eventData' in event &&

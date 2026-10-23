@@ -16,6 +16,7 @@
     "throttle-error",
     "entity-conflict-error",
     "precondition-failed-error",
+    "in-band-superseded-error",
     "run-expired-error",
     "run-not-supported-error",
     "too-early-error"

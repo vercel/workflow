@@ -1048,10 +1048,13 @@ export const IN_BAND_SUPERSEDED_CODE = 'in-band-superseded';
  * written in-band since this one loaded the log (HTTP 412,
  * `in-band-superseded`).
  *
- * The in-band fence keeps a run to one orchestrator writer: the World counts
- * the positions it allocated to in-band writes, and accepts an in-band write
- * only when the writer's expected count matches. Nothing is written or
- * allocated for a refused write.
+ * The in-band fence is what keeps a run to one orchestrator writer. An
+ * invocation that receives this error has been superseded: it stops writing
+ * and stops running step bodies, sends the queue messages its own committed
+ * writes still owe (background step messages, wait timers), and acknowledges
+ * its queue message. The invocation that superseded it already holds every
+ * write it committed and drives the run on. The runtime handles all of this;
+ * users calling a World's storage API directly may encounter it.
  *
  * @property seq - The run's allocated position count at the time of the
  *   refusal, when the World reports it. Diagnostic only.

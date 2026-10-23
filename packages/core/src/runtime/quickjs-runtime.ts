@@ -32,10 +32,12 @@
 import { SerializationError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
+  classifyEntityEvent,
   type Event,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
+  TERMINAL_EVENT_CLASSES,
   type WorkflowRun,
   type WorldCapabilities,
 } from '@workflow/world';
@@ -1859,6 +1861,7 @@ export async function startQuickJSWorkflow(
 
       // Process the delta events and drain jobs.
       {
+        const inert = beginTerminalInertBatch(vm, events, lastUlid);
         let maxIterations = 100;
         let madeProgress: boolean;
         do {
@@ -1868,6 +1871,7 @@ export async function startQuickJSWorkflow(
             events,
             advanceClock,
             () => lastUlid,
+            inert,
             options.encryptionKey
           );
           let batch: number;
@@ -1876,6 +1880,7 @@ export async function startQuickJSWorkflow(
             if (batch > 0) madeProgress = true;
           } while (batch > 0);
         } while (madeProgress && --maxIterations > 0);
+        endTerminalInertBatch(vm, inert, lastUlid);
       }
 
       return makeLiveSession(
@@ -2159,6 +2164,7 @@ export async function startQuickJSWorkflow(
     // subsequent events. Re-processing events matches these new resolvers
     // against events that were already delivered.
     {
+      const inert = beginTerminalInertBatch(vm, events, lastUlid);
       let maxIterations = 100;
       let madeProgress: boolean;
       do {
@@ -2174,6 +2180,7 @@ export async function startQuickJSWorkflow(
           events,
           advanceClock,
           () => lastUlid,
+          inert,
           options.encryptionKey
         );
         do {
@@ -2181,6 +2188,7 @@ export async function startQuickJSWorkflow(
           if (batch > 0) madeProgress = true;
         } while (batch > 0);
       } while (madeProgress && --maxIterations > 0);
+      endTerminalInertBatch(vm, inert, lastUlid);
       if (madeProgress && maxIterations === 0) {
         // The drain loop hit its bound while still making progress:
         // proceeding as if it converged would present as a mysterious
@@ -2294,6 +2302,7 @@ function makeLiveSession(
         }
       }
 
+      const inert = beginTerminalInertBatch(vm, newEvents, getLastUlid());
       let maxIterations = 100;
       let madeProgress: boolean;
       do {
@@ -2308,6 +2317,7 @@ function makeLiveSession(
           newEvents,
           advanceClock,
           getLastUlid,
+          inert,
           encryptionKey
         );
         do {
@@ -2315,6 +2325,7 @@ function makeLiveSession(
           if (batch > 0) madeProgress = true;
         } while (batch > 0);
       } while (madeProgress && --maxIterations > 0);
+      endTerminalInertBatch(vm, inert, getLastUlid());
 
       const next = checkWorkflowState(vm, serde, {
         keepAliveOnSuspend: true,
@@ -2374,10 +2385,13 @@ async function processEvents(
   advanceClock: (ms: number) => void,
   /** The last correlation-id ULID this VM drew (see isConsumedTerminal). */
   getLastUlid: () => string | undefined,
+  /** This batch's terminal-inert facts (see beginTerminalInertBatch). */
+  inert: TerminalInertBatch,
   encryptionKey?: DecryptionKey
 ): Promise<boolean> {
   let resolved = false;
-  for (const event of events) {
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
     // A sealed-log noop occupies a slot whose writer died; the run never
     // observed it. Step over it BEFORE the clock line below, not at the
     // switch: its `createdAt` is the sealer's wall clock and can postdate
@@ -2406,10 +2420,34 @@ async function processEvents(
     const cid = event.correlationId;
     if (!cid) continue;
 
-    // JSON.stringify handles quotes, backslashes and control characters;
-    // correlation ids are host-generated ULIDs today, but the eval-string
-    // safety shouldn't depend on that invariant being asserted nowhere.
+    // Terminal-inert, the rule `EventsConsumer` applies on the node:vm
+    // engine: once an entity's terminal event (step outcome, wait
+    // completion, hook disposal, workflow attribute write) is in the log,
+    // every event AFTER it under the same correlation id is inert. The test
+    // is a log position, not "this VM has seen the terminal": the fixed-point
+    // loop re-scans the same batch, and the entity's earlier events must
+    // still reach `markCreated` on a re-scan (a terminal buffered before the
+    // VM called the step leaves the step's pending op to be marked then).
     const cidJs = JSON.stringify(cid);
+    const terminalIndex = inert.firstTerminalIndex.get(cid);
+    if (
+      inert.closedBefore.has(cid) ||
+      (terminalIndex !== undefined && index > terminalIndex)
+    ) {
+      // Inert for the workflow, but the pending-op bookkeeping still
+      // applies: an op under this id has its creation in the log either
+      // way.
+      markCreated(vm, cidJs);
+      if (event.eventType === 'hook_disposed') {
+        markCreated(vm, cidJs, 'hook_dispose');
+      }
+      continue;
+    }
+
+    // JSON.stringify (above) handles quotes, backslashes and control
+    // characters; correlation ids are host-generated ULIDs today, but the
+    // eval-string safety shouldn't depend on that invariant being asserted
+    // nowhere.
     const eventData =
       'eventData' in event
         ? (event.eventData as Record<string, unknown>)
@@ -3078,6 +3116,132 @@ async function processEvents(
     }
   }
   return resolved;
+}
+
+/**
+ * The terminal-inert facts for one batch of events, which every scan of that
+ * batch shares (the fixed-point loop re-scans a batch while it makes
+ * progress, and must reach the same verdicts each time).
+ *
+ * - `firstTerminalIndex`: the position of the first terminal event per
+ *   correlation id in this batch. An event after it is inert; an event
+ *   before it is not, even on a re-scan that runs after the terminal settled
+ *   the entity.
+ * - `closedBefore`: the correlation ids whose terminal is in an EARLIER
+ *   batch, so every event of this batch under them is inert. This is read
+ *   from the VM heap when the batch begins (see TERMINAL_STATE_JS), so it
+ *   travels with a VM snapshot: a restored VM is fed only the events after
+ *   the snapshot, and a straggler among them is recognized against a
+ *   terminal it saw before.
+ *
+ * Both are host-side and live for one batch only. Nothing here grows with
+ * the run's length.
+ */
+interface TerminalInertBatch {
+  firstTerminalIndex: Map<string, number>;
+  closedBefore: Set<string>;
+}
+
+/**
+ * VM-side predicate `reflected(cid)`: whether the VM's own state already
+ * shows that the entity's terminal event was processed, without a record
+ * per entity. `lastUlid` (the last id this VM drew, or null) is in scope.
+ *
+ * - Step, wait and attribute ids are drawn from the run's monotonic ULID
+ *   sequence by the call that registers their resolver, and only a
+ *   terminal event removes that resolver. A drawn id with no resolver has
+ *   had its terminal; an undrawn id has had it exactly when it sits in
+ *   `__terminalBuffer` (an undrawn id's terminal is always buffered).
+ * - A hook id is drawn the same way, but the hook object can register a
+ *   new resolver after its disposal, so resolver absence says nothing.
+ *   Instead: a drawn user hook keeps its `__hooks` entry until this run's
+ *   own disposal is matched (`__releaseDisposedHook`), and a disposal by
+ *   another run's takeover sets `forceClaimed` on it.
+ *
+ * Everything else (an AbortController's system hook, a hook disposed in
+ * the log before this VM reached `dispose()` or created it, an id outside
+ * the ULID scheme) is not reflected, and its terminal is recorded in
+ * `__unreflectedTerminals` until it is (see endTerminalInertBatch).
+ */
+const TERMINAL_STATE_JS = `
+  var re = /^(step|wait|attr|hook)_([0-9A-HJKMNP-TV-Z]{26})$/;
+  function reflected(cid) {
+    var m = re.exec(cid);
+    if (!m) return false;
+    var drawn = lastUlid !== null && m[2] <= lastUlid;
+    if (m[1] !== "hook") {
+      return drawn ? !globalThis.__resolvers[cid] : !!globalThis.__terminalBuffer[cid];
+    }
+    if (!drawn || (globalThis.__abortSignals && globalThis.__abortSignals[cid])) return false;
+    var state = globalThis.__hooks && globalThis.__hooks[cid];
+    return !state || !!state.forceClaimed;
+  }
+`;
+
+/**
+ * Starts a batch: finds each correlation id's first terminal event in it,
+ * and asks the VM which ids were already closed by an earlier batch. Also
+ * drops record entries the VM state reflects by now, which keeps the record
+ * at the handful of entities whose terminal outran this VM.
+ */
+function beginTerminalInertBatch(
+  vm: QuickJS,
+  events: Event[],
+  lastUlid: string | undefined
+): TerminalInertBatch {
+  const firstTerminalIndex = new Map<string, number>();
+  const cids = new Set<string>();
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
+    const cid = event.correlationId;
+    if (!cid || isSealedNoopEvent(event)) continue;
+    cids.add(cid);
+    if (firstTerminalIndex.has(cid)) continue;
+    const entityClass = classifyEntityEvent(event);
+    if (
+      entityClass !== undefined &&
+      TERMINAL_EVENT_CLASSES.has(entityClass.eventClass)
+    ) {
+      firstTerminalIndex.set(cid, index);
+    }
+  }
+  if (cids.size === 0) return { firstTerminalIndex, closedBefore: new Set() };
+  // An object result must be disposed: a leaked handle keeps the array
+  // alive in the VM heap.
+  using closedHandle = vm.evalCode(
+    `(function(cids, lastUlid){${TERMINAL_STATE_JS}
+        var record = globalThis.__unreflectedTerminals;
+        if (record) for (var k in record) if (reflected(k)) delete record[k];
+        var out = [];
+        for (var i = 0; i < cids.length; i++) {
+          if ((record && record[cids[i]]) || reflected(cids[i])) out.push(cids[i]);
+        }
+        return out;
+      })(${JSON.stringify([...cids])}, ${JSON.stringify(lastUlid ?? null)})`
+  );
+  const closed = vm.dump(closedHandle) as string[];
+  return { firstTerminalIndex, closedBefore: new Set(closed) };
+}
+
+/**
+ * Ends a batch: records each terminal it held that the VM state does not
+ * reflect (see TERMINAL_STATE_JS), so the next batch, or a VM restored
+ * from a snapshot taken now, still treats its entity as closed.
+ */
+function endTerminalInertBatch(
+  vm: QuickJS,
+  inert: TerminalInertBatch,
+  lastUlid: string | undefined
+): void {
+  if (inert.firstTerminalIndex.size === 0) return;
+  vm.evalCode(
+    `(function(cids, lastUlid){${TERMINAL_STATE_JS}
+      for (var i = 0; i < cids.length; i++) {
+        if (reflected(cids[i])) continue;
+        (globalThis.__unreflectedTerminals = globalThis.__unreflectedTerminals || {})[cids[i]] = true;
+      }
+    })(${JSON.stringify([...inert.firstTerminalIndex.keys()])}, ${JSON.stringify(lastUlid ?? null)})`
+  ).dispose();
 }
 
 /**

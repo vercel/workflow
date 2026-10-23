@@ -1,34 +1,17 @@
 import { globalSingleton } from '@workflow/utils';
 import { runtimeLogger } from '../logger.js';
-import type { StepExecutionResult } from './step-executor.js';
 
 /**
  * In-process single-flight for step body execution, keyed by
- * `runId:correlationId`.
+ * `runId:correlationId`: two executions of one step in one process are two
+ * deliveries racing for its body. The loser awaits the winner's settlement
+ * (success or failure) and then returns what its caller chose for a loser,
+ * without running the body. Each orchestrator wraps this with its own loser
+ * outcome; see `spec8/step-single-flight.ts` and `spec9/step-single-flight.ts`.
  *
- * This is a required companion to inline step ownership (see
- * `isInlineOwnershipEnabled` in constants.ts): the ownership lease is a
- * *death proof* only on platforms with a bounded invocation lifetime. On
- * worlds without an invocation kill bound (world-local's single process,
- * self-hosted deployments) a delayed backstop can fire while the owning
- * execution is still mid-body, in the same process. This map absorbs that
- * race: the loser awaits the winner's settlement and then acks WITHOUT
- * executing. On Vercel Fluid compute it also absorbs same-instance races
- * between an owner redelivery and a backstop.
- *
- * The loser must not ack-and-skip early (before the winner settles): a crash
- * after an early ack would consume the loser's queue message while the
- * winner's outcome is still unknown, potentially orphaning the step with no
- * message left to drive it. Awaiting settlement first keeps the at-least-once
- * envelope intact: if the loser's own invocation hits its deadline while
- * waiting, its message redelivers and re-checks, degrading gracefully to
- * polling.
- *
- * Cross-instance duplicates (two separate processes racing the same step)
- * are out of scope here; that is what the ownership lease bounds on
- * platforms where it is a death proof, and the documented residual risk on
- * multi-instance self-hosted worlds (mitigate by raising
- * `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`).
+ * The loser must not return early (before the winner settles): its caller
+ * would act on its message while the winner's outcome is still unknown.
+ * Cross-instance duplicates (two processes racing one step) are not covered.
  */
 // On `globalThis` (see `globalSingleton`), not module scope: a per-copy map is
 // not single-flight. Two invocations reaching this module through different
@@ -38,24 +21,21 @@ import type { StepExecutionResult } from './step-executor.js';
 const singleFlight = globalSingleton(
   '@workflow/core//stepSingleFlight',
   1,
-  () => ({ inFlight: new Map<string, Promise<StepExecutionResult>>() })
+  () => ({ inFlight: new Map<string, Promise<unknown>>() })
 );
 
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
- * already in flight in this process. The winner's result is returned to the
- * winner; a loser awaits the winner's settlement (success OR failure) and
- * then returns `{ type: 'skipped' }` so its caller acks without running the
- * body. A winner failure is not propagated to the loser: the winner's own
- * queue message redelivers and drives the retry, so exactly one message
- * keeps owning the outcome.
+ * already in flight in this process; a loser gets `loserResult()` once the
+ * winner settled.
  */
-export async function runStepSingleFlight(
+export async function runSingleFlight<R>(
   runId: string,
   correlationId: string,
-  execute: () => Promise<StepExecutionResult>,
+  execute: () => Promise<R>,
+  loserResult: () => R,
   logLevel: 'debug' | 'warn' = 'warn'
-): Promise<StepExecutionResult> {
+): Promise<R> {
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
   if (existing) {
@@ -68,10 +48,10 @@ export async function runStepSingleFlight(
     try {
       await existing;
     } catch {
-      // The winner failed (typically a transient world error). Its own queue
-      // message redelivers and retries; this loser still skips.
+      // The winner failed (typically a transient world error). The loser's
+      // outcome does not depend on how the winner settled.
     }
-    return { type: 'skipped' };
+    return loserResult();
   }
 
   const promise = execute();

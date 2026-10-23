@@ -15,6 +15,7 @@ import {
 } from './events.js';
 import {
   createWorkflowRunEventV4,
+  EVENTS_API_VERSION,
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -318,7 +319,8 @@ describe('in-band writer fence counts (world-vercel)', () => {
     agent
       .get(origin)
       .intercept({
-        path: (path) => path.startsWith('/api/v4/runs/wrun_1/events'),
+        path: (path) =>
+          path.startsWith(`/api/${EVENTS_API_VERSION}/runs/wrun_1/events`),
         method: 'GET',
       })
       .reply(
@@ -413,7 +415,7 @@ describe('in-band writer fence counts (world-vercel)', () => {
       agent
         .get(origin)
         .intercept({
-          path: '/api/v4/runs/wrun_1/events/step_completed',
+          path: `/api/${EVENTS_API_VERSION}/runs/wrun_1/events/step_completed`,
           method: 'POST',
         })
         .reply(

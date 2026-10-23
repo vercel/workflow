@@ -1,0 +1,456 @@
+---
+title: "Edge cases"
+description: The failure and overlap scenarios of the spec 9 single orchestrator, each with a short timeline, its outcome, and a link to the mechanism.
+---
+
+# Edge cases
+
+<Callout type="warn">
+This page is temporary review material for the pull request that introduces spec version 9, and is removed before merge. The written review is [Review: single orchestrator](/docs/changelog/single-orchestrator-review).
+</Callout>
+
+Each scenario has a timeline, the outcome, and the page that explains the mechanism. The facts come from the review page and were checked against the code at the references given; anything not checked says so.
+
+| Scenario | Status |
+|---|---|
+| [Lease stall overlap](#lease-stall-overlap) | Handled by the fence |
+| [Self-superseded 412](#self-superseded-412) | Fixed |
+| [Crash between commit and dispatch](#crash-between-commit-and-dispatch) | Handled by the creator rules |
+| [Lost completion wake](#lost-completion-wake) | Fixed (`76643fe621`) |
+| [Inline `maxRetries: 0` step after an orchestrator crash](#inline-maxretries-0-step-after-an-orchestrator-crash) | Fixed (`75ddd45207`) |
+| [Background body before a refused start](#background-body-before-a-refused-start) | Behavior change, accepted |
+| [Uncoalesced wakes on world-local and world-postgres](#uncoalesced-wakes-on-world-local-and-world-postgres) | Open follow-up |
+| [Coalesced timer losing its re-arm](#coalesced-timer-losing-its-re-arm) | Fixed |
+| [Two concurrent sleeps](#two-concurrent-sleeps) | Fixed |
+| [Run-ahead stop re-runs step bodies](#run-ahead-stop-re-runs-step-bodies) | Accepted, bounded |
+| [Replay divergence recovered in place](#replay-divergence-recovered-in-place) | Handled |
+| [Deadline handoff and the inline-start margin](#deadline-handoff-and-the-inline-start-margin) | Handled, one extra hop |
+| [Stream-flush handoff](#stream-flush-handoff) | Handled |
+| [Coalesced re-runs exhausted](#coalesced-re-runs-exhausted) | Fixed |
+| [`run.wakeUp()` lost under coalescing](#runwakeup-lost-under-coalescing) | Accepted |
+| [Spec 8 retry chains over 12 hours](#spec-8-retry-chains-over-12-hours) | Fixed |
+| [Older SDK after a rollback](#older-sdk-after-a-rollback) | Known limitation |
+| [world-postgres resets `attempt`](#world-postgres-resets-attempt) | Known gap |
+| [Inline retry re-sent past the 24-hour dedupe](#inline-retry-re-sent-past-the-24-hour-dedupe) | Known gap, not verified |
+| [Long step retries on Vercel](#long-step-retries-on-vercel) | Known cost |
+| [QuickJS differences](#quickjs-differences) | Known differences |
+
+## Lease stall overlap
+
+An orchestrator's event loop blocks past its queue lease, for example in a CPU-heavy inline step. The queue redelivers the message and a second orchestrator starts.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant O1 as Delivery 1
+    participant O2 as Delivery 2
+    participant W as World
+    Q->>O1: deliver m1
+    Note over O1: event loop blocked past the lease
+    Q->>O2: lease lapsed, deliver m1 again, attempt 2
+    O2->>W: load log, write in-band, count moves
+    O1->>W: next in-band write at its old count
+    W-->>O1: 412 InBandSupersededError
+    O1->>Q: messages its own writes owe, one keyed wake
+    Note over Q: wake coalesced into O2
+    O2->>W: drives the run on
+```
+
+**Outcome.** Nothing is written twice, and O2 drives the run. What the queue answers to O1's acknowledgment of a lapsed lease is not verified here. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1011`).
+
+## Self-superseded 412
+
+The world-vercel backend also answers 412 when it sealed the writer's own position (its put outlived the staleness bound), or after a 409 that allocated a position and moved the count past the writer's. No other orchestrator exists.
+
+```mermaid
+sequenceDiagram
+    participant Q as Vercel Queues
+    participant O as Only delivery
+    participant W as World
+    O->>W: in-band write, slow put
+    W->>W: seals the position past the staleness bound
+    W-->>O: 412 in-band-superseded
+    O->>Q: owed messages, one keyed wake
+    Note over Q: O holds the key, wake coalesced into O
+    O->>Q: acknowledge
+    Q-->>O: refused, 1 coalesced
+    Note over O: re-run from a fresh load with a fresh writer
+    O->>W: writes at the new count, run completes
+```
+
+**Outcome.** Before the fix, a refused delivery acknowledged with no wake and the run stopped until something else woke it. Now it sends one keyed wake. On world-local and world-postgres the wake is delivered after the running delivery. A delivery refused on every pass ends after 32 re-runs with a handoff. Tests: `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts`. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1034`).
+
+## Crash between commit and dispatch
+
+A delivery commits a background step's `step_created` and dies before it sends the step's message.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant O1 as Delivery 1 of m1
+    participant O2 as Delivery 2 of m1
+    participant W as World
+    Q->>O1: deliver m1, attempt 1
+    O1->>W: step_created s1, creatorMessageId m1
+    Note over O1: crash before sending s1's message
+    Q->>O2: lease lapsed, m1 again, attempt 2
+    O2->>W: load log
+    Note over O2: s1 created by m1, no step_started, creator count 2
+    O2->>Q: s1's message, same stable idempotency key
+```
+
+**Outcome.** The redelivery re-sends the message. A delivery after a handoff of a first delivery has creator count 1 and re-sends nothing, as a new message would not (`stepsToReenqueue`, `packages/core/src/runtime/spec9/creator-rules.ts:22`; creator count `packages/core/src/runtime/spec9/delivery.ts:345`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Lost completion wake
+
+A background step commits its outcome, and sending its orchestrator wake fails. That wake is the only thing that moves the run on: the node orchestrator arms no backstop for background steps on spec 9.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant S1 as Step delivery 1
+    participant S2 as Step delivery 2
+    participant W as World
+    participant O as Orchestrator
+    Q->>S1: step message s1
+    S1->>W: step_started, body, step_completed
+    S1--xQ: wake send fails, the handler throws
+    Q->>S2: s1 again, deliveryCount 2
+    S2->>W: read the log, step terminal
+    Note over S2: before the fix: acknowledge, no wake, the run stalls
+    S2->>Q: current: one plain wake, then acknowledge
+    Q->>O: wake, or coalesced into a live delivery
+    O->>W: load, takes the outcome in
+```
+
+**Outcome.** Fixed in commit `76643fe621`: a redelivery whose decision is to acknowledge because the step is terminal (`step-terminal` in `packages/core/src/runtime/spec9/step-delivery.ts:87`) sends the plain wake again (`packages/core/src/runtime/spec9/step-handler.ts:167`). A live orchestrator absorbs it, and one with nothing new acknowledges it after a tail read. A run-terminal acknowledgment still sends nothing. Test: `re-sends the wake when a redelivered step message finds the step terminal` in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts`, both engines. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Inline `maxRetries: 0` step after an orchestrator crash
+
+An orchestrator commits an inline `maxRetries: 0` step's `step_started` and dies before the outcome.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant O1 as Delivery 1
+    participant O2 as Delivery 2
+    participant W as World
+    Q->>O1: deliver m1
+    O1->>W: step_started inline true, attempt 1
+    Note over O1: crash inside the body
+    Q->>O2: m1 again, attempt 2
+    O2->>W: load, open inline step, one start
+    Note over O2: before the fix: attempt 2 ran the body again
+    O2->>W: current: step_failed, attempt 2 above maxRetries + 1, no body
+```
+
+**Outcome.** Fixed in commit `75ddd45207`: `executeStep` fails an attempt past `maxRetries + 1` without running the body (`packages/core/src/runtime/spec9/step-executor.ts:403`), for inline and background steps alike. Only a background step's own message checked this before. It also covers a winner re-running a refused overlap's open inline step. Test: `runs an inline maxRetries: 0 step at most once across an orchestrator crash` in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts`, both engines. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Background body before a refused start
+
+On a plain first delivery, a background step that allows retries starts its body while its `step_started` is in flight (commit `83ee22003e`).
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant S as Step invocation
+    participant W as World
+    Q->>S: step message, deliveryCount 1
+    S-)W: step_started, out-of-band
+    S->>S: body runs, side effects happen
+    alt start committed
+        S->>W: outcome
+        S->>Q: one plain wake
+    else 429 or too early
+        Note over S: outcome discarded
+        S->>Q: redeliver after the backoff
+    else run ended, for example cancelled
+        Note over S: outcome discarded
+        S->>Q: acknowledge
+    end
+```
+
+**Outcome.** Accepted behavior change: on a cancelled run or under throttling the body runs before the refusal arrives, where the awaited start used to be refused first. A `maxRetries: 0` step and every delivery that reads the log keep the awaited start, and `WORKFLOW_OPTIMISTIC_INLINE_START=0` restores it for all steps (`forceOptimisticStart`, `packages/core/src/runtime/spec9/step-handler.ts`; `mayRunBeforeItsStart`, `packages/core/src/runtime/spec9/step-executor.ts:79`). Tests in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts` and `suspension.runtime.test.ts`. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Uncoalesced wakes on world-local and world-postgres
+
+Both mint spec 9 runs by default and serialize a run's orchestrator deliveries, but neither coalesces.
+
+```mermaid
+sequenceDiagram
+    participant S as Step invocations
+    participant G as Per-run gate
+    participant O as Orchestrator deliveries
+    S->>G: wake 1 .. wake n, one per background outcome
+    loop one delivery per wake, in series
+        G->>O: next wake
+        alt tail at the consumed position
+            O->>O: one tail read, acknowledge
+        else new events
+            O->>O: full load and replay
+        end
+    end
+```
+
+**Outcome.** Open follow-up: a fan-out of `n` background steps costs `n` orchestrator deliveries in series. world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has the same shape with one function invocation per wake. What the two Worlds would need (re-runs with the gate held, the coalesced count, `invocationStartedAt`, a handoff at the front of the run's queue) is on [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology#follow-up-coalescing-on-world-local-and-world-postgres).
+
+## Coalesced timer losing its re-arm
+
+Earlier rule: only a wait's own timer delivery armed the chain's next timer. A keyed timer that came due while a hook or step wake held the run was coalesced, and the holder completed the wait but armed nothing.
+
+```mermaid
+sequenceDiagram
+    participant Q as Vercel Queues
+    participant H as Hook wake delivery
+    participant W as World
+    Note over W: w1 and w2 open, one chain, timer T1 for w1
+    Q->>H: hook wake holds the key
+    Q-->>Q: T1 comes due, coalesced into H
+    H->>W: re-run, wait_completed w1
+    Note over H: earlier rule, H is not T1, arms nothing for w2
+    Note over H: current rule, H completed w1 and owns the chain, arms w2
+```
+
+**Outcome.** Fixed: the delivery that completes a wait owns its chain, whatever message it is (`ownedWaitChains`, `packages/core/src/runtime/spec9/creator-rules.ts:116`). The same loss hit a coalesced intermediate hop of a long sleep, which is why intermediate hops are unkeyed. Tests: `packages/core/src/runtime/spec9/wait-chains.runtime.test.ts`. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
+
+## Two concurrent sleeps
+
+`await Promise.all([sleep("1h"), sleep("2h")])`. One timer covers the chain's earliest wait.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant T1 as Timer delivery for w1
+    participant W as World
+    Q->>T1: T1 at 1h
+    T1->>W: wait_completed w1
+    Note over T1: first version, owned only its own wait, armed nothing for w2
+    Note over T1: second version, owned the chain, but a coalesced T1 still lost it
+    T1->>Q: current, completed w1 so arms w2 per chain
+```
+
+**Outcome.** Fixed twice: first by letting a timer own its chain, then by letting the completing delivery own it. A delivery owning waits of two chains also used to arm only the earliest of all; it now arms the earliest of each chain (`waitTimersToArm`, `packages/core/src/runtime/spec9/creator-rules.ts:176`). e2e did not catch the original bug, because its only parallel sleeps have equal durations. Residual: a delivery that commits `wait_completed` and dies before its next send leaves that chain without a timer, unless it was the timer's own delivery; no test covers it. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
+
+## Run-ahead stop re-runs step bodies
+
+A run-ahead stop (`RunAheadStopError`) lets the outcomes still allowed commit, sends what its writes owe, reloads, and replays from cold in the same delivery with run-ahead off. A step whose body started ahead of its creation, and whose creation the stop refused, has no committed start, so the restarted pass runs its body again.
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator delivery
+    participant W as World
+    O->>O: step A body runs, outcome handed to the workflow early
+    O->>O: steps B and C start ahead of their creation
+    O->>W: speculative batch, step_completed A, creation of B and C
+    W-->>O: an entry refused
+    Note over O: RunAheadStopError, restart in place, run-ahead off
+    O->>W: fresh load, B and C have no committed start
+    O->>O: B and C bodies run again
+```
+
+**Outcome.** Up to `WORKFLOW_RUN_AHEAD_DEPTH` bodies can run twice per stop. The default in code is 10 (`RUN_AHEAD_DEPTH`, `packages/core/src/runtime/constants.ts:411`). A step with `maxRetries: 0` never starts before its start commits (`mayRunBeforeItsStart`, `packages/core/src/runtime/spec9/step-executor.ts:79`). A second stop after the one restart hands off (`MAX_RUN_AHEAD_RESTARTS`, 1).
+
+Stops in the code come from a refused speculative batch entry, a World that does not store `occurredAt` as `createdAt` (which also turns run-ahead off for that World), and the hazard check (`packages/core/src/runtime/spec9/delivery.ts:2160`, `:2234`, `:1963`). An awaited hook is not a trigger: it makes the boundary not inert, so the orchestrator does not run ahead past it, and the hazard check is documented as ruled out by the classification and the fence (`packages/core/src/runtime/spec9/delivery.ts:1915`). Which events trigger a stop in practice is not verified. Mechanism: [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
+
+## Replay divergence recovered in place
+
+A replay diverges from the log.
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator delivery
+    participant W as World
+    O->>O: replay throws ReplayDivergenceError
+    O->>O: record divergence, count 1
+    O->>W: discard the VM, reload the log
+    O->>O: replay from cold in a fresh VM
+    alt replay gets past it
+        O->>W: first natural write carries replayDivergenceCount
+    else more than WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES
+        O->>W: run_failed CORRUPTED_EVENT_LOG
+    end
+```
+
+**Outcome.** Up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` (3, `packages/core/src/runtime/constants.ts:379`) recoveries in the same delivery, counted in memory (`recordDivergence`, `packages/core/src/runtime/spec9/delivery.ts:3916`). The count starts again across crashes and redeliveries, where the delivery cap bounds it. Spec 9 no longer sends a `replayDivergence` message; spec 8 still does. QuickJS has no divergence recovery. Mechanism: [Run lifecycle](/docs/changelog/single-orchestrator-diagrams/run-lifecycle).
+
+## Deadline handoff and the inline-start margin
+
+The inline deadline is 2, 5 or 10 minutes from the invocation's start, by the function's maximum duration (`getMaxInlineDurationMs`, `packages/core/src/runtime/delivery.ts:319`). No inline step starts within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` (60 seconds) of it (`packages/core/src/runtime/spec9/deadline.ts:31`).
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator delivery
+    participant Q as Queue
+    participant S as Step invocation
+    alt short inline steps reach the margin first
+        O->>O: next step created inside the margin
+        O->>Q: step message, background
+        O->>Q: acknowledge
+        S->>Q: completion wakes the orchestrator, new message
+    else a long inline step runs into the deadline
+        O->>O: next pass starts past the deadline
+        O->>Q: handoff, timeoutSeconds 0
+        Q->>O: same message, attempt unchanged
+    end
+```
+
+**Outcome.** Both continue the run. The margin path costs a step invocation and a queue hop where a handoff would cost a redelivery; handing off at the margin is not implemented. The handoff is not an attempt. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology) (`packages/core/src/runtime/spec9/delivery.ts:2417`).
+
+## Stream-flush handoff
+
+An inline step returns while its stream writes are still flushing in `waitUntil`, for example `request.respondWith()` in a webhook step.
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator delivery
+    participant WU as waitUntil
+    participant Q as Queue
+    participant O2 as Next delivery
+    O->>O: inline step completes, stream ops pending
+    O->>WU: flush continues in the background
+    O->>Q: handoff, timeoutSeconds 0
+    Q->>O2: same message at once
+    O2->>O2: load log, continue the run
+```
+
+**Outcome.** The delivery ends so the flush can finish, and the run continues in the handoff (`pending-stream-ops`, `packages/core/src/runtime/spec9/delivery.ts:3649`). The e2e `webhookWorkflow` test exercises it. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
+
+## Coalesced re-runs exhausted
+
+A busy run, such as a fan-out whose completions keep arriving, finds more coalesced messages on every acknowledgment.
+
+```mermaid
+sequenceDiagram
+    participant Q as Vercel Queues
+    participant C as Queue client
+    participant O as Orchestrator handler
+    loop up to 32 re-runs
+        C->>Q: acknowledge, If-Coalesced n
+        Q-->>C: refused, more coalesced
+        C->>O: re-run with the lease held
+    end
+    C->>Q: acknowledge
+    Q-->>C: refused again
+    C-->>O: ConcurrencyCoalescedPendingError to the retry hook
+    O->>Q: handoff, afterSeconds 0
+    Q->>O: same message, attempt unchanged
+```
+
+**Outcome.** Fixed: the retry hook used to back off and count an attempt, so a long busy fan-out could reach the delivery cap. Now it hands off (`packages/world-vercel/src/queue.ts:1039`). Each re-run measures the inline deadline from `invocationStartedAt`, so re-runs do not extend the invocation past its deadline. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology), [Fan-out](/docs/changelog/single-orchestrator-diagrams/fan-out).
+
+## `run.wakeUp()` lost under coalescing
+
+```mermaid
+sequenceDiagram
+    participant U as wakeUp caller
+    participant Q as Vercel Queues
+    participant O as Running orchestrator
+    U->>Q: completeWaits w1, keyed
+    U-->>U: stoppedCount 1
+    Q-->>Q: key held by O, coalesced
+    O->>O: re-run reads only the log
+    Note over O: w1 runs its full length
+```
+
+**Outcome.** Accepted: `wakeUp()` is best-effort on world-vercel while an orchestrator delivery holds the key, and reliable when the run is suspended and on world-local and world-postgres (`packages/core/src/runtime/runs.ts:468`). The unkeyed wake it replaced had two bugs when an orchestrator was running: a fence-losing wake dropped `completeWaits`, and a fence-winning one refused the running orchestrator's `step_completed`, so an open inline step's body ran twice. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
+
+## Spec 8 retry chains over 12 hours
+
+An earlier version of this PR redelivered the same message for every `{ timeoutSeconds }` result, spec 8 included.
+
+```mermaid
+sequenceDiagram
+    participant Q as Vercel Queues
+    participant O as Spec 8 delivery
+    loop earlier version, each hop at most 900s
+        O->>Q: timeoutSeconds 3600, same message
+        Q->>O: redelivered after 900s, delivery counted
+    end
+    Note over O: 48 deliveries, about 12h, MAX_DELIVERIES_EXCEEDED
+    O->>Q: current, new message with delay up to 23h, then acknowledge
+```
+
+**Outcome.** Fixed: a spec 8 run's `{ timeoutSeconds }` sends a new message before acknowledging, as on `main` (`packages/world-vercel/src/queue.ts:984`). Unit-tested; per the review, not run against Vercel. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
+
+## Older SDK after a rollback
+
+A deployment on an SDK without spec 9 writes to a spec 9 run, for example a rolled-back production deployment whose API route calls `resumeHook()` or `cancel()`.
+
+```mermaid
+sequenceDiagram
+    participant Old as Older SDK deployment
+    participant B as world-vercel backend
+    Old->>B: hook_received or run_cancelled, API below 5
+    B-->>Old: 400 spec-version-requires-api-v5
+    Note over Old: no wake is sent, the run is unchanged
+```
+
+**Outcome.** The older SDK cannot resume hooks on, or cancel, spec 9 runs. Reads still work. The run's own deliveries stay on the deployment that created it, so the run keeps going; only callers on the older SDK fail. Mechanism: [Spec routing](/docs/changelog/single-orchestrator-diagrams/spec-routing).
+
+## world-postgres resets `attempt`
+
+Every `{ timeoutSeconds }` result on world-postgres, a handoff included, reschedules on a new Graphile job. `attempt` comes from that job's own counter plus an `attemptOffset` that the reschedule carries unchanged.
+
+```mermaid
+sequenceDiagram
+    participant G as Graphile
+    participant O as Delivery
+    G->>O: job 1, attempt 1, deliveryCount 1
+    O-->>G: handler rejects
+    G->>O: job 1 retry, attempt 2, deliveryCount 2
+    O-->>G: timeoutSeconds 0, handoff
+    G->>O: job 2, attempt 1, deliveryCount 3
+    Note over O: contract asks for attempt 2, creator count drops to 1
+```
+
+**Outcome.** Known gap, not fixed. A crash redelivery that then hands off loses its creator re-send on the next delivery, so a step message lost in the crash window is not re-sent and the run can strand. Whether a redelivery can hand off before it reaches its re-send point is not known. A reschedule also resets what the delivery cap counts. The review verified the sequence with a scratch test; I read the code (`packages/world-postgres/src/queue.ts:962`, `:1052`) and did not rerun it. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
+
+## Inline retry re-sent past the 24-hour dedupe
+
+An inline step's retry moves to the background with a `retryAfter` beyond 24 hours. Its retry message can be re-sent after Vercel Queues' 24-hour idempotency window has passed, and then two messages own one step's body.
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator delivery
+    participant Q as Vercel Queues
+    participant S as Step messages
+    O->>Q: step_retrying committed, retry message, key k, delay over 24h
+    Note over Q: 24h later the dedupe record for k is gone
+    O->>Q: a re-send of the retry message with key k
+    Q->>S: two messages for one step
+```
+
+**Outcome.** Known gap, reported by a reviewer, predates this PR. Not verified: I did not trace which path re-sends the retry message after 24 hours. Step messages with retries are retained up to 7 days (`stepMessageRetentionSeconds`, `packages/core/src/runtime/spec9/step-retention.ts:25`), and `QueueOptions.idempotencyKey` documents the Vercel Queues dedupe window as `min(retention, 24h)` (`packages/world/src/queue.ts:717`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Long step retries on Vercel
+
+A spec 9 step retries in place: its handler returns `{ timeoutSeconds: n }` with `n` from `retryAfter`, and the same message is redelivered. Vercel Queues clamps a redelivery to 900 seconds.
+
+```mermaid
+sequenceDiagram
+    participant Q as Vercel Queues
+    participant S as Step invocation
+    S->>Q: timeoutSeconds 86400, retryAfter tomorrow
+    loop every 900 seconds
+        Q->>S: redelivered early
+        S->>S: read the log, retryAfter not reached
+        S->>Q: timeoutSeconds for the rest
+    end
+    Q->>S: retryAfter reached, step_started, body runs
+```
+
+**Outcome.** About 96 invocations a day for a day-long backoff, where `main` sends a new message of up to 23 hours. Not measured (`decideStepDelivery`, `packages/core/src/runtime/spec9/step-delivery.ts:60`; `MAX_REDELIVERY_DELAY_SECONDS`, `packages/world-vercel/src/queue.ts:334`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## QuickJS differences
+
+```mermaid
+flowchart LR
+    N["node engine"] --> RA["Run-ahead"]
+    N --> DR["Divergence recovery in place"]
+    N --> DL["Deadline handoff, verified on Vercel"]
+    Q["QuickJS engine"] --> NRA["No run-ahead, waits for every write"]
+    Q --> NDR["No divergence recovery, fails the run"]
+    Q --> QC["Continuations hand off, covered by typecheck only"]
+```
+
+**Outcome.** On QuickJS, run-ahead stops, their restarts and the out-of-band `wait_completed` hazard never occur, and a VM failure fails the run as before this change (`packages/core/src/runtime/spec9/quickjs-entrypoint.ts` has no run-ahead or divergence-recovery code). Its exit continuations (replay budget, an elapsed wait, an unread write of its own) hand off through `continueInNextDelivery` (`packages/core/src/runtime/spec9/delivery.ts:1534`), and no test triggers them. Mechanism: [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).

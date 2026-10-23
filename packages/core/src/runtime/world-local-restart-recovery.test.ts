@@ -16,7 +16,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { globalSingleton } from '@workflow/utils';
 import type { Event, World } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+} from '@workflow/world';
 import { createWorld, type LocalWorld } from '@workflow/world-local';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
@@ -86,7 +89,12 @@ describe('world-local restart recovery of an inline step', () => {
   afterEach(async () => {
     setWorld(undefined);
     await Promise.all(worlds.splice(0).map((world) => world.close()));
-    await rm(dataDir, { recursive: true, force: true });
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
 
   function bootWorld(): LocalWorld {
@@ -105,12 +113,39 @@ describe('world-local restart recovery of an inline step', () => {
     return data.filter((e: Event) => e.eventType.startsWith('step_'));
   }
 
+  // A spec 8 run records an inline step's creation as its own `step_created`
+  // and stamps the start with its queue message, which world-local releases
+  // with a `step_retrying`. A single-orchestrator run (spec 9) records the
+  // creation on the `step_started` and stamps no owner: its redelivered
+  // orchestrator starts the step again on its own, so nothing is released.
   it.each([
-    { engine: 'node', workflowVm: undefined },
-    { engine: 'quickjs', workflowVm: 'quickjs' },
-  ])('dispatches the step at once instead of waiting out the lease ($engine)', async ({
+    {
+      engine: 'node',
+      workflowVm: undefined,
+      specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+    },
+    {
+      engine: 'quickjs',
+      workflowVm: 'quickjs',
+      specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+    },
+    {
+      engine: 'node',
+      workflowVm: undefined,
+      specVersion: SPEC_VERSION_CURRENT,
+    },
+    {
+      engine: 'quickjs',
+      workflowVm: 'quickjs',
+      specVersion: SPEC_VERSION_CURRENT,
+    },
+  ])('dispatches the step at once instead of waiting out the lease ($engine, spec $specVersion)', async ({
     workflowVm,
+    specVersion,
   }) => {
+    const singleOrchestrator = specVersion === SPEC_VERSION_CURRENT;
+    const creation = singleOrchestrator ? [] : ['step_created'];
+    const release = singleOrchestrator ? [] : ['step_retrying'];
     let bodyRuns = 0;
     let entered!: () => void;
     const firstBodyEntered = new Promise<void>((resolve) => {
@@ -130,7 +165,7 @@ describe('world-local restart recovery of an inline step', () => {
     await previous.start();
     const created = await previous.events.create(null, {
       eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion,
       eventData: {
         deploymentId: 'dpl_restart_recovery',
         workflowName: 'workflow',
@@ -142,10 +177,14 @@ describe('world-local restart recovery of an inline step', () => {
     await previous.queue('__wkf_workflow_workflow', { runId });
     await firstBodyEntered;
 
-    const [, started] = await stepEvents(previous, runId);
+    const [started] = (await stepEvents(previous, runId)).slice(
+      creation.length
+    );
     expect(started).toMatchObject({
       eventType: 'step_started',
-      eventData: { ownerMessageId: expect.stringMatching(/^msg_/) },
+      eventData: singleOrchestrator
+        ? { inline: true }
+        : { ownerMessageId: expect.stringMatching(/^msg_/) },
     });
     await previous.close();
     await simulateProcessRestart();
@@ -168,9 +207,9 @@ describe('world-local restart recovery of an inline step', () => {
 
     const events = await stepEvents(restarted, runId);
     expect(events.map((e) => e.eventType)).toEqual([
-      'step_created',
+      ...creation,
       'step_started',
-      'step_retrying',
+      ...release,
       'step_started',
       'step_completed',
     ]);
@@ -179,8 +218,9 @@ describe('world-local restart recovery of an inline step', () => {
       (await restarted.steps.get(runId, events[0].correlationId as string))
         .attempt
     ).toBe(2);
+    if (singleOrchestrator) return;
     const error = await hydrateStepError(
-      (events[2].eventData as { error: unknown }).error,
+      (events[creation.length + 1].eventData as { error: unknown }).error,
       runId,
       undefined
     );

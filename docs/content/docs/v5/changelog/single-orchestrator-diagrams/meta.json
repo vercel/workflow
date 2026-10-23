@@ -1,0 +1,18 @@
+{
+  "title": "Single orchestrator diagrams",
+  "pages": [
+    "index",
+    "run-lifecycle",
+    "event-posting",
+    "in-band-fence",
+    "step-ownership",
+    "fan-out",
+    "run-ahead-and-turbo",
+    "queue-topology",
+    "timers-and-waits",
+    "hooks",
+    "spec-routing",
+    "edge-cases"
+  ],
+  "defaultOpen": false
+}

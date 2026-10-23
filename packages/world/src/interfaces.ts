@@ -12,6 +12,7 @@ import type {
   EventBatchResult,
   EventListResponse,
   EventResult,
+  EventsSubscribeOptions,
   GetEventParams,
   ListEventsByCorrelationIdParams,
   ListEventsParams,
@@ -391,6 +392,48 @@ export interface Storage {
    * run's log rather than a prefix with a hole in it. A World that hands a
    * position out earlier, and can therefore let an event land behind one a
    * reader has already passed, breaks the property every replay depends on.
+   *
+   * **Single-orchestrator runs (spec >= 9).** One orchestrator invocation
+   * makes every decision for a run, and the runtime keeps every invariant of
+   * the step and wait lifecycles itself:
+   *
+   * - Step and wait events (`step_created`, `step_started`, `step_retrying`,
+   *   `step_completed`, `step_failed`, `wait_created`, `wait_completed`) are
+   *   appends. A World MAY keep step and wait entities and MAY refuse writes
+   *   that do not fit them (409, 404, 425), but the runtime never relies on a
+   *   refusal for them: it decides from the log alone, so a World that
+   *   accepts every such append is fully correct. Refusing a step or wait
+   *   write on a terminal run (`step_created`, `step_started`,
+   *   `step_retrying`, `wait_created`) is still expected; `step_completed`,
+   *   `step_failed` and `wait_completed` must stay accepted after the run
+   *   ended.
+   * - Each write says whether the orchestrator made it
+   *   ({@link CreateEventParams.inBand}). The **in-band fence** is required:
+   *   `list` returns a `snapshot`, and a stale in-band write is refused with
+   *   `InBandSupersededError` before anything is written, which keeps the
+   *   run to one writer even when two orchestrator invocations overlap. The
+   *   queue delivering a run's orchestrator messages one at a time
+   *   (`WorldCapabilities.maxConcurrency`) makes such an overlap rare; the
+   *   fence is what makes it safe. A World declares the fence with
+   *   `WorldCapabilities.inBandFence`, and the runtime refuses a World that
+   *   does not.
+   * - An in-band write's `createdAt` is the `occurredAt` it was sent with
+   *   ({@link CreateEventParams.occurredAt}), on creates and on batch items
+   *   alike. The runtime's run-ahead hands an inline step's outcome to the
+   *   workflow before the write commits, and the workflow clock
+   *   (`Date.now()`) moves to that event's `createdAt`; replay reads the
+   *   stored one, so the two must be the same. The runtime checks every
+   *   speculative write's stored time, and on a mismatch stops the delivery
+   *   before anything else is written and turns run-ahead off for the World
+   *   for the rest of the process.
+   * - A `createBatch` on such a run is not atomic: an event of the batch may
+   *   commit while another fails, and the runtime treats per-item results
+   *   independently. It is ordered per entity: once the World refuses an
+   *   item, it refuses every later item of the batch with the same
+   *   `correlationId` too, so a step's outcome never commits behind its
+   *   refused creation. The runtime relies on this to let one batch carry
+   *   several writes for one step. A World without `createBatch` meets it
+   *   trivially.
    */
   events: {
     /**
@@ -476,6 +519,42 @@ export interface Storage {
     listByCorrelationId(
       params: ListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<Event>>;
+
+    /**
+     * OPTIONAL live feed of a run's log. The runtime calls it while an
+     * orchestrator invocation is alive and blocked (for example while it runs
+     * a long inline step, or waits on a background step or a hook), so events
+     * other writers commit reach the running workflow without a queue hop.
+     *
+     * Contract:
+     *
+     * - Calls `onEvent` for each event of `runId` whose slot is above
+     *   `afterSlot`, in slot order, each slot at most once per subscription,
+     *   with no gaps while the subscription is healthy. Events carry the same
+     *   shape and data resolution as `list` with `resolveData: 'all'`.
+     * - Best effort. A World may stop delivering at any time (a dropped
+     *   connection, a shutdown), and should call `options.onError` when it
+     *   does. It need not replay what it missed: the runtime also polls the
+     *   log tail, and accepts a pushed event only when it is the next slot
+     *   it expects, so a late, duplicated or out-of-order event is dropped
+     *   rather than misapplied. Correctness never depends on this method.
+     * - Returns an unsubscribe function. Calling it stops delivery promptly
+     *   and is idempotent. `onEvent` must not be called after it returns.
+     * - Must not throw synchronously for a transport failure; report it
+     *   through `options.onError` instead.
+     *
+     * A World that omits it is fully supported: the runtime then polls the
+     * log tail at `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`. While a
+     * subscription is live, the poll runs at the slower
+     * `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`, so a World that offers
+     * it must report a closed or ended subscription through `onError`.
+     */
+    subscribe?(
+      runId: string,
+      afterSlot: number,
+      onEvent: (event: Event) => void,
+      options?: EventsSubscribeOptions
+    ): () => void;
   };
 
   hooks: {
@@ -563,12 +642,15 @@ export interface Storage {
 }
 
 /**
- * Optional feature capabilities a World implementation declares so the core
- * runtime can enable optimizations that depend on backend behavior, instead
- * of inferring support from environment variables alone. Every capability
- * defaults to "unsupported" when absent: runtime fast paths that rely on
- * one must fail closed (keep their conservative behavior) unless the World
- * explicitly declares it.
+ * Feature capabilities a World implementation declares so the core runtime
+ * can enable behavior that depends on the backend, instead of inferring
+ * support from environment variables alone. Every capability defaults to
+ * "unsupported" when absent: runtime fast paths that rely on one must fail
+ * closed (keep their conservative behavior) unless the World explicitly
+ * declares it.
+ *
+ * One member is required rather than optional: {@link inBandFence}. The
+ * runtime refuses a World that does not declare it.
  */
 export interface WorldCapabilities {
   /**
@@ -591,49 +673,50 @@ export interface WorldCapabilities {
   };
 
   /**
-   * The World's queue supports `maxConcurrency`-limited consumption, in
-   * particular the per-run flow topics consumed with `maxConcurrency: 1`
-   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
-   * orchestrator invocations. Worlds whose queue has no concurrency-limit
-   * concept must leave this unset.
+   * The World's queue delivers a single-orchestrator run's orchestrator
+   * messages one at a time (see `singleOrchestratorRunIdOf`): on Vercel
+   * Queues, a concurrency key per run (or, under
+   * `WORKFLOW_SEQUENTIAL_REPLAYS=1`, per-run topics consumed with
+   * `maxConcurrency: 1`); an in-process per-run gate or a per-run job queue
+   * elsewhere. Worlds whose queue cannot serialize a run's orchestrator
+   * deliveries must leave this unset.
    *
-   * Note this declares queue *support*, not deployed configuration: the
-   * serialization also requires the build-time half (a flow trigger emitted
-   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
-   * The core runtime therefore does not yet take any fast path from this
-   * capability alone: it exists so a future build-verified signal can be
-   * combined with it (and so Worlds document the contract explicitly).
+   * Declares queue *support*, not deployed configuration. The runtime takes
+   * no fast path from it: one orchestrator at a time is a frequency
+   * mechanism, and the in-band fence ({@link inBandFence}) is what makes an
+   * overlap safe.
    */
   maxConcurrency?: boolean;
 
   /**
-   * The World implements the in-band writer fence
-   * ({@link CreateEventParams.inBand}). Optional: the runtime does not send
-   * the fence yet, and a World without it stays fully supported.
+   * The World implements the in-band writer fence on single-orchestrator runs
+   * (spec >= 9). **Required**: this is the one member of
+   * {@link WorldCapabilities} the runtime does not treat as optional:
+   * `@workflow/core` refuses a World that does not declare it in `start()`
+   * and at the start of every orchestrator delivery, before it writes
+   * anything.
    *
    * Declaring it commits the World to all of:
    *
    * - **A per-run in-band count.** Next to the position counter its sequencer
    *   allocates from (`seq`), the World counts the positions allocated to
-   *   in-band writes (`seqInBand`). A new run's `run_created` counts as
-   *   in-band and is never fenced itself, so a fresh run holds
-   *   `seq = 1, seqInBand = IN_BAND_SEQ_AT_RUN_CREATION`.
-   * - **The counters, from a list or a refusal.** `events.list` on a
-   *   slot-numbered run returns `snapshot: { seq, seqInBand }`
-   *   ({@link EventListResponse.snapshot}), read before the listing, on
-   *   every page where the World reads one. A World may list none
-   *   (world-vercel lists one only where its backend reports it); its
-   *   refusals then carry both counters, read together
-   *   (`InBandSupersededError.seq` and `.seqInBand`), and a writer takes its
-   *   count from a refusal instead. Building a World's in-band fence section
-   *   says how.
-   * - **Fenced in-band creates.** A create with `inBand: true` carries
-   *   {@link CreateEventParams.expectedSeqInBand}. The World checks it
+   *   in-band writes (`seqInBand`, see {@link CreateEventParams.inBand}). A
+   *   new run's `run_created` counts as in-band and is never fenced itself,
+   *   so a fresh run holds `seq = 1, seqInBand = IN_BAND_SEQ_AT_RUN_CREATION`.
+   * - **A list snapshot.** `events.list` on a slot-numbered run returns
+   *   `snapshot: { seq, seqInBand }` ({@link EventListResponse.snapshot}),
+   *   read before the listing. A full load from the first page covers every
+   *   position up to that `seq`, each one committed or sealed. Required on
+   *   every page of a single-orchestrator run (spec >= 9). On earlier runs a
+   *   World may list none (world-vercel lists one only where its backend
+   *   reports it); its refusals then carry both counters, read together
+   *   (`InBandSupersededError.seq` and `.seqInBand`).
+   * - **Fenced in-band creates.** A create or batch with `inBand: true`
+   *   carries {@link CreateEventParams.expectedSeqInBand}. The World checks it
    *   against `seqInBand` and advances both counters by the positions it
    *   allocates in one atomic step. On a mismatch it throws
    *   `InBandSupersededError` (HTTP 412, `in-band-superseded`) and writes and
    *   allocates nothing. An in-band write without an expected count is a 400.
-   *   A batch is one fenced allocation for the whole block.
    * - **Unfenced out-of-band creates.** Writes with `inBand: false` (or
    *   absent) move `seq` and never `seqInBand`, and are never refused by the
    *   fence.

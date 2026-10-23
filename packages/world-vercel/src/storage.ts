@@ -9,6 +9,7 @@ import {
   getEvent,
   getWorkflowRunEvents,
 } from './events.js';
+import { subscribeRunEvents } from './events-live-feed.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
 import {
@@ -75,7 +76,14 @@ export function createStorage(config?: APIConfig): Storage {
   return {
     runs: instrumentObject('world.runs', storage.runs),
     steps: instrumentObject('world.steps', storage.steps),
-    events: instrumentObject('world.events', storage.events),
+    events: {
+      ...instrumentObject('world.events', storage.events),
+      // Outside the instrumentation: it returns its unsubscribe synchronously
+      // and stays open for a whole blocked wait, so a per-call span would
+      // measure nothing.
+      subscribe: (runId, afterSlot, onEvent, options) =>
+        subscribeRunEvents(runId, afterSlot, onEvent, options, config),
+    },
     hooks: instrumentObject('world.hooks', storage.hooks),
     experimental_snapshots: instrumentObject(
       'world.experimental_snapshots',

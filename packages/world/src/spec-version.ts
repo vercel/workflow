@@ -5,7 +5,7 @@
  * from @workflow/world rather than using arbitrary numbers.
  */
 
-import { envFlag } from './env-config.js';
+import { warnOnce } from './env-config.js';
 
 declare const SpecVersionBrand: unique symbol;
 
@@ -94,85 +94,86 @@ export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
 
 /**
+ * Runs at this spec version or later follow the single-orchestrator model:
+ * one orchestrator invocation per run makes every decision, step and wait
+ * events are plain appends to the log (a World keeps no step or wait state it
+ * checks writes against), and the orchestrator's own writes are fenced.
+ *
+ * What changes for a reader and a writer:
+ *
+ * - Every write request says whether the run's orchestrator made it
+ *   (`CreateEventParams.inBand`). An in-band write carries the orchestrator's
+ *   count of in-band positions (`expectedSeqInBand`), taken from the
+ *   `snapshot` its log load returned. The World refuses an in-band write
+ *   whose count is stale with
+ *   `InBandSupersededError`, which makes at most one orchestrator a writer
+ *   even when two invocations of it run at once. Every World implements
+ *   this fence (`WorldCapabilities.inBandFence`).
+ * - `step_created` records how the step executes (`eventData.inline`) and
+ *   which queue message's invocation created it (`creatorMessageId`). Step
+ *   events carry `stepName`, and `step_started` carries `attempt`.
+ * - Replay treats any event for an entity after its terminal event as inert.
+ *
+ * Structural: positions are counted against an in-band head, and step state
+ * is folded from the log instead of read from a row, so a run can only be
+ * moved across this version before anything past `run_created` exists.
+ *
+ * It requires the sealed log: the fence counts positions the World's
+ * sequencer allocates, so it builds on {@link SPEC_VERSION_SUPPORTS_SEALED_LOG}.
+ */
+export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
+
+/**
  * Current spec version: event-sourced architecture with native attributes,
- * compressed payloads, slot-numbered event ids, sealed-log sequencing, and
- * involuntary hook disposal.
+ * compressed payloads, slot-numbered event ids, sealed-log sequencing,
+ * involuntary hook disposal, and the single-orchestrator model.
  *
- * This is both the version a World stamps on the runs it creates and the
- * *lowest* one this runtime accepts from a World (see
- * `assertWorldSupportsRuntimeProtocol`). Slot numbering is a requirement of
- * the World contract rather than a capability to opt into: a World declaring
- * anything below this allocates event ids the runtime cannot read positions
- * out of, so admitting it would only move the failure from startup to the
- * middle of a run.
+ * This is the version a World stamps on the runs it creates (see
+ * {@link mintedSpecVersion}). The lowest version this runtime accepts from a
+ * World is lower: see `assertWorldSupportsRuntimeProtocol` in
+ * `@workflow/core`, which floors at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}.
  *
- * This is the FLOOR, not necessarily what gets stamped. Sealed-log runs sit
- * one version above it and are opt-in, so what a World actually stamps comes
- * from {@link mintedSpecVersion}; this is what that falls back to.
- *
- * A World therefore declares this constant rather than a literal, so a bump
- * moves the declaration and the floor together. Pinning a literal would leave
- * the adapter one version behind the next bump and get it rejected by the
- * runtime it ships alongside.
+ * A World declares `mintedSpecVersion()` rather than a literal, so a bump
+ * moves the declaration with the package. Pinning a literal would leave the
+ * adapter one version behind the next bump.
  *
  * Bumping this does not touch runs already created: their stamped version is
  * persisted, every version test in the runtime is `>=`, and a World resolves a
  * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
+  SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
 
 /**
- * Environment variable that opts new runs OUT of the sealed log.
+ * The spec version a World should stamp on the runs it creates:
+ * {@link SPEC_VERSION_CURRENT}, or {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM}
+ * when `WORKFLOW_SPEC_VERSION=8`.
  *
- * Read per `createWorld()` call rather than at module load, so a test or a
- * single process can create worlds in both modes.
- */
-export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
-
-/**
- * The spec version a World should stamp on the runs it creates: the current
- * version (sealed log plus involuntary hook disposal) unless
- * {@link SEALED_LOG_ENV_VAR} switches the sealed log off, in which case the
- * slot-identity version it supersedes. Versions are linear, so switching the
- * sealed log off also drops below {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM}:
- * runs minted that way can force-claim, but cannot be force-claimed from.
+ * The runtime drives runs of both versions, each with its own orchestrator:
+ * spec 9 runs are kept to one writer by the World's in-band fence, spec 8 runs
+ * allow several orchestrator invocations to write at once and need no fence.
+ * A run keeps the version it was created with, so changing the setting only
+ * affects new runs. Any other value is ignored. Earlier releases read
+ * `WORKFLOW_SEALED_LOG=0` here instead, which minted runs of an earlier spec
+ * version. It is no longer read, so it now mints the current version; a set
+ * value is warned about once per process.
  *
- * Same shape, and the same reasoning, as the flag slot identity itself shipped
- * behind before going unconditional: default on, with one env var to put a
- * deployment back on the previous scheme without a release.
- *
- * What default-on rests on is the density requirement in
- * `Storage['events']`: a reader's log must be a PREFIX of the run's log, so
- * that the number of events it holds tells it whether it has the whole thing.
- * A sealed log satisfies that by repair rather than by construction — a
- * position is handed out before its write commits, so a read can land while
- * one is still empty — and it is only equivalent if a read that cannot see
- * past such a position waits for it to be filled or sealed instead of
- * reporting a log that ends there. It has to be the READ that waits, because
- * a shorter prefix is a legal log state and nothing downstream can tell the
- * two apart. The first rollout of this default shipped without that: the
- * backend's in-request poll budget was shorter than the age a position must
- * reach before it can be sealed, so the read always gave up and truncated,
- * and a replay took a step whose completion sat above the gap to be still
- * running — then sat on it for a full inline-ownership lease.
- *
- * The fallback is a real fallback, not a formality. Turning this off has to
- * leave a World the runtime still admits, which is why
- * `assertWorldSupportsRuntimeProtocol` floors at the slot-identity version
- * rather than at {@link SPEC_VERSION_CURRENT} because a kill switch that made
- * the runtime reject its own World would be no kill switch at all.
- *
- * Every World reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever
- * this returns, so switching it off here does not make runs another process
- * created unreadable.
+ * A function rather than a constant so a World reads the setting where it is
+ * created.
  */
 export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env
 ): SpecVersion {
-  return envFlag(SEALED_LOG_ENV_VAR, true, env)
-    ? SPEC_VERSION_CURRENT
-    : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+  if (env.WORKFLOW_SEALED_LOG !== undefined && env.WORKFLOW_SEALED_LOG !== '') {
+    warnOnce(
+      'WORKFLOW_SEALED_LOG',
+      'WORKFLOW_SEALED_LOG is no longer read, and new runs use the current spec version whatever its value. Set WORKFLOW_SPEC_VERSION=8 to create runs of the previous spec version.'
+    );
+  }
+  return env.WORKFLOW_SPEC_VERSION ===
+    String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM)
+    ? SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+    : SPEC_VERSION_CURRENT;
 }
 
 /**
@@ -186,7 +187,7 @@ export function mintedSpecVersion(
  * everywhere.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
-  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
+  SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
 
 /**
  * Spec versions whose only effect is to switch on capabilities of a run's
@@ -214,6 +215,7 @@ export const STRUCTURAL_SPEC_VERSIONS: ReadonlySet<number> = new Set([
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
 ]);
 
 /**

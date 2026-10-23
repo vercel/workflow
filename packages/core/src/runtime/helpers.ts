@@ -7,6 +7,7 @@ import type {
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventLogSnapshot,
   EventResult,
   HealthCheckPayload,
   RunDispatchContext,
@@ -38,6 +39,7 @@ import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { withRunSpecVersion } from './run-spec-routing.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
@@ -650,11 +652,15 @@ export function withReplayDelta(
  *   returned (incremental load). If omitted, all events are returned.
  *   The returned cursor can be passed back in on a subsequent call for
  *   incremental loading.
+ * @param options.signal - Abandons the load: handed to every page read, and
+ *   checked between pages.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor?: string
+  afterCursor?: string,
+  options?: { signal?: AbortSignal }
 ): Promise<LoadedEventLog> {
+  const signal = options?.signal;
   const incremental = afterCursor !== undefined;
   return trace('workflow.replay.load', async (span) => {
     span?.setAttributes({
@@ -665,6 +671,10 @@ export async function loadWorkflowRunEvents(
     });
 
     const loadedEvents: Event[] = [];
+    // The fence snapshot of a full load comes from its FIRST page: that is
+    // the sequencer state the listing as a whole covers.
+    let snapshot: EventLogSnapshot | undefined;
+    let snapshotTaken = false;
     const loadedEventIds = new Set<string>();
     const requestedCursors = new Set<string>();
     let cursor: string | null = afterCursor ?? null;
@@ -677,6 +687,7 @@ export async function loadWorkflowRunEvents(
       // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
       // to lazyload the data from the world instead so that we can optimize and make the event log loading
       // much faster and memory efficient
+      signal?.throwIfAborted();
       const pageStart = Date.now();
       const requestedCursor = cursor;
       recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
@@ -690,8 +701,10 @@ export async function loadWorkflowRunEvents(
             cursor: requestedCursor ?? undefined,
           },
           resolveData: REPLAY_RESOLVE_DATA,
+          ...(signal ? { signal } : {}),
         });
       } catch (error) {
+        signal?.throwIfAborted();
         if (
           shouldRetryWithoutEventCursor(
             error,
@@ -705,6 +718,8 @@ export async function loadWorkflowRunEvents(
           );
           loadedEvents.length = 0;
           loadedEventIds.clear();
+          snapshotTaken = false;
+          snapshot = undefined;
           requestedCursors.clear();
           cursor = null;
           retriedWithoutCursor = true;
@@ -713,6 +728,10 @@ export async function loadWorkflowRunEvents(
         throw error;
       }
 
+      if (!snapshotTaken && !incremental) {
+        snapshotTaken = true;
+        snapshot = response.snapshot;
+      }
       appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
       hasMore = response.hasMore;
       assertEventPaginationProgress(
@@ -756,7 +775,9 @@ export async function loadWorkflowRunEvents(
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
     });
 
-    return { events: loadedEvents, cursor };
+    return snapshot === undefined
+      ? { events: loadedEvents, cursor }
+      : { events: loadedEvents, cursor, snapshot };
   });
 }
 
@@ -768,6 +789,11 @@ export async function loadWorkflowRunEvents(
 export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
+  /**
+   * The fence snapshot from the first page of a full load, when the World
+   * returned one. Absent on incremental loads.
+   */
+  snapshot?: EventLogSnapshot;
 }
 
 /**
@@ -1028,7 +1054,7 @@ export function findEventSlotGap(
  * survives all three re-reads is a position no write will ever occupy.
  */
 export const SLOT_GAP_RECHECK_ATTEMPTS = 3;
-const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
+export const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
 
 /**
  * Re-read a log that looks holey until the hole fills in or the re-reads run
@@ -1041,7 +1067,11 @@ const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
  *
  * The reload is full rather than incremental: the missing position is below the
  * log's maximum, so a cursor-anchored read starts past it and can never see it
- * arrive.
+ * arrive. Each re-read keeps every event the caller already held: the
+ * orchestrator's log holds its own writes from their responses, and with
+ * run-ahead an outcome the workflow consumed before its write committed. A
+ * re-read can come back without one of those, and replacing the log with it
+ * would leave a position this delivery already took in nobody's view.
  */
 export async function settleEventSlotGap(
   runId: string,
@@ -1058,6 +1088,7 @@ export async function settleEventSlotGap(
       setTimeout(resolve, SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt)
     );
     log = await loadWorkflowRunEvents(runId);
+    mergeReportedEvents(log.events, loaded.events);
     gap = findEventSlotGap(log.events);
   }
   return { log, gap };
@@ -1321,6 +1352,36 @@ export function stepDispatchIdempotencyKey(
   return `${correlationId}:${fnv1a32Hex(stepName)}`;
 }
 
+// A registered symbol, so a mark set by one bundled copy of this module is
+// read by every other copy in the process.
+const QUEUE_SEND_FAILURE = Symbol.for('workflow.core.queueSendFailure');
+
+/**
+ * Whether `err` came from a failed queue publish ({@link queueMessage} or
+ * {@link queueMessages}). Queue errors are not `WorkflowWorldError`s, so the
+ * orchestrator would otherwise read them as a failure of the run. A failed
+ * publish fails the delivery instead: the queue redelivers it, and the
+ * redelivery publishes again.
+ */
+export function isQueueSendFailure(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { [QUEUE_SEND_FAILURE]?: true })[QUEUE_SEND_FAILURE] === true
+  );
+}
+
+function markQueueSendFailure(err: unknown): never {
+  if (typeof err === 'object' && err !== null) {
+    try {
+      Object.defineProperty(err, QUEUE_SEND_FAILURE, { value: true });
+    } catch {
+      // A frozen error stays unmarked and fails the run as before.
+    }
+  }
+  throw err;
+}
+
 /**
  * Queues a message to the specified queue with tracing.
  */
@@ -1328,7 +1389,19 @@ export async function queueMessage(
   world: World,
   ...args: Parameters<typeof world.queue>
 ) {
-  const queueName = args[0];
+  const [queueName, message, opts] = args;
+  await queueMessageTraced(world, queueName, [
+    queueName,
+    withRunSpecVersion(message, opts?.specVersion),
+    opts,
+  ]).catch(markQueueSendFailure);
+}
+
+async function queueMessageTraced(
+  world: World,
+  queueName: string,
+  args: Parameters<World['queue']>
+) {
   await trace(
     'queue.publish',
     {
@@ -1374,6 +1447,21 @@ export async function queueMessages(
   }[]
 ): Promise<void> {
   if (messages.length === 0) return;
+  await queueMessagesTraced(
+    world,
+    queueName,
+    messages.map((entry) => ({
+      ...entry,
+      message: withRunSpecVersion(entry.message, entry.opts?.specVersion),
+    }))
+  ).catch(markQueueSendFailure);
+}
+
+async function queueMessagesTraced(
+  world: World,
+  queueName: Parameters<World['queue']>[0],
+  messages: Parameters<typeof queueMessages>[2]
+): Promise<void> {
   const batch = world.queueBatch?.bind(world);
   if (!batch) {
     await Promise.all(
