@@ -128,6 +128,7 @@ An out-of-band terminal event has these effects, all of them benign:
 
 - Default: `2000`
 - While an orchestrator is busy running inline steps, it polls the run's log tail at this interval, and also listens on the World's live event feed when the World has one. Events other writers commit (a background step's outcome, a hook payload, a cancellation) then reach the running workflow without a queue hop.
+- While the live feed is keeping up (the subscription is live and the last poll found nothing the feed had not delivered), the interval doubles per poll, up to 8 times this value. A feed error, a failed poll, an event only the poll found, or a pushed event that skips a position puts it back at this value at once.
 - `0` turns polling off, leaving the live feed and queue wakes.
 
 ### `WORKFLOW_ORCHESTRATOR_LINGER_MS`

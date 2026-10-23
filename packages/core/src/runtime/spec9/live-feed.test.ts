@@ -5,6 +5,7 @@ import {
   DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
+  ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR,
 } from './live-feed.js';
 
 const RUN = 'wrun_feed';
@@ -108,5 +109,144 @@ describe('LiveLogFeed', () => {
         WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS: 'nope',
       })
     ).toBe(DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS);
+  });
+});
+
+describe('LiveLogFeed poll backoff', () => {
+  const BASE = 50;
+  const MAX = BASE * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR;
+
+  /** A World whose push the test drives, and whose list can be made to fail. */
+  function controlled() {
+    const world = seeded({});
+    const base = world.asWorld();
+    const feed: {
+      push?: (event: Event) => void;
+      onError?: (error: unknown) => void;
+      failList: boolean;
+    } = { failList: false };
+    const controlledWorld = {
+      ...base,
+      events: {
+        ...base.events,
+        list: async (params: Parameters<typeof base.events.list>[0]) => {
+          if (feed.failList) throw new Error('list failed');
+          return base.events.list(params);
+        },
+        subscribe: (
+          _runId: string,
+          _afterSlot: number,
+          onEvent: (event: Event) => void,
+          options?: { onError?: (error: unknown) => void }
+        ) => {
+          feed.push = onEvent;
+          feed.onError = options?.onError;
+          return () => {};
+        },
+      },
+    } as typeof base;
+    return { world, controlledWorld, feed };
+  }
+
+  function start(world: ConstructorParameters<typeof LiveLogFeed>[0]) {
+    const received: string[] = [];
+    const live = new LiveLogFeed(world, RUN, {
+      afterSlot: 1,
+      cursor: slotToEventId(1),
+      pollIntervalMs: BASE,
+      onEvents: (events) => received.push(...events.map((e) => e.eventId)),
+    });
+    live.start();
+    return { live, received };
+  }
+
+  /** Runs polls until the interval stops growing. */
+  async function backOffFully(live: LiveLogFeed) {
+    for (let interval = BASE; interval < MAX; interval *= 2) {
+      await vi.advanceTimersByTimeAsync(live.nextPollIntervalMs);
+    }
+    expect(live.nextPollIntervalMs).toBe(MAX);
+  }
+
+  it('doubles the interval per clean poll while the push keeps up, up to a bound', async () => {
+    vi.useFakeTimers();
+    const world = seeded({ subscribe: true });
+    const { live, received } = start(world.asWorld());
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    // Pushed, so the next poll finds nothing new.
+    world.appendOutOfBand(hookReceived('hook_a'));
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(live.nextPollIntervalMs).toBe(BASE * 2);
+    await backOffFully(live);
+    await vi.advanceTimersByTimeAsync(MAX * 3);
+    expect(live.nextPollIntervalMs).toBe(MAX);
+    expect(received).toEqual([slotToEventId(2)]);
+    live.stop();
+  });
+
+  it('never backs off without a live feed', async () => {
+    vi.useFakeTimers();
+    const world = seeded({});
+    const { live } = start(world.asWorld());
+    await vi.advanceTimersByTimeAsync(BASE * 5);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    expect(world.listCalls.length).toBeGreaterThanOrEqual(5);
+    live.stop();
+  });
+
+  it('polls at the configured interval again as soon as the feed errors', async () => {
+    vi.useFakeTimers();
+    const { world, controlledWorld, feed } = controlled();
+    const { live, received } = start(controlledWorld);
+    await backOffFully(live);
+    // The next poll is now up to MAX away; the feed ends and an event lands.
+    feed.onError?.(new Error('socket closed'));
+    world.appendOutOfBand(hookReceived('hook_a'));
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(received).toEqual([slotToEventId(2)]);
+    // And stays there: the feed is gone.
+    await vi.advanceTimersByTimeAsync(BASE * 4);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    live.stop();
+  });
+
+  it('resets after a poll delivers an event the push missed', async () => {
+    vi.useFakeTimers();
+    const { world, controlledWorld } = controlled();
+    const { live, received } = start(controlledWorld);
+    await backOffFully(live);
+    // Never pushed.
+    world.appendOutOfBand(hookReceived('hook_a'));
+    await vi.advanceTimersByTimeAsync(MAX);
+    expect(received).toEqual([slotToEventId(2)]);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    live.stop();
+  });
+
+  it('moves the next poll up when a push skips a slot', async () => {
+    vi.useFakeTimers();
+    const { world, controlledWorld, feed } = controlled();
+    const { live, received } = start(controlledWorld);
+    await backOffFully(live);
+    world.appendOutOfBand(hookReceived('hook_a'));
+    const third = world.appendOutOfBand(hookReceived('hook_b'));
+    feed.push?.(third);
+    expect(received).toEqual([]);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(received).toEqual([slotToEventId(2), slotToEventId(3)]);
+    live.stop();
+  });
+
+  it('resets after a failed poll', async () => {
+    vi.useFakeTimers();
+    const { controlledWorld, feed } = controlled();
+    const { live } = start(controlledWorld);
+    await backOffFully(live);
+    feed.failList = true;
+    await vi.advanceTimersByTimeAsync(MAX);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    live.stop();
   });
 });
