@@ -124,6 +124,50 @@ export async function threeParallelChains(
   ]);
 }
 
+export async function parallelChainsBenchmark(
+  markerPath: string,
+  width: number,
+  fastMs: number,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.all(
+    Array.from({ length: width }, (_, index) =>
+      namedChain(
+        markerPath,
+        index === 0 ? 'many-fast-' : `many-slow-${index}-`,
+        index === 0 ? fastMs : slowMs
+      )
+    )
+  );
+}
+
+export async function fanoutEpisodeReset(
+  markerPath: string,
+  fastMs: number,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.all(
+    Array.from({ length: 6 }, (_, index) =>
+      markerStep(markerPath, `episode-wide-${index}`, 25)
+    )
+  );
+  await Promise.all([
+    namedChain(markerPath, 'episode-two-fast-', fastMs),
+    namedChain(markerPath, 'episode-two-slow-', slowMs),
+  ]);
+  await Promise.all(
+    Array.from({ length: 4 }, (_, index) =>
+      namedChain(
+        markerPath,
+        index === 0 ? 'episode-four-fast-' : `episode-four-slow-${index}-`,
+        index === 0 ? fastMs : slowMs
+      )
+    )
+  );
+}
+
 export async function detachedStep(markerPath: string, delayMs: number) {
   'use workflow';
   const detached = markerStep(markerPath, 'detached', delayMs);

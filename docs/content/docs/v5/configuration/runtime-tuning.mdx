@@ -200,18 +200,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_ADVANCE_ONLY_REPLAY`
 
 - Default: enabled
-- Node.js VM engine only. Lets an eligible branch of a `Promise.all` or `Promise.race` start its next step as soon as its own step settles, instead of once every step pending beside it has. Inline steps that settle early hand the run to a fresh invocation; queued steps replay in their current handler. Replays act only on work they create. Once either path advances early, completion and failure wait for steps that are started or durably scheduled, but not un-awaited steps identified by the replay's terminal drain. The advance-only replay can publish one per-run safety probe delayed by [`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`](#workflow_inline_ownership_lease_seconds); it does not poll or re-arm while work remains live. If all siblings settle while a hand-off waits for claims and writes to become durable, or during the 10 ms coalescing window after it, the now-redundant replay is normally not sent. Under event-loop load, near-simultaneous leaf steps can still send one idle hand-off and pay its invocation, event-log read, and replay. `WORKFLOW_SEQUENTIAL_REPLAYS=1` does not suppress hand-offs because the runtime value cannot verify the built trigger's concurrency setting. See [Branches advance independently](/docs/changelog/eager-processing#branches-advance-independently).
-- Applies only when at most [`WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING`](#workflow_advance_only_replay_max_pending) other steps were pending when the step attempt started. Eligibility stays fixed as the batch drains.
+- Node.js VM engine only. Lets an eligible branch of a `Promise.all` or `Promise.race` start its next step as soon as its own step settles, instead of once every step pending beside it has. Inline steps that settle early hand the run to a fresh invocation; queued steps replay in their current handler. Replays act only on work they create. Once either path advances early, completion and failure wait for steps that are started or durably scheduled, but not un-awaited steps identified by the replay's terminal drain. The advance-only replay can publish one per-run safety probe delayed by [`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`](#workflow_inline_ownership_lease_seconds); it does not poll or re-arm while work remains live. A batch-level coalescing window suppresses the hand-off when clustered leaf steps settle together: 10 ms for two inline steps and 50 ms for wider eligible batches. `WORKFLOW_SEQUENTIAL_REPLAYS=1` does not suppress hand-offs because the runtime value cannot verify the built trigger's concurrency setting. See [Branches advance independently](/docs/changelog/eager-processing#branches-advance-independently).
+- Applies only when at most [`WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING`](#workflow_advance_only_replay_max_pending) other steps were pending while the step attempt waited to start. Eligibility stays fixed as that fan-out drains, then resets after the run reaches zero pending steps.
 - On the QuickJS engine (`WORKFLOW_VM=quickjs`), a branch still waits for the steps pending beside it.
 - Set `0` or `false` to restore that behavior on the Node.js engine too, so each round of a fan-out takes as long as its slowest step.
 
 ### `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING`
 
-- Default: `1`
+- Default: `3`
 - Minimum: `0`
-- The most other steps that may have been pending beside a step when its attempt started for its branch to advance at once under [`WORKFLOW_ADVANCE_ONLY_REPLAY`](#workflow_advance_only_replay). In a wider fan-out a branch waits for its siblings, even after the batch drains below the bound.
+- The most other steps that may have been pending while a step attempt waited to start for its branch to advance at once under [`WORKFLOW_ADVANCE_ONLY_REPLAY`](#workflow_advance_only_replay). In a wider fan-out a branch waits for its siblings, even after the batch drains below the bound. Once every pending step settles, a later fan-out starts a new eligibility episode.
 - The bound exists because an early replay does work only when the settled branch has a step after the one that settled. In a wide fan-out of one-step branches, every settlement but the last replays for nothing, and each replay reads a log that grows with the fan-out. With the bound, such a fan-out pays at most this many extra replays per round.
-- Raise it to let the branches of wider fan-outs advance independently, at the cost of up to one replay per settlement in them.
+- Raise it to let the branches of wider fan-outs advance independently, at the cost of additional replay work when their branches settle at different times.
 
 ### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`
 

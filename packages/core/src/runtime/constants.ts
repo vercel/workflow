@@ -493,7 +493,7 @@ export function isAdvanceOnlyReplayEnabled(): boolean {
  * the common two-branch shape without taxing wider fan-outs; operators can
  * raise it for wider groups of chained branches.
  */
-export const ADVANCE_ONLY_REPLAY_MAX_PENDING = 1;
+export const ADVANCE_ONLY_REPLAY_MAX_PENDING = 3;
 
 /**
  * The most sibling steps that may be pending when an attempt starts for its

@@ -12,8 +12,10 @@ import {
   detachedStep,
   duplicateProbe,
   failAfterRaceLoser,
+  fanoutEpisodeReset,
   fastFirstParallelChains,
   oneStepFanoutBenchmark,
+  parallelChainsBenchmark,
   queuedRaceLoserWithDetachedTerminalDrain,
   raceLoser,
   raceThenNext,
@@ -83,7 +85,9 @@ async function runWithTimeline(
     | typeof detachedAfterAdvanceOnlyReplay
     | typeof detachedStep
     | typeof raceLoser
-    | typeof duplicateProbe,
+    | typeof duplicateProbe
+    | typeof fanoutEpisodeReset
+    | typeof parallelChainsBenchmark,
   args: number[],
   tag: string
 ): Promise<{ markers: Marker[]; timeline: string; wallMs: number }> {
@@ -422,19 +426,43 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       ).toBeLessThanOrEqual(150);
     });
 
-    it('keeps three chains in lockstep at the default pending limit', async () => {
+    it.each([
+      3, 4,
+    ] as const)('advances %s agent chains at the default pending limit', async (width) => {
       const { markers, timeline } = await runWithTimeline(
-        threeParallelChains,
-        [100, 500],
-        'three-chains-default'
+        parallelChainsBenchmark,
+        [width, 100, 500],
+        `${width}-chains-default`
       );
-      const fast2 = markerAt(markers, 'three-fast-2', 'start');
-      expect(fast2, timeline).toBeGreaterThanOrEqual(
-        markerAt(markers, 'three-slow-a-1', 'end')
+      const fast2 = markerAt(markers, 'many-fast-2', 'start');
+      for (let index = 1; index < width; index++) {
+        expect(fast2, timeline).toBeLessThan(
+          markerAt(markers, `many-slow-${index}-1`, 'end')
+        );
+      }
+    });
+
+    it('resets eligibility after a completed wide fan-out', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        fanoutEpisodeReset,
+        [100, 600],
+        'fanout-episode-reset'
       );
-      expect(fast2, timeline).toBeGreaterThanOrEqual(
-        markerAt(markers, 'three-slow-b-1', 'end')
-      );
+      const twoGap =
+        markerAt(markers, 'episode-two-fast-2', 'start') -
+        markerAt(markers, 'episode-two-fast-1', 'end');
+      const fourGap =
+        markerAt(markers, 'episode-four-fast-2', 'start') -
+        markerAt(markers, 'episode-four-fast-1', 'end');
+      expect(
+        markerAt(markers, 'episode-two-fast-2', 'start'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'episode-two-slow-1', 'end'));
+      expect(
+        markerAt(markers, 'episode-four-fast-2', 'start'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'episode-four-slow-1-1', 'end'));
+      expect(fourGap, timeline).toBeLessThanOrEqual(twoGap * 2 + 100);
     });
 
     it('advances three chains through the hand-off path when the pending limit is 2', async () => {
@@ -679,7 +707,8 @@ async function measureAdvanceGap(
   workflow:
     | typeof fastFirstParallelChains
     | typeof raceThenNext
-    | typeof threeParallelChains,
+    | typeof threeParallelChains
+    | typeof parallelChainsBenchmark,
   args: number[],
   tag: string,
   from: [string, Marker['phase']],
@@ -742,6 +771,8 @@ async function measureTerminalDrainRace(
 
 async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
   const results: Record<string, Measurement[]> = {};
+  const configuredPendingLimit =
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING ?? '3';
   const selectedMode = process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_MODE;
   const selectedShape = process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_SHAPE;
   const rounds = Number(
@@ -765,9 +796,13 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
       ['2x1-noop', twoLeafBenchmark, [0]],
       ['2x1-200ms', twoLeafBenchmark, [200]],
       ['2x1-200-800ms', twoDifferentLeafBenchmark, [200, 800]],
+      ['3x1', oneStepFanoutBenchmark, [3]],
+      ['4x1', oneStepFanoutBenchmark, [4]],
+      ['5x1', oneStepFanoutBenchmark, [5]],
+      ['8x1', oneStepFanoutBenchmark, [8]],
       ['8x4', chainedFanoutBenchmark, [8, 4]],
       ['64x1', oneStepFanoutBenchmark, [64]],
-      ['256x1', oneStepFanoutBenchmark, [256]],
+      ['128x1', oneStepFanoutBenchmark, [128]],
     ] as const) {
       if (
         selectedShape &&
@@ -775,6 +810,14 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         !(
           selectedShape === 'two-leaf-all' &&
           (shape === '2x1-noop' || shape === '2x1-200ms')
+        ) &&
+        !(
+          selectedShape === 'pending-limit-fanouts' &&
+          ['3x1', '4x1', '5x1', '8x1', '8x4'].includes(shape)
+        ) &&
+        !(
+          selectedShape === 'wide-fanout-controls' &&
+          (shape === '64x1' || shape === '128x1')
         )
       ) {
         continue;
@@ -843,6 +886,22 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         ['three-fast-2', 'start'],
         '4',
       ],
+      [
+        'three-agent-chains',
+        parallelChainsBenchmark,
+        [3, 200, 1_500],
+        ['many-fast-1', 'end'],
+        ['many-fast-2', 'start'],
+        configuredPendingLimit,
+      ],
+      [
+        'four-agent-chains',
+        parallelChainsBenchmark,
+        [4, 200, 1_500],
+        ['many-fast-1', 'end'],
+        ['many-fast-2', 'start'],
+        configuredPendingLimit,
+      ],
     ] as const) {
       if (
         selectedShape &&
@@ -850,6 +909,10 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         !(
           selectedShape === 'short-beside-all' &&
           shape.startsWith('short-beside-')
+        ) &&
+        !(
+          selectedShape === 'agent-chains' &&
+          (shape === 'three-agent-chains' || shape === 'four-agent-chains')
         )
       ) {
         continue;

@@ -83,6 +83,100 @@ export function pendingStepIdsIn(
   return pending;
 }
 
+export interface PendingStepReplayAnalysis {
+  pendingStepIds: Set<string | undefined>;
+  currentEpisodePeakPendingStepCount: number;
+  pendingSiblingCountAtLatestStart: number | undefined;
+  pendingCreationsFollowFirstStart: boolean;
+}
+
+/**
+ * Derive the queued replay's pending and width inputs in one event-log pass.
+ * A fan-out episode begins when the pending set leaves zero and ends when it
+ * returns to zero, so a completed wide fan-out cannot disable a later batch.
+ */
+export function analyzePendingStepsForReplay(
+  events: readonly Event[],
+  stepId: string
+): PendingStepReplayAnalysis {
+  const pending = new Set<string | undefined>();
+  const settled = new Set<string | undefined>();
+  const createdAfterFirstStart = new Set<string>();
+  const started = new Set<string | undefined>();
+  let currentEpisodePeakPendingStepCount = 0;
+  let pendingSiblingCount: number | undefined;
+  let attemptPeak: number | undefined;
+  let awaitingStart = false;
+  let sawFirstStart = false;
+
+  for (const event of events) {
+    if (event.eventType === 'step_created') {
+      pending.add(event.correlationId);
+      if (sawFirstStart && event.correlationId !== undefined) {
+        createdAfterFirstStart.add(event.correlationId);
+      }
+      if (event.correlationId === stepId) {
+        awaitingStart = true;
+        attemptPeak = Math.max(0, pending.size - 1);
+      } else if (awaitingStart) {
+        attemptPeak = Math.max(attemptPeak ?? 0, pending.size - 1);
+      }
+      currentEpisodePeakPendingStepCount = Math.max(
+        currentEpisodePeakPendingStepCount,
+        pending.size
+      );
+    } else if (event.eventType === 'step_started') {
+      pending.add(event.correlationId);
+      started.add(event.correlationId);
+      if (event.correlationId === stepId) {
+        pendingSiblingCount = Math.max(attemptPeak ?? 0, pending.size - 1);
+        awaitingStart = false;
+        sawFirstStart = true;
+      } else if (awaitingStart) {
+        attemptPeak = Math.max(attemptPeak ?? 0, pending.size - 1);
+      }
+      currentEpisodePeakPendingStepCount = Math.max(
+        currentEpisodePeakPendingStepCount,
+        pending.size
+      );
+    } else if (
+      event.eventType === 'step_retrying' &&
+      event.correlationId === stepId
+    ) {
+      awaitingStart = true;
+      pendingSiblingCount = undefined;
+      attemptPeak = Math.max(0, pending.size - 1);
+    } else if (
+      event.eventType === 'step_completed' ||
+      event.eventType === 'step_failed'
+    ) {
+      pending.delete(event.correlationId);
+      settled.add(event.correlationId);
+      if (pending.size === 0) currentEpisodePeakPendingStepCount = 0;
+    }
+  }
+
+  // Match pendingStepIdsIn's set-difference behavior for malformed or legacy
+  // logs whose terminal row precedes a duplicate create/start.
+  for (const id of settled) pending.delete(id);
+  if (pending.size === 0) currentEpisodePeakPendingStepCount = 0;
+
+  const pendingCreationsFollowFirstStart =
+    pending.size > 0 &&
+    !pending.has(undefined) &&
+    [...pending].every(
+      (id): id is string =>
+        id !== undefined && createdAfterFirstStart.has(id) && !started.has(id)
+    );
+
+  return {
+    pendingStepIds: pending,
+    currentEpisodePeakPendingStepCount,
+    pendingSiblingCountAtLatestStart: pendingSiblingCount,
+    pendingCreationsFollowFirstStart,
+  };
+}
+
 /**
  * How many other steps were pending when `stepId` most recently started.
  *
@@ -96,14 +190,32 @@ export function pendingSiblingCountAtLatestStart(
 ): number | undefined {
   const pending = new Set<string | undefined>();
   let count: number | undefined;
+  let peak: number | undefined;
+  let awaitingStart = false;
   for (const event of events) {
     if (event.eventType === 'step_created') {
       pending.add(event.correlationId);
+      if (event.correlationId === stepId) {
+        awaitingStart = true;
+        peak = Math.max(0, pending.size - 1);
+      } else if (awaitingStart) {
+        peak = Math.max(peak ?? 0, pending.size - 1);
+      }
     } else if (event.eventType === 'step_started') {
       pending.add(event.correlationId);
       if (event.correlationId === stepId) {
-        count = Math.max(0, pending.size - 1);
+        count = Math.max(peak ?? 0, pending.size - 1);
+        awaitingStart = false;
+      } else if (awaitingStart) {
+        peak = Math.max(peak ?? 0, pending.size - 1);
       }
+    } else if (
+      event.eventType === 'step_retrying' &&
+      event.correlationId === stepId
+    ) {
+      awaitingStart = true;
+      count = undefined;
+      peak = Math.max(0, pending.size - 1);
     } else if (
       event.eventType === 'step_completed' ||
       event.eventType === 'step_failed'

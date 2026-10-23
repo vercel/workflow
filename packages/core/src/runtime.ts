@@ -54,8 +54,7 @@ import {
   advanceOnlyHasWork,
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
-  pendingCreationsFollowFirstStart,
-  pendingSiblingCountAtLatestStart,
+  analyzePendingStepsForReplay,
   pendingStepIdsIn,
   runRowFromCreation,
   settlesBranch,
@@ -250,6 +249,10 @@ export {
 // Lets near-simultaneous inline siblings finish without paying for an idle
 // advance-only replay, while still handing genuinely slower branches off.
 const ADVANCE_ONLY_HANDOFF_COALESCE_MS = 10;
+// Wider inline batches finish their terminal writes in a short burst. Give
+// that burst enough room to settle so leaf-only fan-outs do not publish idle
+// hand-offs, while chained branches still advance well before slow siblings.
+const ADVANCE_ONLY_WIDE_HANDOFF_COALESCE_MS = 50;
 
 function terminalBackstopIdempotencyKey(runId: string): string {
   return `advance-only:terminal-backstop:${runId}`;
@@ -2159,9 +2162,6 @@ export function workflowEntrypoint(
                           (event) => event.eventType === 'run_started'
                         );
 
-                        // Check for pending steps: any created step without
-                        // a matching step_completed or step_failed.
-                        const pendingStepIds = pendingStepIdsIn(loaded.events);
                         const advanceOnlyReplaySupported =
                           isAdvanceOnlyReplayEnabled() &&
                           runCreatedEvent?.eventType === 'run_created' &&
@@ -2172,13 +2172,25 @@ export function workflowEntrypoint(
                                 : undefined,
                           });
                         const maxPending = getAdvanceOnlyReplayMaxPending();
+                        const pendingAnalysis = advanceOnlyReplaySupported
+                          ? analyzePendingStepsForReplay(
+                              loaded.events,
+                              incomingStepId
+                            )
+                          : undefined;
+                        const pendingStepIds =
+                          pendingAnalysis?.pendingStepIds ??
+                          pendingStepIdsIn(loaded.events);
+                        const pendingSiblingCount =
+                          pendingAnalysis?.pendingSiblingCountAtLatestStart ??
+                          Number.POSITIVE_INFINITY;
                         const withinAdvanceOnlyBound =
                           advanceOnlyReplaySupported &&
                           pendingStepIds.size <= maxPending &&
-                          (pendingSiblingCountAtLatestStart(
-                            loaded.events,
-                            incomingStepId
-                          ) ?? Number.POSITIVE_INFINITY) <= maxPending;
+                          pendingSiblingCount <= maxPending &&
+                          (pendingAnalysis?.currentEpisodePeakPendingStepCount ??
+                            Number.POSITIVE_INFINITY) <=
+                            maxPending + 1;
                         // The full-log terminal probe is needed only to bypass
                         // the bound, or on a redelivery where it prevents
                         // drain-only creations from being recovered as lost
@@ -2187,13 +2199,11 @@ export function workflowEntrypoint(
                         const terminalProbe =
                           advanceOnlyReplaySupported &&
                           pendingStepIds.size > 0 &&
+                          pendingSiblingCount <= maxPending &&
                           (!withinAdvanceOnlyBound ||
                             advanceOnlyDelivery.recoverNeverStarted) &&
-                          pendingCreationsFollowFirstStart(
-                            loaded.events,
-                            incomingStepId,
-                            pendingStepIds
-                          );
+                          pendingAnalysis?.pendingCreationsFollowFirstStart ===
+                            true;
 
                         if (pendingStepIds.size > 0) {
                           // A pending step that THIS message inline-owns (a
@@ -5147,6 +5157,8 @@ export function workflowEntrypoint(
                         // restores main's optimistic-start behavior exactly.
                         if (
                           isAdvanceOnlyReplayEnabled() &&
+                          pendingSteps.length - 1 <=
+                            getAdvanceOnlyReplayMaxPending() &&
                           outOfBandObservation &&
                           outOfBandObservation.externalStepCount > 0 &&
                           lazyInlineSteps.some(
@@ -5404,9 +5416,6 @@ export function workflowEntrypoint(
                             getAdvanceOnlyReplayMaxPending() &&
                           !world.capabilities?.invoke
                         ) {
-                          const batchSettled = Promise.allSettled(
-                            stepExecutionPromises
-                          );
                           const batchClaimedAndDurable = Promise.all([
                             runReadyBarrier,
                             dispatchesSettled,
@@ -5415,6 +5424,108 @@ export function workflowEntrypoint(
                           ]);
                           batchClaimedAndDurable.catch(() => {});
                           let stillRunning = stepExecutionPromises.length;
+                          let candidateIndex: number | undefined;
+                          let coalescingTimer:
+                            | ReturnType<typeof setTimeout>
+                            | undefined;
+                          let handOffStarted = false;
+                          let handOffFinished = false;
+                          const handOffSettled = withResolvers<void>();
+                          const finishHandOff = () => {
+                            if (handOffFinished) return;
+                            handOffFinished = true;
+                            handOffSettled.resolve();
+                          };
+                          const logHandOffFailure = (handOffErr: unknown) => {
+                            runtimeLogger.warn(
+                              'Failed to hand a settled inline branch to another invocation; it advances once its batch settles',
+                              {
+                                workflowRunId: runId,
+                                loopIteration,
+                                stepId:
+                                  candidateIndex === undefined
+                                    ? undefined
+                                    : inlineExecutions[candidateIndex]
+                                        .correlationId,
+                                errorName:
+                                  handOffErr instanceof Error
+                                    ? handOffErr.name
+                                    : 'UnknownError',
+                                errorMessage:
+                                  handOffErr instanceof Error
+                                    ? handOffErr.message
+                                    : String(handOffErr),
+                              }
+                            );
+                          };
+                          const publishHandOff = async () => {
+                            coalescingTimer = undefined;
+                            const index = candidateIndex;
+                            if (
+                              handOffStarted ||
+                              stillRunning === 0 ||
+                              index === undefined
+                            ) {
+                              if (stillRunning === 0) finishHandOff();
+                              return;
+                            }
+                            handOffStarted = true;
+                            concurrentBranchReplayPossible = true;
+                            try {
+                              await queueMessage(
+                                world,
+                                getWorkflowQueueName(workflowName, namespace),
+                                {
+                                  ...(await replayMessage()),
+                                  advanceOnly: true,
+                                },
+                                {
+                                  idempotencyKey:
+                                    advanceOnlyReplayIdempotencyKey(
+                                      runId,
+                                      inlineExecutions[index].correlationId
+                                    ),
+                                }
+                              );
+                              advanceOnlyTerminalGuard = true;
+                              span?.setAttributes({
+                                'workflow.advance_only.handoff_sent': true,
+                              });
+                              runtimeLogger.debug(
+                                'Inline step settled with siblings still running; handed its branch to an advance-only replay',
+                                {
+                                  workflowRunId: runId,
+                                  loopIteration,
+                                  stepId: inlineExecutions[index].correlationId,
+                                  stillRunning,
+                                }
+                              );
+                            } catch (handOffErr) {
+                              logHandOffFailure(handOffErr);
+                            } finally {
+                              finishHandOff();
+                            }
+                          };
+                          const armHandOff = (index: number) => {
+                            if (handOffStarted || handOffFinished) return;
+                            candidateIndex = index;
+                            if (coalescingTimer !== undefined) {
+                              clearTimeout(coalescingTimer);
+                            }
+                            // Debounce one batch-level window on sibling
+                            // progress. A burst of leaf settlements therefore
+                            // finishes without an idle replay, while a truly
+                            // slow sibling still causes a hand-off 10 ms after
+                            // the latest progress.
+                            coalescingTimer = setTimeout(
+                              () => {
+                                void publishHandOff();
+                              },
+                              stepExecutionPromises.length > 2
+                                ? ADVANCE_ONLY_WIDE_HANDOFF_COALESCE_MS
+                                : ADVANCE_ONLY_HANDOFF_COALESCE_MS
+                            );
+                          };
                           for (const [
                             index,
                             promise,
@@ -5422,10 +5533,15 @@ export function workflowEntrypoint(
                             const handOff = promise.then(
                               async (result) => {
                                 stillRunning--;
-                                if (
-                                  stillRunning === 0 ||
-                                  !settlesBranch(result)
-                                ) {
+                                if (stillRunning === 0) {
+                                  if (coalescingTimer !== undefined) {
+                                    clearTimeout(coalescingTimer);
+                                    coalescingTimer = undefined;
+                                  }
+                                  finishHandOff();
+                                  return;
+                                }
+                                if (!settlesBranch(result)) {
                                   return;
                                 }
                                 await batchClaimedAndDurable;
@@ -5436,71 +5552,17 @@ export function workflowEntrypoint(
                                 // so publishing another invocation would be a
                                 // pure idle replay on the common near-together
                                 // leaf case.
-                                if (stillRunning === 0) return;
-                                // Give terminal writes already in flight one
-                                // short coalescing window to join the batch.
-                                // Racing the raw executions means this adds no
-                                // delay when they do: their settlement resolves
-                                // this wait immediately. A genuinely slow
-                                // sibling loses the race and the hand-off still
-                                // goes out.
-                                let coalescingTimer:
-                                  | ReturnType<typeof setTimeout>
-                                  | undefined;
-                                const coalescingElapsed = new Promise<true>(
-                                  (resolve) => {
-                                    coalescingTimer = setTimeout(
-                                      () => resolve(true),
-                                      ADVANCE_ONLY_HANDOFF_COALESCE_MS
-                                    );
-                                  }
-                                );
-                                const siblingStillRunning = await Promise.race([
-                                  batchSettled.then(() => false),
-                                  coalescingElapsed,
-                                ]);
-                                if (coalescingTimer !== undefined) {
-                                  clearTimeout(coalescingTimer);
-                                }
-                                if (
-                                  !siblingStillRunning ||
-                                  stillRunning === 0
-                                ) {
-                                  return;
-                                }
-                                concurrentBranchReplayPossible = true;
-                                await queueMessage(
-                                  world,
-                                  getWorkflowQueueName(workflowName, namespace),
-                                  {
-                                    ...(await replayMessage()),
-                                    advanceOnly: true,
-                                  },
-                                  {
-                                    idempotencyKey:
-                                      advanceOnlyReplayIdempotencyKey(
-                                        runId,
-                                        inlineExecutions[index].correlationId
-                                      ),
-                                  }
-                                );
-                                advanceOnlyTerminalGuard = true;
-                                span?.setAttributes({
-                                  'workflow.advance_only.handoff_sent': true,
-                                });
-                                runtimeLogger.debug(
-                                  'Inline step settled with siblings still running; handed its branch to an advance-only replay',
-                                  {
-                                    workflowRunId: runId,
-                                    loopIteration,
-                                    stepId:
-                                      inlineExecutions[index].correlationId,
-                                    stillRunning,
-                                  }
-                                );
+                                if (stillRunning > 0) armHandOff(index);
                               },
                               () => {
                                 stillRunning--;
+                                if (stillRunning === 0) {
+                                  if (coalescingTimer !== undefined) {
+                                    clearTimeout(coalescingTimer);
+                                    coalescingTimer = undefined;
+                                  }
+                                  finishHandOff();
+                                }
                               }
                             );
                             // An optimization only: the branch still
@@ -5508,27 +5570,10 @@ export function workflowEntrypoint(
                             // loop replays, so a failed hand-off is logged
                             // and otherwise ignored.
                             branchHandOffs.push(
-                              handOff.catch((handOffErr) => {
-                                runtimeLogger.warn(
-                                  'Failed to hand a settled inline branch to another invocation; it advances once its batch settles',
-                                  {
-                                    workflowRunId: runId,
-                                    loopIteration,
-                                    stepId:
-                                      inlineExecutions[index].correlationId,
-                                    errorName:
-                                      handOffErr instanceof Error
-                                        ? handOffErr.name
-                                        : 'UnknownError',
-                                    errorMessage:
-                                      handOffErr instanceof Error
-                                        ? handOffErr.message
-                                        : String(handOffErr),
-                                  }
-                                );
-                              })
+                              handOff.catch(logHandOffFailure)
                             );
                           }
+                          branchHandOffs.push(handOffSettled.promise);
                         }
                         try {
                           // Join the dispatch publishes launched above and

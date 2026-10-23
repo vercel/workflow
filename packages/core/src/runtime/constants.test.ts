@@ -408,6 +408,7 @@ describe('getAdvanceOnlyReplayMaxPending', () => {
 
   it('defaults when unset or empty', () => {
     delete process.env[ENV];
+    expect(ADVANCE_ONLY_REPLAY_MAX_PENDING).toBe(3);
     expect(getAdvanceOnlyReplayMaxPending()).toBe(
       ADVANCE_ONLY_REPLAY_MAX_PENDING
     );

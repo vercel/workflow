@@ -10,6 +10,7 @@ import {
   advanceOnlyHasWork,
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
+  analyzePendingStepsForReplay,
   pendingCreationsFollowFirstStart,
   pendingSiblingCountAtLatestStart,
   pendingStepIdsIn,
@@ -59,17 +60,65 @@ describe('pendingSiblingCountAtLatestStart', () => {
     expect(pendingSiblingCountAtLatestStart(events, 'c')).toBe(2);
   });
 
-  it('uses the latest retry attempt and returns undefined without a start', () => {
+  it('keeps a late queued start bound to the width it waited behind', () => {
+    const events = [
+      event('step_created', 'a'),
+      event('step_created', 'b'),
+      event('step_created', 'c'),
+      event('step_created', 'd'),
+      event('step_created', 'e'),
+      event('step_started', 'a'),
+      event('step_completed', 'a'),
+      event('step_started', 'b'),
+      event('step_completed', 'b'),
+      event('step_started', 'e'),
+    ];
+    expect(pendingSiblingCountAtLatestStart(events, 'e')).toBe(4);
+  });
+
+  it('uses a fresh retry window and returns undefined without a new start', () => {
     const events = [
       event('step_created', 'a'),
       event('step_created', 'b'),
       event('step_started', 'a'),
       event('step_started', 'b'),
-      event('step_failed', 'b'),
+      event('step_completed', 'b'),
+      event('step_retrying', 'a'),
       event('step_started', 'a'),
     ];
     expect(pendingSiblingCountAtLatestStart(events, 'a')).toBe(0);
+    events.push(event('step_retrying', 'a'));
+    expect(pendingSiblingCountAtLatestStart(events, 'a')).toBeUndefined();
     expect(pendingSiblingCountAtLatestStart(events, 'missing')).toBeUndefined();
+  });
+});
+
+describe('analyzePendingStepsForReplay', () => {
+  it('resets the too-wide decision after an episode reaches zero pending steps', () => {
+    const events = [
+      ...['a', 'b', 'c', 'd', 'e', 'f'].map((id) => event('step_created', id)),
+      ...['a', 'b', 'c', 'd', 'e', 'f'].map((id) =>
+        event('step_completed', id)
+      ),
+      event('step_created', 'later-a'),
+      event('step_created', 'later-b'),
+      event('step_started', 'later-a'),
+    ];
+    const analysis = analyzePendingStepsForReplay(events, 'later-a');
+    expect(analysis.currentEpisodePeakPendingStepCount).toBe(2);
+    expect(analysis.pendingSiblingCountAtLatestStart).toBe(1);
+  });
+
+  it('keeps a wide decision while any step from the episode remains pending', () => {
+    const events = [
+      ...['a', 'b', 'c', 'd', 'e', 'f'].map((id) => event('step_created', id)),
+      ...['a', 'b', 'c', 'd', 'e'].map((id) => event('step_completed', id)),
+      event('step_created', 'later-a'),
+      event('step_created', 'later-b'),
+      event('step_started', 'later-a'),
+    ];
+    const analysis = analyzePendingStepsForReplay(events, 'later-a');
+    expect(analysis.currentEpisodePeakPendingStepCount).toBe(6);
   });
 });
 
