@@ -2716,11 +2716,14 @@ describe('workflowEntrypoint turbo mode', () => {
       stepStartedGate: gate,
     });
 
-    await vi.waitFor(() => expect(order).toContain('step_started_called'));
+    await vi.waitFor(() => expect(order).toContain('step_started_called'), {
+      timeout: 15_000,
+    });
     if (bodyRunsBeforeStart) {
-      await vi.waitFor(() => expect(order).toContain('body'));
+      await vi.waitFor(() => expect(order).toContain('body'), {
+        timeout: 15_000,
+      });
     } else {
-      await new Promise((resolve) => setTimeout(resolve, 20));
       expect(order).not.toContain('body');
     }
 

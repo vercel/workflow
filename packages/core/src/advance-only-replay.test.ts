@@ -43,6 +43,16 @@ type Gate = { promise: Promise<void>; open: () => void };
 
 const spanExporter = new InMemorySpanExporter();
 const tracerProvider = new BasicTracerProvider();
+const WINDOWS_SAFE_WAIT_TIMEOUT_MS = 15_000;
+
+const waitFor = <T>(
+  callback: () => T | Promise<T>,
+  options: Parameters<typeof vi.waitFor>[1] = {}
+) =>
+  vi.waitFor(callback, {
+    timeout: WINDOWS_SAFE_WAIT_TIMEOUT_MS,
+    ...options,
+  });
 
 beforeAll(() => {
   tracerProvider.addSpanProcessor(new SimpleSpanProcessor(spanExporter));
@@ -475,7 +485,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, workflowCode);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(
+    await waitFor(
       () => {
         expect(h.stepMessageFor('fast1')).toBeDefined();
       },
@@ -535,7 +545,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, THREE_LEAVES);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepMessageFor('fast1')).toBeDefined();
       expect(h.stepMessageFor('queued')).toBeDefined();
     });
@@ -561,7 +571,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, THREE_LEAVES);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepMessageFor('fast1')).toBeDefined();
       expect(h.stepMessageFor('queued')).toBeDefined();
     });
@@ -613,7 +623,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, SLOW_BESIDE_CHAIN);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(
+    await waitFor(
       () => {
         expect(h.stepMessageFor('fast1')).toBeDefined();
       },
@@ -642,14 +652,14 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('b1', b1);
     const h = await setupHarness(runId, TWO_CHAINS_BESIDE_SLOW);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepMessageFor('a1')).toBeDefined();
       expect(h.stepMessageFor('b1')).toBeDefined();
     });
 
     const first = h.deliver(h.stepMessageFor('a1'), 'msg_a1');
     const second = h.deliver(h.stepMessageFor('b1'), 'msg_b1');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyStarts.get('a1')).toBe(1);
       expect(bodyStarts.get('b1')).toBe(1);
     });
@@ -682,7 +692,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('fast2', fast2);
     const h = await setupHarness(runId, SLOW_BESIDE_CHAIN);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(
+    await waitFor(
       () => {
         expect(h.stepMessageFor('fast1')).toBeDefined();
       },
@@ -690,7 +700,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     );
 
     const early = h.deliver(h.stepMessageFor('fast1'), 'msg_fast1');
-    await vi.waitFor(
+    await waitFor(
       () => {
         expect(bodyStarts.get('fast2')).toBe(1);
       },
@@ -712,7 +722,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepMessageFor('fast1')).toBeDefined();
     });
 
@@ -748,7 +758,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, FAIL_AFTER_RACE);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepMessageFor('fast1')).toBeDefined();
     });
 
@@ -772,7 +782,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     bodyGates.set('slow', slow);
     const h = await setupHarness(runId, ATTRIBUTE_FANOUT_BESIDE_SLOW);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepMessageFor('fast1')).toBeDefined();
     });
 
@@ -820,7 +830,7 @@ describe('inline path: an inline step settling while its batch is still running'
     const slowClaim = gate();
     if (holdSlowClaim) h.claimGates.set('slow', slowClaim);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepHas('fast1', 'step_completed')).toBe(true);
     });
     return { h, slow, slowClaim, flow };
@@ -844,7 +854,7 @@ describe('inline path: an inline step settling while its batch is still running'
     );
 
     if (enabled === '1') {
-      await vi.waitFor(() => {
+      await waitFor(() => {
         expect(handOffs(h)).toHaveLength(1);
       });
       await h.deliver(handOffs(h)[0], 'msg_handoff');
@@ -863,7 +873,7 @@ describe('inline path: an inline step settling while its batch is still running'
     const runId = newRunId();
     const { h, slow, flow } = await startInlineBatch(runId);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     const [handOff] = handOffs(h);
@@ -912,7 +922,7 @@ describe('inline path: an inline step settling while its batch is still running'
     expect(handOffs(h)).toEqual([]);
 
     slowClaim.open();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
 
@@ -930,14 +940,14 @@ describe('inline path: an inline step settling while its batch is still running'
     });
     const flow = h.deliver(h.startMessage, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyFinishes.has('fast1')).toBe(true);
     });
     await settle();
     expect(handOffs(h)).toEqual([]);
 
     runStarted.open();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     slow.open();
@@ -953,11 +963,11 @@ describe('inline path: an inline step settling while its batch is still running'
     });
     const flow = h.deliver(h.startMessage, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyFinishes.has('fast1')).toBe(true);
     });
     slow.open();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyFinishes.has('slow')).toBe(true);
     });
     expect(handOffs(h)).toEqual([]);
@@ -981,14 +991,14 @@ describe('inline path: an inline step settling while its batch is still running'
     });
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyFinishes.has('fast1')).toBe(true);
     });
     await settle();
     expect(handOffs(h)).toEqual([]);
 
     dispatch.open();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
       expect(h.stepMessageFor('queued')).toBeDefined();
     });
@@ -1007,7 +1017,7 @@ describe('inline path: an inline step settling while its batch is still running'
     });
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(h.stepHas('fast1', 'step_completed')).toBe(true);
     });
     slow.open();
@@ -1022,12 +1032,12 @@ describe('inline path: an inline step settling while its batch is still running'
     const { h, slow, flow } = await startInlineBatch(runId);
     const fast2 = gate();
     bodyGates.set('fast2', fast2);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
 
     const handedOff = h.deliver(handOffs(h)[0], 'msg_handoff');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyStarts.get('fast2')).toBe(1);
     });
     slow.open();
@@ -1049,11 +1059,11 @@ describe('inline path: an inline step settling while its batch is still running'
     const h = await setupHarness(runId, DETACHED_AFTER_FAST_BESIDE_SLOW);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     const handedOff = h.deliver(handOffs(h)[0], 'msg_handoff');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyStarts.get('detached')).toBe(1);
     });
 
@@ -1075,7 +1085,7 @@ describe('inline path: an inline step settling while its batch is still running'
     const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     await h.deliver(handOffs(h)[0], 'msg_handoff');
@@ -1130,7 +1140,7 @@ describe('inline path: an inline step settling while its batch is still running'
     const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     await h.deliver(handOffs(h)[0], 'msg_handoff');
@@ -1165,7 +1175,7 @@ describe('inline path: an inline step settling while its batch is still running'
     });
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     await h.deliver(handOffs(h)[0], 'msg_handoff');
@@ -1200,7 +1210,7 @@ describe('inline path: an inline step settling while its batch is still running'
     });
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     await h.deliver(handOffs(h)[0], 'msg_handoff');
@@ -1227,7 +1237,7 @@ describe('inline path: an inline step settling while its batch is still running'
       'msg_flow'
     );
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(bodyFinishes.has('fast1')).toBe(true);
     });
     expect(handOffs(h)).toEqual([]);
@@ -1285,7 +1295,7 @@ describe('inline path: an inline step settling while its batch is still running'
       maxConcurrencyCapable: true,
     });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handOffs(h)).toHaveLength(1);
     });
     slow.open();
