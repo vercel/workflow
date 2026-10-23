@@ -97,7 +97,14 @@ flowchart TD
 
 ## Consume after commit
 
-A write that resolves a promise in the workflow (`wait_completed`, an inline step's `step_completed` or `step_failed`) is consumed only after it committed and after the events its report names (`packages/core/src/runtime/spec9/consume-after-commit.ts:32`):
+Two operations happen to every event the orchestrator writes for itself:
+
+- **Commit.** The World accepts the write at a log position: it checks the in-band fence (`expectedSeqInBand`), allocates the next slot, and answers with the event, `allocated`, and the skipped-slot report of every event between the write's `eventCount` and its own slot. Until that answer arrives, the event has no position, and the orchestrator does not know what lies below it.
+- **Consume.** The orchestrator takes the event into the log it replays from, and the next pass of the VM acts on it: a promise resolves, the deterministic clock moves to the event's time, and the workflow's next decisions follow from it.
+
+Replay consumes a log in slot order. Every later replay of the run, in this delivery or a cold one, reads the committed log and resolves promises in that order. So the live orchestrator must consume the same events in the same order, and it can only know that order once the write committed: the slot, and what the report says landed below it, come with the commit.
+
+A write that resolves a promise in the workflow (`wait_completed`, an inline step's `step_completed` or `step_failed`) is therefore consumed only after it committed and after the events its report names (`consumeOwnResolvingWrite`, `packages/core/src/runtime/spec9/consume-after-commit.ts:32`):
 
 ```mermaid
 flowchart LR
@@ -108,6 +115,73 @@ flowchart LR
 ```
 
 The reason: an out-of-band event below the write (a background step's outcome, a `hook_received`, a `run_cancelled`) is consumed first by every later replay, and resolution order is observable through correlation ids and the workflow clock.
+
+### Example: a hook payload lands while an inline step runs
+
+The workflow races a hook against an inline step:
+
+```js
+const hook = createHook({ token: 'race' });
+return await Promise.race([hook.then(() => 'hook'), gated()]);
+```
+
+The first pass writes `hook_created` and the inline step's `step_started` (slots 3 and 4, `seqInBand` 4) and starts the body. While the body runs, `resumeHook()` commits a `hook_received` out-of-band at slot 5. Then the body returns, and its `step_completed` is written in-band.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant O as "Orchestrator (delivery.ts)"
+    participant IW as "InBandWriter"
+    participant W as "World"
+    participant H as "resumeHook() caller"
+    participant F as "LiveLogFeed"
+
+    O->>O: pass 1 consumed through slot 4, passConsumedSlot 4
+    O->>F: ensureLiveFeed after slot 4
+    Note over O: body of gated() runs
+    H->>W: hook_received, out-of-band
+    Note over W: slot 5, seq 5, seqInBand stays 4
+    Note over F: the push of slot 5 is missed, and no poll has run yet
+    O->>IW: create step_completed, eventCount 4
+    IW->>W: inBand true, expectedSeqInBand 4, eventCount 4
+    Note over W: fence matches: slot 6, seqInBand 5
+    W--)F: push slot 6, the orchestrator's own write
+    Note over F: held back: slot 5 is missing, poll interval reset
+    W-->>IW: event at 6, events = slot 5, allocated 1
+    IW-->>O: result, queued in pendingAbsorbs
+    O->>O: flushPending: absorbWrite merges report 5, then own 6
+    O->>O: consumeOwnResolvingWrite: merged, no reload
+    O->>O: pass 2 replays 1..6: hook_received at 5 first
+    Note over O: Promise.race settles to "hook", as every later replay does
+```
+
+The report in step 7 names slot 5 whatever the feed did, so the order is right even with no push at all. The push in step 6 and the response in step 7 can arrive in either order, and the feed passes on slot 6 only after slot 5, by push or poll. Had the push of slot 5 arrived while the body ran, the delivery would have run a pass on it there and then (a committed foreign event ends the wait in `awaitInlineProgress`, `delivery.ts:3587`), and the race settles to `"hook"` just the same: consuming a committed event is always safe, only its position must be known. This is the case `inline-step-writes.runtime.test.ts` ("feeds an out-of-band event that landed below an inline outcome before the outcome") runs, with the poll off and no push, so the report alone carries the hook payload.
+
+**What would go wrong otherwise.** Had the orchestrator handed `step_completed` to the VM when the body returned, pass 2 would settle the race to the step's value and the workflow would act on it (return, or create its next step). The committed log says the hook resolved first. The next cold replay, after a handoff, a redelivery or a retained session's discard, settles the race to `"hook"` and diverges from what the run already wrote. The same holds for a `run_cancelled` below a `wait_completed`: consumed in commit order, the run stops before the sleep's continuation runs (`hook-wait.runtime.test.ts`, "stops when a run_cancelled lands below its own wait_completed").
+
+### Other orderings the rule covers
+
+| Situation | What the code does | What would go wrong otherwise |
+|---|---|---|
+| The write's report is incomplete (`hasMore`) or the World answers without the event | `consumeOwnResolvingWrite` returns `reload`; the delivery drops the retained session and does a full load before the next pass (`delivery.ts:2509`, `delivery.ts:3690`). `absorbWrite` sets `logBehind` instead of merging (`delivery.ts:657`). | The VM would consume the own event above a hole. If the hole held an out-of-band resolution, the order would be wrong, as in the example. |
+| The own slot is more than one above everything held and the report names nothing between | `absorbWrite` marks the log behind rather than merge across the hole (`delivery.ts:689`). | Same as above: an unseen event below the own one. |
+| The fence refuses the write (412 `in-band-superseded`) | Nothing committed, so nothing is consumed. The writer stops for good and every later write throws `OrchestratorSupersededError` (`stop`, `in-band-writer.ts:878`). The delivery forgets its consumed position, sends the messages its committed writes owe and one plain wake, and acknowledges (`delivery.ts:1035`). Its retained session is discarded, and the wake's delivery replays from a fresh load. | A VM that consumed the refused event would hold a state the log never had: another orchestrator wrote at that count, and its decisions, not this one's, are the run's. Covered by `fenced-overlap.runtime.test.ts` ("discards the retained session when a later write is fenced out..."). |
+| The live feed pushes the orchestrator's own write before the response | `isOwnEvent` does not start a pass for it (`delivery.ts:1620`); `mergeReportedEvents` keeps one copy per event id; `allocatedBy` counts only slots unknown when the write was sent, so the echo does not read as an idempotent replay (`in-band-writer.ts:823`). | A pass per echo, and a fence count that undercounts the write, so the next in-band write is refused. Covered by `orchestrator.runtime.test.ts` ("takes one workflow pass per inline step when the live feed echoes its own writes") and `inline-step-writes.runtime.test.ts` ("keeps the fence count when the feed shows a batch and later events before its response"). |
+| An inline step finishes while a fan-out's later creation batches are still committing | Its outcome is queued on the writer only after every creation batch was queued (`creationBatchesQueuing`, `delivery.ts:3482`), and no pass decides while a creation is in flight (`creationsInFlight`, `delivery.ts:3617`). | A pass before the creations committed would not see them in the log, re-derive them as uncreated, and create the steps again. An outcome between two creation batches would also hold up the background creations behind it. |
+| Another writer's event lands above what the pass consumed, after the VM decided | Before suspending, the delivery replays again if the log holds a foreign event above `passConsumedSlot` (`delivery.ts:3411`). It records its consumed position (`recordConsumedPosition`, `consumed-position.ts:40`) only after its writes committed and its messages and timers went out. | That event's own wake would find the tail at the recorded position and be acknowledged as a no-op (`isNoopDelivery`, `consumed-position.ts:66`), so the event would never be consumed. Covered by `small-rules.test.ts` ("skips a delivery whose tail is the consumed position..."). |
+
+### The one exception: run-ahead
+
+Run-ahead consumes an inline step's outcome before its write commits, and only where the order cannot matter. At a boundary that `observeOutOfBandWriters` (`packages/core/src/runtime/out-of-band-observation.ts:156`) classifies inert (no hook the workflow waits on, no abort-signal hook, no step running in another invocation, no wait due within the invocation), the outcome is placed at the slot the writer predicts (`predictNextSlot`, `in-band-writer.ts:324`) and handed to the VM while the write is in flight, at most `WORKFLOW_RUN_AHEAD_DEPTH` writes deep. Every event that then lands below a speculative slot is checked by `checkRunAheadHazard` (`delivery.ts:1967`, `runAheadHazard` in `packages/core/src/runtime/spec9/run-ahead.ts:43`). A path-changing one stops the writer's decisions (`stopDecisions`, `in-band-writer.ts:240`) so nothing decided from the speculative state is written, and the redelivery decides from the log. An inert one displaced by a foreign event is repaired in place. Before a boundary that is not inert, the delivery drains run-ahead and replays if anything foreign landed below (`hasUnconsumedForeignEvent`, `delivery.ts:2924`). Covered by `run-ahead.runtime.test.ts`.
+
+### Where the code enforces it
+
+- `consumeOwnResolvingWrite` (`consume-after-commit.ts`): the decision between merge and reload; unit tests in `consume-after-commit.test.ts` (unseen out-of-band event first, empty report, incomplete report, truncated report).
+- `absorbWrite` (`delivery.ts:657`): folds every accepted in-band write into the log as report, then own event, in slot order; refuses to merge across a hole.
+- `flushPending` (`delivery.ts:1704`): the only place buffered feed events and inline writes join the log, between passes and never under a replay.
+- `InBandWriter` (`in-band-writer.ts`): one write at a time, the fence, `sendPosition` and `noteComplete` for the report's lower bound, and the stop on a refusal or an unknown outcome.
+- `LiveLogFeed` (`live-feed.ts`): passes on only a gap-free run of slots, so the feed never hands over an event above one it has not delivered.
+- `recordConsumedPosition` and `isNoopDelivery` (`consumed-position.ts`): a position counts as consumed only once the delivery that consumed it finished cleanly.
 
 ## Out-of-band writers
 
