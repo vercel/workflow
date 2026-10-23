@@ -2,4 +2,4 @@
 "@workflow/world-local": patch
 ---
 
-Reclaim dead in-band fence locks immediately via PID check, reducing recovery from 30s to <1s after SIGKILL
+Take over a run's in-band fence lock at once when its holder is known to be dead (its pid is gone on this host), instead of stalling in-band writes on that run for 30 s after the holder was killed

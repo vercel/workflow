@@ -84,6 +84,7 @@ import {
   writeJSON,
 } from '../fs.js';
 import { withInProcessLock } from '../util.js';
+import { withFenceFileLock } from './fence-lock.js';
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
@@ -3921,12 +3922,12 @@ export function createEventsStorage(
   // that follows could miss.
   //
   // The count lives in a file (`inBandCountPath`) and every check-and-advance
-  // runs under a lock file on it (proper-lockfile, like the hook token
-  // claim), after an in-process lock shared by every storage instance in the
-  // process: so two processes on one data directory fence each other, as two
-  // storage instances in one process do, and a restart keeps every count.
+  // runs under a lock directory next to it (`withFenceFileLock`), after an
+  // in-process lock shared by every storage instance in the process: so two
+  // processes on one data directory fence each other, as two storage
+  // instances in one process do, and a restart keeps every count.
   // Between its check and its publish an accepted write marks the count
-  // `pending`. A writer that died there (its lock goes stale) leaves the
+  // `pending`. A writer that died there (its lock is taken over) leaves the
   // mark, and the next writer through the lock counts that write as if it
   // landed: it may have, and counting a write that did not land only costs a
   // superseded redelivery, while missing one that did would let a stale
@@ -3984,258 +3985,12 @@ export function createEventsStorage(
     );
   }
 
-  function isFencePidAlive(pid: number): boolean | null {
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ESRCH') return false;
-      if (code === 'EPERM') return true;
-      return null;
-    }
-  }
-
-  interface FenceLockMeta {
-    pid: number;
-    token: string;
-  }
-
-  async function readFenceLockMeta(
-    metaPath: string
-  ): Promise<FenceLockMeta | null> {
-    try {
-      const raw = await fs.readFile(metaPath, 'utf8');
-      const parsed = JSON.parse(raw) as Partial<FenceLockMeta>;
-      if (typeof parsed.pid !== 'number' || typeof parsed.token !== 'string') {
-        return null;
-      }
-      return { pid: parsed.pid, token: parsed.token };
-    } catch {
-      return null;
-    }
-  }
-
-  async function safeUnlinkFile(filePath: string): Promise<void> {
-    try {
-      await fs.unlink(filePath);
-    } catch {}
-  }
-
-  async function safeRmDir(dirPath: string): Promise<void> {
-    try {
-      await fs.rm(dirPath, { recursive: true, force: true });
-    } catch {}
-  }
-
-  async function isLockReclaimable(
-    lockDir: string,
-    metaPath: string
-  ): Promise<boolean> {
-    const meta = await readFenceLockMeta(metaPath);
-    if (meta) {
-      return isFencePidAlive(meta.pid) === false;
-    }
-    try {
-      const stat = await fs.stat(lockDir);
-      return Date.now() - stat.mtimeMs > 5_000;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Renames the lock directory to a unique claim path. Returns the claim
-   * paths, or null if the lock dir disappeared (ENOENT — someone else
-   * reclaimed it first).
-   */
-  async function renameLockToClaim(
-    lockDir: string,
-    metaPath: string
-  ): Promise<{ claimDir: string; claimMeta: string } | null> {
-    const claimDir = `${lockDir}.claim-${monotonicUlid()}`;
-    const claimMeta = `${claimDir}-meta`;
-    try {
-      await fs.rename(lockDir, claimDir);
-      return { claimDir, claimMeta };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        await safeUnlinkFile(metaPath);
-      }
-      return null;
-    }
-  }
-
-  /**
-   * Moves the meta sidecar to the claim path. If the meta doesn't exist
-   * (process died between mkdir and writeFenceLockMeta), returns null
-   * without error — there's nothing to verify.
-   */
-  async function renameMetaToClaim(
-    metaPath: string,
-    claimMeta: string
-  ): Promise<FenceLockMeta | null> {
-    try {
-      await fs.rename(metaPath, claimMeta);
-      return await readFenceLockMeta(claimMeta);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        // metaPath disappeared between read and rename — treat as missing
-        return null;
-      }
-      throw err;
-    }
-  }
-
-  /**
-   * Restores a claim back to the original lock paths. Used when a
-   * concurrent acquirer replaced the lock between our read and rename.
-   */
-  async function restoreClaim(
-    claimDir: string,
-    claimMeta: string,
-    lockDir: string,
-    metaPath: string
-  ): Promise<void> {
-    await fs.rename(claimMeta, metaPath).catch(() => {});
-    await fs.rename(claimDir, lockDir).catch(() => {});
-  }
-
-  async function reclaimDeadInBandLock(countPath: string): Promise<void> {
-    const lockDir = `${countPath}.lock`;
-    const metaPath = `${countPath}.lock-meta`;
-
-    if (!(await isLockReclaimable(lockDir, metaPath))) return;
-
-    const originalMeta = await readFenceLockMeta(metaPath);
-    const claim = await renameLockToClaim(lockDir, metaPath);
-    if (claim === null) return;
-
-    let claimedMeta: FenceLockMeta | null = null;
-    try {
-      if (originalMeta !== null) {
-        claimedMeta = await renameMetaToClaim(metaPath, claim.claimMeta);
-      }
-    } catch {
-      await restoreClaim(claim.claimDir, claim.claimMeta, lockDir, metaPath);
-      return;
-    }
-
-    if (
-      originalMeta !== null &&
-      claimedMeta !== null &&
-      claimedMeta.token !== originalMeta.token
-    ) {
-      await restoreClaim(claim.claimDir, claim.claimMeta, lockDir, metaPath);
-      return;
-    }
-
-    await safeUnlinkFile(claim.claimMeta);
-    await safeRmDir(claim.claimDir);
-  }
-
-  async function writeFenceLockMeta(
-    metaPath: string,
-    token: string
-  ): Promise<void> {
-    try {
-      await fs.writeFile(metaPath, JSON.stringify({ pid: process.pid, token }));
-    } catch {}
-  }
-
-  async function removeFenceLockMetaIfOwned(
-    metaPath: string,
-    token: string
-  ): Promise<void> {
-    const meta = await readFenceLockMeta(metaPath);
-    if (meta?.token !== token) return;
-    await safeUnlinkFile(metaPath);
-  }
-
-  /**
-   * Run `fn` holding the run's fence lock: in this process, then across
-   * processes.
-   *
-   * Before acquiring the file lock, check whether a stale lock was left behind
-   * by a dead process (the recorded PID is no longer alive per
-   * `process.kill(pid, 0)`). If so, reclaim it immediately via atomic `rename`
-   * rather than waiting the full 30s `stale` timeout, cutting SIGKILL recovery
-   * from ~30s to <1s in the common case.
-   *
-   * The lock's meta file records both the PID and a unique per-acquisition
-   * token. After the reclaim rename, we re-read the meta from the claimed
-   * location: if its token differs from the one we read before the rename, a
-   * concurrent acquirer replaced the lock between our read and our rename,
-   * and we restore both files instead of deleting a live lock.
-   *
-   * If `process.kill` returns `null` or `EPERM` (e.g. restricted containers
-   * where PID liveness cannot be determined), the reclaim is skipped and the
-   * original `stale: 30_000` behavior applies unchanged.
-   */
-  async function tryAcquireLock(
-    lockDir: string,
-    metaPath: string,
-    countPath: string
-  ): Promise<void> {
-    for (let attempt = 0; attempt < 350; attempt++) {
-      try {
-        await fs.mkdir(lockDir);
-        return;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-
-        if (await isLockReclaimable(lockDir, metaPath)) {
-          await reclaimDeadInBandLock(countPath);
-          await new Promise((r) => setTimeout(r, 10));
-          continue;
-        }
-
-        await new Promise((r) => setTimeout(r, 100));
-      }
-    }
-    throw new WorkflowWorldError(
-      `Could not acquire the in-band fence lock of run ${countPath}`
-    );
-  }
-
-  async function runWithHeartbeat<T>(
-    lockDir: string,
-    metaPath: string,
-    token: string,
-    fn: () => Promise<T>
-  ): Promise<T> {
-    await writeFenceLockMeta(metaPath, token);
-
-    const heartbeat = setInterval(async () => {
-      try {
-        await fs.utimes(lockDir, new Date(), new Date());
-      } catch {
-        clearInterval(heartbeat);
-      }
-    }, 1_000);
-
-    try {
-      return await fn();
-    } finally {
-      clearInterval(heartbeat);
-      await removeFenceLockMetaIfOwned(metaPath, token);
-      await safeRmDir(lockDir);
-    }
-  }
-
+  /** Run `fn` holding the run's fence lock: in this process, then across processes. */
   function withFenceLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
     return withInProcessLock(fenceState.locks, fenceKey(runId), async () => {
       const countPath = inBandCountPath(basedir, runId, tag);
-      const lockDir = `${countPath}.lock`;
-      const metaPath = `${countPath}.lock-meta`;
       await fs.mkdir(path.dirname(countPath), { recursive: true });
-
-      await reclaimDeadInBandLock(countPath);
-      await tryAcquireLock(lockDir, metaPath, countPath);
-
-      const token = monotonicUlid();
-      return runWithHeartbeat(lockDir, metaPath, token, fn);
+      return withFenceFileLock(`${countPath}.lock`, runId, fn);
     });
   }
 
