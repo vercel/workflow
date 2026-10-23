@@ -548,8 +548,11 @@ type RetentionDecision =
  * continuation. Steps in the same suspension ride along deferred rather than
  * queued: an awaiter holds `lazyInlineSteps` back for the pass the
  * continuation drives, and the conflict branch returns before any inline
- * execution, so nothing this invocation does can order the continuation behind
- * a step body. The hook this suspension just created is an open hook by
+ * execution, so a step body is never ordered ahead of a continuation this
+ * invocation is still going to take. (A continuation it has already taken and
+ * been refused for — the repeat guard — does let the batch run first; there is
+ * nothing left for the ordering to protect by then.) The hook this suspension
+ * just created is an open hook by
  * definition, and is no more a hazard than any other open hook here: a
  * `hook_received` landing out of band is absent from the log the resume reads
  * exactly as it is absent from a fetch that returned a moment before it — a
@@ -3887,7 +3890,8 @@ export function workflowEntrypoint(
                          *
                          * False when this invocation cannot get anywhere that
                          * way — no session to resume (retention off, or a
-                         * boundary the predicate refused), or every hook here
+                         * boundary the predicate refused) and no
+                         * `allowColdReplay` from the caller, or every hook here
                          * already had its continuation and still wants one, so
                          * the pass ran over a log that did not hold the event
                          * and repeating it would spin. The caller re-invokes.
@@ -4155,16 +4159,23 @@ export function workflowEntrypoint(
                         // steps are deferred, only when they run: an inline
                         // `await executeStep(...)` blocks this handler for the
                         // full step duration, so an awaiter settled after the
-                        // batch would be serialized behind a step body —
-                        // defeating work the workflow expressed as parallel
-                        // (e.g. `hook.getConflict().then(() => stepB())` racing
-                        // `await stepA()`). The hook-write continuation below
-                        // therefore runs FIRST and holds this batch back for
-                        // one pass, which is free precisely because a deferred
-                        // step has written nothing to answer for. stepA runs on
-                        // the pass after it, alongside the stepB the settled
-                        // awaiter started — both inline, both in this
-                        // invocation.
+                        // batch would be settled behind a step body — and a
+                        // branch waiting on that awaiter cannot start the work
+                        // the body may itself be waiting for. The hook-write
+                        // continuation below therefore runs FIRST and holds
+                        // this batch back, which is free precisely because a
+                        // deferred step has written nothing to answer for.
+                        // `hook.getConflict().then(() => stepB())` racing
+                        // `await stepA()` then reaches the batch with both
+                        // steps pending and runs them together.
+                        //
+                        // One batch, not an unbounded fork: the batch awaits
+                        // every body, so a THIRD step the branch starts after
+                        // stepB waits for stepA as well — the same shape plain
+                        // `const p = a(); await b(); await c();` has, and what
+                        // the QuickJS engine does here too. Holding bounds the
+                        // branch's reach to one batch; it does not make the
+                        // branch independent of the invocation.
                         const lazyInlineSteps =
                           suspensionResult.lazyInlineSteps;
                         const inlineCorrelationIds = new Set(
@@ -4578,19 +4589,27 @@ export function workflowEntrypoint(
                          *
                          * The continuation runs BEFORE this invocation's
                          * inline batch, so the awaiter settles off the write
-                         * rather than behind a step body — the property that
-                         * keeps `hook.getConflict().then(…)` racing an
-                         * `await step()` genuinely parallel. The handler
-                         * deferred those steps' creates (`lazyInlineSteps`)
-                         * precisely so they can be held for it: nothing is
-                         * written for a deferred step, so the pass that
-                         * continues leaves nothing dangling, and the pass
-                         * after it re-raises them from the workflow's own
-                         * queue and runs them inline, joined by whatever the
-                         * settled awaiter started in the meantime. Eagerly
-                         * creating and queueing them instead, which is what
-                         * an awaiter used to force, bought the same ordering
-                         * for a publish, a second invocation and a replay.
+                         * rather than behind a step body. The handler deferred
+                         * those steps' creates (`lazyInlineSteps`) precisely so
+                         * they can be held for it: nothing is written for a
+                         * deferred step, so the pass that continues leaves
+                         * nothing dangling, and the pass after it re-raises
+                         * them from the workflow's own queue and runs them
+                         * inline, joined by whatever the settled awaiter
+                         * started in the meantime. Eagerly creating and
+                         * queueing them instead, which is what an awaiter used
+                         * to force, bought the same ordering for a publish, a
+                         * second invocation and a replay.
+                         *
+                         * What the hold buys is that the branch off the awaiter
+                         * reaches the SAME batch as the step it was started
+                         * beside, not that it becomes independent of this
+                         * invocation: the batch awaits every body, so work the
+                         * branch starts after its first step waits for the held
+                         * step too. That is the inline model everywhere else
+                         * (and what QuickJS does here), where queueing the held
+                         * step put the branch in a different invocation
+                         * entirely. See the comment above `lazyInlineSteps`.
                          *
                          * The hold ends when the registrations do, and is
                          * bounded by nothing else: `continuedHookIds` grants
@@ -4892,11 +4911,12 @@ export function workflowEntrypoint(
                         // forced optimistic start safe no longer holds: turbo
                         // exits and the steps take the normal (env-gated)
                         // await-then-run path. The hook-conflict case already
-                        // returned early above, the attr case continued into a
-                        // fresh replay (so a batch-scheduling suspension never
-                        // carries attr events), and the awaited-hook case
-                        // emptied lazyInlineSteps; the checks below are
-                        // defensive.
+                        // returned early above and the attr case continued into
+                        // a fresh replay (so a batch-scheduling suspension never
+                        // carries attr events), making those two checks
+                        // defensive; `hasAwaitedHookCreation` is not, since an
+                        // awaiter whose continuation was refused falls through
+                        // to this batch with the flag still set.
                         //
                         // The `suspensionResult.*` flags only reflect what THIS
                         // batch created, so they do not catch a hook/wait opened

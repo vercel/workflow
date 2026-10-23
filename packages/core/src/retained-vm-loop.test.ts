@@ -435,9 +435,9 @@ const racedBranchGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFL
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
 // Two awaited hook registrations created one after the other, each in its own
-// suspension, with a step racing both. The step is held for the first
-// continuation only; the second pass runs it inline rather than parking it
-// behind another hook write (see `heldForHookContinuationIds`).
+// suspension, with a step racing both. The step is held across both of them:
+// one continuation per hook, and the step runs only once neither registration
+// is outstanding.
 const chainedGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
   async function workflow() {
@@ -447,6 +447,24 @@ const chainedGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_U
     const second = createHook({ token: "retained-chained-token-2" });
     await second.getConflict();
     return await step;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// The same chain, with the raced step DEPENDING on work that only exists once
+// the SECOND registration has settled. A hold that ends after the first
+// continuation runs the dependent body with nothing to unblock it, so this
+// shape deadlocks the invocation rather than merely serializing it.
+const chainedDependentGetConflictWorkflow = `const blocked = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_chained_blocked");
+  const release = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_chained_release");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const waiting = blocked();
+    const first = createHook({ token: "retained-chained-dep-1" });
+    await first.getConflict();
+    const second = createHook({ token: "retained-chained-dep-2" });
+    await second.getConflict();
+    const released = await release();
+    return (await waiting) + released;
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
@@ -492,6 +510,29 @@ const conflictingParallelGetConflictWorkflow = `const s1 = globalThis[Symbol.for
     }
     if (conflict) return "deduped";
     return await work;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// The same shape with TWO steps beside the awaiter, for a run whose inline cap
+// admits only one of them. The deferral — and so the ordering it buys — is
+// bounded by that cap: the second step keeps its eager create, written
+// alongside the hook, so a conflict reaches the workflow with that row already
+// in the log.
+const conflictingOverflowGetConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const hook = createHook({ token: "${CONFLICTING_TOKEN}" });
+    const work = Promise.all([s1(), s2()]);
+    let conflict;
+    try {
+      conflict = await hook.getConflict();
+    } catch {
+      conflict = "rejected";
+    }
+    if (conflict) return "deduped";
+    const [a, b] = await work;
+    return a + b;
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
@@ -1616,7 +1657,9 @@ describe('retained VM through the inline replay loop', () => {
       // No retained session to resume, so the continuation is a cold replay
       // over the reloaded log rather than a VM resume — the ordering is the
       // same, and so is the delivery: the step still runs here, and nothing
-      // is enqueued.
+      // is enqueued. This case only pins the delivery; `does not block the
+      // hook continuation behind a step when retention is off` is what pins
+      // the order the two happen in.
       process.env.WORKFLOW_RETAINED_VM = '0';
       const { result, queueSends, vmBuilds } = await drive(
         'wrun_retained_parallel_get_conflict_off',
@@ -1735,6 +1778,58 @@ describe('retained VM through the inline replay loop', () => {
       }
     });
 
+    it('does not run a step that the second registration unblocks before settling it', async () => {
+      // The chain with a dependency across it: the raced step parks until a
+      // step the SECOND registration's continuation starts releases it. A hold
+      // that ended after the first continuation would run the parked body with
+      // nothing able to release it, deadlocking the invocation rather than
+      // merely serializing the two branches. (The retained path: the
+      // retention-off one above covers the same ordering through a cold
+      // replay.)
+      const blockedStarted = withResolvers<void>();
+      const releaseStarted = withResolvers<void>();
+      const unblock = withResolvers<void>();
+      registerStepFunction('r_chained_blocked', async () => {
+        blockedStarted.resolve();
+        await unblock.promise;
+        return 10;
+      });
+      registerStepFunction('r_chained_release', async () => {
+        releaseStarted.resolve();
+        unblock.resolve();
+        return 20;
+      });
+      const driving = drive(
+        'wrun_retained_chained_dependent',
+        chainedDependentGetConflictWorkflow
+      );
+      try {
+        // Raced against the drive so a delivery that queues the blocked step
+        // instead of running it fails here rather than hanging.
+        expect(
+          await Promise.race([
+            blockedStarted.promise.then(() => true),
+            driving.then(() => false),
+          ])
+        ).toBe(true);
+        expect(
+          await Promise.race([
+            releaseStarted.promise.then(() => true),
+            new Promise<boolean>((resolve) =>
+              setTimeout(() => resolve(false), 1000)
+            ),
+          ])
+        ).toBe(true);
+        await expect(driving).resolves.toMatchObject({
+          result: 30,
+          queueSends: 0,
+        });
+      } finally {
+        unblock.resolve();
+        await driving;
+      }
+    });
+
     it('stops holding and runs the step when a repeat pass cannot see the registration', async () => {
       // The repeat guard, from the held-step side. With no delta AND a read
       // that has not caught up, the continuation runs over a log that still
@@ -1822,6 +1917,29 @@ describe('retained VM through the inline replay loop', () => {
         expect(result).toBe('deduped');
         expect(committedTypes).toEqual(['hook_conflict', 'run_completed']);
         expect(queueSends).toBe(0);
+      });
+
+      it('still creates a step past the inline cap before the conflict settles', async () => {
+        // The bound on the above, and on the ordering the deferral buys in
+        // general: only the steps the invocation would run inline are deferred.
+        // With the cap at one and two steps beside the awaiter, the second
+        // keeps its eager `step_created`, written alongside the hook, so the
+        // conflict reaches the workflow with that row already committed. The
+        // docs say so; this is what makes them say it.
+        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+        const { result, committedTypes } = await drive(
+          'wrun_retained_taken_overflow',
+          conflictingOverflowGetConflictWorkflow,
+          { type: 'normal' },
+          { conflictToken: CONFLICTING_TOKEN }
+        );
+
+        expect(result).toBe('deduped');
+        expect(committedTypes).toEqual([
+          'hook_conflict',
+          'step_created',
+          'run_completed',
+        ]);
       });
 
       it('settles a payload await in-process, with no getConflict() awaiter', async () => {
