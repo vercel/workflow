@@ -25,7 +25,10 @@ vi.mock('./child-run-completion-notify.js', async (importOriginal) => ({
  * after registering the hook, so a resume that lands before the terminal
  * write (and finds no hook) could leave the parent waiting forever.
  */
-describe('terminal writes resume the parent completion hook', () => {
+describe.each([
+  'node',
+  'quickjs',
+] as const)('%s terminal writes resume the parent completion hook', (engine) => {
   afterEach(() => {
     setWorld(undefined);
     vi.restoreAllMocks();
@@ -44,7 +47,10 @@ describe('terminal writes resume the parent completion hook', () => {
       startedAt: new Date('2024-01-01T00:00:00.000Z'),
       deploymentId: 'test-deployment',
       specVersion: SPEC_VERSION_CURRENT,
-      executionContext: { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true },
+      executionContext: {
+        [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true,
+        ...(engine === 'quickjs' ? { workflowVm: 'quickjs' } : {}),
+      },
     };
     const events: Event[] = [];
     const written: string[] = [];
