@@ -19,7 +19,10 @@ import { SerializedDataSchema } from './serialization.js';
  * - **One immutable decision per candidate `runId`.** The first admission
  *   attempt for a candidate decides it. Every later attempt for that `runId`,
  *   through either path, returns that decision even if the token has since
- *   become free or been taken:
+ *   become free or been taken, until the orphan bound below: past it, a
+ *   `run_created` for the candidate is refused with
+ *   `START_HOOK_ADMISSION_REJECTED` even if it was decided (`start()` only
+ *   retries with a new candidate, so nothing waits on that decision):
  *   - accepted: the run is created with the token reserved, and repeated
  *     attempts return that run (never `EntityConflictError`);
  *   - rejected: no run or events are created for the candidate, and repeated

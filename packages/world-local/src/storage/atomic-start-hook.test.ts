@@ -298,12 +298,8 @@ describe('atomic start Hook (world-local)', () => {
       const past = await create(orphan, creating('run_created', token)).catch(
         (e: unknown) => e
       );
-      // Already decided (refused) for this candidate, so the refusal replays
-      // unless the World answers the bound first; both are final.
-      expect(
-        HookConflictError.is(past) ||
-          (past as { code?: string }).code === START_HOOK_ADMISSION_REJECTED
-      ).toBe(true);
+      // Past the bound the World answers it, decided or not.
+      expect(past).toMatchObject({ code: START_HOOK_ADMISSION_REJECTED });
     } finally {
       vi.useRealTimers();
     }

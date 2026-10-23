@@ -46,7 +46,8 @@ import {
  * - A retention beyond the World's limit is refused with
  *   `START_HOOK_ADMISSION_REJECTED`.
  * - Past the 24h orphan bound, a candidate with no run is refused with
- *   `START_HOOK_ADMISSION_REJECTED` through either copy. A staged orphan (an accepted candidate
+ *   `START_HOOK_ADMISSION_REJECTED` through either copy, and a decided
+ *   candidate's `run_created` is too. A staged orphan (an accepted candidate
  *   whose run was never created) holds its token for the World's hold and
  *   releases it after, and its own later copies are then refused naming the
  *   run that took the token.
@@ -633,6 +634,34 @@ export function atomicStartHookConformance(
           expect(await runExists(late)).toBe(false);
           // The refusal reserved nothing.
           await admit(events, { token });
+        }
+      );
+
+      orphanTest(
+        "refuses a decided candidate's run_created past the bound, accepted or refused",
+        async () => {
+          const events = setup();
+          const token = newToken();
+          const accepted = await admit(events, { token });
+          const refused = options.newRunId();
+          await expectRefused(
+            create(events, refused, runCreated({ token })),
+            token,
+            accepted
+          );
+          advance?.(DAY_MS + 60_000);
+
+          // The bound answers first: start() only ever retries with a new
+          // candidate, so nothing waits on these decisions past it.
+          for (const runId of [accepted, refused]) {
+            const error = await refusal(
+              create(events, runId, runCreated({ token }))
+            );
+            expect(errorNamed(error, 'WorkflowWorldError')).toBe(true);
+            expect(error).toMatchObject({
+              code: START_HOOK_ADMISSION_REJECTED_CODE,
+            });
+          }
         }
       );
 
