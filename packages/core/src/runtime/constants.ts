@@ -302,11 +302,12 @@ export function isVmRetentionEnabled(): boolean {
 }
 
 /**
- * Whether an operator has explicitly disabled optimistic inline start with
+ * Whether an operator has explicitly disabled optimistic start with
  * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Turbo mode starts the first
- * delivery's inline step bodies before their `step_started` commits; this
- * opt-out keeps turbo's other shortcuts and makes those bodies wait for the
- * commit instead.
+ * delivery's inline step bodies before their `step_started` commits, and a
+ * background step's first delivery starts its body while its out-of-band
+ * `step_started` is in flight; this opt-out keeps turbo's other shortcuts
+ * and makes those bodies wait for the commit instead.
  *
  * Only the opt-out is read. On single-orchestrator runs there is no general
  * optimistic inline start to turn on: a body that runs before its

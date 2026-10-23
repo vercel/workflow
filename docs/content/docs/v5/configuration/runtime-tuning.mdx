@@ -179,7 +179,7 @@ An out-of-band terminal event has these effects, all of them benign:
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
 
 - Default: unset
-- Set `0` or `false` to keep inline step bodies waiting for their start to commit, on turbo's first delivery and under run-ahead alike. `WORKFLOW_TURBO` still backgrounds `run_started` and skips the initial load. Use it when step side effects are not idempotent.
+- Set `0` or `false` to keep step bodies waiting for their start to commit: inline steps on turbo's first delivery and under run-ahead, and background steps on their message's first delivery. `WORKFLOW_TURBO` still backgrounds `run_started` and skips the initial load. Use it when step side effects are not idempotent.
 - A step declared with `maxRetries: 0` always waits for its start to commit before its body runs, whatever this is set to: a step that allows no retries is taken not to be idempotent. Steps that allow retries (the default) are taken to survive running again after a lost write.
 - No other value has an effect.
 

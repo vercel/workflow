@@ -81,7 +81,9 @@ export interface StepMessageContext {
  *    from the run's full log) whether to run the body, using the table in
  *    `orchestrator/step-delivery.ts`;
  * 2. writes `step_started`, runs the body, and writes the outcome, all
- *    out-of-band (`inBand: false`);
+ *    out-of-band (`inBand: false`). On a plain first delivery a step that
+ *    allows retries starts its body while `step_started` is in flight, and
+ *    its outcome is written only once that start committed;
  * 3. wakes the run's orchestrator with an unkeyed message.
  *
  * Its result is queue control, per the World's `createQueueHandler`
@@ -197,6 +199,12 @@ export async function handleStepMessage(
         ? { firstStartedAt: decision.firstStartedAt }
         : {}),
       input,
+      // A plain first delivery (no log read) starts the body while its
+      // `step_started` is in flight, for a step that allows retries (see
+      // `mayRunBeforeItsStart`); the outcome waits for the start, and a
+      // start that did not commit discards it. A redelivery, a retry's
+      // message and a `maxRetries: 0` step write the start first.
+      forceOptimisticStart: log === undefined,
       retryOutlivesMessage: (retryAtMs) =>
         retryOutlivesMessage({
           messageCreatedAt: meta.createdAt,
