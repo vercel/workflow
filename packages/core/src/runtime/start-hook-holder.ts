@@ -3,6 +3,7 @@ import type { WorkflowInvokePayload, World } from '@workflow/world';
 import { getRunQueueNamespace } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { withRunSpecVersion } from './run-spec-routing.js';
 
 /**
  * How long a start Hook's holder may stay `pending` before a refused
@@ -63,7 +64,13 @@ export async function wakePendingStartHookHolder(
         holder.workflowName,
         getRunQueueNamespace(holder.executionContext)
       ),
-      { runId: holder.runId, traceCarrier } satisfies WorkflowInvokePayload,
+      // Stamped with the holder's spec version: a World that keys a
+      // single-orchestrator run's messages (world-vercel's concurrency key)
+      // reads it from the payload, not the send options.
+      withRunSpecVersion(
+        { runId: holder.runId, traceCarrier } satisfies WorkflowInvokePayload,
+        holder.specVersion
+      ),
       {
         deploymentId: holder.deploymentId,
         ...(holder.specVersion !== undefined

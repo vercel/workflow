@@ -5,13 +5,19 @@ import {
   RUN_ERROR_CODES,
   START_HOOK_ADMISSION_REJECTED,
   ThrottleError,
-  WorkflowRunNotFoundError,
   WorkflowError,
+  WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowStartError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  isSingleOrchestratorMessage,
+  messageRunSpecVersion,
+  orchestratorRunIdOf,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hydrateStepArguments } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -401,13 +407,38 @@ describe('start({ hook })', () => {
         getWorkflowQueueName('workflow//./test//orders', 'eve')
       );
       expect(queueName).toMatch(/^__eve_wkf_workflow_/);
-      expect(payload).toEqual({ runId: 'wrun_owner', traceCarrier: {} });
+      expect(payload).toEqual({
+        runId: 'wrun_owner',
+        traceCarrier: {},
+        runSpecVersion: 8,
+      });
       expect(payload).not.toHaveProperty('runInput');
       expect(opts).toEqual({
         deploymentId: 'dpl_owner',
         specVersion: 8,
         idempotencyKey: startHookHolderWakeKey('wrun_owner', Date.now()),
       });
+    });
+
+    it.each([
+      [8, false],
+      [SPEC_VERSION_SINGLE_ORCHESTRATOR, true],
+    ])("stamps a spec-%i holder's wake so a World keys it by run (%s)", async (specVersion, keyed) => {
+      refusingWorld(
+        vi.fn().mockResolvedValue({
+          ...holderRun('pending', START_HOOK_HOLDER_WAKE_AFTER_MS + 1_000),
+          specVersion,
+        })
+      );
+
+      await rejection(start(workflow, [], { hook: { token: TOKEN } }));
+
+      const [, payload, opts] = queue.mock.calls[1];
+      expect(opts.specVersion).toBe(specVersion);
+      expect(messageRunSpecVersion(payload)).toBe(specVersion);
+      // What world-vercel's concurrency key is derived from.
+      expect(isSingleOrchestratorMessage(payload)).toBe(keyed);
+      expect(orchestratorRunIdOf(payload)).toBe('wrun_owner');
     });
 
     it.each([

@@ -472,10 +472,12 @@ export function atomicStartHookConformance(
     ])("an adoption without its own retention keeps the start's after the owner %s", async (_label, disposeEarly) => {
       const events = setup();
       const token = newToken();
-      const retentionMs = 2_000;
+      // Longer than its neighbours': five writes land before the check after
+      // the owner ends, so leave room for a slow filesystem.
+      const until = Date.now() + 5_000;
       const owner = await admit(events, {
         token,
-        tokenRetentionUntil: new Date(Date.now() + retentionMs),
+        tokenRetentionUntil: new Date(until),
       });
       await create(events, owner, runStarted({ token }));
       const hookId = newHookId();
@@ -487,7 +489,7 @@ export function atomicStartHookConformance(
 
       await finish(events, owner);
       await expectRefused(admit(events, { token }), token, owner);
-      await sleep(retentionMs + 250);
+      await sleep(Math.max(0, until - Date.now()) + 250);
       await admit(events, { token });
     });
 
