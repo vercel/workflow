@@ -54,6 +54,14 @@ export default defineConfig({
 | `typescriptPlugin` | `boolean` | `false` | Adds the `workflow` TypeScript plugin to the generated `tsconfig.json` for integrated development environment (IDE) IntelliSense. |
 | `runtime` | `string` | — | Node.js runtime version for Vercel Functions (for example, `'nodejs22.x'` or `'nodejs24.x'`). Only applies when deploying to Vercel. |
 | `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles, which helps stay under the Vercel 250 MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
+| `onAfterBundle` | `WorkflowAfterBundleHook` | — | Optional callback invoked after the workflow bundles and serialized manifest are written. |
+
+`onAfterBundle` receives absolute paths for the `steps`, `workflows`, and
+`manifest` artifacts. It runs before later Nitro/Vercel outputs are written.
+Production builds reject hook failures; development Vite updates use the
+normal queued-build logging behavior. Keep the callback fast and make external
+side effects idempotent. This is a programmatic callback and is not exposed as
+a command-line option.
 
 ## Vite-based Nitro
 

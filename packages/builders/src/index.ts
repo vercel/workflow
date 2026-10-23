@@ -1,7 +1,10 @@
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';
-export { createBuildQueue } from './build-queue.js';
+export {
+  type BuildQueueOptions,
+  createBuildQueue,
+} from './build-queue.js';
 export {
   createBaseBuilderConfig,
   type DecoratorOptions,
@@ -73,9 +76,16 @@ export type {
   AstroConfig,
   BuildTarget,
   NextConfig,
+  NitroConfig,
   StandaloneConfig,
   SvelteKitConfig,
   VercelBuildOutputConfig,
+  WorkflowAfterBundleHook,
+  WorkflowBundleArtifact,
+  WorkflowBundleArtifactKind,
+  WorkflowBundleArtifacts,
+  WorkflowBundleBuildTarget,
+  WorkflowBundleResult,
   WorkflowConfig,
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';

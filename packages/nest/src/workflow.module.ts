@@ -423,7 +423,9 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
       import('@workflow/builders'),
     ]);
     const builder = new NestLocalBuilder({ ...this.options, basePath });
-    await createBuildQueue()(() => builder.build());
+    // Module initialization is a startup/production build, not a watcher.
+    // Propagate hook failures so derived artifacts cannot silently go stale.
+    await createBuildQueue({ swallowErrors: false })(() => builder.build());
   }
 
   async #startWorld(): Promise<void> {

@@ -30,6 +30,12 @@ const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
   specifier: string
 ) => Promise<T>;
 
+function isAfterBundleHookFailure(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === 'onAfterBundle hook failed'
+  );
+}
+
 /**
  * The dev watcher belongs to the process, not to a builder instance. Next.js
  * re-evaluates `next.config` more than once per dev session (on a config edit,
@@ -642,6 +648,17 @@ export async function getNextBuilderEager(
               // watch set is only correct once it follows.
               applyWatchScope(batchStartedAt);
             } catch (error) {
+              // The bundle and manifest are already authoritative when the
+              // after-bundle hook fails. Keep the watcher baseline aligned with
+              // that successful rebuild, even though the hook error is logged.
+              if (isAfterBundleHookFailure(error)) {
+                failedRebuildUnresolvedImports = new Set();
+                refreshKnownFiles();
+                await refreshSourceSnapshots();
+                applyWatchScope(batchStartedAt);
+                throw error;
+              }
+
               // Discovery runs before the bundle and records where every
               // unresolved import was expected; it is cached for these input
               // files, so reading it back here does not walk the graph again.
@@ -670,6 +687,14 @@ export async function getNextBuilderEager(
             for (const [file, snapshot] of decision.snapshots) {
               sourceSnapshots.set(file, snapshot);
             }
+          } catch (error) {
+            // `createManifest()` writes the bundle and manifest before invoking
+            // the hook. If only the hook failed, the source snapshots must still
+            // advance or the next edit will be compared with stale content.
+            if (isAfterBundleHookFailure(error)) {
+              await refreshSourceSnapshots();
+            }
+            throw error;
           } finally {
             // See the matching line on the full path above.
             logDevHmr('workflow dev hmr: rebuild complete');
