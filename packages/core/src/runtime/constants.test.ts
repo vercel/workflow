@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import {
   _resetReplayTimeoutWarnCacheForTests,
+  EAGER_BRANCH_REPLAY_DELAY_MS,
+  EAGER_BRANCH_REPLAY_MAX_PENDING,
+  getEagerBranchReplayDelayMs,
+  getEagerBranchReplayMaxPending,
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
   INLINE_OWNERSHIP_LEASE_SECONDS,
+  isEagerBranchReplayEnabled,
   isInlineOwnershipEnabled,
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -355,6 +360,123 @@ describe('isInlineOwnershipEnabled', () => {
     expect(isInlineOwnershipEnabled()).toBe(true);
     process.env.WORKFLOW_INLINE_OWNERSHIP = 'yes';
     expect(isInlineOwnershipEnabled()).toBe(true);
+  });
+});
+
+describe('isEagerBranchReplayEnabled', () => {
+  const originalEnv = process.env.WORKFLOW_EAGER_BRANCH_REPLAY;
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.WORKFLOW_EAGER_BRANCH_REPLAY;
+    } else {
+      process.env.WORKFLOW_EAGER_BRANCH_REPLAY = originalEnv;
+    }
+  });
+
+  it('defaults to enabled when unset or empty', () => {
+    delete process.env.WORKFLOW_EAGER_BRANCH_REPLAY;
+    expect(isEagerBranchReplayEnabled()).toBe(true);
+    process.env.WORKFLOW_EAGER_BRANCH_REPLAY = '';
+    expect(isEagerBranchReplayEnabled()).toBe(true);
+  });
+
+  it('is disabled by "0" or "false" (kill switch)', () => {
+    process.env.WORKFLOW_EAGER_BRANCH_REPLAY = '0';
+    expect(isEagerBranchReplayEnabled()).toBe(false);
+    process.env.WORKFLOW_EAGER_BRANCH_REPLAY = 'False';
+    expect(isEagerBranchReplayEnabled()).toBe(false);
+  });
+
+  it('stays enabled for other values', () => {
+    process.env.WORKFLOW_EAGER_BRANCH_REPLAY = '1';
+    expect(isEagerBranchReplayEnabled()).toBe(true);
+  });
+});
+
+describe('getEagerBranchReplayMaxPending', () => {
+  const ENV = 'WORKFLOW_EAGER_BRANCH_REPLAY_MAX_PENDING';
+  const originalEnv = process.env[ENV];
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env[ENV];
+    else process.env[ENV] = originalEnv;
+    warnSpy.mockRestore();
+  });
+
+  it('defaults when unset or empty', () => {
+    delete process.env[ENV];
+    expect(getEagerBranchReplayMaxPending()).toBe(
+      EAGER_BRANCH_REPLAY_MAX_PENDING
+    );
+    process.env[ENV] = '';
+    expect(getEagerBranchReplayMaxPending()).toBe(
+      EAGER_BRANCH_REPLAY_MAX_PENDING
+    );
+  });
+
+  it('takes a non-negative integer, zero included', () => {
+    process.env[ENV] = '64';
+    expect(getEagerBranchReplayMaxPending()).toBe(64);
+    process.env[ENV] = '0';
+    expect(getEagerBranchReplayMaxPending()).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the default and warns once on anything else', () => {
+    process.env[ENV] = '-7';
+    expect(getEagerBranchReplayMaxPending()).toBe(
+      EAGER_BRANCH_REPLAY_MAX_PENDING
+    );
+    expect(getEagerBranchReplayMaxPending()).toBe(
+      EAGER_BRANCH_REPLAY_MAX_PENDING
+    );
+    process.env[ENV] = 'many-branches';
+    expect(getEagerBranchReplayMaxPending()).toBe(
+      EAGER_BRANCH_REPLAY_MAX_PENDING
+    );
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('getEagerBranchReplayDelayMs', () => {
+  const ENV = 'WORKFLOW_EAGER_BRANCH_REPLAY_DELAY_MS';
+  const originalEnv = process.env[ENV];
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env[ENV];
+    else process.env[ENV] = originalEnv;
+    warnSpy.mockRestore();
+  });
+
+  it('defaults when unset or empty', () => {
+    delete process.env[ENV];
+    expect(getEagerBranchReplayDelayMs()).toBe(EAGER_BRANCH_REPLAY_DELAY_MS);
+    process.env[ENV] = '';
+    expect(getEagerBranchReplayDelayMs()).toBe(EAGER_BRANCH_REPLAY_DELAY_MS);
+  });
+
+  it('takes a non-negative integer, zero included', () => {
+    process.env[ENV] = '1000';
+    expect(getEagerBranchReplayDelayMs()).toBe(1000);
+    process.env[ENV] = '0';
+    expect(getEagerBranchReplayDelayMs()).toBe(0);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the default and warns once on anything else', () => {
+    process.env[ENV] = '2.5';
+    expect(getEagerBranchReplayDelayMs()).toBe(EAGER_BRANCH_REPLAY_DELAY_MS);
+    expect(getEagerBranchReplayDelayMs()).toBe(EAGER_BRANCH_REPLAY_DELAY_MS);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });
 

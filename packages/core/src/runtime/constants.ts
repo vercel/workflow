@@ -83,10 +83,12 @@ export const MAX_REPLAY_TIMEOUT_MS = 780_000;
 // On `globalThis` rather than at module scope so "once per process" survives
 // bundling: this package is compiled into the host application's server build
 // once per bundler layer, and per-copy sets warn once per layer instead.
-const warned = globalSingleton('@workflow/core//envWarnings', 1, () => ({
+const warned = globalSingleton('@workflow/core//envWarnings', 2, () => ({
   replayTimeoutValues: new Set<string>(),
   maxInlineStepsValues: new Set<string>(),
   maxEventsValues: new Set<string>(),
+  eagerBranchReplayMaxPendingValues: new Set<string>(),
+  eagerBranchReplayDelayValues: new Set<string>(),
 }));
 
 function warnOnce(
@@ -449,6 +451,118 @@ export function isInlineOwnershipEnabled(): boolean {
   const raw = process.env.WORKFLOW_INLINE_OWNERSHIP;
   if (raw === undefined || raw === '') return true;
   return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Whether a parallel branch advances as soon as its own step settles (default
+ * ON), rather than once every step pending beside it has settled
+ * (vercel/workflow#4457).
+ *
+ * Two places used to hold a settled branch back. A queued step's handler
+ * returned without replaying while any sibling step was still pending, and the
+ * inline loop replayed only after every step in its inline batch had settled.
+ * Either way each round of a `Promise.all` cost as long as its slowest step.
+ * With this on, the queued step's handler replays anyway, and an inline step
+ * that settles while its siblings are still running hands the run to a fresh
+ * invocation. Both replays are advance-only: they act on the work they create
+ * and leave the steps still in flight to the invocations running them.
+ *
+ * A branch advances early only while at most
+ * {@link getEagerBranchReplayMaxPending} other steps are pending beside it.
+ *
+ * `WORKFLOW_EAGER_BRANCH_REPLAY=0` (or `false`) is the kill switch: a settled
+ * branch waits for its siblings again, exactly as before.
+ */
+export function isEagerBranchReplayEnabled(): boolean {
+  const raw = process.env.WORKFLOW_EAGER_BRANCH_REPLAY;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Default for {@link getEagerBranchReplayMaxPending}.
+ *
+ * An early replay finds nothing to do unless the settled step's branch has a
+ * step after it, which it cannot know before replaying, and in a wide fan-out
+ * of one-step branches every settlement but the last finds exactly that. Each
+ * of those replays costs a full pass over a log that grows with the fan-out, so
+ * replaying on all of them makes the fan-out quadratic (measured on the Local
+ * World: a 64-branch `Promise.all` went from 3.5s to 12.7s, and 256 branches
+ * from 32s to more than ten minutes). Bounding the pending count caps that at
+ * this many extra replays per round while covering the fan-outs the early
+ * replay is for: a few branches, such as parallel agents, each a chain of
+ * steps of different lengths.
+ */
+export const EAGER_BRANCH_REPLAY_MAX_PENDING = 8;
+
+/**
+ * The most steps that may still be pending beside a settled step for its
+ * branch to advance at once (see {@link isEagerBranchReplayEnabled}). Above
+ * it the branch waits for its siblings, as it always used to.
+ *
+ * Reads `process.env.WORKFLOW_EAGER_BRANCH_REPLAY_MAX_PENDING` lazily. A
+ * non-negative integer overrides the default; anything else falls back to it
+ * with a one-time warning. `0` leaves early replay only for a step whose
+ * siblings have all settled, which the ordinary replay already covers.
+ */
+export function getEagerBranchReplayMaxPending(): number {
+  const raw = process.env.WORKFLOW_EAGER_BRANCH_REPLAY_MAX_PENDING;
+  if (raw === undefined || raw === '') return EAGER_BRANCH_REPLAY_MAX_PENDING;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    if (!warned.eagerBranchReplayMaxPendingValues.has(raw)) {
+      warned.eagerBranchReplayMaxPendingValues.add(raw);
+      runtimeLogger.warn(
+        'Ignoring WORKFLOW_EAGER_BRANCH_REPLAY_MAX_PENDING: not a non-negative integer; using default',
+        { raw, defaultValue: EAGER_BRANCH_REPLAY_MAX_PENDING }
+      );
+    }
+    return EAGER_BRANCH_REPLAY_MAX_PENDING;
+  }
+  return parsed;
+}
+
+/**
+ * Default for {@link getEagerBranchReplayDelayMs}.
+ *
+ * An early replay costs about as much as an ordinary one, and it only pays
+ * for itself when the branch would otherwise have waited longer than that.
+ * Steps that settle close together, as the branches of most short-step
+ * fan-outs do, are cheaper to replay once for all of them, the way the run
+ * always has: measured on the Local World, an 8-branch fan-out of
+ * 50-100ms steps went from 0.8s to 3s when every settlement replayed at once.
+ * A settled branch therefore gives its siblings this long first, and replays
+ * early only if any of them is still running after it. A branch beside a
+ * long-running sibling, such as a tool call beside a model call, then starts
+ * its next step this much later than it could have, instead of when the
+ * sibling settles.
+ */
+export const EAGER_BRANCH_REPLAY_DELAY_MS = 250;
+
+/**
+ * How long a settled branch waits for the steps pending beside it before it
+ * advances on its own (see {@link isEagerBranchReplayEnabled}). If they have
+ * all settled by then, the run replays once for all of them as before.
+ *
+ * Reads `process.env.WORKFLOW_EAGER_BRANCH_REPLAY_DELAY_MS` lazily. A
+ * non-negative integer overrides the default (`0` advances at once); anything
+ * else falls back to it with a one-time warning.
+ */
+export function getEagerBranchReplayDelayMs(): number {
+  const raw = process.env.WORKFLOW_EAGER_BRANCH_REPLAY_DELAY_MS;
+  if (raw === undefined || raw === '') return EAGER_BRANCH_REPLAY_DELAY_MS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    if (!warned.eagerBranchReplayDelayValues.has(raw)) {
+      warned.eagerBranchReplayDelayValues.add(raw);
+      runtimeLogger.warn(
+        'Ignoring WORKFLOW_EAGER_BRANCH_REPLAY_DELAY_MS: not a non-negative integer; using default',
+        { raw, defaultValue: EAGER_BRANCH_REPLAY_DELAY_MS }
+      );
+    }
+    return EAGER_BRANCH_REPLAY_DELAY_MS;
+  }
+  return parsed;
 }
 
 /**
