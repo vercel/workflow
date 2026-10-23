@@ -53,7 +53,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         stepName,
         args,
       });
-      ctx.eventsConsumer.subscribe((event) => {
+      // Keyed to the step: for another entity's event the consumer only
+      // declines, so the walk does not offer it those events.
+      ctx.eventsConsumer.subscribeFor(correlationId, (event) => {
         if (!event) {
           // We've reached the end of the events, so this step has either not been run or is currently running.
           // Crucially, if we got here, then this step Promise does
