@@ -69,12 +69,12 @@ Every send of a spec 9 run's message in this runtime names the run's version. `q
 | Producer | Field | Where |
 |---|---|---|
 | `start()`, first delivery | `runInput.specVersion` | `packages/core/src/runtime/start.ts:1219` |
-| Background step message, node engine | `runContext` | `packages/core/src/runtime/spec9/delivery.ts:3701` |
+| Background step message, node engine | `runContext` | `packages/core/src/runtime/spec9/delivery.ts:3722` |
 | Background step message, QuickJS | `runContext` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:218` |
-| Orchestrator wake, timer, intermediate hop | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:808` |
-| Fence-refusal wake | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:1049` |
-| Deployment-mismatch re-enqueue | `runSpecVersion`, the run's or the routed spec | `packages/core/src/runtime/spec9/delivery.ts:858` |
-| Step handler's wake | `runSpecVersion` | `packages/core/src/runtime/spec9/step-handler.ts:345` |
+| Orchestrator wake, timer, intermediate hop | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:809` |
+| Fence-refusal wake | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:1050` |
+| Deployment-mismatch re-enqueue | `runSpecVersion`, the run's or the routed spec | `packages/core/src/runtime/spec9/delivery.ts:859` |
+| Step handler's wake | `runSpecVersion` | `packages/core/src/runtime/spec9/step-handler.ts:258` |
 | QuickJS wakes and timers | `runSpecVersion` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:445`, `:2394`, `:2423` |
 | `resumeHook()` wake | `runSpecVersion`, explicit | `packages/core/src/runtime/resume-hook.ts:971` |
 | Force-claim victim wake | `runSpecVersion` from `claimedFrom` | `packages/core/src/runtime/hook-wake.ts:141` |

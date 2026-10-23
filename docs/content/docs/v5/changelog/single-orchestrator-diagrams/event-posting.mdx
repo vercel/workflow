@@ -32,10 +32,10 @@ An out-of-band write moves `seq` only. It never invalidates the orchestrator's c
 
 | Field | Set by | Meaning |
 |---|---|---|
-| `inBand: true` | `fenceParams` (`in-band-writer.ts:796`) | The orchestrator made this write. |
+| `inBand: true` | `fenceParams` (`in-band-writer.ts:798`) | The orchestrator made this write. |
 | `expectedSeqInBand` | `fenceParams` | The writer's count: the load snapshot's `seqInBand`, advanced by every accepted write's `allocated`. |
-| `eventCount` | `sendPosition` (`in-band-writer.ts:848`) | The slot the decision was made against, raised to the highest slot the writer knows it holds every event below. The World reports what lies between it and the write's own slot. |
-| `occurredAt` | run-ahead writes (`packages/core/src/runtime/spec9/delivery.ts:2123`, `delivery.ts:2201`) | The time the workflow already used. On spec 9 the World stores it as the event's `createdAt` (`packages/world/src/interfaces.ts:420`). Writes that are not speculative do not send it, so the World's own time is stored. |
+| `eventCount` | `sendPosition` (`in-band-writer.ts:850`) | The slot the decision was made against, raised to the highest slot the writer knows it holds every event below. The World reports what lies between it and the write's own slot. |
+| `occurredAt` | run-ahead writes (`packages/core/src/runtime/spec9/delivery.ts:2130`, `delivery.ts:2208`) | The time the workflow already used. On spec 9 the World stores it as the event's `createdAt` (`packages/world/src/interfaces.ts:420`). Writes that are not speculative do not send it, so the World's own time is stored. |
 
 The response carries:
 
@@ -90,9 +90,10 @@ flowchart TD
     H -->|"transport error or 5xx"| L["Stop for good, the delivery is retried"]
 ```
 
-- **One at a time.** Two concurrent in-band writes would carry the same count and the second would be refused, so the writer chains every write on one promise (`serialize`, `in-band-writer.ts:903`). A fan-out goes out as `createBatch` calls of at most `MAX_BATCH_EVENTS` (16) events (`packages/core/src/runtime/constants.ts:484`, `packages/core/src/runtime/spec9/step-wait-creation.ts:632`).
+- **One at a time.** Two concurrent in-band writes would carry the same count and the second would be refused, so the writer chains every write on one promise (`serialize`, `in-band-writer.ts:905`). A suspension's creations go out, on the awaited path, as `createBatch` calls of at most `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and `MAX_IN_BAND_CREATION_BATCH_BYTES` (512 KiB, each event's payload bytes plus a 1 KiB allowance), one after another; the inline steps' creation-bearing starts go first and share the first batch with background creations (`batchChunks`, `packages/core/src/runtime/spec9/step-wait-creation.ts:672`; `packages/core/src/runtime/constants.ts:506`, `constants.ts:515`). A single creation over the byte budget goes out alone. `MAX_BATCH_EVENTS` (16, `constants.ts:486`) still bounds run-ahead's coalesced write groups and the speculative creation batch run-ahead sends ahead of a boundary. On the node engine, an inline step's outcome is queued on the writer only after a fan-out's last creation batch was queued, so it never lands between two creation batches.
 - **Per-entity order.** A batch on a spec 9 run is not atomic, but once the World refuses an item it refuses every later item with the same `correlationId` (`packages/world/src/interfaces.ts:429`). The world-vercel backend answers those with 409 `batch-earlier-item-failed`. This is what lets one run-ahead group carry a step's creation and its outcome.
 - **Run-ahead groups.** Run-ahead writes queued behind a write in flight go out together as one batch when their turn comes (`enqueueAhead`, `in-band-writer.ts:475`); any other write closes the group, so writes are never reordered.
+- **No resolved payloads on a batch.** A batch is sent without `resolveData`, which world-vercel sends as `lazy`, unless one of its writes explicitly asks for `'all'`. A write's `skip-step-inputs` (the replay default) no longer escalates the batch to `'all'`: it describes how a single write's event-log page is read, a batch returns no such page, and the writer overlays the payload it sent on every committed event anyway (`withWrittenEventData`). Single in-band writes already behaved this way (`in-band-writer.ts:538`, #5034).
 
 ## Consume after commit
 
@@ -112,7 +113,7 @@ The reason: an out-of-band event below the write (a background step's outcome, a
 
 | Writer | Event | Code | Wake it sends |
 |---|---|---|---|
-| Background step invocation | `step_started`, `step_retrying`, `step_completed`, `step_failed` | `packages/core/src/runtime/spec9/step-handler.ts:146` | Orchestrator message; shared per 1s window while other steps are open (`step-handler.ts:265`) |
+| Background step invocation | `step_started`, `step_retrying`, `step_completed`, `step_failed` | `packages/core/src/runtime/spec9/step-handler.ts:148` | One plain orchestrator message per outcome, no idempotency key, no delay, no log read; sent again by a redelivery that finds the step terminal (`wakeOrchestrator`, `step-handler.ts:258`) |
 | `resumeHook()` | `hook_received` | `packages/core/src/runtime/resume-hook.ts:938` | Orchestrator message, no idempotency key on spec 9 |
 | `cancel()` | `run_cancelled` | `packages/core/src/runtime/runs.ts:230`, `packages/core/src/runtime/run.ts:323` | `wakeRunAfterOutOfBandWrite` (`runs.ts:173`) |
 | `setAttributes()` in a step body | `attr_set` | `packages/core/src/set-attributes.ts:67` | none |
@@ -142,22 +143,22 @@ sequenceDiagram
     O->>O: buffer, fold in only between passes
 ```
 
-A push that is late, duplicated or out of order is dropped and the poll fills it in, so correctness never depends on the push (`live-feed.ts:167`). world-local has no `subscribe`, so it is the poll alone there, and a delivery on world-local never lingers (`delivery.ts:2339`).
+A push that is late, duplicated or out of order is dropped and the poll fills it in, so correctness never depends on the push (`live-feed.ts:167`). world-local has no `subscribe`, so it is the poll alone there, and a delivery on world-local never lingers (`delivery.ts:2346`).
 
 ## Edge cases
 
-- **Idempotent replay.** A write answered with an event at a slot the writer already knew allocated nothing, and the count does not move when the World reports no `allocated` (`packages/core/src/runtime/spec9/in-band-writer.ts:821`).
-- **No `allocated` from the World.** The writer assumes 1 per create and the whole block per batch, less items answered at known slots (`in-band-writer.ts:383`, `in-band-writer.ts:762`).
-- **Per-item batch failure.** A failed item leaves a hole the World seals as a `noop`; the next replay re-derives the event and the next suspension writes it again (`packages/core/src/runtime/spec9/step-wait-creation.ts:486`).
-- **Throttle or terminal run in a batch.** A 429 or 410 on an inline step's creation-bearing start is that step's start refusal; any other 429 or a 5xx fails the delivery (`step-wait-creation.ts:499`).
-- **Unknown outcome.** A transport error or 5xx may have allocated, so the writer stops for good and the delivery is retried from a fresh load (`in-band-writer.ts:876`).
-- **Definite refusal that did allocate.** The writer keeps its count after a non-fence 4xx; when the world-vercel backend had allocated anyway, the next in-band write is refused with 412 and the delivery stands down with a wake (`in-band-writer.ts:877`).
-- **Write before any snapshot.** Fails without reaching the World (`in-band-writer.ts:800`).
+- **Idempotent replay.** A write answered with an event at a slot the writer already knew allocated nothing, and the count does not move when the World reports no `allocated` (`packages/core/src/runtime/spec9/in-band-writer.ts:823`).
+- **No `allocated` from the World.** The writer assumes 1 per create and the whole block per batch, less items answered at known slots (`in-band-writer.ts:383`, `in-band-writer.ts:764`).
+- **Per-item batch failure.** A failed item leaves a hole the World seals as a `noop`; the next replay re-derives the event and the next suspension writes it again (`packages/core/src/runtime/spec9/step-wait-creation.ts:513`).
+- **Throttle or terminal run in a batch.** A 429 or 410 on an inline step's creation-bearing start is that step's start refusal; any other 429 or a 5xx fails the delivery (`step-wait-creation.ts:526`).
+- **Unknown outcome.** A transport error or 5xx may have allocated, so the writer stops for good and the delivery is retried from a fresh load (`in-band-writer.ts:878`).
+- **Definite refusal that did allocate.** The writer keeps its count after a non-fence 4xx; when the world-vercel backend had allocated anyway, the next in-band write is refused with 412 and the delivery stands down with a wake (`in-band-writer.ts:879`).
+- **Write before any snapshot.** Fails without reaching the World (`in-band-writer.ts:802`).
 - **Non-empty log without a snapshot.** Fails the run with a World contract error instead of writing unfenced (`in-band-writer.ts:89`).
-- **Payload missing from the response.** The writer fills the event's `eventData` from what it sent, so replay has the bytes (`in-band-writer.ts:955`).
-- **Report incomplete or truncated.** `hasMore` marks the log behind and the next pass reloads before replaying (`packages/core/src/runtime/spec9/delivery.ts:675`).
-- **Own write above an unreported gap.** If the own slot is more than one above everything held, the log is marked behind instead of merged with a hole (`delivery.ts:688`).
-- **Writes queued behind others.** A queued write names the highest slot known complete, not the older slot it was decided from, so its report does not repeat the earlier writes' events (`in-band-writer.ts:848`).
-- **Feed echo of own writes.** Feed events at own slots or of own inline steps do not start a pass (`delivery.ts:1599`).
-- **World that rewrites `occurredAt`.** A speculative write stored at another time stops the delivery and turns run-ahead off for that World for the process (`delivery.ts:2147`, `packages/core/src/runtime/spec9/run-ahead.ts:145`).
+- **Payload missing from the response.** The writer fills the event's `eventData` from what it sent, so replay has the bytes (`in-band-writer.ts:957`).
+- **Report incomplete or truncated.** `hasMore` marks the log behind and the next pass reloads before replaying (`packages/core/src/runtime/spec9/delivery.ts:676`).
+- **Own write above an unreported gap.** If the own slot is more than one above everything held, the log is marked behind instead of merged with a hole (`delivery.ts:689`).
+- **Writes queued behind others.** A queued write names the highest slot known complete, not the older slot it was decided from, so its report does not repeat the earlier writes' events (`in-band-writer.ts:850`).
+- **Feed echo of own writes.** Feed events at own slots or of own inline steps do not start a pass (`delivery.ts:1600`).
+- **World that rewrites `occurredAt`.** A speculative write stored at another time stops the delivery and turns run-ahead off for that World for the process (`delivery.ts:2154`, `packages/core/src/runtime/spec9/run-ahead.ts:145`).
 - **Feed failure.** A failed subscribe or poll is logged at debug level and the feed continues on what remains (`live-feed.ts:102`, `live-feed.ts:147`).

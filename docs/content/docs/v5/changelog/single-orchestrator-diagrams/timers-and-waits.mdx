@@ -9,13 +9,13 @@ description: How a spec 9 run's sleeps are timed, who arms each timer, how long 
 This page is temporary review material for the pull request that introduces spec version 9, and is removed before merge. The written review is [Review: single orchestrator](/docs/changelog/single-orchestrator-review).
 </Callout>
 
-On spec 9, the orchestrator writes both events of a sleep in-band: `wait_created` when the workflow reaches `sleep()`, and `wait_completed` at the top of a pass once the wait is due (`dueWaits`, `packages/core/src/runtime/spec9/delivery.ts:2445`). Between the two, a timer message wakes the run. A timer is a delayed orchestrator message carrying `waitContinuation`, the wait it is for. Spec 9 timers carry no idempotency key (`packages/core/src/runtime/spec9/wait-timer.ts:19`).
+On spec 9, the orchestrator writes both events of a sleep in-band: `wait_created` when the workflow reaches `sleep()`, and `wait_completed` at the top of a pass once the wait is due (`dueWaits`, `packages/core/src/runtime/spec9/delivery.ts:2452`). Between the two, a timer message wakes the run. A timer is a delayed orchestrator message carrying `waitContinuation`, the wait it is for. Spec 9 timers carry no idempotency key (`packages/core/src/runtime/spec9/wait-timer.ts:19`).
 
 The pieces:
 
 - `waitTimerMessage` (`spec9/wait-timer.ts`) builds the message: the delay from `getWaitContinuationDispatch` (at most `WAIT_CONTINUATION_MAX_DELAY_SECONDS`, 82800 seconds), and `resumeAtMs` on every hop but the last.
-- `sendWaitTimer` (`spec9/delivery.ts:3783`) sends one timer through `wakeSelf`, which stamps the run's spec version.
-- `armTimers` (`spec9/delivery.ts:3763`) sends the timers this delivery owns, once per wait per delivery.
+- `sendWaitTimer` (`spec9/delivery.ts:3822`) sends one timer through `wakeSelf`, which stamps the run's spec version.
+- `armTimers` (`spec9/delivery.ts:3802`) sends the timers this delivery owns, once per wait per delivery.
 - `ownedWaitChains`, `schedulesWaitTimer` and `waitTimersToArm` (`spec9/creator-rules.ts`) decide which timers those are.
 
 ## Who arms a timer
@@ -43,7 +43,7 @@ flowchart TD
     E -->|"no"| WAITN["Armed later by whoever completes the earlier wait"]
 ```
 
-The delivery that completes a wait arms its chain's next timer right after the completion, not at suspend (`armTimers(log.events, 'other-chains')`, `packages/core/src/runtime/spec9/delivery.ts:2470`). The delivery may end in a handoff first, and the next delivery does not know which waits this one completed.
+The delivery that completes a wait arms its chain's next timer right after the completion, not at suspend (`armTimers(log.events, 'other-chains')`, `packages/core/src/runtime/spec9/delivery.ts:2477`). The delivery may end in a handoff first, and the next delivery does not know which waits this one completed.
 
 ## Two sleeps in one `Promise.all`
 
@@ -81,7 +81,7 @@ An earlier rule let only the wait's own timer delivery arm the next one. A timer
 
 ## Long sleeps are reached in hops
 
-A wait more than 82800 seconds (23 hours) away is reached in hops. Every hop but the last carries the wait's deadline (`waitContinuation.resumeAtMs`), which `isIntermediateWaitHop` reads. An intermediate hop has no concurrency key on world-vercel and no per-run gate on world-local and world-postgres. Its delivery reads only the run's status, writes nothing, sends the next hop, and acknowledges (`packages/core/src/runtime/spec9/delivery.ts:874`). The last hop is an ordinary keyed timer.
+A wait more than 82800 seconds (23 hours) away is reached in hops. Every hop but the last carries the wait's deadline (`waitContinuation.resumeAtMs`), which `isIntermediateWaitHop` reads. An intermediate hop has no concurrency key on world-vercel and no per-run gate on world-local and world-postgres. Its delivery reads only the run's status, writes nothing, sends the next hop, and acknowledges (`packages/core/src/runtime/spec9/delivery.ts:875`). The last hop is an ordinary keyed timer.
 
 ```mermaid
 flowchart TD
@@ -146,9 +146,9 @@ If the key was released before a keyed timer came due, the review states that Ve
 
 ## Timers inside a live delivery
 
-A delivery that is still running inline steps, or lingering on a live feed, completes a due wait itself. `waitForProgress` sleeps at most until the earliest open wait's deadline (`nextTimerAt`, `packages/core/src/runtime/spec9/delivery.ts:1690`), and the next pass writes `wait_completed`. The timer message also goes out before the delivery waits (`armTimers` in `awaitInlineProgress`, `packages/core/src/runtime/spec9/delivery.ts:3513`), so the wait is covered if the delivery ends first. When it comes due while the delivery still holds the key, it is coalesced and costs a re-run that finds nothing to do.
+A delivery that is still running inline steps, or lingering on a live feed, completes a due wait itself. `waitForProgress` sleeps at most until the earliest open wait's deadline (`nextTimerAt`, `packages/core/src/runtime/spec9/delivery.ts:1697`), and the next pass writes `wait_completed`. The timer message also goes out before the delivery waits (`armTimers` in `awaitInlineProgress`, `packages/core/src/runtime/spec9/delivery.ts:3533`), so the wait is covered if the delivery ends first. When it comes due while the delivery still holds the key, it is coalesced and costs a re-run that finds nothing to do.
 
-A wait due within the invocation's inline window plus `OPEN_WAIT_CLOCK_SKEW_MS` (30 seconds) makes the boundary path-changing, so the orchestrator does not run ahead past it (`waitDue`, `packages/core/src/runtime/spec9/delivery.ts:2813`). See [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
+A wait due within the invocation's inline window plus `OPEN_WAIT_CLOCK_SKEW_MS` (30 seconds) makes the boundary path-changing, so the orchestrator does not run ahead past it (`waitDue`, `packages/core/src/runtime/spec9/delivery.ts:2820`). See [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
 
 ## `run.wakeUp()`
 
@@ -202,9 +202,9 @@ If a `wait_completed` committed below `fetchUpdates`'s outcome, the live run saw
 - A delivery that commits `wait_completed` and dies before its next send leaves that chain without a timer, unless it was the timer's own delivery, whose redelivery owns the chain; no test covers it (`packages/core/src/runtime/spec9/creator-rules.ts:140`).
 - `VERCEL_QUEUE_MAX_DELAY_SECONDS` below 82800 clamps a final hop so it arrives early; delivered on its own it re-arms its wait, coalesced it is not re-armed, and no test covers it (`packages/world-vercel/src/queue.ts:238`, `:272`).
 - A timer delivered slightly early (clock skew) is its own wait's `timerFor` and re-arms the rest (`packages/core/src/runtime/spec9/creator-rules.ts:161`).
-- A timer delivery skips the no-op fast path, because an early one must still arm the next hop (`packages/core/src/runtime/spec9/delivery.ts:977`).
+- A timer delivery skips the no-op fast path, because an early one must still arm the next hop (`packages/core/src/runtime/spec9/delivery.ts:978`).
 - A delivery that owns waits of two chains arms the earliest of each chain, not the earliest of all (`packages/core/src/runtime/spec9/creator-rules.ts:176`).
-- An intermediate hop for a run that ended stops the chain without writing anything (`packages/core/src/runtime/spec9/delivery.ts:884`).
+- An intermediate hop for a run that ended stops the chain without writing anything (`packages/core/src/runtime/spec9/delivery.ts:885`).
 - Spec 9 timers have no idempotency key, so a duplicate timer is possible and costs one delivery that finds its wait completed (`packages/core/src/runtime/spec9/wait-timer.ts:19`).
 - `run.wakeUp()` is lost on world-vercel while an orchestrator delivery holds the key, and `stoppedCount` still counts the waits (`packages/core/src/runtime/runs.ts:468`).
 - The review states that the Vercel dashboard's wake-up action calls a pinned `@workflow/core` that writes `wait_completed` out-of-band, which the backend refuses on spec 9 runs; not verified here.

@@ -50,7 +50,7 @@ flowchart LR
 
 ## Spec 9 on Vercel
 
-Same topic and same trigger. Orchestrator messages carry the run id as the key. Vercel Queues keeps at most one push delivery per key active, and a keyed message claimed while another delivery holds the key is coalesced into that delivery. Step messages, health checks and intermediate wait hops carry no key and keep full parallelism. A run's step dispatches share one topic, so a fan-out goes out in batches of up to 100 (`packages/world-vercel/src/queue.ts:38`, `:860`).
+Same topic and same trigger. Orchestrator messages carry the run id as the key. Vercel Queues keeps at most one push delivery per key active, and a keyed message claimed while another delivery holds the key is coalesced into that delivery. Step messages, health checks and intermediate wait hops carry no key and keep full parallelism. A run's step dispatches share one topic, so a fan-out's step messages go out in parallel queue batch requests of up to `STEP_DISPATCH_QUEUE_BATCH_SIZE` (16) each on the node engine (`enqueueStepMessages`, `packages/core/src/runtime/spec9/delivery.ts:3697`); world-vercel caps one request at 100 (`packages/world-vercel/src/queue.ts:38`, `:860`).
 
 ```mermaid
 flowchart LR
@@ -123,7 +123,7 @@ sequenceDiagram
 | Non-finite `timeoutSeconds` | Redelivery after 900 seconds, counted | `Infinity` is clamped to a new message 82800 seconds out |
 | Anything else | Acknowledge | Acknowledge |
 
-A spec 9 delivery ends with `{ timeoutSeconds: 0 }` when `wakeSelf()` is called with nothing to carry and no delay (`packages/core/src/runtime/spec9/delivery.ts:808`, `:295`): the inline deadline, a stream flush, a hook conflict, a run-ahead stop past its restart, and the QuickJS continuations.
+A spec 9 delivery ends with `{ timeoutSeconds: 0 }` when `wakeSelf()` is called with nothing to carry and no delay (`packages/core/src/runtime/spec9/delivery.ts:809`, `:296`): the inline deadline, a stream flush, a hook conflict, a run-ahead stop past its restart, and the QuickJS continuations.
 
 ## Handoff
 
@@ -143,11 +143,11 @@ sequenceDiagram
     Note over O2: attempt = 2 - 1 = 1, same messageId, loads the log and continues
 ```
 
-A message the orchestrator sent itself would be coalesced into its own delivery and re-run in the same invocation, which is why a spec 9 delivery hands off instead (`packages/core/src/runtime/spec9/delivery.ts:267`).
+A message the orchestrator sent itself would be coalesced into its own delivery and re-run in the same invocation, which is why a spec 9 delivery hands off instead (`packages/core/src/runtime/spec9/delivery.ts:268`).
 
 ## Attempt accounting
 
-world-vercel computes `attempt` as `max(1, deliveryCount - handoffCount)` and reports `deliveryCount + rerun` as the delivery count (`packages/world-vercel/src/queue.ts:956`). A re-run is not a queue delivery, so it never raises `attempt`. The spec 9 creator rules use `min(deliveryCount, attempt)` (`packages/core/src/runtime/spec9/delivery.ts:344`).
+world-vercel computes `attempt` as `max(1, deliveryCount - handoffCount)` and reports `deliveryCount + rerun` as the delivery count (`packages/world-vercel/src/queue.ts:956`). A re-run is not a queue delivery, so it never raises `attempt`. The spec 9 creator rules use `min(deliveryCount, attempt)` (`packages/core/src/runtime/spec9/delivery.ts:345`).
 
 One message, in order:
 
@@ -159,7 +159,7 @@ One message, in order:
 | After a handoff | 2 | 1 | 0 | 2 | 1 | 1 |
 | After a lease lapse (crash) | 3 | 1 | 0 | 3 | 2 | 2 |
 
-`meta.deliveryCount` drops from 3 to 2 across the handoff, because the queue never counted the re-runs. Turbo needs `attempt === 1` and `deliveryCount === 1`, and the delivery after a handoff reports 2, so the drop does not turn turbo on (`packages/core/src/runtime/spec9/delivery.ts:534`). A delivery whose creator count is 1 continues like a new message; one above 1 may re-send what an earlier delivery of the same message created (see [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership)).
+`meta.deliveryCount` drops from 3 to 2 across the handoff, because the queue never counted the re-runs. Turbo needs `attempt === 1` and `deliveryCount === 1`, and the delivery after a handoff reports 2, so the drop does not turn turbo on (`packages/core/src/runtime/spec9/delivery.ts:535`). A delivery whose creator count is 1 continues like a new message; one above 1 may re-send what an earlier delivery of the same message created (see [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership)).
 
 ```mermaid
 stateDiagram-v2
@@ -177,14 +177,16 @@ stateDiagram-v2
 
 ## world-local and world-postgres
 
-Both declare the fence and serialize a spec 9 run's orchestrator deliveries with `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. Neither coalesces: a second orchestrator message waits and is delivered after the running one.
+Both declare the fence, mint spec 9 runs by default (`mintedSpecVersion()`, `packages/world-local/src/index.ts:147`, `packages/world-postgres/src/index.ts:79`), and serialize a spec 9 run's orchestrator deliveries with `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. Neither coalesces: a second orchestrator message waits and is delivered after the running one, so every background completion's wake is its own orchestrator delivery.
 
 | | world-local | world-postgres |
 |---|---|---|
 | Per-run gate | In-process run gate (`createRunGate`, `packages/world-local/src/queue.ts:216`) | Graphile named queue per run (`serialRunId`, `packages/world-postgres/src/queue.ts:912`) |
-| Handoff | Same message at once, `handoffs++`, `attempt = delivery + 1 - handoffs` (`packages/world-local/src/queue.ts:358`, `:448`), up to 10,000 handoffs | Reschedule on a new Graphile job with the same `messageId`, no delay (`packages/world-postgres/src/queue.ts:1040`) |
+| Handoff | Same message, `handoffs++`, `attempt = delivery + 1 - handoffs` (`packages/world-local/src/queue.ts:358`, `:448`), up to 10,000 handoffs. The delivery releases the run gate and takes it again in FIFO order, so orchestrator messages already waiting run first | Reschedule on a new Graphile job with the same `messageId`, no delay, on the run's named queue behind jobs already there (`packages/world-postgres/src/queue.ts:1040`) |
 | `attempt` after a handoff | Unchanged | Reset to the new job's count (known gap, below) |
 | Coalescing | None | None |
+| Re-runs with the gate held, coalesced count | None | None |
+| `invocationStartedAt` | Not passed | Not passed |
 
 ```mermaid
 sequenceDiagram
@@ -199,12 +201,25 @@ sequenceDiagram
     G->>O2: deliver m2, attempt 1
 ```
 
+### Follow-up: coalescing on world-local and world-postgres
+
+A fan-out of `n` background steps sends `n` wakes, and here each is one orchestrator delivery, in series. A delivery that finds the log tail at the position this process last consumed acknowledges after one tail read (`packages/core/src/runtime/spec9/consumed-position.ts`); every other one loads the full log and replays. world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has the same shape, with each wake one function invocation, because its spec 9 messages are unkeyed on per-run topics.
+
+What these Worlds would need to match world-vercel:
+
+1. Drop an orchestrator message for a spec 9 run that arrives while the run's delivery holds the gate, and count it on the holder.
+2. When the holder's handler returns, run it again in the same process while counted messages are uncovered, reporting `deliveryCount + rerun` and the same `attempt`, and the first run's `invocationStartedAt`.
+3. Cap the re-runs (world-vercel: 32) and hand off past the cap.
+4. Give a handoff the front of the run's queue, instead of a place behind the waiting wakes.
+
+Intermediate wait hops are already ungated and must stay that way, since a hop's delivery depends on its own message. Every other spec 9 orchestrator message is safe to coalesce (review page, section 5, "No orchestrator message carries state the log needs"). Not implemented.
+
 ## Edge cases
 
 - An unstamped spec 9 orchestrator message is sent unkeyed and continues on new messages, so it runs next to the keyed holder and only the fence keeps it safe (`packages/world-vercel/src/queue.ts:666`).
 - A keyed send to a `maxConcurrency` topic is refused with 400, which is why the opt-in sends spec 9 messages unkeyed (`packages/world-vercel/src/queue.ts:665`).
 - A delivery whose acknowledgment is refused 32 times in a row gets `ConcurrencyCoalescedPendingError`, and the retry hook hands the message off instead of backing off (`packages/world-vercel/src/queue.ts:1039`).
-- Every coalesced re-run measures its inline deadline from the invocation's start (`invocationStartedAt`), so a late re-run does not get a fresh budget (`packages/world-vercel/src/queue.ts:968`, `packages/core/src/runtime/spec9/delivery.ts:352`).
+- Every coalesced re-run measures its inline deadline from the invocation's start (`invocationStartedAt`), so a late re-run does not get a fresh budget (`packages/world-vercel/src/queue.ts:968`, `packages/core/src/runtime/spec9/delivery.ts:353`).
 - A non-finite `timeoutSeconds` on a spec 9 message is a 900-second redelivery, never a handoff, so a handler that kept returning it is still bounded by the delivery cap (`packages/world-vercel/src/queue.ts:1012`).
 - Vercel Queues bounds handoffs per message and past the bound applies an ordinary reschedule (`limit_reached`), which counts as an attempt; world-local mirrors this with `MAX_LOCAL_HANDOFFS` (`packages/world-local/src/queue.ts:333`).
 - The queue's answer to a handoff is not logged by the client, so `accepted` versus `not_immediate` is not observed directly (`packages/world-vercel/src/queue.ts:1035`).

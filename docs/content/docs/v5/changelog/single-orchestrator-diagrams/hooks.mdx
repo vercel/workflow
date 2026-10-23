@@ -39,7 +39,7 @@ sequenceDiagram
 
 ### Resume while the orchestrator is running
 
-A spec 9 delivery that has nothing left to run, while the run waits on an open hook or a background step, lingers for up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` (30 seconds by default), bounded by the inline deadline minus the inline-start margin (`lingerForExternalWork`, `packages/core/src/runtime/spec9/delivery.ts:2336`). It lingers only on a World with `events.subscribe` (world-vercel implements it in `packages/world-vercel/src/storage.ts:84`; world-local and world-postgres do not). While it lingers, or while it waits on inline bodies, a live feed pushes other writers' events and starts a new pass in the same delivery.
+A spec 9 delivery that has nothing left to run, while the run waits on an open hook or a background step, lingers for up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` (30 seconds by default), bounded by the inline deadline minus the inline-start margin (`lingerForExternalWork`, `packages/core/src/runtime/spec9/delivery.ts:2343`). It lingers only on a World with `events.subscribe` (world-vercel implements it in `packages/world-vercel/src/storage.ts:84`; world-local and world-postgres do not). While it lingers, or while it waits on inline bodies, a live feed pushes other writers' events and starts a new pass in the same delivery.
 
 ```mermaid
 sequenceDiagram
@@ -68,15 +68,15 @@ sequenceDiagram
     end
 ```
 
-The feed accepts an event only at exactly the next slot, so a late, duplicate or out-of-order push is dropped and the log-tail poll (`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`, 2 seconds by default) fills in (`packages/core/src/runtime/spec9/live-feed.ts:62`). The re-run's no-op exit applies because a re-run's creator count is 1 (`packages/core/src/runtime/spec9/delivery.ts:973`).
+The feed accepts an event only at exactly the next slot, so a late, duplicate or out-of-order push is dropped and the log-tail poll (`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`, 2 seconds by default) fills in (`packages/core/src/runtime/spec9/live-feed.ts:62`). The re-run's no-op exit applies because a re-run's creator count is 1 (`packages/core/src/runtime/spec9/delivery.ts:974`).
 
 ## Run-ahead and awaited hooks
 
-The orchestrator runs ahead only at an inert boundary (`observation.inert`, `packages/core/src/runtime/spec9/delivery.ts:2847`). A boundary is not inert while any open hook is awaited by workflow code, has unknown observation, or is a system (abort) hook, or while a step runs elsewhere or a wait is due in the window (`observeOutOfBandWriters`, `packages/core/src/runtime/out-of-band-observation.ts:155`). At a boundary that is not inert, the delivery first drains its speculative writes and takes in what landed below them, in log order (`packages/core/src/runtime/spec9/delivery.ts:2863`).
+The orchestrator runs ahead only at an inert boundary (`observation.inert`, `packages/core/src/runtime/spec9/delivery.ts:2854`). A boundary is not inert while any open hook is awaited by workflow code, has unknown observation, or is a system (abort) hook, or while a step runs elsewhere or a wait is due in the window (`observeOutOfBandWriters`, `packages/core/src/runtime/out-of-band-observation.ts:156`). At a boundary that is not inert, the delivery first drains its speculative writes and takes in what landed below them, in log order (`packages/core/src/runtime/spec9/delivery.ts:2870`).
 
 An unawaited hook is inert: on the node engine its payload is buffered as an unarmed delivery and moves neither step results nor `Date.now()`, so a `hook_received` for it may land anywhere below speculative writes (`admitBelowSpeculation`, `packages/core/src/runtime/spec9/run-ahead.ts:81`). The first `then()` on the hook marks it observed (`observedHookIds`), and from that boundary on, run-ahead waits for its writes.
 
-`sensitiveHookIds` (`runAheadContextFor`, `packages/core/src/runtime/spec9/run-ahead.ts:102`) keeps, per run-ahead context, the hooks a hazard check names. A hook event for one of them below an unconfirmed speculative write stops run-ahead (`runAheadHazard`, `packages/core/src/runtime/spec9/run-ahead.ts:43`). The code comment on that check says the classification and the fence rule this case out, so it is a guard (`packages/core/src/runtime/spec9/delivery.ts:1908`). What a stop does is on [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
+`sensitiveHookIds` (`runAheadContextFor`, `packages/core/src/runtime/spec9/run-ahead.ts:102`) keeps, per run-ahead context, the hooks a hazard check names. A hook event for one of them below an unconfirmed speculative write stops run-ahead (`runAheadHazard`, `packages/core/src/runtime/spec9/run-ahead.ts:43`). The code comment on that check says the classification and the fence rule this case out, so it is a guard (`packages/core/src/runtime/spec9/delivery.ts:1915`). What a stop does is on [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
 
 {/* @skip-typecheck - illustrative workflow */}
 ```typescript
@@ -101,7 +101,7 @@ flowchart TD
 
 ## Hook conflicts
 
-A `hook_created` for a token another run holds is answered with a `hook_conflict` event in the creator's log (`packages/core/src/runtime/hook-creation.ts:76`). The workflow observes it on its next pass: an awaited payload rejects, `hook.getConflict()` resolves with the conflicting run. While a suspension has a hook creation with a conflict awaiter, no inline step starts (`hookAwaitingConflict`, `packages/core/src/runtime/spec9/delivery.ts:2769`).
+A `hook_created` for a token another run holds is answered with a `hook_conflict` event in the creator's log (`packages/core/src/runtime/hook-creation.ts:76`). The workflow observes it on its next pass: an awaited payload rejects, `hook.getConflict()` resolves with the conflicting run. While a suspension has a hook creation with a conflict awaiter, no inline step starts (`hookAwaitingConflict`, `packages/core/src/runtime/spec9/delivery.ts:2776`).
 
 ```mermaid
 sequenceDiagram
@@ -122,7 +122,7 @@ sequenceDiagram
     end
 ```
 
-The continue-or-hand-off rule is in `packages/core/src/runtime/spec9/delivery.ts:2919`: each conflicting hook id gets one in-place continuation per delivery, then the delivery hands off.
+The continue-or-hand-off rule is in `packages/core/src/runtime/spec9/delivery.ts:2926`: each conflicting hook id gets one in-place continuation per delivery, then the delivery hands off.
 
 ## Force-claim
 
@@ -170,7 +170,7 @@ flowchart TD
 - A 409 on the `hook_received` write is passed through as retryable instead of being mapped to `HookNotFoundError`, since it committed nothing (`packages/core/src/runtime/resume-hook.ts:910`).
 - A resume to an ended run is refused by the World and surfaces as `HookNotFoundError` for the token (`packages/core/src/runtime/resume-hook.ts:921`).
 - A spec 9 wake without an idempotency key can be duplicated by a retried publish; the extra delivery exits without a replay when nothing new is in the log (`packages/core/src/runtime/resume-hook.ts:979`).
-- Linger is skipped when the remaining time to the inline deadline minus the margin is zero, so a late delivery does not hold the invocation (`packages/core/src/runtime/spec9/delivery.ts:2350`).
-- A payload for an unawaited hook may land below speculative writes and is admitted; once the workflow awaits the hook, the boundary drains instead of running ahead (`packages/core/src/runtime/spec9/run-ahead.ts:81`, `packages/core/src/runtime/spec9/delivery.ts:2863`). See [Edge cases](/docs/changelog/single-orchestrator-diagrams/edge-cases).
+- Linger is skipped when the remaining time to the inline deadline minus the margin is zero, so a late delivery does not hold the invocation (`packages/core/src/runtime/spec9/delivery.ts:2357`).
+- A payload for an unawaited hook may land below speculative writes and is admitted; once the workflow awaits the hook, the boundary drains instead of running ahead (`packages/core/src/runtime/spec9/run-ahead.ts:81`, `packages/core/src/runtime/spec9/delivery.ts:2870`). See [Edge cases](/docs/changelog/single-orchestrator-diagrams/edge-cases).
 - An older SDK's `resumeHook()` on a spec 9 run gets 400 `spec-version-requires-api-v5` from the world-vercel backend on the `hook_received` write, before it sends a wake. See [Spec routing](/docs/changelog/single-orchestrator-diagrams/spec-routing).
 - A force-claim victim with no recorded `workflowName` (a legacy hook) gets no wake, and reads the disposal on its next invocation for any reason (`packages/core/src/runtime/hook-wake.ts:127`).

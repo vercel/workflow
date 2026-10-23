@@ -24,9 +24,9 @@ export async function order(id: string) {
 
 Terms used below:
 
-- **Delivery**: one call of the orchestrator handler for one queue message (`runSpec9Delivery`, `packages/core/src/runtime/spec9/delivery.ts:271`).
+- **Delivery**: one call of the orchestrator handler for one queue message (`runSpec9Delivery`, `packages/core/src/runtime/spec9/delivery.ts:272`).
 - **In-band**: a write the orchestrator makes, fenced with `expectedSeqInBand`. **Out-of-band**: any other writer (a background step's invocation, `resumeHook()`, `cancel()`).
-- **Handoff**: the delivery returns `{ timeoutSeconds: 0 }` and the World delivers the same message again at once without counting an attempt (`delivery.ts:295`).
+- **Handoff**: the delivery returns `{ timeoutSeconds: 0 }` and the World delivers the same message again at once without counting an attempt (`delivery.ts:296`).
 
 ## On world-vercel
 
@@ -58,9 +58,10 @@ sequenceDiagram
         O->>W: 3 step_completed, in-band, serialized
     and background step
         Q->>S: step message, deliveryCount 1
-        S->>W: step_started, out-of-band
-        S->>W: step_completed, out-of-band
-        S->>Q: wake, keyed by runId, shared per 1s window while siblings are open
+        S-)W: step_started, out-of-band
+        Note over S: first delivery: body starts while the start is in flight
+        S->>W: step_completed, out-of-band, once the start committed
+        S->>Q: one plain wake, key runId, no idempotency key, no log read
         Note over Q: O holds the key, so the wake is coalesced
     end
     W--)O: live feed pushes the background outcome
@@ -108,7 +109,7 @@ sequenceDiagram
     and background step
         G->>S: step message
         S->>W: step_started, step_completed, out-of-band
-        S->>G: plain wake, waits behind the gate
+        S->>G: one plain wake, waits behind the gate
     end
     O->>W: poll every 2s while bodies run
     W-->>O: the background outcome
@@ -166,16 +167,16 @@ flowchart TD
     S2 -.->|"replay divergence"| RD["Full load and cold replay, or fail the run"]
 ```
 
-The dotted exits are exceptions caught around the whole pass (`delivery.ts:1006`, `delivery.ts:2708`). The fence and run-ahead exits have their own pages: [The in-band fence](/docs/changelog/single-orchestrator-diagrams/in-band-fence) and [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
+The dotted exits are exceptions caught around the whole pass (`delivery.ts:1007`, `delivery.ts:2715`). The fence and run-ahead exits have their own pages: [The in-band fence](/docs/changelog/single-orchestrator-diagrams/in-band-fence) and [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
 
 ## Edge cases
 
-- **Resilient start.** When `run_created` never landed, the first delivery creates the run from `run_started` carrying `runInput`, and the writer starts at the count a run has at creation (`packages/core/src/runtime/spec9/delivery.ts:1291`).
-- **Run already finished at setup.** A `run_started` refused as a conflict or an expired run acknowledges without writing (`delivery.ts:1358`).
-- **Wake with nothing new.** A delivery that is not a redelivery, carries no `runInput`, hook or timer, and finds the log tail at the position this process recorded, acknowledges without a replay (`delivery.ts:973`, `packages/core/src/runtime/spec9/consumed-position.ts:66`).
-- **Coalesced re-run.** world-vercel reports a re-run with the next `deliveryCount` and the same `attempt`, so turbo is off and the log is read, while creator rules see attempt 1 (`packages/world-vercel/src/queue.ts:955`, `delivery.ts:344`).
+- **Resilient start.** When `run_created` never landed, the first delivery creates the run from `run_started` carrying `runInput`, and the writer starts at the count a run has at creation (`packages/core/src/runtime/spec9/delivery.ts:1292`).
+- **Run already finished at setup.** A `run_started` refused as a conflict or an expired run acknowledges without writing (`delivery.ts:1359`).
+- **Wake with nothing new.** A delivery that is not a redelivery, carries no `runInput`, hook or timer, and finds the log tail at the position this process recorded, acknowledges without a replay (`delivery.ts:974`, `packages/core/src/runtime/spec9/consumed-position.ts:66`).
+- **Coalesced re-run.** world-vercel reports a re-run with the next `deliveryCount` and the same `attempt`, so turbo is off and the log is read, while creator rules see attempt 1 (`packages/world-vercel/src/queue.ts:955`, `delivery.ts:345`).
 - **Coalesced re-run of the wait's creator re-arms its timer.** A re-run is a new handler call with no memory of the timer the first pass sent, and spec 9 timers carry no idempotency key, so the run can hold two timers for one wait; the later one finds the wait completed and arms nothing (`packages/core/src/runtime/spec9/wait-timer.ts:19`, `packages/core/src/runtime/spec9/creator-rules.ts:112`). From reading the code; not run.
-- **Inline deadline.** At the top of each pass the delivery hands off once `invocationStartedAt` plus the inline window has passed (`delivery.ts:2411`); the window is 2, 5 or 10 minutes depending on the function's deadline (`packages/core/src/runtime/delivery.ts:319`).
+- **Inline deadline.** At the top of each pass the delivery hands off once `invocationStartedAt` plus the inline window has passed (`delivery.ts:2418`); the window is 2, 5 or 10 minutes depending on the function's deadline (`packages/core/src/runtime/delivery.ts:319`).
 - **Inline-start margin.** Within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` (60s) of the window's end, new steps are created as background steps instead of inline (`packages/core/src/runtime/spec9/deadline.ts:26`, `delivery.ts:2956`).
 - **Stream writes still flushing.** An inline step that returned with stream writes pending makes the delivery hand off once no body runs (`delivery.ts:3629`).
 - **Hook conflict.** A hook conflict the workflow has to consume in a fresh pass hands off (`delivery.ts:2927`).
@@ -183,4 +184,6 @@ The dotted exits are exceptions caught around the whole pass (`delivery.ts:1006`
 - **Linger.** On a World with a live feed, a delivery with an open hook or a background step stays live up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` (30s), capped by the inline-start margin, and runs a pass for each foreign event (`delivery.ts:2336`, `packages/core/src/runtime/spec9/live-feed.ts:41`).
 - **Throttled inline start.** A throttled inline start defers the run by the longest backoff once every sibling settled (`delivery.ts:3572`).
 - **Out-of-band terminal event first.** A `run_completed` that loses to an earlier `run_cancelled` or `run_failed` by position does not dispatch completion hooks (`delivery.ts:2615`).
+- **Background step after its body.** The step's invocation writes its outcome once its `step_started` committed (on a plain first delivery the body started while that start was in flight), then sends one plain orchestrator wake without reading the log (`packages/core/src/runtime/spec9/step-handler.ts`, `wakeOrchestrator`). That wake is the only thing that moves the run on. A redelivery of the step message that finds the step terminal sends the wake again, so a wake whose send failed is not lost; one that finds the run terminal sends nothing (commit `76643fe621`).
+- **Uncoalesced wakes.** On world-local, world-postgres, and world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1`, each background outcome's wake is its own orchestrator delivery, delivered after the running one. A fan-out's wakes are then a series of deliveries; one that finds nothing new since the last consumed position acknowledges after one tail read, the others load the log and replay (review page, section 7).
 - **QuickJS engine.** The same delivery hands the run to the QuickJS entry point after setup, with the same writer; it has no run-ahead and no divergence recovery (`delivery.ts:1508`).

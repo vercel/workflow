@@ -16,6 +16,10 @@ Each scenario has a timeline, the outcome, and the page that explains the mechan
 | [Lease stall overlap](#lease-stall-overlap) | Handled by the fence |
 | [Self-superseded 412](#self-superseded-412) | Fixed |
 | [Crash between commit and dispatch](#crash-between-commit-and-dispatch) | Handled by the creator rules |
+| [Lost completion wake](#lost-completion-wake) | Fixed (`76643fe621`) |
+| [Inline `maxRetries: 0` step after an orchestrator crash](#inline-maxretries-0-step-after-an-orchestrator-crash) | Fixed (`75ddd45207`) |
+| [Background body before a refused start](#background-body-before-a-refused-start) | Behavior change, accepted |
+| [Uncoalesced wakes on world-local and world-postgres](#uncoalesced-wakes-on-world-local-and-world-postgres) | Open follow-up |
 | [Coalesced timer losing its re-arm](#coalesced-timer-losing-its-re-arm) | Fixed |
 | [Two concurrent sleeps](#two-concurrent-sleeps) | Fixed |
 | [Run-ahead stop re-runs step bodies](#run-ahead-stop-re-runs-step-bodies) | Accepted, bounded |
@@ -52,7 +56,7 @@ sequenceDiagram
     O2->>W: drives the run on
 ```
 
-**Outcome.** Nothing is written twice, and O2 drives the run. What the queue answers to O1's acknowledgment of a lapsed lease is not verified here. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1010`).
+**Outcome.** Nothing is written twice, and O2 drives the run. What the queue answers to O1's acknowledgment of a lapsed lease is not verified here. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1011`).
 
 ## Self-superseded 412
 
@@ -74,7 +78,7 @@ sequenceDiagram
     O->>W: writes at the new count, run completes
 ```
 
-**Outcome.** Before the fix, a refused delivery acknowledged with no wake and the run stopped until something else woke it. Now it sends one keyed wake. On world-local and world-postgres the wake is delivered after the running delivery. A delivery refused on every pass ends after 32 re-runs with a handoff. Tests: `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts`. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1033`).
+**Outcome.** Before the fix, a refused delivery acknowledged with no wake and the run stopped until something else woke it. Now it sends one keyed wake. On world-local and world-postgres the wake is delivered after the running delivery. A delivery refused on every pass ends after 32 re-runs with a handoff. Tests: `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts`. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1034`).
 
 ## Crash between commit and dispatch
 
@@ -95,7 +99,100 @@ sequenceDiagram
     O2->>Q: s1's message, same stable idempotency key
 ```
 
-**Outcome.** The redelivery re-sends the message. A delivery after a handoff of a first delivery has creator count 1 and re-sends nothing, as a new message would not (`stepsToReenqueue`, `packages/core/src/runtime/spec9/creator-rules.ts:22`; creator count `packages/core/src/runtime/spec9/delivery.ts:344`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+**Outcome.** The redelivery re-sends the message. A delivery after a handoff of a first delivery has creator count 1 and re-sends nothing, as a new message would not (`stepsToReenqueue`, `packages/core/src/runtime/spec9/creator-rules.ts:22`; creator count `packages/core/src/runtime/spec9/delivery.ts:345`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Lost completion wake
+
+A background step commits its outcome, and sending its orchestrator wake fails. That wake is the only thing that moves the run on: the node orchestrator arms no backstop for background steps on spec 9.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant S1 as Step delivery 1
+    participant S2 as Step delivery 2
+    participant W as World
+    participant O as Orchestrator
+    Q->>S1: step message s1
+    S1->>W: step_started, body, step_completed
+    S1--xQ: wake send fails, the handler throws
+    Q->>S2: s1 again, deliveryCount 2
+    S2->>W: read the log, step terminal
+    Note over S2: before the fix: acknowledge, no wake, the run stalls
+    S2->>Q: current: one plain wake, then acknowledge
+    Q->>O: wake, or coalesced into a live delivery
+    O->>W: load, takes the outcome in
+```
+
+**Outcome.** Fixed in commit `76643fe621`: a redelivery whose decision is to acknowledge because the step is terminal (`step-terminal` in `packages/core/src/runtime/spec9/step-delivery.ts:87`) sends the plain wake again (`packages/core/src/runtime/spec9/step-handler.ts:167`). A live orchestrator absorbs it, and one with nothing new acknowledges it after a tail read. A run-terminal acknowledgment still sends nothing. Test: `re-sends the wake when a redelivered step message finds the step terminal` in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts`, both engines. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Inline `maxRetries: 0` step after an orchestrator crash
+
+An orchestrator commits an inline `maxRetries: 0` step's `step_started` and dies before the outcome.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant O1 as Delivery 1
+    participant O2 as Delivery 2
+    participant W as World
+    Q->>O1: deliver m1
+    O1->>W: step_started inline true, attempt 1
+    Note over O1: crash inside the body
+    Q->>O2: m1 again, attempt 2
+    O2->>W: load, open inline step, one start
+    Note over O2: before the fix: attempt 2 ran the body again
+    O2->>W: current: step_failed, attempt 2 above maxRetries + 1, no body
+```
+
+**Outcome.** Fixed in commit `75ddd45207`: `executeStep` fails an attempt past `maxRetries + 1` without running the body (`packages/core/src/runtime/spec9/step-executor.ts:403`), for inline and background steps alike. Only a background step's own message checked this before. It also covers a winner re-running a refused overlap's open inline step. Test: `runs an inline maxRetries: 0 step at most once across an orchestrator crash` in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts`, both engines. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Background body before a refused start
+
+On a plain first delivery, a background step that allows retries starts its body while its `step_started` is in flight (commit `83ee22003e`).
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant S as Step invocation
+    participant W as World
+    Q->>S: step message, deliveryCount 1
+    S-)W: step_started, out-of-band
+    S->>S: body runs, side effects happen
+    alt start committed
+        S->>W: outcome
+        S->>Q: one plain wake
+    else 429 or too early
+        Note over S: outcome discarded
+        S->>Q: redeliver after the backoff
+    else run ended, for example cancelled
+        Note over S: outcome discarded
+        S->>Q: acknowledge
+    end
+```
+
+**Outcome.** Accepted behavior change: on a cancelled run or under throttling the body runs before the refusal arrives, where the awaited start used to be refused first. A `maxRetries: 0` step and every delivery that reads the log keep the awaited start, and `WORKFLOW_OPTIMISTIC_INLINE_START=0` restores it for all steps (`forceOptimisticStart`, `packages/core/src/runtime/spec9/step-handler.ts`; `mayRunBeforeItsStart`, `packages/core/src/runtime/spec9/step-executor.ts:79`). Tests in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts` and `suspension.runtime.test.ts`. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Uncoalesced wakes on world-local and world-postgres
+
+Both mint spec 9 runs by default and serialize a run's orchestrator deliveries, but neither coalesces.
+
+```mermaid
+sequenceDiagram
+    participant S as Step invocations
+    participant G as Per-run gate
+    participant O as Orchestrator deliveries
+    S->>G: wake 1 .. wake n, one per background outcome
+    loop one delivery per wake, in series
+        G->>O: next wake
+        alt tail at the consumed position
+            O->>O: one tail read, acknowledge
+        else new events
+            O->>O: full load and replay
+        end
+    end
+```
+
+**Outcome.** Open follow-up: a fan-out of `n` background steps costs `n` orchestrator deliveries in series. world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has the same shape with one function invocation per wake. What the two Worlds would need (re-runs with the gate held, the coalesced count, `invocationStartedAt`, a handoff at the front of the run's queue) is on [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology#follow-up-coalescing-on-world-local-and-world-postgres).
 
 ## Coalesced timer losing its re-arm
 
@@ -151,9 +248,9 @@ sequenceDiagram
     O->>O: B and C bodies run again
 ```
 
-**Outcome.** Up to `WORKFLOW_RUN_AHEAD_DEPTH` bodies can run twice per stop. The default in code is 10 (`RUN_AHEAD_DEPTH`, `packages/core/src/runtime/constants.ts:410`). A step with `maxRetries: 0` never starts before its start commits (`mayRunBeforeItsStart`, `packages/core/src/runtime/spec9/step-executor.ts:79`). A second stop after the one restart hands off (`MAX_RUN_AHEAD_RESTARTS`, 1).
+**Outcome.** Up to `WORKFLOW_RUN_AHEAD_DEPTH` bodies can run twice per stop. The default in code is 10 (`RUN_AHEAD_DEPTH`, `packages/core/src/runtime/constants.ts:411`). A step with `maxRetries: 0` never starts before its start commits (`mayRunBeforeItsStart`, `packages/core/src/runtime/spec9/step-executor.ts:79`). A second stop after the one restart hands off (`MAX_RUN_AHEAD_RESTARTS`, 1).
 
-Stops in the code come from a refused speculative batch entry, a World that does not store `occurredAt` as `createdAt` (which also turns run-ahead off for that World), and the hazard check (`packages/core/src/runtime/spec9/delivery.ts:2153`, `:2227`, `:1956`). The review names a hook payload for an awaited hook as a trigger; in the code, an awaited hook makes the boundary not inert, so the orchestrator does not run ahead past it, and the hazard check is documented as ruled out by the classification and the fence (`packages/core/src/runtime/spec9/delivery.ts:1908`). Which events trigger a stop in practice is not verified. Mechanism: [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
+Stops in the code come from a refused speculative batch entry, a World that does not store `occurredAt` as `createdAt` (which also turns run-ahead off for that World), and the hazard check (`packages/core/src/runtime/spec9/delivery.ts:2160`, `:2234`, `:1963`). An awaited hook is not a trigger: it makes the boundary not inert, so the orchestrator does not run ahead past it, and the hazard check is documented as ruled out by the classification and the fence (`packages/core/src/runtime/spec9/delivery.ts:1915`). Which events trigger a stop in practice is not verified. Mechanism: [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
 
 ## Replay divergence recovered in place
 
@@ -174,7 +271,7 @@ sequenceDiagram
     end
 ```
 
-**Outcome.** Up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` (3, `packages/core/src/runtime/constants.ts:378`) recoveries in the same delivery, counted in memory (`recordDivergence`, `packages/core/src/runtime/spec9/delivery.ts:3877`). The count starts again across crashes and redeliveries, where the delivery cap bounds it. Spec 9 no longer sends a `replayDivergence` message; spec 8 still does. QuickJS has no divergence recovery. Mechanism: [Run lifecycle](/docs/changelog/single-orchestrator-diagrams/run-lifecycle).
+**Outcome.** Up to `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES` (3, `packages/core/src/runtime/constants.ts:379`) recoveries in the same delivery, counted in memory (`recordDivergence`, `packages/core/src/runtime/spec9/delivery.ts:3916`). The count starts again across crashes and redeliveries, where the delivery cap bounds it. Spec 9 no longer sends a `replayDivergence` message; spec 8 still does. QuickJS has no divergence recovery. Mechanism: [Run lifecycle](/docs/changelog/single-orchestrator-diagrams/run-lifecycle).
 
 ## Deadline handoff and the inline-start margin
 
@@ -197,7 +294,7 @@ sequenceDiagram
     end
 ```
 
-**Outcome.** Both continue the run. The margin path costs a step invocation and a queue hop where a handoff would cost a redelivery; handing off at the margin is not implemented. The handoff is not an attempt. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology) (`packages/core/src/runtime/spec9/delivery.ts:2410`).
+**Outcome.** Both continue the run. The margin path costs a step invocation and a queue hop where a handoff would cost a redelivery; handing off at the margin is not implemented. The handoff is not an attempt. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology) (`packages/core/src/runtime/spec9/delivery.ts:2417`).
 
 ## Stream-flush handoff
 
@@ -216,7 +313,7 @@ sequenceDiagram
     O2->>O2: load log, continue the run
 ```
 
-**Outcome.** The delivery ends so the flush can finish, and the run continues in the handoff (`pending-stream-ops`, `packages/core/src/runtime/spec9/delivery.ts:3629`). The e2e `webhookWorkflow` test exercises it. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
+**Outcome.** The delivery ends so the flush can finish, and the run continues in the handoff (`pending-stream-ops`, `packages/core/src/runtime/spec9/delivery.ts:3649`). The e2e `webhookWorkflow` test exercises it. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
 
 ## Coalesced re-runs exhausted
 
@@ -356,4 +453,4 @@ flowchart LR
     Q --> QC["Continuations hand off, covered by typecheck only"]
 ```
 
-**Outcome.** On QuickJS, run-ahead stops, their restarts and the out-of-band `wait_completed` hazard never occur, and a VM failure fails the run as before this change (`packages/core/src/runtime/spec9/quickjs-entrypoint.ts` has no run-ahead or divergence-recovery code). Its exit continuations (replay budget, an elapsed wait, an unread write of its own) hand off through `continueInNextDelivery` (`packages/core/src/runtime/spec9/delivery.ts:1533`), and no test triggers them. Mechanism: [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
+**Outcome.** On QuickJS, run-ahead stops, their restarts and the out-of-band `wait_completed` hazard never occur, and a VM failure fails the run as before this change (`packages/core/src/runtime/spec9/quickjs-entrypoint.ts` has no run-ahead or divergence-recovery code). Its exit continuations (replay budget, an elapsed wait, an unread write of its own) hand off through `continueInNextDelivery` (`packages/core/src/runtime/spec9/delivery.ts:1534`), and no test triggers them. Mechanism: [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo).
