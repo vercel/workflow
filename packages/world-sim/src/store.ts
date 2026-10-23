@@ -48,6 +48,7 @@ import {
   type ResolveData,
   requireEventSlot,
   SPEC_VERSION_CURRENT,
+  type StartHook,
   type Step,
   type Storage,
   slotToEventId,
@@ -56,6 +57,12 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import type { IdFactory } from './ids.js';
+import {
+  createStartHookTable,
+  type StartHookDecision,
+  startHookRejected,
+  type TokenClaim,
+} from './start-hook.js';
 
 /** Per-run event ceiling reported on run responses, mirroring the other worlds. */
 const MAX_EVENTS_PER_RUN = 25_000;
@@ -158,6 +165,34 @@ export interface SimStoreOptions {
    * reconstructs; see `SimWorldOptions.countGuard`.
    */
   countGuard?: boolean;
+  /**
+   * Admit `start({ hook })` (`WorldCapabilities.atomicStartHook`): reserve
+   * the token with the run, one immutable decision per candidate, adoption by
+   * the run's own `createHook()`, `HookReservedError` before adoption, and
+   * the 24h orphan bound. See `start-hook.ts`. Off: a `startHook` is refused
+   * with `START_HOOK_ADMISSION_REJECTED`, as a backend with the feature
+   * switched off answers.
+   */
+  atomicStartHook?: boolean;
+  /**
+   * Honor `createHook({ experimental_force })`
+   * (`WorldCapabilities.hookForceClaim`): take a live Hook's token from
+   * another run, journaling `hook_disposed{forceClaimedBy}` in the victim's
+   * log. Off: a forced creation gets the ordinary `hook_conflict`.
+   */
+  hookForceClaim?: boolean;
+  /**
+   * A named point inside a write, between two of its commits, that the world
+   * facade turns into a call point (`phase: 'inside'`). The store awaits it,
+   * so a script can hold the writer there or kill it. Only the start Hook
+   * admission has one (`start-hook:accepted`).
+   */
+  checkpoint?(
+    name: string,
+    info: { runId: string; token: string }
+  ): Promise<void> | void;
+  /** A store-side narration line for the trace (fences, releases). */
+  onNote?(message: string): void;
   /** Invoked after every successful append, before the create call returns. */
   onEvent?(event: Event): void;
   /** Invoked when a read was served an incomplete log. */
@@ -210,6 +245,17 @@ export interface SimStore extends Storage {
   allHooks(runId?: string): Hook[];
   allWaits(runId?: string): Wait[];
   hookByToken(token: string): Hook | undefined;
+  /** Every start Hook admission decision, in decision order. */
+  startHookDecisions(): StartHookDecision[];
+  /** Every token constraint (reservations and retained claims). */
+  tokenClaims(): TokenClaim[];
+  /** Candidates fenced as orphans. */
+  fencedCandidates(): string[];
+  /**
+   * Who would refuse a new start Hook candidate for `token` at `atMs`, or
+   * `undefined` when it would be admitted. Read-only: fences nothing.
+   */
+  probeToken(token: string, atMs: number): string | undefined;
 }
 
 /** Brand check that survives a swapped global constructor (see `clock.ts`). */
@@ -336,6 +382,33 @@ export function createSimStore(options: SimStoreOptions): SimStore {
    * racing another, which the out-of-band marker cannot see by construction.
    */
   const runEventIndex = new Map<string, RunEventIndex>();
+
+  /** The start Hook token constraint and decision table; see start-hook.ts. */
+  const startHooks = createStartHookTable({
+    now: nowMs,
+    getRun: (runId) => runs.get(runId),
+    liveHookRun: (hookId) =>
+      disposedHooks.has(hookId) ? undefined : hooks.get(hookId)?.runId,
+    liveTokenOwner: (token) => {
+      const hookId = tokenOwners.get(token);
+      return hookId ? hooks.get(hookId)?.runId : undefined;
+    },
+    checkpoint: async (name, info) => {
+      await options.checkpoint?.(name, info);
+    },
+    note: options.onNote,
+  });
+
+  /** The longer of two optional instants, in ms. */
+  const laterMs = (
+    a: number | undefined,
+    b: Date | number | undefined
+  ): number | undefined => {
+    const bm = b === undefined ? undefined : new Date(b).getTime();
+    if (a === undefined) return bm;
+    if (bm === undefined) return a;
+    return Math.max(a, bm);
+  };
 
   /** Reads to withhold the next appended event from, once it is appended. */
   let armedWithhold: number | undefined;
@@ -493,10 +566,22 @@ export function createSimStore(options: SimStoreOptions): SimStore {
           input: data?.input as Uint8Array,
           attributes: (data?.attributes as Record<string, string>) ?? {},
           encryptionPublicKey: data?.encryptionPublicKey as string | undefined,
+          ...(data?.startHook
+            ? { startHook: data.startHook as StartHook }
+            : {}),
           createdAt: at,
           updatedAt: at,
         } as WorkflowRun;
         runs.set(runId, run);
+        // On the write path the admission already decided and claimed; this
+        // is how a seeded log gets its reservation back.
+        if (data?.startHook) {
+          startHooks.seedAccepted(
+            runId,
+            data.startHook as StartHook,
+            at.getTime()
+          );
+        }
         return { run };
       }
 
@@ -626,11 +711,17 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         if (!correlationId) return {};
         const token = data?.token as string;
         const owningRun = runs.get(runId);
+        const retentionUntil = data?.tokenRetentionUntil as Date | undefined;
+        const claimedFrom = data?.forceClaimedFrom as Hook['claimedFrom'];
         const hook: Hook = {
           runId,
           hookId: correlationId,
           token,
           metadata: data?.metadata as Uint8Array | undefined,
+          ...(retentionUntil
+            ? { tokenRetentionUntil: new Date(retentionUntil) }
+            : {}),
+          ...(claimedFrom ? { claimedFrom } : {}),
           ownerId: 'sim-owner',
           projectId: 'sim-project',
           environment: 'sim',
@@ -642,6 +733,32 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         };
         hooks.set(correlationId, hook);
         tokenOwners.set(token, correlationId);
+        // The token constraint behind the Hook. A reservation this run owns
+        // (its own, or one it just took with the Hook it rides on) is adopted:
+        // it now names this Hook, and keeps the longest retention it was ever
+        // promised. Otherwise a Hook with a retention leaves a retained claim
+        // behind, so the token outlives the Hook until the retention passes.
+        const claim = startHooks.claim(token);
+        const takesClaim =
+          claim !== undefined &&
+          (claim.runId === runId ||
+            (claimedFrom !== undefined && claim.runId === claimedFrom.runId));
+        if (claim && takesClaim) {
+          startHooks.set({
+            ...claim,
+            runId,
+            hookId: correlationId,
+            retentionUntilMs: laterMs(claim.retentionUntilMs, retentionUntil),
+          });
+        } else if (retentionUntil) {
+          startHooks.set({
+            token,
+            runId,
+            reservation: false,
+            hookId: correlationId,
+            retentionUntilMs: new Date(retentionUntil).getTime(),
+          });
+        }
         return { hook };
       }
 
@@ -760,8 +877,9 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     data: AnyEventRequest,
     params?: CreateEventParams
   ): Promise<EventResult> {
-    // Event and entity timestamps are both assigned at commit.
-    const now = new Date(nowMs());
+    // Event and entity timestamps are both assigned at commit (and reread
+    // below if the start Hook admission awaited its checkpoint).
+    let now = new Date(nowMs());
     const internal = params as
       | (CreateEventParams & SimCreateParams)
       | undefined;
@@ -777,6 +895,48 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       throw new Error('runId is required for non-run_created events');
     } else {
       runId = runIdArg;
+    }
+
+    // ---- Atomic start Hook admission ---------------------------------------
+    // `run_created` always decides; the queued copy's `run_started` decides
+    // only when there is no run yet (an existing run takes the ordinary path,
+    // which is how a redelivery of an admitted candidate's message starts it).
+    // A refusal throws here, before anything is written. Everything after
+    // this block runs without awaiting, so the run row it creates is the
+    // second of the two cross-region writes, atomic with its `run_created`.
+    const startHook =
+      data.eventType === 'run_created' || data.eventType === 'run_started'
+        ? (data.eventData as { startHook?: StartHook } | undefined)?.startHook
+        : undefined;
+    if (startHook && (data.eventType === 'run_created' || !runs.has(runId))) {
+      if (!options.atomicStartHook) {
+        throw startHookRejected(
+          'start Hook admission is not enabled in this Sim World (start-hook-disabled)'
+        );
+      }
+      // Re-checked in the turn that creates the run: see `confirmCreation`.
+      const admission =
+        (await startHooks.admit(runId, startHook)) === 'existing'
+          ? 'existing'
+          : startHooks.confirmCreation(runId);
+      now = new Date(nowMs());
+      if (admission === 'existing' && data.eventType === 'run_created') {
+        // Every later attempt for an accepted candidate gets its run, with
+        // the `run_created` at its first slot, never `EntityConflictError`.
+        const existing = requireRun(runId);
+        const created = eventsForRun(runId).find(
+          (e) => e.eventType === 'run_created'
+        );
+        return {
+          ...(created
+            ? {
+                event: stripEventDataRefs(clone(created), resolveData),
+              }
+            : {}),
+          run: clone(existing),
+          maxEvents: MAX_EVENTS_PER_RUN,
+        } as EventResult;
+      }
     }
     let position = eventPosition(runId);
 
@@ -803,6 +963,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             executionContext: seed.executionContext,
             attributes: seed.attributes,
             encryptionPublicKey: seed.encryptionPublicKey,
+            ...(startHook ? { startHook } : {}),
           },
         } as Event;
         currentRun = applyEvent(synthetic, now).run;
@@ -1015,6 +1176,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       };
     }
 
+    /** A forced `hook_created` taking another run's live Hook. */
+    let forceTakeover:
+      | { victimRunId: string; victimHookId: string; victimRunning?: boolean }
+      | undefined;
+
     // ---- Per-event-type validation ----------------------------------------
     // Everything the write path *refuses*. What it does to the entity rows is
     // `applyEvent` below: the same fold the seed path runs.
@@ -1047,9 +1213,46 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       }
 
       case 'hook_created': {
+        // The hook copies a resume context off its run, so that resuming it
+        // needs no run read. No run, no hook, and no `hook_conflict` either:
+        // a log with no run in it is not a log.
+        requireRun(runId);
         const { token } = data.eventData;
         const owner = tokenOwners.get(token);
+        const ownerRunId = owner ? hooks.get(owner)?.runId : undefined;
+        // Who refuses this creation, if anyone. A live Hook holding the token
+        // refuses it unless this is a force claim against another run's
+        // Hook. With no live Hook, the token constraint decides: this run's
+        // own reservation is adopted, anyone else's claim refuses while it
+        // still holds and is cleared once it does not.
+        let conflicts = false;
+        let conflictingRunId: string | undefined;
         if (owner && owner !== data.correlationId) {
+          if (
+            data.eventData.force === true &&
+            options.hookForceClaim === true &&
+            ownerRunId !== undefined &&
+            ownerRunId !== runId
+          ) {
+            forceTakeover = { victimRunId: ownerRunId, victimHookId: owner };
+          } else {
+            conflicts = true;
+            conflictingRunId = ownerRunId;
+          }
+        } else if (!owner) {
+          const claim = startHooks.claim(token);
+          if (claim && !(claim.reservation && claim.runId === runId)) {
+            // A forced creation cannot take a reservation that has no Hook:
+            // the claim's run never listened on the token.
+            if (startHooks.holds(claim, nowMs())) {
+              conflicts = true;
+              conflictingRunId = claim.runId;
+            } else {
+              startHooks.release(token);
+            }
+          }
+        }
+        if (conflicts) {
           // Someone else holds the token. This is not an error for the
           // *caller* (the workflow needs to observe it and fail its awaited
           // hook), so it is journaled as a `hook_conflict` event instead.
@@ -1062,7 +1265,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             correlationId: data.correlationId,
             eventData: {
               token,
-              conflictingRunId: hooks.get(owner)?.runId,
+              conflictingRunId,
             },
           } as Event);
           // The conflict answers the inline delta the same way the
@@ -1083,9 +1286,44 @@ export function createSimStore(options: SimStoreOptions): SimStore {
             `Hook "${data.correlationId}" already created`
           );
         }
-        // The hook copies a resume context off its run, so that resuming it
-        // needs no run read. No run, no hook.
-        requireRun(runId);
+        const eventData = event.eventData as Record<string, unknown>;
+        // Adoption without metadata of its own takes the reservation's,
+        // journaled with the creation so the entity and a replay agree.
+        const reservation = startHooks.claim(token);
+        if (
+          reservation?.reservation &&
+          reservation.runId === runId &&
+          data.eventData.metadata === undefined &&
+          reservation.metadata !== undefined
+        ) {
+          event = {
+            ...event,
+            eventData: { ...eventData, metadata: reservation.metadata },
+          } as Event;
+        }
+        if (forceTakeover) {
+          const victim = runs.get(forceTakeover.victimRunId);
+          const victimRunning =
+            victim !== undefined && !isTerminalWorkflowRunStatus(victim.status);
+          forceTakeover.victimRunning = victimRunning;
+          event = {
+            ...event,
+            eventData: {
+              ...(event.eventData as Record<string, unknown>),
+              forceClaimedFrom: {
+                runId: forceTakeover.victimRunId,
+                hookId: forceTakeover.victimHookId,
+                ...(victimRunning && victim
+                  ? {
+                      workflowName: victim.workflowName,
+                      deploymentId: victim.deploymentId,
+                      runSpecVersion: victim.specVersion,
+                    }
+                  : {}),
+              },
+            },
+          } as Event;
+        }
         break;
       }
 
@@ -1162,6 +1400,27 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     const { run, step, hook, wait } = applyEvent(event, now);
 
     event = append(event);
+
+    // A force claim tells its victim second: the claimer's creation is
+    // journaled first, so the token resolves to a Hook whose creation is
+    // already in its log at every instant, then the victim's own log gets
+    // the disposal that names the claimer (workflow-server's order).
+    if (forceTakeover?.victimRunning) {
+      const victim = requireRun(forceTakeover.victimRunId);
+      const disposed = {
+        eventType: 'hook_disposed',
+        runId: victim.runId,
+        correlationId: forceTakeover.victimHookId,
+        ...eventPosition(victim.runId),
+        specVersion: victim.specVersion ?? specVersion,
+        eventData: {
+          token: (data.eventData as { token: string }).token,
+          forceClaimedBy: { runId, hookId: data.correlationId as string },
+        },
+      } as Event;
+      applyEvent(disposed, now);
+      append(disposed);
+    }
 
     // Track externally-originated writes for the precondition fence. A write
     // the facade attached no snapshot to did not come from a replay context, so
@@ -1390,7 +1649,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       async getByToken(token) {
         const hookId = tokenOwners.get(token);
         const found = hookId ? hooks.get(hookId) : undefined;
-        if (!found) throw new HookNotFoundError(token);
+        if (!found) {
+          // A reservation its run has not adopted has an owner but no Hook.
+          startHooks.assertNotReserved(token);
+          throw new HookNotFoundError(token);
+        }
         return clone(found);
       },
       async list(params) {
@@ -1438,6 +1701,10 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       [...hooks.values()].filter((h) => !runId || h.runId === runId).map(clone),
     allWaits: (runId) =>
       [...waits.values()].filter((w) => !runId || w.runId === runId).map(clone),
+    startHookDecisions: () => startHooks.decisions(),
+    tokenClaims: () => startHooks.claims(),
+    fencedCandidates: () => startHooks.fenced(),
+    probeToken: (token, atMs) => startHooks.probe(token, atMs),
     hookByToken: (token) => {
       const hookId = tokenOwners.get(token);
       const found = hookId ? hooks.get(hookId) : undefined;

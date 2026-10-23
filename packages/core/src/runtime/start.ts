@@ -1,9 +1,24 @@
-import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
-import { globalSingleton } from '@workflow/utils';
+import {
+  EntityConflictError,
+  HookConflictError,
+  RUN_ERROR_CODES,
+  START_HOOK_ADMISSION_REJECTED,
+  WorkflowRuntimeError,
+  WorkflowStartError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import {
+  globalSingleton,
+  type PromiseWithResolvers,
+  parseDurationToDate,
+  withResolvers,
+} from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type {
   RunRetention,
+  StartHook,
   WorkflowInvokePayload,
+  WorkflowRunStatus,
   World,
 } from '@workflow/world';
 import {
@@ -20,6 +35,7 @@ import {
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   workflowRunIdSchema,
 } from '@workflow/world';
+import type { StringValue } from 'ms';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
 import {
@@ -39,6 +55,7 @@ import {
 import type { CompressionMode } from '../serialization/compression.js';
 import {
   dehydrateDynamicWorkflowCode,
+  dehydrateStepArguments,
   dehydrateWorkflowArguments,
   type PayloadKey,
   sealTo,
@@ -66,6 +83,7 @@ import {
   healthCheck,
 } from './helpers.js';
 import { Run } from './run.js';
+import { wakePendingStartHookHolder } from './start-hook-holder.js';
 import {
   getSnapshotThresholdForStart,
   getWorkflowVmFromEnv,
@@ -340,7 +358,183 @@ async function probeCrossDeployment(
   return { probe, cached: false };
 }
 
+export interface StartHookOptions {
+  /**
+   * The Hook token to reserve for the run. Non-empty. Another run that owns
+   * the token, whether through its own `start({ hook })` or a `createHook()`,
+   * makes this start throw `HookConflictError` naming it.
+   */
+  token: string;
+
+  /**
+   * **Experimental.** Keep the token unavailable for at least this long, even
+   * after the run ends. Accepts the same duration string, millisecond number,
+   * or absolute `Date` as `sleep()` and `createHook({ experimental_minRetention })`.
+   * A duration starts when `start()` is called.
+   *
+   * The run owns the token until it ends even if this time passes first. A
+   * `createHook()` in the run with the same token can extend it, never
+   * shorten it.
+   */
+  experimental_minRetention?: StringValue | Date | number;
+
+  /**
+   * Data stored with the Hook, with the same semantics and serialization as
+   * `createHook({ metadata })`. The World keeps it with the reservation; when
+   * the workflow's `createHook({ token })` adopts the reservation without
+   * metadata of its own, the Hook carries this one, so `getHookByToken()`
+   * returns it.
+   */
+  metadata?: unknown;
+}
+
+/**
+ * How long a start Hook keeps its token by default, counted from `start()`:
+ * the token is unavailable until the run ends or this passes, whichever is
+ * later. Applies only on a World (and, cross-deployment, a target) that
+ * supports Hook retention; elsewhere the default is skipped rather than
+ * refusing the start. `experimental_minRetention: 0` opts out.
+ */
+export const DEFAULT_START_HOOK_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Validates and resolves `start({ hook })` before anything is written. The
+ * default retention and the metadata are applied later, once the World and
+ * the run's key are known. Exported for tests.
+ */
+export function normalizeStartHook(options: StartHookOptions): StartHook {
+  if (typeof options?.token !== 'string' || options.token.length === 0) {
+    throw new WorkflowRuntimeError(
+      'start({ hook }) requires hook.token to be a non-empty string.'
+    );
+  }
+  if (
+    options.experimental_minRetention === undefined ||
+    options.experimental_minRetention === 0
+  ) {
+    return { token: options.token };
+  }
+  const tokenRetentionUntil = parseDurationToDate(
+    options.experimental_minRetention
+  );
+  if (
+    !Number.isFinite(tokenRetentionUntil.getTime()) ||
+    tokenRetentionUntil.getTime() <= Date.now()
+  ) {
+    throw new WorkflowRuntimeError(
+      'start({ hook }) requires hook.experimental_minRetention to resolve to a future time.'
+    );
+  }
+  return { token: options.token, tokenRetentionUntil };
+}
+
+/**
+ * A deterministic refusal to use `start({ hook })` against a World (or target
+ * deployment) that cannot admit it. Nothing was published.
+ */
+function startHookContractError(message: string): WorkflowWorldError {
+  return new WorkflowWorldError(`${message} No run was created.`, {
+    code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+  });
+}
+
+/**
+ * A cross-deployment `start({ hook })` relies on the TARGET's runtime and
+ * World too: its queue consumer admits the queued copy. Its capability probe
+ * is the only evidence, so:
+ *
+ * - a probe that answered and does not advertise the capability (or Hook
+ *   retention, when a retention is set) is a deterministic refusal;
+ * - a probe that did not answer proves nothing either way. Nothing has been
+ *   published yet, so this is a plain retryable failure, not an uncertain
+ *   start.
+ */
+function assertTargetAdmitsStartHook(
+  startHook: StartHook,
+  deploymentId: string,
+  probe: HealthCheckResult | undefined
+): void {
+  if (probe?.format === undefined) {
+    throw new WorkflowWorldError(
+      `start({ hook }) could not verify that the target deployment (${deploymentId}) supports atomic start Hooks: it did not answer the capability probe${
+        probe?.error ? ` (${probe.error})` : ''
+      }. No run was created; retry the start.`,
+      { code: 'TIMEOUT' }
+    );
+  }
+  if (probe.capabilities?.atomicStartHook?.active !== true) {
+    throw startHookContractError(
+      `start({ hook }) requires the target deployment (${deploymentId}) to support atomic start Hooks, and it does not.`
+    );
+  }
+  if (
+    startHook.tokenRetentionUntil !== undefined &&
+    probe.capabilities.hookRetention?.active !== true
+  ) {
+    throw startHookContractError(
+      `start({ hook: { experimental_minRetention } }) requires the target deployment (${deploymentId}) to support Hook retention, and it does not.`
+    );
+  }
+}
+
+/**
+ * Backoff between the re-posts with which a streamed `start({ hook })`
+ * confirms an uncertain admission before throwing `WorkflowStartError`. Its
+ * stream arguments are piped only on a confirmed admission, so giving up at
+ * the first uncertain answer would leave an owner that was in fact admitted
+ * waiting on input nothing will send.
+ */
+export const START_HOOK_CONFIRM_DELAYS_MS: readonly number[] = [100, 300, 900];
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Inside a workflow, `start()` is a step, and a step retries every error that
+ * is not fatal. A start Hook's deterministic answers (a refusal naming the
+ * owner, a permanent rejection, a contract error) cannot change on a retry,
+ * so they are marked fatal there and reach the workflow on the first attempt
+ * with their own type intact. `WorkflowStartError` is left retryable: a retry
+ * with the same token is safe, and either becomes the owner or is refused
+ * naming it.
+ */
+function finalInStep<E>(error: E): E {
+  if (
+    contextStorage.getStore()?.workflowMetadata !== undefined &&
+    error instanceof Error
+  ) {
+    Object.defineProperty(error, 'fatal', {
+      value: true,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    });
+  }
+  return error;
+}
+
+/** Whether a World error is a deterministic answer rather than an outage. */
+function isPermanentWorldError(error: unknown): error is WorkflowWorldError {
+  return WorkflowWorldError.is(error) && !isRetryableWorldError(error);
+}
+
 export interface StartOptionsBase {
+  /**
+   * Reserve a Hook token atomically with the run's admission, making the
+   * start idempotent on that token. If another run owns the token, `start()`
+   * throws `HookConflictError` with `conflictingRunId`, and the duplicate
+   * never becomes a run: no run is created and none of its code executes.
+   *
+   * The workflow can `createHook({ token })` with the same token to receive
+   * payloads through it. When `start()` cannot confirm whether the candidate
+   * was queued or admitted it throws `WorkflowStartError`; retrying with the
+   * same token can never admit a second owner.
+   *
+   * Requires a World that supports atomic start Hooks (and, with a
+   * retention, Hook retention). Not supported for dynamic workflows.
+   */
+  hook?: StartHookOptions;
+
   /**
    * The world to use for the workflow run creation,
    * by default the world is inferred from the environment variables.
@@ -592,6 +786,18 @@ export async function start<TArgs extends unknown[], TResult>(
       opts = argsOrOptions;
     }
 
+    // `start({ hook })`: validated before anything else, so a malformed token
+    // or retention fails without I/O.
+    const startHook =
+      opts.hook !== undefined ? normalizeStartHook(opts.hook) : undefined;
+    if (startHook && typeof workflow === 'string') {
+      // A dynamic run is created before it is published, the opposite of the
+      // queue-first ordering atomic admission relies on.
+      throw dynamicStartRefusal(
+        'start({ hook }) is not supported for dynamic workflows, so no run was created.'
+      );
+    }
+
     // Dynamic source: compile it up front so the derived workflow id is
     // available for the span name, the queue topic, and the ref key — all of
     // which are decided before anything is written.
@@ -633,7 +839,7 @@ export async function start<TArgs extends unknown[], TResult>(
     const queueName = getWorkflowQueueName(workflowName, opts.namespace);
 
     const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
-    return trace(spanName, async (span) => {
+    const traced = trace(spanName, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -645,6 +851,24 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      if (startHook) {
+        span?.setAttributes(Attribute.WorkflowStartHook(true));
+        // The calling World writes `run_created`, so it must admit too. A
+        // cross-deployment target is checked again below, from its probe.
+        if (world.capabilities?.atomicStartHook?.active !== true) {
+          throw startHookContractError(
+            'start({ hook }) requires a World that supports atomic start Hooks, and the configured World does not.'
+          );
+        }
+        if (
+          startHook.tokenRetentionUntil !== undefined &&
+          world.capabilities?.hookRetention?.active !== true
+        ) {
+          throw startHookContractError(
+            'start({ hook: { experimental_minRetention } }) requires a World that supports Hook retention, and the configured World does not.'
+          );
+        }
+      }
       // `undefined` when this process is not itself a deployment and the
       // caller named a concrete target; see below.
       let currentDeploymentId: string | undefined;
@@ -767,6 +991,10 @@ export async function start<TArgs extends unknown[], TResult>(
       // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
       let targetSpecVersion: number;
       let specVersionSource: SpecVersionSource;
+      // Whether the deployment that executes the run keeps Hook retention,
+      // for the start Hook's default retention. Same deployment: the caller's
+      // World, checked below.
+      let targetSupportsHookRetention = true;
       if (!crossDeployment) {
         framedByteStreams = true;
         targetCompression = true;
@@ -777,6 +1005,13 @@ export async function start<TArgs extends unknown[], TResult>(
         targetSpecVersion = world.specVersion;
         specVersionSource = 'same-deployment';
       } else if (typeof world.streams?.get !== 'function') {
+        if (startHook) {
+          // The capability probe is the only way to learn whether the target
+          // admits start Hooks, and this World cannot carry one.
+          throw startHookContractError(
+            `start({ hook }) cannot verify that the target deployment (${deploymentId}) supports atomic start Hooks: the configured World has no stream channel for the capability probe.`
+          );
+        }
         framedByteStreams = false;
         targetCompression = false;
         targetNodeVersion = undefined;
@@ -800,6 +1035,11 @@ export async function start<TArgs extends unknown[], TResult>(
           runId,
           namespace: opts.namespace,
         });
+        if (startHook) {
+          assertTargetAdmitsStartHook(startHook, deploymentId, probe);
+          targetSupportsHookRetention =
+            probe?.capabilities?.hookRetention?.active === true;
+        }
         probedRunPublicKey = probe?.encryptionPublicKey;
         const capabilities = getRunCapabilities(
           probe?.workflowCoreVersion,
@@ -868,6 +1108,39 @@ export async function start<TArgs extends unknown[], TResult>(
             : `${featureRequires} a World that supports spec version ${SPEC_VERSION_SUPPORTS_ATTRIBUTES} or later.`
         );
       const v1Compat = isLegacySpecVersion(specVersion);
+      // The queued copy of an atomic start admits from its `runInput`, which
+      // only exists from CBOR queue transport on.
+      if (
+        startHook &&
+        specVersion < SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+      ) {
+        throw startHookContractError(
+          `start({ hook }) requires spec version ${SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT} or later, but this run would be stamped ${specVersion}.`
+        );
+      }
+      // The default retention: absolute from now, like an explicit
+      // `experimental_minRetention`. Skipped, not refused, where the World or
+      // the target cannot keep it; an explicit retention there still fails
+      // closed above.
+      if (
+        startHook &&
+        opts.hook?.experimental_minRetention === undefined &&
+        world.capabilities?.hookRetention?.active === true &&
+        targetSupportsHookRetention
+      ) {
+        startHook.tokenRetentionUntil = new Date(
+          Date.now() + DEFAULT_START_HOOK_RETENTION_MS
+        );
+      }
+      if (startHook) {
+        span?.setAttributes(
+          startHook.tokenRetentionUntil
+            ? Attribute.WorkflowStartHookRetentionUntil(
+                startHook.tokenRetentionUntil.toISOString()
+              )
+            : {}
+        );
+      }
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
       if (opts.attributes && Object.keys(opts.attributes).length > 0) {
@@ -1067,6 +1340,11 @@ export async function start<TArgs extends unknown[], TResult>(
           : false;
       const argumentCompression: CompressionMode =
         opts.compressArguments === false ? false : compression;
+      // An atomic start pipes its stream arguments only once the candidate is
+      // admitted, so a refused duplicate never reads or locks them (a
+      // webhook's `request.body` is one-shot). Resolved `true` on admission,
+      // `false` on anything else.
+      const streamStartGate = startHook ? withResolvers<boolean>() : undefined;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -1075,8 +1353,23 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        argumentCompression
+        argumentCompression,
+        ops,
+        streamStartGate?.promise
       );
+      // The start Hook's metadata, serialized and encrypted exactly as
+      // `createHook({ metadata })`'s is, so the adopted Hook's lookups
+      // hydrate it the same way.
+      if (startHook && opts.hook?.metadata !== undefined) {
+        startHook.metadata = (await dehydrateStepArguments(
+          opts.hook.metadata,
+          runId,
+          encryptionKey,
+          globalThis,
+          v1Compat,
+          compression
+        )) as StartHook['metadata'];
+      }
 
       // Dynamic workflow code goes through the same serialization pipeline as
       // the arguments — compressed, then encrypted with the run's key — and is
@@ -1149,23 +1442,227 @@ export async function start<TArgs extends unknown[], TResult>(
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
-      const runCreated = world.events.create(
-        runId,
-        {
-          eventType: 'run_created',
-          specVersion,
-          eventData: {
-            deploymentId: deploymentId,
-            workflowName: workflowName,
-            input: workflowArguments,
-            executionContext,
-            ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-            ...attributeSeed,
-            ...dynamicWorkflowSeed,
+      const runCreationData = {
+        deploymentId: deploymentId,
+        workflowName: workflowName,
+        input: workflowArguments,
+        executionContext,
+        ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+        ...attributeSeed,
+        ...dynamicWorkflowSeed,
+        ...(startHook ? { startHook } : {}),
+      };
+      const createRun = () =>
+        world.events.create(
+          runId,
+          {
+            eventType: 'run_created',
+            specVersion,
+            eventData: runCreationData,
           },
-        },
-        { v1Compat }
-      );
+          { v1Compat }
+        );
+      const enqueueRun = () =>
+        world.queue(
+          queueName,
+          {
+            runId,
+            traceCarrier,
+            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+              ? {
+                  runInput: {
+                    ...runCreationData,
+                    specVersion,
+                    ...(creatorEnvironment !== undefined
+                      ? { environment: creatorEnvironment }
+                      : {}),
+                  },
+                }
+              : {}),
+          } satisfies WorkflowInvokePayload,
+          {
+            deploymentId,
+            specVersion,
+            // Forward any caller-supplied region hint so worlds with
+            // per-region queue routing (e.g. world-vercel) can target the
+            // matching queue. Worlds without a regional dimension ignore
+            // this field.
+            ...(opts.region !== undefined ? { region: opts.region } : {}),
+          }
+        );
+
+      // These argument-stream ops are flushed in the background; the promise
+      // handed to waitUntil must never reject (an unconsumed waitUntil
+      // rejection crashes the process as unhandledRejection), so unexpected
+      // failures are logged instead.
+      const flushArgumentStreams = () =>
+        safeWaitUntil(Promise.all(ops), (err) => {
+          runtimeLogger.warn(
+            'Background flush of workflow argument streams failed',
+            {
+              workflowRunId: runId,
+              error: err instanceof Error ? err.message : String(err),
+            }
+          );
+        });
+
+      if (startHook) {
+        // Atomic admission, queue first: publish the candidate, then decide
+        // it with `run_created`. The queued copy carries the same `startHook`
+        // in its `runInput`, so whichever write reaches the World first
+        // admits or refuses the candidate, and both get that one decision. A
+        // refused queued copy exits before creating a run or running code.
+        //
+        // The gate stays closed on every path but admission, and is
+        // registered for flushing on all of them, so the gated stream ops
+        // always settle.
+        const gate = streamStartGate as PromiseWithResolvers<boolean>;
+        // Stream arguments registered their gated pipes in `ops`, and their
+        // producers run only from here. So a streamed start confirms an
+        // uncertain admission in place (`START_HOOK_CONFIRM_DELAYS_MS`)
+        // before giving up, rather than leave an admitted owner waiting on
+        // input that nothing will send.
+        const streamed = ops.length > 0;
+        flushArgumentStreams();
+        span?.setAttributes({
+          ...Attribute.WorkflowRunId(runId),
+          ...Attribute.DeploymentId(deploymentId),
+        });
+        let createdRunStatus: WorkflowRunStatus;
+        try {
+          let enqueueFailure: { error: unknown } | undefined;
+          try {
+            await enqueueRun();
+          } catch (error) {
+            span?.setAttributes(
+              Attribute.WorkflowStartHookOutcome(
+                isPermanentWorldError(error) ? 'failed' : 'uncertain'
+              )
+            );
+            // A permanent refusal published nothing; anything else may have.
+            if (isPermanentWorldError(error)) throw error;
+            if (!streamed) throw new WorkflowStartError(runId, 'queue', error);
+            // Decide the candidate anyway: its queued copy may exist, and
+            // an accepted candidate is published again below.
+            enqueueFailure = { error };
+          }
+          let result: Awaited<ReturnType<typeof createRun>> | undefined;
+          for (let attempt = 0; result === undefined; attempt++) {
+            try {
+              result = await createRun();
+            } catch (error) {
+              if (HookConflictError.is(error)) {
+                span?.setAttributes({
+                  ...Attribute.WorkflowStartHookOutcome('rejected'),
+                  ...(error.conflictingRunId
+                    ? Attribute.WorkflowStartHookConflictingRunId(
+                        error.conflictingRunId
+                      )
+                    : {}),
+                });
+                if (!error.conflictingRunId) {
+                  throw startHookContractError(
+                    `The World refused start Hook candidate "${runId}" without naming the run that owns the token.`
+                  );
+                }
+                // A holder stuck pending (its first message lost) would hold
+                // the token forever: wake it. Best effort; the refusal stands.
+                const wake = await wakePendingStartHookHolder(
+                  world,
+                  error.conflictingRunId,
+                  traceCarrier
+                );
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookHolderWoken(wake === 'woken')
+                );
+                throw error;
+              }
+              if (EntityConflictError.is(error)) {
+                // Admission must replay the candidate's decision. A plain
+                // conflict says nothing about who owns the token.
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookOutcome('failed')
+                );
+                throw startHookContractError(
+                  `The World answered start Hook candidate "${runId}" with EntityConflictError instead of its admission decision.`
+                );
+              }
+              // A permanent answer (a validation 400, or
+              // START_HOOK_ADMISSION_REJECTED) is the candidate's outcome: the
+              // queued copy gets the same answer and creates nothing.
+              if (isPermanentWorldError(error)) {
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookOutcome('failed')
+                );
+                throw error;
+              }
+              if (streamed && attempt < START_HOOK_CONFIRM_DELAYS_MS.length) {
+                // The decision replays: re-posting the same candidate learns
+                // it whether or not the last attempt committed.
+                await sleep(START_HOOK_CONFIRM_DELAYS_MS[attempt]);
+                continue;
+              }
+              span?.setAttributes(
+                Attribute.WorkflowStartHookOutcome('uncertain')
+              );
+              throw new WorkflowStartError(
+                runId,
+                enqueueFailure ? 'queue' : 'admission',
+                enqueueFailure?.error ?? error
+              );
+            }
+          }
+          if (result.run?.runId !== runId) {
+            span?.setAttributes(Attribute.WorkflowStartHookOutcome('failed'));
+            throw startHookContractError(
+              `The World admitted run "${result.run?.runId}" for start Hook candidate "${runId}".`
+            );
+          }
+          if (result.run.startHook?.token !== startHook.token) {
+            // The backend created the run without reserving the token, most
+            // likely because it predates start Hooks and dropped the field.
+            // The run exists and is queued, so say so.
+            span?.setAttributes(Attribute.WorkflowStartHookOutcome('failed'));
+            throw new WorkflowWorldError(
+              `Workflow run "${runId}" was created, but the World did not confirm reserving its start Hook token, so the start was not idempotent. The run is queued and may execute.`,
+              { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+            );
+          }
+          if (enqueueFailure) {
+            // Admitted, but its message may never have been published:
+            // publish it again so the owner starts.
+            for (let attempt = 0; ; attempt++) {
+              try {
+                await enqueueRun();
+                break;
+              } catch (error) {
+                if (
+                  !isPermanentWorldError(error) &&
+                  attempt < START_HOOK_CONFIRM_DELAYS_MS.length
+                ) {
+                  await sleep(START_HOOK_CONFIRM_DELAYS_MS[attempt]);
+                  continue;
+                }
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookOutcome('uncertain')
+                );
+                throw new WorkflowStartError(runId, 'queue', error);
+              }
+            }
+          }
+          createdRunStatus = result.run.status;
+          gate.resolve(true);
+        } finally {
+          gate.resolve(false);
+        }
+        span?.setAttributes({
+          ...Attribute.WorkflowStartHookOutcome('accepted'),
+          ...Attribute.WorkflowRunStatus(createdRunStatus),
+        });
+        return new Run<TResult>(runId, { resilientStart: false });
+      }
+
+      const runCreated = createRun();
 
       // A dynamic run publishes only once the backend has confirmed it stored
       // the code. The queue message carries that code too, and its first
@@ -1201,39 +1698,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // via the queue and creation will be re-tried async by the runtime.
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
-        world.queue(
-          queueName,
-          {
-            runId,
-            traceCarrier,
-            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-              ? {
-                  runInput: {
-                    input: workflowArguments,
-                    deploymentId,
-                    workflowName,
-                    specVersion,
-                    executionContext,
-                    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-                    ...(creatorEnvironment !== undefined
-                      ? { environment: creatorEnvironment }
-                      : {}),
-                    ...attributeSeed,
-                    ...dynamicWorkflowSeed,
-                  },
-                }
-              : {}),
-          } satisfies WorkflowInvokePayload,
-          {
-            deploymentId,
-            specVersion,
-            // Forward any caller-supplied region hint so worlds with
-            // per-region queue routing (e.g. world-vercel) can target the
-            // matching queue. Worlds without a regional dimension ignore
-            // this field.
-            ...(opts.region !== undefined ? { region: opts.region } : {}),
-          }
-        ),
+        enqueueRun(),
       ]);
 
       // Queue failure is always fatal: the run was not enqueued
@@ -1274,19 +1739,7 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       }
 
-      // These argument-stream ops are flushed in the background; the promise
-      // handed to waitUntil must never reject (an unconsumed waitUntil
-      // rejection crashes the process as unhandledRejection), so unexpected
-      // failures are logged instead.
-      safeWaitUntil(Promise.all(ops), (err) => {
-        runtimeLogger.warn(
-          'Background flush of workflow argument streams failed',
-          {
-            workflowRunId: runId,
-            error: err instanceof Error ? err.message : String(err),
-          }
-        );
-      });
+      flushArgumentStreams();
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
@@ -1298,5 +1751,19 @@ export async function start<TArgs extends unknown[], TResult>(
 
       return new Run<TResult>(runId, { resilientStart });
     });
+    if (!startHook) return traced;
+    try {
+      return await traced;
+    } catch (error) {
+      if (
+        HookConflictError.is(error) ||
+        (WorkflowWorldError.is(error) &&
+          (error.code === START_HOOK_ADMISSION_REJECTED ||
+            error.code === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR))
+      ) {
+        finalInStep(error);
+      }
+      throw error;
+    }
   });
 }

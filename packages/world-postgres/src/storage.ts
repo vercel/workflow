@@ -4,9 +4,11 @@ import {
   EntityConflictError,
   HookForceClaimedError,
   HookNotFoundError,
+  HookReservedError,
   InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
+  START_HOOK_ADMISSION_REJECTED,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
@@ -28,6 +30,7 @@ import type {
   PaginatedResponse,
   ResolveData,
   SerializedData,
+  StartHook,
   Step,
   StepWithoutData,
   Storage,
@@ -45,6 +48,7 @@ import {
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
+  HOOK_RESERVED_RETRY_AFTER_SECONDS,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
@@ -97,6 +101,16 @@ import {
   notifyRunTerminal,
   type RunStatusListener,
 } from './run-status.js';
+import {
+  adoptStartReservation,
+  decideStartHookAdmission,
+  findActiveStartReservation,
+  findUnadoptedStartReservation,
+  lockStartHookToken,
+  type StartHookDecision,
+  startHookConflict,
+  transferStartReservation,
+} from './start-hook.js';
 import { compact } from './util.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -1342,6 +1356,23 @@ function createUnfencedEventsStorage(
           { status: 400 }
         );
       }
+      // The start Hook reservation, on either creating write. Validated
+      // before anything is written; a refusal is permanent, so it carries
+      // the code that stops the queued copy of the candidate retrying.
+      const startHook: StartHook | undefined =
+        data.eventType === 'run_created' || data.eventType === 'run_started'
+          ? data.eventData?.startHook
+          : undefined;
+      if (
+        startHook?.tokenRetentionUntil !== undefined &&
+        startHook.tokenRetentionUntil.getTime() >
+          Date.now() + hookRetentionLimitMs
+      ) {
+        throw new WorkflowWorldError(
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Postgres World.`,
+          { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+        );
+      }
 
       // The id this call's event took, known only once its insert has
       // committed: on a slot-numbered run the position is chosen inside the
@@ -1371,7 +1402,13 @@ function createUnfencedEventsStorage(
       if (data.eventType === 'run_created' && runId && runId !== '') {
         const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
         if (validationError) {
-          throw new WorkflowWorldError(validationError);
+          // A start Hook candidate this old can never be created (the orphan
+          // bound), so its refusal is permanent for both of its copies.
+          throw new WorkflowWorldError(validationError, {
+            ...(data.eventData.startHook
+              ? { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+              : {}),
+          });
         }
       }
 
@@ -1459,7 +1496,25 @@ function createUnfencedEventsStorage(
             // transaction ensures we never have an orphaned run
             // without its run_created event.
             const { deploymentId, workflowName } = runInputData;
+            let startHookDecision: StartHookDecision | undefined;
             const createdRun = await drizzle.transaction(async (tx) => {
+              // The queued copy of an atomic start admits its candidate here
+              // when it beats the direct `run_created`; both reach the one
+              // decision recorded for the candidate.
+              if (startHook) {
+                await lockStartHookToken(tx, startHook.token);
+                startHookDecision = await decideStartHookAdmission(
+                  tx,
+                  effectiveRunId,
+                  startHook
+                );
+                if (
+                  startHookDecision.decision === 'rejected' ||
+                  startHookDecision.replayed
+                ) {
+                  return undefined;
+                }
+              }
               const [inserted] = await tx
                 .insert(Schema.runs)
                 .values({
@@ -1477,6 +1532,7 @@ function createUnfencedEventsStorage(
                   // would otherwise be lost for the rest of the run's life.
                   encryptionPublicKey: runInputData.encryptionPublicKey,
                   dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
+                  startHook,
                   status: 'pending',
                 })
                 .onConflictDoNothing()
@@ -1503,11 +1559,17 @@ function createUnfencedEventsStorage(
                   attributes: runInputData.attributes,
                   allowReservedAttributes: runInputData.allowReservedAttributes,
                   encryptionPublicKey: runInputData.encryptionPublicKey,
+                  ...(startHook ? { startHook } : {}),
                 },
                 specVersion: effectiveSpecVersion,
               });
               return inserted;
             }, SLOT_INSERT_TRANSACTION);
+            // Thrown only now: the rejection had to commit to be immutable.
+            const decided = startHookDecision as StartHookDecision | undefined;
+            if (startHook && decided?.decision === 'rejected') {
+              throw startHookConflict(startHook, decided.conflictingRunId);
+            }
 
             if (createdRun) {
               currentRun = {
@@ -1797,7 +1859,48 @@ function createUnfencedEventsStorage(
         );
         // A visible run must already have its slot marker and first event;
         // otherwise a concurrent writer mistakes it for a legacy run.
+        let startHookDecision: StartHookDecision | undefined;
         const created = await drizzle.transaction(async (tx) => {
+          // Atomic start: decide the candidate in the transaction that
+          // creates its run, so the reservation and the run commit together.
+          if (startHook) {
+            await lockStartHookToken(tx, startHook.token);
+            startHookDecision = await decideStartHookAdmission(
+              tx,
+              effectiveRunId,
+              startHook
+            );
+            if (startHookDecision.decision === 'rejected') {
+              return undefined;
+            }
+            if (startHookDecision.replayed) {
+              // Accepted earlier (by this call's retry or the queued copy):
+              // answer with that run rather than EntityConflictError.
+              const [runValue] = await tx
+                .select()
+                .from(Schema.runs)
+                .where(eq(Schema.runs.runId, effectiveRunId))
+                .limit(1);
+              const [eventValue] = await tx
+                .select({
+                  eventId: Schema.events.eventId,
+                  createdAt: Schema.events.createdAt,
+                })
+                .from(Schema.events)
+                .where(
+                  and(
+                    eq(Schema.events.runId, effectiveRunId),
+                    eq(Schema.events.eventType, 'run_created')
+                  )
+                )
+                .limit(1);
+              if (!runValue || !eventValue) {
+                // The run was admitted and has since been deleted.
+                throw new WorkflowRunNotFoundError(effectiveRunId);
+              }
+              return { runValue, eventValue };
+            }
+          }
           const [runValue] = await tx
             .insert(Schema.runs)
             .values({
@@ -1813,6 +1916,7 @@ function createUnfencedEventsStorage(
               attributes: eventData.attributes,
               encryptionPublicKey: eventData.encryptionPublicKey,
               dynamicWorkflowCode: eventData.dynamicWorkflowCode,
+              startHook,
               status: 'pending',
             })
             .onConflictDoNothing()
@@ -1851,6 +1955,15 @@ function createUnfencedEventsStorage(
           }
           return { runValue, eventValue };
         }, SLOT_INSERT_TRANSACTION);
+        const decided = startHookDecision as StartHookDecision | undefined;
+        if (!created) {
+          // Only a rejected start Hook candidate creates nothing, and the
+          // rejection had to commit before it could be answered.
+          throw startHookConflict(
+            startHook as StartHook,
+            decided?.decision === 'rejected' ? decided.conflictingRunId : ''
+          );
+        }
         eventId = created.eventValue.eventId;
         value = created.eventValue;
         run = deserializeRunError(compact(created.runValue));
@@ -2443,6 +2556,21 @@ function createUnfencedEventsStorage(
         const [existingHook] = await getHookByToken.execute({
           token: eventData.token,
         });
+        // A start reservation (`start({ hook })`) held by another run owns
+        // the token as surely as a live Hook does. The owning run's own
+        // `createHook()` with the token adopts it instead. A forced creation
+        // may take a reservation only together with its materialized Hook,
+        // which moves the reservation to the claimer (see the takeover).
+        const reservationOwner = await findActiveStartReservation(
+          drizzle,
+          eventData.token,
+          effectiveRunId
+        );
+        const reservationBlocks =
+          reservationOwner !== undefined &&
+          !(
+            eventData.force === true && existingHook?.runId === reservationOwner
+          );
         // Set when the create ends in a `hook_conflict`: `null` for the plain
         // conflict of an unforced create, a reason when a forced create was
         // declined on purpose. Left `undefined` when the hook was created.
@@ -2486,6 +2614,44 @@ function createUnfencedEventsStorage(
         const insertFreshHook = async (): Promise<void> => {
           const created = await journaledHookCreated(() =>
             drizzle.transaction(async (tx) => {
+              // Serialize with start admissions for the token: either the
+              // admission sees this Hook, or this sees the reservation.
+              await lockStartHookToken(tx, eventData.token);
+              if (
+                await findActiveStartReservation(
+                  tx,
+                  eventData.token,
+                  effectiveRunId
+                )
+              ) {
+                // Reserved after the check above; the retry reads the
+                // reservation and answers hook_conflict.
+                throw new WorkflowWorldError(
+                  `Hook token "${eventData.token}" was reserved by a start concurrently; retry`,
+                  { status: 503 }
+                );
+              }
+              // The run's own reservation: this Hook adopts it. A retention
+              // the Hook brings extends the reservation (and outlives the
+              // Hook's disposal), and the reservation's metadata fills in for
+              // a Hook created without any.
+              const adopted = await adoptStartReservation(
+                tx,
+                eventData.token,
+                effectiveRunId,
+                eventData.tokenRetentionUntil
+              );
+              const hookMetadata =
+                eventData.metadata ?? adopted?.metadata ?? undefined;
+              if (
+                eventData.metadata === undefined &&
+                hookMetadata !== undefined
+              ) {
+                storedEventData = {
+                  ...(storedEventData as Record<string, unknown>),
+                  metadata: hookMetadata,
+                };
+              }
               await tx
                 .delete(Schema.hooks)
                 .where(
@@ -2502,7 +2668,7 @@ function createUnfencedEventsStorage(
                   runId: effectiveRunId,
                   hookId: data.correlationId!,
                   token: eventData.token,
-                  metadata: eventData.metadata as SerializedContent,
+                  metadata: hookMetadata as SerializedContent,
                   ownerId: '', // TODO: get from context
                   projectId: '', // TODO: get from context
                   environment: '', // TODO: get from context
@@ -2537,7 +2703,7 @@ function createUnfencedEventsStorage(
           eventId = created.eventValue.eventId;
           value = { createdAt: created.eventValue.createdAt };
         };
-        if (existingHook) {
+        if (existingHook || reservationBlocks) {
           // Idempotency: if the existing hook is the *same* (runId, hookId)
           // we are trying to create, this is either a duplicate / replayed
           // processing of the same hook_created (not a real conflict), or
@@ -2556,7 +2722,11 @@ function createUnfencedEventsStorage(
           //     and events INSERT): skip the hook insert (the existing
           //     row already has the desired state) and fall through to
           //     the events INSERT below, completing the partial write.
-          if (
+          if (reservationBlocks) {
+            forceRefusedReason = null;
+            conflictingRunId = reservationOwner;
+          } else if (
+            existingHook &&
             existingHook.runId === effectiveRunId &&
             existingHook.hookId === data.correlationId
           ) {
@@ -2623,6 +2793,7 @@ function createUnfencedEventsStorage(
             const OWNER_CHANGED = Symbol('owner changed before lock');
             const takeoverAttempt = () =>
               drizzle.transaction(async (tx) => {
+                await lockStartHookToken(tx, eventData.token);
                 const [candidate] = await tx
                   .select({
                     runId: Schema.hooks.runId,
@@ -2727,6 +2898,16 @@ function createUnfencedEventsStorage(
                 await tx
                   .delete(Schema.hooks)
                   .where(eq(Schema.hooks.hookId, victim.hookId));
+                // A start reservation the victim holds on this token goes
+                // with its Hook, so the claimer owns the token until it ends
+                // rather than leaving it pinned to a run that may never end.
+                await transferStartReservation(
+                  tx,
+                  eventData.token,
+                  victim.runId,
+                  effectiveRunId,
+                  eventData.tokenRetentionUntil
+                );
                 const [inserted] = await tx
                   .insert(Schema.hooks)
                   .values({
@@ -3548,6 +3729,14 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
     async getByToken(token, params) {
       const [value] = await getByToken.execute({ token });
       if (!value) {
+        // A start reservation its run has not adopted yet owns the token
+        // without a Hook: retryable, not missing.
+        const reservedBy = await findUnadoptedStartReservation(drizzle, token);
+        if (reservedBy) {
+          throw new HookReservedError(token, reservedBy, {
+            retryAfter: HOOK_RESERVED_RETRY_AFTER_SECONDS,
+          });
+        }
         throw new HookNotFoundError(token);
       }
       value.metadata ||= value.metadataJson;

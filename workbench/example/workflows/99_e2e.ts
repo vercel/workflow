@@ -909,6 +909,30 @@ export async function hookSignalOwnerWorkflow(token: string, message: string) {
 }
 
 /**
+ * The owner of a `start({ hook })` reservation: it adopts the reserved token
+ * with its own `createHook()` and collects `expected` payloads routed to it by
+ * duplicate starts (which resume the token on `HookConflictError`).
+ */
+export async function startHookOwnerWorkflow(token: string, expected: number) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+
+  // The reservation is this run's own, so adopting it never conflicts.
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return { conflictRunId: conflict.runId, messages: [] as string[] };
+  }
+
+  const messages: string[] = [];
+  for await (const payload of hook) {
+    messages.push(payload.message);
+    if (messages.length >= expected) break;
+  }
+  return { conflictRunId: null, messages };
+}
+
+/**
  * "Supersede the owner" strategy (newest-wins): cancel the active owner
  * and claim the released token. Cancellation disposes the owner's hooks;
  * the retry loop covers the window where disposal has not propagated.

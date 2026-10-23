@@ -124,6 +124,11 @@ import {
 } from './runtime/resume-latency.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
+  ackRefusedStartHookCandidate,
+  admitsTurboStart,
+  retriesRunlessRunStarted,
+} from './runtime/start-hook-delivery.js';
+import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
   type PreclaimedInlineStart,
@@ -218,12 +223,14 @@ export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,
+  type StartHookOptions,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,
   type StartOptionsWithoutDeploymentId,
   start,
 } from './runtime/start.js';
+
 export {
   createWorld,
   createWorldFromModule,
@@ -1410,6 +1417,7 @@ export function workflowEntrypoint(
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
+                    admitsTurboStart(runInput) &&
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
@@ -1442,6 +1450,12 @@ export function workflowEntrypoint(
                   const recordWorkflowSetupFailure = async (
                     err: unknown
                   ): Promise<boolean> => {
+                    if (retriesRunlessRunStarted(err, runId)) {
+                      span?.setAttributes(
+                        Attribute.WorkflowRunStartedRunlessResponse(true)
+                      );
+                      return false;
+                    }
                     const errorCode = getWorkflowSetupErrorCode(err);
                     if (!errorCode) return false;
                     await recordFatalRunError({
@@ -2504,6 +2518,13 @@ export function workflowEntrypoint(
                               dynamicWorkflowCode: runInput.dynamicWorkflowCode,
                               dynamicWorkflowCodeRef:
                                 runInput.dynamicWorkflowCodeRef,
+                              // Without the key, a run this event creates
+                              // could never receive sealed writes.
+                              encryptionPublicKey: runInput.encryptionPublicKey,
+                              // The queued copy of `start({ hook })`: this
+                              // write may be the one that admits or refuses
+                              // the candidate.
+                              startHook: runInput.startHook,
                             },
                           }
                         : {}),
@@ -2688,6 +2709,13 @@ export function workflowEntrypoint(
                         }
                         startWorkflowCompile(workflowRun);
                       } catch (err) {
+                        // The queued copy of a `start({ hook })` candidate the
+                        // World refused: nothing ran, ack the message.
+                        if (
+                          ackRefusedStartHookCandidate(err, runInput, runId)
+                        ) {
+                          return;
+                        }
                         // Run was concurrently completed/failed/canceled
                         if (
                           EntityConflictError.is(err) ||

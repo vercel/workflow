@@ -308,7 +308,11 @@ if (process.platform === 'win32') {
           .filter((c) => c.column_name === 'created_at')
           .map((c) => `${c.table_name} ${c.column_default}`)
           .sort()
-      ).toEqual(TABLES.map((table) => `${table} now()`).sort());
+      ).toEqual(
+        [...TABLES, 'workflow_start_hook_admissions']
+          .map((table) => `${table} now()`)
+          .sort()
+      );
     }, 60_000);
 
     describe('upgrading a database written by 5.0.x', () => {

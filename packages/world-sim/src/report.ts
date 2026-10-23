@@ -28,7 +28,7 @@
  */
 
 import type { Event } from '@workflow/world';
-import type { ScenarioResult } from './scenario.js';
+import { describeStartOutcome, type ScenarioResult } from './scenario.js';
 import type { TraceEntry, WriterId } from './types.js';
 
 export interface RenderOptions {
@@ -42,6 +42,12 @@ export interface RenderOptions {
    * anyone having to remember a flag.
    */
   color?: boolean;
+}
+
+/** `RenderOptions` plus what `renderScenario` knows about the runs. */
+interface TraceRenderOptions extends RenderOptions {
+  /** Run ids to label even if the trace never names them. */
+  runIds?: readonly string[];
 }
 
 const CHECK = 'ok';
@@ -124,8 +130,12 @@ function eventStyle(eventType: string): Style {
  * able to reason about what a replay will see.
  */
 interface EventIndex {
-  /** Log position of an event, by its id. */
-  position(eventId: string): number | undefined;
+  /**
+   * Log position of an event, by its id, within its own run's log. Without a
+   * run, only an id no other run's log shares resolves: event ids are slot
+   * numbers, so every run has a `#0`.
+   */
+  position(eventId: string, runId?: string): number | undefined;
   /** Log position at which a correlationId first appears. */
   origin(correlationId: string): number | undefined;
   /** Width of the widest position, for column alignment. */
@@ -146,19 +156,74 @@ function buildEventIndex(trace: readonly TraceEntry[]): EventIndex {
     return a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0;
   });
 
+  // Each run's log is numbered on its own, the way a reader of that run's
+  // `events.list` would number it.
   const positions = new Map<string, number>();
+  const byId = new Map<string, number | null>();
   const origins = new Map<string, number>();
-  sorted.forEach((event, i) => {
-    positions.set(event.eventId, i);
+  const nextInRun = new Map<string, number>();
+  let widest = 0;
+  for (const event of sorted) {
+    const i = nextInRun.get(event.runId) ?? 0;
+    nextInRun.set(event.runId, i + 1);
+    widest = Math.max(widest, i);
+    positions.set(`${event.runId}|${event.eventId}`, i);
+    byId.set(event.eventId, byId.has(event.eventId) ? null : i);
     if (event.correlationId && !origins.has(event.correlationId)) {
       origins.set(event.correlationId, i);
     }
-  });
+  }
 
   return {
-    position: (eventId) => positions.get(eventId),
+    position: (eventId, runId) =>
+      runId !== undefined
+        ? positions.get(`${runId}|${eventId}`)
+        : (byId.get(eventId) ?? undefined),
     origin: (correlationId) => origins.get(correlationId),
-    width: Math.max(2, String(Math.max(0, sorted.length - 1)).length),
+    width: Math.max(2, String(widest).length),
+  };
+}
+
+/**
+ * Short names for the runs a trace mentions, once it mentions more than one:
+ * `r1`, `r2`, … in order of first appearance, whether as an event's run or
+ * as an id inside a message (a refused candidate is never a run, and appears
+ * only there). A trace of one run gets none, and prints as it always has.
+ */
+interface RunLabels {
+  multi: boolean;
+  of(runId: string): string | undefined;
+  /** Replace run ids in free text with their labels. */
+  rewrite(text: string): string;
+  entries(): [runId: string, label: string][];
+}
+
+const RUN_ID = /\bwrun_[0-9A-Za-z]+\b/g;
+
+function buildRunLabels(
+  trace: readonly TraceEntry[],
+  extra: readonly string[] = []
+): RunLabels {
+  const labels = new Map<string, string>();
+  const see = (runId: string) => {
+    if (!labels.has(runId)) labels.set(runId, `r${labels.size + 1}`);
+  };
+  for (const entry of trace) {
+    if (entry.kind === 'event') see(entry.event.runId);
+    else if ('message' in entry) {
+      for (const id of entry.message.match(RUN_ID) ?? []) see(id);
+    } else if (entry.kind === 'hold') {
+      for (const id of entry.label.match(RUN_ID) ?? []) see(id);
+    }
+  }
+  for (const id of extra) see(id);
+  const multi = labels.size > 1;
+  return {
+    multi,
+    of: (runId) => (multi ? labels.get(runId) : undefined),
+    rewrite: (text) =>
+      multi ? text.replace(RUN_ID, (id) => labels.get(id) ?? id) : text,
+    entries: () => [...labels.entries()],
   };
 }
 
@@ -182,11 +247,17 @@ function resourceRef(position: number | undefined): string {
  * without making every check carry a positional index it has no other use
  * for.
  */
-function withRefs(message: string, index: EventIndex): string {
-  return message.replace(/\bevnt_[0-9A-Za-z]+\b/g, (id) => {
-    const position = index.position(id);
+function withRefs(
+  message: string,
+  index: EventIndex,
+  runs?: RunLabels,
+  runId?: string
+): string {
+  const refs = message.replace(/\bevnt_[0-9A-Za-z]+\b/g, (id) => {
+    const position = index.position(id, runId);
     return position === undefined ? id : `#${position}`;
   });
+  return runs ? runs.rewrite(refs) : refs;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,10 +277,15 @@ function describeEvent(event: Event, width: number): string {
 
   switch (event.eventType) {
     case 'run_created':
-    case 'run_started':
+    case 'run_started': {
       if (data?.workflowName)
         bits.push(String(shortName(String(data.workflowName))));
+      const startHook = data?.startHook as { token?: string } | undefined;
+      if (startHook?.token) {
+        bits.push(`startHook=${JSON.stringify(startHook.token)}`);
+      }
       break;
+    }
     case 'step_created':
     case 'step_started':
     case 'step_completed':
@@ -222,9 +298,18 @@ function describeEvent(event: Event, width: number): string {
     case 'hook_created':
     case 'hook_received':
     case 'hook_disposed':
-    case 'hook_conflict':
+    case 'hook_conflict': {
       if (data?.token) bits.push(`token=${JSON.stringify(data.token)}`);
+      if (data?.force === true) bits.push('force');
+      if (typeof data?.conflictingRunId === 'string') {
+        bits.push(`owner=${data.conflictingRunId}`);
+      }
+      const from = data?.forceClaimedFrom as { runId?: string } | undefined;
+      if (from?.runId) bits.push(`from=${from.runId}`);
+      const by = data?.forceClaimedBy as { runId?: string } | undefined;
+      if (by?.runId) bits.push(`forceClaimedBy=${by.runId}`);
       break;
+    }
     case 'wait_created':
     case 'wait_completed':
       if (data?.resumeAt) {
@@ -295,11 +380,17 @@ function shortWriter(writer: WriterId | undefined): string {
 
 export function renderTrace(
   trace: readonly TraceEntry[],
-  options: RenderOptions = {}
+  options: TraceRenderOptions = {}
 ): string {
   const paint = painter(options);
   const width = options.payloadWidth ?? 48;
   const index = buildEventIndex(trace);
+  const runs = buildRunLabels(trace, options.runIds);
+  // A trace of several runs prefixes each event with its run's label, since
+  // each run's log is numbered on its own.
+  const labelWidth = runs.multi
+    ? Math.max(...runs.entries().map(([, label]) => label.length)) + 1
+    : 0;
   const epochMs = trace.length > 0 ? trace[0].atMs : 0;
   // Sized to the widest writer actually seen, so the common case (a run with
   // no steps, or short step names) does not pay for a name it never prints.
@@ -310,12 +401,12 @@ export function renderTrace(
         : max,
     2
   );
-  const blank = ' '.repeat(index.width + 1);
+  const blank = ' '.repeat(labelWidth + index.width + 1);
   const lines: string[] = [];
-  // Highest log position printed so far. A line below it is an event that was
-  // committed after one that outranks it in the log, the disagreement the six
-  // red scenarios are about.
-  let highWater = -1;
+  // Highest log position printed so far, per run. A line below it is an event
+  // that was committed after one that outranks it in the log, the
+  // disagreement the six red scenarios are about.
+  const highWater = new Map<string, number>();
 
   for (const entry of trace) {
     const time = paint(offset(entry.atMs, epochMs).padStart(8), 'dim');
@@ -339,12 +430,15 @@ export function renderTrace(
 
     switch (entry.kind) {
       case 'event': {
-        const position = index.position(entry.event.eventId);
-        const backwards = position !== undefined && position < highWater;
-        if (position !== undefined && position > highWater)
-          highWater = position;
+        const runId = entry.event.runId;
+        const position = index.position(entry.event.eventId, runId);
+        const high = highWater.get(runId) ?? -1;
+        const backwards = position !== undefined && position < high;
+        if (position !== undefined && position > high)
+          highWater.set(runId, position);
 
-        const ref = eventRef(position, index.width);
+        const label = runs.of(runId);
+        const ref = `${label ? `${label.padEnd(labelWidth - 1)} ` : ''}${eventRef(position, index.width)}`;
         const type = entry.event.eventType;
         const correlation = entry.event.correlationId
           ? ` ${paint(
@@ -352,7 +446,7 @@ export function renderTrace(
               'gray'
             )}`
           : '';
-        const detail = describeEvent(entry.event, width);
+        const detail = runs.rewrite(describeEvent(entry.event, width));
 
         lines.push(
           `${paint(ref, ...(backwards ? (['yellow', 'bold'] as const) : (['dim'] as const)))} ${time}  ` +
@@ -363,29 +457,29 @@ export function renderTrace(
       }
       case 'hold':
         lines.push(
-          `${blank} ${time}  ${writer}${indent}${paint(`>> held "${entry.label}" at ${entry.inside}`, 'yellow')}`
+          `${blank} ${time}  ${writer}${indent}${paint(`>> held "${runs.rewrite(entry.label)}" at ${entry.inside}`, 'yellow')}`
         );
         break;
       case 'delivery':
         if (!options.verbose) break;
         lines.push(
-          `${blank} ${time}  ${writer}${indent}${paint(`-- ${entry.message}`, 'gray')}`
+          `${blank} ${time}  ${writer}${indent}${paint(`-- ${runs.rewrite(entry.message)}`, 'gray')}`
         );
         break;
       case 'note':
         lines.push(
-          `${blank} ${time}  ${writer}${indent}${paint(`// ${entry.message}`, 'dim')}`
+          `${blank} ${time}  ${writer}${indent}${paint(`// ${runs.rewrite(entry.message)}`, 'dim')}`
         );
         break;
       case 'warn':
         lines.push(
-          `${blank} ${time}  ${writer}${indent}${paint(`!! ${withRefs(entry.message, index)}`, 'red')}`
+          `${blank} ${time}  ${writer}${indent}${paint(`!! ${withRefs(entry.message, index, runs)}`, 'red')}`
         );
         break;
       case 'check':
         lines.push(
           `${blank} ${time}  ${writer}${indent}${paint(
-            `${entry.ok ? CHECK : CROSS} check: ${entry.name}`,
+            `${entry.ok ? CHECK : CROSS} check: ${runs.rewrite(entry.name)}`,
             entry.ok ? 'green' : 'red'
           )}`
         );
@@ -418,8 +512,53 @@ export function renderScenario(
       'dim'
     )
   );
+  // Every run the scenario touched, created or not, labelled the way the
+  // trace labels them.
+  const candidateIds = [
+    ...result.runs.map((r) => r.runId),
+    ...result.startHookDecisions.map((d) => d.runId),
+  ];
+  const runs = buildRunLabels(result.trace, candidateIds);
+  if (runs.multi) {
+    const status = new Map(result.runs.map((r) => [r.runId, r]));
+    const decision = new Map(
+      result.startHookDecisions.map((d) => [d.runId, d])
+    );
+    out.push('');
+    for (const [runId, label] of runs.entries()) {
+      const run = status.get(runId);
+      const d = decision.get(runId);
+      const what = run
+        ? `${shortName(run.workflowName)} ${run.status}${d ? `, owns "${d.token}"` : ''}`
+        : d?.decision === 'rejected'
+          ? `refused for "${d.token}" (owner ${runs.rewrite(d.conflictingRunId ?? '?')}), never a run`
+          : d?.decision === 'accepted'
+            ? `accepted for "${d.token}", never created`
+            : 'never a run';
+      out.push(paint(`      ${label.padEnd(4)} ${runId}  ${what}`, 'dim'));
+    }
+  }
+  if (result.requests.length > 0) {
+    out.push('');
+    for (const request of result.requests) {
+      const attempts = request.attempts
+        .map(
+          (a) =>
+            `${a.caller}: ${
+              a.outcome
+                ? runs.rewrite(describeStartOutcome(a.outcome))
+                : a.died
+                  ? `died (${runs.rewrite(a.died)})`
+                  : 'no answer'
+            }`
+        )
+        .join('; ');
+      out.push(paint(`      request ${request.request} -> ${attempts}`, 'dim'));
+    }
+  }
+
   out.push('');
-  out.push(renderTrace(result.trace, options));
+  out.push(renderTrace(result.trace, { ...options, runIds: candidateIds }));
 
   const index = buildEventIndex(result.trace);
 
@@ -448,12 +587,18 @@ export function renderScenario(
     out.push('');
     out.push(paint('      CONSISTENCY VIOLATIONS', 'red', 'bold'));
     for (const v of result.violations) {
+      const position = v.eventId
+        ? index.position(v.eventId, v.runId)
+        : undefined;
+      const where = v.runId ? runs.of(v.runId) : undefined;
       const at =
-        v.eventId && index.position(v.eventId) !== undefined
-          ? ` (at #${index.position(v.eventId)})`
-          : '';
+        position !== undefined
+          ? ` (at ${where ? `${where} ` : ''}#${position})`
+          : where
+            ? ` (${where})`
+            : '';
       out.push(
-        `        ${paint(`[${v.rule}]`, 'red')} ${withRefs(v.message, index)}${paint(at, 'dim')}`
+        `        ${paint(`[${v.rule}]`, 'red')} ${withRefs(v.message, index, runs, v.runId)}${paint(at, 'dim')}`
       );
     }
   }
@@ -461,7 +606,9 @@ export function renderScenario(
   if (result.problems.length > 0) {
     out.push('');
     out.push(paint('      PROBLEMS', 'red', 'bold'));
-    for (const p of result.problems) out.push(`        ${withRefs(p, index)}`);
+    for (const p of result.problems) {
+      out.push(`        ${withRefs(p, index, runs)}`);
+    }
   }
 
   return out.join('\n');

@@ -1,5 +1,6 @@
 import { z } from 'zod/v4';
 import { SerializedDataSchema } from './serialization.js';
+import { StartHookSchema } from './start-hook.js';
 
 export type QueueKind = 'workflow';
 
@@ -175,6 +176,17 @@ export const RunInputSchema = z.compile(
        * the original `run_created` attempt.
        */
       allowReservedAttributes: z.literal(true).optional(),
+      /**
+       * The run's X25519 public key, mirrored from `run_created` so a run the
+       * resilient-start path creates can still receive sealed writes.
+       */
+      encryptionPublicKey: z.string().optional(),
+      /**
+       * The atomic start Hook reservation, mirrored from `run_created` so the
+       * queued copy of the candidate can admit (or be refused) on its own.
+       * See `start-hook.ts`.
+       */
+      startHook: StartHookSchema.optional(),
       /**
        * The environment the creating client's writes are attributed to, as
        * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
