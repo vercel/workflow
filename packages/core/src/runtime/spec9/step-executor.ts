@@ -392,6 +392,24 @@ export async function executeStep(
       ...Attribute.StepMaxRetries(maxRetries),
     });
 
+    // An attempt past the retry budget fails without running the body. The
+    // step's own message checks this before calling here; an orchestrator
+    // that re-runs an open inline step (after a crash, or after an overlap
+    // the fence refused) reaches it here, so a `maxRetries: 0` inline step
+    // that already started is failed, not run again.
+    if (attempt > maxRetries + 1) {
+      return await failStepForExhaustedRetries({
+        createEvent,
+        workflowRunId,
+        stepId,
+        stepName,
+        attempt,
+        maxRetries,
+        encryptionKey: params.encryptionKey ?? (await getEncryptionKey()),
+        runSpecVersion: params.runSpecVersion,
+      });
+    }
+
     // `Date.now()` taken immediately before the `step_started` create is
     // issued; anchors RSFS's end point.
     let stepStartPostSentAtMs = params.started?.postSentAtMs;

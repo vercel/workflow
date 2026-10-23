@@ -12,6 +12,7 @@ import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   expectAcknowledged,
   orchestratorMessagesOf,
+  runResult,
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
 import * as workflowModule from '../../workflow.js';
@@ -459,6 +460,40 @@ describe.each([
     }
   });
 
+  // The orchestrator itself dies between an inline step's start and its
+  // outcome. Its redelivery finds the step open with one start: a
+  // `maxRetries: 0` step is failed, not run a second time.
+  it('runs an inline maxRetries: 0 step at most once across an orchestrator crash', async () => {
+    let crashed = false;
+    const { world, start } = await setup(
+      `const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_once");
+       async function workflow() {
+         try { return await once(); } catch (e) { return "failed: " + e.message; }
+       }${transform('workflow')}`,
+      [],
+      {
+        async beforeCreate(data) {
+          if (!crashed && data.eventType === 'step_completed') {
+            crashed = true;
+            throw new Error('invocation died');
+          }
+        },
+      }
+    );
+    await world.deliver(start).catch(() => {});
+    expect(crashed).toBe(true);
+    expect(calls.so_once).toBe(1);
+
+    world.held.length = 0;
+    await world.deliver({ ...start, deliveryCount: 2 });
+    await world.runUntilIdle();
+
+    expect(calls.so_once).toBe(1);
+    expect(eventsOf(world, 'step_started')).toHaveLength(1);
+    expect(eventsOf(world, 'step_failed')).toHaveLength(1);
+    expect(await runResult(world)).toMatch(/^failed: /);
+  });
+
   it('acks a redelivered step message without a body when the outcome is already in the log', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
     try {
@@ -759,13 +794,15 @@ describe.each([
         })
       );
     // The harness delivers a delayed message at once, and a timer that comes
-    // early re-arms itself, so this runs until the later sleep is due.
+    // early re-arms itself, so deliver one message per tick until the later
+    // sleep is due on the real clock.
     const deadline = Date.now() + 10_000;
     while (
       eventsOf(world, 'run_completed').length === 0 &&
       Date.now() < deadline
     ) {
-      await world.runUntilIdle();
+      const next = world.held[0];
+      if (next) await world.deliver(next);
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
