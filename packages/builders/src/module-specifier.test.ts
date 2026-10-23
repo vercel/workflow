@@ -163,6 +163,36 @@ describe('getImportPath', () => {
     });
   });
 
+  it('uses package root import for root exports written as bare conditions', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const workspacePkgDir = join(testRoot, 'packages/agent');
+    const filePath = join(workspacePkgDir, 'src/index.ts');
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { '@internal/agent': 'workspace:*' },
+    });
+
+    writeJson(join(workspacePkgDir, 'package.json'), {
+      name: '@internal/agent',
+      version: '1.0.0',
+      exports: {
+        types: './src/index.ts',
+        default: './src/index.ts',
+      },
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(getImportPath(filePath, projectRoot)).toEqual({
+      importPath: '@internal/agent',
+      isPackage: true,
+    });
+    expect(resolveModuleSpecifier(filePath, projectRoot)).toEqual({
+      moduleSpecifier: '@internal/agent@1.0.0',
+    });
+  });
+
   it('falls back to relative import for deep files in packages without exports', () => {
     const projectRoot = join(testRoot, 'apps/chat');
     const workspacePkgDir = join(testRoot, 'packages/agent');
