@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  FatalError,
   RunExpiredError,
   ThrottleError,
   WorkflowWorldError,
@@ -15,6 +16,7 @@ const {
   mockStepLogger,
   mockQueueMessage,
   mockStepFn,
+  mockStepSpan,
 } = vi.hoisted(() => {
   const mockStepFn = Object.assign(vi.fn().mockResolvedValue('step-result'), {
     maxRetries: 3,
@@ -39,6 +41,10 @@ const {
     },
     mockQueueMessage: vi.fn().mockResolvedValue(undefined),
     mockStepFn,
+    mockStepSpan: {
+      setAttributes: vi.fn(),
+      addEvent: vi.fn(),
+    },
   };
 });
 
@@ -77,7 +83,9 @@ vi.mock('../telemetry.js', () => ({
   trace: vi.fn((_name: string, _opts: unknown, fn?: unknown) => {
     // trace() can be called as trace(name, fn) or trace(name, opts, fn)
     const callback = typeof _opts === 'function' ? _opts : fn;
-    return (callback as (span?: undefined) => unknown)(undefined);
+    return (callback as (span?: typeof mockStepSpan) => unknown)(
+      _name.startsWith('STEP ') ? mockStepSpan : undefined
+    );
   }),
   withTraceContext: vi.fn((_ctx: unknown, fn: () => unknown) => fn()),
   getSpanKind: vi.fn().mockResolvedValue(undefined),
@@ -226,7 +234,7 @@ describe('step-handler 409 handling', () => {
     vi.mocked(getErrorStack).mockReturnValue('');
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
-    mockQueueMessage.mockResolvedValue(undefined);
+    mockQueueMessage.mockReset().mockResolvedValue(undefined);
     // Re-set getWorld mock since clearAllMocks resets it
     vi.mocked(getWorld).mockReturnValue({
       events: { create: mockEventsCreate },
@@ -259,12 +267,16 @@ describe('step-handler 409 handling', () => {
   });
 
   describe('step_completed 409', () => {
-    it('should warn and return when step_completed gets a 409', async () => {
-      // step_started succeeds, step function succeeds, step_completed returns 409
-      let callCount = 0;
+    beforeEach(() => {
+      let completed = false;
       mockEventsCreate.mockImplementation(
         (_runId: string, event: { eventType: string }) => {
           if (event.eventType === 'step_started') {
+            if (completed) {
+              return Promise.reject(
+                new EntityConflictError('Step already completed')
+              );
+            }
             return Promise.resolve({
               step: {
                 stepId: 'step_abc',
@@ -277,7 +289,9 @@ describe('step-handler 409 handling', () => {
             });
           }
           if (event.eventType === 'step_completed') {
-            callCount++;
+            // The write committed, but its response was lost. The transport
+            // retries the write and surfaces the already-completed conflict.
+            completed = true;
             return Promise.reject(
               new EntityConflictError(
                 'Cannot complete step because it is already completed'
@@ -287,15 +301,15 @@ describe('step-handler 409 handling', () => {
           return Promise.resolve({ event: {} });
         }
       );
+    });
 
+    it('should queue the workflow continuation when step_completed gets a 409', async () => {
       const result = await capturedHandler(
         createMessage(),
         createMetadata('myStep')
       );
 
-      // Should not throw, should return undefined (early return)
       expect(result).toBeUndefined();
-      // Should have logged a warning, not an error
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried completing step, but step has already finished.',
         expect.objectContaining({
@@ -303,13 +317,183 @@ describe('step-handler 409 handling', () => {
           stepId: 'step_abc',
         })
       );
-      // Should NOT have queued a workflow continuation
+      expect(mockStepFn).toHaveBeenCalledOnce();
+      expect(mockStepSpan.setAttributes).toHaveBeenCalledWith(
+        expect.objectContaining({
+          'step.skipped': true,
+          'step.skip_reason': 'completed',
+        })
+      );
+      expect(mockStepSpan.addEvent).toHaveBeenCalledWith('step.skipped', {
+        'skip.reason': 'terminal_state',
+        'step.name': 'myStep',
+        'step.id': 'step_abc',
+      });
+      expect(mockQueueMessage).toHaveBeenCalledExactlyOnceWith(
+        getWorld(),
+        '__wkf_workflow_test-workflow',
+        {
+          runId: 'wrun_test123',
+          traceCarrier: {},
+          requestedAt: expect.any(Date),
+        }
+      );
+    });
+
+    it('should retry a failed continuation send without executing the completed step again', async () => {
+      const sendError = new Error('queue send failed');
+      mockQueueMessage.mockRejectedValueOnce(sendError);
+      const message = createMessage();
+
+      await expect(
+        capturedHandler(message, createMetadata('myStep'))
+      ).rejects.toThrow(sendError);
+
+      // The queue redelivers the same message. step_started now returns 409,
+      // so the handler retries only the workflow continuation.
+      await expect(
+        capturedHandler(message, createMetadata('myStep', { attempt: 2 }))
+      ).resolves.toBeUndefined();
+
+      expect(mockStepFn).toHaveBeenCalledOnce();
+      expect(
+        mockEventsCreate.mock.calls.filter(
+          ([, event]) => event.eventType === 'step_completed'
+        )
+      ).toHaveLength(1);
+      expect(mockQueueMessage).toHaveBeenCalledTimes(2);
+      expect(mockQueueMessage).toHaveBeenLastCalledWith(
+        getWorld(),
+        '__wkf_workflow_test-workflow',
+        {
+          runId: 'wrun_test123',
+          traceCarrier: {},
+          requestedAt: expect.any(Date),
+        }
+      );
+    });
+  });
+
+  const failureCases = [
+    { name: 'missing function', bodyCalls: 0 },
+    { name: 'pre-execution retry limit', bodyCalls: 0 },
+    { name: 'missing startedAt', bodyCalls: 0 },
+    { name: 'FatalError', bodyCalls: 1 },
+    { name: 'post-execution retry limit', bodyCalls: 1 },
+  ] as const;
+
+  function mockFailureResponse(
+    name: (typeof failureCases)[number]['name'],
+    writeError: Error = new EntityConflictError('Step already failed')
+  ) {
+    if (name === 'missing function') {
+      vi.mocked(getStepFunction).mockReturnValue(undefined);
+    } else if (name === 'FatalError') {
+      mockStepFn.mockRejectedValue(new FatalError('fatal step error'));
+    } else if (name === 'post-execution retry limit') {
+      mockStepFn.maxRetries = 0;
+      mockStepFn.mockRejectedValue(new Error('step error'));
+    }
+    const step = {
+      stepId: 'step_abc',
+      status: 'running',
+      attempt: name === 'pre-execution retry limit' ? 5 : 1,
+      startedAt: name === 'missing startedAt' ? undefined : new Date(),
+      input: [],
+    };
+    let failed = false;
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          if (failed) {
+            return Promise.reject(
+              new EntityConflictError('Step already failed')
+            );
+          }
+          return Promise.resolve({
+            step,
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_failed') {
+          // A committed terminal write with a lost response surfaces as 409.
+          failed = EntityConflictError.is(writeError);
+          return Promise.reject(writeError);
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+  }
+
+  describe.each(failureCases)('step_failed lost response ($name)', ({
+    name,
+    bodyCalls,
+  }) => {
+    beforeEach(() => {
+      mockFailureResponse(name);
+    });
+
+    it('should wake the workflow after the failure write conflicts', async () => {
+      await expect(
+        capturedHandler(createMessage(), createMetadata('myStep'))
+      ).resolves.toBeUndefined();
+
+      expect(mockStepFn).toHaveBeenCalledTimes(bodyCalls);
+      expect(
+        mockEventsCreate.mock.calls.map(([, event]) => event.eventType)
+      ).toEqual(['step_started', 'step_failed']);
+      expect(mockQueueMessage).toHaveBeenCalledExactlyOnceWith(
+        getWorld(),
+        '__wkf_workflow_test-workflow',
+        {
+          runId: 'wrun_test123',
+          traceCarrier: {},
+          requestedAt: expect.any(Date),
+        }
+      );
+    });
+
+    it('should redeliver a failed wake without rerunning the failed step', async () => {
+      const sendError = new Error('queue send failed');
+      mockQueueMessage.mockRejectedValueOnce(sendError);
+      const message = createMessage();
+
+      await expect(
+        capturedHandler(message, createMetadata('myStep'))
+      ).rejects.toThrow(sendError);
+      await expect(
+        capturedHandler(message, createMetadata('myStep', { attempt: 2 }))
+      ).resolves.toBeUndefined();
+
+      expect(mockStepFn).toHaveBeenCalledTimes(bodyCalls);
+      expect(
+        mockEventsCreate.mock.calls.map(([, event]) => event.eventType)
+      ).toEqual(['step_started', 'step_failed', 'step_started']);
+      expect(mockQueueMessage).toHaveBeenCalledTimes(2);
+      expect(mockQueueMessage).toHaveBeenLastCalledWith(
+        getWorld(),
+        '__wkf_workflow_test-workflow',
+        {
+          runId: 'wrun_test123',
+          traceCarrier: {},
+          requestedAt: expect.any(Date),
+        }
+      );
+    });
+
+    it('should propagate other persistence errors without acknowledging or waking the workflow', async () => {
+      const writeError = new WorkflowWorldError('Persistence unavailable');
+      mockFailureResponse(name, writeError);
+
+      await expect(
+        capturedHandler(createMessage(), createMetadata('myStep'))
+      ).rejects.toThrow(writeError);
       expect(mockQueueMessage).not.toHaveBeenCalled();
     });
   });
 
   describe('step_failed 409 (max retries exhausted path)', () => {
-    it('should warn and return when step_failed gets a 409 after max retries', async () => {
+    it('should log and re-queue when step_failed gets a 409 after max retries', async () => {
       // step_started succeeds with attempt > maxRetries+1, step function throws, step_failed returns 409
       mockStepFn.mockRejectedValue(new Error('step error'));
       mockStepFn.maxRetries = 2;
@@ -352,11 +536,12 @@ describe('step-handler 409 handling', () => {
           stepId: 'step_abc',
         })
       );
+      expect(mockQueueMessage).toHaveBeenCalledOnce();
     });
   });
 
   describe('step_failed 409 (pre-execution max retries guard)', () => {
-    it('should warn and return when step_failed gets a 409 on pre-execution guard', async () => {
+    it('should log and re-queue when step_failed gets a 409 on pre-execution guard', async () => {
       // step_started returns attempt > maxRetries+1 (pre-execution guard triggers)
       mockStepFn.maxRetries = 2;
       mockEventsCreate.mockImplementation(
@@ -400,6 +585,7 @@ describe('step-handler 409 handling', () => {
       );
       // Step function should NOT have been called (pre-execution guard)
       expect(mockStepFn).not.toHaveBeenCalled();
+      expect(mockQueueMessage).toHaveBeenCalledOnce();
     });
   });
 
@@ -535,7 +721,7 @@ describe('step-handler max deliveries', () => {
     vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
-    mockQueueMessage.mockResolvedValue(undefined);
+    mockQueueMessage.mockReset().mockResolvedValue(undefined);
     vi.mocked(getWorld).mockReturnValue({
       events: { create: mockEventsCreate },
       queue: mockQueue,
@@ -663,7 +849,7 @@ describe('step-handler max deliveries', () => {
   });
 
   it('should not trigger max deliveries check when under limit', async () => {
-    const result = await capturedHandler(createMessage(), {
+    await capturedHandler(createMessage(), {
       ...createMetadata('myStep'),
       attempt: MAX_QUEUE_DELIVERIES,
     });
@@ -678,7 +864,7 @@ describe('step-handler step not found', () => {
     vi.clearAllMocks();
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
-    mockQueueMessage.mockResolvedValue(undefined);
+    mockQueueMessage.mockReset().mockResolvedValue(undefined);
     vi.mocked(getWorld).mockReturnValue({
       events: { create: mockEventsCreate },
       queue: mockQueue,
@@ -807,8 +993,8 @@ describe('step-handler step not found', () => {
         stepId: 'step_abc',
       })
     );
-    // Should NOT re-queue the workflow since step was already resolved
-    expect(mockQueueMessage).not.toHaveBeenCalled();
+    // The terminal event may be this invocation's own committed write.
+    expect(mockQueueMessage).toHaveBeenCalledOnce();
   });
 });
 
@@ -827,7 +1013,7 @@ describe('step-handler unserializable-argument placeholder recovery', () => {
     vi.mocked(getErrorStack).mockReturnValue('');
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
-    mockQueueMessage.mockResolvedValue(undefined);
+    mockQueueMessage.mockReset().mockResolvedValue(undefined);
     vi.mocked(getWorld).mockReturnValue({
       events: { create: mockEventsCreate },
       queue: mockQueue,
