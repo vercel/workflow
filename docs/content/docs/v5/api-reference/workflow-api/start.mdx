@@ -151,12 +151,12 @@ export async function parentWorkflow(value: number) {
 ```
 
 <Callout type="info">
-The returned `Run` object is fully functional inside a workflow. Each property access or method call (`.status`, `.returnValue`, `.cancel()`) executes as a separate step. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) for choosing between spawning a child run and awaiting a workflow function directly.
+The returned `Run` object is fully functional inside a workflow. Each property access or method call (`.status`, `.cancel()`) executes as a separate step. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) for choosing between spawning a child run and awaiting a workflow function directly.
 </Callout>
 
-<Callout type="warn">
-`returnValue` polls the child run every second and holds the polling step's worker slot open for as long as the child takes to finish. For long-running children, spawn without awaiting `returnValue` and have the child resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
-</Callout>
+Awaiting `returnValue` of a run the workflow started does not poll. The parent registers a system hook and suspends on it, and the child resumes that hook when it completes, fails, or is canceled, so the wait costs no compute or worker slot and the parent resumes as soon as the child finishes. The same holds when the `Run` was returned from a step of the parent that called `start()`. See [Child Workflows](/cookbook/advanced/child-workflows#waiting-for-a-child).
+
+`returnValue` still polls when the waiting code is not the parent: a step, an API route, or another workflow handed the `Run`. It also polls for a child on another deployment (`deploymentId`) that predates the system hook, and for every child while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. A polling step holds its worker slot until the child finishes.
 
 ### Dynamic Workflow Source
 

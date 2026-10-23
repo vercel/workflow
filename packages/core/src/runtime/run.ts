@@ -21,6 +21,11 @@ import {
   tagForwardedWritableTarget,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import {
+  awaitChildRunCompletion,
+  type ReturnValueRead,
+} from './child-run-completion.js';
+import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
@@ -193,14 +198,22 @@ export interface WorkflowRunWritableStreamOptions {
  */
 export class Run<TResult> {
   static [WORKFLOW_SERIALIZE](instance: Run<unknown>) {
-    return { runId: instance.runId, resilientStart: instance.#resilientStart };
+    return {
+      runId: instance.runId,
+      resilientStart: instance.#resilientStart,
+      ...(instance.#parentRunId ? { parentRunId: instance.#parentRunId } : {}),
+    };
   }
 
   static [WORKFLOW_DESERIALIZE](data: {
     runId: string;
     resilientStart?: boolean;
+    parentRunId?: string;
   }) {
-    return new Run(data.runId, { resilientStart: data.resilientStart });
+    return new Run(data.runId, {
+      resilientStart: data.resilientStart,
+      parentRunId: data.parentRunId,
+    });
   }
 
   /**
@@ -234,9 +247,22 @@ export class Run<TResult> {
    */
   #resilientStart = false;
 
-  constructor(runId: string, opts?: { resilientStart?: boolean }) {
+  /**
+   * The workflow run that started this run with `start()` and that this run
+   * resumes, through the child-run completion hook, when it finishes. Set only
+   * on handles returned by such a `start()`. Inside that parent workflow,
+   * `returnValue` suspends on the hook instead of polling.
+   * @internal
+   */
+  #parentRunId: string | undefined;
+
+  constructor(
+    runId: string,
+    opts?: { resilientStart?: boolean; parentRunId?: string }
+  ) {
     this.runId = runId;
     this.#resilientStart = opts?.resilientStart ?? false;
+    this.#parentRunId = opts?.parentRunId;
   }
 
   /**
@@ -317,6 +343,7 @@ export class Run<TResult> {
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
     });
+    await notifyParentOfRunCompletion(world, run, 'cancelled');
   }
 
   /**
@@ -350,12 +377,38 @@ export class Run<TResult> {
   }
 
   /**
-   * The return value of the workflow run.
-   * Polls the workflow return value until the workflow run completes.
+   * The return value of the workflow run, once it completes. Rejects with
+   * `WorkflowRunFailedError` or `WorkflowRunCancelledError` if the run fails
+   * or is cancelled.
+   *
+   * Inside the workflow that started this run, the parent suspends on a system
+   * hook the run resumes when it finishes, so waiting costs no compute and
+   * resumes as soon as the run is done. Everywhere else (host code, steps,
+   * a workflow handed another run's handle) it polls until the run finishes.
    */
   get returnValue(): Promise<TResult> {
+    return (
+      awaitChildRunCompletion(this.runId, this.#parentRunId, (wait) =>
+        this.readReturnValue(wait)
+      ) ??
+      this.readReturnValue(true).then(
+        (read) => (read as { value: TResult }).value
+      )
+    );
+  }
+
+  /**
+   * The step behind {@link returnValue}. With `wait`, polls until the run is
+   * terminal; without it, reads the run once and reports `{ done: false }` if
+   * it has not finished yet. Use `returnValue` instead.
+   * @internal
+   */
+  async readReturnValue(wait: boolean): Promise<ReturnValueRead<TResult>> {
     'use step';
-    return this.#pollReturnValue();
+    if (wait) {
+      return { done: true, value: await this.#pollReturnValue() };
+    }
+    return this.#readReturnValueOnce();
   }
 
   /**
@@ -606,6 +659,35 @@ export class Run<TResult> {
     // Terminal statuses are immutable, but if an inconsistent world returns
     // a non-terminal full record, resume polling safely.
     throw new WorkflowRunNotCompletedError(this.runId, run.status);
+  }
+
+  /**
+   * Reads the run once: its return value (or error) when it is terminal,
+   * `{ done: false }` when it is still going.
+   * @internal
+   */
+  async #readReturnValueOnce(): Promise<ReturnValueRead<TResult>> {
+    const world = await this.#lazyWorldPromise;
+    let runMetadata: Awaited<ReturnType<World['runs']['get']>>;
+    try {
+      runMetadata = await world.runs.get(this.runId, { resolveData: 'none' });
+    } catch (error) {
+      // A resilient start may not have created the run yet. It will exist
+      // once its queue message is delivered, and resumes its parent when it
+      // finishes like any other run.
+      if (this.#resilientStart && WorkflowRunNotFoundError.is(error)) {
+        return { done: false };
+      }
+      throw error;
+    }
+    if (runMetadata.status === 'cancelled') {
+      throw new WorkflowRunCancelledError(this.runId);
+    }
+    if (!PAYLOAD_TERMINAL_RUN_STATUSES.has(runMetadata.status)) {
+      return { done: false };
+    }
+    const run = await world.runs.get(this.runId, { resolveData: 'all' });
+    return { done: true, value: await this.#resolveTerminalReturnValue(run) };
   }
 
   /**

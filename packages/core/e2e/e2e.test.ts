@@ -3432,6 +3432,54 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  test.each([
+    { fail: false, expected: { childResult: 42 } },
+    {
+      fail: true,
+      expected: {
+        childError: 'WorkflowRunFailedError',
+        childErrorCause: 'slow child failed for 21',
+      },
+    },
+  ])(
+    'awaitChildReturnValueWorkflow - parent waits on the child-run completion hook (fail: $fail)',
+    { timeout: 120_000 },
+    async ({ fail, expected }) => {
+      const run = await start(await e2e('awaitChildReturnValueWorkflow'), [
+        21,
+        fail,
+      ]);
+      trackRun(run);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toMatchObject(expected);
+      expect(returnValue.childRunId).toMatch(/^wrun_/);
+      trackRun(getRun(returnValue.childRunId));
+
+      // The parent registered the system hook for this child, and the child
+      // resumed it: the parent waited on the hook, not on a polling step.
+      const world = await getWorld();
+      const { data: events } = await world.events.list({
+        runId: run.runId,
+        pagination: { limit: 100 },
+      });
+      const token = `wkf_child_run_completion:${returnValue.childRunId}`;
+      const hookCreated = events.find(
+        (e) =>
+          e.eventType === 'hook_created' &&
+          (e.eventData as { token?: string } | undefined)?.token === token
+      );
+      expect(hookCreated, 'completion hook was registered').toBeDefined();
+      expect(
+        events.some(
+          (e) =>
+            e.eventType === 'hook_received' &&
+            e.correlationId === hookCreated?.correlationId
+        ),
+        'the child resumed the completion hook'
+      ).toBe(true);
+    }
+  );
+
   // This test requires direct HTTP access and works when running locally.
   // For production use on Vercel with Deployment Protection enabled, use the
   // queue-based `healthCheck(world, options)` function instead, which

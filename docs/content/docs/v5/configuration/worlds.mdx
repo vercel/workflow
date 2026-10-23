@@ -160,7 +160,7 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 - Default: `50`
 - Number of concurrent workers polling for jobs.
-- Also bounds concurrent parent-to-child workflow return-value polls.
+- Also bounds concurrent `returnValue` polls that run inside steps. A parent workflow awaiting a child it started suspends on a system hook instead and holds no worker (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)).
 
 ### `pollInterval`
 

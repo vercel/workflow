@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.18'
+  version: '1.19'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -214,7 +214,7 @@ export async function parentWorkflow() {
 }
 ```
 
-`start()` returns after creating the child run and doesn't wait for it to complete. Use `childRun.returnValue` only when the parent should wait for the child; each `Run` property access or method call inside a workflow is a step.
+`start()` returns after creating the child run and doesn't wait for it to complete. Use `await childRun.returnValue` when the parent should wait for the child: the parent suspends on a system hook the child resumes when it finishes, so it does not poll and holds no worker while waiting. Don't hand-roll a completion hook for this. Other `Run` property accesses and method calls inside a workflow are steps.
 
 ## Run size & concurrency: know when to split
 

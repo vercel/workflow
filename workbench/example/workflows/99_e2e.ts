@@ -3655,18 +3655,54 @@ export async function startFromWorkflow(inputValue: number) {
 }
 
 /**
+ * Child for the child-run completion tests: sleeps first so the parent's
+ * first read finds it still running and the parent has to suspend on the
+ * completion hook, then doubles `value` or fails.
+ */
+export async function slowChildWorkflow(value: number, fail: boolean) {
+  'use workflow';
+  await sleep('2s');
+  if (fail) {
+    throw new FatalError(`slow child failed for ${value}`);
+  }
+  return await doubleValue(value);
+}
+
+/**
+ * Parent that awaits a child's `returnValue` directly from workflow code.
+ * The wait goes through the system completion hook rather than a polling
+ * step; the e2e test checks the parent's event log for it.
+ */
+export async function awaitChildReturnValueWorkflow(
+  value: number,
+  fail: boolean
+) {
+  'use workflow';
+  const childRun = await start(slowChildWorkflow, [value, fail]);
+  try {
+    const childResult = await childRun.returnValue;
+    return { childRunId: childRun.runId, childResult };
+  } catch (error) {
+    return {
+      childRunId: childRun.runId,
+      childError: (error as Error).name,
+      childErrorCause: ((error as Error).cause as Error | undefined)?.message,
+    };
+  }
+}
+
+/**
  * Recursive Fibonacci workflow. start() is called directly to spawn
  * child workflows for fib(n-1) and fib(n-2).
  *
- * WORKER POOL CAVEAT: each `runA.returnValue` / `runB.returnValue` await
- * resolves by polling the child run's status inside a step that holds a
- * worker slot until the child completes. In worker-based worlds (notably
- * `world-postgres`), the peak number of these in-flight polls must fit
- * within `queueConcurrency`, or the workflow will deadlock — all slots
- * end up held by parents waiting for children that can't get a slot to
- * start. For `fib(n)`, the recursion tree produces roughly `2·(T(n)−leaves)`
- * concurrent polls at peak; fib(6) needs ~24 slots, fib(10) needs
- * hundreds. If you raise `n`, raise `queueConcurrency` accordingly.
+ * Each `runA.returnValue` / `runB.returnValue` await suspends the parent on
+ * the child-run completion hook, which the child resumes when it finishes,
+ * so a waiting parent holds no worker slot. (Before that hook existed, each
+ * await polled inside a step that held a slot until the child completed, and
+ * a deep enough tree deadlocked worker-based worlds such as `world-postgres`
+ * once every slot was held by a waiting parent. With
+ * `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` the awaits poll again, and that
+ * caveat applies: fib(6) needs ~24 slots, fib(10) hundreds.)
  */
 export async function fibonacciWorkflow(n: number): Promise<number> {
   'use workflow';
