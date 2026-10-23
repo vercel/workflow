@@ -801,6 +801,62 @@ describe.each([
     }
   });
 
+  // The step's outcome committed, but sending its wake failed, so its
+  // message comes back. The redelivery finds the step terminal: it must send
+  // the wake the first delivery lost, or nothing moves the run on.
+  it('re-sends the wake when a redelivered step message finds the step terminal', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    try {
+      const { world } = await setup(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+         async function workflow() { return await add(2, 3); }${transform('workflow')}`,
+        []
+      );
+      await world.deliver(world.held[0]!);
+      const stepMessage = world.held.find(
+        (held) => (held.message as { stepId?: string }).stepId !== undefined
+      )!;
+      world.held.length = 0;
+
+      const asWorld = world.asWorld();
+      const queue = asWorld.queue.bind(asWorld);
+      let failedWakes = 0;
+      asWorld.queue = (async (...args: Parameters<typeof queue>) => {
+        const message = args[1] as { stepId?: string };
+        if (message.stepId === undefined && failedWakes === 0) {
+          failedWakes++;
+          throw new Error('queue send failed');
+        }
+        return queue(...args);
+      }) as typeof asWorld.queue;
+      setWorld(asWorld);
+
+      await expect(world.deliver(stepMessage)).rejects.toThrow(
+        'queue send failed'
+      );
+      expect(failedWakes).toBe(1);
+      expect(eventsOf(world, 'step_completed')).toHaveLength(1);
+      // Only the step message is held, for its redelivery: no wake went out.
+      expect(world.held).toHaveLength(1);
+      const redelivery = world.held[0]!;
+      expect(redelivery.messageId).toBe(stepMessage.messageId);
+      expect(redelivery.deliveryCount).toBe(2);
+
+      await world.deliver(redelivery);
+      expect(calls.so_add).toBe(1);
+      expect(
+        world.held.filter(
+          (held) => (held.message as { stepId?: string }).stepId === undefined
+        )
+      ).toHaveLength(1);
+
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe(5);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('stops a superseded orchestrator without running bodies, and acknowledges with one plain wake', async () => {
     const { world, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");

@@ -158,6 +158,13 @@ export async function handleStepMessage(
 
   switch (decision.action) {
     case 'ack':
+      // The step's outcome is in the log, but the delivery that wrote it may
+      // have died, or failed to send its wake, before the orchestrator heard
+      // of it: that wake is the only thing that moves the run on, and nothing
+      // else re-sends it. Send it again. It is cheap: a live orchestrator
+      // absorbs it, and one with nothing new acknowledges it after a tail
+      // read. A finished run needs no wake.
+      if (decision.reason === 'step-terminal') await wakeOrchestrator(wakeCtx);
       return undefined;
     case 'redeliver':
       return { timeoutSeconds: decision.timeoutSeconds };
