@@ -114,6 +114,59 @@ export async function parallelStepsWorkflow(input: string) {
   return `${a}|${b}`;
 }
 
+async function handoffFastFirst(input: string) {
+  'use step';
+  return `fast-1:${input}`;
+}
+
+async function handoffFastSecond(input: string) {
+  'use step';
+  return `fast-2:${input}`;
+}
+
+async function handoffSlowFirst(input: string) {
+  'use step';
+  return `slow-1:${input}`;
+}
+
+async function handoffSlowSecond(input: string) {
+  'use step';
+  return `slow-2:${input}`;
+}
+
+/** Two chained branches whose first steps begin in one inline batch. */
+export async function advanceOnlyHandoffWorkflow(input: string) {
+  'use workflow';
+  return await Promise.all([
+    (async () => {
+      await handoffFastFirst(input);
+      return await handoffFastSecond(input);
+    })(),
+    (async () => {
+      await handoffSlowFirst(input);
+      return await handoffSlowSecond(input);
+    })(),
+  ]);
+}
+
+/**
+ * The slow branch is scheduled first so a one-inline-step scenario leaves it
+ * in the original delivery while the fast branch advances from its queue.
+ */
+export async function advanceOnlyQueuedWorkflow(input: string) {
+  'use workflow';
+  return await Promise.all([
+    (async () => {
+      await handoffSlowFirst(input);
+      return await handoffSlowSecond(input);
+    })(),
+    (async () => {
+      await handoffFastFirst(input);
+      return await handoffFastSecond(input);
+    })(),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // 3. Approval — a hook and a step suspended together
 // ---------------------------------------------------------------------------

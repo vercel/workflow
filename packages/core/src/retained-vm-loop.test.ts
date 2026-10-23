@@ -1031,6 +1031,7 @@ describe('retained VM through the inline replay loop', () => {
   beforeEach(() => {
     createContextSpy.mockClear();
     barrierArmObservations.length = 0;
+    vi.stubEnv('WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING', '0');
   });
   afterEach(() => {
     delete process.env.WORKFLOW_RETAINED_VM;
