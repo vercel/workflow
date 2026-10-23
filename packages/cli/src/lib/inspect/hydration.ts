@@ -154,6 +154,7 @@ const ERROR_REVIVER_KEYS = [
   'FatalError',
   'HookConflictError',
   'HookForceClaimedError',
+  'HookReservedError',
   'RangeError',
   'ReferenceError',
   'RetryableError',
@@ -162,6 +163,7 @@ const ERROR_REVIVER_KEYS = [
   'SyntaxError',
   'TypeError',
   'URIError',
+  'WorkflowStartError',
 ] as const;
 
 /**

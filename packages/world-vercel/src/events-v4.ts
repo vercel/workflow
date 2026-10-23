@@ -41,6 +41,8 @@ import {
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
+  START_HOOK_WIRE_CODES,
+  type StartHook,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -316,6 +318,9 @@ interface CreateEventV4InputBase {
    *  resilient-start path). Validated server-side against the attribute
    *  key/value/count caps. */
   attributes?: Record<string, string>;
+  /** Atomic start Hook reservation (run_created / resilient run_started).
+   *  Rides the frame meta as `startHook: { token, tokenRetentionUntil? }`. */
+  startHook?: StartHook;
   /** attr_set's attribute change list ({key, value|null} entries). */
   changes?: Array<Record<string, unknown>>;
   /** attr_set's writer provenance ({type:'workflow'} or
@@ -759,6 +764,7 @@ function buildPostFrameMeta(
     meta.executionContext = input.executionContext;
   }
   if (input.attributes !== undefined) meta.attributes = input.attributes;
+  if (input.startHook !== undefined) meta.startHook = input.startHook;
   if (input.changes !== undefined) meta.changes = input.changes;
   if (input.writer !== undefined) meta.writer = input.writer;
   if (input.allowReservedAttributes !== undefined) {
@@ -857,6 +863,15 @@ function errorFromV4Response(
     if (statusCode === 409 && code === 'hook-force-claimed') {
       details = { claimedBy: record.claimedBy };
     }
+    if (statusCode === 425 && code === START_HOOK_WIRE_CODES.reserved) {
+      details = { runId: record.runId };
+    }
+    if (statusCode === 409 && code === START_HOOK_WIRE_CODES.conflict) {
+      details = {
+        token: record.token,
+        conflictingRunId: record.conflictingRunId,
+      };
+    }
   } else if (text) {
     // body wasn't a structured object, so keep the default message and append
     // whatever the server did send
@@ -884,6 +899,11 @@ interface V4ErrorBody {
   error?: unknown;
   /** 409 hook-force-claimed: the run and hook the token now belongs to. */
   claimedBy?: unknown;
+  /** 409 start-hook-conflict: the refused token and the run that owns it. */
+  token?: unknown;
+  conflictingRunId?: unknown;
+  /** 425 hook-reserved: the run that reserved the token. */
+  runId?: unknown;
   events?: unknown;
   cursor?: unknown;
   /** 412 in-band-superseded: the backend's counters at the refusal. */
@@ -1261,12 +1281,30 @@ async function decodeCreateEventResponse<T extends EventType>(
   }
   const parsedBody = schema.safeParse(decoded);
   if (!parsedBody.success) {
-    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
-      code: 'SCHEMA_VALIDATION',
-      cause: parsedBody.error,
-    });
+    throw new WorkflowWorldError(
+      `v4 createEvent: invalid response body (${eventType}: ${describeIssuePaths(parsedBody.error)})`,
+      { code: 'SCHEMA_VALIDATION', cause: parsedBody.error }
+    );
   }
   return foldReportIncomplete(parsedBody.data);
+}
+
+/**
+ * Where a response failed its schema, without the values: a setup failure is
+ * logged with only the error's message, so the paths are what makes it
+ * diagnosable. Capped, since a union's issues can multiply.
+ */
+function describeIssuePaths(error: z.ZodError): string {
+  const MAX = 5;
+  const described = error.issues
+    .slice(0, MAX)
+    .map(
+      (issue) => `${issue.path.map(String).join('.') || '<root>'} ${issue.code}`
+    );
+  if (error.issues.length > MAX) {
+    described.push(`+${error.issues.length - MAX} more`);
+  }
+  return described.join(', ');
 }
 
 /**

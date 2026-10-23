@@ -2,6 +2,7 @@ import {
   type Event,
   type Hook,
   type SerializedData,
+  type StartHook,
   type Step,
   StepStatusSchema,
   type Wait,
@@ -148,6 +149,12 @@ export const runs = schema.table(
      * started on. Null on every static run.
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
+    /**
+     * The Hook token this run reserved through `start({ hook })`, as admitted
+     * (see `workflow_start_hook_admissions`). Display and echo only: the
+     * admission row is what holds the token. Null on every other run.
+     */
+    startHook: Cbor<StartHook>()('start_hook_cbor'),
     createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     updatedAt: timestamptz('updated_at')
       .default(sql`now()`)
@@ -240,6 +247,44 @@ export const eventSlots = schema.table('workflow_event_slots', {
    */
   seqInBand: integer('seq_in_band').notNull().default(1),
 });
+
+/**
+ * One immutable `start({ hook })` admission decision per candidate run (see
+ * `start-hook.ts` in @workflow/world, and `../start-hook.ts` here).
+ *
+ * - `accepted` rows are written in the same transaction as the run they
+ *   admit, so an accepted candidate always has its run (until the run is
+ *   deleted, which releases the token). `holder_run_id` is the run that holds
+ *   the reservation: the candidate itself, until a forced `createHook` takes
+ *   the materialized Hook, and the reservation with it, into another run.
+ * - `rejected` rows record the owner the candidate lost to, so a later
+ *   attempt for the same candidate answers the same `conflicting_run_id`
+ *   even after the owner has released the token.
+ *
+ * A reservation holds its token while its holder run is not terminal, or
+ * while `token_retention_until` is in the future.
+ */
+export const startHookAdmissions = schema.table(
+  'workflow_start_hook_admissions',
+  {
+    runId: varchar('run_id').primaryKey(),
+    token: varchar('token').notNull(),
+    decision: varchar('decision').$type<'accepted' | 'rejected'>().notNull(),
+    holderRunId: varchar('holder_run_id'),
+    conflictingRunId: varchar('conflicting_run_id'),
+    tokenRetentionUntil: timestamptz('token_retention_until'),
+    /** The start Hook's serialized metadata, for an adoption that has none. */
+    metadata: Cbor<SerializedData>()('metadata_cbor'),
+    /**
+     * When the holder's `createHook()` first adopted the reservation. Until
+     * then a by-token lookup answers `HookReservedError` rather than not
+     * found.
+     */
+    adoptedAt: timestamptz('adopted_at'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+  },
+  (tb) => [index().on(tb.token)]
+);
 
 export const steps = schema.table(
   'workflow_steps',

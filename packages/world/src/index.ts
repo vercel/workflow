@@ -37,6 +37,10 @@ export {
   validateAttributeEventDataSize,
 } from './attributes.js';
 export {
+  parseWorldCapabilities,
+  WorldCapabilitiesSchema,
+} from './capabilities.js';
+export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
   envFlag,
@@ -191,6 +195,14 @@ export {
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   STRUCTURAL_SPEC_VERSIONS,
 } from './spec-version.js';
+export type * from './start-hook.js';
+export {
+  HOOK_RESERVED_RETRY_AFTER_SECONDS,
+  START_HOOK_ADMISSION_REJECTED_CODE,
+  START_HOOK_CANDIDATE_MAX_AGE_MS,
+  START_HOOK_WIRE_CODES,
+  StartHookSchema,
+} from './start-hook.js';
 export type * from './steps.js';
 export {
   isTerminalStepStatus,

@@ -125,6 +125,11 @@ import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import {
+  ackRefusedStartHookCandidate,
+  admitsTurboStart,
+  retriesRunlessRunStarted,
+} from '../start-hook-delivery.js';
 import { computeStepLatencyTracking } from '../step-latency.js';
 import { useQuickJSVm } from '../vm-mode.js';
 import { getWaitContinuationDispatch } from '../wait-continuation.js';
@@ -532,6 +537,7 @@ export async function runSpec8Delivery(
   const turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
+    admitsTurboStart(runInput) &&
     metadata.attempt === 1 &&
     incomingStepId === undefined &&
     !replayDivergence;
@@ -562,6 +568,10 @@ export async function runSpec8Delivery(
   };
 
   const recordWorkflowSetupFailure = async (err: unknown): Promise<boolean> => {
+    if (retriesRunlessRunStarted(err, runId)) {
+      span?.setAttributes(Attribute.WorkflowRunStartedRunlessResponse(true));
+      return false;
+    }
     const errorCode = getWorkflowSetupErrorCode(err);
     if (!errorCode) return false;
     await recordFatalRunError({
@@ -1569,6 +1579,13 @@ export async function runSpec8Delivery(
               // run is created unable to replay.
               dynamicWorkflowCode: runInput.dynamicWorkflowCode,
               dynamicWorkflowCodeRef: runInput.dynamicWorkflowCodeRef,
+              // Without the key, a run this event creates
+              // could never receive sealed writes.
+              encryptionPublicKey: runInput.encryptionPublicKey,
+              // The queued copy of `start({ hook })`: this
+              // write may be the one that admits or refuses
+              // the candidate.
+              startHook: runInput.startHook,
             },
           }
         : {}),
@@ -1750,6 +1767,11 @@ export async function runSpec8Delivery(
         }
         startWorkflowCompile(workflowRun);
       } catch (err) {
+        // A refused `start({ hook })` candidate's queued copy: nothing
+        // ran, ack. Narrowed to the two admission answers.
+        if (ackRefusedStartHookCandidate(err, runInput, runId)) {
+          return;
+        }
         // Run was concurrently completed/failed/canceled
         if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
           // EntityConflictError: run was concurrently

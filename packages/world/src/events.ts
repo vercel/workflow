@@ -10,6 +10,7 @@ import type {
   PaginationOptions,
   ResolveData,
 } from './shared.js';
+import { StartHookSchema } from './start-hook.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
@@ -593,6 +594,12 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
        * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
        */
       encryptionPublicKey: z.string().optional(),
+      /**
+       * Reserve this Hook token atomically with the run's creation. Only sent
+       * to Worlds that declare `capabilities.atomicStartHook`; see
+       * `start-hook.ts` for the admission contract.
+       */
+      startHook: StartHookSchema.optional(),
     })
     .refine(
       (value) =>
@@ -635,6 +642,12 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       /** Dynamic code carried for resilient run creation. */
       dynamicWorkflowCode: SerializedDataSchema.optional(),
       dynamicWorkflowCodeRef: z.string().optional(),
+      /**
+       * Mirrors `run_created.eventData.startHook` for the queued copy of an
+       * atomic start. Either write may admit the candidate, and both must
+       * reach the same decision; see `start-hook.ts`.
+       */
+      startHook: StartHookSchema.optional(),
     })
     .refine(
       (value) =>

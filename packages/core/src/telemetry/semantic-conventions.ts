@@ -88,6 +88,47 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
  */
 export const WorkflowDynamic = SemanticConvention<boolean>('workflow.dynamic');
 
+/** Set on a `start()` that reserves a Hook token (`start({ hook })`). */
+export const WorkflowStartHook = SemanticConvention<boolean>(
+  'workflow.start_hook'
+);
+
+/** The absolute retention a `start({ hook })` asked for, ISO 8601. */
+export const WorkflowStartHookRetentionUntil = SemanticConvention<string>(
+  'workflow.start_hook.retention_until'
+);
+
+/**
+ * How a `start({ hook })` ended: `accepted` (the candidate is the token's
+ * owner), `rejected` (another run owns it; no run was created), `uncertain`
+ * (queueing or admission could not be confirmed: `WorkflowStartError`), or
+ * `failed` (a deterministic World answer or contract error).
+ */
+export const WorkflowStartHookOutcome = SemanticConvention<
+  'accepted' | 'rejected' | 'uncertain' | 'failed'
+>('workflow.start_hook.outcome');
+
+/**
+ * Set when setup's `run_started` was answered without the run and the
+ * delivery is retried instead of failing the run.
+ */
+export const WorkflowRunStartedRunlessResponse = SemanticConvention<boolean>(
+  'workflow.run_started.runless_response'
+);
+
+/**
+ * On a `rejected` `start({ hook })`: whether the holder was found stuck
+ * `pending` and its orchestrator message re-published.
+ */
+export const WorkflowStartHookHolderWoken = SemanticConvention<boolean>(
+  'workflow.start_hook.holder_woken'
+);
+
+/** The run that owns the token, on a `rejected` `start({ hook })`. */
+export const WorkflowStartHookConflictingRunId = SemanticConvention<string>(
+  'workflow.start_hook.conflicting_run_id'
+);
+
 /** SHA-256 of a dynamic run's source and step bindings. */
 export const WorkflowDynamicSourceHash = SemanticConvention<string>(
   'workflow.dynamic.source_hash'

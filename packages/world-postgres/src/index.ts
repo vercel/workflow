@@ -79,6 +79,9 @@ export function createWorld(
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
+      // `start({ hook })`: the decision and the run it admits commit in one
+      // transaction, serialized per token; see start-hook.ts.
+      atomicStartHook: { active: true },
       // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
       // upload path, so `start()` always sends the code inline.
       dynamicWorkflowCode: true,

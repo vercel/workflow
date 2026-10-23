@@ -259,9 +259,11 @@ const SYMBOL_NAMES = [
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
   '@workflow/errors//HookForceClaimedError',
+  '@workflow/errors//HookReservedError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
+  '@workflow/errors//WorkflowStartError',
 ] as const;
 type SymbolName = (typeof SYMBOL_NAMES)[number];
 
@@ -1177,6 +1179,38 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
+    HookReservedError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'HookReservedError') return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        token: own(value, 'token'),
+        runId: own(value, 'runId'),
+      };
+      const retryAfter = own(value, 'retryAfter');
+      if (retryAfter && !retryAfter.isUndefined) {
+        reduced.retryAfter = retryAfter;
+      } else {
+        retryAfter?.dispose();
+      }
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
+    WorkflowStartError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'WorkflowStartError') return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        runId: own(value, 'runId'),
+        stage: own(value, 'stage'),
+      };
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
     RangeError: namedErrorSubclassReducer('RangeError'),
     ReferenceError: namedErrorSubclassReducer('ReferenceError'),
     RetryableError: (value) => {
@@ -1885,6 +1919,67 @@ export function createQuickJSSerde(
       } else {
         error = buildError(i.Error, value, { name: 'HookForceClaimedError' });
         for (const field of ['token', 'claimedByRunId', 'claimedByHookId']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+      }
+      return error;
+    },
+    HookReservedError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass('@workflow/errors//HookReservedError');
+      let error: JSValueHandle;
+      if (cls) {
+        const token = own(value, 'token') ?? vm.undefined;
+        const runId = own(value, 'runId') ?? vm.undefined;
+        error = vm.construct(cls, token, runId);
+        if (token !== vm.undefined) token.dispose();
+        if (runId !== vm.undefined) runId.dispose();
+        cls.dispose();
+        for (const field of ['retryAfter', 'stack']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+        if (guestHasOwn(value, 'cause')) {
+          const cause = own(value, 'cause') ?? vm.undefined;
+          define(error, 'cause', cause);
+          if (cause !== vm.undefined) cause.dispose();
+        }
+      } else {
+        error = buildError(i.Error, value, { name: 'HookReservedError' });
+        for (const field of ['token', 'runId', 'retryAfter']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+      }
+      return error;
+    },
+    WorkflowStartError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass('@workflow/errors//WorkflowStartError');
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (runId, stage, cause).
+        const runId = own(value, 'runId') ?? vm.undefined;
+        const stage = own(value, 'stage') ?? vm.undefined;
+        const cause = guestHasOwn(value, 'cause')
+          ? (own(value, 'cause') ?? vm.undefined)
+          : vm.undefined;
+        error = vm.construct(cls, runId, stage, cause);
+        if (runId !== vm.undefined) runId.dispose();
+        if (stage !== vm.undefined) stage.dispose();
+        if (cause !== vm.undefined) cause.dispose();
+        const message = own(value, 'message');
+        if (message && !message.isUndefined) define(error, 'message', message);
+        message?.dispose();
+        const stack = own(value, 'stack');
+        if (stack && !stack.isUndefined) define(error, 'stack', stack);
+        stack?.dispose();
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'WorkflowStartError' });
+        for (const field of ['runId', 'stage']) {
           const handle = own(value, field);
           if (handle && !handle.isUndefined) define(error, field, handle);
           handle?.dispose();

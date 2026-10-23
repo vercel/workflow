@@ -142,6 +142,8 @@ export async function recreateRunFromExisting(
         : undefined);
     const region = options.region ?? world.regionForRunId?.(runId) ?? undefined;
 
+    // Never forward the source run's `startHook`: a re-run is a new run by
+    // intent, and the reservation would refuse it as a duplicate.
     const newRun = await start(
       { workflowId: run.workflowName },
       workflowArgs as unknown[],
