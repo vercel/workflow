@@ -140,11 +140,15 @@ export interface StepWaitCreationPlan {
    * the first batch and every inline creation committed (inline steps come
    * first in {@link events}), with the steps those batches created. `rest`
    * resolves with the steps the later batches created, once they committed.
-   * For a plan with no waits and no step that failed to serialize.
+   * `queued` resolves once the last batch is queued on the writer (or the
+   * commit stopped before it): a write queued after that goes out behind
+   * every batch. For a plan with no waits and no step that failed to
+   * serialize.
    */
   commitInChunks(): {
     first: Promise<StepWaitCreationResult>;
     rest: Promise<StepWaitCreationResult>;
+    queued: Promise<void>;
   };
 }
 
@@ -317,6 +321,7 @@ function commitPlanInChunks(
 ): {
   first: Promise<StepWaitCreationResult>;
   rest: Promise<StepWaitCreationResult>;
+  queued: Promise<void>;
 } {
   const postSentAtMs = Date.now();
   const resultOf = (
@@ -331,8 +336,15 @@ function commitPlanInChunks(
   const firstBatch = new Promise<StepWaitCreationResult>((resolve) => {
     resolveFirst = resolve;
   });
-  const rest = writeAll(params, events, (written) =>
-    resolveFirst(resultOf(written, createdSteps))
+  let resolveQueued!: () => void;
+  const queued = new Promise<void>((resolve) => {
+    resolveQueued = resolve;
+  });
+  const rest = writeAll(
+    params,
+    events,
+    (written) => resolveFirst(resultOf(written, createdSteps)),
+    resolveQueued
   ).then(async (written) => {
     // Without a batch the writes went out one at a time: all of them are
     // the first.
@@ -349,7 +361,9 @@ function commitPlanInChunks(
   const first = Promise.race([firstBatch, rest.then(() => firstBatch)]);
   first.catch(() => {});
   rest.catch(() => {});
-  return { first, rest };
+  // A commit that stopped early (a failed batch) queues nothing more.
+  void rest.then(resolveQueued, resolveQueued);
+  return { first, rest, queued };
 }
 
 /** What a commit wrote, and the inline creations the World refused. */
@@ -450,7 +464,9 @@ async function writeAll(
   },
   events: CreateEventRequest[],
   /** Called after the first batch and all inline creations committed. */
-  onFirstBatch?: (written: Written) => void
+  onFirstBatch?: (written: Written) => void,
+  /** Called right after the last batch is queued on the writer. */
+  onLastQueued?: () => void
 ): Promise<Written> {
   const refusedStarts = new Map<string, Error>();
   if (events.length === 0) return { committed: [], refusedStarts };
@@ -460,17 +476,20 @@ async function writeAll(
     let inlineRemaining = events.filter(
       (event) => event.eventType === 'step_started'
     ).length;
-    for (const chunk of batchChunks(events)) {
+    const chunks = batchChunks(events);
+    for (const [index, chunk] of chunks.entries()) {
       const batch: BatchEventRequest[] = chunk.map((event) =>
         event.eventType === 'step_started'
           ? { event, computeInstanceId: COMPUTE_INSTANCE_ID }
           : { event }
       );
       const eventCount = params.eventCount();
-      const batchResult = await writer.createBatch(batch, {
+      const sending = writer.createBatch(batch, {
         ...(params.requestId ? { requestId: params.requestId } : {}),
         ...(eventCount !== undefined ? { eventCount } : {}),
       });
+      if (index === chunks.length - 1) onLastQueued?.();
+      const batchResult = await sending;
       const { results } = batchResult;
       let first = true;
       for (const result of results) {
@@ -635,20 +654,20 @@ async function finalizeUnserializableStep(
 
 /**
  * Splits a suspension's creations into the batches it writes, one after
- * another.
+ * another, in order: each batch holds up to
+ * {@link MAX_IN_BAND_CREATION_BATCH_EVENTS} creations and stays within
+ * {@link MAX_IN_BAND_CREATION_BATCH_BYTES} (see {@link creationBatchBytes});
+ * a single event over the byte budget still goes out, alone. A suspension of
+ * at most {@link MAX_BATCH_EVENTS} creations is therefore one batch unless
+ * its payloads overflow the byte budget.
  *
- * A suspension of at most {@link MAX_BATCH_EVENTS} creations goes out as one
- * batch. A wider one puts the inline steps' creation-bearing starts (which
- * come first) in batches of at most {@link MAX_BATCH_EVENTS} of their own:
- * the inline bodies start once those commit, and a smaller batch commits
- * sooner. The background creations behind them go out in batches of at most
- * {@link MAX_IN_BAND_CREATION_BATCH_EVENTS}: an in-band writer sends one
- * batch at a time, so every extra batch costs the fan-out one more round
- * trip in sequence.
- *
- * Every batch also stays within {@link MAX_IN_BAND_CREATION_BATCH_BYTES}
- * (see {@link creationBatchBytes}); a single event over it still goes out,
- * alone.
+ * The inline steps' creation-bearing starts come first and share the first
+ * batch with the background creations behind them. An in-band writer sends
+ * one batch at a time, so a batch of their own would put one more round trip
+ * in front of every background creation, and of the last branch's start. The
+ * trade: the inline bodies start once the larger first batch commits rather
+ * than a batch of only their starts. Each step's creation is a single event,
+ * so no step's events straddle two batches.
  */
 export function batchChunks(
   events: CreateEventRequest[]
@@ -656,30 +675,17 @@ export function batchChunks(
   const chunks: CreateEventRequest[][] = [];
   let current: CreateEventRequest[] = [];
   let currentBytes = 0;
-  const split = events.length > MAX_BATCH_EVENTS;
-  let currentHasInline = false;
-  const close = () => {
-    chunks.push(current);
-    current = [];
-    currentBytes = 0;
-    currentHasInline = false;
-  };
   for (const event of events) {
-    const isInline = event.eventType === 'step_started';
-    if (split && currentHasInline && !isInline && current.length > 0) {
-      close();
-    }
-    const ceiling =
-      split && !isInline ? MAX_IN_BAND_CREATION_BATCH_EVENTS : MAX_BATCH_EVENTS;
     const bytes = creationBatchBytes(event);
     if (
       current.length > 0 &&
-      (current.length + 1 > ceiling ||
+      (current.length + 1 > MAX_IN_BAND_CREATION_BATCH_EVENTS ||
         currentBytes + bytes > MAX_IN_BAND_CREATION_BATCH_BYTES)
     ) {
-      close();
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
     }
-    if (isInline) currentHasInline = true;
     current.push(event);
     currentBytes += bytes;
   }

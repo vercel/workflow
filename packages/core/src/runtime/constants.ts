@@ -469,8 +469,8 @@ export function getOpenWaitClockSkewMs(): number {
  * byte budget over frame meta plus inline-bound payloads) and refuses an
  * oversized one whole, so a suspension's creations go out in batches of at
  * most this many, with a margin under both. A step's `step_created` and the
- * `step_started` behind it stay in one batch. A fan-out wider than this
- * commits its background creations in larger batches
+ * `step_started` behind it stay in one batch. A suspension's creation
+ * batches on the awaited path are larger
  * ({@link MAX_IN_BAND_CREATION_BATCH_EVENTS}).
  *
  * 16 rather than the World's limit because a smaller batch commits sooner,
@@ -479,19 +479,18 @@ export function getOpenWaitClockSkewMs(): number {
  * per chunk against 32 moved the queued branches' median `step_started` from
  * ~570 to ~460 ms after `run_started` at 64 branches, and the last branch's
  * first line from 967 to 875 ms, with no first-branch or join regression at
- * 64 or 128 branches. It also keeps the inline steps' creation-bearing starts
- * in one batch up to `MAX_MAX_INLINE_STEPS`, and bounds the speculative
- * creation batch run-ahead sends ahead of a boundary (a larger fan-out
- * commits in chunks on the awaited path).
+ * 64 or 128 branches. It bounds the speculative creation batch run-ahead
+ * sends ahead of a boundary (a larger fan-out commits in chunks on the
+ * awaited path) and run-ahead's coalesced write groups.
  */
 export const MAX_BATCH_EVENTS = 16;
 
 /**
- * Ceiling on events per creation batch of a fan-out wider than
- * {@link MAX_BATCH_EVENTS} on the awaited path (`batchChunks`). The
- * inline steps' creation-bearing starts still go first in a batch of their
- * own; the background creations behind them go out in batches of at most
- * this many.
+ * Ceiling on events per creation batch on the awaited path (`batchChunks`).
+ * The inline steps' creation-bearing starts go first, in the first batch,
+ * and the background creations fill it and the batches behind it, at most
+ * this many each. It is above `MAX_MAX_INLINE_STEPS`, so the inline starts
+ * always fit the first batch by count.
  *
  * Larger than {@link MAX_BATCH_EVENTS} because an in-band writer sends its
  * batches one at a time: each must commit before the next can name its
@@ -499,7 +498,7 @@ export const MAX_BATCH_EVENTS = 16;
  * sequence. On durabench (64 one-step branches on world-vercel) 16 per batch
  * put the 61 background `step_created` in 4 batches landing ~200-250 ms
  * apart, ~1 s after `run_started` for the last one. With 64 they go out in
- * one batch behind the inline batch.
+ * one batch, together with the 3 inline starts.
  *
  * Bounded by world-vercel's batch limit of 100 events, and by bytes through
  * {@link MAX_IN_BAND_CREATION_BATCH_BYTES}.

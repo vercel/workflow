@@ -392,13 +392,13 @@ describe.each([
   // An in-band writer sends its batches one at a time, each a round trip the
   // next waits on, so every creation batch of a fan-out adds a round trip to
   // its last branch's start. A latency budget: a 64-wide fan-out (the
-  // durabench fan-out shape) commits its inline steps' starts in one batch
-  // and all its background creations in one more. The QuickJS engine does
-  // not batch a suspension's creations.
+  // durabench fan-out shape) commits its inline steps' starts and all its
+  // background creations in one batch. The QuickJS engine does not batch a
+  // suspension's creations.
   it.skipIf(engine !== 'node')(
-    'commits a 64-wide fan-out in two creation round trips',
+    'commits a 64-wide fan-out in one creation round trip',
     async () => {
-      const width = 64;
+      const width = MAX_IN_BAND_CREATION_BATCH_EVENTS;
       const { world } = await setupOrchestratorRun(
         fanOutWorkflow,
         [width],
@@ -411,20 +411,75 @@ describe.each([
       expect(await runResult(world)).toBe(width);
       const background = width - getMaxInlineSteps();
       expect(eventsOf(world, 'step_created')).toHaveLength(background);
-      const creationBatches = world.batches.filter((batch) =>
-        batch.includes('step_created')
+      const creationBatches = world.batches.filter(
+        (batch) =>
+          batch.includes('step_created') || batch.includes('step_started')
       );
-      expect(creationBatches).toEqual([
-        Array.from({ length: background }, () => 'step_created'),
+      // The inline steps' creation-bearing starts go first, in the batch
+      // that also carries every background creation.
+      expect(creationBatches[0]).toEqual([
+        ...Array.from({ length: getMaxInlineSteps() }, () => 'step_started'),
+        ...Array.from({ length: background }, () => 'step_created'),
       ]);
-      // The inline steps' creation-bearing starts went first, on their own.
-      const before = world.batches.slice(
-        0,
-        world.batches.indexOf(creationBatches[0]!)
+      expect(
+        creationBatches.filter((batch) => batch.includes('step_created'))
+      ).toHaveLength(1);
+    }
+  );
+
+  // The inline bodies start once the first creation batch committed and
+  // finish while the later batches are still going out. Their outcomes are
+  // single writes on the same serialized writer: queued between two creation
+  // batches, each would hold up every background creation behind it.
+  it.skipIf(engine !== 'node')(
+    'queues inline outcomes behind every creation batch of a fan-out',
+    async () => {
+      const width = 2 * MAX_IN_BAND_CREATION_BATCH_EVENTS + MAX_BATCH_EVENTS;
+      // The first delivery's writes in send order: `batch` per creation
+      // batch, the event type per single write.
+      const writes: string[] = [];
+      let seenBatches = 0;
+      let current: AppendOnlyWorld | undefined;
+      const { world } = await setupOrchestratorRun(
+        fanOutWorkflow,
+        [width],
+        {
+          async beforeCreate(data, _params, source) {
+            if (!source?.batch) {
+              writes.push(data.eventType);
+              return;
+            }
+            const batches = current?.batches.length ?? 0;
+            if (batches === seenBatches) return;
+            seenBatches = batches;
+            writes.push('batch');
+            // A slow batch round trip, so the inline bodies finish while
+            // a later creation batch is in flight.
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          },
+        },
+        engine
       );
-      expect(before).toEqual([
-        Array.from({ length: getMaxInlineSteps() }, () => 'step_started'),
-      ]);
+      current = world;
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+      await world.deliver(world.held[0]!);
+      const firstDelivery = [...writes];
+      await world.runUntilIdle(4 * width);
+
+      expect(await runResult(world)).toBe(width);
+      const creationBatches = Math.ceil(
+        width / MAX_IN_BAND_CREATION_BATCH_EVENTS
+      );
+      const lastBatch = firstDelivery.lastIndexOf('batch');
+      expect(firstDelivery.filter((w) => w === 'batch')).toHaveLength(
+        creationBatches
+      );
+      // Every inline outcome went out after the last creation batch.
+      const outcomes = firstDelivery.flatMap((w, index) =>
+        w === 'step_completed' ? [index] : []
+      );
+      expect(outcomes).toHaveLength(getMaxInlineSteps());
+      expect(Math.min(...outcomes)).toBeGreaterThan(lastBatch);
     }
   );
 
@@ -499,7 +554,10 @@ describe.each([
               !refused &&
               source?.batch &&
               data.eventType === 'step_created' &&
-              ++batchedCreations === MAX_BATCH_EVENTS
+              // The first creation of the second batch: the first carries
+              // the inline starts and fills up with background creations.
+              ++batchedCreations ===
+                MAX_IN_BAND_CREATION_BATCH_EVENTS - getMaxInlineSteps() + 1
             ) {
               refused = true;
               throw new WorkflowWorldError('unavailable', { status: 503 });

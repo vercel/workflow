@@ -34,10 +34,15 @@ describe('batchChunks', () => {
     expect(batchChunks(events)).toEqual([events]);
   });
 
-  it('puts the inline creations of a wider fan-out in a batch of their own', () => {
+  // The inline starts share the first batch with background creations, so
+  // the background creations do not wait one more round trip behind a batch
+  // of only the inline starts.
+  it('puts the inline creations of a wider fan-out in the first batch, with background creations', () => {
     const events = fanOut(3, 97);
     const chunks = batchChunks(events);
-    expect(chunks[0]).toEqual(events.slice(0, 3));
+    expect(chunks[0]).toEqual(
+      events.slice(0, MAX_IN_BAND_CREATION_BATCH_EVENTS)
+    );
     for (const chunk of chunks) {
       expect(chunk.length).toBeLessThanOrEqual(
         MAX_IN_BAND_CREATION_BATCH_EVENTS
@@ -49,9 +54,17 @@ describe('batchChunks', () => {
 
   // Each batch is a round trip the next one waits on, so a fan-out's
   // background creations go out in the fewest batches that fit.
-  it('writes a fan-out of one full background batch in two round trips', () => {
-    const events = fanOut(3, MAX_IN_BAND_CREATION_BATCH_EVENTS);
-    expect(batchChunks(events)).toEqual([events.slice(0, 3), events.slice(3)]);
+  it('writes a fan-out that fits one batch, inline starts included, in one round trip', () => {
+    const events = fanOut(3, MAX_IN_BAND_CREATION_BATCH_EVENTS - 3);
+    expect(batchChunks(events)).toEqual([events]);
+  });
+
+  it('writes a fan-out one past a full batch in two round trips', () => {
+    const events = fanOut(3, MAX_IN_BAND_CREATION_BATCH_EVENTS - 2);
+    expect(batchChunks(events)).toEqual([
+      events.slice(0, MAX_IN_BAND_CREATION_BATCH_EVENTS),
+      events.slice(MAX_IN_BAND_CREATION_BATCH_EVENTS),
+    ]);
   });
 
   it('starts a new background batch past the event ceiling', () => {
@@ -97,23 +110,19 @@ describe('batchChunks', () => {
     expect(batchChunks(events)).toEqual([[events[0]], [huge], [events[2]]]);
   });
 
-  it('fills batches with inline creations before any background creation', () => {
+  it('keeps every inline creation ahead of every background creation', () => {
     const inline = MAX_BATCH_EVENTS + 1;
-    const chunks = batchChunks(fanOut(inline, 10));
+    const events = fanOut(inline, MAX_IN_BAND_CREATION_BATCH_EVENTS);
+    const chunks = batchChunks(events);
     for (const chunk of chunks) {
-      expect(chunk.length).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
+      expect(chunk.length).toBeLessThanOrEqual(
+        MAX_IN_BAND_CREATION_BATCH_EVENTS
+      );
     }
-    const firstPlain = chunks.findIndex((chunk) =>
-      chunk.some((e) => e.correlationId?.startsWith('b'))
-    );
+    expect(chunks.flat()).toEqual(events);
+    // Every inline start is in the first batch.
     expect(
-      chunks
-        .slice(0, firstPlain)
-        .flat()
-        .every((e) => e.correlationId?.startsWith('i'))
-    ).toBe(true);
-    expect(
-      chunks[firstPlain]?.every((e) => e.eventType === 'step_created')
-    ).toBe(true);
+      chunks[0]?.filter((e) => e.eventType === 'step_started')
+    ).toHaveLength(inline);
   });
 });

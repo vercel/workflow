@@ -1622,6 +1622,12 @@ async function runDelivery(
     // Turbo: creation commits still in flight while the bodies
     // they create run (see `optimisticCreation`).
     const creationsInFlight = new Set<Promise<unknown>>();
+    // A fan-out's later creation batches not yet queued on
+    // the writer (`commitInChunks().queued`). An inline step's
+    // outcome waits for them, so it is queued behind every
+    // creation batch rather than between two of them, where
+    // it would hold up the background creations behind it.
+    const creationBatchesQueuing = new Set<Promise<void>>();
     // Why a fan-out's later creation batches failed. The
     // delivery fails with it, so its redelivery writes them.
     let trailingCreationFailure: unknown;
@@ -3101,6 +3107,10 @@ async function runDelivery(
         // decides before they commit (see
         // `creationsInFlight`).
         const chunks = plan.commitInChunks();
+        creationBatchesQueuing.add(chunks.queued);
+        void chunks.queued.then(() =>
+          creationBatchesQueuing.delete(chunks.queued)
+        );
         created = await chunks.first;
         deferAbsorbs = true;
         newInline = created.createdSteps.filter((step) => step.inline);
@@ -3403,6 +3413,15 @@ async function runDelivery(
               executeStep({
                 world,
                 createEvent: async (data, params) => {
+                  if (
+                    data.eventType === 'step_completed' ||
+                    data.eventType === 'step_failed' ||
+                    data.eventType === 'step_retrying'
+                  ) {
+                    while (creationBatchesQueuing.size > 0) {
+                      await Promise.all([...creationBatchesQueuing]);
+                    }
+                  }
                   if (
                     runAhead &&
                     (data.eventType === 'step_completed' ||
