@@ -42,7 +42,8 @@ import {
  *   after the adopted Hook was disposed.
  * - An adoption without metadata takes the reservation's; its own wins.
  * - A forced `createHook()` cannot take a reservation that has no Hook, and
- *   taking its adopted Hook moves the reservation to the claimer.
+ *   taking its adopted Hook moves the reservation to the claimer, extended
+ *   by the claimer's Hook retention past that Hook's disposal.
  * - A retention beyond the World's limit is refused with
  *   `START_HOOK_ADMISSION_REJECTED`.
  * - Past the 24h orphan bound, a candidate with no run is refused with
@@ -602,6 +603,30 @@ export function atomicStartHookConformance(
       await expectRefused(admit(events, { token }), token, successor);
       // ...and ending it does, though the source is still running.
       await finish(events, successor);
+      await admit(events, { token });
+    });
+
+    test("a forced createHook's own retention extends the reservation it takes past its disposal", async () => {
+      if (!options.capabilities()?.hookForceClaim) return;
+      const events = setup();
+      const token = newToken();
+      const source = await admit(events, { token });
+      await create(events, source, runStarted({ token }));
+      await create(events, source, hookCreated(token, newHookId()));
+
+      const successor = await plainRun(events);
+      const successorHookId = newHookId();
+      const until = Date.now() + 5_000;
+      const claimed = await create(events, successor, {
+        ...hookCreated(token, successorHookId, true),
+        eventData: { token, force: true, tokenRetentionUntil: new Date(until) },
+      } as AnyEventRequest);
+      expect(claimed.event?.eventType).toBe('hook_created');
+
+      await create(events, successor, hookDisposed(token, successorHookId));
+      await finish(events, successor);
+      await expectRefused(admit(events, { token }), token, successor);
+      await sleep(Math.max(0, until - Date.now()) + 250);
       await admit(events, { token });
     });
 

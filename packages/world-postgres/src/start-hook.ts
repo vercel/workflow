@@ -218,17 +218,28 @@ export function startHookConflict(
  * Moves the reservation `fromRunId` holds on `token` to `toRunId`. Used by a
  * forced `createHook()` that takes the reservation's materialized Hook: the
  * reservation follows the Hook, so the claimer owns the token until it ends.
+ * The claimer's Hook retention extends it as an adoption's does, so it
+ * outlives that Hook's disposal.
  */
 export async function transferStartReservation(
   tx: DrizzleTransaction,
   token: string,
   fromRunId: string,
-  toRunId: string
+  toRunId: string,
+  hookRetentionUntil: Date | undefined
 ): Promise<void> {
   const admissions = Schema.startHookAdmissions;
+  const until = hookRetentionUntil?.toISOString();
   await tx
     .update(admissions)
-    .set({ holderRunId: toRunId })
+    .set({
+      holderRunId: toRunId,
+      ...(until
+        ? {
+            tokenRetentionUntil: sql`greatest(coalesce(${admissions.tokenRetentionUntil}, ${until}::timestamptz), ${until}::timestamptz)`,
+          }
+        : {}),
+    })
     .where(
       and(
         eq(admissions.token, token),

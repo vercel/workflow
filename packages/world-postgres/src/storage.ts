@@ -2932,7 +2932,8 @@ function createUnfencedEventsStorage(
                   tx,
                   eventData.token,
                   victim.runId,
-                  effectiveRunId
+                  effectiveRunId,
+                  eventData.tokenRetentionUntil
                 );
                 const [inserted] = await tx
                   .insert(Schema.hooks)
