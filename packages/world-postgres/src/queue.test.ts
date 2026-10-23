@@ -495,6 +495,42 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('preserves the first schedule when a keyed delayed job is published again', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
+
+    try {
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+      const message = {
+        runId: 'run_01ABC',
+        stepId: 'step_01ABC',
+        stepName: 'retrying-step',
+      } as const;
+
+      await queue.queue('__wkf_workflow_test-step', message, {
+        delaySeconds: 5,
+        idempotencyKey: 'step_01ABC',
+      });
+      await queue.queue('__wkf_workflow_test-step', message, {
+        idempotencyKey: 'step_01ABC',
+      });
+
+      expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
+      expect(workerUtilsMock.addJob).toHaveBeenNthCalledWith(
+        2,
+        'workflow_flows',
+        expect.anything(),
+        expect.objectContaining({
+          jobKey: 'step_01ABC',
+          jobKeyMode: 'preserve_run_at',
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('stamps createdAt on a new message and keeps an idempotency key off a wake', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();

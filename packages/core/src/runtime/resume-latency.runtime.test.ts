@@ -643,6 +643,7 @@ describe('hook-resume TTR telemetry (runtime)', () => {
   beforeEach(() => {
     spanExporter.reset();
     bodyEntryClock = undefined;
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = '0';
   });
 
   afterEach(() => {
@@ -650,6 +651,7 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     vi.restoreAllMocks();
     vi.clearAllMocks();
     spanExporter.reset();
+    delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
   });
 
   it('reports total TTR and every phase on the first step after the resume', async () => {

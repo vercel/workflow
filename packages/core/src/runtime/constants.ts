@@ -83,10 +83,11 @@ export const MAX_REPLAY_TIMEOUT_MS = 780_000;
 // On `globalThis` rather than at module scope so "once per process" survives
 // bundling: this package is compiled into the host application's server build
 // once per bundler layer, and per-copy sets warn once per layer instead.
-const warned = globalSingleton('@workflow/core//envWarnings', 1, () => ({
+const warned = globalSingleton('@workflow/core//envWarnings', 2, () => ({
   replayTimeoutValues: new Set<string>(),
   maxInlineStepsValues: new Set<string>(),
   maxEventsValues: new Set<string>(),
+  advanceOnlyReplayMaxPendingValues: new Set<string>(),
 }));
 
 function warnOnce(
@@ -449,6 +450,77 @@ export function isInlineOwnershipEnabled(): boolean {
   const raw = process.env.WORKFLOW_INLINE_OWNERSHIP;
   if (raw === undefined || raw === '') return true;
   return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Whether a parallel branch advances as soon as its own step settles (default
+ * ON), rather than once every step pending beside it has settled
+ * (vercel/workflow#4457).
+ *
+ * Two places used to hold a settled branch back. A queued step's handler
+ * returned without replaying while any sibling step was still pending, and the
+ * inline loop replayed only after every step in its inline batch had settled.
+ * Either way each round of a `Promise.all` cost as long as its slowest step.
+ * With this on, the queued step's handler replays anyway, while an eligible
+ * inline batch hands an early settler to a fresh invocation. These replays act
+ * only on the work they create and leave steps still in flight to the
+ * invocations running them.
+ *
+ * A branch advances early only when at most
+ * {@link getAdvanceOnlyReplayMaxPending} siblings were pending when its
+ * attempt started.
+ *
+ * `WORKFLOW_ADVANCE_ONLY_REPLAY=0` (or `false`) is the kill switch: a settled
+ * branch waits for its siblings again, exactly as before.
+ */
+export function isAdvanceOnlyReplayEnabled(): boolean {
+  const raw = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
+ * Default for {@link getAdvanceOnlyReplayMaxPending}.
+ *
+ * An early replay finds nothing to do unless the settled step's branch has a
+ * step after it, which it cannot know before replaying, and in a wide fan-out
+ * of one-step branches every settlement but the last finds exactly that. Each
+ * of those replays costs a full pass over a log that grows with the fan-out, so
+ * replaying on all of them makes the fan-out quadratic (measured on the Local
+ * World: a 64-branch `Promise.all` went from 3.5s to 12.7s, and 256 branches
+ * from 32s to more than ten minutes). Eligibility is fixed at attempt start,
+ * so a wide batch does not become eligible as it drains. The default covers
+ * the common two-branch shape without taxing wider fan-outs; operators can
+ * raise it for wider groups of chained branches.
+ */
+export const ADVANCE_ONLY_REPLAY_MAX_PENDING = 3;
+
+/**
+ * The most sibling steps that may be pending when an attempt starts for its
+ * branch to advance at once (see {@link isAdvanceOnlyReplayEnabled}). Above
+ * it the branch waits for its siblings, even if the batch later drains below
+ * the bound.
+ *
+ * Reads `process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` lazily. A
+ * non-negative integer overrides the default; anything else falls back to it
+ * with a one-time warning. `0` leaves early replay only for a step whose
+ * siblings have all settled, which the ordinary replay already covers.
+ */
+export function getAdvanceOnlyReplayMaxPending(): number {
+  const raw = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
+  if (raw === undefined || raw === '') return ADVANCE_ONLY_REPLAY_MAX_PENDING;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    if (!warned.advanceOnlyReplayMaxPendingValues.has(raw)) {
+      warned.advanceOnlyReplayMaxPendingValues.add(raw);
+      runtimeLogger.warn(
+        'Ignoring WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING: not a non-negative integer; using default',
+        { raw, defaultValue: ADVANCE_ONLY_REPLAY_MAX_PENDING }
+      );
+    }
+    return ADVANCE_ONLY_REPLAY_MAX_PENDING;
+  }
+  return parsed;
 }
 
 /**

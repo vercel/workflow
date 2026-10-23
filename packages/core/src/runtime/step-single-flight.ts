@@ -49,6 +49,15 @@ const singleFlight = globalSingleton(
  * body. A winner failure is not propagated to the loser: the winner's own
  * queue message redelivers and drives the retry, so exactly one message
  * keeps owning the outcome.
+ *
+ * The exception is a winner that itself came back `skipped`. That outcome
+ * means it never ran the body: its claim lost to a concurrent writer, or the
+ * step had already settled. It owned nothing, so nothing on its side will
+ * drive the step, and the loser may be the very execution the claim lost to
+ * (say, the queued step message of the replay that created the step, while a
+ * racing replay of the same run tried to claim it inline). Skipping with it
+ * would leave the step created and never run. The loser runs its own attempt
+ * instead, which its claim gates like any other.
  */
 export async function runStepSingleFlight(
   runId: string,
@@ -65,11 +74,18 @@ export async function runStepSingleFlight(
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
     );
+    let winner: StepExecutionResult | undefined;
     try {
-      await existing;
+      winner = await existing;
     } catch {
       // The winner failed (typically a transient world error). Its own queue
       // message redelivers and retries; this loser still skips.
+    }
+    if (winner?.type === 'skipped') {
+      // The winner ran nothing (see above), so try the step here. Re-enter
+      // rather than call `execute` directly: another caller may have taken
+      // the slot while this one waited.
+      return runStepSingleFlight(runId, correlationId, execute, logLevel);
     }
     return { type: 'skipped' };
   }
