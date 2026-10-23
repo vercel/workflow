@@ -1,5 +1,20 @@
 # @workflow/core
 
+## 5.2.4
+
+### Patch Changes
+
+- [#4990](https://github.com/vercel/workflow/pull/4990) [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip redundant hook disposal events when a workflow completes or fails.
+
+- [#5018](https://github.com/vercel/workflow/pull/5018) [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183) Thanks [@pranaygp](https://github.com/pranaygp)! - Run steps started beside an awaited `hook.getConflict()` inline instead of handing them to the queue: the suspension now defers their creates, settles the awaiter off the hook write, and runs the bodies on the pass after it. Those steps now share one inline batch with whatever the settled awaiter started, so work the awaiter's branch begins after its own first step waits for them — where queueing put the branch in a separate invocation. Steps past `WORKFLOW_MAX_INLINE_STEPS` are unaffected and still queue.
+
+- [#4945](https://github.com/vercel/workflow/pull/4945) [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Keep the QuickJS VM heap flat over long runs: settled steps, sleeps, attributes and disposed hooks are released instead of retained (with their step arguments) for the rest of the run, and event replay no longer scans every operation the run ever created.
+- Updated dependencies [[`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`1123ea6`](https://github.com/vercel/workflow/commit/1123ea6c13cce041b5088da2684987dfa5165a92), [`6455beb`](https://github.com/vercel/workflow/commit/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff), [`5dc9e15`](https://github.com/vercel/workflow/commit/5dc9e1543dfcbb1d130b9a4cff87b8952c4cd7c2)]:
+  - @workflow/world@5.0.6
+  - @workflow/world-vercel@5.2.4
+  - @workflow/world-local@5.1.3
+  - @workflow/errors@5.0.6
+
 ## 5.2.3
 
 ### Patch Changes
