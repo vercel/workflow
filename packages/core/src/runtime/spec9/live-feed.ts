@@ -1,6 +1,10 @@
 import { type Event, eventIdToSlot, type World } from '@workflow/world';
 import { runtimeLogger } from '../../logger.js';
 import { REPLAY_RESOLVE_DATA } from '../helpers.js';
+import {
+  getOrchestratorReadTimeoutMs,
+  readWithDeadline,
+} from './read-deadline.js';
 
 /** Default interval of the orchestrator's log-tail poll, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS = 2_000;
@@ -162,7 +166,12 @@ export class LiveLogFeed {
     this.timerDueAtMs = undefined;
   }
 
-  /** Poll once now, outside the schedule. */
+  /**
+   * Poll once now, outside the schedule. Each page read runs under the
+   * orchestrator's read deadline, once: a poll that runs out of time ends,
+   * and the next scheduled one asks again from the same cursor, instead of
+   * one held read stopping every later poll.
+   */
   async pollNow(): Promise<void> {
     if (this.polling || this.stopped) return;
     this.polling = true;
@@ -170,14 +179,22 @@ export class LiveLogFeed {
     try {
       let hasMore = true;
       while (hasMore && !this.stopped) {
-        const page = await this.world.events.list({
-          runId: this.runId,
-          pagination: {
-            sortOrder: 'asc',
-            cursor: this.cursor ?? undefined,
-          },
-          resolveData: REPLAY_RESOLVE_DATA,
-        });
+        const cursor = this.cursor ?? undefined;
+        const page = await readWithDeadline(
+          (signal) =>
+            this.world.events.list({
+              runId: this.runId,
+              pagination: { sortOrder: 'asc', cursor },
+              resolveData: REPLAY_RESOLVE_DATA,
+              ...(signal ? { signal } : {}),
+            }),
+          {
+            timeoutMs: getOrchestratorReadTimeoutMs(),
+            attempts: 1,
+            label: 'Live event feed poll',
+            runId: this.runId,
+          }
+        );
         this.cursor = page.cursor ?? this.cursor;
         hasMore = page.hasMore;
         // An event only the poll delivered is one the push missed.
