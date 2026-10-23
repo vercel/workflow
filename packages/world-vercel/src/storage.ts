@@ -64,7 +64,7 @@ export function createStorage(config?: APIConfig): Storage {
     },
     hooks: {
       get: (hookId, params) => getHook(hookId, params, config),
-      getByToken: (token) => getHookByToken(token, config),
+      getByToken: (token, params) => getHookByToken(token, params, config),
       list: (params) => listHooks(params, config),
     },
     experimental_snapshots: snapshots,

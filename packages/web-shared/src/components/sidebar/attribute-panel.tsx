@@ -265,6 +265,7 @@ const attributeOrder: AttributeKey[] = [
   'attempt',
   'token',
   'tokenRetentionUntil',
+  'region',
   'claimedFrom',
   'isWebhook',
   'isSystem',
@@ -328,6 +329,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   runId: 'Run ID',
   token: 'Token',
   tokenRetentionUntil: 'Minimum Retention Until',
+  region: 'Region',
   claimedFrom: 'Token Taken From Run',
   eventType: 'Event Type',
   errorCode: 'Error Code',
@@ -451,6 +453,8 @@ const attributeToDisplayFn: Record<
   // Hook details
   token: (value: unknown) => String(value),
   tokenRetentionUntil: timestampWithTooltipOrNull,
+  // The region the hook (and its token) is stored in, on Worlds with regions.
+  region: (value: unknown) => String(value),
   // A force-claimed hook (`experimental_force`): the run whose token it took.
   claimedFrom: (value: unknown) => {
     const from = value as { runId?: unknown } | undefined;

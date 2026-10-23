@@ -311,8 +311,9 @@ export const hooks = schema.table(
     claimedFrom: Cbor<NonNullable<Hook['claimedFrom']>>()('claimed_from'),
     // `resumeCapabilities` is deliberately response-only (attested fresh on
     // each by-token lookup, never persisted), so it must not become a column.
+    // Nor `region`: it is only reported by Worlds that store hooks per region.
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
+    Cborized<Omit<Hook, 'resumeCapabilities' | 'region'>, 'metadata'>
   >,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
