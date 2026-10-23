@@ -716,16 +716,11 @@ export interface QueueOptions {
    * Deduplicates sends that carry the same key while the first message with
    * that key exists (on Vercel Queues: for `min(retention, 24h)`).
    *
-   * On a spec 9 run's messages the runtime sets it on:
+   * On a spec 9 run's messages the runtime sets it on a step's execution
+   * message, with a key stable for the step, because a second message for a
+   * step would be a second owner of its body.
    *
-   * - a step's execution message, with a key stable for the step, because a
-   *   second message for a step would be a second owner of its body;
-   * - the wake a background step's completion shares with the other
-   *   completions of its one-second window (`wake:<runId>:<window>`), sent
-   *   delayed past the window's end, so every completion that joins the key
-   *   committed before the message is delivered.
-   *
-   * Every other wake of a spec 9 run's orchestrator (after a lone step
+   * Every wake of a spec 9 run's orchestrator (after a background step's
    * outcome, `resumeHook()`, `cancel()`, a force-claimed hook, a timer, a
    * fence refusal) carries no key: a duplicate wake costs one cheap delivery,
    * while a key can be absorbed by a delivery that is already exiting and

@@ -332,7 +332,7 @@ The handler's result is queue control. What a `{ timeoutSeconds }` result asks f
 
 **Deliver a run's orchestrator messages one at a time.** This is the queue half of the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence), described there with the fence. It applies to the Workflow SDK's own prefix only; a queue consumer's own messages on another prefix are delivered as they come.
 
-On a spec 9 run's messages, `QueueOptions.idempotencyKey` is set on step messages, with a key stable for the step, and on the wake a background step's completion shares with the other completions of its one-second window (`wake:<runId>:<window>`, sent delayed past the window's end). Every other wake of a spec 9 run's orchestrator carries no key. Step messages also carry `retentionSeconds`, which you cap at what your queue supports.
+On a spec 9 run's messages, `QueueOptions.idempotencyKey` is set on step messages, with a key stable for the step. No wake of a spec 9 run's orchestrator carries a key: each background step's outcome sends one undelayed wake, which your queue coalesces into the run's running orchestrator delivery if it coalesces, or delivers after it. Step messages also carry `retentionSeconds`, which you cap at what your queue supports.
 
 Optionally, implement `events.subscribe(runId, afterSlot, onEvent, options)` to push a run's newly committed events, in slot order, to a running orchestrator. It is best effort: the runtime also polls the log tail and drops any pushed event that is not the next slot it expects. Return an unsubscribe function, and report a dropped connection through `options.onError`.
 

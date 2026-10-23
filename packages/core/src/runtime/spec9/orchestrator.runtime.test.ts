@@ -363,16 +363,10 @@ describe.each([
         (call) => (call.message as { stepId?: string }).stepId === undefined
       );
       expect(wakes.length).toBeGreaterThan(0);
-      // The last completion wakes the orchestrator unkeyed. One that leaves
-      // another step pending sends its window's shared, delayed wake.
-      expect(
-        wakes.some((wake) => wake.opts?.idempotencyKey === undefined)
-      ).toBe(true);
+      // Every background completion wakes the orchestrator unkeyed and now.
       for (const wake of wakes) {
-        const key = wake.opts?.idempotencyKey;
-        if (key === undefined) continue;
-        expect(key).toMatch(/^wake:/);
-        expect(wake.opts?.delaySeconds).toBeGreaterThan(0);
+        expect(wake.opts?.idempotencyKey).toBeUndefined();
+        expect(wake.opts?.delaySeconds).toBeUndefined();
       }
       // Background step writes are out-of-band.
       const bgWrites = world.creates.filter(

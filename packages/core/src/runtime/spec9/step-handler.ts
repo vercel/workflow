@@ -224,126 +224,24 @@ export async function handleStepMessage(
       await wakeOrchestrator(wakeCtx);
       return { timeoutSeconds: result.timeoutSeconds };
     case 'completed':
-      await wakeAfterCompletion(wakeCtx, stepId);
-      return undefined;
     case 'failed':
-      // A failed step can fail the run whatever else is pending: wake now.
       await wakeOrchestrator(wakeCtx);
       return undefined;
   }
-}
-
-/** Width of the time window whose step completions share one wake. */
-export const WAKE_COALESCE_WINDOW_MS = 1000;
-/**
- * Seconds a shared wake waits past the end of its window, so it is delivered
- * after every completion of the window committed, clock skew between the
- * completing invocations included.
- */
-export const WAKE_COALESCE_MARGIN_SECONDS = 1;
-
-/**
- * Wakes the run's orchestrator after a background step completed.
- *
- * A fan-out's branches complete together, and the run can usually go on only
- * once the last of them has, so one wake per completion mostly wakes the
- * orchestrator to find nothing it can do. Instead:
- *
- * - A completion that leaves no other step of the run pending (the last one
- *   of a fan-out, or a lone step) wakes the orchestrator now, unkeyed, as
- *   {@link wakeOrchestrator} does.
- * - A completion that leaves another step pending sends a wake shared by
- *   every completion of its {@link WAKE_COALESCE_WINDOW_MS} window: keyed on
- *   the window, and delayed until {@link WAKE_COALESCE_MARGIN_SECONDS} past
- *   its end. It covers what the pending steps' own completions do not, such
- *   as a `Promise.race` that this outcome already decides.
- *
- * The shared wake can never absorb a completion its delivery would not see.
- * Every completion that joins the window's key sent its wake during the
- * window, after its outcome committed, and the key's message is delivered
- * only after the window ended (the delay). So that delivery loads a log with
- * every outcome that joined it. A World that replaces a keyed message
- * instead of keeping the first keeps that bound too: every sender of the
- * window delays to the same end.
- *
- * Two last completions that each see the other pending both send the shared
- * wake: their progress waits for it, at most the window plus the margin. A
- * log that cannot be read wakes now.
- */
-export async function wakeAfterCompletion(
-  ctx: Parameters<typeof wakeOrchestrator>[0],
-  stepId: string,
-  nowMs: () => number = Date.now
-): Promise<void> {
-  let othersPending: boolean;
-  try {
-    const { events } = await loadWorkflowRunEvents(ctx.runId);
-    othersPending = hasOtherPendingStep(events, stepId);
-  } catch (error) {
-    runtimeLogger.debug('Could not read the log after a step completed', {
-      workflowRunId: ctx.runId,
-      stepId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    othersPending = false;
-  }
-  if (!othersPending) {
-    await wakeOrchestrator(ctx);
-    return;
-  }
-  const now = nowMs();
-  const window = Math.floor(now / WAKE_COALESCE_WINDOW_MS);
-  const windowEndMs = (window + 1) * WAKE_COALESCE_WINDOW_MS;
-  await queueMessage(
-    ctx.world,
-    getWorkflowQueueName(ctx.workflowName, ctx.namespace),
-    {
-      runId: ctx.runId,
-      traceCarrier: await ctx.nextTraceCarrier(),
-      requestedAt: new Date(),
-    },
-    {
-      ...(ctx.specVersion !== undefined && { specVersion: ctx.specVersion }),
-      idempotencyKey: `wake:${ctx.runId}:${window}`,
-      delaySeconds:
-        Math.ceil((windowEndMs - now) / 1000) + WAKE_COALESCE_MARGIN_SECONDS,
-    }
-  );
-}
-
-/**
- * Whether a step other than `stepId` was created and has no outcome. A
- * `step_started` counts as a creation: an inline step's creation may be its
- * first start alone, and a World refuses a start for a step that does not
- * exist.
- */
-export function hasOtherPendingStep(
-  events: readonly Event[],
-  stepId: string
-): boolean {
-  const pending = new Set<string>();
-  for (const event of events) {
-    const id = event.correlationId;
-    if (!id || id === stepId) continue;
-    if (
-      event.eventType === 'step_created' ||
-      event.eventType === 'step_started'
-    ) {
-      pending.add(id);
-    } else if (
-      event.eventType === 'step_completed' ||
-      event.eventType === 'step_failed'
-    ) {
-      pending.delete(id);
-    }
-  }
-  return pending.size > 0;
 }
 
 /**
  * Wakes the run's orchestrator after an out-of-band write. No idempotency
  * key: a key could be absorbed by a delivery that is already exiting and lose
  * the wakeup, while a duplicate wake only costs a cheap delivery.
+ *
+ * A background step's outcome wakes it this way too, without reading the
+ * run's log first: the orchestrator decides from its own load what the
+ * outcome lets the run do. A fan-out's completions then send one wake each,
+ * which a World that coalesces an orchestrator's messages folds into the
+ * delivery that holds the run, and which a delivery that finds nothing new
+ * since its last consumed position acknowledges without a replay (see
+ * `consumed-position.ts`).
  *
  * `specVersion` is the run's: the wake carries it, so a World that reads the
  * run's spec off the payload (world-vercel keys and continues spec 9 runs'
