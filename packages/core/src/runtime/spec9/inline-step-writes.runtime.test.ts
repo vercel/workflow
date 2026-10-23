@@ -60,6 +60,13 @@ registerStepFunction('iw_gated', async () => {
   return 'step';
 });
 
+/** The argument of every `iw_race` body, in the order they ran. */
+const raceRuns: number[] = [];
+registerStepFunction('iw_race', async (i: number) => {
+  raceRuns.push(i);
+  return i;
+});
+
 registerStepFunction('iw_attributes', async (n: number) => {
   count('iw_attributes');
   await setAttributes({ phase: 'step-started' });
@@ -87,6 +94,48 @@ const fanOutWorkflow = `const a = ${step('iw_a')};
     const results = await Promise.all(Array.from({ length: n }, () => a()));
     return results.reduce((sum, x) => sum + x, 0);
   }${registerWorkflow()}`;
+
+const raceWorkflow = `const r = ${step('iw_race')};
+  async function workflow(n) {
+    return await Promise.race(Array.from({ length: n }, (_, i) => r(i)));
+  }${registerWorkflow()}`;
+
+/** A fan-out three creation batches wide: two full ones and a short one. */
+const THREE_BATCH_FAN_OUT =
+  2 * MAX_IN_BAND_CREATION_BATCH_EVENTS + MAX_BATCH_EVENTS;
+
+/** The step ids of every step message sent so far. */
+const stepMessageIds = (world: AppendOnlyWorld) =>
+  stepMessagesOf(world).map(
+    (call) => (call.message as { stepId: string }).stepId
+  );
+
+/** The background steps the second creation batch of a fan-out created. */
+const secondBatchSteps = (world: AppendOnlyWorld) =>
+  eventsOf(world, 'step_created')
+    .slice(
+      MAX_IN_BAND_CREATION_BATCH_EVENTS - getMaxInlineSteps(),
+      2 * MAX_IN_BAND_CREATION_BATCH_EVENTS - getMaxInlineSteps()
+    )
+    .map((event) => event.correlationId!);
+
+/**
+ * Waits up to `ms` for every step of the second creation batch to have its
+ * message, and returns whether they all did.
+ */
+async function secondBatchSent(
+  world: AppendOnlyWorld,
+  ms = 1000
+): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (true) {
+    const sent = new Set(stepMessageIds(world));
+    const second = secondBatchSteps(world);
+    if (second.length > 0 && second.every((id) => sent.has(id))) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
 
 const attributesStepWorkflow = `const s = ${step('iw_attributes')};
   async function workflow(n) { return await s(n); }${registerWorkflow()}`;
@@ -150,6 +199,7 @@ function deferral(world: AppendOnlyWorld): number | undefined {
 beforeEach(() => {
   for (const key of Object.keys(calls)) delete calls[key];
   failuresLeft = 0;
+  raceRuns.length = 0;
   bodyEntered = withResolvers<void>();
   bodyGate = withResolvers<void>();
 });
@@ -580,6 +630,188 @@ describe.each([
       // (a step that allows retries tolerates that). No other step does.
       expect(calls.iw_a).toBeGreaterThanOrEqual(FAN_OUT);
       expect(calls.iw_a).toBeLessThanOrEqual(FAN_OUT + getMaxInlineSteps());
+    }
+  );
+
+  // An in-band writer commits a fan-out's creation batches one at a time.
+  // Each later batch's background steps go out as soon as that batch
+  // committed, not once every batch behind it did.
+  it.skipIf(engine !== 'node')(
+    "enqueues a later creation batch's steps before the batch behind it commits",
+    async () => {
+      let current: AppendOnlyWorld | undefined;
+      let sentBeforeThirdBatch: boolean | undefined;
+      const { world } = await setupOrchestratorRun(
+        fanOutWorkflow,
+        [THREE_BATCH_FAN_OUT],
+        {
+          // Holds the third creation batch until the second batch's steps
+          // have their messages, or for 1s.
+          async beforeCreate(_data, _params, source) {
+            if (
+              !source?.batch ||
+              sentBeforeThirdBatch !== undefined ||
+              (current?.batches.length ?? 0) < 3
+            ) {
+              return;
+            }
+            sentBeforeThirdBatch = false;
+            sentBeforeThirdBatch = await secondBatchSent(current!);
+          },
+        },
+        engine
+      );
+      current = world;
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+      await world.runUntilIdle(4 * THREE_BATCH_FAN_OUT);
+
+      expect(await runResult(world)).toBe(THREE_BATCH_FAN_OUT);
+      expect(sentBeforeThirdBatch).toBe(true);
+      // Each background step's message went out once.
+      const sent = stepMessageIds(world);
+      expect(sent).toHaveLength(THREE_BATCH_FAN_OUT - getMaxInlineSteps());
+      expect(new Set(sent).size).toBe(sent.length);
+    }
+  );
+
+  // A creation batch the World refuses after the batch before it committed
+  // and sent its steps: no step is sent before its creation committed, the
+  // steps sent are sent once, and the redelivery finishes the run.
+  it.skipIf(engine !== 'node')(
+    'redelivers a fan-out whose third creation batch failed after the second was sent',
+    async () => {
+      let current: AppendOnlyWorld | undefined;
+      let refused = false;
+      let sentBeforeRefusal = false;
+      const { world, start } = await setupOrchestratorRun(
+        fanOutWorkflow,
+        [THREE_BATCH_FAN_OUT],
+        {
+          async beforeCreate(_data, _params, source) {
+            if (
+              refused ||
+              !source?.batch ||
+              (current?.batches.length ?? 0) < 3
+            ) {
+              return;
+            }
+            refused = true;
+            sentBeforeRefusal = await secondBatchSent(current!);
+            throw new WorkflowWorldError('unavailable', { status: 503 });
+          },
+        },
+        engine
+      );
+      current = world;
+      // Every step message names a step whose creation is in the log.
+      const uncreated: string[] = [];
+      const asWorld = world.asWorld();
+      const queue = asWorld.queue.bind(asWorld);
+      asWorld.queue = (async (...args: Parameters<typeof queue>) => {
+        const stepId = (args[1] as { stepId?: string }).stepId;
+        if (
+          stepId !== undefined &&
+          !creationsOf(world).some((event) => event.correlationId === stepId)
+        ) {
+          uncreated.push(stepId);
+        }
+        return queue(...args);
+      }) as typeof queue;
+      setWorld(asWorld);
+      await workflowEntrypoint(fanOutWorkflow)(
+        new Request('https://example.test')
+      );
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+
+      await expect(world.deliver(start)).rejects.toThrow();
+      expect(refused).toBe(true);
+      expect(sentBeforeRefusal).toBe(true);
+      const sentByFirst = stepMessageIds(world);
+      expect(new Set(sentByFirst).size).toBe(sentByFirst.length);
+      expect(sentByFirst).toHaveLength(
+        2 * MAX_IN_BAND_CREATION_BATCH_EVENTS - getMaxInlineSteps()
+      );
+
+      await world.runUntilIdle(4 * THREE_BATCH_FAN_OUT);
+      expect(await runResult(world)).toBe(THREE_BATCH_FAN_OUT);
+      expect(uncreated).toEqual([]);
+      const created = creationsOf(world).map((event) => event.correlationId);
+      expect(created).toHaveLength(THREE_BATCH_FAN_OUT);
+      expect(new Set(created).size).toBe(THREE_BATCH_FAN_OUT);
+      // The redelivery sent none of the steps the first delivery sent
+      // again, and each background step ran from one delivered message.
+      const sentByRedelivery = stepMessageIds(world).slice(sentByFirst.length);
+      expect(sentByRedelivery.filter((id) => sentByFirst.includes(id))).toEqual(
+        []
+      );
+      const ran = world.deliveries.flatMap((delivery) => {
+        const stepId = (delivery.message as { stepId?: string }).stepId;
+        return stepId === undefined ? [] : [stepId];
+      });
+      expect(ran).toHaveLength(THREE_BATCH_FAN_OUT - getMaxInlineSteps());
+      expect(new Set(ran).size).toBe(ran.length);
+      expect(calls.iw_a).toBeGreaterThanOrEqual(THREE_BATCH_FAN_OUT);
+      expect(calls.iw_a).toBeLessThanOrEqual(
+        THREE_BATCH_FAN_OUT + getMaxInlineSteps()
+      );
+    }
+  );
+
+  // A branch of the second creation batch finishes while the third batch
+  // is still committing, so its outcome lands in the log ahead of the third
+  // batch's creations and ahead of the inline steps' outcomes. It wins the
+  // race, and every replay after agrees.
+  it.skipIf(engine !== 'node')(
+    'completes a race over a wide fan-out won by a branch that finished before the last creation batch committed',
+    async () => {
+      let current: AppendOnlyWorld | undefined;
+      let winner: number | undefined;
+      const { world } = await setupOrchestratorRun(
+        raceWorkflow,
+        [THREE_BATCH_FAN_OUT],
+        {
+          // Holds the third creation batch while a step of the second
+          // batch runs out of band, start to outcome.
+          async beforeCreate(_data, _params, source) {
+            if (
+              winner !== undefined ||
+              !source?.batch ||
+              (current?.batches.length ?? 0) < 3
+            ) {
+              return;
+            }
+            winner = -1;
+            if (!(await secondBatchSent(current!))) return;
+            const stepId = secondBatchSteps(current!)[0];
+            const held = current!.held.find(
+              (message) =>
+                (message.message as { stepId?: string }).stepId === stepId
+            );
+            if (!held) return;
+            await current!.deliver(held);
+            winner = raceRuns.at(-1);
+          },
+        },
+        engine
+      );
+      current = world;
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+      await world.runUntilIdle(4 * THREE_BATCH_FAN_OUT);
+
+      expect(winner).toBeGreaterThanOrEqual(getMaxInlineSteps());
+      expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(await runResult(world)).toBe(winner);
+      // The winner's outcome precedes the third batch's creations.
+      const completedAt = world.events.findIndex(
+        (event) => event.eventType === 'step_completed'
+      );
+      const lastCreatedAt = world.events.findLastIndex(
+        (event) => event.eventType === 'step_created'
+      );
+      expect(completedAt).toBeLessThan(lastCreatedAt);
+      const created = creationsOf(world).map((event) => event.correlationId);
+      expect(new Set(created).size).toBe(THREE_BATCH_FAN_OUT);
     }
   );
 });

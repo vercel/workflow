@@ -144,8 +144,12 @@ export interface StepWaitCreationPlan {
    * commit stopped before it): a write queued after that goes out behind
    * every batch. For a plan with no waits and no step that failed to
    * serialize.
+   *
+   * `onLaterBatch` is called once per batch after the first, as soon as
+   * that batch committed, with the steps it created. A batch that failed
+   * is not reported; `rest` rejects with its error.
    */
-  commitInChunks(): {
+  commitInChunks(onLaterBatch?: (result: StepWaitCreationResult) => void): {
     first: Promise<StepWaitCreationResult>;
     rest: Promise<StepWaitCreationResult>;
     queued: Promise<void>;
@@ -302,11 +306,17 @@ export async function planStepsAndWaits(
         serializationBlockerCount,
         serializationBlockers,
       }),
-    commitInChunks: () =>
-      commitPlanInChunks(params, events, createdSteps, {
-        serializationBlockerCount,
-        serializationBlockers,
-      }),
+    commitInChunks: (onLaterBatch) =>
+      commitPlanInChunks(
+        params,
+        events,
+        createdSteps,
+        {
+          serializationBlockerCount,
+          serializationBlockers,
+        },
+        onLaterBatch
+      ),
   };
 }
 
@@ -317,7 +327,8 @@ function commitPlanInChunks(
   stats: {
     serializationBlockerCount: number;
     serializationBlockers: SuspensionSerializationBlocker[];
-  }
+  },
+  onLaterBatch?: (result: StepWaitCreationResult) => void
 ): {
   first: Promise<StepWaitCreationResult>;
   rest: Promise<StepWaitCreationResult>;
@@ -344,7 +355,8 @@ function commitPlanInChunks(
     params,
     events,
     (written) => resolveFirst(resultOf(written, createdSteps)),
-    resolveQueued
+    resolveQueued,
+    onLaterBatch && ((written) => onLaterBatch(resultOf(written, createdSteps)))
   ).then(async (written) => {
     // Without a batch the writes went out one at a time: all of them are
     // the first.
@@ -466,7 +478,12 @@ async function writeAll(
   /** Called after the first batch and all inline creations committed. */
   onFirstBatch?: (written: Written) => void,
   /** Called right after the last batch is queued on the writer. */
-  onLastQueued?: () => void
+  onLastQueued?: () => void,
+  /**
+   * Called with what each batch after the one that called `onFirstBatch`
+   * committed, once it committed. A batch that throws is not reported.
+   */
+  onLaterBatch?: (written: Written) => void
 ): Promise<Written> {
   const refusedStarts = new Map<string, Error>();
   if (events.length === 0) return { committed: [], refusedStarts };
@@ -491,6 +508,8 @@ async function writeAll(
       if (index === chunks.length - 1) onLastQueued?.();
       const batchResult = await sending;
       const { results } = batchResult;
+      const reportsLater = onFirstBatch === undefined;
+      const committedBefore = committed.length;
       let first = true;
       for (const result of results) {
         if (result.error !== undefined) continue;
@@ -549,7 +568,12 @@ async function writeAll(
       inlineRemaining -= chunk.filter(
         (event) => event.eventType === 'step_started'
       ).length;
-      if (onFirstBatch && inlineRemaining === 0) {
+      if (reportsLater) {
+        onLaterBatch?.({
+          committed: committed.slice(committedBefore),
+          refusedStarts: new Map(),
+        });
+      } else if (onFirstBatch && inlineRemaining === 0) {
         onFirstBatch({
           committed: [...committed],
           refusedStarts: new Map(refusedStarts),

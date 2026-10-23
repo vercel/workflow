@@ -3146,11 +3146,35 @@ async function runDelivery(
       ) {
         // A fan-out larger than one batch: the inline steps
         // ride the first batch and start once it commits;
-        // the later batches commit behind it, and each
-        // enqueues the background steps it created. No pass
-        // decides before they commit (see
+        // the later batches commit behind it, one at a time,
+        // and each enqueues the background steps it created
+        // as soon as it committed, while the batches behind
+        // it are still going out. A step is enqueued only
+        // once its creation committed; a batch that fails
+        // stops the ones behind it and fails the delivery,
+        // whose redelivery creates and enqueues what is
+        // missing (`stepsToReenqueue`). No pass decides
+        // before every batch and its enqueue settled (see
         // `creationsInFlight`).
-        const chunks = plan.commitInChunks();
+        const chunks = plan.commitInChunks((batch) =>
+          trackInFlightCreation(
+            enqueueStepMessages(
+              run,
+              batch.createdSteps.flatMap((step) =>
+                step.inline
+                  ? []
+                  : [
+                      {
+                        correlationId: step.correlationId,
+                        stepName: step.stepName,
+                        stepCreatedEventId: step.event?.eventId,
+                        input: step.input,
+                      },
+                    ]
+              )
+            )
+          )
+        );
         creationBatchesQueuing.add(chunks.queued);
         void chunks.queued.then(() =>
           creationBatchesQueuing.delete(chunks.queued)
@@ -3158,24 +3182,7 @@ async function runDelivery(
         created = await chunks.first;
         deferAbsorbs = true;
         newInline = created.createdSteps.filter((step) => step.inline);
-        const trailing = chunks.rest.then((rest) =>
-          enqueueStepMessages(
-            run,
-            rest.createdSteps.flatMap((step) =>
-              step.inline
-                ? []
-                : [
-                    {
-                      correlationId: step.correlationId,
-                      stepName: step.stepName,
-                      stepCreatedEventId: step.event?.eventId,
-                      input: step.input,
-                    },
-                  ]
-            )
-          )
-        );
-        trackInFlightCreation(trailing);
+        trackInFlightCreation(chunks.rest);
       } else {
         created = await plan.commit();
         newInline = created.createdSteps.filter((step) => step.inline);

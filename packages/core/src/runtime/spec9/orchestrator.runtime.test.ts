@@ -1427,20 +1427,26 @@ describe.each([
           refuseLateCreations(() => current!)
         );
         current = world;
-        // The first step message after the refusal never goes out: the
-        // invocation dies there.
+        // Past the first creation batch's messages, no step message of
+        // this delivery goes out: neither the later batches' own enqueues
+        // nor the ones it owes once refused. The invocation dies there.
         const asWorld = world.asWorld();
         const queue = asWorld.queue.bind(asWorld);
+        const sentSteps = new Set<string>();
+        let dying = true;
         let failed = false;
         asWorld.queue = (async (...args: Parameters<typeof queue>) => {
+          const stepId = (args[1] as { stepId?: string }).stepId;
           if (
-            !failed &&
-            (args[1] as { stepId?: string }).stepId !== undefined &&
-            eventsOf(world, 'noop').length > 0
+            dying &&
+            stepId !== undefined &&
+            !sentSteps.has(stepId) &&
+            sentSteps.size >= MAX_IN_BAND_CREATION_BATCH_EVENTS
           ) {
             failed = true;
             throw new Error('the invocation died');
           }
+          if (stepId !== undefined) sentSteps.add(stepId);
           return queue(...args);
         }) as typeof queue;
         setWorld(asWorld);
@@ -1449,7 +1455,9 @@ describe.each([
         );
 
         await expect(world.deliver(start)).rejects.toThrow();
+        dying = false;
         expect(failed).toBe(true);
+        expect(eventsOf(world, 'noop')).toHaveLength(1);
         // The queue redelivers the same message; as a redelivery of the
         // creating message it re-sends what the first delivery never got
         // out, and as the only orchestrator now it finishes the run.
