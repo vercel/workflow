@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.8.15
+
+### Patch Changes
+
+- [#5028](https://github.com/vercel/workflow/pull/5028) [`0f518c6`](https://github.com/vercel/workflow/commit/0f518c60194d5ace362e68a531586711c9ab290d) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Queue the workflow continuation when a step completion or failure retry reports an already finished step, preventing runs from remaining stuck in the running state.
+
 ## 4.8.14
 
 ### Patch Changes

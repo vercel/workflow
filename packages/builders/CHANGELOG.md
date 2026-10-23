@@ -1,5 +1,14 @@
 # @workflow/builders
 
+## 4.1.20
+
+### Patch Changes
+
+- [#4999](https://github.com/vercel/workflow/pull/4999) [`e01fe25`](https://github.com/vercel/workflow/commit/e01fe25fd48bd91745173eee0bb0f1ee856d6f96) Thanks [@joelfickson](https://github.com/joelfickson)! - Fix module error reporting when the offending import spans multiple lines, and fix multi-line imports not being checked for modules correctly.
+
+- Updated dependencies [[`0f518c6`](https://github.com/vercel/workflow/commit/0f518c60194d5ace362e68a531586711c9ab290d)]:
+  - @workflow/core@4.8.15
+
 ## 4.1.19
 
 ### Patch Changes
