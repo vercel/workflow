@@ -4332,3 +4332,827 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
   const child = await startDisallowedDynamicRun(value);
   return { childRunId: child.runId };
 }
+
+//////////////////////////////////////////////////////////
+// Dynamic workflows: published revisions
+//
+// A runner for revisions published after deploy, plus a small bird-survey
+// catalog kept as regression coverage for revision checks, hook disposal on a
+// review timeout, and fan-out from a static parent. The revision checks
+// (`bindMissionRevision`) mirror "Operating it" in the "Dynamic Workflows"
+// cookbook recipe (docs/content/docs/v5/cookbook/advanced/dynamic-workflows.mdx);
+// the recipe's own example is the customer-migration catalog further down.
+// No procedure source lives here: the e2e runner plays the operator and store,
+// and hands each revision to `dynamicMissionRun`.
+//////////////////////////////////////////////////////////
+
+interface BirdDetection {
+  id: number;
+  species: string;
+  confidence: number;
+}
+
+/** Fixed detections, so the runner knows which reviews a mission will open. */
+const BIRD_DETECTIONS = [
+  { species: 'American robin', confidence: 0.97 },
+  { species: 'Blue jay', confidence: 0.62 },
+  { species: 'Northern cardinal', confidence: 0.91 },
+  { species: 'Mourning dove', confidence: 0.55 },
+] as const;
+
+/** Catalog step standing in for a vision-model call. */
+async function detectBirds(request: {
+  image: string;
+  count: number;
+}): Promise<BirdDetection[]> {
+  'use step';
+  return Array.from({ length: request.count }, (_, id) => ({
+    id,
+    ...BIRD_DETECTIONS[id % BIRD_DETECTIONS.length],
+  }));
+}
+
+/** Catalog step: asks a reviewer to resume `token`. */
+async function requestExpertReview(detection: BirdDetection, token: string) {
+  'use step';
+  return { detectionId: detection.id, token };
+}
+
+/** Catalog step: posts a status message. */
+async function notify(message: string) {
+  'use step';
+  return { delivered: message };
+}
+
+/** Catalog step: fans a child mission's result back into its parent. */
+async function reportToParent(token: string, report: unknown) {
+  'use step';
+  // Throws, and so retries, until the parent has created its hook.
+  await resumeHook(token, report);
+}
+
+/** Every step a published mission may bind, by catalog name. */
+const MISSION_CATALOG = {
+  detectBirds,
+  requestExpertReview,
+  notify,
+  reportToParent,
+};
+
+/** Bumped whenever a catalog step changes in a way old missions would notice. */
+const MISSION_CATALOG_VERSION = 'birds@1';
+
+/** One immutable, approved revision of a mission, as the store holds it. */
+interface MissionRevision {
+  missionId: string;
+  revision: number;
+  source: string;
+  sourceSha256: string;
+  steps: Record<string, string>;
+  catalogVersion: string;
+  approval: { approvedBy: string; approvedAt: string };
+}
+
+async function sha256Hex(text: string) {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(text)
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('');
+}
+
+//////////////////////////////////////////////////////////
+// Dynamic workflows: customer migration catalog
+//
+// Backs the "Dynamic Workflows" cookbook recipe: these steps are its deployed
+// catalog. The procedures that call them (grouping, identity, ordering) are
+// published after deploy and live in the e2e test file, byte-for-byte as the
+// recipe shows them; keep the three in sync.
+//
+// The destination is a PURE SIMULATION. There is no shared store on every
+// World the e2e suite runs on, so a plan's records are derived from the plan
+// itself (and the plans it depends on), and `verifyChanges` reconciles the
+// apply results it is handed. It shows SDK replay of recorded step results;
+// it does not demonstrate destination-side deduplication after an ambiguous
+// write, which needs a real backing store.
+//////////////////////////////////////////////////////////
+
+/** A row of the synthetic legacy CRM export. Every name and email is invented. */
+type LegacyRow =
+  | {
+      kind: 'account';
+      id: string;
+      name: string;
+      parentId: string | null;
+      contract: string;
+      owner: string;
+    }
+  | {
+      kind: 'contact';
+      id: string;
+      name: string;
+      email: string;
+      accountId: string;
+    };
+
+/** Synthetic legacy CRM data: one customer's export, labelled as such. */
+const LEGACY_DATASETS: Record<string, LegacyRow[]> = {
+  'synthetic-crm-v1': [
+    {
+      kind: 'account',
+      id: 'acct-acme',
+      name: 'Acme Holdings',
+      parentId: null,
+      contract: 'C-100',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-acme-east',
+      name: 'Acme East',
+      parentId: 'acct-acme',
+      contract: 'C-100/E',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-acme-west',
+      name: 'Acme West',
+      parentId: 'acct-acme',
+      contract: 'C-100/W',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-globex',
+      name: 'Globex',
+      parentId: null,
+      contract: 'C-200',
+      owner: 'lee',
+    },
+    {
+      kind: 'account',
+      id: 'acct-initech',
+      name: 'Initech',
+      parentId: null,
+      contract: 'C-300',
+      owner: 'kim',
+    },
+    {
+      kind: 'account',
+      id: 'acct-initech-ltd',
+      name: 'Initech Ltd',
+      parentId: null,
+      contract: 'C-300',
+      owner: 'sam',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-ada-east',
+      name: 'Ada Park',
+      email: 'ada@acme.com',
+      accountId: 'acct-acme-east',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-ada-west',
+      name: 'Ada Park',
+      email: ' ADA@acme.com',
+      accountId: 'acct-acme-west',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-info-initech',
+      name: 'Initech front desk',
+      email: 'info@initech.com',
+      accountId: 'acct-initech',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-info-globex',
+      name: 'Globex reseller desk',
+      email: 'info@initech.com',
+      accountId: 'acct-globex',
+    },
+  ],
+  // Acme is valid; every other company has a parent link that cannot be
+  // ordered, and one contact names an account that is not in the export.
+  'synthetic-crm-invalid': [
+    {
+      kind: 'account',
+      id: 'acct-acme',
+      name: 'Acme Holdings',
+      parentId: null,
+      contract: 'C-100',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-acme-east',
+      name: 'Acme East',
+      parentId: 'acct-acme',
+      contract: 'C-100/E',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-acme-west',
+      name: 'Acme West',
+      parentId: 'acct-acme',
+      contract: 'C-100/W',
+      owner: 'dana',
+    },
+    {
+      kind: 'account',
+      id: 'acct-self',
+      name: 'Self Parent Co',
+      parentId: 'acct-self',
+      contract: 'C-400',
+      owner: 'lee',
+    },
+    {
+      kind: 'account',
+      id: 'acct-loop-a',
+      name: 'Loop A',
+      parentId: 'acct-loop-b',
+      contract: 'C-500',
+      owner: 'kim',
+    },
+    {
+      kind: 'account',
+      id: 'acct-loop-b',
+      name: 'Loop B',
+      parentId: 'acct-loop-a',
+      contract: 'C-500/B',
+      owner: 'kim',
+    },
+    {
+      kind: 'account',
+      id: 'acct-stray',
+      name: 'Stray Branch',
+      parentId: 'acct-missing',
+      contract: 'C-600',
+      owner: 'sam',
+    },
+    {
+      kind: 'account',
+      id: 'acct-cross',
+      name: 'Cross Lineage',
+      parentId: 'acct-acme',
+      contract: 'C-700',
+      owner: 'sam',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-ada-east',
+      name: 'Ada Park',
+      email: 'ada@acme.com',
+      accountId: 'acct-acme-east',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-ada-west',
+      name: 'Ada Park',
+      email: ' ADA@acme.com',
+      accountId: 'acct-acme-west',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-loop',
+      name: 'Loop desk',
+      email: 'desk@loop.example',
+      accountId: 'acct-loop-a',
+    },
+    {
+      kind: 'contact',
+      id: 'ct-orphan',
+      name: 'Orphan contact',
+      email: 'orphan@example.com',
+      accountId: 'acct-gone',
+    },
+  ],
+};
+
+const SOURCE_PAGE_SIZE = 4;
+
+type DestinationOp =
+  | {
+      op: 'createAccount';
+      key: string;
+      name: string;
+      owner: string;
+      status?: 'provisional' | 'final';
+      sources: string[];
+    }
+  | {
+      op: 'createContact';
+      key: string;
+      name: string;
+      email: string;
+      sources: string[];
+    }
+  | { op: 'linkContact'; contact: string; account: string }
+  | { op: 'setParent'; account: string; parent: string }
+  | { op: 'setOwner'; key: string; owner: string }
+  | { op: 'markFinal'; key: string }
+  | { op: 'mergeAccount'; from: string; into: string }
+  | { op: 'mergeContact'; from: string; into: string };
+
+interface DestinationAccount {
+  key: string;
+  name: string;
+  owner: string;
+  parent: string | null;
+  status: 'provisional' | 'final';
+  sources: string[];
+}
+
+interface DestinationContact {
+  key: string;
+  name: string;
+  email: string;
+  accounts: string[];
+  sources: string[];
+}
+
+interface DestinationRecords {
+  accounts: Record<string, DestinationAccount>;
+  contacts: Record<string, DestinationContact>;
+}
+
+/** An adapter-level conflict: the plan can be staged but not applied. */
+interface PlanConflict {
+  kind: 'owner';
+  account: string;
+  values: [string, string];
+}
+
+interface StagedPlan {
+  planId: string;
+  migrationId: string;
+  destinationId: string;
+  groupKey: string;
+  operations: DestinationOp[];
+  dependsOn: StagedPlan[];
+  conflicts: PlanConflict[];
+}
+
+interface ApplyResult {
+  planId: string;
+  dependsOn: string[];
+  applied: number;
+  replayed: boolean;
+  records: DestinationRecords;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .filter((key) => (value as Record<string, unknown>)[key] !== undefined)
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${stableJson((value as Record<string, unknown>)[key])}`
+      )
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function planIdFor(plan: Omit<StagedPlan, 'planId' | 'conflicts'>) {
+  return `plan-${(
+    await sha256Hex(
+      stableJson({
+        migrationId: plan.migrationId,
+        destinationId: plan.destinationId,
+        groupKey: plan.groupKey,
+        operations: plan.operations,
+        dependsOn: plan.dependsOn.map((dependency) => dependency.planId),
+      })
+    )
+  ).slice(0, 16)}`;
+}
+
+/**
+ * Applies a plan's operations to the records its dependencies produced, and
+ * collects its conflicts. Referential integrity lives here, not in the
+ * procedure: every reference must resolve to a record that exists at that
+ * point in the plan.
+ */
+function simulatePlan(plan: Omit<StagedPlan, 'conflicts'>): {
+  records: DestinationRecords;
+  conflicts: PlanConflict[];
+} {
+  const base: DestinationRecords = { accounts: {}, contacts: {} };
+  for (const dependency of plan.dependsOn) {
+    const { records } = simulatePlan(dependency);
+    Object.assign(base.accounts, structuredClone(records.accounts));
+    Object.assign(base.contacts, structuredClone(records.contacts));
+  }
+  const conflicts: PlanConflict[] = [];
+  const { accounts, contacts } = base;
+  const label = `${plan.groupKey} plan`;
+  const account = (key: string) => {
+    const found = accounts[key];
+    if (!found) throw new FatalError(`${label}: no account "${key}"`);
+    return found;
+  };
+  const contact = (key: string) => {
+    const found = contacts[key];
+    if (!found) throw new FatalError(`${label}: no contact "${key}"`);
+    return found;
+  };
+  for (const op of plan.operations) {
+    switch (op.op) {
+      case 'createAccount':
+        if (accounts[op.key]) {
+          throw new FatalError(`${label}: account "${op.key}" exists`);
+        }
+        accounts[op.key] = {
+          key: op.key,
+          name: op.name,
+          owner: op.owner,
+          parent: null,
+          status: op.status ?? 'final',
+          sources: op.sources,
+        };
+        break;
+      case 'createContact':
+        if (contacts[op.key]) {
+          throw new FatalError(`${label}: contact "${op.key}" exists`);
+        }
+        contacts[op.key] = {
+          key: op.key,
+          name: op.name,
+          email: op.email,
+          accounts: [],
+          sources: op.sources,
+        };
+        break;
+      case 'linkContact': {
+        account(op.account);
+        const target = contact(op.contact);
+        if (!target.accounts.includes(op.account)) {
+          target.accounts.push(op.account);
+        }
+        break;
+      }
+      case 'setParent': {
+        // Parent links must stay acyclic, whatever order a plan writes them in.
+        for (let at: string | null = op.parent; at; at = account(at).parent) {
+          if (at === op.account) {
+            throw new FatalError(
+              `${label}: ${op.account} -> ${op.parent} would create a parent cycle`
+            );
+          }
+        }
+        account(op.account).parent = op.parent;
+        break;
+      }
+      case 'setOwner':
+        account(op.key).owner = op.owner;
+        break;
+      case 'markFinal':
+        account(op.key).status = 'final';
+        break;
+      case 'mergeAccount': {
+        const from = account(op.from);
+        const into = account(op.into);
+        if (from.owner !== into.owner) {
+          conflicts.push({
+            kind: 'owner',
+            account: op.into,
+            values: [into.owner, from.owner],
+          });
+        }
+        into.sources = [...into.sources, ...from.sources];
+        delete accounts[op.from];
+        for (const other of Object.values(accounts)) {
+          if (other.parent === op.from) other.parent = op.into;
+        }
+        for (const person of Object.values(contacts)) {
+          person.accounts = [
+            ...new Set(
+              person.accounts.map((key) => (key === op.from ? op.into : key))
+            ),
+          ];
+        }
+        break;
+      }
+      case 'mergeContact': {
+        const from = contact(op.from);
+        const into = contact(op.into);
+        into.accounts = [...new Set([...into.accounts, ...from.accounts])];
+        into.sources = [...into.sources, ...from.sources];
+        delete contacts[op.from];
+        break;
+      }
+      default:
+        throw new FatalError(
+          `${label}: unsupported operation ${JSON.stringify(op)}`
+        );
+    }
+  }
+  return { records: base, conflicts };
+}
+
+/** Catalog step: one page of the customer's legacy export. */
+async function readSourcePage(request: {
+  dataset: string;
+  cursor: string | null;
+}) {
+  'use step';
+  const rows = LEGACY_DATASETS[request.dataset];
+  if (!rows) throw new FatalError(`Unknown dataset "${request.dataset}"`);
+  const start = request.cursor === null ? 0 : Number(request.cursor);
+  const end = start + SOURCE_PAGE_SIZE;
+  return {
+    records: rows.slice(start, end),
+    nextCursor: end < rows.length ? String(end) : null,
+  };
+}
+
+/** Catalog step: which of these keys the destination already has. */
+async function lookupDestination(_request: {
+  destinationId: string;
+  keys: string[];
+}) {
+  'use step';
+  // The simulated destination starts empty for every migration.
+  return { matches: [] as string[] };
+}
+
+/**
+ * Catalog step: an immutable plan of supported operations. Its ID is a hash
+ * of its scope and contents, so a different plan never shares an ID.
+ */
+async function stageChanges(request: {
+  migrationId: string;
+  destinationId: string;
+  groupKey: string;
+  operations: DestinationOp[];
+  dependsOn?: StagedPlan[];
+}): Promise<StagedPlan> {
+  'use step';
+  const draft = {
+    migrationId: request.migrationId,
+    destinationId: request.destinationId,
+    groupKey: request.groupKey,
+    operations: request.operations,
+    dependsOn: request.dependsOn ?? [],
+  };
+  for (const dependency of draft.dependsOn) {
+    if (dependency.destinationId !== draft.destinationId) {
+      throw new FatalError(
+        'A plan can only depend on plans for its destination'
+      );
+    }
+  }
+  const staged = { ...draft, planId: await planIdFor(draft) };
+  // Integrity is checked now, so a broken plan never reaches review.
+  const { conflicts } = simulatePlan(staged);
+  return { ...staged, conflicts };
+}
+
+/** Catalog step: asks a reviewer to resume `token` with a decision. */
+async function requestApproval(request: {
+  planId: string;
+  token: string;
+  summary: string;
+}) {
+  'use step';
+  return { planId: request.planId, token: request.token };
+}
+
+/**
+ * Catalog step: applies a staged plan. The destination comes from the plan,
+ * and the idempotency key must be derived from the plan's ID, so one key can
+ * never name two payloads.
+ */
+async function applyChanges(request: {
+  plan: StagedPlan;
+  idempotencyKey: string;
+}): Promise<ApplyResult> {
+  'use step';
+  const { plan } = request;
+  if ((await planIdFor(plan)) !== plan.planId) {
+    throw new FatalError(`Plan ${plan.planId} changed after it was staged`);
+  }
+  if (request.idempotencyKey !== `apply:${plan.planId}`) {
+    throw new FatalError(
+      `Idempotency key ${request.idempotencyKey} does not belong to plan ${plan.planId}`
+    );
+  }
+  const { records, conflicts } = simulatePlan(plan);
+  if (conflicts.length > 0) {
+    throw new FatalError(`Plan ${plan.planId} has unresolved conflicts`);
+  }
+  return {
+    planId: plan.planId,
+    dependsOn: plan.dependsOn.map((dependency) => dependency.planId),
+    applied: plan.operations.length,
+    // The simulation keeps no memory between calls, so it never sees a replay.
+    replayed: false,
+    records,
+  };
+}
+
+/** Catalog step: integrity invariants over everything a migration applied. */
+async function verifyChanges(request: {
+  destinationId: string;
+  migrationId: string;
+  results: ApplyResult[];
+}) {
+  'use step';
+  // Reconcile: a result another result builds on is superseded by it, and
+  // the remaining results cover disjoint partitions.
+  const superseded = new Set(request.results.flatMap((r) => r.dependsOn));
+  const accounts: Record<string, DestinationAccount> = {};
+  const contacts: Record<string, DestinationContact> = {};
+  const violations: string[] = [];
+  for (const result of request.results) {
+    if (superseded.has(result.planId)) continue;
+    for (const [key, value] of Object.entries(result.records.accounts)) {
+      if (accounts[key]) violations.push(`account ${key} written by two plans`);
+      accounts[key] = value;
+    }
+    for (const [key, value] of Object.entries(result.records.contacts)) {
+      if (contacts[key]) violations.push(`contact ${key} written by two plans`);
+      contacts[key] = value;
+    }
+  }
+  for (const record of Object.values(accounts)) {
+    if (record.parent && !accounts[record.parent]) {
+      violations.push(`dangling parent ${record.key} -> ${record.parent}`);
+    }
+    if (record.status !== 'final') {
+      violations.push(`provisional account ${record.key}`);
+    }
+  }
+  // A contact is one person per normalized email within an account family.
+  const rootOf = (key: string, seen = new Set<string>()): string => {
+    const parent = accounts[key]?.parent;
+    if (!parent || !accounts[parent] || seen.has(parent)) return key;
+    seen.add(key);
+    return rootOf(parent, seen);
+  };
+  const people = new Map<string, string>();
+  for (const person of Object.values(contacts)) {
+    for (const key of person.accounts) {
+      if (!accounts[key]) {
+        violations.push(`dangling link ${person.key} -> ${key}`);
+      }
+    }
+    const lineages = new Set(person.accounts.map((key) => rootOf(key)));
+    for (const lineage of lineages) {
+      const identity = `${lineage}:${person.email.trim().toLowerCase()}`;
+      const seen = people.get(identity);
+      if (seen) violations.push(`duplicate contact ${seen} and ${person.key}`);
+      people.set(identity, person.key);
+    }
+  }
+  const byKey = <T extends { key: string }>(records: Record<string, T>) =>
+    Object.values(records).sort((a, b) => a.key.localeCompare(b.key));
+  return {
+    ok: violations.length === 0,
+    violations,
+    counts: {
+      accounts: Object.keys(accounts).length,
+      contacts: Object.keys(contacts).length,
+      provisional: Object.values(accounts).filter(
+        (record) => record.status !== 'final'
+      ).length,
+    },
+    accounts: byKey(accounts),
+    contacts: byKey(contacts).map((person) => ({
+      ...person,
+      accounts: [...person.accounts].sort(),
+    })),
+  };
+}
+
+/** Catalog step: a human-readable summary of the migration. */
+async function publishReport(request: {
+  migrationId: string;
+  results: unknown;
+}) {
+  'use step';
+  return {
+    reportId: `report-${request.migrationId}`,
+    summary: JSON.stringify(request.results),
+  };
+}
+
+/** Every step a published migration procedure may bind, by catalog name. */
+const MIGRATION_CATALOG = {
+  readSourcePage,
+  lookupDestination,
+  stageChanges,
+  requestApproval,
+  applyChanges,
+  verifyChanges,
+  publishReport,
+};
+
+/** Catalogs this deployment serves, by version. */
+const CATALOGS: Record<string, Record<string, (...args: any[]) => unknown>> = {
+  [MISSION_CATALOG_VERSION]: MISSION_CATALOG,
+  'crm-migration@1': MIGRATION_CATALOG,
+};
+
+/**
+ * Start-time checks on a stored revision: it has an approval record, its
+ * source still matches the hash recorded with it, and it targets the catalog
+ * this deployment serves. The hash catches a source that changed without it,
+ * not a writer who changes both; trust comes from who can publish. Returns
+ * the step map `start()` needs, built from the imported step functions.
+ */
+async function bindMissionRevision(revision: MissionRevision) {
+  const label = `${revision.missionId}@${revision.revision}`;
+  if (!revision.approval?.approvedBy) {
+    throw new FatalError(`Mission ${label} has no approval record`);
+  }
+  if ((await sha256Hex(revision.source)) !== revision.sourceSha256) {
+    throw new FatalError(`Mission ${label} does not match its recorded hash`);
+  }
+  if (!Object.hasOwn(CATALOGS, revision.catalogVersion)) {
+    throw new FatalError(
+      `Mission ${label} targets catalog ${revision.catalogVersion}, which this deployment does not serve`
+    );
+  }
+  const catalog = CATALOGS[revision.catalogVersion];
+  const steps: Record<string, (...args: any[]) => unknown> = {};
+  for (const [alias, name] of Object.entries(revision.steps)) {
+    if (!Object.hasOwn(catalog, name)) {
+      throw new FatalError(`Mission ${label} binds unknown step "${name}"`);
+    }
+    steps[alias] = catalog[name];
+  }
+  return steps;
+}
+
+/** Starts one stored mission revision as a dynamic run. */
+async function startMissionRevision(
+  revision: MissionRevision,
+  input: Record<string, unknown>
+) {
+  'use step';
+  const steps = await bindMissionRevision(revision);
+  const run = await start(revision.source, [input], {
+    experimental_dynamic: { steps },
+  });
+  return { runId: run.runId, workflowName: await run.workflowName };
+}
+
+/**
+ * Starts a published mission revision and hands back the child's run ID. The
+ * recipe's start route makes the same calls.
+ */
+export async function dynamicMissionRun(
+  revision: MissionRevision,
+  input: Record<string, unknown>
+) {
+  'use workflow';
+  const child = await startMissionRevision(revision, input);
+  return { childRunId: child.runId, workflowName: child.workflowName };
+}
+
+interface MissionResult {
+  image: string;
+  confirmed: number;
+}
+
+/**
+ * Static parent that fans one mission run out per image and fans back in
+ * through hooks: each child resumes the hook the parent created for it, as in
+ * the child-workflows recipe.
+ */
+export async function dynamicMissionFanOut(
+  revision: MissionRevision,
+  surveyKey: string,
+  images: string[]
+) {
+  'use workflow';
+  const hooks = images.map((_, index) =>
+    createHook<MissionResult>({ token: `${surveyKey}:mission:${index}` })
+  );
+  await Promise.all(
+    images.map((image, index) =>
+      startMissionRevision(revision, {
+        image,
+        count: 1,
+        reviewTokenPrefix: `${surveyKey}:review:${index}`,
+        parentToken: `${surveyKey}:mission:${index}`,
+      })
+    )
+  );
+  const results = await Promise.all(hooks);
+  return {
+    images: results.length,
+    confirmed: results.reduce((total, result) => total + result.confirmed, 0),
+    results,
+  };
+}
