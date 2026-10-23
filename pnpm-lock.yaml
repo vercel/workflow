@@ -2673,6 +2673,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@workflow/vitest':
         specifier: workspace:*
         version: link:../../packages/vitest

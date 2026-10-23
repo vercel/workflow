@@ -201,17 +201,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 - Default: enabled
 - Node.js VM engine only. Lets an eligible branch of a `Promise.all` or `Promise.race` start its next step as soon as its own step settles, instead of once every step pending beside it has. Inline steps that settle early hand the run to a fresh invocation; queued steps replay in their current handler. Replays act only on work they create. Once either path advances early, completion and failure wait for steps that are started or durably scheduled, but not un-awaited steps identified by the replay's terminal drain. The advance-only replay can publish one per-run safety probe delayed by [`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`](#workflow_inline_ownership_lease_seconds); it does not poll or re-arm while work remains live. If all siblings settle while a hand-off waits for claims and writes to become durable, or during the 10 ms coalescing window after it, the now-redundant replay is normally not sent. Under event-loop load, near-simultaneous leaf steps can still send one idle hand-off and pay its invocation, event-log read, and replay. `WORKFLOW_SEQUENTIAL_REPLAYS=1` does not suppress hand-offs because the runtime value cannot verify the built trigger's concurrency setting. See [Branches advance independently](/docs/changelog/eager-processing#branches-advance-independently).
-- Applies only when at most [`WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING`](#workflow_advance_only_replay_max_pending) other steps were pending when the step attempt started. Eligibility stays fixed as the batch drains.
+- Applies only while the run has exposed at most [`WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING`](#workflow_advance_only_replay_max_pending) other steps at once. Once a wider fan-out is observed, a conservative optional queue hint keeps its later chained rounds on the ordinary wait-for-siblings path. Retrying inline steps in eligible runs publish their delayed, keyed retry message as soon as the attempt settles, so a retry does not wait for a slow inline sibling.
 - On the QuickJS engine (`WORKFLOW_VM=quickjs`), a branch still waits for the steps pending beside it.
 - Set `0` or `false` to restore that behavior on the Node.js engine too, so each round of a fan-out takes as long as its slowest step.
 
 ### `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING`
 
-- Default: `1`
+- Default: `3`
 - Minimum: `0`
-- The most other steps that may have been pending beside a step when its attempt started for its branch to advance at once under [`WORKFLOW_ADVANCE_ONLY_REPLAY`](#workflow_advance_only_replay). In a wider fan-out a branch waits for its siblings, even after the batch drains below the bound.
-- The bound exists because an early replay does work only when the settled branch has a step after the one that settled. In a wide fan-out of one-step branches, every settlement but the last replays for nothing, and each replay reads a log that grows with the fan-out. With the bound, such a fan-out pays at most this many extra replays per round.
-- Raise it to let the branches of wider fan-outs advance independently, at the cost of up to one replay per settlement in them.
+- The most other steps a run may expose at once for its branches to advance early under [`WORKFLOW_ADVANCE_ONLY_REPLAY`](#workflow_advance_only_replay). In a wider fan-out branches wait for their siblings, including in later chained rounds after the initial batch drains.
+- The default covers up to four parallel branches. It is the smallest measured value that lets both three- and four-agent chains advance independently; a limit of 4 did not improve those continuation gaps and admitted more idle work.
+- The bound exists because an early replay does work only when the settled branch has a step after the one that settled. In a wide fan-out of one-step branches, eligible settlements can replay for nothing, and each replay reads a log that grows with the fan-out. The conservative run-wide hint prevents a wide chained fan-out from splitting into smaller eligible batches; an 8×4 control stayed within 10% of the kill switch at the default.
+- Raise it to let more branches of wider fan-outs advance independently, at the cost of up to one replay per eligible settlement in them.
 
 ### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`
 

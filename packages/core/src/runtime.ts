@@ -54,8 +54,8 @@ import {
   advanceOnlyHasWork,
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
-  pendingCreationsFollowFirstStart,
-  pendingSiblingCountAtLatestStart,
+  analyzePendingStepsForReplay,
+  peakPendingStepCountIn,
   pendingStepIdsIn,
   runRowFromCreation,
   settlesBranch,
@@ -862,6 +862,7 @@ export function workflowEntrypoint(
           hookResumeTiming,
           waitContinuation,
           advanceOnly: incomingAdvanceOnly,
+          advanceOnlyEligible: incomingAdvanceOnlyEligible,
           terminalBackstop: incomingTerminalBackstop,
           terminalBackstopAttempt: incomingTerminalBackstopAttempt,
         } = WorkflowInvokePayloadSchema.parse(message_);
@@ -1918,6 +1919,27 @@ export function workflowEntrypoint(
                   // second probe there would duplicate the chain on Worlds
                   // whose queue keys are released after delivery.
                   let ownsTerminalSafetyProbe = advanceOnly;
+                  // Cached per invocation. Once a run has exposed a wider
+                  // fan-out it cannot become eligible again as that fan-out
+                  // drains, and later suspensions can only flip this latch
+                  // from true to false.
+                  let advanceOnlyRunStayedWithinBound: boolean | undefined =
+                    incomingAdvanceOnlyEligible;
+                  const advanceOnlyEligibilityFor = (
+                    pendingStepCount: number
+                  ): boolean | undefined => {
+                    if (!isAdvanceOnlyReplayEnabled()) return undefined;
+                    const maxPending = getAdvanceOnlyReplayMaxPending();
+                    if (pendingStepCount > maxPending + 1) {
+                      advanceOnlyRunStayedWithinBound = false;
+                    } else {
+                      if (eventLog.type !== 'ready') return false;
+                      advanceOnlyRunStayedWithinBound ??=
+                        peakPendingStepCountIn(eventLog.events) <=
+                        maxPending + 1;
+                    }
+                    return advanceOnlyRunStayedWithinBound;
+                  };
 
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
@@ -2001,6 +2023,9 @@ export function workflowEntrypoint(
                             stepId: incomingStepId,
                             stepName: incomingStepName,
                             ...(runContext ? { runContext } : {}),
+                            ...(incomingAdvanceOnlyEligible === false
+                              ? { advanceOnlyEligible: false as const }
+                              : {}),
                             // Keep the re-routed hop in the TTR decomposition.
                             ...(hookResumeTiming ? { hookResumeTiming } : {}),
                           })
@@ -2159,11 +2184,9 @@ export function workflowEntrypoint(
                           (event) => event.eventType === 'run_started'
                         );
 
-                        // Check for pending steps: any created step without
-                        // a matching step_completed or step_failed.
-                        const pendingStepIds = pendingStepIdsIn(loaded.events);
                         const advanceOnlyReplaySupported =
                           isAdvanceOnlyReplayEnabled() &&
+                          incomingAdvanceOnlyEligible !== false &&
                           runCreatedEvent?.eventType === 'run_created' &&
                           !useQuickJSVm({
                             executionContext:
@@ -2172,28 +2195,72 @@ export function workflowEntrypoint(
                                 : undefined,
                           });
                         const maxPending = getAdvanceOnlyReplayMaxPending();
+                        const pendingStepIds = pendingStepIdsIn(loaded.events);
+                        // A wide batch with a live sibling cannot be a
+                        // terminal-drain tail, so the pending count alone is
+                        // enough to reject it. Avoid the richer full-log
+                        // analysis on this dominant wide-fan-out path.
+                        let hasStartedPendingStep = false;
+                        if (
+                          advanceOnlyReplaySupported &&
+                          pendingStepIds.size > maxPending
+                        ) {
+                          for (
+                            let index = loaded.events.length - 1;
+                            index >= 0;
+                            index--
+                          ) {
+                            const event = loaded.events[index];
+                            if (
+                              event.eventType === 'step_started' &&
+                              pendingStepIds.has(event.correlationId)
+                            ) {
+                              hasStartedPendingStep = true;
+                              break;
+                            }
+                          }
+                        }
+                        const pendingAnalysis =
+                          advanceOnlyReplaySupported &&
+                          !(
+                            pendingStepIds.size > maxPending &&
+                            hasStartedPendingStep
+                          )
+                            ? analyzePendingStepsForReplay(
+                                loaded.events,
+                                incomingStepId
+                              )
+                            : undefined;
+                        const pendingSiblingCount =
+                          pendingAnalysis?.pendingSiblingCountAtLatestStart ??
+                          Number.POSITIVE_INFINITY;
+                        const runStayedWithinAdvanceOnlyBound =
+                          (pendingAnalysis?.peakPendingStepCount ??
+                            Number.POSITIVE_INFINITY) <=
+                          maxPending + 1;
+                        advanceOnlyRunStayedWithinBound =
+                          runStayedWithinAdvanceOnlyBound;
                         const withinAdvanceOnlyBound =
                           advanceOnlyReplaySupported &&
+                          runStayedWithinAdvanceOnlyBound &&
                           pendingStepIds.size <= maxPending &&
-                          (pendingSiblingCountAtLatestStart(
-                            loaded.events,
-                            incomingStepId
-                          ) ?? Number.POSITIVE_INFINITY) <= maxPending;
-                        // The full-log terminal probe is needed only to bypass
-                        // the bound, or on a redelivery where it prevents
-                        // drain-only creations from being recovered as lost
-                        // dispatches. First deliveries already leave every
-                        // never-started sibling alone.
+                          pendingSiblingCount <= maxPending;
+                        // The full-log terminal probe may bypass the current
+                        // pending count when a bounded attempt is the last live
+                        // executor beside creation-only terminal-drain rows. It
+                        // never bypasses that attempt's peak sibling bound: a
+                        // queued tail from a wider fan-out must not turn into a
+                        // series of early replays merely because it started
+                        // late. A redelivery also uses the probe to keep
+                        // drain-only creations out of lost-dispatch recovery.
                         const terminalProbe =
                           advanceOnlyReplaySupported &&
                           pendingStepIds.size > 0 &&
+                          pendingSiblingCount <= maxPending &&
                           (!withinAdvanceOnlyBound ||
                             advanceOnlyDelivery.recoverNeverStarted) &&
-                          pendingCreationsFollowFirstStart(
-                            loaded.events,
-                            incomingStepId,
-                            pendingStepIds
-                          );
+                          pendingAnalysis?.pendingCreationsFollowFirstStart ===
+                            true;
 
                         if (pendingStepIds.size > 0) {
                           // A pending step that THIS message inline-owns (a
@@ -3873,6 +3940,10 @@ export function workflowEntrypoint(
                           eventLog.type === 'ready',
                           'Workflow suspended before its event log was loaded'
                         );
+                        const suspensionAdvanceOnlyEligible =
+                          err.stepCount > 0
+                            ? advanceOnlyEligibilityFor(err.stepCount)
+                            : undefined;
                         let suspensionResult: Awaited<
                           ReturnType<typeof handleSuspension>
                         >;
@@ -3898,6 +3969,9 @@ export function workflowEntrypoint(
                                 namespace
                               ),
                               getTraceCarrier: nextTraceCarrier,
+                              ...(suspensionAdvanceOnlyEligible === false
+                                ? { advanceOnlyEligible: false as const }
+                                : {}),
                             },
                             // Inline pre-claims: lets the batched fan-out
                             // fold the lazy-inline steps' step_created +
@@ -4656,6 +4730,9 @@ export function workflowEntrypoint(
                                 // start the step without a blocking runs.get
                                 // — see RunDispatchContextSchema.
                                 runContext: runDispatchContext(workflowRun),
+                                ...(advanceOnlyRunStayedWithinBound === false
+                                  ? { advanceOnlyEligible: false as const }
+                                  : {}),
                                 ...(stepResumeTiming
                                   ? { hookResumeTiming: stepResumeTiming }
                                   : {}),
@@ -5225,6 +5302,43 @@ export function workflowEntrypoint(
                         const claimsSettled = inlineExecutions.map(() =>
                           withResolvers<void>()
                         );
+                        let retryTraceCarrier:
+                          | Promise<Record<string, string>>
+                          | undefined;
+                        const publishInlineRetry = async (
+                          step: (typeof inlineExecutions)[number],
+                          delaySeconds: number
+                        ) => {
+                          // Every producer of this step's dispatch uses the
+                          // same step/name-scoped key. If an advance-only
+                          // replay observes step_retrying concurrently, one
+                          // publish wins and the other is a no-op; neither
+                          // continues from an assumed queue result.
+                          retryTraceCarrier ??= nextTraceCarrier();
+                          await queueMessage(
+                            world,
+                            getWorkflowQueueName(workflowName, namespace),
+                            {
+                              runId,
+                              stepId: step.correlationId,
+                              stepName: step.stepName,
+                              traceCarrier: await retryTraceCarrier,
+                              requestedAt: new Date(),
+                              runContext: runDispatchContext(workflowRun),
+                              ...(advanceOnlyRunStayedWithinBound === false
+                                ? { advanceOnlyEligible: false as const }
+                                : {}),
+                            },
+                            {
+                              delaySeconds,
+                              idempotencyKey: stepDispatchIdempotencyKey(
+                                step.correlationId,
+                                step.stepName
+                              ),
+                            }
+                          );
+                        };
+                        const earlyRetryDispatches: Promise<boolean>[] = [];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
                             const run = () => {
@@ -5352,13 +5466,42 @@ export function workflowEntrypoint(
                               run,
                               isFreshClaim ? 'debug' : 'warn'
                             );
-                            return executed.finally(() => {
+                            const execution = executed.finally(() => {
                               inFlightOwnedSteps.delete(s.correlationId);
                               // Covers the executions that never sent a
                               // claim: a single-flight loser, or an executor
                               // that returned before its start.
                               claimsSettled[stepIndex].resolve();
                             });
+                            // A retry is already durable when executeStep
+                            // returns it. Publish its delayed step message now,
+                            // instead of holding the retry behind unrelated
+                            // sibling bodies in this inline batch. The keyed
+                            // end-of-batch path below retries this publication
+                            // if it fails.
+                            earlyRetryDispatches.push(
+                              execution.then(
+                                async (result) => {
+                                  if (
+                                    result.type !== 'retry' ||
+                                    !isAdvanceOnlyReplayEnabled()
+                                  ) {
+                                    return false;
+                                  }
+                                  try {
+                                    await publishInlineRetry(
+                                      s,
+                                      result.timeoutSeconds
+                                    );
+                                    return true;
+                                  } catch {
+                                    return false;
+                                  }
+                                },
+                                () => false
+                              )
+                            );
+                            return execution;
                           }
                         );
                         // The joins below sit BETWEEN these promises' creation
@@ -5397,11 +5540,21 @@ export function workflowEntrypoint(
                         // have nothing after their step (see
                         // ADVANCE_ONLY_REPLAY_MAX_PENDING).
                         const branchHandOffs: Promise<void>[] = [];
+                        const advanceOnlyEnabled = isAdvanceOnlyReplayEnabled();
+                        let advanceOnlyMaxPending = 0;
+                        let runAllowsAdvanceOnly = false;
+                        if (advanceOnlyEnabled) {
+                          advanceOnlyMaxPending =
+                            getAdvanceOnlyReplayMaxPending();
+                          runAllowsAdvanceOnly =
+                            advanceOnlyEligibilityFor(pendingSteps.length) ===
+                            true;
+                        }
                         if (
                           stepExecutionPromises.length > 1 &&
-                          isAdvanceOnlyReplayEnabled() &&
-                          pendingSteps.length - 1 <=
-                            getAdvanceOnlyReplayMaxPending() &&
+                          advanceOnlyEnabled &&
+                          pendingSteps.length - 1 <= advanceOnlyMaxPending &&
+                          runAllowsAdvanceOnly &&
                           !world.capabilities?.invoke
                         ) {
                           const batchSettled = Promise.allSettled(
@@ -5548,7 +5701,10 @@ export function workflowEntrypoint(
                               suspensionResult.deferredBatchWork,
                             ]);
                           } catch (dispatchErr) {
-                            await Promise.allSettled(stepExecutionPromises);
+                            await Promise.allSettled([
+                              ...stepExecutionPromises,
+                              ...earlyRetryDispatches,
+                            ]);
                             throw dispatchErr;
                           }
                           stepResults = await Promise.all(
@@ -5610,10 +5766,14 @@ export function workflowEntrypoint(
                           replayBudget.resume();
                         }
 
+                        const earlyRetryDispatched =
+                          await Promise.all(earlyRetryDispatches);
+
                         // Aggregate the batch results. `retry` steps (which
-                        // already exist, since their `step_started` succeeded) are
-                        // re-queued per-step as background steps with their own
-                        // delay; `throttled` steps (rejected on the create-claim,
+                        // already exist, since their `step_started` succeeded)
+                        // were re-queued as soon as they settled; the list below
+                        // retains only failed early publications for the
+                        // end-of-batch fallback. `throttled` steps (rejected on the create-claim,
                         // so never created) instead defer redelivery of this
                         // orchestrator message so they re-run inline with input
                         // on replay; completed/failed steps already wrote their
@@ -5626,6 +5786,7 @@ export function workflowEntrypoint(
                           step: (typeof inlineExecutions)[number];
                           delaySeconds: number;
                         }[] = [];
+                        let hasRetry = false;
                         let anyPendingOps = false;
                         // A throttled inline step delays redelivery of THIS
                         // orchestrator message rather than being re-queued as a
@@ -5650,10 +5811,13 @@ export function workflowEntrypoint(
                           const r = stepResults[i];
                           const s = inlineExecutions[i];
                           if (r.type === 'retry') {
-                            toRetry.push({
-                              step: s,
-                              delaySeconds: r.timeoutSeconds,
-                            });
+                            hasRetry = true;
+                            if (!earlyRetryDispatched[i]) {
+                              toRetry.push({
+                                step: s,
+                                delaySeconds: r.timeoutSeconds,
+                              });
+                            }
                           } else if (r.type === 'throttled') {
                             throttleTimeout = Math.max(
                               throttleTimeout ?? 0,
@@ -5693,51 +5857,9 @@ export function workflowEntrypoint(
                         }
 
                         if (toRetry.length > 0) {
-                          const retryTraceCarrier = await nextTraceCarrier();
                           await Promise.all(
                             toRetry.map(({ step, delaySeconds }) =>
-                              queueMessage(
-                                world,
-                                getWorkflowQueueName(workflowName, namespace),
-                                {
-                                  runId,
-                                  stepId: step.correlationId,
-                                  stepName: step.stepName,
-                                  traceCarrier: retryTraceCarrier,
-                                  requestedAt: new Date(),
-                                  runContext: runDispatchContext(workflowRun),
-                                },
-                                {
-                                  delaySeconds,
-                                  // Key the delayed retry on the step's
-                                  // dispatch key so it dedupes against the
-                                  // keyed re-dispatch the suspension handler
-                                  // performs on replay (it uses the same
-                                  // stepDispatchIdempotencyKey).
-                                  //
-                                  // Without this, a mixed batch where one step
-                                  // `completed` with unflushed background ops
-                                  // (`anyPendingOps`) and another step is
-                                  // retrying would double-dispatch the retry:
-                                  // the `anyPendingOps` branch below queues an
-                                  // immediate plain continuation, whose replay
-                                  // sees the still-`retrying` step as pending
-                                  // and re-dispatches it *immediately* and
-                                  // *with* a key. Since this delayed retry had
-                                  // no key, the two messages wouldn't dedupe:
-                                  // the step would run twice, the configured
-                                  // retry backoff would be ignored (plain
-                                  // `Error` retries persist no `retryAfter`, so
-                                  // the world has no `TooEarly` guard), and the
-                                  // retry body could run early/concurrently.
-                                  // Sharing the key lets the earlier delayed
-                                  // message win, honoring the backoff.
-                                  idempotencyKey: stepDispatchIdempotencyKey(
-                                    step.correlationId,
-                                    step.stepName
-                                  ),
-                                }
-                              )
+                              publishInlineRetry(step, delaySeconds)
                             )
                           );
                         }
@@ -5761,7 +5883,20 @@ export function workflowEntrypoint(
                           return;
                         }
 
-                        if (toRetry.length > 0) {
+                        if (hasRetry) {
+                          // An early retry may already have completed (and
+                          // advanced its branch) while this invocation was
+                          // still waiting for a slow sibling. The batch's
+                          // in-memory `retry` result predates that race, so do
+                          // not return from it: reload storage and let the
+                          // last completer drive the run forward. If the retry
+                          // is still pending, the keyed dispatch path observes
+                          // that state and leaves it to its queued executor.
+                          if (earlyRetryDispatched.some(Boolean)) {
+                            eventLog = nextEventLogLoad(eventLog);
+                            eventLogFromInlineDelta = false;
+                            continue;
+                          }
                           // Some inline steps will be re-run via their queued
                           // retry messages; the background-step path replays
                           // once all steps are terminal. Don't loop here: the

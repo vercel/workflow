@@ -466,9 +466,8 @@ export function isInlineOwnershipEnabled(): boolean {
  * only on the work they create and leave steps still in flight to the
  * invocations running them.
  *
- * A branch advances early only when at most
- * {@link getAdvanceOnlyReplayMaxPending} siblings were pending when its
- * attempt started.
+ * A branch advances early only while the run has exposed at most
+ * {@link getAdvanceOnlyReplayMaxPending} pending siblings at once.
  *
  * `WORKFLOW_ADVANCE_ONLY_REPLAY=0` (or `false`) is the kill switch: a settled
  * branch waits for its siblings again, exactly as before.
@@ -488,12 +487,16 @@ export function isAdvanceOnlyReplayEnabled(): boolean {
  * of those replays costs a full pass over a log that grows with the fan-out, so
  * replaying on all of them makes the fan-out quadratic (measured on the Local
  * World: a 64-branch `Promise.all` went from 3.5s to 12.7s, and 256 branches
- * from 32s to more than ten minutes). Eligibility is fixed at attempt start,
- * so a wide batch does not become eligible as it drains. The default covers
- * the common two-branch shape without taxing wider fan-outs; operators can
- * raise it for wider groups of chained branches.
+ * from 32s to more than ten minutes). Once a run exposes a wider fan-out, a
+ * conservative queue hint keeps its later chained rounds ineligible too, so
+ * the draining tail cannot turn into smaller replaying batches. The default
+ * covers groups of up to four branches (three pending siblings), including the
+ * multi-branch agent shape from vercel/workflow#4457. Measured on the Local
+ * World, the default kept an 8-by-4 chained control within 10% of the kill
+ * switch, while raising the limit to four added idle work without improving
+ * the three- or four-branch continuation gap.
  */
-export const ADVANCE_ONLY_REPLAY_MAX_PENDING = 1;
+export const ADVANCE_ONLY_REPLAY_MAX_PENDING = 3;
 
 /**
  * The most sibling steps that may be pending when an attempt starts for its

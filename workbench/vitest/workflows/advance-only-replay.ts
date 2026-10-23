@@ -124,6 +124,67 @@ export async function threeParallelChains(
   ]);
 }
 
+export async function parallelChainsBenchmark(
+  markerPath: string,
+  width: number,
+  fastMs: number,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.all(
+    Array.from({ length: width }, (_, index) =>
+      namedChain(
+        markerPath,
+        index === 0 ? 'many-fast-' : `many-slow-${index}-`,
+        index === 0 ? fastMs : slowMs
+      )
+    )
+  );
+}
+
+async function retryOnceStep(markerPath: string, retryAfterMs: number) {
+  'use step';
+  const { attempt } = getStepMetadata();
+  await appendFile(markerPath, `retry-once-${attempt} start ${Date.now()}\n`);
+  if (attempt === 1) {
+    throw new RetryableError('once', { retryAfter: retryAfterMs });
+  }
+  await appendFile(markerPath, `retry-once-${attempt} end ${Date.now()}\n`);
+}
+
+export async function retryingBranchBesideSlowSibling(
+  markerPath: string,
+  slowMs: number,
+  retryAfterMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    (async () => {
+      await retryOnceStep(markerPath, retryAfterMs);
+      await markerStep(markerPath, 'retry-next', 0);
+    })(),
+    markerStep(markerPath, 'retry-slow-sibling', slowMs),
+  ]);
+}
+
+export async function nestedParallelToolsBesideSlowSibling(
+  markerPath: string,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    (async () => {
+      await markerStep(markerPath, 'agent-model-1', 100);
+      await Promise.all([
+        markerStep(markerPath, 'agent-tool-1', 50),
+        markerStep(markerPath, 'agent-tool-2', 50),
+      ]);
+      await markerStep(markerPath, 'agent-model-2', 0);
+    })(),
+    markerStep(markerPath, 'agent-slow-sibling', slowMs),
+  ]);
+}
+
 export async function detachedStep(markerPath: string, delayMs: number) {
   'use workflow';
   const detached = markerStep(markerPath, 'detached', delayMs);

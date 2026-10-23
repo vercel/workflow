@@ -124,6 +124,8 @@ export interface SuspensionHandlerParams {
   stepDispatch?: {
     /** The unified workflow queue this run's step messages are published to. */
     queueName: ValidQueueName;
+    /** Propagates a conservative run-wide advance-only eligibility decision. */
+    advanceOnlyEligible?: false;
     /**
      * Lazily resolves the trace carrier to stamp on the step messages.
      * Called at most once per suspension (memoized here).
@@ -1848,6 +1850,9 @@ export async function handleSuspension({
                 traceCarrier,
                 requestedAt: new Date(),
                 runContext: runDispatchContext(run),
+                ...(stepDispatch?.advanceOnlyEligible === false
+                  ? { advanceOnlyEligible: false as const }
+                  : {}),
               },
               opts: {
                 idempotencyKey: stepDispatchIdempotencyKey(

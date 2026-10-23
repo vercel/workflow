@@ -116,6 +116,24 @@ const THREE_LEAVES = workflowSource(`
   return 'done';
 `);
 
+const THREE_TWO_STEP_CHAINS = workflowSource(`
+  await Promise.all([
+    (async () => {
+      await branchStep('a1');
+      await branchStep('a2');
+    })(),
+    (async () => {
+      await branchStep('b1');
+      await branchStep('b2');
+    })(),
+    (async () => {
+      await branchStep('c1');
+      await branchStep('c2');
+    })(),
+  ]);
+  return 'done';
+`);
+
 /** A two-step chain beside a one-step sibling, the chain listed first. */
 const CHAIN_BESIDE_SLOW = workflowSource(`
   await Promise.all([
@@ -591,6 +609,52 @@ describe('background path: a queued step settling beside pending siblings', () =
     expect(h.events.map((e) => e.eventType)).toContain('run_completed');
   });
 
+  it('propagates wide-fan-out ineligibility to later chained rounds', async () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = '1';
+    const runId = newRunId();
+    const firstInline = gate();
+    bodyGates.set('a1', firstInline);
+    const h = await setupHarness(runId, THREE_TWO_STEP_CHAINS);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+    await vi.waitFor(
+      () => {
+        expect(h.stepMessageFor('b1')).toBeDefined();
+        expect(h.stepMessageFor('c1')).toBeDefined();
+      },
+      { timeout: 5_000 }
+    );
+    expect(h.stepMessageFor('b1')).toMatchObject({
+      advanceOnlyEligible: false,
+    });
+    expect(h.stepMessageFor('c1')).toMatchObject({
+      advanceOnlyEligible: false,
+    });
+
+    await h.deliver(h.stepMessageFor('b1'), 'msg_b1');
+    await h.deliver(h.stepMessageFor('c1'), 'msg_c1');
+    const queuedBeforeSecondRound = h.queued.length;
+    firstInline.open();
+    await vi.waitFor(
+      () => {
+        expect(h.queued.length).toBeGreaterThanOrEqual(
+          queuedBeforeSecondRound + 2
+        );
+      },
+      { timeout: 5_000 }
+    );
+    const secondRoundMessages = h.queued
+      .slice(queuedBeforeSecondRound)
+      .filter((message) => typeof message.stepId === 'string');
+    expect(secondRoundMessages).toHaveLength(2);
+    for (const [index, message] of secondRoundMessages.entries()) {
+      expect(message).toMatchObject({ advanceOnlyEligible: false });
+      await h.deliver(message, `msg_second_${index}`);
+    }
+    await flow;
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
   it('waits for the siblings again with the kill switch off', async () => {
     process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
     const { h, slow, flow } = await deliverQueuedStepBesideSlow(
@@ -599,6 +663,7 @@ describe('background path: a queued step settling beside pending siblings', () =
     );
 
     expect(h.stepHas('fast2', 'step_created')).toBe(false);
+    expect(h.stepMessageFor('fast1')).not.toHaveProperty('advanceOnlyEligible');
 
     slow.open();
     await flow;

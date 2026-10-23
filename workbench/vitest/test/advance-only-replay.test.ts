@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { runtimeLogger } from '@workflow/core/logger';
+import { describe, expect, it, vi } from 'vitest';
 import { start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import {
@@ -13,10 +14,13 @@ import {
   duplicateProbe,
   failAfterRaceLoser,
   fastFirstParallelChains,
+  nestedParallelToolsBesideSlowSibling,
   oneStepFanoutBenchmark,
+  parallelChainsBenchmark,
   queuedRaceLoserWithDetachedTerminalDrain,
   raceLoser,
   raceThenNext,
+  retryingBranchBesideSlowSibling,
   retryingRaceLoserWithDetachedTerminalDrain,
   slowFirstParallelChains,
   threeParallelChains,
@@ -79,6 +83,9 @@ async function runWithTimeline(
     | typeof twoLeafPromiseAll
     | typeof raceThenNext
     | typeof threeParallelChains
+    | typeof parallelChainsBenchmark
+    | typeof retryingBranchBesideSlowSibling
+    | typeof nestedParallelToolsBesideSlowSibling
     | typeof twoDifferentLeafDurations
     | typeof detachedAfterAdvanceOnlyReplay
     | typeof detachedStep
@@ -422,19 +429,150 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       ).toBeLessThanOrEqual(150);
     });
 
-    it('keeps three chains in lockstep at the default pending limit', async () => {
+    it.each([
+      3, 4,
+    ])('advances %i chains at the default pending limit', async (width) => {
       const { markers, timeline } = await runWithTimeline(
-        threeParallelChains,
-        [100, 500],
-        'three-chains-default'
+        parallelChainsBenchmark,
+        [width, 100, 500],
+        `${width}-chains-default`
       );
-      const fast2 = markerAt(markers, 'three-fast-2', 'start');
-      expect(fast2, timeline).toBeGreaterThanOrEqual(
-        markerAt(markers, 'three-slow-a-1', 'end')
+      const fast2 = markerAt(markers, 'many-fast-2', 'start');
+      for (let index = 1; index < width; index++) {
+        expect(fast2, timeline).toBeLessThan(
+          markerAt(markers, `many-slow-${index}-1`, 'end')
+        );
+      }
+    });
+
+    it('retries a branch without waiting for its slow inline sibling', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        retryingBranchBesideSlowSibling,
+        [3_000, 200],
+        'retry-beside-slow-sibling'
       );
-      expect(fast2, timeline).toBeGreaterThanOrEqual(
-        markerAt(markers, 'three-slow-b-1', 'end')
+      expect(markerAt(markers, 'retry-once-2', 'start'), timeline).toBeLessThan(
+        markerAt(markers, 'retry-slow-sibling', 'end')
       );
+      expect(markerAt(markers, 'retry-next', 'start'), timeline).toBeLessThan(
+        markerAt(markers, 'retry-slow-sibling', 'end')
+      );
+      for (const label of ['retry-once-1', 'retry-once-2', 'retry-next']) {
+        expect(
+          markers.filter(
+            (marker) => marker.label === label && marker.phase === 'start'
+          ),
+          timeline
+        ).toHaveLength(1);
+      }
+    });
+
+    it('does not duplicate retrying branch bodies across concurrent runs', async () => {
+      const runs = await Promise.all(
+        Array.from({ length: 10 }, (_, index) =>
+          runWithTimeline(
+            retryingBranchBesideSlowSibling,
+            [1_500, 200],
+            `retry-coalescing-stress-${index}`
+          )
+        )
+      );
+      for (const { markers, timeline } of runs) {
+        for (const label of [
+          'retry-once-1',
+          'retry-once-2',
+          'retry-next',
+          'retry-slow-sibling',
+        ]) {
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'start'
+            ),
+            timeline
+          ).toHaveLength(1);
+        }
+      }
+    }, 60_000);
+
+    it('keeps a retry behind its inline sibling when advance-only replay is disabled', async () => {
+      const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
+      try {
+        const { markers, timeline } = await runWithTimeline(
+          retryingBranchBesideSlowSibling,
+          [1_500, 200],
+          'retry-kill-switch'
+        );
+        expect(
+          markerAt(markers, 'retry-once-2', 'start'),
+          timeline
+        ).toBeGreaterThanOrEqual(
+          markerAt(markers, 'retry-slow-sibling', 'end')
+        );
+      } finally {
+        if (original === undefined) {
+          delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+        } else {
+          process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = original;
+        }
+      }
+    });
+
+    it('falls back to the end-of-batch retry send when the early send fails', async () => {
+      const world = await getWorld();
+      const originalQueue = world.queue;
+      let failedEarlySend = false;
+      world.queue = (async (...args: Parameters<typeof originalQueue>) => {
+        const opts = args[2] as { delaySeconds?: unknown } | undefined;
+        if (!failedEarlySend && typeof opts?.delaySeconds === 'number') {
+          failedEarlySend = true;
+          throw new Error('retry send unavailable');
+        }
+        return originalQueue.apply(world, args);
+      }) as typeof originalQueue;
+      try {
+        const { markers, timeline } = await runWithTimeline(
+          retryingBranchBesideSlowSibling,
+          [500, 200],
+          'retry-send-fallback'
+        );
+        expect(failedEarlySend).toBe(true);
+        for (const label of ['retry-once-1', 'retry-once-2', 'retry-next']) {
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'start'
+            ),
+            timeline
+          ).toHaveLength(1);
+        }
+      } finally {
+        world.queue = originalQueue;
+      }
+    });
+
+    it('advances nested parallel tools inside one branch', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        nestedParallelToolsBesideSlowSibling,
+        [1_500],
+        'nested-tools-beside-slow-sibling'
+      );
+      expect(
+        markerAt(markers, 'agent-model-2', 'start'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'agent-slow-sibling', 'end'));
+      for (const label of [
+        'agent-model-1',
+        'agent-tool-1',
+        'agent-tool-2',
+        'agent-model-2',
+      ]) {
+        expect(
+          markers.filter(
+            (marker) => marker.label === label && marker.phase === 'start'
+          ),
+          timeline
+        ).toHaveLength(1);
+      }
     });
 
     it('advances three chains through the hand-off path when the pending limit is 2', async () => {
@@ -650,6 +788,11 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
 type Measurement = {
   wallMs: number;
   cpuMs: number;
+  handOffSends?: number;
+  idleReplays?: number;
+  queuedEarlyReplays?: number;
+  terminalProbes?: number;
+  terminalProbePending?: number[];
   advanceGapMs?: number;
   detachedStartMs?: number;
   detachedEndMs?: number;
@@ -664,15 +807,61 @@ async function measure(
     | typeof twoLeafBenchmark,
   args: number[]
 ): Promise<Measurement> {
+  const world = await getWorld();
+  const originalQueue = world.queue;
+  let handOffSends = 0;
+  world.queue = (async (...queueArgs: Parameters<typeof originalQueue>) => {
+    const payload = queueArgs[1] as { advanceOnly?: unknown };
+    if (payload.advanceOnly === true) handOffSends++;
+    return originalQueue.apply(world, queueArgs);
+  }) as typeof originalQueue;
+  const countIdleReplays =
+    process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_COUNT_IDLE === '1';
+  const idleReplayLogs = countIdleReplays
+    ? vi.spyOn(runtimeLogger, 'debug').mockImplementation(() => {})
+    : undefined;
   const cpuStart = process.cpuUsage();
   const wallStart = performance.now();
-  const run = await start(workflow, args as never);
-  await run.returnValue;
-  const cpu = process.cpuUsage(cpuStart);
-  return {
-    wallMs: Math.round(performance.now() - wallStart),
-    cpuMs: Math.round((cpu.user + cpu.system) / 1_000),
-  };
+  try {
+    const run = await start(workflow, args as never);
+    await run.returnValue;
+    const cpu = process.cpuUsage(cpuStart);
+    return {
+      wallMs: Math.round(performance.now() - wallStart),
+      cpuMs: Math.round((cpu.user + cpu.system) / 1_000),
+      handOffSends,
+      ...(idleReplayLogs
+        ? {
+            idleReplays: idleReplayLogs.mock.calls.filter(
+              ([message]) =>
+                message === 'Advance-only replay reached no new work; returning'
+            ).length,
+            queuedEarlyReplays: idleReplayLogs.mock.calls.filter(
+              ([message]) =>
+                message ===
+                'Background step done with other steps pending, replaying advance-only'
+            ).length,
+            terminalProbes: idleReplayLogs.mock.calls.filter(
+              ([message, metadata]) =>
+                message ===
+                  'Background step done with other steps pending, replaying advance-only' &&
+                metadata?.terminalProbe === true
+            ).length,
+            terminalProbePending: idleReplayLogs.mock.calls
+              .filter(
+                ([message, metadata]) =>
+                  message ===
+                    'Background step done with other steps pending, replaying advance-only' &&
+                  metadata?.terminalProbe === true
+              )
+              .map(([, metadata]) => Number(metadata?.pendingSteps)),
+          }
+        : {}),
+    };
+  } finally {
+    idleReplayLogs?.mockRestore();
+    world.queue = originalQueue;
+  }
 }
 
 async function measureAdvanceGap(
@@ -742,6 +931,8 @@ async function measureTerminalDrainRace(
 
 async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
   const results: Record<string, Measurement[]> = {};
+  const configuredPendingLimit =
+    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING ?? '3';
   const selectedMode = process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_MODE;
   const selectedShape = process.env.WORKFLOW_ADVANCE_ONLY_BENCHMARK_SHAPE;
   const rounds = Number(
@@ -765,8 +956,13 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
       ['2x1-noop', twoLeafBenchmark, [0]],
       ['2x1-200ms', twoLeafBenchmark, [200]],
       ['2x1-200-800ms', twoDifferentLeafBenchmark, [200, 800]],
+      ['3x1', oneStepFanoutBenchmark, [3]],
+      ['4x1', oneStepFanoutBenchmark, [4]],
+      ['5x1', oneStepFanoutBenchmark, [5]],
+      ['8x1', oneStepFanoutBenchmark, [8]],
       ['8x4', chainedFanoutBenchmark, [8, 4]],
       ['64x1', oneStepFanoutBenchmark, [64]],
+      ['128x1', oneStepFanoutBenchmark, [128]],
       ['256x1', oneStepFanoutBenchmark, [256]],
     ] as const) {
       if (
@@ -775,6 +971,14 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         !(
           selectedShape === 'two-leaf-all' &&
           (shape === '2x1-noop' || shape === '2x1-200ms')
+        ) &&
+        !(
+          selectedShape === 'pending-limit-fanouts' &&
+          ['3x1', '4x1', '5x1', '8x1', '8x4'].includes(shape)
+        ) &&
+        !(
+          selectedShape === 'wide-fanout-controls' &&
+          (shape === '64x1' || shape === '128x1')
         )
       ) {
         continue;
@@ -843,6 +1047,22 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         ['three-fast-2', 'start'],
         '4',
       ],
+      [
+        'three-agent-chains',
+        parallelChainsBenchmark,
+        [3, 200, 1_500],
+        ['many-fast-1', 'end'],
+        ['many-fast-2', 'start'],
+        configuredPendingLimit,
+      ],
+      [
+        'four-agent-chains',
+        parallelChainsBenchmark,
+        [4, 200, 1_500],
+        ['many-fast-1', 'end'],
+        ['many-fast-2', 'start'],
+        configuredPendingLimit,
+      ],
     ] as const) {
       if (
         selectedShape &&
@@ -850,6 +1070,10 @@ async function runBenchmarks(): Promise<Record<string, Measurement[]>> {
         !(
           selectedShape === 'short-beside-all' &&
           shape.startsWith('short-beside-')
+        ) &&
+        !(
+          selectedShape === 'agent-chains' &&
+          (shape === 'three-agent-chains' || shape === 'four-agent-chains')
         )
       ) {
         continue;

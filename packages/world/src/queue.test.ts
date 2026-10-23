@@ -215,6 +215,27 @@ describe('QueuePayloadSchema', () => {
     ).toEqual({ runId: 'wrun_01ABC', advanceOnly: undefined });
   });
 
+  it('preserves a disabled eligibility hint and ignores other values', () => {
+    expect(
+      WorkflowInvokePayloadSchema.parse({
+        runId: 'wrun_01ABC',
+        advanceOnlyEligible: false,
+      })
+    ).toMatchObject({
+      runId: 'wrun_01ABC',
+      advanceOnlyEligible: false,
+    });
+    expect(
+      WorkflowInvokePayloadSchema.parse({
+        runId: 'wrun_01ABC',
+        advanceOnlyEligible: true,
+      })
+    ).toEqual({
+      runId: 'wrun_01ABC',
+      advanceOnlyEligible: undefined,
+    });
+  });
+
   it('preserves a valid terminal backstop marker and ignores a malformed one', () => {
     expect(
       WorkflowInvokePayloadSchema.parse({

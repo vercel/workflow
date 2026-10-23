@@ -83,12 +83,129 @@ export function pendingStepIdsIn(
   return pending;
 }
 
+export interface PendingStepReplayAnalysis {
+  pendingStepIds: Set<string | undefined>;
+  peakPendingStepCount: number;
+  pendingSiblingCountAtLatestStart: number | undefined;
+  pendingCreationsFollowFirstStart: boolean;
+}
+
 /**
- * How many other steps were pending when `stepId` most recently started.
+ * Derive every queued-step replay eligibility input in one event-log pass.
+ * Settlements in a wide chained fan-out take this path once per step, so
+ * separate pending, width, attempt and terminal-probe scans noticeably tax the
+ * very runs the bound is meant to leave alone.
+ */
+export function analyzePendingStepsForReplay(
+  events: readonly Event[],
+  stepId: string
+): PendingStepReplayAnalysis {
+  const pending = new Set<string | undefined>();
+  const settled = new Set<string | undefined>();
+  const createdAfterFirstStart = new Set<string>();
+  const started = new Set<string | undefined>();
+  let peakPendingStepCount = 0;
+  let pendingSiblingCount: number | undefined;
+  let attemptPeak: number | undefined;
+  let awaitingStart = false;
+  let sawFirstStart = false;
+
+  for (const event of events) {
+    if (event.eventType === 'step_created') {
+      pending.add(event.correlationId);
+      if (sawFirstStart && event.correlationId !== undefined) {
+        createdAfterFirstStart.add(event.correlationId);
+      }
+      if (event.correlationId === stepId) {
+        awaitingStart = true;
+        attemptPeak = Math.max(0, pending.size - 1);
+      } else if (awaitingStart) {
+        attemptPeak = Math.max(attemptPeak ?? 0, pending.size - 1);
+      }
+      peakPendingStepCount = Math.max(peakPendingStepCount, pending.size);
+    } else if (event.eventType === 'step_started') {
+      pending.add(event.correlationId);
+      started.add(event.correlationId);
+      if (event.correlationId === stepId) {
+        pendingSiblingCount = Math.max(attemptPeak ?? 0, pending.size - 1);
+        awaitingStart = false;
+        sawFirstStart = true;
+      } else if (awaitingStart) {
+        attemptPeak = Math.max(attemptPeak ?? 0, pending.size - 1);
+      }
+      peakPendingStepCount = Math.max(peakPendingStepCount, pending.size);
+    } else if (
+      event.eventType === 'step_retrying' &&
+      event.correlationId === stepId
+    ) {
+      awaitingStart = true;
+      attemptPeak = Math.max(0, pending.size - 1);
+    } else if (
+      event.eventType === 'step_completed' ||
+      event.eventType === 'step_failed'
+    ) {
+      pending.delete(event.correlationId);
+      settled.add(event.correlationId);
+    }
+  }
+
+  // A terminal event may precede a duplicate create/start in malformed or
+  // legacy logs. Match pendingStepIdsIn's set-difference semantics exactly.
+  for (const id of settled) pending.delete(id);
+  const creationOnlyAfterFirstStart =
+    pending.size > 0 &&
+    !pending.has(undefined) &&
+    [...pending].every(
+      (id): id is string =>
+        id !== undefined && createdAfterFirstStart.has(id) && !started.has(id)
+    );
+
+  return {
+    pendingStepIds: pending,
+    peakPendingStepCount,
+    pendingSiblingCountAtLatestStart: pendingSiblingCount,
+    pendingCreationsFollowFirstStart: creationOnlyAfterFirstStart,
+  };
+}
+
+/**
+ * The largest number of unsettled steps recorded at once in this run.
  *
- * Advance-only eligibility is fixed at attempt start. Rechecking only the
- * current tail of a wide fan-out would make its last few completions suddenly
- * eligible, adding replays even though the original batch was over the bound.
+ * An early replay can split one wide chained fan-out into smaller later
+ * suspensions. Those tails must not become eligible merely because the replay
+ * now sees only a few of the original branches. Keeping the run's observed
+ * peak makes the pending bound stable across those later rounds.
+ */
+export function peakPendingStepCountIn(events: readonly Event[]): number {
+  const pending = new Set<string | undefined>();
+  let peak = 0;
+  for (const event of events) {
+    if (
+      event.eventType === 'step_created' ||
+      event.eventType === 'step_started'
+    ) {
+      pending.add(event.correlationId);
+      peak = Math.max(peak, pending.size);
+    } else if (
+      event.eventType === 'step_completed' ||
+      event.eventType === 'step_failed'
+    ) {
+      pending.delete(event.correlationId);
+    }
+  }
+  return peak;
+}
+
+/**
+ * The peak number of other pending steps while `stepId` waited to start its
+ * current attempt.
+ *
+ * The window opens when the step is created, or when `step_retrying` hands its
+ * next attempt to the queue, and closes on `step_started`. A queued step from a
+ * wide batch may start only after early siblings have already settled; using
+ * the instantaneous count at that late start would admit the draining tail and
+ * add replays even though the scheduled batch was over the bound. A retry gets
+ * a fresh window so it is judged against the work pending for that attempt.
  */
 export function pendingSiblingCountAtLatestStart(
   events: readonly Event[],
@@ -96,14 +213,31 @@ export function pendingSiblingCountAtLatestStart(
 ): number | undefined {
   const pending = new Set<string | undefined>();
   let count: number | undefined;
+  let peak: number | undefined;
+  let awaitingStart = false;
   for (const event of events) {
     if (event.eventType === 'step_created') {
       pending.add(event.correlationId);
+      if (event.correlationId === stepId) {
+        awaitingStart = true;
+        peak = Math.max(0, pending.size - 1);
+      } else if (awaitingStart) {
+        peak = Math.max(peak ?? 0, pending.size - 1);
+      }
     } else if (event.eventType === 'step_started') {
       pending.add(event.correlationId);
       if (event.correlationId === stepId) {
-        count = Math.max(0, pending.size - 1);
+        count = Math.max(peak ?? 0, pending.size - 1);
+        awaitingStart = false;
+      } else if (awaitingStart) {
+        peak = Math.max(peak ?? 0, pending.size - 1);
       }
+    } else if (
+      event.eventType === 'step_retrying' &&
+      event.correlationId === stepId
+    ) {
+      awaitingStart = true;
+      peak = Math.max(0, pending.size - 1);
     } else if (
       event.eventType === 'step_completed' ||
       event.eventType === 'step_failed'

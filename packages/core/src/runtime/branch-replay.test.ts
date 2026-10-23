@@ -10,6 +10,8 @@ import {
   advanceOnlyHasWork,
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
+  analyzePendingStepsForReplay,
+  peakPendingStepCountIn,
   pendingCreationsFollowFirstStart,
   pendingSiblingCountAtLatestStart,
   pendingStepIdsIn,
@@ -59,17 +61,87 @@ describe('pendingSiblingCountAtLatestStart', () => {
     expect(pendingSiblingCountAtLatestStart(events, 'c')).toBe(2);
   });
 
-  it('uses the latest retry attempt and returns undefined without a start', () => {
+  it('keeps a late queued start bound to the width it waited behind', () => {
+    const events = [
+      event('step_created', 'a'),
+      event('step_created', 'b'),
+      event('step_created', 'c'),
+      event('step_created', 'd'),
+      event('step_created', 'e'),
+      event('step_started', 'a'),
+      event('step_completed', 'a'),
+      event('step_started', 'b'),
+      event('step_completed', 'b'),
+      event('step_started', 'e'),
+    ];
+    expect(pendingSiblingCountAtLatestStart(events, 'e')).toBe(4);
+  });
+
+  it('uses a fresh retry window and returns undefined without a start', () => {
     const events = [
       event('step_created', 'a'),
       event('step_created', 'b'),
       event('step_started', 'a'),
       event('step_started', 'b'),
-      event('step_failed', 'b'),
+      event('step_completed', 'b'),
+      event('step_retrying', 'a'),
       event('step_started', 'a'),
     ];
     expect(pendingSiblingCountAtLatestStart(events, 'a')).toBe(0);
     expect(pendingSiblingCountAtLatestStart(events, 'missing')).toBeUndefined();
+  });
+});
+
+describe('peakPendingStepCountIn', () => {
+  it('keeps the widest earlier fan-out after it settles', () => {
+    const events = [
+      event('step_created', 'a'),
+      event('step_created', 'b'),
+      event('step_created', 'c'),
+      event('step_started', 'a'),
+      event('step_completed', 'a'),
+      event('step_completed', 'b'),
+      event('step_completed', 'c'),
+      event('step_created', 'later_a'),
+      event('step_created', 'later_b'),
+    ];
+    expect(peakPendingStepCountIn(events)).toBe(3);
+  });
+
+  it('does not count a created and started row twice', () => {
+    expect(
+      peakPendingStepCountIn([
+        event('step_created', 'a'),
+        event('step_started', 'a'),
+        event('step_created', 'b'),
+      ])
+    ).toBe(2);
+  });
+});
+
+describe('analyzePendingStepsForReplay', () => {
+  it('matches the individual pending and width helpers', () => {
+    const events = [
+      event('step_created', 'current'),
+      event('step_created', 'sibling'),
+      event('step_started', 'current'),
+      event('step_started', 'sibling'),
+      event('step_completed', 'sibling'),
+      event('step_created', 'later'),
+    ];
+    const analysis = analyzePendingStepsForReplay(events, 'current');
+    expect(analysis.pendingStepIds).toEqual(pendingStepIdsIn(events));
+    expect(analysis.pendingSiblingCountAtLatestStart).toBe(
+      pendingSiblingCountAtLatestStart(events, 'current')
+    );
+    expect(analysis.peakPendingStepCount).toBe(peakPendingStepCountIn(events));
+    expect(analysis.pendingCreationsFollowFirstStart).toBe(
+      pendingCreationsFollowFirstStart(
+        events,
+        'current',
+        analysis.pendingStepIds
+      )
+    );
   });
 });
 

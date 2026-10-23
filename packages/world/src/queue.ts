@@ -510,6 +510,14 @@ export const WorkflowInvokePayloadSchema = z.compile(
      */
     advanceOnly: z.literal(true).optional().catch(undefined),
     /**
+     * `false` when this step belongs to a run that has already exposed a
+     * fan-out wider than the producer's advance-only bound. The consumer can
+     * take the ordinary wait-for-siblings path without rescanning the event
+     * log for eligibility. Older consumers ignore the hint; newer consumers
+     * derive eligibility when older producers omit it.
+     */
+    advanceOnlyEligible: z.literal(false).optional().catch(undefined),
+    /**
      * Marks the delayed, per-run safety probe published after an advance-only
      * terminal deferral. It does not poll or re-arm itself while work is live.
      */

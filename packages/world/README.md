@@ -53,6 +53,12 @@ implementations must reject `step_started` on terminal runs, including redeliver
 for a step that still has `running` status. In-flight steps may still record
 `step_completed` or `step_failed` after the run ends.
 
+Queue and invoke transports must preserve the complete invocation payload
+rather than copying only recognized fields. Optional coordination hints such as
+`advanceOnlyEligible: false` are backward-compatible: older consumers ignore
+them, while newer consumers fall back to deriving the same decision from
+storage when older producers omit them.
+
 ## Committed event cursors
 
 `EventResult.eventCursor` optionally identifies the ascending `events.list`

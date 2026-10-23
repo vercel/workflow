@@ -431,6 +431,7 @@ interface WorkflowInvokePayload {
   stepId?: string;
   stepName?: string;
   runContext?: RunDispatchContext;  // Immutable run identity, step messages only
+  advanceOnlyEligible?: false;  // Conservative wide-fan-out hint
   traceCarrier?: Record<string, string>;  // OpenTelemetry context
   requestedAt?: Date;
 }
@@ -445,6 +446,13 @@ is deliberately absent: the liveness check for a queued step is the
 [Key implementation details](#key-implementation-details)). Messages from older
 producers omit `runContext` and take the older path that fetches the run, so a
 World needs to do nothing to support either.
+
+**Forward-compatible payloads:** queue and invoke transports must preserve the
+complete payload they receive rather than copying a fixed list of known fields.
+The runtime can add optional coordination hints such as
+`advanceOnlyEligible: false`; dropping one remains safe, but makes the consumer
+re-derive the decision from storage and can add work on the hot path. Older SDK
+consumers ignore fields they do not understand.
 
 The SDK also sends an internal `HealthCheckPayload` through the same workflow queue.
 

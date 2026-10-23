@@ -95,7 +95,9 @@ A queued step can finish after a concurrent terminal replay recorded drain-only 
 
 An advance-only replay still drives the steps no one else would: one its own message claimed inline (owned recovery), and, on a redelivery, any step created but never started, which the delivery being retried may have created before it crashed.
 
-A replay can't know ahead of time whether the settled branch has another step, and in a wide fan-out of one-step branches none does until the last. So a branch advances early only when at most `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` (default 1) other steps were pending when its attempt started. Eligibility does not change as a wide batch drains, so its tail does not add replays.
+A retrying inline step publishes its delayed retry message as soon as that attempt settles instead of waiting for the other inline bodies in its batch. It uses the same step/name-scoped idempotency key as suspension replay, so concurrent publishers converge on one queued attempt. If that retry finishes while the original invocation still owns a slow sibling, the original invocation reloads the event log before deciding what remains. Nested parallel steps created inside one branch use the same advance-only path.
+
+A replay can't know ahead of time whether the settled branch has another step, and in a wide fan-out of one-step branches none does until the last. So a branch advances early only while the run has exposed at most `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` (default 3) other steps at once. Once a wider fan-out is observed, its step messages carry a conservative eligibility hint into later chained rounds. Older consumers ignore the optional hint, and newer consumers derive the same decision from the event log when older messages omit it.
 
 The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and persisted creation/start events. An eligible multi-inline batch may add one deduplicated continuation per settled branch, but suppresses it when every sibling finishes before its durability barriers resolve; a 10 ms coalescing window also avoids the send when the remaining siblings settle almost together. Under event-loop load, settlement observation can lag beyond that window, so even equal-duration leaf steps can still pay one idle hand-off, receiving invocation, event-log read, and replay. An advance-only pass that creates no work performs no writes or sends. A terminal deferral owned by an advance-only replay adds at most one lease-delayed safety-probe send; the probe never re-arms itself.
 
@@ -103,7 +105,21 @@ The original invocation is still waiting for its sibling when an inline hand-off
 
 Before this, each round of a fan-out took as long as its slowest step: a branch of 1-second steps next to a branch of 30-second steps waited 30 seconds before each of its own. `WORKFLOW_ADVANCE_ONLY_REPLAY=0` restores that behavior, and fan-outs wider than the bound keep it. So does the QuickJS engine (`WORKFLOW_VM=quickjs`) for now.
 
-The default pending limit of 1 covers two-branch `Promise.all` and `Promise.race` shapes. Three or more branches remain in lockstep unless `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` is raised; with a limit of 2, the three-chain regression advances independently. Invoke-capable Worlds already serialize run continuations and therefore skip the inline hand-off. `WORKFLOW_SEQUENTIAL_REPLAYS=1` alone does not suppress it: that runtime environment value cannot prove that the built flow trigger also has `maxConcurrency: 1`, and the World capability reports queue support rather than deployed configuration.
+The default pending limit of 3 covers groups of up to four branches, including several parallel agent chains. Five or more branches need a higher `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` to make every initial attempt eligible. Invoke-capable Worlds already serialize run continuations and therefore skip the inline hand-off. `WORKFLOW_SEQUENTIAL_REPLAYS=1` alone does not suppress it: that runtime environment value cannot prove that the built flow trigger also has `maxConcurrency: 1`, and the World capability reports queue support rather than deployed configuration.
+
+Measured through `workbench/vitest` on world-local (Node.js VM, median and range of 5 runs after warm-up), the default of 3 was the smallest limit that covered both three- and four-agent chains. Raising it to 4 did not improve their continuation gaps and added more idle work. The 64- and 128-branch controls stayed within 10% of the kill switch:
+
+| Case | Kill switch | Limit 1 | Limit 3 (default) | Limit 4 |
+| --- | ---: | ---: | ---: | ---: |
+| 3 chained agents, next-step gap | 1,315 ms (1,315–1,318) | 1,315 ms (1,313–1,322) | 116 ms (113–166) | 120 ms (112–152) |
+| 4 chained agents, next-step gap | 1,318 ms (1,315–1,324) | 1,329 ms (1,321–1,339) | 112 ms (105–121) | 132 ms (117–184) |
+| 3 one-step branches, wall time | 195 ms (171–260) | 184 ms (169–257) | 316 ms (251–388) | 326 ms (253–408) |
+| 4 one-step branches, wall time | 287 ms (276–320) | 278 ms (270–287) | 417 ms (402–429) | 453 ms (419–500) |
+| 5 one-step branches, wall time | 297 ms (288–310) | 284 ms (281–302) | 282 ms (277–287) | 536 ms (504–544) |
+| 8 one-step branches, wall time | 310 ms (305–314) | 302 ms (299–309) | 306 ms (294–318) | 329 ms (299–386) |
+| 8 branches × 4 steps, wall time | 706 ms (684–721) | 799 ms (749–906) | 753 ms (750–793) | 788 ms (739–844) |
+
+Small leaf groups do pay for eligible idle passes: at limit 3 the median 3- and 4-step leaf runs sent 2 hand-offs and recorded 1 and 2 idle exits, respectively. Five- and eight-step leaf fan-outs, and the 8×4 chained control, sent no hand-offs and recorded no idle exits because their run-wide hint kept them outside the bound. Limit 4 admitted the five-step leaf case, which sent 2 hand-offs and recorded 3 idle exits.
 
 Measured through `workbench/vitest` on world-local (Node.js VM, median and range of 12 runs after warm-up):
 
