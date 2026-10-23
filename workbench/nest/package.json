@@ -15,7 +15,7 @@
   },
   "engines": {
     "npm": ">=10.0.0",
-    "node": ">=20.0.0"
+    "node": "^24.0.0"
   },
   "dependencies": {
     "@ai-sdk/workflow": "catalog:ai-sdk-v7",
