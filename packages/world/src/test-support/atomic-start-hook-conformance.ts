@@ -707,12 +707,17 @@ export function atomicStartHookConformance(
           const contender = await admit(events, { token });
           expect(await runExists(contender)).toBe(true);
           expect(await runExists(orphan)).toBe(false);
-          // The orphan's own late copies can never create it now.
-          await expectRefused(
-            create(events, orphan, runStarted({ token })),
-            token,
-            contender
-          );
+          // The orphan's own late copies can never create it now: refused
+          // naming the contender, or, for a World whose hold is the orphan
+          // bound itself, by the bound.
+          const late = create(events, orphan, runStarted({ token }));
+          if (holdMs < DAY_MS) {
+            await expectRefused(late, token, contender);
+          } else {
+            expect(await refusal(late)).toMatchObject({
+              code: START_HOOK_ADMISSION_REJECTED_CODE,
+            });
+          }
           expect(await runExists(orphan)).toBe(false);
         }
       );
