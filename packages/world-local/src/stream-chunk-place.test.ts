@@ -256,6 +256,26 @@ describe('where a stream chunk lands', () => {
     expect(files.sort()[0]).toBe(`chnk_${'0'.repeat(25)}1.bin`);
   });
 
+  it('a write that fails before it lands does not let a later write land ahead of an earlier one', async () => {
+    const dir = await tempDir();
+    const streamer = createStreamer(dir);
+    const name = 'failed-turn';
+    let resolveRunId!: (runId: string) => void;
+    const later = new Promise<string>((resolve) => {
+      resolveRunId = resolve;
+    });
+    const first = streamer.streams.write(later, name, 'one');
+    // Fails at once, while the first write still waits for its run id.
+    const failed = streamer.streams.write('not a run id/..', name, 'lost');
+    const third = streamer.streams.write(TEST_RUN_ID, name, 'three');
+    await expect(failed).rejects.toThrow();
+    await sleep(50);
+    expect(await replayOf(streamer, name)).toEqual([]);
+    resolveRunId(TEST_RUN_ID);
+    await Promise.all([first, third]);
+    expect(await replayOf(streamer, name)).toEqual(['one', 'three']);
+  });
+
   it('chunks land in order on a file system that makes no hard links, and a writer with links goes on after them', async () => {
     const dir = await tempDir();
     const name = 'no-links';

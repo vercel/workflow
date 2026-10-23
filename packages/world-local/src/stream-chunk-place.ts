@@ -78,7 +78,10 @@ export async function newestChunkId(dir: string): Promise<string | null> {
 export interface ChunkPlacerOptions {
   /** The tag suffix of chunk file names, such as `.vitest-0`, or ''. */
   tagSuffix: string;
-  /** Writes a whole file, making its directory. */
+  /**
+   * Writes a whole temporary file, making its directory. It need not be
+   * atomic: readers never list the temporary name.
+   */
   writeFile: (filePath: string, data: Buffer) => Promise<void>;
   /** Retries a file operation the platform can fail for a moment. */
   retry: <T>(fn: () => Promise<T>) => Promise<T>;
@@ -113,6 +116,12 @@ export function createChunkPlacer({
    * called, as they did when each chunk was named then.
    */
   turn(name: string): ChunkTurn;
+  /**
+   * Forgets the newest chunk landed in `dir`, as once its stream ended, so a
+   * placer does not keep one entry per stream it ever wrote. A later write
+   * there lists the stream.
+   */
+  forget(dir: string): void;
 } {
   // Each stream's last turn, by name.
   const turns = new Map<string, Promise<void>>();
@@ -222,9 +231,14 @@ export function createChunkPlacer({
     turn(name) {
       const before = turns.get(name);
       let done!: () => void;
-      const mine = new Promise<void>((resolve) => {
+      const ended = new Promise<void>((resolve) => {
         done = resolve;
       });
+      // The next turn lands once this one ended and every turn before it did:
+      // a turn that ends early, as a write that fails before it lands does,
+      // must not let a later write land ahead of an earlier one still on its
+      // way.
+      const mine = before ? Promise.all([ended, before]).then(() => {}) : ended;
       turns.set(name, mine);
       void mine.then(() => {
         if (turns.get(name) === mine) turns.delete(name);
@@ -233,6 +247,9 @@ export function createChunkPlacer({
         land: (dir, chunks, landed) => land(before, dir, chunks, landed),
         done,
       };
+    },
+    forget(dir) {
+      newest.delete(dir);
     },
   };
 }

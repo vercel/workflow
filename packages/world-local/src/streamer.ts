@@ -20,6 +20,7 @@ import {
   withWindowsRetry,
   write,
   writeJSON,
+  writeTempFile,
 } from './fs.js';
 import { createChunkPlacer } from './stream-chunk-place.js';
 import { withInProcessLock } from './util.js';
@@ -411,7 +412,7 @@ export function createStreamer(
   // (see stream-chunk-place.ts).
   const placer = createChunkPlacer({
     tagSuffix,
-    writeFile: (filePath, data) => write(filePath, data, { overwrite: true }),
+    writeFile: writeTempFile,
     retry: (fn) => withWindowsRetry(fn),
     mint: () => monotonicUlid(),
   });
@@ -506,6 +507,8 @@ export function createStreamer(
           await turn.land(chunkDir(name), [
             serializeChunk({ chunk: Buffer.from([]), eof: true }),
           ]);
+          // The stream ended: its newest id need not be kept.
+          placer.forget(chunkDir(name));
 
           streamEmitter.emit(`close:${name}` as const, { streamName: name });
         } finally {

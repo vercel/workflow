@@ -529,6 +529,21 @@ export async function write(
   }
 }
 
+/**
+ * Writes a new private temporary file, making its directory. Unlike
+ * {@link write} it is neither atomic nor remembered in the created-files
+ * cache: the caller publishes the file under another name (as a stream chunk
+ * is linked into place) and removes it, so nothing reads it by this path.
+ */
+export async function writeTempFile(
+  filePath: string,
+  data: Buffer
+): Promise<void> {
+  await withEnsuredDirectory(path.dirname(filePath), () =>
+    fs.writeFile(filePath, data, { flag: 'wx' })
+  );
+}
+
 export async function readJSON<T>(
   filePath: string,
   decoder: z.ZodType<T>
