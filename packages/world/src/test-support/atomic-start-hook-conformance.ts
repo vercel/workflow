@@ -439,7 +439,9 @@ export function atomicStartHookConformance(
     test('an adopted Hook retention extends the reservation past its disposal', async () => {
       const events = setup();
       const token = newToken();
-      const retentionMs = 2_000;
+      // Six writes land before the check after the owner ends, so leave
+      // room for a slow filesystem.
+      const until = Date.now() + 5_000;
       const owner = await admit(events, { token });
       await create(events, owner, runStarted({ token }));
 
@@ -449,7 +451,7 @@ export function atomicStartHookConformance(
         ...hookCreated(token, first),
         eventData: {
           token,
-          tokenRetentionUntil: new Date(Date.now() + retentionMs),
+          tokenRetentionUntil: new Date(until),
         },
       } as AnyEventRequest);
       await create(events, owner, hookDisposed(token, first));
@@ -462,7 +464,7 @@ export function atomicStartHookConformance(
 
       await finish(events, owner);
       await expectRefused(admit(events, { token }), token, owner);
-      await sleep(retentionMs + 250);
+      await sleep(Math.max(0, until - Date.now()) + 250);
       await admit(events, { token });
     });
 
