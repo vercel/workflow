@@ -23,6 +23,7 @@ import * as workflowModule from '../../workflow.js';
 import {
   getMaxQueueDeliveries,
   MAX_IN_BAND_CREATION_BATCH_EVENTS,
+  STEP_DISPATCH_QUEUE_BATCH_SIZE,
 } from '../constants.js';
 import { setWorld } from '../world.js';
 
@@ -388,6 +389,113 @@ describe.each([
       vi.unstubAllEnvs();
     }
   });
+
+  // The QuickJS engine dispatches each background step with a send of its
+  // own.
+  describe.skipIf(engine !== 'node')(
+    'dispatching a fan-out of background steps',
+    () => {
+      const width = 2 * STEP_DISPATCH_QUEUE_BATCH_SIZE + 3;
+      const fanOut = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(n) {
+         const all = await Promise.all(Array.from({ length: n }, (_, i) => add(i, 1)));
+         return all.reduce((sum, x) => sum + x, 0);
+       }${transform('workflow')}`;
+      const expectedSum = (width * (width + 1)) / 2;
+      const stepBatchesOf = (world: AppendOnlyWorld) =>
+        world.queueBatches.filter((batch) =>
+          batch.every(
+            (call) => (call.message as { stepId?: string }).stepId !== undefined
+          )
+        );
+
+      beforeEach(() => {
+        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+      });
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+
+      it('sends the step messages in parallel queue batches of a bounded size', async () => {
+        let inFlight = 0;
+        let mostInFlight = 0;
+        const { world } = await setup(fanOut, [width], {
+          queueBatch: true,
+          async failQueueBatch() {
+            inFlight++;
+            mostInFlight = Math.max(mostInFlight, inFlight);
+            await new Promise((resolve) => setTimeout(resolve, 10));
+            inFlight--;
+          },
+        });
+        await world.deliver(world.held[0]!);
+
+        const batches = stepBatchesOf(world);
+        expect(batches).toHaveLength(
+          Math.ceil(width / STEP_DISPATCH_QUEUE_BATCH_SIZE)
+        );
+        for (const batch of batches) {
+          expect(batch.length).toBeLessThanOrEqual(
+            STEP_DISPATCH_QUEUE_BATCH_SIZE
+          );
+        }
+        expect(mostInFlight).toBe(batches.length);
+        // Every step once, each with its own key and the run's spec stamp.
+        const messages = batches.flat();
+        expect(messages).toHaveLength(width);
+        const keys = messages.map((call) => call.opts?.idempotencyKey);
+        expect(new Set(keys).size).toBe(width);
+        for (const call of messages) {
+          expect(call.opts?.idempotencyKey).toEqual(expect.any(String));
+          expect(
+            (call.message as { runSpecVersion?: number }).runSpecVersion
+          ).toBe(SPEC_VERSION_CURRENT);
+        }
+
+        await world.runUntilIdle(4 * width);
+        expect(await runResult(world)).toBe(expectedSum);
+      });
+
+      it('fails the delivery when one queue batch fails, and its redelivery sends every step once', async () => {
+        let failed = false;
+        const { world } = await setup(fanOut, [width], {
+          queueBatch: true,
+          failQueueBatch(messages) {
+            const steps = messages.filter(
+              (entry) =>
+                (entry.message as { stepId?: string }).stepId !== undefined
+            );
+            // The second step batch of the first dispatch.
+            if (
+              !failed &&
+              steps.length > 0 &&
+              world.queueBatches.length === 2
+            ) {
+              failed = true;
+              throw new Error('queue unavailable');
+            }
+          },
+        });
+        await expect(world.deliver(world.held[0]!)).rejects.toThrow(
+          'queue unavailable'
+        );
+        expect(failed).toBe(true);
+        // The batches that did go out are kept; none is sent after the failure
+        // is known.
+        expect(stepBatchesOf(world)).toHaveLength(
+          Math.ceil(width / STEP_DISPATCH_QUEUE_BATCH_SIZE)
+        );
+
+        await world.runUntilIdle(4 * width);
+        expect(await runResult(world)).toBe(expectedSum);
+        expect(calls.so_add).toBe(width);
+        expect(
+          new Set(eventsOf(world, 'step_created').map((e) => e.correlationId))
+            .size
+        ).toBe(width);
+      });
+    }
+  );
 
   it('retries a background step in place on its own message', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');

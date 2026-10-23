@@ -522,5 +522,16 @@ export const MAX_IN_BAND_CREATION_BATCH_BYTES = 512 * 1024;
  */
 export const CREATION_EVENT_META_ALLOWANCE_BYTES = 1024;
 
+/**
+ * Messages per queue batch request when a spec 9 orchestrator dispatches a
+ * fan-out's background steps. The batches go out in parallel, so a wide
+ * fan-out is several concurrent requests rather than one request carrying
+ * every message, whose latency grows with its message count. Spec 8
+ * publishes one batch per creation chunk, concurrently, to the same effect.
+ * Each message keeps its own idempotency key, so a batch the delivery's
+ * retry sends again is deduplicated.
+ */
+export const STEP_DISPATCH_QUEUE_BATCH_SIZE = 16;
+
 /** A step's `maxRetries` when its function declares none. */
 export const DEFAULT_STEP_MAX_RETRIES = 3;

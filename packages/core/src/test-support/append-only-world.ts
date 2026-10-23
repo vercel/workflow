@@ -10,6 +10,7 @@ import {
   type EventListResponse,
   type EventResult,
   orchestratorRunIdOf,
+  type QueueBatchResult,
   SPEC_VERSION_CURRENT,
   slotToEventId,
   type WorkflowRun,
@@ -94,6 +95,11 @@ export class AppendOnlyWorld {
   /** The event types of every `createBatch` call, in call order. */
   readonly batches: string[][] = [];
   /**
+   * The messages of every `queueBatch` call (with the `queueBatch` option),
+   * in call order. Each message is also recorded in {@link queueCalls}.
+   */
+  readonly queueBatches: RecordedQueueCall[][] = [];
+  /**
    * Every in-band write's named position and first slot, in call order: how
    * many positions its skipped-slot report covered.
    */
@@ -135,6 +141,16 @@ export class AppendOnlyWorld {
       reportIncomplete?: boolean;
       /** Leave `events.createBatch` out, as a World without batch writes. */
       noBatch?: boolean;
+      /**
+       * Offer `queueBatch`, recorded in {@link AppendOnlyWorld.queueBatches}.
+       * Each message is published as a single `queue` call would be. A throw
+       * from `failQueueBatch` fails that call whole.
+       */
+      queueBatch?: boolean;
+      /** Called with each `queueBatch` call's messages before it publishes. */
+      failQueueBatch?: (
+        messages: readonly { message: unknown; opts?: unknown }[]
+      ) => void | Promise<void>;
       /**
        * Answer every `events.create` and `events.createBatch` this many
        * milliseconds late, after committing, as a remote World's round trip.
@@ -804,7 +820,7 @@ export class AppendOnlyWorld {
     } as World['events'];
     if (self.options.noBatch) delete events.createBatch;
 
-    return {
+    const world = {
       specVersion: SPEC_VERSION_CURRENT,
       events,
       runs: {
@@ -867,5 +883,28 @@ export class AppendOnlyWorld {
         return self.run?.deploymentId ?? 'dpl_test';
       },
     } as unknown as World;
+    if (self.options.queueBatch) {
+      world.queueBatch = async (queueName, messages) => {
+        self.queueBatches.push(
+          messages.map((entry) => ({
+            queueName,
+            message: entry.message,
+            opts: entry.opts as Record<string, unknown> | undefined,
+          }))
+        );
+        await self.options.failQueueBatch?.(messages);
+        const results: QueueBatchResult[] = [];
+        for (const entry of messages) {
+          const { messageId } = await world.queue(
+            queueName,
+            entry.message,
+            entry.opts
+          );
+          results.push({ messageId });
+        }
+        return results;
+      };
+    }
+    return world;
   }
 }
