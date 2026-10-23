@@ -4,4 +4,4 @@
 '@workflow/world': patch
 ---
 
-Retry an orchestrator event log read that never returns, instead of holding the run until the invocation ends.
+Add `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`: an orchestrator event log read that never returns is retried instead of holding the run.

@@ -5,4 +5,4 @@
 "@workflow/vitest": patch
 ---
 
-Inline steps run ahead of their writes when no other writer can change the workflow's path (`WORKFLOW_RUN_AHEAD_DEPTH`), and `run.wakeUp()` lets the run's orchestrator complete the sleeps (best-effort on Vercel while the orchestrator is running).
+Add `WORKFLOW_RUN_AHEAD_DEPTH` to run inline steps ahead of their writes, and let `run.wakeUp()` complete sleeps from the run's orchestrator.
