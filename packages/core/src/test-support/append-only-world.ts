@@ -15,7 +15,11 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { MAX_BATCH_EVENTS } from '../runtime/constants.js';
+import {
+  MAX_IN_BAND_CREATION_BATCH_BYTES,
+  MAX_IN_BAND_CREATION_BATCH_EVENTS,
+} from '../runtime/constants.js';
+import { creationBatchBytes } from '../runtime/spec9/step-wait-creation.js';
 
 /** One `world.queue` call recorded by {@link AppendOnlyWorld}. */
 export interface RecordedQueueCall {
@@ -727,10 +731,21 @@ export class AppendOnlyWorld {
           );
         }
         // A World refuses an oversized batch whole (world-vercel caps it by
-        // event count); this one caps it at what the runtime may send.
-        if (batch.length > MAX_BATCH_EVENTS) {
+        // event count and bytes); this one caps it at what the runtime may
+        // send.
+        if (batch.length > MAX_IN_BAND_CREATION_BATCH_EVENTS) {
           throw new WorkflowWorldError(
-            `An event batch may carry at most ${MAX_BATCH_EVENTS} events`,
+            `An event batch may carry at most ${MAX_IN_BAND_CREATION_BATCH_EVENTS} events`,
+            { status: 400 }
+          );
+        }
+        const batchBytes = batch.reduce(
+          (sum, item) => sum + creationBatchBytes(item.event),
+          0
+        );
+        if (batch.length > 1 && batchBytes > MAX_IN_BAND_CREATION_BATCH_BYTES) {
+          throw new WorkflowWorldError(
+            `An event batch may carry at most ${MAX_IN_BAND_CREATION_BATCH_BYTES} bytes`,
             { status: 400 }
           );
         }

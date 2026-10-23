@@ -28,7 +28,12 @@ import {
   dehydrateStepError,
 } from '../../serialization.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
-import { MAX_BATCH_EVENTS } from '../constants.js';
+import {
+  CREATION_EVENT_META_ALLOWANCE_BYTES,
+  MAX_BATCH_EVENTS,
+  MAX_IN_BAND_CREATION_BATCH_BYTES,
+  MAX_IN_BAND_CREATION_BATCH_EVENTS,
+} from '../constants.js';
 import type { SuspensionSerializationBlocker } from '../delivery.js';
 import { unserializableStepInputPlaceholder } from '../unserializable-step.js';
 import type { InBandWriter } from './in-band-writer.js';
@@ -623,34 +628,71 @@ async function finalizeUnserializableStep(
 }
 
 /**
- * Splits a suspension's creations into batches of at most
- * {@link MAX_BATCH_EVENTS}. When they need more than one batch, the inline
- * steps' creation-bearing starts (which come first) go in batches of their
- * own: the inline bodies start once those commit, and a smaller batch
- * commits sooner.
+ * Splits a suspension's creations into the batches it writes, one after
+ * another.
+ *
+ * A suspension of at most {@link MAX_BATCH_EVENTS} creations goes out as one
+ * batch. A wider one puts the inline steps' creation-bearing starts (which
+ * come first) in batches of at most {@link MAX_BATCH_EVENTS} of their own:
+ * the inline bodies start once those commit, and a smaller batch commits
+ * sooner. The background creations behind them go out in batches of at most
+ * {@link MAX_IN_BAND_CREATION_BATCH_EVENTS}: an in-band writer sends one
+ * batch at a time, so every extra batch costs the fan-out one more round
+ * trip in sequence.
+ *
+ * Every batch also stays within {@link MAX_IN_BAND_CREATION_BATCH_BYTES}
+ * (see {@link creationBatchBytes}); a single event over it still goes out,
+ * alone.
  */
 export function batchChunks(
   events: CreateEventRequest[]
 ): CreateEventRequest[][] {
   const chunks: CreateEventRequest[][] = [];
   let current: CreateEventRequest[] = [];
+  let currentBytes = 0;
   const split = events.length > MAX_BATCH_EVENTS;
   let currentHasInline = false;
+  const close = () => {
+    chunks.push(current);
+    current = [];
+    currentBytes = 0;
+    currentHasInline = false;
+  };
   for (const event of events) {
     const isInline = event.eventType === 'step_started';
     if (split && currentHasInline && !isInline && current.length > 0) {
-      chunks.push(current);
-      current = [];
-      currentHasInline = false;
+      close();
     }
-    if (current.length + 1 > MAX_BATCH_EVENTS) {
-      chunks.push(current);
-      current = [];
-      currentHasInline = false;
+    const ceiling =
+      split && !isInline ? MAX_IN_BAND_CREATION_BATCH_EVENTS : MAX_BATCH_EVENTS;
+    const bytes = creationBatchBytes(event);
+    if (
+      current.length > 0 &&
+      (current.length + 1 > ceiling ||
+        currentBytes + bytes > MAX_IN_BAND_CREATION_BATCH_BYTES)
+    ) {
+      close();
     }
     if (isInline) currentHasInline = true;
     current.push(event);
+    currentBytes += bytes;
   }
   if (current.length > 0) chunks.push(current);
   return chunks;
+}
+
+/**
+ * What one creation counts against {@link MAX_IN_BAND_CREATION_BATCH_BYTES}:
+ * the binary payloads on its `eventData` (a step's serialized input) plus
+ * {@link CREATION_EVENT_META_ALLOWANCE_BYTES} for the rest of the event.
+ */
+export function creationBatchBytes(event: CreateEventRequest): number {
+  let bytes = CREATION_EVENT_META_ALLOWANCE_BYTES;
+  const data = (event as { eventData?: Record<string, unknown> }).eventData;
+  if (data) {
+    for (const value of Object.values(data)) {
+      if (ArrayBuffer.isView(value)) bytes += value.byteLength;
+    }
+  }
+  return bytes;
 }

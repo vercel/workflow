@@ -16,7 +16,10 @@ import {
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
 import * as workflowModule from '../../workflow.js';
-import { getMaxQueueDeliveries, MAX_BATCH_EVENTS } from '../constants.js';
+import {
+  getMaxQueueDeliveries,
+  MAX_IN_BAND_CREATION_BATCH_EVENTS,
+} from '../constants.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -885,7 +888,7 @@ describe.each([
   });
 
   describe('a delivery the fence refuses', () => {
-    const fanOut = 2 * MAX_BATCH_EVENTS + 4;
+    const fanOut = 2 * MAX_IN_BAND_CREATION_BATCH_EVENTS + 4;
     const fanOutCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(n) {
          const sums = await Promise.all(Array.from({ length: n }, (_, i) => add(i, 1)));
@@ -902,7 +905,7 @@ describe.each([
         beforeCreate(data: { eventType: string }) {
           if (
             data.eventType === 'step_created' &&
-            ++creations === 2 * MAX_BATCH_EVENTS + 1
+            ++creations === 2 * MAX_IN_BAND_CREATION_BATCH_EVENTS + 1
           ) {
             world().seqInBand++;
             world().appendOutOfBand({ eventType: 'noop' } as Partial<Event>);
