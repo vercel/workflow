@@ -524,7 +524,7 @@ The rule now keeps no per-entity record. Within one batch of events, the host ho
 ## 10. Before merge
 
 - Remove the temporary `[diag]` warn logs in `packages/core/src/runtime/spec9/delivery.ts`.
-- Get the Vercel e2e lanes green on the final head. On `2cd65d5af2` the only failing lanes were the two nest Vercel Prod lanes; `d617404712` pins the nest workbench to Node 24 for them, and whether that fixes them is not verified yet (the run on the current head had not finished when this was written).
+- Keep the Vercel e2e lanes green on the final head. CI on `c9446d4c09` passed every check, including E2E Required Check and the nest lanes, which `d617404712` fixed by pinning the nest workbench to Node 24.
 - Re-verify handoffs on Vercel now that they are signalled with `{ timeoutSeconds: 0 }`, and re-run the benchmarks, including durabench's fan-out after the fan-out latency fixes (section 7).
 - Move the Vercel dashboard's wake-up action to a `@workflow/core` release with this change (section 7).
 - Re-run the storm workflows on Vercel (`stepStormReproWorkflow`, `hookStormReproWorkflow`) to confirm the cascade is gone (section 7).
