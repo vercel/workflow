@@ -143,6 +143,8 @@ While a hook is active, its token is reserved and cannot be used by other workfl
 
 When a workflow ends, its hooks can no longer be resumed. They are normally removed, and their tokens become available again. With `experimental_minRetention`, a hook remains readable, and its token remains unavailable until retention ends. A `hook_disposed` event removes the hook and makes its token available immediately.
 
+A hook disposed as the workflow returns or throws, such as one declared with `using` in the workflow function's top-level scope, is released by the run's `run_completed` or `run_failed` event, so the log records no separate `hook_disposed`. Disposing a hook that uses `experimental_minRetention` still records one, because it releases the token before retention ends.
+
 See [Hooks and webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
 
 ### Wait lifecycle

@@ -374,6 +374,8 @@ Vercel team ID.
 
 Custom base URL for the Vercel workflow API proxy. Default: `https://api.vercel.com/v1/workflow`.
 
+The Vercel World doesn't follow HTTP redirects on workflow API requests, so point custom URLs at an endpoint that answers directly. A `3xx` response fails the request.
+
 ### `VERCEL_WORKFLOW_SERVER_URL`
 
 Custom workflow-server URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
