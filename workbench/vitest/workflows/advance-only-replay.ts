@@ -223,6 +223,24 @@ export async function retryRaceWithDetachedDownstream(
   return 'done';
 }
 
+export async function nestedParallelToolsBesideSlowAgent(
+  markerPath: string,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    (async () => {
+      await markerStep(markerPath, 'agent-model-1', 100);
+      await Promise.all([
+        markerStep(markerPath, 'agent-tool-1', 50),
+        markerStep(markerPath, 'agent-tool-2', 50),
+      ]);
+      await markerStep(markerPath, 'agent-model-2', 0);
+    })(),
+    markerStep(markerPath, 'agent-slow-sibling', slowMs),
+  ]);
+}
+
 export async function detachedStep(markerPath: string, delayMs: number) {
   'use workflow';
   const detached = markerStep(markerPath, 'detached', delayMs);

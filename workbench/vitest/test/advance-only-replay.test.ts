@@ -14,14 +14,15 @@ import {
   failAfterRaceLoser,
   fanoutEpisodeReset,
   fastFirstParallelChains,
+  nestedParallelToolsBesideSlowAgent,
   oneStepFanoutBenchmark,
   parallelChainsBenchmark,
   queuedRaceLoserWithDetachedTerminalDrain,
   raceLoser,
   raceThenNext,
   retryingBranchBesideSlowSibling,
-  retryRaceWithDetachedDownstream,
   retryingRaceLoserWithDetachedTerminalDrain,
+  retryRaceWithDetachedDownstream,
   slowFirstParallelChains,
   threeParallelChains,
   twoDifferentLeafBenchmark,
@@ -90,6 +91,7 @@ async function runWithTimeline(
     | typeof duplicateProbe
     | typeof fanoutEpisodeReset
     | typeof parallelChainsBenchmark
+    | typeof nestedParallelToolsBesideSlowAgent
     | typeof retryingBranchBesideSlowSibling
     | typeof retryRaceWithDetachedDownstream,
   args: (number | string)[],
@@ -579,6 +581,40 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         timeline
       ).toBeGreaterThan(markerAt(markers, 'retry-race-slow', 'end'));
     }, 15_000);
+
+    it('advances parallel tool calls inside one agent without waiting for a slow agent', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        nestedParallelToolsBesideSlowAgent,
+        [1_500],
+        'nested-tools-beside-slow-agent'
+      );
+      expect(
+        markerAt(markers, 'agent-model-2', 'start'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'agent-slow-sibling', 'end'));
+      expect(
+        markerAt(markers, 'agent-model-2', 'start'),
+        timeline
+      ).toBeGreaterThanOrEqual(markerAt(markers, 'agent-tool-1', 'end'));
+      expect(
+        markerAt(markers, 'agent-model-2', 'start'),
+        timeline
+      ).toBeGreaterThanOrEqual(markerAt(markers, 'agent-tool-2', 'end'));
+      for (const label of [
+        'agent-model-1',
+        'agent-tool-1',
+        'agent-tool-2',
+        'agent-model-2',
+        'agent-slow-sibling',
+      ]) {
+        expect(
+          markers.filter(
+            (marker) => marker.label === label && marker.phase === 'start'
+          ),
+          timeline
+        ).toHaveLength(1);
+      }
+    });
 
     it('advances three chains through the hand-off path when the pending limit is 2', async () => {
       const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
