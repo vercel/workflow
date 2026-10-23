@@ -215,3 +215,21 @@ it('lets a different run publish while one run holds its turn', async () => {
   expect(publications.attempts).toBe(2);
   await expectDenseHistory(2);
 });
+
+it('shares the turn across bundled copies of the storage module', async () => {
+  vi.resetModules();
+  const copy = await import('../storage.js');
+  expect(copy.createStorage).not.toBe(createStorage);
+  const writers = [createStorage(testDir), copy.createStorage(testDir)];
+  const width = 30;
+  await Promise.all(
+    Array.from({ length: width }, (_, i) =>
+      writers[i % writers.length].events.create(runId, {
+        ...stepRequest(i),
+        eventType: 'step_started',
+      })
+    )
+  );
+  expect(publications.attempts).toBe(width * 2);
+  await expectDenseHistory(width * 2 + 1);
+});

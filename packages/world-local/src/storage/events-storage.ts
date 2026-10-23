@@ -751,10 +751,11 @@ export function createEventsStorage(
   // what keeps the log dense, and it is not a rare path: a duplicate
   // `step_started` from a concurrent replay is rejected on every storm.
   //
-  // The cost is that two in-flight writers hold the same candidate. The
-  // exclusive publish arbitrates and the loser bumps, which is the same
-  // mechanism two instances sharing one directory (a test-only configuration
-  // this backend supports) already rely on.
+  // The cost is that two in-flight writers can hold the same candidate. Step
+  // events in one process avoid that by publishing under a shared per-run
+  // turn that rebases the candidate first (`withStepPublicationTurn`). For
+  // other processes and non-step events, the exclusive publish arbitrates and
+  // the loser bumps.
   const runSlotState = new Map<string, { published: number } | null>();
 
   function slotStateKey(runId: string): string {
@@ -951,9 +952,7 @@ export function createEventsStorage(
    */
   async function storeEvent(event: Event): Promise<Event> {
     return withStepPublicationTurn(event, async () => {
-      let current = isStepEventType(event.eventType)
-        ? await rebaseStepEvent(event)
-        : event;
+      let current = await rebaseStepEvent(event);
       for (let attempt = 0; ; attempt++) {
         const eventPath = taggedPath(
           basedir,
@@ -3523,6 +3522,8 @@ export function createEventsStorage(
           if (eventPublished) {
             // The position is occupied now, so the next draw for this run
             // starts above it. Only a committed publish moves the watermark.
+            // Step events already advanced it inside their turn; repeating
+            // that is a no-op, and this is the advance for every other path.
             notePublishedSlot(effectiveRunId, eventId);
             break;
           }
