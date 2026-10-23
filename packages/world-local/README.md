@@ -6,6 +6,13 @@ Stores workflow data as JSON files on disk and provides in-memory queuing. Autom
 
 Used by default on `next dev` and `next start`.
 
+Concurrent step events in one process share a per-run publication turn across
+storage instances, including synthetic step creation. Each event chooses its
+current slot immediately before publishing, avoiding repeated temporary-file
+writes for stale candidates. Slots are never reserved ahead of publication;
+exclusive filesystem writes still arbitrate with other processes and non-step
+events.
+
 The local World continues to resume hooks by writing an event and queuing
 workflow execution. It does not implement `world.invoke()` or enable
 `capabilities.invoke`.
