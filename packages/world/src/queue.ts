@@ -510,12 +510,11 @@ export const WorkflowInvokePayloadSchema = z.compile(
      */
     advanceOnly: z.literal(true).optional().catch(undefined),
     /**
-     * Marks the delayed, per-run continuation that guarantees a terminal
-     * replay is retried after an advance-only hand-off. If it arrives while
-     * work is still live, the handler publishes a fresh backstop generation.
+     * Marks the delayed, per-run safety probe published after an advance-only
+     * terminal deferral. It does not poll or re-arm itself while work is live.
      */
     terminalBackstop: z.literal(true).optional().catch(undefined),
-    /** Logical generation for delay and queue-dedupe identity. */
+    /** Probe generation retained for compatibility with earlier producers. */
     terminalBackstopAttempt: z
       .number()
       .int()

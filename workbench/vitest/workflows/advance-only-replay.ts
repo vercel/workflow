@@ -226,6 +226,18 @@ export async function duplicateProbe(markerPath: string) {
   ]);
 }
 
+export async function coalescingWindowStress(
+  markerPath: string,
+  firstMs: number,
+  secondMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    markerStep(markerPath, 'coalesce-a', firstMs),
+    markerStep(markerPath, 'coalesce-b', secondMs),
+  ]);
+}
+
 async function benchmarkStep(delayMs: number) {
   'use step';
   await new Promise((resolve) => setTimeout(resolve, delayMs));

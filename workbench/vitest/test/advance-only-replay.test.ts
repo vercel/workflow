@@ -7,6 +7,7 @@ import { getWorld } from 'workflow/runtime';
 import {
   caughtSlowPromiseChain,
   chainedFanoutBenchmark,
+  coalescingWindowStress,
   detachedAfterAdvanceOnlyReplay,
   detachedStep,
   duplicateProbe,
@@ -74,6 +75,7 @@ async function runWithTimeline(
     | typeof fastFirstParallelChains
     | typeof slowFirstParallelChains
     | typeof caughtSlowPromiseChain
+    | typeof coalescingWindowStress
     | typeof twoLeafPromiseAll
     | typeof raceThenNext
     | typeof threeParallelChains
@@ -258,6 +260,24 @@ async function withUnknownStepCreatedFieldsDropped<T>(fn: () => Promise<T>) {
   }
 }
 
+async function withTerminalBackstopSendCount<T>(
+  fn: () => Promise<T>
+): Promise<{ result: T; sends: number }> {
+  const world = await getWorld();
+  const originalQueue = world.queue;
+  let sends = 0;
+  world.queue = (async (...args: Parameters<typeof originalQueue>) => {
+    const payload = args[1] as { terminalBackstop?: unknown };
+    if (payload.terminalBackstop === true) sends++;
+    return originalQueue.apply(world, args);
+  }) as typeof originalQueue;
+  try {
+    return { result: await fn(), sends };
+  } finally {
+    world.queue = originalQueue;
+  }
+}
+
 describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
   'advance-only replay (#4457)',
   () => {
@@ -340,6 +360,52 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         timeline
       ).toBeGreaterThan(markerAt(markers, 'different-leaf-1', 'end'));
     });
+
+    it('keeps terminal safety sends constant for a long race loser', async () => {
+      const { sends } = await withTerminalBackstopSendCount(() =>
+        runWithTimeline(raceLoser, [2_000, 0], 'long-race-loser')
+      );
+      expect(sends).toBe(1);
+    });
+
+    it('keeps terminal safety sends constant for a retrying race loser', async () => {
+      const { result, sends } = await withTerminalBackstopSendCount(() =>
+        terminalDrainRaceCompletes(
+          retryingRaceLoserWithDetachedTerminalDrain,
+          'retrying-race-loser'
+        )
+      );
+      expect(result.completed, result.events).toBe(true);
+      expect(sends).toBe(1);
+    });
+
+    it('completes concurrent batches around the coalescing window without duplicate bodies', async () => {
+      const runs = await Promise.all(
+        Array.from({ length: 30 }, (_, index) =>
+          runWithTimeline(
+            coalescingWindowStress,
+            [40, 40 + (index % 25)],
+            `coalescing-stress-${index}`
+          )
+        )
+      );
+      for (const { markers, timeline } of runs) {
+        for (const label of ['coalesce-a', 'coalesce-b']) {
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'start'
+            ),
+            timeline
+          ).toHaveLength(1);
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'end'
+            ),
+            timeline
+          ).toHaveLength(1);
+        }
+      }
+    }, 60_000);
 
     it('advances after a Promise.race winner without waiting for the loser', async () => {
       const { markers, timeline } = await runWithTimeline(

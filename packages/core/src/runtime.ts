@@ -64,6 +64,7 @@ import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
   getAdvanceOnlyReplayMaxPending,
+  getInlineOwnershipLeaseSeconds,
   getMaxEventsOverride,
   getMaxQueueDeliveries,
   getOpenWaitClockSkewMs,
@@ -249,23 +250,9 @@ export {
 // Lets near-simultaneous inline siblings finish without paying for an idle
 // advance-only replay, while still handing genuinely slower branches off.
 const ADVANCE_ONLY_HANDOFF_COALESCE_MS = 10;
-// A terminal deferral must make progress even if the handler expected to wake
-// it never does. One second avoids a tight replay loop around long steps.
-const ADVANCE_ONLY_TERMINAL_BACKSTOP_INITIAL_DELAY_SECONDS = 1;
-const ADVANCE_ONLY_TERMINAL_BACKSTOP_MAX_DELAY_SECONDS = 30;
 
-function terminalBackstopDelaySeconds(attempt: number): number {
-  return Math.min(
-    ADVANCE_ONLY_TERMINAL_BACKSTOP_INITIAL_DELAY_SECONDS * 2 ** attempt,
-    ADVANCE_ONLY_TERMINAL_BACKSTOP_MAX_DELAY_SECONDS
-  );
-}
-
-function terminalBackstopIdempotencyKey(
-  runId: string,
-  attempt: number
-): string {
-  return `advance-only:terminal-backstop:${runId}:${attempt}`;
+function terminalBackstopIdempotencyKey(runId: string): string {
+  return `advance-only:terminal-backstop:${runId}`;
 }
 
 /**
@@ -1571,20 +1558,24 @@ export function workflowEntrypoint(
                   };
 
                   /**
-                   * Keep terminal progress independent of another step
-                   * handler's replay eligibility. The first deferral publishes
-                   * one delayed continuation per run. If a continuation is
-                   * early, it publishes a fresh generation so healthy live work
-                   * never consumes one message's delivery-attempt budget. The
-                   * generation key makes an ambiguous send or redelivery safe.
+                   * Keep one delayed safety probe independent of another step
+                   * handler's replay eligibility. Pending work normally finishes
+                   * the run through its own live executor or durable queue
+                   * delivery. Spacing this fallback by the inline ownership
+                   * lease avoids polling a healthy long-running or retrying step.
+                   * An early probe deliberately does not re-arm itself: its
+                   * delivery is only a crash-recovery safety net, not a second
+                   * progress driver.
                    */
-                  const deferTerminalForAdvanceOnlyWork = async (): Promise<
-                    { timeoutSeconds: number } | undefined
-                  > => {
-                    const nextAttempt =
+                  const deferTerminalForAdvanceOnlyWork = async (
+                    publishSafetyProbe: boolean
+                  ): Promise<{ timeoutSeconds: number } | undefined> => {
+                    if (
+                      !publishSafetyProbe ||
                       incomingTerminalBackstop === true
-                        ? (incomingTerminalBackstopAttempt ?? 0) + 1
-                        : 0;
+                    ) {
+                      return undefined;
+                    }
                     await queueMessage(
                       world,
                       getWorkflowQueueName(workflowName, namespace),
@@ -1592,14 +1583,11 @@ export function workflowEntrypoint(
                         ...(await replayMessage()),
                         advanceOnly: true,
                         terminalBackstop: true,
-                        terminalBackstopAttempt: nextAttempt,
+                        terminalBackstopAttempt: 0,
                       },
                       {
-                        delaySeconds: terminalBackstopDelaySeconds(nextAttempt),
-                        idempotencyKey: terminalBackstopIdempotencyKey(
-                          runId,
-                          nextAttempt
-                        ),
+                        delaySeconds: getInlineOwnershipLeaseSeconds(),
+                        idempotencyKey: terminalBackstopIdempotencyKey(runId),
                       }
                     );
                     return undefined;
@@ -1899,6 +1887,12 @@ export function workflowEntrypoint(
                     ...(advanceOnly
                       ? { 'workflow.advance_only.ran': true }
                       : {}),
+                    ...(incomingTerminalBackstop === true
+                      ? {
+                          'workflow.advance_only.terminal_backstop_attempt':
+                            incomingTerminalBackstopAttempt ?? 0,
+                        }
+                      : {}),
                   });
                   const advanceOnlyDelivery: AdvanceOnlyDelivery = {
                     messageId: metadata.messageId,
@@ -1913,10 +1907,17 @@ export function workflowEntrypoint(
                   // rests on, so later batches here claim before they run.
                   let concurrentBranchReplayPossible = false;
                   // This is deliberately separate from the optimistic-start
-                  // latch above: it means a continuation was actually sent.
-                  // An incoming advance-only delivery proves its producer sent
-                  // one even though that happened in another invocation.
-                  let handOffSent = advanceOnly;
+                  // latch above: it means this invocation is replaying beside
+                  // work another executor still owns, either because it is an
+                  // advance-only delivery or because a queued step settled
+                  // while a sibling remained pending.
+                  let advanceOnlyTerminalGuard = advanceOnly;
+                  // Exactly the advance-only replay that reaches terminal owns
+                  // the one safety probe. The original inline batch still uses
+                  // the guard after publishing its hand-off, but publishing a
+                  // second probe there would duplicate the chain on Worlds
+                  // whose queue keys are released after delivery.
+                  let ownsTerminalSafetyProbe = advanceOnly;
 
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
@@ -2170,21 +2171,29 @@ export function workflowEntrypoint(
                                 ? runCreatedEvent.eventData.executionContext
                                 : undefined,
                           });
+                        const maxPending = getAdvanceOnlyReplayMaxPending();
+                        const withinAdvanceOnlyBound =
+                          advanceOnlyReplaySupported &&
+                          pendingStepIds.size <= maxPending &&
+                          (pendingSiblingCountAtLatestStart(
+                            loaded.events,
+                            incomingStepId
+                          ) ?? Number.POSITIVE_INFINITY) <= maxPending;
+                        // The full-log terminal probe is needed only to bypass
+                        // the bound, or on a redelivery where it prevents
+                        // drain-only creations from being recovered as lost
+                        // dispatches. First deliveries already leave every
+                        // never-started sibling alone.
                         const terminalProbe =
                           advanceOnlyReplaySupported &&
+                          pendingStepIds.size > 0 &&
+                          (!withinAdvanceOnlyBound ||
+                            advanceOnlyDelivery.recoverNeverStarted) &&
                           pendingCreationsFollowFirstStart(
                             loaded.events,
                             incomingStepId,
                             pendingStepIds
                           );
-                        const withinAdvanceOnlyBound =
-                          pendingStepIds.size <=
-                            getAdvanceOnlyReplayMaxPending() &&
-                          (pendingSiblingCountAtLatestStart(
-                            loaded.events,
-                            incomingStepId
-                          ) ?? Number.POSITIVE_INFINITY) <=
-                            getAdvanceOnlyReplayMaxPending();
 
                         if (pendingStepIds.size > 0) {
                           // A pending step that THIS message inline-owns (a
@@ -2227,6 +2236,8 @@ export function workflowEntrypoint(
                               }
                             );
                             advanceOnly = true;
+                            advanceOnlyTerminalGuard = true;
+                            ownsTerminalSafetyProbe = true;
                             if (terminalProbe) {
                               // These creation-only rows appeared after this
                               // attempt began. Probe their replay state, but
@@ -3696,15 +3707,16 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
-                      // A published hand-off may start downstream work that
-                      // the original batch does not await (a detached step or
+                      // An advance-only replay may reach a terminal result while
+                      // downstream work remains live (a detached step or a
                       // Promise.race loser). Leave terminal completion to a
                       // replay after that live or durably scheduled work ends.
                       // Creation-only terminal-drain rows do not count here.
                       // Do not apply this to the optimistic-start latch or an
-                      // unrelated ordinary continuation: no hand-off was sent.
+                      // unrelated ordinary continuation: neither establishes a
+                      // concurrent advance-only replay.
                       if (
-                        handOffSent &&
+                        advanceOnlyTerminalGuard &&
                         pendingStepIdsIn(eventLog.events, terminalDrainStepIds)
                           .size > 0
                       ) {
@@ -3718,7 +3730,9 @@ export function workflowEntrypoint(
                         span?.setAttributes({
                           'workflow.advance_only.terminal_exit': true,
                         });
-                        return await deferTerminalForAdvanceOnlyWork();
+                        return await deferTerminalForAdvanceOnlyWork(
+                          ownsTerminalSafetyProbe
+                        );
                       }
 
                       // Workflow completed. Do NOT reload-and-retry the create
@@ -5470,7 +5484,7 @@ export function workflowEntrypoint(
                                       ),
                                   }
                                 );
-                                handOffSent = true;
+                                advanceOnlyTerminalGuard = true;
                                 span?.setAttributes({
                                   'workflow.advance_only.handoff_sent': true,
                                 });
@@ -6011,7 +6025,7 @@ export function workflowEntrypoint(
                         let failureKey: PayloadKey | undefined;
                         let dehydratedError: Uint8Array;
                         try {
-                          const failurePendingEvents = handOffSent
+                          const failurePendingEvents = advanceOnlyTerminalGuard
                             ? eventLog.type === 'loadAll'
                               ? (await loadWorkflowRunEvents(runId)).events
                               : eventLog.events
@@ -6033,7 +6047,9 @@ export function workflowEntrypoint(
                             span?.setAttributes({
                               'workflow.advance_only.terminal_exit': true,
                             });
-                            return await deferTerminalForAdvanceOnlyWork();
+                            return await deferTerminalForAdvanceOnlyWork(
+                              ownsTerminalSafetyProbe
+                            );
                           }
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.

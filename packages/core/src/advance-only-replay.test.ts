@@ -238,6 +238,7 @@ async function setupHarness(
     stepSendGate?: Gate;
     failAdvanceOnlySend?: boolean;
     invokeCapable?: boolean;
+    maxConcurrencyCapable?: boolean;
     dropUnknownStepCreatedFields?: boolean;
   } = {}
 ): Promise<Harness> {
@@ -363,7 +364,14 @@ async function setupHarness(
   });
   setWorld({
     specVersion: SPEC_VERSION_CURRENT,
-    ...(options.invokeCapable ? { capabilities: { invoke: true } } : {}),
+    ...(options.invokeCapable || options.maxConcurrencyCapable
+      ? {
+          capabilities: {
+            ...(options.invokeCapable ? { invoke: true } : {}),
+            ...(options.maxConcurrencyCapable ? { maxConcurrency: true } : {}),
+          },
+        }
+      : {}),
     createQueueHandler: vi.fn((_prefix: string, h: typeof handler) => {
       handler = h;
       return async () => new Response(null, { status: 204 });
@@ -446,6 +454,7 @@ afterEach(() => {
   delete process.env.WORKFLOW_MAX_INLINE_STEPS;
   delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
   delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
+  delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
   setWorld(undefined);
   spanExporter.reset();
   vi.clearAllMocks();
@@ -718,11 +727,42 @@ describe('background path: a queued step settling beside pending siblings', () =
         (label) => !h.stepHas(label, 'step_started')
       )
     ).toBe(true);
-    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+    // The queued winner is itself an advance-only replay. It must not seal the
+    // run while the inline loser still has a live executor.
+    expect(h.events.map((event) => event.eventType)).not.toContain(
+      'run_completed'
+    );
+    expect(
+      h.queued.filter((message) => message.terminalBackstop === true)
+    ).toHaveLength(1);
 
     slow.open();
     await flow;
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('guards run_failed on a queued-step advance-only replay', async () => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
+    const runId = newRunId();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(runId, FAIL_AFTER_RACE);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+    await vi.waitFor(() => {
+      expect(h.stepMessageFor('fast1')).toBeDefined();
+    });
+
+    await h.deliver(h.stepMessageFor('fast1'), 'msg_fast1');
+    expect(h.events.map((event) => event.eventType)).not.toContain(
+      'run_failed'
+    );
+    expect(
+      h.queued.filter((message) => message.terminalBackstop === true)
+    ).toHaveLength(1);
+
+    slow.open();
+    await flow;
+    expect(h.events.map((event) => event.eventType)).toContain('run_failed');
   });
 
   it('dispatches overflow steps created before an in-process attribute detour', async () => {
@@ -769,7 +809,10 @@ describe('inline path: an inline step settling while its batch is still running'
   async function startInlineBatch(
     runId: string,
     holdSlowClaim = false,
-    options: { invokeCapable?: boolean } = {}
+    options: {
+      invokeCapable?: boolean;
+      maxConcurrencyCapable?: boolean;
+    } = {}
   ) {
     const slow = gate();
     bodyGates.set('slow', slow);
@@ -1025,7 +1068,7 @@ describe('inline path: an inline step settling while its batch is still running'
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
   });
 
-  it('backs a terminal deferral off exponentially while live work runs', async () => {
+  it('schedules one lease-spaced terminal safety probe while live work runs', async () => {
     const runId = newRunId();
     const slow = gate();
     bodyGates.set('slow', slow);
@@ -1055,8 +1098,8 @@ describe('inline path: an inline step settling while its batch is still running'
       Object.is(message, terminalBackstops(h)[0])
     );
     expect(backstopCall?.[2]).toMatchObject({
-      delaySeconds: 1,
-      idempotencyKey: `advance-only:terminal-backstop:${runId}:0`,
+      delaySeconds: 860,
+      idempotencyKey: `advance-only:terminal-backstop:${runId}`,
     });
     expect(terminalBackstops(h)[0]).toMatchObject({
       terminalBackstopAttempt: 0,
@@ -1065,39 +1108,22 @@ describe('inline path: an inline step settling while its batch is still running'
     await expect(
       h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop')
     ).resolves.toBeUndefined();
-    expect(terminalBackstops(h)[1]).toMatchObject({
-      terminalBackstopAttempt: 1,
-    });
-    const secondCall = h.queue.mock.calls.find(([, message]) =>
-      Object.is(message, terminalBackstops(h)[1])
-    );
-    expect(secondCall?.[2]).toMatchObject({
-      delaySeconds: 2,
-      idempotencyKey: `advance-only:terminal-backstop:${runId}:1`,
-    });
-    await expect(
-      h.deliver(terminalBackstops(h)[1], 'msg_terminal_backstop_again')
-    ).resolves.toBeUndefined();
-    expect(terminalBackstops(h)[2]).toMatchObject({
-      terminalBackstopAttempt: 2,
-    });
-    const thirdCall = h.queue.mock.calls.find(([, message]) =>
-      Object.is(message, terminalBackstops(h)[2])
-    );
-    expect(thirdCall?.[2]).toMatchObject({
-      delaySeconds: 4,
-      idempotencyKey: `advance-only:terminal-backstop:${runId}:2`,
-    });
+    expect(terminalBackstops(h)).toHaveLength(1);
+    expect(
+      hasExecutionAttribute(
+        'workflow.advance_only.terminal_backstop_attempt',
+        0
+      )
+    ).toBe(true);
 
-    // Logical delivery times are 1s and 3s. The original slow-step handler
-    // settles at 6s and completes immediately, so only two polling deferrals
-    // are needed instead of one per second. Each is a fresh queue message.
+    // The live step's own handler completes the run; the safety probe never
+    // becomes a duration-proportional polling loop.
     slow.open();
     await flow;
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
   });
 
-  it('chains terminal backstops through fresh messages before the delivery ceiling', async () => {
+  it('does not re-arm an early terminal safety probe', async () => {
     const runId = newRunId();
     const slow = gate();
     bodyGates.set('slow', slow);
@@ -1116,36 +1142,15 @@ describe('inline path: an inline step settling while its batch is still running'
     expect(h.events.map((event) => event.eventType)).not.toContain(
       'run_failed'
     );
-    expect(terminalBackstops(h)).toHaveLength(2);
-    expect(terminalBackstops(h)[1]).toMatchObject({
-      terminalBackstopAttempt: 1,
-    });
-    const nextCall = h.queue.mock.calls.find(([, message]) =>
-      Object.is(message, terminalBackstops(h)[1])
-    );
-    expect(nextCall?.[2]).toMatchObject({
-      delaySeconds: 2,
-      idempotencyKey: `advance-only:terminal-backstop:${runId}:1`,
-    });
+    expect(terminalBackstops(h)).toHaveLength(1);
 
-    // If the generation-0 delivery is redelivered after an ambiguous send,
-    // it republishes generation 1 under the same key instead of forking the
-    // backstop chain from the transport's delivery-attempt counter.
+    // A transport redelivery is also a no-op while the live owner remains.
     await h.deliver(
       terminalBackstops(h)[0],
       'msg_terminal_backstop_redelivery',
       2
     );
-    expect(terminalBackstops(h)[2]).toMatchObject({
-      terminalBackstopAttempt: 1,
-    });
-    const duplicateNextCall = h.queue.mock.calls.find(([, message]) =>
-      Object.is(message, terminalBackstops(h)[2])
-    );
-    expect(duplicateNextCall?.[2]).toMatchObject({
-      delaySeconds: 2,
-      idempotencyKey: `advance-only:terminal-backstop:${runId}:1`,
-    });
+    expect(terminalBackstops(h)).toHaveLength(1);
 
     slow.open();
     await flow;
@@ -1272,5 +1277,18 @@ describe('inline path: an inline step settling while its batch is still running'
     await flow;
     expect(h.stepHas('fast2', 'step_completed')).toBe(true);
     expect(h.events.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it('does not infer serialized replays from an unverifiable runtime setting', async () => {
+    process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+    const { h, slow, flow } = await startInlineBatch(newRunId(), false, {
+      maxConcurrencyCapable: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    slow.open();
+    await flow;
   });
 });

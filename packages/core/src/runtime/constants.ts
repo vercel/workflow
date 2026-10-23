@@ -461,11 +461,10 @@ export function isInlineOwnershipEnabled(): boolean {
  * returned without replaying while any sibling step was still pending, and the
  * inline loop replayed only after every step in its inline batch had settled.
  * Either way each round of a `Promise.all` cost as long as its slowest step.
- * With this on, the queued step's handler replays anyway. The default
- * two-branch inline path dispatches one branch so both can advance in their
- * current handlers; wider eligible inline batches hand early settlers to a
- * fresh invocation. These replays act only on the work they create and leave
- * steps still in flight to the invocations running them.
+ * With this on, the queued step's handler replays anyway, while an eligible
+ * inline batch hands an early settler to a fresh invocation. These replays act
+ * only on the work they create and leave steps still in flight to the
+ * invocations running them.
  *
  * A branch advances early only when at most
  * {@link getAdvanceOnlyReplayMaxPending} siblings were pending when its
