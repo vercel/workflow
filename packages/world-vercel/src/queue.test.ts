@@ -46,7 +46,7 @@ const {
   const MockQueueClient = vi.fn().mockImplementation(function () {
     return {
       send: mockSend,
-      experimental_sendBatch: mockSendBatch,
+      sendBatch: mockSendBatch,
       handleCallback: mockHandleCallback,
     };
   });
