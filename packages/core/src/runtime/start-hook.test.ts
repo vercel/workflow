@@ -26,6 +26,7 @@ import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import {
   DEFAULT_START_HOOK_RETENTION_MS,
   normalizeStartHook,
+  START_HOOK_CONFIRM_DELAYS_MS,
   start,
 } from './start.js';
 import {
@@ -703,6 +704,78 @@ describe('start({ hook })', () => {
 
       expect(sink.locked).toBe(false);
       expect(streams.get).not.toHaveBeenCalled();
+    });
+
+    it('confirms an admission whose response was lost in place, then pipes the stream', async () => {
+      const streams = streamWorld();
+      // The first run_created commits, but its answer never arrives; the
+      // re-post replays the acceptance.
+      eventsCreate
+        .mockRejectedValueOnce(
+          new WorkflowWorldError('reset', { code: 'TRANSPORT' })
+        )
+        .mockImplementation(accept);
+      const { stream, reads } = oneShotSource();
+
+      const run = await start(workflow, [stream], { hook: { token: TOKEN } });
+
+      expect(run.runId).toBe(queue.mock.calls[0][1].runId);
+      expect(eventsCreate).toHaveBeenCalledTimes(2);
+      expect(eventsCreate.mock.calls[1][0]).toBe(run.runId);
+      await vi.waitFor(() => expect(reads.count).toBe(1));
+      await vi.waitFor(() => expect(streams.close).toHaveBeenCalled());
+    });
+
+    it('learns a refusal on the in-place re-post and never reads the stream', async () => {
+      const streams = streamWorld();
+      eventsCreate
+        .mockRejectedValueOnce(new WorkflowWorldError('down', { status: 503 }))
+        .mockRejectedValue(new HookConflictError(TOKEN, 'wrun_owner'));
+      const { stream, reads } = oneShotSource();
+
+      const error = await rejection(
+        start(workflow, [stream], { hook: { token: TOKEN } })
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(HookConflictError.is(error)).toBe(true);
+      expect(reads.count).toBe(0);
+      expect(streams.write).not.toHaveBeenCalled();
+    });
+
+    it('decides a streamed candidate whose queue publish was uncertain, and publishes it again', async () => {
+      const streams = streamWorld();
+      queue
+        .mockRejectedValueOnce(
+          new WorkflowWorldError('reset', { code: 'TRANSPORT' })
+        )
+        .mockResolvedValue(undefined);
+      const { stream, reads } = oneShotSource();
+
+      const run = await start(workflow, [stream], { hook: { token: TOKEN } });
+
+      expect(queue).toHaveBeenCalledTimes(2);
+      expect(queue.mock.calls[1][1].runId).toBe(run.runId);
+      await vi.waitFor(() => expect(reads.count).toBe(1));
+      await vi.waitFor(() => expect(streams.close).toHaveBeenCalled());
+    });
+
+    it('throws WorkflowStartError once the re-posts stay uncertain', async () => {
+      streamWorld();
+      eventsCreate.mockRejectedValue(
+        new WorkflowWorldError('down', { status: 503 })
+      );
+      const { stream } = oneShotSource();
+
+      const error = await rejection(
+        start(workflow, [stream], { hook: { token: TOKEN } })
+      );
+
+      expect(WorkflowStartError.is(error)).toBe(true);
+      expect(error).toMatchObject({ stage: 'admission' });
+      expect(eventsCreate).toHaveBeenCalledTimes(
+        START_HOOK_CONFIRM_DELAYS_MS.length + 1
+      );
     });
 
     it('pipes the stream only once the candidate is admitted', async () => {

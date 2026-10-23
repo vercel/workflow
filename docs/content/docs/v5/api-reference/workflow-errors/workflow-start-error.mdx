@@ -45,6 +45,8 @@ import { WorkflowStartError } from "workflow/errors";
 export default WorkflowStartError;`}
 />
 
+A start with stream arguments re-confirms an uncertain admission a few times before it throws, because its streams are piped only to a confirmed run. If it still throws, the candidate may be admitted and waiting on input that nothing will send: cancel it with `getRun(error.runId).cancel()`, and the token is released once its retention passes.
+
 `stage` is `"queue"` when the SDK could not confirm that the run was queued, and `"admission"` when it was queued but the SDK could not confirm the World's admission decision. `runId` is the candidate's run ID, for inspection.
 
 ### Static Methods

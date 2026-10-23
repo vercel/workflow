@@ -482,6 +482,18 @@ function assertTargetAdmitsStartHook(
 }
 
 /**
+ * Backoff between the re-posts with which a streamed `start({ hook })`
+ * confirms an uncertain admission before throwing `WorkflowStartError`. Its
+ * stream arguments are piped only on a confirmed admission, so giving up at
+ * the first uncertain answer would leave an owner that was in fact admitted
+ * waiting on input nothing will send.
+ */
+export const START_HOOK_CONFIRM_DELAYS_MS: readonly number[] = [100, 300, 900];
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
  * Inside a workflow, `start()` is a step, and a step retries every error that
  * is not fatal. A start Hook's deterministic answers (a refusal naming the
  * owner, a permanent rejection, a contract error) cannot change on a retry,
@@ -1520,6 +1532,12 @@ export async function start<TArgs extends unknown[], TResult>(
         // registered for flushing on all of them, so the gated stream ops
         // always settle.
         const gate = streamStartGate as PromiseWithResolvers<boolean>;
+        // Stream arguments registered their gated pipes in `ops`, and their
+        // producers run only from here. So a streamed start confirms an
+        // uncertain admission in place (`START_HOOK_CONFIRM_DELAYS_MS`)
+        // before giving up, rather than leave an admitted owner waiting on
+        // input that nothing will send.
+        const streamed = ops.length > 0;
         flushArgumentStreams();
         span?.setAttributes({
           ...Attribute.WorkflowRunId(runId),
@@ -1527,6 +1545,7 @@ export async function start<TArgs extends unknown[], TResult>(
         });
         let createdRunStatus: WorkflowRunStatus;
         try {
+          let enqueueFailure: { error: unknown } | undefined;
           try {
             await enqueueRun();
           } catch (error) {
@@ -1537,56 +1556,76 @@ export async function start<TArgs extends unknown[], TResult>(
             );
             // A permanent refusal published nothing; anything else may have.
             if (isPermanentWorldError(error)) throw error;
-            throw new WorkflowStartError(runId, 'queue', error);
+            if (!streamed) throw new WorkflowStartError(runId, 'queue', error);
+            // Decide the candidate anyway: its queued copy may exist, and
+            // an accepted candidate is published again below.
+            enqueueFailure = { error };
           }
-          let result: Awaited<ReturnType<typeof createRun>>;
-          try {
-            result = await createRun();
-          } catch (error) {
-            if (HookConflictError.is(error)) {
-              span?.setAttributes({
-                ...Attribute.WorkflowStartHookOutcome('rejected'),
-                ...(error.conflictingRunId
-                  ? Attribute.WorkflowStartHookConflictingRunId(
-                      error.conflictingRunId
-                    )
-                  : {}),
-              });
-              if (!error.conflictingRunId) {
+          let result: Awaited<ReturnType<typeof createRun>> | undefined;
+          for (let attempt = 0; result === undefined; attempt++) {
+            try {
+              result = await createRun();
+            } catch (error) {
+              if (HookConflictError.is(error)) {
+                span?.setAttributes({
+                  ...Attribute.WorkflowStartHookOutcome('rejected'),
+                  ...(error.conflictingRunId
+                    ? Attribute.WorkflowStartHookConflictingRunId(
+                        error.conflictingRunId
+                      )
+                    : {}),
+                });
+                if (!error.conflictingRunId) {
+                  throw startHookContractError(
+                    `The World refused start Hook candidate "${runId}" without naming the run that owns the token.`
+                  );
+                }
+                // A holder stuck pending (its first message lost) would hold
+                // the token forever: wake it. Best effort; the refusal stands.
+                const wake = await wakePendingStartHookHolder(
+                  world,
+                  error.conflictingRunId,
+                  traceCarrier
+                );
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookHolderWoken(wake === 'woken')
+                );
+                throw error;
+              }
+              if (EntityConflictError.is(error)) {
+                // Admission must replay the candidate's decision. A plain
+                // conflict says nothing about who owns the token.
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookOutcome('failed')
+                );
                 throw startHookContractError(
-                  `The World refused start Hook candidate "${runId}" without naming the run that owns the token.`
+                  `The World answered start Hook candidate "${runId}" with EntityConflictError instead of its admission decision.`
                 );
               }
-              // A holder stuck pending (its first message lost) would hold
-              // the token forever: wake it. Best effort; the refusal stands.
-              const wake = await wakePendingStartHookHolder(
-                world,
-                error.conflictingRunId,
-                traceCarrier
-              );
+              // A permanent answer (a validation 400, or
+              // START_HOOK_ADMISSION_REJECTED) is the candidate's outcome: the
+              // queued copy gets the same answer and creates nothing.
+              if (isPermanentWorldError(error)) {
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookOutcome('failed')
+                );
+                throw error;
+              }
+              if (streamed && attempt < START_HOOK_CONFIRM_DELAYS_MS.length) {
+                // The decision replays: re-posting the same candidate learns
+                // it whether or not the last attempt committed.
+                await sleep(START_HOOK_CONFIRM_DELAYS_MS[attempt]);
+                continue;
+              }
               span?.setAttributes(
-                Attribute.WorkflowStartHookHolderWoken(wake === 'woken')
+                Attribute.WorkflowStartHookOutcome('uncertain')
               );
-              throw error;
-            }
-            if (EntityConflictError.is(error)) {
-              // Admission must replay the candidate's decision. A plain
-              // conflict says nothing about who owns the token.
-              span?.setAttributes(Attribute.WorkflowStartHookOutcome('failed'));
-              throw startHookContractError(
-                `The World answered start Hook candidate "${runId}" with EntityConflictError instead of its admission decision.`
+              throw new WorkflowStartError(
+                runId,
+                enqueueFailure ? 'queue' : 'admission',
+                enqueueFailure?.error ?? error
               );
             }
-            span?.setAttributes(
-              Attribute.WorkflowStartHookOutcome(
-                isPermanentWorldError(error) ? 'failed' : 'uncertain'
-              )
-            );
-            // A permanent answer (a validation 400, or
-            // START_HOOK_ADMISSION_REJECTED) is the candidate's outcome: the
-            // queued copy gets the same answer and creates nothing.
-            if (isPermanentWorldError(error)) throw error;
-            throw new WorkflowStartError(runId, 'admission', error);
           }
           if (result.run?.runId !== runId) {
             span?.setAttributes(Attribute.WorkflowStartHookOutcome('failed'));
@@ -1603,6 +1642,28 @@ export async function start<TArgs extends unknown[], TResult>(
               `Workflow run "${runId}" was created, but the World did not confirm reserving its start Hook token, so the start was not idempotent. The run is queued and may execute.`,
               { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
             );
+          }
+          if (enqueueFailure) {
+            // Admitted, but its message may never have been published:
+            // publish it again so the owner starts.
+            for (let attempt = 0; ; attempt++) {
+              try {
+                await enqueueRun();
+                break;
+              } catch (error) {
+                if (
+                  !isPermanentWorldError(error) &&
+                  attempt < START_HOOK_CONFIRM_DELAYS_MS.length
+                ) {
+                  await sleep(START_HOOK_CONFIRM_DELAYS_MS[attempt]);
+                  continue;
+                }
+                span?.setAttributes(
+                  Attribute.WorkflowStartHookOutcome('uncertain')
+                );
+                throw new WorkflowStartError(runId, 'queue', error);
+              }
+            }
           }
           createdRunStatus = result.run.status;
           gate.resolve(true);
