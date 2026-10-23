@@ -17,7 +17,7 @@ import { entityEventClass } from '@workflow/world/event-metadata';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
 import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
-import type { QueueItem } from './global.js';
+import type { QueueItem, StepInvocationQueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -88,8 +88,16 @@ async function drainPendingQueueItems(
    * In turbo mode, gates final `*_created` writes on backgrounded
    * `run_started`. Undefined when `run_started` is awaited.
    */
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  onTerminalDrain?: (stepIds: ReadonlySet<string>) => void
 ): Promise<void> {
+  onTerminalDrain?.(
+    new Set(
+      [...pendingQueue.values()]
+        .filter((item): item is StepInvocationQueueItem => item.type === 'step')
+        .map((item) => item.correlationId)
+    )
+  );
   if (pendingQueue.size === 0) return;
   try {
     const world = await getWorld();
@@ -122,6 +130,8 @@ interface WorkflowSessionOptions {
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
+  /** Reports steps left un-awaited when this replay becomes terminal. */
+  readonly onTerminalDrain?: (stepIds: ReadonlySet<string>) => void;
 }
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
@@ -384,6 +394,7 @@ async function createWorkflowSessionInner(
     compiledWorkflowScripts,
     runReadyBarrier,
     worldCapabilities,
+    onTerminalDrain,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
 ): Promise<{
@@ -1227,7 +1238,8 @@ async function createWorkflowSessionInner(
       vmGlobalThis,
       workflowRun,
       'failed',
-      runReadyBarrier
+      runReadyBarrier,
+      onTerminalDrain
     );
 
     throw error;
@@ -1288,7 +1300,8 @@ async function createWorkflowSessionInner(
         vmGlobalThis,
         workflowRun,
         'completed',
-        runReadyBarrier
+        runReadyBarrier,
+        onTerminalDrain
       );
 
       return { type: 'completed', output, resultType: typeof result };

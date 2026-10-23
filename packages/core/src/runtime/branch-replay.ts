@@ -50,24 +50,22 @@ export function suspensionHasNewWork(
 }
 
 /**
- * Steps that have executable work in progress: a normally scheduled
- * `step_created`, or a `step_started`, without a terminal step event.
- *
- * Terminal drain records detached steps while the workflow is already
- * returning or throwing, but deliberately publishes no message for them.
- * Those creation-only rows match main's event history and do not keep a run
- * alive. A later `step_started` still makes one live, independently of how it
- * was created. Older creation rows have no marker and retain their historical
- * scheduled-work meaning.
+ * Steps that have executable work in progress: a `step_created` not identified
+ * by the current replay as drain-only, or any `step_started`, without a
+ * terminal step event. A start is authoritative even when the replay also
+ * reports the id as an un-awaited terminal-drain item.
  */
 export function pendingStepIdsIn(
-  events: readonly Event[]
+  events: readonly Event[],
+  terminalDrainStepIds: ReadonlySet<string> = new Set()
 ): Set<string | undefined> {
   const created = new Set<string | undefined>();
   const settled = new Set<string | undefined>();
   for (const e of events) {
     if (
-      (e.eventType === 'step_created' && e.eventData?.terminalDrain !== true) ||
+      (e.eventType === 'step_created' &&
+        (e.correlationId === undefined ||
+          !terminalDrainStepIds.has(e.correlationId))) ||
       e.eventType === 'step_started'
     ) {
       created.add(e.correlationId);
@@ -99,10 +97,7 @@ export function pendingSiblingCountAtLatestStart(
   const pending = new Set<string | undefined>();
   let count: number | undefined;
   for (const event of events) {
-    if (
-      event.eventType === 'step_created' &&
-      event.eventData?.terminalDrain !== true
-    ) {
+    if (event.eventType === 'step_created') {
       pending.add(event.correlationId);
     } else if (event.eventType === 'step_started') {
       pending.add(event.correlationId);
@@ -119,12 +114,57 @@ export function pendingSiblingCountAtLatestStart(
   return count;
 }
 
+/**
+ * Whether every currently pending step is a creation-only row written after
+ * this step first started. Such rows can be work a concurrent replay
+ * scheduled, or terminal-drain records that no delivery owns. A scoped
+ * advance-only probe safely distinguishes them by replaying: awaited work
+ * suspends unchanged, while a terminal replay reports its drain-only ids.
+ */
+export function pendingCreationsFollowFirstStart(
+  events: readonly Event[],
+  stepId: string,
+  pendingStepIds: ReadonlySet<string | undefined>
+): boolean {
+  if (pendingStepIds.size === 0 || pendingStepIds.has(undefined)) return false;
+
+  const firstStartIndex = events.findIndex(
+    (event) =>
+      event.eventType === 'step_started' && event.correlationId === stepId
+  );
+  if (firstStartIndex < 0) return false;
+
+  const relevantEvents = events.filter(
+    (event) =>
+      event.correlationId !== undefined &&
+      pendingStepIds.has(event.correlationId)
+  );
+  if (relevantEvents.some((event) => event.eventType === 'step_started')) {
+    return false;
+  }
+  const createdAfterStart = new Set(
+    events
+      .slice(firstStartIndex + 1)
+      .filter(
+        (event): event is Event & { correlationId: string } =>
+          event.eventType === 'step_created' &&
+          event.correlationId !== undefined
+      )
+      .map((event) => event.correlationId)
+  );
+
+  return [...pendingStepIds].every(
+    (stepId): stepId is string =>
+      stepId !== undefined && createdAfterStart.has(stepId)
+  );
+}
+
 /** Who is replaying: decides which pending steps an advance-only pass owes. */
 export interface AdvanceOnlyDelivery {
   /** The queue message id of the delivery replaying. */
   messageId: string;
-  /** Whether this is a redelivery of that message (`attempt > 1`). */
-  redelivery: boolean;
+  /** Whether this delivery must recover created-but-never-started steps. */
+  recoverNeverStarted: boolean;
 }
 
 /** Queue dedupe key for one settled inline step's advance-only continuation. */
@@ -157,7 +197,9 @@ export function advanceOnlyLeavesStep(
   delivery: AdvanceOnlyDelivery
 ): boolean {
   if (step.ownerMessageId === delivery.messageId) return false;
-  if (delivery.redelivery && step.lastStartedAt === undefined) return false;
+  if (delivery.recoverNeverStarted && step.lastStartedAt === undefined) {
+    return false;
+  }
   return true;
 }
 

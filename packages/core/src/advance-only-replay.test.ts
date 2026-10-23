@@ -238,6 +238,7 @@ async function setupHarness(
     stepSendGate?: Gate;
     failAdvanceOnlySend?: boolean;
     invokeCapable?: boolean;
+    dropUnknownStepCreatedFields?: boolean;
   } = {}
 ): Promise<Harness> {
   const workflowRun: WorkflowRun = {
@@ -331,6 +332,15 @@ async function setupHarness(
     }
     if (data.eventType === 'step_created') {
       await learnLabel(data.correlationId, data.eventData?.input);
+      if (options.dropUnknownStepCreatedFields) {
+        const { stepName, workflowName, input } = data.eventData ?? {};
+        return {
+          event: record({
+            ...data,
+            eventData: { stepName, workflowName, input },
+          }),
+        };
+      }
       return { event: record(data) };
     }
     if (data.eventType === 'step_started') {
@@ -699,10 +709,13 @@ describe('background path: a queued step settling beside pending siblings', () =
 
     await h.deliver(h.stepMessageFor('fast1'), 'msg_fast1');
     expect(
-      h.events.some(
-        (event) =>
-          event.eventType === 'step_created' &&
-          event.eventData.terminalDrain === true
+      ['detached1', 'detached2', 'detached3', 'detached4'].some((label) =>
+        h.stepHas(label, 'step_created')
+      )
+    ).toBe(true);
+    expect(
+      ['detached1', 'detached2', 'detached3', 'detached4'].every(
+        (label) => !h.stepHas(label, 'step_started')
       )
     ).toBe(true);
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
@@ -1012,7 +1025,7 @@ describe('inline path: an inline step settling while its batch is still running'
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
   });
 
-  it('ignores unsent terminal-drain creations and arms a self-rescheduling backstop', async () => {
+  it('backs a terminal deferral off exponentially while live work runs', async () => {
     const runId = newRunId();
     const slow = gate();
     bodyGates.set('slow', slow);
@@ -1025,10 +1038,13 @@ describe('inline path: an inline step settling while its batch is still running'
     await h.deliver(handOffs(h)[0], 'msg_handoff');
 
     expect(
-      h.events.some(
-        (event) =>
-          event.eventType === 'step_created' &&
-          event.eventData.terminalDrain === true
+      ['detached1', 'detached2', 'detached3', 'detached4'].some((label) =>
+        h.stepHas(label, 'step_created')
+      )
+    ).toBe(true);
+    expect(
+      ['detached1', 'detached2', 'detached3', 'detached4'].every(
+        (label) => !h.stepHas(label, 'step_started')
       )
     ).toBe(true);
     expect(h.events.map((event) => event.eventType)).not.toContain(
@@ -1042,10 +1058,54 @@ describe('inline path: an inline step settling while its batch is still running'
       delaySeconds: 1,
       idempotencyKey: `advance-only:terminal-backstop:${runId}`,
     });
+    expect(terminalBackstops(h)[0]).toMatchObject({
+      terminalBackstopAttempt: 0,
+    });
 
     await expect(
       h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop')
-    ).resolves.toEqual({ timeoutSeconds: 1 });
+    ).resolves.toEqual({ timeoutSeconds: 2 });
+    await expect(
+      h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop_again', 2)
+    ).resolves.toEqual({ timeoutSeconds: 4 });
+
+    // Logical delivery times are 1s and 3s. The original slow-step handler
+    // settles at 6s and completes immediately, so only two polling deferrals
+    // are needed instead of one per second.
+    slow.open();
+    await flow;
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('does not recover drain-only steps when a World drops unknown creation fields', async () => {
+    const runId = newRunId();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN, {
+      dropUnknownStepCreatedFields: true,
+    });
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    await vi.waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    await h.deliver(handOffs(h)[0], 'msg_handoff');
+    expect(terminalBackstops(h)).toHaveLength(1);
+
+    await h.deliver(
+      terminalBackstops(h)[0],
+      'msg_terminal_backstop_redelivery',
+      2
+    );
+
+    const detachedLabels = ['detached1', 'detached2', 'detached3', 'detached4'];
+    for (const label of detachedLabels) {
+      const message = h.stepMessageFor(label);
+      if (message) await h.deliver(message, `msg_${label}`);
+    }
+    for (const label of detachedLabels) {
+      expect(bodyStarts.get(label)).toBeUndefined();
+    }
 
     slow.open();
     await flow;
@@ -1056,7 +1116,9 @@ describe('inline path: an inline step settling while its batch is still running'
     const runId = newRunId();
     const slow = gate();
     bodyGates.set('slow', slow);
-    const h = await setupHarness(runId, FAIL_AFTER_RACE);
+    const h = await setupHarness(runId, FAIL_AFTER_RACE, {
+      dropUnknownStepCreatedFields: true,
+    });
     const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
 
     await vi.waitFor(() => {

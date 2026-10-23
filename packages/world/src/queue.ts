@@ -515,6 +515,13 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * work is still live, the handler reschedules this same delivery.
      */
     terminalBackstop: z.literal(true).optional().catch(undefined),
+    /** Logical retry number for exponential terminal-backstop delay. */
+    terminalBackstopAttempt: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .catch(undefined),
   })
 );
 

@@ -54,6 +54,7 @@ import {
   advanceOnlyHasWork,
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
+  pendingCreationsFollowFirstStart,
   pendingSiblingCountAtLatestStart,
   pendingStepIdsIn,
   runRowFromCreation,
@@ -250,7 +251,15 @@ export {
 const ADVANCE_ONLY_HANDOFF_COALESCE_MS = 10;
 // A terminal deferral must make progress even if the handler expected to wake
 // it never does. One second avoids a tight replay loop around long steps.
-const ADVANCE_ONLY_TERMINAL_BACKSTOP_DELAY_SECONDS = 1;
+const ADVANCE_ONLY_TERMINAL_BACKSTOP_INITIAL_DELAY_SECONDS = 1;
+const ADVANCE_ONLY_TERMINAL_BACKSTOP_MAX_DELAY_SECONDS = 30;
+
+function terminalBackstopDelaySeconds(attempt: number): number {
+  return Math.min(
+    ADVANCE_ONLY_TERMINAL_BACKSTOP_INITIAL_DELAY_SECONDS * 2 ** attempt,
+    ADVANCE_ONLY_TERMINAL_BACKSTOP_MAX_DELAY_SECONDS
+  );
+}
 
 /**
  * Apply the optional client-side event-limit override.
@@ -860,6 +869,7 @@ export function workflowEntrypoint(
           waitContinuation,
           advanceOnly: incomingAdvanceOnly,
           terminalBackstop: incomingTerminalBackstop,
+          terminalBackstopAttempt: incomingTerminalBackstopAttempt,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -1564,9 +1574,22 @@ export function workflowEntrypoint(
                     { timeoutSeconds: number } | undefined
                   > => {
                     if (incomingTerminalBackstop === true) {
+                      // Turbo re-enqueues a new message (attempt resets), while
+                      // other transports redeliver this message (attempt
+                      // increments). Carry the logical attempt so both use
+                      // the same 1s, 2s, 4s ... 30s schedule.
+                      const currentAttempt = Math.max(
+                        incomingTerminalBackstopAttempt ?? 0,
+                        metadata.attempt - 1
+                      );
+                      const nextAttempt = currentAttempt + 1;
                       return await reinvoke(
-                        ADVANCE_ONLY_TERMINAL_BACKSTOP_DELAY_SECONDS,
-                        { advanceOnly: true, terminalBackstop: true }
+                        terminalBackstopDelaySeconds(nextAttempt),
+                        {
+                          advanceOnly: true,
+                          terminalBackstop: true,
+                          terminalBackstopAttempt: nextAttempt,
+                        }
                       );
                     }
                     await queueMessage(
@@ -1576,10 +1599,11 @@ export function workflowEntrypoint(
                         ...(await replayMessage()),
                         advanceOnly: true,
                         terminalBackstop: true,
+                        terminalBackstopAttempt: 0,
                       },
                       {
                         delaySeconds:
-                          ADVANCE_ONLY_TERMINAL_BACKSTOP_DELAY_SECONDS,
+                          ADVANCE_ONLY_TERMINAL_BACKSTOP_INITIAL_DELAY_SECONDS,
                         idempotencyKey: `advance-only:terminal-backstop:${runId}`,
                       }
                     );
@@ -1883,8 +1907,10 @@ export function workflowEntrypoint(
                   });
                   const advanceOnlyDelivery: AdvanceOnlyDelivery = {
                     messageId: metadata.messageId,
-                    redelivery: metadata.attempt > 1,
+                    recoverNeverStarted:
+                      metadata.attempt > 1 && incomingTerminalBackstop !== true,
                   };
+                  let terminalDrainStepIds: ReadonlySet<string> = new Set();
                   // Set once this invocation has handed a settled inline
                   // branch to another invocation. From then on a peer may
                   // replay this run concurrently, which ends the
@@ -2140,6 +2166,30 @@ export function workflowEntrypoint(
                         // Check for pending steps: any created step without
                         // a matching step_completed or step_failed.
                         const pendingStepIds = pendingStepIdsIn(loaded.events);
+                        const advanceOnlyReplaySupported =
+                          isAdvanceOnlyReplayEnabled() &&
+                          runCreatedEvent?.eventType === 'run_created' &&
+                          !useQuickJSVm({
+                            executionContext:
+                              runCreatedEvent?.eventType === 'run_created'
+                                ? runCreatedEvent.eventData.executionContext
+                                : undefined,
+                          });
+                        const terminalProbe =
+                          advanceOnlyReplaySupported &&
+                          pendingCreationsFollowFirstStart(
+                            loaded.events,
+                            incomingStepId,
+                            pendingStepIds
+                          );
+                        const withinAdvanceOnlyBound =
+                          pendingStepIds.size <=
+                            getAdvanceOnlyReplayMaxPending() &&
+                          (pendingSiblingCountAtLatestStart(
+                            loaded.events,
+                            incomingStepId
+                          ) ?? Number.POSITIVE_INFINITY) <=
+                            getAdvanceOnlyReplayMaxPending();
 
                         if (pendingStepIds.size > 0) {
                           // A pending step that THIS message inline-owns (a
@@ -2163,35 +2213,8 @@ export function workflowEntrypoint(
                               { workflowRunId: runId }
                             );
                           } else if (
-                            isAdvanceOnlyReplayEnabled() &&
-                            // A wide fan-out of one-step branches would
-                            // otherwise replay on every settlement for
-                            // nothing; see ADVANCE_ONLY_REPLAY_MAX_PENDING.
-                            pendingStepIds.size <=
-                              getAdvanceOnlyReplayMaxPending() &&
-                            // Eligibility is fixed when this attempt starts;
-                            // a wide batch must not become eligible merely
-                            // because only its tail remains.
-                            (pendingSiblingCountAtLatestStart(
-                              loaded.events,
-                              incomingStepId
-                            ) ?? Number.POSITIVE_INFINITY) <=
-                              getAdvanceOnlyReplayMaxPending() &&
-                            // A partial/corrupt log cannot safely synthesize
-                            // the run row needed by advance-only replay.
-                            runCreatedEvent?.eventType === 'run_created' &&
-                            // The QuickJS engine runs its own replay loop,
-                            // which has no advance-only mode and re-sends
-                            // every pending step it did not create: replaying
-                            // there on every settlement would cost a fan-out
-                            // a quadratic number of sends. It keeps waiting
-                            // for the siblings until it gets that mode.
-                            !useQuickJSVm({
-                              executionContext:
-                                runCreatedEvent?.eventType === 'run_created'
-                                  ? runCreatedEvent.eventData.executionContext
-                                  : undefined,
-                            })
+                            advanceOnlyReplaySupported &&
+                            (withinAdvanceOnlyBound || terminalProbe)
                           ) {
                             // Other steps still in progress. Replay anyway, so
                             // the branch this step belongs to can create its
@@ -2209,6 +2232,14 @@ export function workflowEntrypoint(
                               }
                             );
                             advanceOnly = true;
+                            if (terminalProbe) {
+                              // These creation-only rows appeared after this
+                              // attempt began. Probe their replay state, but
+                              // never claim them as redelivery recovery: their
+                              // producer owns any real dispatch, and a terminal
+                              // replay identifies unsent drain-only rows.
+                              advanceOnlyDelivery.recoverNeverStarted = false;
+                            }
                             span?.setAttributes({
                               'workflow.advance_only': true,
                               'workflow.advance_only.ran': true,
@@ -3605,6 +3636,7 @@ export function workflowEntrypoint(
                         workflowRun,
                         eventLog.events
                       );
+                      terminalDrainStepIds = new Set();
                       let workflowResult: WorkflowResumeResult = retainedSession
                         ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
@@ -3645,6 +3677,9 @@ export function workflowEntrypoint(
                           // events before the terminal `awaitRunReady()` below.
                           runReadyBarrier,
                           worldCapabilities: world.capabilities,
+                          onTerminalDrain: (stepIds) => {
+                            terminalDrainStepIds = stepIds;
+                          },
                         });
                       }
                       await payloadPrewarm;
@@ -3675,7 +3710,8 @@ export function workflowEntrypoint(
                       // unrelated ordinary continuation: no hand-off was sent.
                       if (
                         handOffSent &&
-                        pendingStepIdsIn(eventLog.events).size > 0
+                        pendingStepIdsIn(eventLog.events, terminalDrainStepIds)
+                          .size > 0
                       ) {
                         runtimeLogger.debug(
                           'Workflow reached completion with advance-only work still pending; returning',
@@ -5987,7 +6023,10 @@ export function workflowEntrypoint(
                             : undefined;
                           if (
                             failurePendingEvents &&
-                            pendingStepIdsIn(failurePendingEvents).size > 0
+                            pendingStepIdsIn(
+                              failurePendingEvents,
+                              terminalDrainStepIds
+                            ).size > 0
                           ) {
                             runtimeLogger.debug(
                               'Workflow reached failure with advance-only work still pending; returning',

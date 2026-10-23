@@ -1406,7 +1406,6 @@ export async function handleSuspension({
             stepName: queueItem.stepName,
             workflowName: run.workflowName,
             input: dehydratedInput as SerializedData,
-            ...(terminalDrain ? { terminalDrain: true as const } : {}),
           },
         };
 

@@ -1002,6 +1002,38 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  test.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
+    'terminal drain never dispatches detached steps',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await e2e('terminalDrainDoesNotDispatchDetachedStepsWorkflow'),
+        []
+      );
+      await expect(run.returnValue).resolves.toBe('winner');
+
+      // Observe the losing race handler and any wrongly dispatched terminal
+      // work before reading the durable event log.
+      await sleep(3_000);
+      const world = await getWorld();
+      const { data: events } = await world.events.list({ runId: run.runId });
+      const createdIds = events
+        .filter((event) => event.eventType === 'step_created')
+        .map((event) => event.correlationId);
+      // The terminal drain may stop after materializing the first of the four
+      // un-awaited calls. Any creation after the two raced steps is detached.
+      expect(createdIds.length).toBeGreaterThan(2);
+      const detachedIds = new Set(createdIds.slice(2));
+      expect(
+        events.filter(
+          (event) =>
+            event.eventType === 'step_started' &&
+            detachedIds.has(event.correlationId)
+        )
+      ).toEqual([]);
+    }
+  );
+
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
     const returnValue = await run.returnValue;

@@ -10,6 +10,7 @@ import {
   advanceOnlyHasWork,
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
+  pendingCreationsFollowFirstStart,
   pendingSiblingCountAtLatestStart,
   pendingStepIdsIn,
   runRowFromCreation,
@@ -26,6 +27,9 @@ const step = (hasCreatedEvent?: boolean): QueueItem => ({
   hasCreatedEvent,
 });
 
+const event = (eventType: string, correlationId?: string) =>
+  ({ eventType, correlationId }) as unknown as Event;
+
 describe('advanceOnlyReplayIdempotencyKey', () => {
   it('is stable per run and step and distinct across either identity', () => {
     expect(advanceOnlyReplayIdempotencyKey('run-a', 'step-a')).toBe(
@@ -41,9 +45,6 @@ describe('advanceOnlyReplayIdempotencyKey', () => {
 });
 
 describe('pendingSiblingCountAtLatestStart', () => {
-  const event = (eventType: string, correlationId?: string) =>
-    ({ eventType, correlationId }) as unknown as Event;
-
   it('keeps the attempt-start width after a wide batch drains', () => {
     const events = [
       event('step_created', 'a'),
@@ -70,23 +71,45 @@ describe('pendingSiblingCountAtLatestStart', () => {
     expect(pendingSiblingCountAtLatestStart(events, 'a')).toBe(0);
     expect(pendingSiblingCountAtLatestStart(events, 'missing')).toBeUndefined();
   });
+});
 
-  it('does not count terminal-drain-only creations at attempt start', () => {
-    const terminalDrain = {
-      eventType: 'step_created',
-      correlationId: 'detached',
-      eventData: { terminalDrain: true },
-    } as unknown as Event;
+describe('pendingCreationsFollowFirstStart', () => {
+  it('recognizes only creation-only pending rows written after the attempt began', () => {
+    const events = [
+      event('step_created', 'current'),
+      event('step_started', 'current'),
+      event('step_created', 'later_a'),
+      event('step_created', 'later_b'),
+      event('step_failed', 'current'),
+      event('step_started', 'current'),
+    ];
     expect(
-      pendingSiblingCountAtLatestStart(
-        [
-          event('step_created', 'live'),
-          terminalDrain,
-          event('step_started', 'live'),
-        ],
-        'live'
+      pendingCreationsFollowFirstStart(
+        events,
+        'current',
+        new Set(['later_a', 'later_b'])
       )
-    ).toBe(0);
+    ).toBe(true);
+  });
+
+  it('rejects pending work that started or predates the current attempt', () => {
+    const events = [
+      event('step_created', 'older'),
+      event('step_created', 'current'),
+      event('step_started', 'current'),
+      event('step_created', 'started_later'),
+      event('step_started', 'started_later'),
+    ];
+    expect(
+      pendingCreationsFollowFirstStart(events, 'current', new Set(['older']))
+    ).toBe(false);
+    expect(
+      pendingCreationsFollowFirstStart(
+        events,
+        'current',
+        new Set(['started_later'])
+      )
+    ).toBe(false);
   });
 });
 
@@ -162,8 +185,14 @@ describe('suspensionHasNewWork', () => {
 });
 
 describe('advanceOnlyLeavesStep', () => {
-  const firstDelivery = { messageId: 'msg_this', redelivery: false };
-  const redelivery = { messageId: 'msg_this', redelivery: true };
+  const firstDelivery = {
+    messageId: 'msg_this',
+    recoverNeverStarted: false,
+  };
+  const redelivery = {
+    messageId: 'msg_this',
+    recoverNeverStarted: true,
+  };
   const pending = (fields: Record<string, unknown>) =>
     ({
       type: 'step',
@@ -402,22 +431,15 @@ describe('pendingStepIdsIn', () => {
     ).toBe(0);
   });
 
-  it('ignores terminal-drain-only creations but counts them once started', () => {
-    const terminalDrain = (eventType: 'step_created' | 'step_started') =>
-      ({
-        eventType,
-        correlationId: 'detached',
-        eventData:
-          eventType === 'step_created' ? { terminalDrain: true } : undefined,
-      }) as unknown as Event;
-    expect(pendingStepIdsIn([terminalDrain('step_created')])).toEqual(
+  it('ignores replay-derived drain-only creations but counts them once started', () => {
+    const created = event('step_created', 'detached');
+    const started = event('step_started', 'detached');
+    const terminalDrainStepIds = new Set(['detached']);
+    expect(pendingStepIdsIn([created], terminalDrainStepIds)).toEqual(
       new Set()
     );
-    expect(
-      pendingStepIdsIn([
-        terminalDrain('step_created'),
-        terminalDrain('step_started'),
-      ])
-    ).toEqual(new Set(['detached']));
+    expect(pendingStepIdsIn([created, started], terminalDrainStepIds)).toEqual(
+      new Set(['detached'])
+    );
   });
 });

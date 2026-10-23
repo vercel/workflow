@@ -2,4 +2,4 @@
 "@workflow/world": patch
 ---
 
-Add optional advance-only continuation markers to workflow queue payloads and distinguish terminal-drain-only step creations from executable pending work.
+Add optional advance-only and terminal-backstop continuation fields to workflow queue payloads.

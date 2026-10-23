@@ -273,6 +273,25 @@ export async function parallelBranchesAdvanceIndependentlyWorkflow() {
   return { chain, long };
 }
 
+/**
+ * Reaches a terminal return after a race, then creates four un-awaited steps.
+ * Terminal drain records their creations but must never dispatch them.
+ */
+export async function terminalDrainDoesNotDispatchDetachedStepsWorkflow() {
+  'use workflow';
+  const winner = await Promise.race([
+    timedDelayStep(100, 'winner'),
+    timedDelayStep(800, 'loser'),
+  ]);
+  const detached = Promise.all(
+    Array.from({ length: 4 }, (_, index) =>
+      timedDelayStep(50, `detached-${index}`)
+    )
+  );
+  detached.catch(() => {});
+  return winner.label;
+}
+
 //////////////////////////////////////////////////////////
 
 // Takes an OBJECT argument: under VM retention (WORKFLOW_RETAINED_VM), a

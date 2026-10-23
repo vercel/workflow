@@ -138,8 +138,16 @@ async function terminalDrainRaceCompletes(
     | typeof retryingRaceLoserWithDetachedTerminalDrain
     | typeof queuedRaceLoserWithDetachedTerminalDrain,
   tag: string,
-  maxInlineSteps?: string
-): Promise<{ completed: boolean; events: string; wallMs: number }> {
+  maxInlineSteps?: string,
+  observeAfterReturnMs = 0
+): Promise<{
+  completed: boolean;
+  events: string;
+  markers: Marker[];
+  timeline: string;
+  terminalAt?: number;
+  wallMs: number;
+}> {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-terminal-drain-'));
   const markerPath = join(dir, `${tag}.log`);
   const originalMaxInlineSteps = process.env.WORKFLOW_MAX_INLINE_STEPS;
@@ -158,23 +166,37 @@ async function terminalDrainRaceCompletes(
       ),
       new Promise<false>((resolve) => setTimeout(() => resolve(false), 15_000)),
     ]);
-    let events = '';
-    if (!completed) {
-      const world = await getWorld();
-      const eventPage = await world.events.list({ runId: run.runId });
-      events = eventPage.data
-        .map((event) =>
-          event.eventType === 'step_created'
-            ? `${event.eventType}:${event.correlationId}:${event.eventData.terminalDrain === true ? 'terminal-drain' : 'scheduled'}`
-            : `${event.eventType}:${event.correlationId ?? ''}`
-        )
-        .join(', ');
+    const returnWallMs = Math.round(performance.now() - wallStart);
+    if (completed && observeAfterReturnMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, observeAfterReturnMs));
     }
+    const world = await getWorld();
+    const eventPage = await world.events.list({ runId: run.runId });
+    const events = eventPage.data
+      .map((event) =>
+        event.eventType === 'step_created'
+          ? `${event.eventType}:${event.correlationId}:creation-only`
+          : `${event.eventType}:${event.correlationId ?? ''}`
+      )
+      .join(', ');
+    const terminalAt = eventPage.data
+      .find(
+        (event) =>
+          event.eventType === 'run_completed' ||
+          event.eventType === 'run_failed'
+      )
+      ?.createdAt.getTime();
     if (!completed) await run.cancel({ cancelReason: 'repro timeout' });
+    const markers = parseMarkers(
+      await readFile(markerPath, 'utf8').catch(() => '')
+    );
     return {
       completed,
       events,
-      wallMs: Math.round(performance.now() - wallStart),
+      markers,
+      timeline: formatTimeline(tag, markers),
+      terminalAt,
+      wallMs: returnWallMs,
     };
   } finally {
     if (originalMaxInlineSteps === undefined) {
@@ -183,6 +205,56 @@ async function terminalDrainRaceCompletes(
       process.env.WORKFLOW_MAX_INLINE_STEPS = originalMaxInlineSteps;
     }
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function withUnknownStepCreatedFieldsDropped<T>(fn: () => Promise<T>) {
+  const world = await getWorld();
+  const originalList = world.events.list;
+  const originalCreate = world.events.create;
+  type ListedEvent = Awaited<ReturnType<typeof originalList>>['data'][number];
+  const stripUnknownStepCreatedFields = (event: ListedEvent): ListedEvent => {
+    if (event.eventType !== 'step_created') return event;
+    const { stepName, workflowName, input } = event.eventData;
+    return { ...event, eventData: { stepName, workflowName, input } };
+  };
+  world.events.list = (async (...args: Parameters<typeof originalList>) => {
+    const page = await originalList.apply(world.events, args);
+    return {
+      ...page,
+      data: page.data.map(stripUnknownStepCreatedFields),
+    };
+  }) as typeof originalList;
+  world.events.create = (async (...args: Parameters<typeof originalCreate>) => {
+    const forwarded = [...args] as Parameters<typeof originalCreate>;
+    const request = forwarded[1];
+    if (request.eventType === 'step_created') {
+      const { stepName, workflowName, input } = request.eventData;
+      forwarded[1] = {
+        ...request,
+        eventData: { stepName, workflowName, input },
+      };
+    }
+    const result = await originalCreate.apply(world.events, forwarded);
+    const returned = result as typeof result & {
+      event?: ListedEvent;
+      events?: ListedEvent[];
+    };
+    return {
+      ...result,
+      ...(returned.event
+        ? { event: stripUnknownStepCreatedFields(returned.event) }
+        : {}),
+      ...(returned.events
+        ? { events: returned.events.map(stripUnknownStepCreatedFields) }
+        : {}),
+    };
+  }) as typeof originalCreate;
+  try {
+    return await fn();
+  } finally {
+    world.events.list = originalList;
+    world.events.create = originalCreate;
   }
 }
 
@@ -381,6 +453,61 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         }
       },
       330_000
+    );
+
+    it.each([
+      [
+        'retrying race loser',
+        retryingRaceLoserWithDetachedTerminalDrain,
+        undefined,
+        'flaky-terminal-drain',
+        'flaky-race-loser-2',
+      ],
+      [
+        'queued race loser',
+        queuedRaceLoserWithDetachedTerminalDrain,
+        '1',
+        'queued-terminal-drain',
+        'queued-race-winner',
+      ],
+    ] as const)(
+      'does not run detached terminal-drain steps when a World drops unknown creation fields (%s)',
+      async (
+        tag,
+        workflow,
+        maxInlineSteps,
+        detachedPrefix,
+        terminalPredecessor
+      ) => {
+        const result = await withUnknownStepCreatedFieldsDropped(() =>
+          terminalDrainRaceCompletes(
+            workflow,
+            `dropped-field-${tag.replaceAll(' ', '-')}`,
+            maxInlineSteps,
+            3_500
+          )
+        );
+        const detachedStarts = result.markers.filter(
+          (marker) =>
+            marker.label.startsWith(detachedPrefix) && marker.phase === 'start'
+        );
+        expect
+          .soft(
+            result.completed,
+            `returned after ${result.wallMs} ms\n${result.timeline}`
+          )
+          .toBe(true);
+        expect.soft(detachedStarts, result.timeline).toEqual([]);
+        expect(result.terminalAt, result.events).toBeDefined();
+        const terminalAt = result.terminalAt ?? Number.POSITIVE_INFINITY;
+        expect
+          .soft(
+            terminalAt - markerAt(result.markers, terminalPredecessor, 'end'),
+            `terminal event lagged its predecessor\n${result.timeline}\n${result.events}`
+          )
+          .toBeLessThan(500);
+      },
+      40_000
     );
 
     it('records a running race loser before the workflow failure', async () => {
