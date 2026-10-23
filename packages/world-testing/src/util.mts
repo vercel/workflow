@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WorkflowRunSchema } from '@workflow/world';
 import chalk, { type ChalkInstance } from 'chalk';
 import jsonlines from 'jsonlines';
-import { assert, onTestFailed, onTestFinished } from 'vitest';
+import { assert, expect, onTestFailed, onTestFinished, vi } from 'vitest';
 import type { TypedHook } from 'workflow';
 import * as z from 'zod';
 import type manifest from '../.well-known/workflow/v1/manifest.json';
@@ -190,6 +190,29 @@ export function createFetcher(control: Control) {
         }[];
       };
       return data.events;
+    },
+    /**
+     * Wait until a run has completed *and* its `run_completed` event is in the
+     * log.
+     *
+     * The run's status alone is not enough before reading the log: a World may
+     * make the terminal status visible before it appends the terminal event
+     * (the local World writes the run record first, then the event), so a
+     * listing taken the moment `status` reads `'completed'` can be one event
+     * short, and a second listing taken a moment later is not.
+     */
+    async waitForCompletedLog(
+      runId: string,
+      opts: { timeout?: number } = {}
+    ): Promise<void> {
+      await vi.waitFor(
+        async () => {
+          expect((await this.getRun(runId)).status).toBe('completed');
+          const events = await this.getEvents(runId);
+          expect(events.map((e) => e.eventType)).toContain('run_completed');
+        },
+        { interval: 200, timeout: opts.timeout ?? 25_000 }
+      );
     },
     /**
      * A run's in-band fence counters: the snapshot the first page of its log

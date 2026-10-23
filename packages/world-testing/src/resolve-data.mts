@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { expect, test } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
@@ -28,12 +28,7 @@ export function resolveData(world: string) {
       );
       // A World that misreads the mode fails here already: the runtime
       // replays with it, so the steps' results come back stripped.
-      await vi.waitFor(
-        async () => {
-          expect((await server.getRun(result.runId)).status).toBe('completed');
-        },
-        { interval: 200, timeout: 25_000 }
-      );
+      await server.waitForCompletedLog(result.runId);
 
       const all = await server.getEvents(result.runId, 'all');
       const skipped = await server.getEvents(result.runId, 'skip-step-inputs');
