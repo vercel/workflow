@@ -5493,6 +5493,11 @@ export function workflowEntrypoint(
                                       s,
                                       result.timeoutSeconds
                                     );
+                                    // The retry handler can replay and start
+                                    // downstream work while siblings still run
+                                    // here, just like an explicit hand-off.
+                                    concurrentBranchReplayPossible = true;
+                                    advanceOnlyTerminalGuard = true;
                                     return true;
                                   } catch {
                                     return false;
