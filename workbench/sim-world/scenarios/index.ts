@@ -15,6 +15,7 @@
  */
 
 import type { ScenarioSpec } from '@workflow/world-sim';
+import { scenario as advanceOnlyEarlyRetry } from './advance-only-early-retry.ts';
 import { scenario as advanceOnlyHandoff } from './advance-only-handoff.ts';
 import { scenario as advanceOnlyQueued } from './advance-only-queued.ts';
 import { scenario as attrFromStepBody } from './attr-from-step-body.ts';
@@ -98,6 +99,7 @@ export const scenarios: ScenarioSpec[] = [
   // -------------------------------------------------------------------------
   stepRetriesTwice,
   parallelSteps,
+  advanceOnlyEarlyRetry,
   advanceOnlyHandoff,
   advanceOnlyQueued,
   hookOnExecutionState,

@@ -19,6 +19,8 @@ import {
   queuedRaceLoserWithDetachedTerminalDrain,
   raceLoser,
   raceThenNext,
+  retryingBranchBesideSlowSibling,
+  retryRaceWithDetachedDownstream,
   retryingRaceLoserWithDetachedTerminalDrain,
   slowFirstParallelChains,
   threeParallelChains,
@@ -87,8 +89,10 @@ async function runWithTimeline(
     | typeof raceLoser
     | typeof duplicateProbe
     | typeof fanoutEpisodeReset
-    | typeof parallelChainsBenchmark,
-  args: number[],
+    | typeof parallelChainsBenchmark
+    | typeof retryingBranchBesideSlowSibling
+    | typeof retryRaceWithDetachedDownstream,
+  args: (number | string)[],
   tag: string
 ): Promise<{ markers: Marker[]; timeline: string; wallMs: number }> {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-'));
@@ -464,6 +468,117 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       ).toBeLessThan(markerAt(markers, 'episode-four-slow-1-1', 'end'));
       expect(fourGap, timeline).toBeLessThanOrEqual(twoGap * 2 + 100);
     });
+
+    it.each([
+      ['plain Error', 'error', 0, 900],
+      ['RetryableError with retryAfter', 'retryable', 1_200, 1_100],
+    ] as const)(
+      'retries a branch without waiting for its slow sibling (%s)',
+      async (_label, errorKind, retryAfterMs, minimumBackoffMs) => {
+        const { markers, timeline } = await runWithTimeline(
+          retryingBranchBesideSlowSibling,
+          [errorKind, 4_000, retryAfterMs],
+          `retry-beside-slow-${errorKind}`
+        );
+        const retryDelay =
+          markerAt(markers, 'retry-once-2', 'start') -
+          markerAt(markers, 'retry-once-1', 'start');
+        expect(retryDelay, timeline).toBeGreaterThanOrEqual(minimumBackoffMs);
+        expect(
+          markerAt(markers, 'retry-once-2', 'start'),
+          timeline
+        ).toBeLessThan(markerAt(markers, 'retry-slow-sibling', 'end'));
+        expect(markerAt(markers, 'retry-next', 'start'), timeline).toBeLessThan(
+          markerAt(markers, 'retry-slow-sibling', 'end')
+        );
+        for (const label of [
+          'retry-once-1',
+          'retry-once-2',
+          'retry-next',
+          'retry-slow-sibling',
+        ]) {
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'start'
+            ),
+            timeline
+          ).toHaveLength(1);
+        }
+      },
+      15_000
+    );
+
+    it('keeps an inline retry behind its sibling when advance-only replay is disabled', async () => {
+      const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
+      try {
+        const { markers, timeline } = await runWithTimeline(
+          retryingBranchBesideSlowSibling,
+          ['error', 1_500, 0],
+          'retry-kill-switch'
+        );
+        expect(
+          markerAt(markers, 'retry-once-2', 'start'),
+          timeline
+        ).toBeGreaterThanOrEqual(
+          markerAt(markers, 'retry-slow-sibling', 'end')
+        );
+      } finally {
+        if (original === undefined) {
+          delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+        } else {
+          process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = original;
+        }
+      }
+    });
+
+    it('falls back to the end-of-batch retry publish when the early publish fails', async () => {
+      const world = await getWorld();
+      const originalQueue = world.queue;
+      let failedEarlyPublish = false;
+      world.queue = (async (...args: Parameters<typeof originalQueue>) => {
+        const opts = args[2] as { delaySeconds?: unknown } | undefined;
+        if (!failedEarlyPublish && typeof opts?.delaySeconds === 'number') {
+          failedEarlyPublish = true;
+          throw new Error('retry publish unavailable');
+        }
+        return originalQueue.apply(world, args);
+      }) as typeof originalQueue;
+      try {
+        const { markers, timeline } = await runWithTimeline(
+          retryingBranchBesideSlowSibling,
+          ['error', 500, 0],
+          'retry-publish-fallback'
+        );
+        expect(failedEarlyPublish).toBe(true);
+        for (const label of ['retry-once-1', 'retry-once-2', 'retry-next']) {
+          expect(
+            markers.filter(
+              (marker) => marker.label === label && marker.phase === 'start'
+            ),
+            timeline
+          ).toHaveLength(1);
+        }
+      } finally {
+        world.queue = originalQueue;
+      }
+    });
+
+    it('does not complete after an early retry while detached downstream work is running', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        retryRaceWithDetachedDownstream,
+        ['retryable', 3_000, 200, 4_000],
+        'retry-detached-terminal-guard'
+      );
+      expect(
+        markerAt(markers, 'retry-downstream-fast', 'end'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'retry-race-slow', 'end'));
+      expect(
+        markerAt(markers, 'retry-downstream-slow', 'end'),
+        timeline
+      ).toBeGreaterThan(markerAt(markers, 'retry-race-slow', 'end'));
+    }, 15_000);
 
     it('advances three chains through the hand-off path when the pending limit is 2', async () => {
       const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;

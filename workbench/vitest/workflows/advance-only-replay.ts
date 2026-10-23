@@ -168,6 +168,61 @@ export async function fanoutEpisodeReset(
   );
 }
 
+async function retryOnceStep(
+  markerPath: string,
+  errorKind: 'error' | 'retryable',
+  retryAfterMs: number
+) {
+  'use step';
+  const { attempt } = getStepMetadata();
+  await appendFile(markerPath, `retry-once-${attempt} start ${Date.now()}\n`);
+  if (attempt === 1) {
+    if (errorKind === 'retryable') {
+      throw new RetryableError('once', { retryAfter: retryAfterMs });
+    }
+    throw new Error('once');
+  }
+  await appendFile(markerPath, `retry-once-${attempt} end ${Date.now()}\n`);
+}
+
+export async function retryingBranchBesideSlowSibling(
+  markerPath: string,
+  errorKind: 'error' | 'retryable',
+  slowMs: number,
+  retryAfterMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    (async () => {
+      await retryOnceStep(markerPath, errorKind, retryAfterMs);
+      await markerStep(markerPath, 'retry-next', 0);
+    })(),
+    markerStep(markerPath, 'retry-slow-sibling', slowMs),
+  ]);
+}
+
+export async function retryRaceWithDetachedDownstream(
+  markerPath: string,
+  errorKind: 'error' | 'retryable',
+  raceSlowMs: number,
+  retryAfterMs: number,
+  downstreamSlowMs: number
+) {
+  'use workflow';
+  await Promise.race([
+    retryOnceStep(markerPath, errorKind, retryAfterMs),
+    markerStep(markerPath, 'retry-race-slow', raceSlowMs),
+  ]);
+  const downstreamSlow = markerStep(
+    markerPath,
+    'retry-downstream-slow',
+    downstreamSlowMs
+  );
+  downstreamSlow.catch(() => {});
+  await markerStep(markerPath, 'retry-downstream-fast', 0);
+  return 'done';
+}
+
 export async function detachedStep(markerPath: string, delayMs: number) {
   'use workflow';
   const detached = markerStep(markerPath, 'detached', delayMs);

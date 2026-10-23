@@ -273,6 +273,68 @@ export async function parallelBranchesAdvanceIndependentlyWorkflow() {
   return { chain, long };
 }
 
+async function retryOnceWithTiming(
+  errorKind: 'error' | 'retryable',
+  retryAfterMs: number
+) {
+  'use step';
+  const { attempt } = getStepMetadata();
+  const startedAt = Date.now();
+  if (attempt === 1) {
+    if (errorKind === 'retryable') {
+      throw new RetryableError('retry once', { retryAfter: retryAfterMs });
+    }
+    throw new Error('retry once');
+  }
+  return { attempt, startedAt, endedAt: Date.now() };
+}
+
+/** A retrying two-step branch beside a slow sibling (vercel/workflow#4457). */
+export async function retryBranchAdvancesIndependentlyWorkflow(
+  errorKind: 'error' | 'retryable'
+) {
+  'use workflow';
+  const scheduledAt = Date.now();
+  const [chain, slow] = await Promise.all([
+    (async () => [
+      await retryOnceWithTiming(errorKind, 1_200),
+      await timedDelayStep(0, 'retry-next'),
+    ])(),
+    timedDelayStep(4_000, 'retry-slow'),
+  ]);
+  return { scheduledAt, chain, slow };
+}
+
+async function earlyRetryRaceSlow() {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+}
+
+async function earlyRetryDownstreamSlow() {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 4_000));
+}
+
+async function earlyRetryDownstreamFast() {
+  'use step';
+  return 'done';
+}
+
+/**
+ * The early retry wins a race and starts detached work. The original race
+ * loser must not seal the run while that downstream body is still running.
+ */
+export async function earlyRetryDetachedTerminalGuardWorkflow() {
+  'use workflow';
+  await Promise.race([
+    retryOnceWithTiming('retryable', 200),
+    earlyRetryRaceSlow(),
+  ]);
+  const downstreamSlow = earlyRetryDownstreamSlow();
+  downstreamSlow.catch(() => {});
+  return await earlyRetryDownstreamFast();
+}
+
 /**
  * Reaches a terminal return after a race, then creates four un-awaited steps.
  * Terminal drain records their creations but must never dispatch them.

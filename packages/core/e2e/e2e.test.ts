@@ -1002,6 +1002,60 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  test.skipIf(process.env.WORKFLOW_VM === 'quickjs').each([
+    ['plain Error', 'error', 900],
+    ['RetryableError with retryAfter', 'retryable', 1_100],
+  ] as const)(
+    'retryBranchAdvancesIndependentlyWorkflow (%s)',
+    { timeout: 60_000 },
+    async (_label, errorKind, minimumBackoffMs) => {
+      const run = await start(
+        await e2e('retryBranchAdvancesIndependentlyWorkflow'),
+        [errorKind]
+      );
+      const { scheduledAt, chain, slow } = await run.returnValue;
+      expect(chain[0].attempt).toBe(2);
+      expect(chain[0].startedAt - scheduledAt).toBeGreaterThanOrEqual(
+        minimumBackoffMs
+      );
+      expect(chain[0].startedAt).toBeLessThan(slow.endedAt);
+      expect(chain[1].startedAt).toBeLessThan(slow.endedAt);
+
+      const world = await getWorld();
+      const { data: events } = await world.events.list({ runId: run.runId });
+      const retryStarts = events.filter(
+        (event) =>
+          event.eventType === 'step_started' &&
+          event.eventData.stepName.endsWith('//retryOnceWithTiming')
+      );
+      expect(retryStarts).toHaveLength(2);
+    }
+  );
+
+  test.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
+    'earlyRetryDetachedTerminalGuardWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await e2e('earlyRetryDetachedTerminalGuardWorkflow'),
+        []
+      );
+      await run.returnValue;
+      const world = await getWorld();
+      const { data: events } = await world.events.list({ runId: run.runId });
+      const downstreamSlowCompleted = events.findIndex(
+        (event) =>
+          event.eventType === 'step_completed' &&
+          event.eventData.stepName.endsWith('//earlyRetryDownstreamSlow')
+      );
+      const runCompleted = events.findIndex(
+        (event) => event.eventType === 'run_completed'
+      );
+      expect(downstreamSlowCompleted).toBeGreaterThanOrEqual(0);
+      expect(runCompleted).toBeGreaterThan(downstreamSlowCompleted);
+    }
+  );
+
   test.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
     'terminal drain never dispatches detached steps',
     { timeout: 60_000 },

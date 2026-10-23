@@ -167,6 +167,31 @@ export async function advanceOnlyQueuedWorkflow(input: string) {
   ]);
 }
 
+async function advanceOnlyRetryOnce(input: string) {
+  'use step';
+  const { attempt } = getStepMetadata();
+  if (attempt === 1)
+    throw new RetryableError('retry once', { retryAfter: 1_000 });
+  return `retry:${input}`;
+}
+
+async function advanceOnlyRetryNext(input: string) {
+  'use step';
+  return `next:${input}`;
+}
+
+/** A retrying chain beside a step held in the original inline batch. */
+export async function advanceOnlyEarlyRetryWorkflow(input: string) {
+  'use workflow';
+  return await Promise.all([
+    (async () => {
+      await advanceOnlyRetryOnce(input);
+      return await advanceOnlyRetryNext(input);
+    })(),
+    handoffSlowFirst(input),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // 3. Approval — a hook and a step suspended together
 // ---------------------------------------------------------------------------

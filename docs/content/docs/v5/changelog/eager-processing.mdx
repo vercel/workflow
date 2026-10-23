@@ -84,6 +84,7 @@ A branch of a `Promise.all` doesn't wait for its slowest sibling before starting
 
 - **A background step** whose siblings are still pending replays as described above.
 - **An inline step** that settles early hands the run to another invocation through a continuation marked `advanceOnly`. That hand-off waits until `run_started`, every claim, dispatch, and deferred write is durable, and its send is joined before the delivery acknowledges.
+- **An inline step that records `step_retrying`** publishes its delayed retry immediately instead of waiting for the inline batch. The retry uses the step's dispatch key, so a concurrent replay cannot add a second executor or replace its backoff. The original batch then reloads the log instead of deciding from its stale in-memory retry result.
 
 Both replays are **advance-only**: they act on the work their own replay creates (a branch's next step, hook, or wait) and leave the steps still in flight to the invocations running them, which replay when those settle. A pass that reaches nothing new returns without writing or sending anything. A background step's advance-only replay builds the run row from the message's run identity and the persisted `run_created` and `run_started` events instead of reading it back.
 
@@ -97,7 +98,7 @@ An advance-only replay still drives the steps no one else would: one its own mes
 
 A replay can't know ahead of time whether the settled branch has another step, and in a wide fan-out of one-step branches none does until the last. So a branch advances early only when at most `WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING` (default 3) other steps were pending while its attempt waited to start. Eligibility does not change as a wide batch drains, so its tail does not add replays. The decision belongs to that fan-out episode: after the run reaches zero pending steps, a later batch is evaluated from a clean boundary.
 
-The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and persisted creation/start events. An eligible multi-inline batch publishes at most one hand-off after its durability barriers resolve. Its batch-level coalescing timer resets on sibling progress (10 ms for two inline steps, 50 ms for wider eligible batches), so clustered one-step leaves finish without an idle receiving invocation while a genuinely slow sibling still triggers the replay. An advance-only pass that creates no work performs no writes or sends. A terminal deferral owned by an advance-only replay adds at most one lease-delayed safety-probe send; the probe never re-arms itself.
+The ordinary hot path adds only feature and pending-width checks. Each eligible background settlement adds one event-log replay but no run-row read: the row is reconstructed from the message's immutable run context and persisted creation/start events. An eligible multi-inline batch publishes at most one hand-off after its durability barriers resolve. Its batch-level coalescing timer resets on sibling progress (10 ms for two inline steps, 50 ms for wider eligible batches), so clustered one-step leaves finish without an idle receiving invocation while a genuinely slow sibling still triggers the replay. An eligible retry adds one delayed keyed publish when the retry event becomes durable; the end-of-batch path remains its fallback if that publish fails. An advance-only pass that creates no work performs no writes or sends. A terminal deferral owned by an advance-only replay adds at most one lease-delayed safety-probe send; the probe never re-arms itself.
 
 The original invocation is still waiting for its sibling when an inline hand-off is published, but running the replay concurrently inside that invocation would share replay/session state and correlation-ID sequencing with the retained workflow VM. The queue hop provides an isolated invocation and durable ownership boundary, so this change keeps it and documents the possible idle replay rather than adding a second in-process replay engine.
 
@@ -120,7 +121,7 @@ Measured through `workbench/vitest` on world-local (Node.js VM, median and range
 | Retried race loser, then un-awaited calls (workflow wall time) | 2,342 ms (2,337–2,364) | 2,347 ms (2,338–2,370) | 2,341.5 ms (2,339–2,379) |
 | Queued race loser, then un-awaited calls (workflow wall time) | 178.5 ms (172–210) | 175.5 ms (172–199) | 177.5 ms (174–194) |
 
-The deterministic Sim World scenario book also passes all 42 scenarios with no consistency violations.
+The deterministic Sim World scenario book also passes all 45 scenarios with no consistency violations.
 
 ### Convergence after parallel steps
 
