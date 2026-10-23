@@ -127,9 +127,16 @@ An out-of-band terminal event has these effects, all of them benign:
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 
 - Default: `2000`
-- While an orchestrator is busy running inline steps, it polls the run's log tail at this interval, and also listens on the World's live event feed when the World has one. Events other writers commit (a background step's outcome, a hook payload, a cancellation) then reach the running workflow without a queue hop.
-- While the live feed is keeping up (the subscription is live and the last poll found nothing the feed had not delivered), the interval doubles per poll, up to 8 times this value. A feed error, a failed poll, an event only the poll found, or a pushed event that skips a position puts it back at this value at once.
+- While an orchestrator is busy running inline steps, it polls the run's log tail, and also listens on the World's live event feed when the World has one. Events other writers commit (a background step's outcome, a hook payload, a cancellation) then reach the running workflow without a queue hop.
+- This is the poll's interval while no live feed covers the run: the World has none, the subscription was refused or ended, or the feed showed it missed an event. While the feed is up, the poll runs at [`WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`](#workflow_orchestrator_feed_poll_interval_ms) instead.
 - `0` turns polling off, leaving the live feed and queue wakes.
+
+### `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`
+
+- Default: `10000`
+- The log-tail poll's interval while the World's live event feed is up. The feed pushes every event in position order, and a closed or ended subscription reports itself, so the poll only catches an event the feed missed without a sign: the newest one, with nothing pushed after it.
+- While the feed keeps up (the last poll found nothing the feed had not delivered), the interval doubles per poll, up to 2 times this value. A feed error, a failed poll, an event only the poll found, or a pushed event that skips a position puts it back at [`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`](#workflow_orchestrator_poll_interval_ms) at once.
+- Never below `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`, so `0` polls at that interval whether the feed is up or not.
 
 ### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
 

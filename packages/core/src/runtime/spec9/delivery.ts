@@ -165,6 +165,7 @@ import {
   requireLoadSnapshot,
 } from './in-band-writer.js';
 import {
+  getOrchestratorFeedPollIntervalMs,
   getOrchestratorLingerMs,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
@@ -1766,6 +1767,7 @@ async function runDelivery(
         afterSlot: maxEventSlot(log.events) ?? 0,
         cursor: log.cursor,
         pollIntervalMs: getOrchestratorPollIntervalMs(),
+        feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
         onEvents: (events) => {
           pendingFeedEvents.push(...events);
           notifyProgress();

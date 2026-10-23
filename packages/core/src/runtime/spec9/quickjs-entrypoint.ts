@@ -116,6 +116,7 @@ import {
   OrchestratorSupersededError,
 } from './in-band-writer.js';
 import {
+  getOrchestratorFeedPollIntervalMs,
   getOrchestratorLingerMs,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
@@ -1367,6 +1368,7 @@ export async function runWorkflowWithQuickJS(params: {
       ),
       cursor: logView.logCursor,
       pollIntervalMs: getOrchestratorPollIntervalMs(),
+      feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
       onEvents: (fed) => {
         fedEventCount += fed.length;
         logView.absorb({ events: fed });

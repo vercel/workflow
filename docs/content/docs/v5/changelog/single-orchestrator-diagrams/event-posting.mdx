@@ -197,7 +197,7 @@ Each lands at the next slot when it commits. The orchestrator sees it in three w
 
 ## The live feed
 
-While inline bodies run or the delivery lingers, the orchestrator follows the log tail with a `LiveLogFeed` (`packages/core/src/runtime/spec9/live-feed.ts:62`):
+While inline bodies run or the delivery lingers, the orchestrator follows the log tail with a `LiveLogFeed` (`packages/core/src/runtime/spec9/live-feed.ts:121`):
 
 ```mermaid
 sequenceDiagram
@@ -207,7 +207,7 @@ sequenceDiagram
 
     F->>W: events.subscribe after the highest held slot
     Note over F,W: world-vercel only, over the events WebSocket
-    loop every 2s, WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS
+    loop every 10s to 20s with the push up, 2s without, WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS and WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS
         F->>W: events.list from the cursor
         W-->>F: page
     end

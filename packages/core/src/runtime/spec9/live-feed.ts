@@ -6,12 +6,16 @@ import {
   readWithDeadline,
 } from './read-deadline.js';
 
-/** Default interval of the orchestrator's log-tail poll, in milliseconds. */
+/**
+ * Default interval of the orchestrator's log-tail poll while no live push
+ * covers the run, in milliseconds: the World has no `events.subscribe`, the
+ * subscription failed or ended, or the push showed it missed an event.
+ */
 export const DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS = 2_000;
 
 /**
- * Interval of the orchestrator's log-tail poll while it is blocked
- * (`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`, default
+ * Interval of the orchestrator's log-tail poll while no live push covers the
+ * run (`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`, default
  * {@link DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS}). `0` disables polling, which
  * leaves the live feed (when the World has one) and queue wakes.
  */
@@ -29,12 +33,40 @@ export function getOrchestratorPollIntervalMs(
 }
 
 /**
- * How far the log-tail poll's interval backs off while the live feed is
- * healthy: up to this many times the configured interval. Each poll that finds
- * nothing the feed had not already delivered doubles the interval; any sign
- * of feed trouble puts it back at the configured interval.
+ * Default interval of the log-tail poll while the World's live push is up,
+ * in milliseconds. The poll is then only the safety net for a push that
+ * never arrives without any sign: the push is dense and in slot order, and a
+ * closed or ended subscription reports itself (see {@link LiveLogFeed}).
  */
-export const ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR = 8;
+export const DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS = 10_000;
+
+/**
+ * Interval of the log-tail poll while the live push is up
+ * (`WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`, default
+ * {@link DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS}). {@link LiveLogFeed}
+ * never polls more often than its interval without a push, so `0` means the
+ * same interval as without one.
+ */
+export function getOrchestratorFeedPollIntervalMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = env.WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0
+    ? value
+    : DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS;
+}
+
+/**
+ * How far the log-tail poll's interval backs off while the live feed is
+ * healthy: up to this many times the live-push interval. Each poll that finds
+ * nothing the feed had not already delivered doubles the interval; any sign
+ * of feed trouble puts it back at the interval without a push.
+ */
+export const ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR = 2;
 
 /** Default of {@link getOrchestratorLingerMs}, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
@@ -71,14 +103,20 @@ export function getOrchestratorLingerMs(
  * push is dropped and the poll fills in. Correctness never depends on the
  * push.
  *
- * The poll is the safety net for a push that never arrives, so it slows down
- * only while the push is demonstrably keeping up: the subscription is live
- * and the previous poll found nothing the push had not already delivered.
- * The interval then doubles per poll, up to
- * {@link ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR} times the configured one. A
- * feed error, a failed poll, a poll that delivers an event the push missed,
+ * The poll is the safety net for a push that never arrives, so it runs at the
+ * live-push interval only while the push is demonstrably keeping up: the
+ * subscription is live and the previous poll found nothing the push had not
+ * already delivered. It starts there when the subscription opens, and each
+ * clean poll doubles the interval, up to
+ * {@link ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR} times the live-push interval.
+ * A feed error, a failed poll, a poll that delivers an event the push missed,
  * or a pushed event that leaves a gap behind it puts the interval back at the
- * configured one at once, rescheduling a poll that was due later.
+ * one without a push at once, rescheduling a poll that was due later.
+ *
+ * What the push can miss without a sign is only the newest event, with
+ * nothing pushed after it and the socket still open: a later push would show
+ * the gap, and a closed socket or an ended subscription calls `onError`. The
+ * capped backoff bounds how long such an event waits for the poll.
  */
 export class LiveLogFeed {
   private nextSlot: number;
@@ -103,13 +141,23 @@ export class LiveLogFeed {
       afterSlot: number;
       /** `events.list` cursor positioned after that slot. */
       cursor: string | null;
+      /** Poll interval while no live push covers the run; `0` never polls. */
       pollIntervalMs: number;
+      /**
+       * Poll interval while the live push is up. Never below
+       * `pollIntervalMs`; defaults to it.
+       */
+      feedPollIntervalMs?: number;
       onEvents: (events: Event[]) => void;
     }
   ) {
     this.nextSlot = options.afterSlot + 1;
     this.cursor = options.cursor;
     this.pollIntervalMs = options.pollIntervalMs;
+    this.feedPollIntervalMs = Math.max(
+      options.feedPollIntervalMs ?? 0,
+      options.pollIntervalMs
+    );
     this.currentIntervalMs = options.pollIntervalMs;
     this.onEvents = options.onEvents;
   }
@@ -120,6 +168,7 @@ export class LiveLogFeed {
   }
 
   private readonly pollIntervalMs: number;
+  private readonly feedPollIntervalMs: number;
   private readonly onEvents: (events: Event[]) => void;
 
   start(): void {
@@ -153,6 +202,7 @@ export class LiveLogFeed {
         });
       }
     }
+    if (this.feedLive) this.currentIntervalMs = this.feedPollIntervalMs;
     this.schedulePoll();
   }
 
@@ -212,7 +262,7 @@ export class LiveLogFeed {
     if (clean && this.feedLive && this.pending.size === 0) {
       this.currentIntervalMs = Math.min(
         this.currentIntervalMs * 2,
-        this.pollIntervalMs * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR
+        this.feedPollIntervalMs * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR
       );
     } else {
       this.currentIntervalMs = this.pollIntervalMs;
@@ -233,7 +283,7 @@ export class LiveLogFeed {
   }
 
   /**
-   * Back to the configured interval: the push may be missing events. A poll
+   * Back to the interval without a push: the push may be missing events. A poll
    * scheduled later than one interval from now is moved up to it; one in
    * flight schedules the next at the configured interval when it ends.
    */

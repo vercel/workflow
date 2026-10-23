@@ -544,7 +544,10 @@ export interface Storage {
      *   through `options.onError` instead.
      *
      * A World that omits it is fully supported: the runtime then polls the
-     * log tail at `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`.
+     * log tail at `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`. While a
+     * subscription is live, the poll runs at the slower
+     * `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`, so a World that offers
+     * it must report a closed or ended subscription through `onError`.
      */
     subscribe?(
       runId: string,

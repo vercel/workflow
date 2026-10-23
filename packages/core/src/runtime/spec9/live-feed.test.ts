@@ -2,7 +2,9 @@ import { type Event, slotToEventId, type WorkflowRun } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
+  DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS,
   DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS,
+  getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
   ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR,
@@ -144,11 +146,38 @@ describe('LiveLogFeed', () => {
       })
     ).toBe(DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS);
   });
+
+  it('reads the live-push poll interval from the environment', () => {
+    expect(getOrchestratorFeedPollIntervalMs({})).toBe(
+      DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS
+    );
+    expect(
+      getOrchestratorFeedPollIntervalMs({
+        WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS: '250',
+      })
+    ).toBe(250);
+    expect(
+      getOrchestratorFeedPollIntervalMs({
+        WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS: 'nope',
+      })
+    ).toBe(DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS);
+  });
+
+  // The push is the fast path; the poll while it is up is only the safety
+  // net, so it is the slower of the two.
+  it('polls less often with a live push than without one by default', () => {
+    expect(DEFAULT_ORCHESTRATOR_FEED_POLL_INTERVAL_MS).toBeGreaterThan(
+      DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS
+    );
+  });
 });
 
 describe('LiveLogFeed poll backoff', () => {
+  /** The interval without a push. */
   const BASE = 50;
-  const MAX = BASE * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR;
+  /** The interval while the push is up. */
+  const FEED = BASE * 4;
+  const MAX = FEED * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR;
 
   /** A World whose push the test drives, and whose list can be made to fail. */
   function controlled() {
@@ -182,12 +211,16 @@ describe('LiveLogFeed poll backoff', () => {
     return { world, controlledWorld, feed };
   }
 
-  function start(world: ConstructorParameters<typeof LiveLogFeed>[0]) {
+  function start(
+    world: ConstructorParameters<typeof LiveLogFeed>[0],
+    feedPollIntervalMs = FEED
+  ) {
     const received: string[] = [];
     const live = new LiveLogFeed(world, RUN, {
       afterSlot: 1,
       cursor: slotToEventId(1),
       pollIntervalMs: BASE,
+      feedPollIntervalMs,
       onEvents: (events) => received.push(...events.map((e) => e.eventId)),
     });
     live.start();
@@ -196,7 +229,11 @@ describe('LiveLogFeed poll backoff', () => {
 
   /** Runs polls until the interval stops growing. */
   async function backOffFully(live: LiveLogFeed) {
-    for (let interval = BASE; interval < MAX; interval *= 2) {
+    for (
+      let interval = live.nextPollIntervalMs;
+      interval < MAX;
+      interval *= 2
+    ) {
       await vi.advanceTimersByTimeAsync(live.nextPollIntervalMs);
     }
     expect(live.nextPollIntervalMs).toBe(MAX);
@@ -206,11 +243,13 @@ describe('LiveLogFeed poll backoff', () => {
     vi.useFakeTimers();
     const world = seeded({ subscribe: true });
     const { live, received } = start(world.asWorld());
-    expect(live.nextPollIntervalMs).toBe(BASE);
+    expect(live.nextPollIntervalMs).toBe(FEED);
     // Pushed, so the next poll finds nothing new.
     world.appendOutOfBand(hookReceived('hook_a'));
-    await vi.advanceTimersByTimeAsync(BASE);
-    expect(live.nextPollIntervalMs).toBe(BASE * 2);
+    expect(world.listCalls).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(FEED);
+    expect(world.listCalls).toHaveLength(1);
+    expect(live.nextPollIntervalMs).toBe(Math.min(FEED * 2, MAX));
     await backOffFully(live);
     await vi.advanceTimersByTimeAsync(MAX * 3);
     expect(live.nextPollIntervalMs).toBe(MAX);
@@ -270,6 +309,27 @@ describe('LiveLogFeed poll backoff', () => {
     expect(live.nextPollIntervalMs).toBe(BASE);
     await vi.advanceTimersByTimeAsync(BASE);
     expect(received).toEqual([slotToEventId(2), slotToEventId(3)]);
+    live.stop();
+  });
+
+  it('climbs back to the bound from the interval without a push once the push keeps up again', async () => {
+    vi.useFakeTimers();
+    const { world, controlledWorld } = controlled();
+    const { live } = start(controlledWorld);
+    await backOffFully(live);
+    // Never pushed: the poll finds it and drops to the interval without a push.
+    world.appendOutOfBand(hookReceived('hook_a'));
+    await vi.advanceTimersByTimeAsync(MAX);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    await backOffFully(live);
+    live.stop();
+  });
+
+  it('never polls more often with a push than without one', async () => {
+    vi.useFakeTimers();
+    const world = seeded({ subscribe: true });
+    const { live } = start(world.asWorld(), BASE / 2);
+    expect(live.nextPollIntervalMs).toBe(BASE);
     live.stop();
   });
 
