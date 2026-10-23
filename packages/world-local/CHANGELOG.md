@@ -1,5 +1,14 @@
 # @workflow/world-local
 
+## 5.1.3
+
+### Patch Changes
+
+- [#4940](https://github.com/vercel/workflow/pull/4940) [`6455beb`](https://github.com/vercel/workflow/commit/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Restart recovery now dispatches steps that were running inline when the previous process exited right away instead of after the 860s inline-ownership lease, and `releaseOrphanedSteps(runId)` exposes the same release to embedders that recover runs themselves.
+- Updated dependencies [[`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc)]:
+  - @workflow/world@5.0.6
+  - @workflow/errors@5.0.6
+
 ## 5.1.2
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 5.0.6
+
+### Patch Changes
+
+- [#4945](https://github.com/vercel/workflow/pull/4945) [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `SNAPSHOT_FORMAT_VERSION` to 4 for the QuickJS engine's new pending-operation heap layout.
+
 ## 5.0.5
 
 ### Patch Changes
