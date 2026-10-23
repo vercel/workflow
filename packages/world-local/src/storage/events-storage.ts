@@ -84,6 +84,7 @@ import {
   writeExclusive,
   writeJSON,
 } from '../fs.js';
+import { lockHolderFs } from '../lock-holder.js';
 import { withInProcessLock } from '../util.js';
 import { stripEventDataRefs } from './filters.js';
 import {
@@ -3927,11 +3928,14 @@ export function createEventsStorage(
   // process: so two processes on one data directory fence each other, as two
   // storage instances in one process do, and a restart keeps every count.
   // Between its check and its publish an accepted write marks the count
-  // `pending`. A writer that died there (its lock goes stale) leaves the
-  // mark, and the next writer through the lock counts that write as if it
-  // landed: it may have, and counting a write that did not land only costs a
-  // superseded redelivery, while missing one that did would let a stale
-  // writer in. A snapshot reports the count without a pending write.
+  // `pending`. A writer that died there leaves the mark, and the next writer
+  // through the lock counts that write as if it landed: it may have, and
+  // counting a write that did not land only costs a superseded redelivery,
+  // while missing one that did would let a stale writer in. A snapshot
+  // reports the count without a pending write. The lock names its holder
+  // (`lockHolderFs`), so when that writer's process is gone, the next writer
+  // on its host takes the lock at once instead of waiting for it to go
+  // stale.
   const fenceState = inBandFenceState();
   const fenceKey = (runId: string) =>
     `${path.resolve(basedir)}\0${slotStateKey(runId)}`;
@@ -3994,6 +3998,7 @@ export function createEventsStorage(
       let release: () => Promise<void>;
       try {
         release = await lockFile(countPath, {
+          fs: lockHolderFs(),
           realpath: false,
           stale: 30_000,
           update: 1_000,
