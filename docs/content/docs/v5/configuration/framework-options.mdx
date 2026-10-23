@@ -28,6 +28,18 @@ Framework options are read at build or dev-server startup. Use them for settings
 - Controls source maps for generated workflow bundles.
 - Explicit config wins over `WORKFLOW_SOURCEMAP`.
 
+### `workflows.onAfterBundle`
+
+- Environment override: none
+- Default: unset
+- Programmatic callback invoked after the `steps`, `workflows`, and serialized
+  `manifest` artifacts are written.
+- Receives absolute artifact paths and runs before later framework-specific
+  outputs are written.
+- Production failures reject the build. Development/watch integrations follow
+  their normal queued-build error handling.
+- Keep the callback fast and make external side effects idempotent.
+
 ```typescript title="next.config.ts" lineNumbers
 import { withWorkflow } from "workflow/next";
 
@@ -73,6 +85,18 @@ Configure Workflow through the Nitro `workflow` module options.
 - Environment override: `WORKFLOW_SOURCEMAP`
 - Default: `inline` in development, `false` in production
 - Controls source maps for generated workflow bundles.
+
+### `workflow.onAfterBundle`
+
+- Environment override: none
+- Default: unset
+- Programmatic callback invoked after the `steps`, `workflows`, and serialized
+  `manifest` artifacts are written.
+- Receives absolute artifact paths and runs before later Nitro/Nuxt outputs are
+  written.
+- Production failures reject the build. Development/watch integrations follow
+  their normal queued-build error handling.
+- The callback is not available through command-line options.
 
 ## NestJS
 
@@ -132,6 +156,16 @@ Configure Workflow through `WorkflowModule.forRoot()`.
 - Default: `true`
 - Keeps the application's body parsers away from `.well-known/workflow/v1`, so queue deliveries are not rejected by Express's 100 KB limit and signed webhook bodies stay byte-exact. Other routes are untouched. On Fastify, where the body limit is enforced per instance rather than per route, nothing is patched and a limit low enough to reject deliveries is reported at startup instead.
 
+### `onAfterBundle`
+
+- Environment override: none
+- Default: unset
+- Programmatic callback invoked after the `steps`, `workflows`, and serialized
+  `manifest` artifacts are written.
+- Receives absolute artifact paths and runs before later Nest outputs are
+  written. Startup failures reject module initialization.
+- The `workflow-nest build` CLI cannot accept a function-valued callback.
+
 ## Astro
 
 ### `sourcemap`
@@ -140,6 +174,15 @@ Configure Workflow through `WorkflowModule.forRoot()`.
 - Default: `inline` in development, `false` in production
 - Controls source maps for generated workflow bundles.
 
+### `onAfterBundle`
+
+- Environment override: none
+- Default: unset
+- Programmatic callback invoked after the workflow bundles and serialized
+  manifest are written. It receives absolute artifact paths.
+- Production failures reject the build; development updates follow the normal
+  queued-build error handling.
+
 ## SvelteKit
 
 ### `sourcemap`
@@ -147,6 +190,15 @@ Configure Workflow through `WorkflowModule.forRoot()`.
 - Environment override: `WORKFLOW_SOURCEMAP`
 - Default: `inline` in development, `false` in production
 - Controls source maps for generated workflow bundles.
+
+### `onAfterBundle`
+
+- Environment override: none
+- Default: unset
+- Programmatic callback invoked after the workflow bundles and serialized
+  manifest are written. It receives absolute artifact paths.
+- Production failures reject the build; development updates follow the normal
+  queued-build error handling.
 
 ## Rollup
 

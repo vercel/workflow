@@ -46,6 +46,14 @@ console.log(`Workflow bundles written to ${builder.outDir}`);
 | `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. When `'commonjs'`, the builder rewrites externalized imports in the steps bundle to use `require()` through `createRequire`, avoiding ECMAScript module (ESM) and CommonJS (CJS) named-export interop issues with SWC's output. |
 | `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'` to resolve compiled file paths. Should match the `outDir` in your `tsconfig.json`. |
 | `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+| `onAfterBundle` | `WorkflowAfterBundleHook` | — | Optional callback invoked after the workflow bundles and serialized manifest are written. |
+
+`onAfterBundle` is available when constructing `NestLocalBuilder`
+programmatically. It receives absolute paths for the `steps`, `workflows`, and
+`manifest` artifacts. The callback runs before later framework outputs and a
+failure rejects the builder. The `workflow-nest build` CLI cannot accept a
+function-valued callback, so use the builder API when this integration is
+needed.
 
 ### Methods
 
