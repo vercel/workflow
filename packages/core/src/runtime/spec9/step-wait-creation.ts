@@ -136,9 +136,9 @@ export interface StepWaitCreationPlan {
   /** Writes the events. See {@link createStepsAndWaits}. */
   commit(): Promise<StepWaitCreationResult>;
   /**
-   * Writes the events as {@link commit} does, and resolves `first` as soon
-   * as the first batch committed: with the steps that batch created, which
-   * include every inline step (they come first in {@link events}). `rest`
+   * Writes the events as {@link commit} does, and resolves `first` once
+   * the first batch and every inline creation committed (inline steps come
+   * first in {@link events}), with the steps those batches created. `rest`
    * resolves with the steps the later batches created, once they committed.
    * For a plan with no waits and no step that failed to serialize.
    */
@@ -449,7 +449,7 @@ async function writeAll(
     }) => void;
   },
   events: CreateEventRequest[],
-  /** Called once the first batch committed, with what it committed. */
+  /** Called after the first batch and all inline creations committed. */
   onFirstBatch?: (written: Written) => void
 ): Promise<Written> {
   const refusedStarts = new Map<string, Error>();
@@ -457,6 +457,9 @@ async function writeAll(
   const { writer } = params;
   if (events.length > 1 && writer.supportsBatch) {
     const committed: Event[] = [];
+    let inlineRemaining = events.filter(
+      (event) => event.eventType === 'step_started'
+    ).length;
     for (const chunk of batchChunks(events)) {
       const batch: BatchEventRequest[] = chunk.map((event) =>
         event.eventType === 'step_started'
@@ -524,7 +527,10 @@ async function writeAll(
           throw new WorkflowWorldError(message, { status: result.status });
         }
       });
-      if (onFirstBatch) {
+      inlineRemaining -= chunk.filter(
+        (event) => event.eventType === 'step_started'
+      ).length;
+      if (onFirstBatch && inlineRemaining === 0) {
         onFirstBatch({
           committed: [...committed],
           refusedStarts: new Map(refusedStarts),
