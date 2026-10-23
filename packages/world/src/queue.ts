@@ -512,10 +512,10 @@ export const WorkflowInvokePayloadSchema = z.compile(
     /**
      * Marks the delayed, per-run continuation that guarantees a terminal
      * replay is retried after an advance-only hand-off. If it arrives while
-     * work is still live, the handler reschedules this same delivery.
+     * work is still live, the handler publishes a fresh backstop generation.
      */
     terminalBackstop: z.literal(true).optional().catch(undefined),
-    /** Logical retry number for exponential terminal-backstop delay. */
+    /** Logical generation for delay and queue-dedupe identity. */
     terminalBackstopAttempt: z
       .number()
       .int()

@@ -261,6 +261,13 @@ function terminalBackstopDelaySeconds(attempt: number): number {
   );
 }
 
+function terminalBackstopIdempotencyKey(
+  runId: string,
+  attempt: number
+): string {
+  return `advance-only:terminal-backstop:${runId}:${attempt}`;
+}
+
 /**
  * Apply the optional client-side event-limit override.
  * `WORKFLOW_MAX_EVENTS_OVERRIDE`, when set to a positive integer, clamps the
@@ -1566,32 +1573,18 @@ export function workflowEntrypoint(
                   /**
                    * Keep terminal progress independent of another step
                    * handler's replay eligibility. The first deferral publishes
-                   * one delayed continuation per run. If that continuation is
-                   * early, it reschedules its own delivery until the live work
-                   * has settled; it does not spend the per-run dedupe key again.
+                   * one delayed continuation per run. If a continuation is
+                   * early, it publishes a fresh generation so healthy live work
+                   * never consumes one message's delivery-attempt budget. The
+                   * generation key makes an ambiguous send or redelivery safe.
                    */
                   const deferTerminalForAdvanceOnlyWork = async (): Promise<
                     { timeoutSeconds: number } | undefined
                   > => {
-                    if (incomingTerminalBackstop === true) {
-                      // Turbo re-enqueues a new message (attempt resets), while
-                      // other transports redeliver this message (attempt
-                      // increments). Carry the logical attempt so both use
-                      // the same 1s, 2s, 4s ... 30s schedule.
-                      const currentAttempt = Math.max(
-                        incomingTerminalBackstopAttempt ?? 0,
-                        metadata.attempt - 1
-                      );
-                      const nextAttempt = currentAttempt + 1;
-                      return await reinvoke(
-                        terminalBackstopDelaySeconds(nextAttempt),
-                        {
-                          advanceOnly: true,
-                          terminalBackstop: true,
-                          terminalBackstopAttempt: nextAttempt,
-                        }
-                      );
-                    }
+                    const nextAttempt =
+                      incomingTerminalBackstop === true
+                        ? (incomingTerminalBackstopAttempt ?? 0) + 1
+                        : 0;
                     await queueMessage(
                       world,
                       getWorkflowQueueName(workflowName, namespace),
@@ -1599,12 +1592,14 @@ export function workflowEntrypoint(
                         ...(await replayMessage()),
                         advanceOnly: true,
                         terminalBackstop: true,
-                        terminalBackstopAttempt: 0,
+                        terminalBackstopAttempt: nextAttempt,
                       },
                       {
-                        delaySeconds:
-                          ADVANCE_ONLY_TERMINAL_BACKSTOP_INITIAL_DELAY_SECONDS,
-                        idempotencyKey: `advance-only:terminal-backstop:${runId}`,
+                        delaySeconds: terminalBackstopDelaySeconds(nextAttempt),
+                        idempotencyKey: terminalBackstopIdempotencyKey(
+                          runId,
+                          nextAttempt
+                        ),
                       }
                     );
                     return undefined;

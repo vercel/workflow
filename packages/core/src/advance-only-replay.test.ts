@@ -1056,7 +1056,7 @@ describe('inline path: an inline step settling while its batch is still running'
     );
     expect(backstopCall?.[2]).toMatchObject({
       delaySeconds: 1,
-      idempotencyKey: `advance-only:terminal-backstop:${runId}`,
+      idempotencyKey: `advance-only:terminal-backstop:${runId}:0`,
     });
     expect(terminalBackstops(h)[0]).toMatchObject({
       terminalBackstopAttempt: 0,
@@ -1064,17 +1064,91 @@ describe('inline path: an inline step settling while its batch is still running'
 
     await expect(
       h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop')
-    ).resolves.toEqual({ timeoutSeconds: 2 });
+    ).resolves.toBeUndefined();
+    expect(terminalBackstops(h)[1]).toMatchObject({
+      terminalBackstopAttempt: 1,
+    });
+    const secondCall = h.queue.mock.calls.find(([, message]) =>
+      Object.is(message, terminalBackstops(h)[1])
+    );
+    expect(secondCall?.[2]).toMatchObject({
+      delaySeconds: 2,
+      idempotencyKey: `advance-only:terminal-backstop:${runId}:1`,
+    });
     await expect(
-      h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop_again', 2)
-    ).resolves.toEqual({ timeoutSeconds: 4 });
+      h.deliver(terminalBackstops(h)[1], 'msg_terminal_backstop_again')
+    ).resolves.toBeUndefined();
+    expect(terminalBackstops(h)[2]).toMatchObject({
+      terminalBackstopAttempt: 2,
+    });
+    const thirdCall = h.queue.mock.calls.find(([, message]) =>
+      Object.is(message, terminalBackstops(h)[2])
+    );
+    expect(thirdCall?.[2]).toMatchObject({
+      delaySeconds: 4,
+      idempotencyKey: `advance-only:terminal-backstop:${runId}:2`,
+    });
 
     // Logical delivery times are 1s and 3s. The original slow-step handler
     // settles at 6s and completes immediately, so only two polling deferrals
-    // are needed instead of one per second.
+    // are needed instead of one per second. Each is a fresh queue message.
     slow.open();
     await flow;
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+  });
+
+  it('chains terminal backstops through fresh messages before the delivery ceiling', async () => {
+    const runId = newRunId();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    await vi.waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    await h.deliver(handOffs(h)[0], 'msg_handoff');
+    expect(terminalBackstops(h)).toHaveLength(1);
+
+    await expect(
+      h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop', 48)
+    ).resolves.toBeUndefined();
+    expect(h.events.map((event) => event.eventType)).not.toContain(
+      'run_failed'
+    );
+    expect(terminalBackstops(h)).toHaveLength(2);
+    expect(terminalBackstops(h)[1]).toMatchObject({
+      terminalBackstopAttempt: 1,
+    });
+    const nextCall = h.queue.mock.calls.find(([, message]) =>
+      Object.is(message, terminalBackstops(h)[1])
+    );
+    expect(nextCall?.[2]).toMatchObject({
+      delaySeconds: 2,
+      idempotencyKey: `advance-only:terminal-backstop:${runId}:1`,
+    });
+
+    // If the generation-0 delivery is redelivered after an ambiguous send,
+    // it republishes generation 1 under the same key instead of forking the
+    // backstop chain from the transport's delivery-attempt counter.
+    await h.deliver(
+      terminalBackstops(h)[0],
+      'msg_terminal_backstop_redelivery',
+      2
+    );
+    expect(terminalBackstops(h)[2]).toMatchObject({
+      terminalBackstopAttempt: 1,
+    });
+    const duplicateNextCall = h.queue.mock.calls.find(([, message]) =>
+      Object.is(message, terminalBackstops(h)[2])
+    );
+    expect(duplicateNextCall?.[2]).toMatchObject({
+      delaySeconds: 2,
+      idempotencyKey: `advance-only:terminal-backstop:${runId}:1`,
+    });
+
+    slow.open();
+    await flow;
   });
 
   it('does not recover drain-only steps when a World drops unknown creation fields', async () => {
