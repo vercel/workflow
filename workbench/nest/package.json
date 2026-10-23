@@ -13,10 +13,6 @@
     "vercel-build": "pnpm -w run build && pnpm setup:swcrc && nest build && node ../../packages/nest/dist/cli.js build --vercel --dirs src/workflows --entry _vercel/entry.ts",
     "start": "node dist/main.js"
   },
-  "engines": {
-    "npm": ">=10.0.0",
-    "node": "^24.0.0"
-  },
   "dependencies": {
     "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@nestjs/common": "^11.1.27",

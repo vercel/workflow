@@ -187,10 +187,14 @@ export type RetentionDecision =
  * in this process rather than re-invoking (see `continueOverHookWrite` in the
  * replay loop), so the runtime itself drives the next iteration. One arm for
  * both outcomes because it is one boundary: same write, same event slot, same
- * continuation. Steps in the same suspension ride along queued: an awaiter
- * empties `lazyInlineSteps` and the conflict branch returns before any inline
- * execution, so nothing this invocation does can order the continuation behind
- * a step body. The hook this suspension just created is an open hook by
+ * continuation. Steps in the same suspension ride along deferred rather than
+ * queued: an awaiter holds `lazyInlineSteps` back for the pass the
+ * continuation drives, and the conflict branch returns before any inline
+ * execution, so a step body is never ordered ahead of a continuation this
+ * invocation is still going to take. (A continuation it has already taken and
+ * been refused for — the repeat guard — does let the batch run first; there is
+ * nothing left for the ordering to protect by then.) The hook this suspension
+ * just created is an open hook by
  * definition, and is no more a hazard than any other open hook here: a
  * `hook_received` landing out of band is absent from the log the resume reads
  * exactly as it is absent from a fetch that returned a moment before it — a
