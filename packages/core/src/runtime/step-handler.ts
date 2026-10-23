@@ -947,16 +947,17 @@ const stepHandler = createQueueHandler(
             serializeTraceCarrier(),
           ]);
 
-          if (stepCompleted409) {
-            return;
+          if (!stepCompleted409) {
+            span?.setAttributes({
+              ...Attribute.StepStatus('completed'),
+              ...Attribute.StepResultType(typeof result),
+            });
           }
 
-          span?.setAttributes({
-            ...Attribute.StepStatus('completed'),
-            ...Attribute.StepResultType(typeof result),
-          });
-
-          // Queue the workflow continuation with the concurrently-resolved trace carrier
+          // A completion may have committed before its response was lost, leaving
+          // a retry to return 409. Always wake the workflow, including on conflict:
+          // an extra replay is safe, while acking without a wake can strand the run.
+          // Let queue failures throw so redelivery retries the wake via step_started.
           await queueMessage(
             world,
             getWorkflowQueueName(workflowName, stepNamespace),

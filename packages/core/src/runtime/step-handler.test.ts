@@ -259,12 +259,16 @@ describe('step-handler 409 handling', () => {
   });
 
   describe('step_completed 409', () => {
-    it('should warn and return when step_completed gets a 409', async () => {
-      // step_started succeeds, step function succeeds, step_completed returns 409
-      let callCount = 0;
+    beforeEach(() => {
+      let completed = false;
       mockEventsCreate.mockImplementation(
         (_runId: string, event: { eventType: string }) => {
           if (event.eventType === 'step_started') {
+            if (completed) {
+              return Promise.reject(
+                new EntityConflictError('Step already completed')
+              );
+            }
             return Promise.resolve({
               step: {
                 stepId: 'step_abc',
@@ -277,7 +281,9 @@ describe('step-handler 409 handling', () => {
             });
           }
           if (event.eventType === 'step_completed') {
-            callCount++;
+            // The write committed, but its response was lost. The transport
+            // retries the write and surfaces the already-completed conflict.
+            completed = true;
             return Promise.reject(
               new EntityConflictError(
                 'Cannot complete step because it is already completed'
@@ -287,15 +293,15 @@ describe('step-handler 409 handling', () => {
           return Promise.resolve({ event: {} });
         }
       );
+    });
 
+    it('should queue the workflow continuation when step_completed gets a 409', async () => {
       const result = await capturedHandler(
         createMessage(),
         createMetadata('myStep')
       );
 
-      // Should not throw, should return undefined (early return)
       expect(result).toBeUndefined();
-      // Should have logged a warning, not an error
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried completing step, but step has already finished.',
         expect.objectContaining({
@@ -303,8 +309,49 @@ describe('step-handler 409 handling', () => {
           stepId: 'step_abc',
         })
       );
-      // Should NOT have queued a workflow continuation
-      expect(mockQueueMessage).not.toHaveBeenCalled();
+      expect(mockStepFn).toHaveBeenCalledOnce();
+      expect(mockQueueMessage).toHaveBeenCalledExactlyOnceWith(
+        getWorld(),
+        '__wkf_workflow_test-workflow',
+        {
+          runId: 'wrun_test123',
+          traceCarrier: {},
+          requestedAt: expect.any(Date),
+        }
+      );
+    });
+
+    it('should retry a failed continuation send without executing the completed step again', async () => {
+      const sendError = new Error('queue send failed');
+      mockQueueMessage.mockRejectedValueOnce(sendError);
+      const message = createMessage();
+
+      await expect(
+        capturedHandler(message, createMetadata('myStep'))
+      ).rejects.toThrow(sendError);
+
+      // The queue redelivers the same message. step_started now returns 409,
+      // so the handler retries only the workflow continuation.
+      await expect(
+        capturedHandler(message, createMetadata('myStep', { attempt: 2 }))
+      ).resolves.toBeUndefined();
+
+      expect(mockStepFn).toHaveBeenCalledOnce();
+      expect(
+        mockEventsCreate.mock.calls.filter(
+          ([, event]) => event.eventType === 'step_completed'
+        )
+      ).toHaveLength(1);
+      expect(mockQueueMessage).toHaveBeenCalledTimes(2);
+      expect(mockQueueMessage).toHaveBeenLastCalledWith(
+        getWorld(),
+        '__wkf_workflow_test-workflow',
+        {
+          runId: 'wrun_test123',
+          traceCarrier: {},
+          requestedAt: expect.any(Date),
+        }
+      );
     });
   });
 
@@ -663,7 +710,7 @@ describe('step-handler max deliveries', () => {
   });
 
   it('should not trigger max deliveries check when under limit', async () => {
-    const result = await capturedHandler(createMessage(), {
+    await capturedHandler(createMessage(), {
       ...createMetadata('myStep'),
       attempt: MAX_QUEUE_DELIVERIES,
     });
