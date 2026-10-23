@@ -56,6 +56,7 @@ import { serializeTraceCarrier, trace } from '../telemetry.js';
 import {
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
+  isQuickJSBaselineSnapshotEnabled,
 } from './constants.js';
 import { maybeWarnApproachingEventLimit } from './event-limit-warning.js';
 import { getPortLazy } from './get-port-lazy.js';
@@ -78,16 +79,20 @@ import { quickjsWasiVersion } from './quickjs-assets.generated.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
 import {
   BASELINE_BUNDLE_FILENAME,
+  getQuickJSBaselineDictionary,
   type PendingAttribute,
   type PendingHook,
   type PendingHookDispose,
   type PendingOperation,
   type PendingStep,
   type PendingWait,
+  type PrebuiltQuickJSBaseline,
+  registerPrebuiltQuickJSBaseline,
   startQuickJSWorkflow,
 } from './quickjs-runtime.js';
 import {
   checkSnapshotMetadataBounds,
+  isSnapshotDictionaryCompressionAvailable,
   MAX_SNAPSHOT_PLAINTEXT_BYTES,
   openSnapshot,
   SnapshotRejectedError,
@@ -898,6 +903,25 @@ const snapshotWarnings = globalSingleton(
   () => new Set<string>()
 );
 
+/**
+ * The live QuickJS heap of a session (`memoryUsedSize`), for snapshot size
+ * tracking: unlike the snapshot's length, a high-water mark of the WASM
+ * memory, it falls when the VM frees memory. Undefined when unavailable;
+ * tracking never fails a capture.
+ */
+function liveHeapBytes(session: {
+  memoryUsage?: () => { memoryUsedSize: number };
+}): number | undefined {
+  try {
+    const bytes = session.memoryUsage?.().memoryUsedSize;
+    return Number.isSafeInteger(bytes) && (bytes as number) >= 0
+      ? bytes
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Log a snapshot-configuration warning once per process per key. */
 function warnOnce(key: string, log: () => void): void {
   if (snapshotWarnings.has(key)) return;
@@ -992,7 +1016,14 @@ export async function runWorkflowWithQuickJS(params: {
    * or the world's dedupe window drops it and the wait loses its only timer.
    */
   waitContinuation?: { correlationId: string; attempt: number };
+  /**
+   * The deployment bundle's baseline heap, prebuilt by the workflow builder
+   * (see `workflowEntrypoint`'s `quickjsBaseline` option). Registered so
+   * this instance restores it instead of evaluating the bundle to build it.
+   */
+  quickjsBaseline?: PrebuiltQuickJSBaseline;
 }): Promise<{ timeoutSeconds?: number } | void> {
+  registerPrebuiltQuickJSBaseline(params.quickjsBaseline);
   const {
     workflowCode,
     workflowName,
@@ -1208,12 +1239,23 @@ export async function runWorkflowWithQuickJS(params: {
             { workflowRunId: runId, message: outOfBounds }
           );
         } else {
+          // A snapshot compressed against the baseline heap needs that
+          // heap to decode. Every instance of the deployment derives the
+          // same one; openSnapshot rejects a digest that doesn't match.
+          const dictionary =
+            loaded.metadata.baselineDigest !== undefined
+              ? await getQuickJSBaselineDictionary(
+                  workflowCodeForVM,
+                  workflowId
+                ).catch(() => undefined)
+              : undefined;
           existingSnapshot = {
             data: await openSnapshot({
               runId,
               stored: loaded.data,
               metadata: loaded.metadata,
               encryptionKey,
+              dictionary,
             }),
             metadata: loaded.metadata,
           };
@@ -1684,6 +1726,8 @@ export async function runWorkflowWithQuickJS(params: {
         /** The log position the heap has consumed through. */
         eventsCursor: string;
         eventsThroughCursor: number;
+        /** Live QuickJS heap at capture (see `SnapshotMetadata.heapBytes`). */
+        heapBytes?: number;
       }
     | undefined;
   // Set when an inline step's lazy claim came back `throttled`: the exit
@@ -2337,6 +2381,7 @@ export async function runWorkflowWithQuickJS(params: {
           ...session.snapshot(),
           eventsCursor: positionCursor,
           eventsThroughCursor: positionCount,
+          heapBytes: liveHeapBytes(session),
         };
         if (capturedSnapshot.data.byteLength > MAX_SNAPSHOT_PLAINTEXT_BYTES) {
           // A heap this large costs more to store/decompress than the
@@ -2385,6 +2430,7 @@ export async function runWorkflowWithQuickJS(params: {
       clockMs: snapshot.clockMs,
       engineVersion: snapshot.engineVersion,
       formatVersion: SNAPSHOT_FORMAT_VERSION,
+      heapBytes: snapshot.heapBytes,
     };
     snapshotStored = true;
     safeWaitUntil(
@@ -2396,11 +2442,25 @@ export async function runWorkflowWithQuickJS(params: {
         // doesn't block the event loop either.)
         await new Promise((resolve) => setImmediate(resolve));
         const t0 = tick();
+        // Compress against the deployment's baseline heap when there is
+        // one: a run's heap mostly repeats it, so only the run's own state
+        // is stored. Respects WORKFLOW_QUICKJS_BASELINE_SNAPSHOT=0 (no
+        // baseline is prepared for this purpose alone).
+        const dictionary =
+          isQuickJSBaselineSnapshotEnabled() &&
+          isSnapshotDictionaryCompressionAvailable()
+            ? await getQuickJSBaselineDictionary(
+                workflowCodeForVM,
+                workflowId
+              ).catch(() => undefined)
+            : undefined;
+        if (dictionary) metadata.baselineDigest = dictionary.digest;
         const toStore = await sealSnapshot({
           runId,
           heap: snapshot.data,
           metadata,
           encryptionKey,
+          dictionary,
         });
         await snapshotsStorage.save(runId, toStore, metadata);
         // A concurrent invocation may have finished the run while this

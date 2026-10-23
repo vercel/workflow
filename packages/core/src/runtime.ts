@@ -113,6 +113,7 @@ import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
 } from './runtime/out-of-band-observation.js';
+import type { PrebuiltQuickJSBaseline } from './runtime/quickjs-runtime.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -800,6 +801,13 @@ export function workflowEntrypoint(
     namespace?: string;
     routeModuleBodyStartedAt?: number;
     basePath?: string;
+    /**
+     * The QuickJS engine's baseline heap for `workflowCode`, prebuilt by
+     * the workflow builder (`WORKFLOW_QUICKJS_PREBUILT_BASELINE`). Only
+     * read by runs on the QuickJS engine; ignored when it was built by
+     * different engine code or for different workflow code.
+     */
+    quickjsBaseline?: PrebuiltQuickJSBaseline;
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
@@ -3150,6 +3158,7 @@ export function workflowEntrypoint(
                           // that arrives before its wait elapses re-arms
                           // under a fresh key instead of losing the timer.
                           waitContinuation,
+                          quickjsBaseline: options?.quickjsBaseline,
                           // Inline-step ownership plumbing: redeliveries of
                           // this message drive crash recovery for steps an
                           // earlier invocation claimed inline (see the
