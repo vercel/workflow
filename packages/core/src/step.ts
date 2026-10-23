@@ -63,19 +63,18 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
-        stepLogger.debug('Step consumer event processing', {
-          correlationId,
-          stepName,
-          args: args.join(', '),
-          incomingCorrelationId: event.correlationId,
-          isMatch: correlationId === event.correlationId,
-          eventType: event.eventType,
-        });
-
         if (event.correlationId !== correlationId) {
           // We're not interested in this event - the correlationId belongs to a different entity
           return EventConsumerResult.NotConsumed;
         }
+
+        // Logged for this step's own events only, so the line costs one
+        // call per event rather than one per pending step per event.
+        stepLogger.debug('Step consumer event processing', {
+          correlationId,
+          stepName,
+          eventType: event.eventType,
+        });
 
         const eventStepName =
           'eventData' in event &&
