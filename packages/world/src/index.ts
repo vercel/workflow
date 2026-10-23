@@ -64,12 +64,14 @@ export {
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
+  isLockEventType,
   isRunEventType,
   isSealedNoopEvent,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepEventType,
   isWaitEventType,
+  LOCK_EVENT_TYPES,
   RUN_ENTITY_KEY,
   RUN_EVENT_TYPES,
   STEP_EVENT_TYPES,
@@ -93,6 +95,27 @@ export type {
   InvocationOutcome,
   SerializedWorkflowError,
 } from './invocation.js';
+export type * from './locks.js';
+export {
+  getLockWaitlistPolicy,
+  LOCK_BACKSTOP_MS,
+  LOCK_GRANT_GRACE_MS,
+  LOCK_KEY_MAX_LENGTH,
+  LOCK_RETRY_BASE_MS,
+  LOCK_RETRY_CAP_MS,
+  LOCK_RETRY_MIN_MS,
+  LOCK_WAITLIST_CAP,
+  LockAttemptSchema,
+  LockHandoffSchema,
+  LockHolderSchema,
+  LockKeySchema,
+  LockSchema,
+  LockWaiterSchema,
+  LockWakeTargetSchema,
+  lockBackstopAt,
+  lockRetryAt,
+  lockRetryDelayMs,
+} from './locks.js';
 // The client this flag selects lives in `./node-http.js`, which is reachable
 // only by subpath: it imports node builtins statically, and this index is also
 // pulled into browser bundles.

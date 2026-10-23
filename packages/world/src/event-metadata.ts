@@ -72,6 +72,9 @@ const ENTITY_EVENT_CLASS_BY_TYPE = {
   wait_completed: 'wait_completed',
   hook_created: 'hook_created',
   hook_disposed: 'hook_disposed',
+  lock_created: 'lock_created',
+  lock_acquired: 'lock_acquired',
+  lock_released: 'lock_released',
   run_started: 'run_started',
 } as const satisfies Partial<Record<EventType, string>>;
 
@@ -104,6 +107,9 @@ export interface EntityEventClassification {
  * another `step_started`, and a step that has not finished absorbs a second
  * `step_created`.
  *
+ * `lock_released` is one too: the lock consumer finishes on it, and the World
+ * refuses every later write for the scope.
+ *
  * `attr_set` is one of these. The dispatcher's consumer in
  * `attribute-dispatcher.ts` returns `Finished` on the event it matches, so an
  * attribute id closes on the first event under it.
@@ -113,6 +119,7 @@ export const TERMINAL_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
   'step_terminal',
   'wait_completed',
   'hook_disposed',
+  'lock_released',
 ]);
 
 /**

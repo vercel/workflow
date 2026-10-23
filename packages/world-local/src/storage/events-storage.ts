@@ -24,6 +24,7 @@ import type {
   Hook,
   HookCreatedEventRequest,
   ListEventsParams,
+  LockHandoff,
   PaginatedResponse,
   PaginationOptions,
   SerializedData,
@@ -45,6 +46,7 @@ import {
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isLegacySpecVersion,
+  isLockEventType,
   isSlotEventId,
   isStepEventType,
   isTerminalRunEventType,
@@ -117,6 +119,12 @@ import {
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+import {
+  createLockAcquisition,
+  createLockRelease,
+  type LockEventContext,
+  reclaimRunLocks,
+} from './locks-storage.js';
 import {
   purgeRunEntityData,
   purgesUserDataOnFinish,
@@ -1179,6 +1187,92 @@ export function createEventsStorage(
       }
       return createImpl();
 
+      async function createLockEventImpl(
+        effectiveRunId: string,
+        currentRun: WorkflowRun | null,
+        now: Date
+      ): Promise<EventResult> {
+        if (!currentRun) {
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
+        if (data.eventType === 'lock_waiter_queued') {
+          throw new WorkflowWorldError(
+            'lock_waiter_queued is not supported: the Local World has no lock waitlist',
+            { status: 400 }
+          );
+        }
+        if (isTerminalWorkflowRunStatus(currentRun.status)) {
+          throw new EntityConflictError(
+            `Cannot ${data.eventType === 'lock_created' ? 'acquire' : 'release'} a lock on run in terminal state "${currentRun.status}"`
+          );
+        }
+        // A lock write appends at most one event, and none when it answers
+        // with one the scope already published (a re-POST), so it reports
+        // what it appended for the in-band count rather than leaving
+        // fencedCreate to infer it from `result.event`.
+        let appended = 0;
+        const ctx: LockEventContext = {
+          basedir,
+          tag,
+          runId: effectiveRunId,
+          now,
+          specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+          storeEvent: async (event) => {
+            const stored = await storeEvent(event);
+            appended++;
+            return stored;
+          },
+          mintEventId: () => mintEventId(effectiveRunId),
+          readEvent: (eventId) =>
+            readJSONWithFallback(
+              basedir,
+              runEntityDir('events', effectiveRunId),
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            ),
+          findEvent: async (correlationId, eventType) => {
+            const found = await paginatedFileSystemQuery({
+              directory: path.join(
+                basedir,
+                runEntityDir('events', effectiveRunId)
+              ),
+              schema: ReadEventSchema,
+              filePrefix: `${effectiveRunId}-`,
+              filter: (event) =>
+                event.eventType === eventType &&
+                event.correlationId === correlationId,
+              limit: 1,
+              getCreatedAt: getObjectCreatedAt('evnt'),
+              getId: (event) => event.eventId,
+            });
+            return (found.data[0] as Event | undefined) ?? null;
+          },
+        };
+        const { event, lock, lockHandoffs } =
+          data.eventType === 'lock_created'
+            ? await createLockAcquisition(ctx, data as any)
+            : await createLockRelease(ctx, data as any);
+        const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+        const result: EventResult = {
+          event: stripEventDataRefs(event, resolveData),
+          lock,
+          ...(lockHandoffs && { lockHandoffs }),
+          allocated: appended,
+        };
+        if (typeof params?.sinceCursor !== 'string') return result;
+        const delta = await queryRunEvents(effectiveRunId, {
+          sortOrder: 'asc',
+          cursor: params.sinceCursor,
+        });
+        return {
+          ...result,
+          events: delta.data,
+          cursor: delta.cursor,
+          hasMore: delta.hasMore,
+        };
+      }
+
       async function createImpl(): Promise<EventResult> {
         // Most paths use the freshly-drawn candidate eventId. The
         // hook_created dedup-recovery path below may reassign it to
@@ -1436,6 +1530,12 @@ export function createEventsStorage(
               params && { resolveData: entityResolveData(params.resolveData) }
             );
           }
+        }
+
+        // Lock events have their own state machine (locks-storage.ts), keyed
+        // across runs; none of the entity checks below apply to them.
+        if (isLockEventType(data.eventType)) {
+          return createLockEventImpl(effectiveRunId, currentRun, now);
         }
 
         // ============================================================
@@ -1850,6 +1950,8 @@ export function createEventsStorage(
 
         // Track entity created/updated for EventResult
         let run: WorkflowRun | undefined;
+        // Slots the terminal reclaim handed to waiters, for the caller to wake.
+        let terminalLockHandoffs: LockHandoff[] = [];
         /**
          * Whether the lifecycle write below purged the run's own payloads for
          * `$retention: '0'`. The rest of the run's user data is deleted on the
@@ -1906,6 +2008,15 @@ export function createEventsStorage(
             ''
           );
           await reapPendingHookEvents(basedir, effectiveRunId, tag);
+          // Terminal reclaim: free every lock slot the run still holds. After
+          // the marker, so a grant racing this transition either inserted its
+          // holder row before the walk (and is deleted here) or reads the
+          // marker and refuses; see locks-storage.ts.
+          terminalLockHandoffs = await reclaimRunLocks(
+            basedir,
+            effectiveRunId,
+            tag
+          );
           // Re-derive this terminal event's replay-ordering key at the
           // linearization point. The eventId/createdAt allocated at
           // createImpl() entry can predate a hook_received that
@@ -3724,6 +3835,9 @@ export function createEventsStorage(
           hook,
           wait,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
+          ...(terminalLockHandoffs.length > 0 && {
+            lockHandoffs: terminalLockHandoffs,
+          }),
           // Per-run event ceiling (mirrors the Vercel World, including the
           // QuickJS-snapshot exemption).
           ...(run ? { maxEvents: getMaxEventsForRun(run) } : {}),
@@ -4074,9 +4188,10 @@ export function createEventsStorage(
         throw error;
       }
       // A create can succeed without appending (`run_started` on a run that
-      // is already running returns the run and no event); it allocated no
-      // position, so the count stays.
-      const allocated = result.event ? 1 : 0;
+      // is already running returns the run and no event, a lock re-POST
+      // returns the event its scope already published); it allocated no
+      // position, so the count stays. Lock writes report their own count.
+      const allocated = result.allocated ?? (result.event ? 1 : 0);
       await writeInBandCount(runId, { seqInBand: current + allocated });
       return { ...result, allocated };
     });

@@ -453,6 +453,21 @@ export const WorkflowInvokePayloadSchema = z.compile(
       })
       .optional()
       .catch(undefined),
+    /**
+     * The `experimental_lock()` scope this message is the delayed retry for, and the
+     * World-computed `retryAt` (epoch ms) it was armed for. Diagnostic only:
+     * unlike a wait's, a lock retry's idempotency key needs no attempt
+     * counter, because it is derived from that `retryAt`, which is fresh on
+     * every failed attempt (see `getLockContinuationDispatch`).
+     * `.catch(undefined)` for the same reason as `waitContinuation`.
+     */
+    lockContinuation: z
+      .object({
+        correlationId: z.string(),
+        retryAtMs: z.number(),
+      })
+      .optional()
+      .catch(undefined),
     /** Step ID for inline step execution in combined handler. If provided, the flow execution
      * will jump directly to execute the step with the given ID before doing an event replay. */
     stepId: z.string().optional(),

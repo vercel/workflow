@@ -1,6 +1,7 @@
 import {
   type Event,
   type Hook,
+  type LockWakeTarget,
   type SerializedData,
   type Step,
   StepStatusSchema,
@@ -11,6 +12,7 @@ import {
 } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import {
+  bigint,
   bigserial,
   boolean,
   customType,
@@ -215,6 +217,14 @@ export const events = schema.table(
       .where(
         sql`${tb.eventType} IN ('step_created', 'hook_created', 'wait_created', 'attr_set')`
       ),
+    // A lock scope records each of its event types at most once (migration
+    // 0028). The scope's key row lock already serializes its writers; this is
+    // the backstop.
+    uniqueIndex('workflow_events_lock_unique')
+      .on(tb.runId, tb.correlationId, tb.eventType)
+      .where(
+        sql`${tb.eventType} IN ('lock_created', 'lock_acquired', 'lock_released')`
+      ),
   ]
 );
 
@@ -333,6 +343,63 @@ export const waits = schema.table(
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<Wait>,
   (tb) => [index().on(tb.runId)]
+);
+
+/**
+ * A `experimental_lock()` key's semaphore. `count` equals the number of the key's rows in
+ * {@link lockHolders}: every statement that changes one changes the other in
+ * the same transaction, and every decrement is computed from the rows a
+ * `DELETE ... RETURNING` actually removed (see `locks.ts`).
+ */
+export const locks = schema.table('workflow_locks', {
+  key: text('key').primaryKey(),
+  concurrency: integer('concurrency').notNull(),
+  count: integer('count').default(0).notNull(),
+  grantSeq: bigint('grant_seq', { mode: 'number' }).default(0).notNull(),
+  /** Waiter rows not yet granted. */
+  queuedCount: integer('queued_count').default(0).notNull(),
+  /** Waiter rows holding a reserved slot (counted in `count`). */
+  reservedCount: integer('reserved_count').default(0).notNull(),
+  /** The last waiter `seq` assigned. */
+  tailSeq: bigint('tail_seq', { mode: 'number' }).default(0).notNull(),
+  createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+  updatedAt: timestamptz('updated_at').default(sql`now()`).notNull(),
+});
+
+/** One waiting lock scope, queued or reserved. */
+export const lockWaiters = schema.table(
+  'workflow_lock_waiters',
+  {
+    runId: varchar('run_id').notNull(),
+    correlationId: varchar('correlation_id').notNull(),
+    key: text('key').notNull(),
+    seq: bigint('seq', { mode: 'number' }).notNull(),
+    enqueuedAt: timestamptz('enqueued_at').default(sql`now()`).notNull(),
+    grantedAt: timestamptz('granted_at'),
+    wake: jsonb('wake').$type<LockWakeTarget>(),
+  },
+  (tb) => [
+    primaryKey({ columns: [tb.runId, tb.correlationId] }),
+    uniqueIndex().on(tb.key, tb.seq),
+    index().on(tb.runId),
+  ]
+);
+
+/** One held slot, per `(runId, correlationId)` lock scope. */
+export const lockHolders = schema.table(
+  'workflow_lock_holders',
+  {
+    runId: varchar('run_id').notNull(),
+    correlationId: varchar('correlation_id').notNull(),
+    key: text('key').notNull(),
+    fencingToken: bigint('fencing_token', { mode: 'number' }).notNull(),
+    acquiredAt: timestamptz('acquired_at').default(sql`now()`).notNull(),
+    leaseExpiresAt: timestamptz('lease_expires_at'),
+  },
+  (tb) => [
+    primaryKey({ columns: [tb.runId, tb.correlationId] }),
+    index().on(tb.key),
+  ]
 );
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
