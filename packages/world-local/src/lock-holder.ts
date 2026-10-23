@@ -18,26 +18,30 @@ const HOLDER_NAME = /^holder-([1-9][0-9]{0,9})-([0-9a-f]{16})-[0-9a-f]{32}$/;
 /**
  * The machine a pid belongs to, hashed. On Linux, also its boot and PID
  * namespace: two containers can share a hostname and a data directory, and a
- * pid from another namespace means nothing here.
+ * pid from another namespace means nothing here. A Linux process that cannot
+ * read either gets a host of its own, so it neither takes over another
+ * process's lock nor has its own taken over, and its locks go stale as
+ * before.
  */
 const HOST = createHash('sha256')
   .update(
     [
       hostname(),
-      optional(() =>
+      linuxOnly(() =>
         readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
       ),
-      optional(() => readlinkSync('/proc/self/ns/pid')),
+      linuxOnly(() => readlinkSync('/proc/self/ns/pid')),
     ].join('\n')
   )
   .digest('hex')
   .slice(0, 16);
 
-function optional(read: () => string): string {
+function linuxOnly(read: () => string): string {
+  if (process.platform !== 'linux') return '';
   try {
     return read();
   } catch {
-    return '';
+    return randomBytes(16).toString('hex');
   }
 }
 

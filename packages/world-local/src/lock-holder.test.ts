@@ -161,6 +161,27 @@ describe('lockHolderFs', () => {
     await release();
   });
 
+  it('leaves the lock of the writer that took it over when the old holder releases', async () => {
+    // Two lock() keys on one lock directory, so both holders live in this process.
+    const before = await lock(path.join(testDir, 'a'), {
+      ...options(0),
+      lockfilePath: lockDir,
+      onCompromised() {},
+    });
+    // The old holder stalled past `stale`, and another writer took the lock.
+    const past = new Date(Date.now() - 60_000);
+    await fs.utimes(lockDir, past, past);
+    const after = await lock(path.join(testDir, 'b'), {
+      ...options(0),
+      lockfilePath: lockDir,
+    });
+    const taken = await holderName();
+    await before().catch(() => {});
+    expect((await holderName()).name).toBe(taken.name);
+    await after();
+    await expect(fs.stat(lockDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('lets one writer at a time hold a dead holder’s lock that several race for', async () => {
     const holder = await otherHolder();
     await holder.kill();
