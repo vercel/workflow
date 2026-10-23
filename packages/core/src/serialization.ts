@@ -761,6 +761,7 @@ function recordStreamReadComplete(
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
+  #cancelled = false;
 
   constructor(runId: string, name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
@@ -793,6 +794,15 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
           connectMs = Date.now() - connectStart;
+          if (this.#cancelled) {
+            // Cancelled while connecting: `cancel` below found no reader to
+            // tear down, so the World stream (on world-vercel, a live GET) is
+            // ours to close. Left open it would be held until the server's
+            // max duration. The stream is already closed to the consumer, so
+            // there is nothing to enqueue.
+            await stream.cancel().catch(() => {});
+            return;
+          }
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -839,6 +849,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         }
       },
       cancel: async (reason) => {
+        this.#cancelled = true;
         if (this.#reader) {
           await this.#reader.cancel(reason).catch(() => {});
           this.#reader = undefined;
