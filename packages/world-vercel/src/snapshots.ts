@@ -98,6 +98,18 @@ export function createSnapshotsStorage(
       // Observability-only denormalized copies (see module docstring).
       headers.set('X-Snapshot-Events-Cursor', metadata.eventsCursor ?? '');
       headers.set('X-Snapshot-Created-At', metadata.createdAt.toISOString());
+      // Size tracking: the uncompressed heap (what the runtime's size
+      // ceiling applies to) and the log length it covers. The body size
+      // alone can't tell a growing run from a compressible one.
+      if (metadata.plaintextBytes !== undefined) {
+        headers.set(
+          'X-Snapshot-Plaintext-Bytes',
+          String(metadata.plaintextBytes)
+        );
+      }
+      if (metadata.eventCount !== undefined) {
+        headers.set('X-Snapshot-Event-Count', String(metadata.eventCount));
+      }
       // Explicit W3C trace-context injection: this path routes around
       // `makeRequest` (raw undici for Buffer-body retry correctness), so
       // ambient auto-instrumentation does not reliably hook it. Required
