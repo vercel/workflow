@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { globalSingleton } from '@workflow/utils';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
@@ -9,7 +8,6 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { type LockOptions, lock } from 'proper-lockfile';
-import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
   assertSafeEntityId,
@@ -24,18 +22,6 @@ import {
 } from './fs.js';
 import { createChunkPlacer } from './stream-chunk-place.js';
 import { withInProcessLock } from './util.js';
-
-// Monotonic ULID source for the ids of chunks renamed into place on a file
-// system without hard links: always increasing even within one millisecond.
-// On `globalThis` rather than at module scope because a bundler can put
-// several copies of this file in one process (see `globalSingleton`), and two
-// copies advancing their own sequences can mint the same `chnk_` ID.
-const chunkIds = globalSingleton(
-  '@workflow/world-local//streamerMonotonicUlid',
-  1,
-  () => ({ next: monotonicFactory(() => Math.random()) })
-);
-const monotonicUlid = (seedTime?: number): string => chunkIds.next(seedTime);
 
 // Schema for the run-to-streams mapping file
 const RunStreamsSchema = z.compile(
@@ -414,7 +400,6 @@ export function createStreamer(
     tagSuffix,
     writeFile: writeTempFile,
     retry: (fn) => withWindowsRetry(fn),
-    mint: () => monotonicUlid(),
   });
   const chunkDir = (name: string) =>
     chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name);
