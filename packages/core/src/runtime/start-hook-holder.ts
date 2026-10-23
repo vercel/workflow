@@ -1,6 +1,9 @@
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
-import { getRunQueueNamespace } from '@workflow/world';
+import {
+  getRunQueueNamespace,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { withRunSpecVersion } from './run-spec-routing.js';
@@ -16,9 +19,9 @@ import { withRunSpecVersion } from './run-spec-routing.js';
 export const START_HOOK_HOLDER_WAKE_AFTER_MS = 60_000;
 
 /**
- * Re-publishes from one holder at most once per this window, whatever the
- * number of duplicates refused in it: the re-publish's queue idempotency key
- * is bucketed by it. It is deliberately not the original start message's
+ * Re-publishes from one spec-8 holder at most once per this window, whatever
+ * the number of duplicates refused in it: the re-publish's queue idempotency
+ * key is bucketed by it. (A spec-9 holder's wake carries no key.) It is deliberately not the original start message's
  * key, whose deduplication (up to 24h on Vercel Queues) would swallow a wake
  * for the very message that was lost.
  */
@@ -76,7 +79,13 @@ export async function wakePendingStartHookHolder(
         ...(holder.specVersion !== undefined
           ? { specVersion: holder.specVersion }
           : {}),
-        idempotencyKey: startHookHolderWakeKey(holder.runId, nowMs),
+        // A spec-9 run's wakes carry no idempotency key (see
+        // `QueueOptions.idempotencyKey`): its concurrency key already
+        // coalesces concurrent refusals' wakes, and a key could be absorbed
+        // by a delivery that is already exiting.
+        ...((holder.specVersion ?? 0) < SPEC_VERSION_SINGLE_ORCHESTRATOR && {
+          idempotencyKey: startHookHolderWakeKey(holder.runId, nowMs),
+        }),
       }
     );
     runtimeLogger.info(

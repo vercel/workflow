@@ -436,6 +436,15 @@ describe('start({ hook })', () => {
 
       const [, payload, opts] = queue.mock.calls[1];
       expect(opts.specVersion).toBe(specVersion);
+      // Spec 8 dedupes concurrent wakes by a bucketed key; spec 9 sends its
+      // wakes unkeyed, coalesced by the run's concurrency key instead.
+      if (keyed) {
+        expect(opts).not.toHaveProperty('idempotencyKey');
+      } else {
+        expect(opts.idempotencyKey).toBe(
+          startHookHolderWakeKey('wrun_owner', Date.now())
+        );
+      }
       expect(messageRunSpecVersion(payload)).toBe(specVersion);
       // What world-vercel's concurrency key is derived from.
       expect(isSingleOrchestratorMessage(payload)).toBe(keyed);
