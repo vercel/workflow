@@ -374,9 +374,9 @@ const stepHandler = createQueueHandler(
                     message: stepFailErr.message,
                   }
                 );
-                return;
+              } else {
+                throw stepFailErr;
               }
-              throw stepFailErr;
             }
 
             span?.setAttributes({
@@ -384,7 +384,8 @@ const stepHandler = createQueueHandler(
               ...Attribute.StepFatalError(true),
             });
 
-            // Re-invoke the workflow to handle the failed step
+            // Wake even on conflict: the terminal write may have committed
+            // before its response was lost, leaving no continuation yet.
             await queueMessage(
               world,
               getWorkflowQueueName(workflowName, stepNamespace),
@@ -445,9 +446,9 @@ const stepHandler = createQueueHandler(
                     message: err.message,
                   }
                 );
-                return;
+              } else {
+                throw err;
               }
-              throw err;
             }
 
             span?.setAttributes({
@@ -501,10 +502,9 @@ const stepHandler = createQueueHandler(
                 { requestId }
               );
             } catch (failErr) {
-              if (EntityConflictError.is(failErr)) {
-                return;
+              if (!EntityConflictError.is(failErr)) {
+                throw failErr;
               }
-              throw failErr;
             }
             // Re-queue the workflow so it can process the step failure
             await queueMessage(
@@ -701,9 +701,9 @@ const stepHandler = createQueueHandler(
                       message: stepFailErr.message,
                     }
                   );
-                  return;
+                } else {
+                  throw stepFailErr;
                 }
-                throw stepFailErr;
               }
 
               span?.setAttributes({
@@ -762,9 +762,9 @@ const stepHandler = createQueueHandler(
                         message: stepFailErr.message,
                       }
                     );
-                    return;
+                  } else {
+                    throw stepFailErr;
                   }
-                  throw stepFailErr;
                 }
 
                 span?.setAttributes({
@@ -947,7 +947,17 @@ const stepHandler = createQueueHandler(
             serializeTraceCarrier(),
           ]);
 
-          if (!stepCompleted409) {
+          if (stepCompleted409) {
+            span?.setAttributes({
+              ...Attribute.StepSkipped(true),
+              ...Attribute.StepSkipReason('completed'),
+            });
+            span?.addEvent?.('step.skipped', {
+              'skip.reason': 'terminal_state',
+              'step.name': stepName,
+              'step.id': stepId,
+            });
+          } else {
             span?.setAttributes({
               ...Attribute.StepStatus('completed'),
               ...Attribute.StepResultType(typeof result),
