@@ -315,6 +315,84 @@ describe('atomic start Hook (world-local)', () => {
     ).toBe(false);
   });
 
+  it('fences a writer stalled inside its run publication past the grace: it never becomes a run', async () => {
+    const token = 'order:stalled';
+    const stalled = `wrun_${ulid()}`;
+    const realWriteExclusive = fsModule.writeExclusive;
+    let reachedPublication!: () => void;
+    const atPublication = new Promise<void>((r) => {
+      reachedPublication = r;
+    });
+    let resume!: () => void;
+    const resumed = new Promise<void>((r) => {
+      resume = r;
+    });
+    const pause = vi
+      .spyOn(fsModule, 'writeExclusive')
+      .mockImplementation(async (filePath, data) => {
+        if (
+          filePath.includes(`${path.sep}runs${path.sep}${stalled}`) &&
+          !data.includes('startHookFence')
+        ) {
+          reachedPublication();
+          await resumed;
+        }
+        return realWriteExclusive(filePath, data);
+      });
+
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    try {
+      // A claims the token and stalls inside the run's publication.
+      const a = create(stalled, creating('run_created', token)).catch(
+        (e: unknown) => e
+      );
+      await atPublication;
+
+      // Its lease is lost (a stalled process stops refreshing the lock) and
+      // the orphan grace passes: B takes the token.
+      await fs.rm(`${hookTokenClaimPath(testDir, token)}.lock`, {
+        recursive: true,
+        force: true,
+      });
+      vi.setSystemTime(Date.now() + START_HOOK_ORPHAN_GRACE_MS + 5_000);
+      const contender = `wrun_${ulid()}`;
+      expect(
+        (await create(contender, creating('run_created', token))).run?.runId
+      ).toBe(contender);
+
+      // A resumes: its publication fails against the fence.
+      resume();
+      const outcome = await a;
+      expect((outcome as { run?: unknown }).run).toBeUndefined();
+
+      // Neither of A's copies can create it now.
+      const queued = await create(
+        stalled,
+        creating('run_started', token)
+      ).catch((e: unknown) => e);
+      expect(HookConflictError.is(queued)).toBe(true);
+      expect(queued).toMatchObject({ conflictingRunId: contender });
+      const direct = await create(
+        stalled,
+        creating('run_created', token)
+      ).catch((e: unknown) => e);
+      expect(HookConflictError.is(direct)).toBe(true);
+    } finally {
+      pause.mockRestore();
+      vi.useRealTimers();
+    }
+
+    expect(
+      await storage.runs.get(stalled).then(
+        () => true,
+        () => false
+      )
+    ).toBe(false);
+    const listed = await storage.runs.list({});
+    expect(listed.data.map((r) => r.runId)).not.toContain(stalled);
+    expect(listed.data.map((r) => r.runId)).toHaveLength(1);
+  });
+
   it('refuses a queued candidate older than the orphan bound with a permanent code', async () => {
     const dayAgo = monotonicFactory()(Date.now() - 25 * 60 * 60 * 1000);
     const error = await create(

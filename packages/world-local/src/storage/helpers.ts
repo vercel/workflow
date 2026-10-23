@@ -3,7 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
-import { eventIdToSlot } from '@workflow/world';
+import {
+  eventIdToSlot,
+  type WorkflowRun,
+  WorkflowRunSchema,
+} from '@workflow/world';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -19,6 +23,7 @@ import {
   taggedPath,
   ulidToDate,
   withWindowsRetry,
+  writeExclusive,
 } from '../fs.js';
 
 /**
@@ -477,11 +482,71 @@ export const HOOK_TOKEN_CLAIM_LOCK_STALE_MS = 30_000;
  * How long a start reservation whose run record was never written keeps its
  * token. Its writer may only be stalled past the lock's lease, not dead, and
  * could still write the run when it resumes, so the claim holds for the
- * lease plus as long again before a contender may take the token. After
- * that, no caller was ever told it was admitted (that is the run record), so
- * releasing it is safe.
+ * lease plus as long again before a contender may take the token. A
+ * contender then fences the candidate's run record path before releasing it
+ * (see {@link StartHookFenceSchema}), so a writer still stalled past the
+ * grace can never publish the run.
  */
 export const START_HOOK_ORPHAN_GRACE_MS = 2 * HOOK_TOKEN_CLAIM_LOCK_STALE_MS;
+
+/**
+ * What a contender writes on a run-less reservation's run record path before
+ * releasing it: the stalled writer's exclusive publication of that run then
+ * fails, so the orphan can never become a run once its token moved on. The
+ * fence names the run the token went to, which every later attempt for the
+ * orphan answers as its owner.
+ */
+export const StartHookFenceSchema = z.compile(
+  z.object({
+    startHookFence: z.object({
+      token: z.string(),
+      conflictingRunId: z.string(),
+    }),
+  })
+);
+export type StartHookFence = z.infer<typeof StartHookFenceSchema>;
+
+/**
+ * A run record file as world-local reads it: a run, or `null` for a start
+ * Hook fence (no run). Every read of a run record goes through this.
+ */
+export const RunRecordSchema: z.ZodType<WorkflowRun | null> = z.compile(
+  z.union([StartHookFenceSchema.transform(() => null), WorkflowRunSchema])
+) as z.ZodType<WorkflowRun | null>;
+
+/** A run record path's fence, if it holds one. */
+export async function readStartHookFence(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<StartHookFence['startHookFence'] | null> {
+  const record = await readJSON(
+    taggedPath(basedir, 'runs', runId, tag),
+    z.unknown()
+  ).catch((error: unknown) => {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  });
+  const parsed = StartHookFenceSchema.safeParse(record);
+  return parsed.success ? parsed.data.startHookFence : null;
+}
+
+/**
+ * Fences a run-less reservation's run record path (see
+ * {@link StartHookFenceSchema}). False if the path already holds a record:
+ * the run was published after all, or another contender fenced it first.
+ */
+export async function fenceStartHookCandidate(
+  basedir: string,
+  runId: string,
+  tag: string | undefined,
+  fence: StartHookFence['startHookFence']
+): Promise<boolean> {
+  return writeExclusive(
+    taggedPath(basedir, 'runs', runId, tag),
+    JSON.stringify({ startHookFence: fence } satisfies StartHookFence)
+  );
+}
 
 /**
  * Serializes claim handoffs. Exclusive writes admit the first owner, but

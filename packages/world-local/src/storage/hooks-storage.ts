@@ -13,7 +13,6 @@ import {
   HOOK_RESERVED_RETRY_AFTER_SECONDS,
   HookSchema,
   isTerminalWorkflowRunStatus,
-  WorkflowRunSchema,
 } from '@workflow/world';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
@@ -36,6 +35,7 @@ import {
   hookTokenClaimPath,
   isHookDisposalCommitted,
   isWithinStartHookOrphanGrace,
+  RunRecordSchema,
   readHookDisposeLock,
   readHookTokenClaim,
   releaseHookTokenClaimIfOwnedBy,
@@ -102,7 +102,7 @@ async function isTerminalRunCache(
     basedir,
     'runs',
     runId,
-    WorkflowRunSchema,
+    RunRecordSchema,
     tag
   );
   return run ? isTerminalWorkflowRunStatus(run.status) : false;
@@ -254,7 +254,7 @@ export function createHooksStorage(
         basedir,
         'runs',
         reserved.runId,
-        WorkflowRunSchema,
+        RunRecordSchema,
         tag
       );
       // Reserved while its run is live, or, before the run is written,

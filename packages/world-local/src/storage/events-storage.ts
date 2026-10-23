@@ -65,7 +65,6 @@ import {
   validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
-  WorkflowRunSchema,
 } from '@workflow/world';
 import { lock as lockFile } from 'proper-lockfile';
 import { z } from 'zod';
@@ -92,6 +91,7 @@ import {
 import { withInProcessLock } from '../util.js';
 import { stripEventDataRefs } from './filters.js';
 import {
+  fenceStartHookCandidate,
   getObjectCreatedAt,
   type HookTokenClaim,
   hookDisposeLockPath,
@@ -104,8 +104,10 @@ import {
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
+  RunRecordSchema,
   readHookDisposeLock,
   readHookTokenClaim,
+  readStartHookFence,
   readStartHookRejection,
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
@@ -301,7 +303,9 @@ async function findCommittedResumeEvent(
 async function isHookTokenClaimReleasable(
   basedir: string,
   claim: HookTokenClaim,
-  tag?: string
+  tag: string | undefined,
+  /** Who would take the token: named by the fence of a run-less reservation. */
+  contender: { token: string; runId: string }
 ): Promise<boolean> {
   if (claim.reservation) {
     // A start reservation ignores its Hook's disposal: it holds the token
@@ -310,15 +314,37 @@ async function isHookTokenClaimReleasable(
     // with no run is a reservation whose writer died (or stalled) before
     // creating it, or whose run was deleted. No caller was told it was
     // admitted, but a stalled writer could still write the run, so it holds
-    // for the orphan grace first.
-    const run = await readJSONWithFallback(
+    // for the orphan grace first, and is then fenced: the run record path
+    // gets a fence, so the writer's exclusive publication fails if it ever
+    // resumes.
+    let run = await readJSONWithFallback(
       basedir,
       'runs',
       claim.runId,
-      WorkflowRunSchema,
+      RunRecordSchema,
       tag
     );
-    if (!run) return !isWithinStartHookOrphanGrace(claim);
+    if (!run) {
+      if (isWithinStartHookOrphanGrace(claim)) return false;
+      if (
+        await fenceStartHookCandidate(basedir, claim.runId, tag, {
+          token: contender.token,
+          conflictingRunId: contender.runId,
+        })
+      ) {
+        return true;
+      }
+      // The path holds a record after all: an earlier contender's fence,
+      // or the run, published since the read above.
+      run = await readJSONWithFallback(
+        basedir,
+        'runs',
+        claim.runId,
+        RunRecordSchema,
+        tag
+      );
+      if (!run) return true;
+    }
     if (!isTerminalWorkflowRunStatus(run.status)) return false;
     const until = Math.max(
       claim.reservation.tokenRetentionUntil?.getTime() ?? 0,
@@ -336,7 +362,7 @@ async function isHookTokenClaimReleasable(
     basedir,
     'runs',
     claim.runId,
-    WorkflowRunSchema,
+    RunRecordSchema,
     tag
   );
   if (!owningRun) {
@@ -372,8 +398,11 @@ type StartHookAdmission =
  *   owner even once the token is free.
  *
  * A reservation whose writer died between its claim and its run was never
- * observed as admitted, so it is released like any ownerless claim (see
- * `isHookTokenClaimReleasable`), and a retry of that candidate decides again.
+ * observed as admitted. Within the orphan grace a retry of that candidate
+ * decides again; past it, a contender fences the candidate's run record path
+ * and takes the token (see `isHookTokenClaimReleasable`), and every later
+ * attempt for the candidate, including its stalled writer's publication, is
+ * refused naming the contender.
  */
 async function admitStartHook({
   basedir,
@@ -399,11 +428,17 @@ async function admitStartHook({
       }
       throw new HookConflictError(rejection.token, rejection.conflictingRunId);
     }
+    // Fenced: the candidate's token went to another run after its writer
+    // stalled past the orphan grace, so it can never be admitted.
+    const fence = await readStartHookFence(basedir, runId, tag);
+    if (fence) {
+      throw new HookConflictError(startHook.token, fence.conflictingRunId);
+    }
     const run = await readJSONWithFallback(
       basedir,
       'runs',
       runId,
-      WorkflowRunSchema,
+      RunRecordSchema,
       tag
     );
     if (!run) return null;
@@ -447,7 +482,12 @@ async function admitStartHook({
 
     const ownReservation = claim?.runId === runId && claim.reservation;
     if (claim && !ownReservation) {
-      if (!(await isHookTokenClaimReleasable(basedir, claim, tag))) {
+      if (
+        !(await isHookTokenClaimReleasable(basedir, claim, tag, {
+          token: startHook.token,
+          runId,
+        }))
+      ) {
         signal.throwIfAborted();
         const rejection: StartHookRejection = {
           runId,
@@ -772,7 +812,7 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
   return withRunFileLock(runId, async () => {
     const fresh = await readJSON(
       taggedPath(basedir, 'runs', runId, tag),
-      WorkflowRunSchema
+      RunRecordSchema
     );
     const attributes = fresh?.attributes ?? proposed.attributes;
     let next: T = { ...proposed, attributes };
@@ -1467,7 +1507,7 @@ export function createEventsStorage(
             basedir,
             'runs',
             effectiveRunId,
-            WorkflowRunSchema,
+            RunRecordSchema,
             tag
           );
 
@@ -1589,7 +1629,7 @@ export function createEventsStorage(
                       basedir,
                       'runs',
                       effectiveRunId,
-                      WorkflowRunSchema,
+                      RunRecordSchema,
                       tag
                     );
                 createdByResilientStart = true;
@@ -1600,7 +1640,7 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   effectiveRunId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
               }
@@ -2471,7 +2511,7 @@ export function createEventsStorage(
           run = await withRunFileLock(effectiveRunId, async () => {
             const fresh = await readJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
-              WorkflowRunSchema
+              RunRecordSchema
             );
             if (!fresh) {
               throw new WorkflowRunNotFoundError(effectiveRunId);
@@ -2927,7 +2967,7 @@ export function createEventsStorage(
                     basedir,
                     'runs',
                     effectiveRunId,
-                    WorkflowRunSchema,
+                    RunRecordSchema,
                     tag
                   );
                   adoptedMetadata = ownRun?.startHook?.metadata;
@@ -2965,7 +3005,7 @@ export function createEventsStorage(
                     basedir,
                     'runs',
                     effectiveRunId,
-                    WorkflowRunSchema,
+                    RunRecordSchema,
                     tag
                   );
                   adoptedMetadata = ownRun?.startHook?.metadata;
@@ -2977,7 +3017,12 @@ export function createEventsStorage(
                 return { status: 'claimed' as const };
               }
               if (
-                !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
+                !(await isHookTokenClaimReleasable(
+                  basedir,
+                  existingClaim,
+                  tag,
+                  { token: hookData.token, runId: effectiveRunId }
+                ))
               ) {
                 if (hookData.force !== true || !existingClaim.hookId) {
                   return { status: 'conflict' as const, claim: existingClaim };
@@ -3016,7 +3061,7 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   existingClaim.runId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
                 const victimRunning =
@@ -3780,7 +3825,7 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   effectiveRunId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
             if (

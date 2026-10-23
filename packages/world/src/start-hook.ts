@@ -26,7 +26,10 @@ import { SerializedDataSchema } from './serialization.js';
  *     attempts throw `HookConflictError` with the same `conflictingRunId`.
  * - **Atomicity.** The token reservation and the run's creation commit
  *   together, or a crash between them is recoverable by re-attempting the
- *   candidate. A rejected candidate never creates a run.
+ *   candidate. A rejected candidate never creates a run, and neither does a
+ *   candidate whose reservation was released as an orphan: once its token
+ *   has moved on, a writer that stalled before creating its run must not be
+ *   able to create it when it resumes.
  * - **Echo.** The `run` a `run_created` returns for an accepted candidate
  *   carries the reservation as `run.startHook`. A backend that ignored the
  *   field would create an unreserved run; the echo is how `start()` tells the

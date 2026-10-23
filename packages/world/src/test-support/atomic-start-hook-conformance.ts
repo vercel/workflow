@@ -46,9 +46,10 @@ import {
  * - A retention beyond the World's limit is refused with
  *   `START_HOOK_ADMISSION_REJECTED`.
  * - Past the 24h orphan bound, a candidate with no run is refused with
- *   `START_HOOK_ADMISSION_REJECTED` through either copy. A staged orphan
- *   (an accepted candidate whose run was never created) holds its token for
- *   the World's hold and releases it after.
+ *   `START_HOOK_ADMISSION_REJECTED` through either copy. A staged orphan (an accepted candidate
+ *   whose run was never created) holds its token for the World's hold and
+ *   releases it after, and its own later copies are then refused naming the
+ *   run that took the token.
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
@@ -651,6 +652,13 @@ export function atomicStartHookConformance(
           advance?.(10_000);
           const contender = await admit(events, { token });
           expect(await runExists(contender)).toBe(true);
+          expect(await runExists(orphan)).toBe(false);
+          // The orphan's own late copies can never create it now.
+          await expectRefused(
+            create(events, orphan, runStarted({ token })),
+            token,
+            contender
+          );
           expect(await runExists(orphan)).toBe(false);
         }
       );
