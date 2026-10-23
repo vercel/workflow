@@ -8,6 +8,7 @@ import { inlineExecution } from './inline-execution.mjs';
 import { lineage } from './lineage.mjs';
 import { nullByte } from './null-byte.mjs';
 import { resolveData } from './resolve-data.mjs';
+import { startIdempotency } from './start-idempotency.mjs';
 
 export function createTestSuite(pkgName: string) {
   addition(pkgName);
@@ -20,4 +21,5 @@ export function createTestSuite(pkgName: string) {
   inlineExecution(pkgName);
   lineage(pkgName);
   resolveData(pkgName);
+  startIdempotency(pkgName);
 }

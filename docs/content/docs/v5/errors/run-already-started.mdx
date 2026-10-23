@@ -1,0 +1,92 @@
+---
+title: run-already-started
+description: Another workflow run already holds the idempotency key passed to start().
+type: troubleshooting
+summary: Handle WorkflowRunAlreadyStartedError by routing the caller to the run that holds the key, or choose a reuse policy that lets a new run take the key over.
+prerequisites:
+  - /docs/foundations/idempotency
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/api-reference/workflow-errors/workflow-run-already-started-error
+---
+
+<CopyPrompt
+  text="Handle run-already-started. Find every `start()` call that passes `experimental_idempotencyKey` with `experimental_idempotencyKeyConflictPolicy: 'FAIL'`. Wrap the call in a try/catch, check `WorkflowRunAlreadyStartedError.is(error)` from `workflow/errors`, and route the caller to the run that holds the key using `error.runId` (for example, return it in the response or read it with `getRun(error.runId)` from `workflow/api`) instead of retrying the same start. If the duplicate should have received the existing run, remove the `'FAIL'` conflict policy so `start()` returns that run with `experimental_started: false`. If a new run should replace a failed, cancelled, or completed one, set `experimental_idempotencyKeyReusePolicy` to `'ALLOW_DUPLICATE_FAILED_ONLY'` or `'ALLOW_DUPLICATE'`, or shorten `experimental_idempotencyKeyTTL`. Verify that two concurrent starts with the same key create one run, that the second either receives that run or throws WorkflowRunAlreadyStartedError naming it, and that a start after the holding run closes behaves as the chosen reuse policy says."
+/>
+
+This error is thrown by [`start()`](/docs/api-reference/workflow-api/start#idempotency-keys) when another run already holds the call's `experimental_idempotencyKey`, the reuse policy does not let the new call take the key over, and the call set `experimental_idempotencyKeyConflictPolicy: 'FAIL'`. No run was created for this call.
+
+## Error message
+
+```text
+The idempotency key is already held by workflow run "<runId>" (<runStatus>)
+╰▶ docs: https://workflow-sdk.dev/err/run-already-started
+```
+
+The first line can differ when the World's backend supplies its own message. The error's `runId` and `runStatus` always identify the run that holds the key.
+
+## Why this happens
+
+Within one workflow, at most one run holds an idempotency key at a time. On the Vercel World, this applies within each run region. A keyed `start()` claims the key atomically with creating its run. When the key is already held, the outcome depends on the holding run and on the new call's reuse policy:
+
+1. **The holding run is `pending` or `running`.** It always keeps the key, whatever the TTL or reuse policy.
+2. **The holding run has closed, but its TTL window hasn't expired.** The window starts when the run completes, fails, or is cancelled, and lasts for the `experimental_idempotencyKeyTTL` that run was started with (24 hours by default). The default reuse policy, `'REJECT_DUPLICATE'`, keeps the key with the holding run until the window expires. `'ALLOW_DUPLICATE_FAILED_ONLY'` keeps it only when the holding run completed.
+
+When the key is kept, `start()` applies the new call's conflict policy. The default, `'USE_EXISTING'`, returns a handle to the holding run with `experimental_started: false` instead of throwing. This error is what `'FAIL'` throws in its place.
+
+This is expected behavior: it usually means the same request, webhook delivery, or job was submitted twice, and the first submission's run is already handling it.
+
+## Handling the conflict
+
+Catch the error where you call `start()` and route the caller to the run that holds the key:
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { WorkflowRunAlreadyStartedError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+
+  try {
+    const run = await start(processOrder, [orderId], {
+      experimental_idempotencyKey: `order:${orderId}`,
+      experimental_idempotencyKeyConflictPolicy: "FAIL",
+    });
+    return Response.json({ runId: run.runId }, { status: 202 });
+  } catch (error) {
+    if (WorkflowRunAlreadyStartedError.is(error)) { // [!code highlight]
+      // Another run already holds this order's key.
+      return Response.json(
+        { runId: error.runId, status: error.runStatus }, // [!code highlight]
+        { status: 409 }
+      );
+    }
+    throw error;
+  }
+}
+```
+
+Pass `error.runId` to [`getRun()`](/docs/api-reference/workflow-api/get-run) to read the holding run's status, wait for its `returnValue`, or stream its output. Retrying the same `start()` throws again for as long as the key is held, so don't retry it in a loop.
+
+## Choosing a different behavior
+
+- **Duplicates should receive the existing run.** Remove `experimental_idempotencyKeyConflictPolicy: 'FAIL'`. `start()` then returns the holding run, and `run.experimental_started` is `false`.
+- **A failed or cancelled run should be replaceable right away.** Set `experimental_idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY'`. A completed run still keeps its key until its window expires.
+- **Any closed run should be replaceable.** Set `experimental_idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE'`. The key then only blocks while the holding run is `pending` or `running`.
+- **The key should be released sooner after the run closes.** Shorten `experimental_idempotencyKeyTTL` on the start that creates the run, down to `'1s'`. The TTL that applies is the one recorded by the holding run's own start.
+- **Two submissions are genuinely different work.** Give them different keys.
+
+## When it is thrown
+
+- Only by a `start()` call that passed both `experimental_idempotencyKey` and `experimental_idempotencyKeyConflictPolicy: 'FAIL'`.
+- Never for a request that one `start()` call retries internally: when an earlier attempt within the same call already created the run, the call returns that run. A separate, later `start()` call with the same key is a different caller, and does throw while the key is held.
+- Never after the holding run's TTL window has expired, or when the holding run no longer exists. The new call creates a run and takes the key over.
+
+The error is not retryable: the runtime does not retry it, and nothing changes until the holding run closes and its window expires or the reuse policy allows a takeover.
+
+## Related
+
+- [Idempotency](/docs/foundations/idempotency#start-at-most-one-run-per-key) - Starting at most one run per key
+- [start](/docs/api-reference/workflow-api/start#idempotency-keys) - The idempotency key options and decision table
+- [WorkflowRunAlreadyStartedError](/docs/api-reference/workflow-errors/workflow-run-already-started-error) - Error reference

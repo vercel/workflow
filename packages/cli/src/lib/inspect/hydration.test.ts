@@ -1,7 +1,12 @@
 import { importKey } from '@workflow/core/encryption';
 import { dehydrateStepError } from '@workflow/core/serialization';
+import { hydrateData } from '@workflow/core/serialization-format';
 import { describe, expect, it } from 'vitest';
-import { hydrateResourceIO, isEncryptedRef } from './hydration.js';
+import {
+  getCLIRevivers,
+  hydrateResourceIO,
+  isEncryptedRef,
+} from './hydration.js';
 
 describe('hydrateResourceIO', () => {
   it('displays and decrypts encrypted event errors', async () => {
@@ -28,5 +33,38 @@ describe('hydrateResourceIO', () => {
     const decrypted = await hydrateResourceIO(event, async () => rawKey);
     expect(decrypted.eventData.error).toBeInstanceOf(Error);
     expect(decrypted.eventData.error).toHaveProperty('message', error.message);
+  });
+});
+
+describe('getCLIRevivers', () => {
+  it('revives a WorkflowRunAlreadyStartedError that keeps its holder in --json output', () => {
+    const revived = hydrateData(
+      [
+        ['WorkflowRunAlreadyStartedError', 1],
+        {
+          message: 2,
+          runId: 3,
+          runStatus: 4,
+          workflowName: 5,
+          idempotencyKey: 6,
+        },
+        'held',
+        'wrun_holder',
+        'running',
+        'workflow//./src/orders//process',
+        'order-1',
+      ],
+      getCLIRevivers()
+    );
+
+    expect(revived).toBeInstanceOf(Error);
+    expect(JSON.parse(JSON.stringify(revived))).toMatchObject({
+      name: 'WorkflowRunAlreadyStartedError',
+      message: 'held',
+      runId: 'wrun_holder',
+      runStatus: 'running',
+      workflowName: 'workflow//./src/orders//process',
+      idempotencyKey: 'order-1',
+    });
   });
 });

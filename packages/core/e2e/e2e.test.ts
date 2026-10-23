@@ -6,6 +6,7 @@ import {
   HookConflictError,
   HookNotFoundError,
   RetryableError,
+  WorkflowRunAlreadyStartedError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -5270,6 +5271,264 @@ describe.concurrent('e2e', () => {
       expect(returnValue.reason).toBe('Test complete');
     }
   );
+
+  // ==========================================================================
+  // start({ experimental_idempotencyKey })
+  // ==========================================================================
+
+  describe('start() idempotency keys', () => {
+    // Never skips: each test calls `requireFixture` for its own fixtures
+    // (see skipUnlessSupported) before anything resolves one.
+    const idem = (fn: string) =>
+      getWorkflowMetadata(
+        deploymentUrl,
+        'workflows/104_start_idempotency.ts',
+        fn
+      );
+    const newKey = (label: string) =>
+      `idem-${label}-${Math.random().toString(36).slice(2)}`;
+
+    /**
+     * Keyed starts go through the raw start plus `trackRun`, not the tracked
+     * `start()` wrapper: its pickup watchdog re-starts a stalled run with the
+     * same arguments, which for a keyed start returns (or refuses with) the
+     * very run it then cancels.
+     */
+    async function startKeyed<T>(
+      ...args: Parameters<typeof rawStart<T>>
+    ): Promise<Run<T>> {
+      const run = await rawStart<T>(...args);
+      trackRun(run);
+      return run;
+    }
+
+    /**
+     * Whether this lane can run these tests. The World must declare
+     * `capabilities.runIdempotencyKeys` (a community or custom World may not),
+     * and its backend must actually record the key: a Vercel backend that
+     * predates keys drops them or rejects the request, and one with the kill
+     * switch on refuses them with `idempotency-keys-disabled`.
+     *
+     * Memoized, one probe per lane, so it never skips (a skip belongs to the
+     * test that is running, not to every test that awaits the probe) and
+     * never throws: it answers `{ reason }` for a lane limitation and
+     * `{ error }` for anything else, which each test rethrows as a failure.
+     */
+    type Probe = { reason?: string; error?: unknown };
+    let probe: Promise<Probe> | undefined;
+    const probeSupport = () =>
+      (probe ??= (async (): Promise<Probe> => {
+        try {
+          const world = await getWorld();
+          if (world.capabilities?.runIdempotencyKeys !== true) {
+            return {
+              reason:
+                'the World does not declare capabilities.runIdempotencyKeys',
+            };
+          }
+          const key = newKey('probe');
+          const run = await startKeyed(
+            await idem('idempotentEchoWorkflow'),
+            ['probe'],
+            { experimental_idempotencyKey: key }
+          );
+          const stored = await world.runs.get(run.runId, {
+            resolveData: 'none',
+          });
+          if (stored.idempotencyKey !== key) {
+            return {
+              reason: "the World's backend did not record the idempotency key",
+            };
+          }
+          return {};
+        } catch (error) {
+          return { reason: unsupportedBackendReason(error), error };
+        }
+      })());
+
+    /**
+     * A lane limitation in a probe failure, or undefined for a failure these
+     * tests should report. Only a remote backend's answer qualifies (the
+     * error carries the request `url`): the kill switch, or a 4xx rejecting
+     * the keyed request outright, as a backend that predates keys may. A
+     * local World, a 5xx, or anything thrown by the SDK itself is a failure.
+     */
+    function unsupportedBackendReason(error: unknown): string | undefined {
+      if (!WorkflowWorldError.is(error)) return undefined;
+      if (error.code === 'idempotency-keys-disabled') {
+        return "the World's backend has idempotency keys switched off";
+      }
+      const status = error.status;
+      if (
+        error.url !== undefined &&
+        status !== undefined &&
+        status >= 400 &&
+        status < 500 &&
+        status !== 409 &&
+        status !== 429
+      ) {
+        return `the World's backend rejected the keyed start (HTTP ${status}${
+          error.code ? ` ${error.code}` : ''
+        }): ${error.message}`;
+      }
+      return undefined;
+    }
+
+    /** Fixture checks first, then the lane probe. */
+    const skipUnlessSupported = async (
+      ctx: TestContext,
+      fixtures: readonly string[]
+    ) => {
+      requireFixture('idempotentEchoWorkflow');
+      for (const fixture of fixtures) requireFixture(fixture);
+      const outcome = await probeSupport();
+      if (outcome.reason) {
+        ctx.skip(`run idempotency keys unavailable: ${outcome.reason}`);
+      }
+      if (outcome.error !== undefined) throw outcome.error;
+    };
+
+    test(
+      'concurrent keyed starts converge on one run, created exactly once',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx, ['idempotentEchoWorkflow']);
+        const key = newKey('concurrent');
+        const workflow = await idem('idempotentEchoWorkflow');
+
+        const runs = await Promise.all(
+          Array.from({ length: 10 }, (_, i) =>
+            startKeyed(workflow, [`caller-${i}`], {
+              experimental_idempotencyKey: key,
+            })
+          )
+        );
+
+        expect(new Set(runs.map((run) => run.runId)).size).toBe(1);
+        expect(runs.filter((run) => run.experimental_started)).toHaveLength(1);
+        expect(
+          runs.filter((run) => run.experimental_started === false)
+        ).toHaveLength(9);
+        // The creator's arguments win; everyone else's are ignored.
+        const winner = runs.findIndex((run) => run.experimental_started);
+        expect(await runs[0].returnValue).toBe(`caller-${winner}`);
+      }
+    );
+
+    test(
+      'a keyed restart after completion returns the same run',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx, ['idempotentEchoWorkflow']);
+        const key = newKey('restart');
+        const workflow = await idem('idempotentEchoWorkflow');
+
+        const first = await startKeyed(workflow, ['first'], {
+          experimental_idempotencyKey: key,
+        });
+        expect(first.experimental_started).toBe(true);
+        expect(await first.returnValue).toBe('first');
+
+        const again = await startKeyed(workflow, ['second'], {
+          experimental_idempotencyKey: key,
+        });
+        expect(again.runId).toBe(first.runId);
+        expect(again.experimental_started).toBe(false);
+        expect(await again.returnValue).toBe('first');
+      }
+    );
+
+    test(
+      'ALLOW_DUPLICATE after completion starts a new run',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx, ['idempotentEchoWorkflow']);
+        const key = newKey('allow-duplicate');
+        const workflow = await idem('idempotentEchoWorkflow');
+
+        const first = await startKeyed(workflow, ['first'], {
+          experimental_idempotencyKey: key,
+        });
+        expect(await first.returnValue).toBe('first');
+
+        const second = await startKeyed(workflow, ['second'], {
+          experimental_idempotencyKey: key,
+          experimental_idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE',
+        });
+        expect(second.runId).not.toBe(first.runId);
+        expect(second.experimental_started).toBe(true);
+        expect(await second.returnValue).toBe('second');
+      }
+    );
+
+    test(
+      'FAIL against a running holder throws WorkflowRunAlreadyStartedError naming it',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx, ['idempotentHoldWorkflow']);
+        const key = newKey('fail');
+        const token = newKey('fail-token');
+        const workflow = await idem('idempotentHoldWorkflow');
+
+        const holder = await startKeyed(workflow, [token], {
+          experimental_idempotencyKey: key,
+        });
+        try {
+          await waitForHook(token, { runId: holder.runId });
+
+          const error = await startKeyed(workflow, [newKey('other-token')], {
+            experimental_idempotencyKey: key,
+            experimental_idempotencyKeyConflictPolicy: 'FAIL',
+          }).catch((err: unknown) => err);
+
+          expect(WorkflowRunAlreadyStartedError.is(error)).toBe(true);
+          expect((error as WorkflowRunAlreadyStartedError).runId).toBe(
+            holder.runId
+          );
+          expect((error as WorkflowRunAlreadyStartedError).runStatus).toBe(
+            'running'
+          );
+        } finally {
+          await resumeHook(token, { done: true }).catch(() => {});
+        }
+        expect(await holder.returnValue).toBe('released');
+      }
+    );
+
+    test(
+      'workflow code that starts with FAIL catches the refusal and reads the holder',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessSupported(ctx, [
+          'idempotentFailFromWorkflow',
+          'idempotentHoldWorkflow',
+        ]);
+        const key = newKey('fail-in-workflow');
+        const token = newKey('fail-in-workflow-token');
+
+        const holder = await startKeyed(
+          await idem('idempotentHoldWorkflow'),
+          [token],
+          { experimental_idempotencyKey: key }
+        );
+        try {
+          await waitForHook(token, { runId: holder.runId });
+
+          const caller = await start(await idem('idempotentFailFromWorkflow'), [
+            key,
+          ]);
+          expect(await caller.returnValue).toEqual({
+            refused: true,
+            runId: holder.runId,
+            runStatus: 'running',
+            idempotencyKey: key,
+          });
+        } finally {
+          await resumeHook(token, { done: true }).catch(() => {});
+        }
+      }
+    );
+  });
 
   // ==========================================================================
   // setAttributes

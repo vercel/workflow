@@ -193,14 +193,26 @@ export interface WorkflowRunWritableStreamOptions {
  */
 export class Run<TResult> {
   static [WORKFLOW_SERIALIZE](instance: Run<unknown>) {
-    return { runId: instance.runId, resilientStart: instance.#resilientStart };
+    return {
+      runId: instance.runId,
+      resilientStart: instance.#resilientStart,
+      // Optional, and omitted when unknown, so handles serialized before it
+      // existed (and `getRun()` handles) keep their exact shape.
+      ...(instance.#started !== undefined
+        ? { started: instance.#started }
+        : {}),
+    };
   }
 
   static [WORKFLOW_DESERIALIZE](data: {
     runId: string;
     resilientStart?: boolean;
+    started?: boolean;
   }) {
-    return new Run(data.runId, { resilientStart: data.resilientStart });
+    return new Run(data.runId, {
+      resilientStart: data.resilientStart,
+      ...(typeof data.started === 'boolean' ? { started: data.started } : {}),
+    });
   }
 
   /**
@@ -234,9 +246,32 @@ export class Run<TResult> {
    */
   #resilientStart = false;
 
-  constructor(runId: string, opts?: { resilientStart?: boolean }) {
+  /** See {@link Run.experimental_started}. */
+  #started: boolean | undefined;
+
+  constructor(
+    runId: string,
+    opts?: { resilientStart?: boolean; started?: boolean }
+  ) {
     this.runId = runId;
     this.#resilientStart = opts?.resilientStart ?? false;
+    this.#started = opts?.started;
+  }
+
+  /**
+   * Whether the `start()` call that returned this handle created the run.
+   * **Experimental.**
+   *
+   * - `true`: this call created the run (every successful `start()` without
+   *   an idempotency key, and a keyed one that claimed the key).
+   * - `false`: the key was already held, and `start()` returned the existing
+   *   run that holds it (`experimental_idempotencyKeyConflictPolicy:
+   *   'USE_EXISTING'`). This call's arguments and options were ignored.
+   * - `undefined`: the handle did not come from `start()`, e.g. `getRun()`,
+   *   or was serialized by an SDK that predates this field.
+   */
+  get experimental_started(): boolean | undefined {
+    return this.#started;
   }
 
   /**

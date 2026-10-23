@@ -138,6 +138,9 @@ export async function recreateRunFromExisting(
         : undefined);
     const region = options.region ?? world.regionForRunId?.(runId) ?? undefined;
 
+    // Never forward the source run's `idempotencyKey`: a re-run is a new run
+    // by intent, and the key would hand back the source run (or refuse)
+    // instead of creating one.
     const newRun = await start(
       { workflowId: run.workflowName },
       workflowArgs as unknown[],

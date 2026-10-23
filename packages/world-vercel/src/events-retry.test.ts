@@ -2,6 +2,7 @@ import {
   EntityConflictError,
   HookNotFoundError,
   ThrottleError,
+  WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,6 +27,7 @@ vi.mock('./events-v4.js', () => ({
   getEventsByCorrelationIdV4: vi.fn(),
 }));
 
+import { createRunId } from './create-run-id.js';
 import { AfterCommitError } from './event-retry.js';
 import { createWorkflowRunEvent } from './events.js';
 import { getDeadline } from './get-deadline.js';
@@ -173,6 +175,75 @@ describe('createWorkflowRunEvent retry wiring', () => {
 
     expect((await p).event).toBeDefined();
     expect(createV4Mock).toHaveBeenCalledTimes(2);
+  });
+
+  describe('keyed run_created', () => {
+    // run_created validates the client-generated run id's timestamp.
+    const KEYED_RUN_ID = `wrun_${createRunId()}`;
+    const keyedRunCreated = () => ({
+      eventType: 'run_created' as const,
+      specVersion: 8,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'w',
+        input: new Uint8Array([1]),
+        idempotencyKey: 'order-1',
+        idempotencyKeyTtlMs: 86_400_000,
+        idempotencyKeyReusePolicy: 'REJECT_DUPLICATE' as const,
+      },
+    });
+
+    it('converges on the plain 409 when the retried original already landed', async () => {
+      // The first attempt committed (run, event and claim in one transaction)
+      // but its response was lost. The retry carries the same run id, so the
+      // server answers the self-conflict 409, never the key refusal, and
+      // start() publishes the run it created.
+      let calls = 0;
+      createV4Mock.mockImplementation(async (input) => {
+        calls++;
+        expect(input).toMatchObject({
+          eventType: 'run_created',
+          idempotencyKey: 'order-1',
+          idempotencyKeyTtlMs: 86_400_000,
+          idempotencyKeyReusePolicy: 'REJECT_DUPLICATE',
+        });
+        if (calls === 1) {
+          throw new WorkflowWorldError('socket hang up', { code: 'TRANSPORT' });
+        }
+        throw new EntityConflictError('Workflow run already exists');
+      });
+
+      const p = createWorkflowRunEvent(
+        KEYED_RUN_ID,
+        keyedRunCreated(),
+        undefined,
+        CONFIG
+      ).catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+
+      const err = await p;
+      expect(EntityConflictError.is(err)).toBe(true);
+      expect(WorkflowRunAlreadyStartedError.is(err)).toBe(false);
+      expect(createV4Mock).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces a key refusal at once, without retrying', async () => {
+      const refusal = new WorkflowRunAlreadyStartedError('wrun_holder', {
+        runStatus: 'running',
+      });
+      createV4Mock.mockRejectedValue(refusal);
+
+      const p = createWorkflowRunEvent(
+        KEYED_RUN_ID,
+        keyedRunCreated(),
+        undefined,
+        CONFIG
+      ).catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+
+      expect(await p).toBe(refusal);
+      expect(createV4Mock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('surfaces a retry-time 409 as EntityConflictError', async () => {

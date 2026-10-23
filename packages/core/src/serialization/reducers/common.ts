@@ -17,6 +17,7 @@ import {
   RetryableError,
   RuntimeDecryptionError,
   StreamError,
+  WorkflowRunAlreadyStartedError,
 } from '@workflow/errors';
 import {
   arrayBufferByteLength,
@@ -398,6 +399,29 @@ export function getCommonReducers(
     SyntaxError: makeErrorSubclassReducer('SyntaxError'),
     TypeError: makeErrorSubclassReducer('TypeError'),
     URIError: makeErrorSubclassReducer('URIError'),
+    // A refused idempotency key: `start()` called from workflow code with
+    // the FAIL conflict policy throws it out of the step, and the workflow
+    // reads `runId` (the holder) off what it catches.
+    WorkflowRunAlreadyStartedError: (value) => {
+      const base = reduceNamedErrorSubclassBase(
+        'WorkflowRunAlreadyStartedError',
+        value
+      );
+      if (!base) return false;
+      const reduced: SerializableSpecial['WorkflowRunAlreadyStartedError'] = {
+        ...base,
+        runId: readProperty(value, 'runId') as string,
+      };
+      for (const field of [
+        'runStatus',
+        'workflowName',
+        'idempotencyKey',
+      ] as const) {
+        const fieldValue = readProperty(value, field);
+        if (typeof fieldValue === 'string') reduced[field] = fieldValue;
+      }
+      return reduced;
+    },
     // AggregateError is similar to other subclasses but also preserves the
     // `errors` array. We extend the base helper's output here.
     AggregateError: (value) => {
@@ -601,6 +625,26 @@ export function getCommonRevivers(
     SyntaxError: makeErrorSubclassReviver(global, 'SyntaxError'),
     TypeError: makeErrorSubclassReviver(global, 'TypeError'),
     URIError: makeErrorSubclassReviver(global, 'URIError'),
+    WorkflowRunAlreadyStartedError: (value) => {
+      // Resolve from the consumer's globalThis (see the FatalError reviver
+      // above) so `instanceof` holds across realms.
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//WorkflowRunAlreadyStartedError')
+        ] as typeof WorkflowRunAlreadyStartedError | undefined) ??
+        WorkflowRunAlreadyStartedError;
+      const error = new Ctor(value.runId, {
+        runStatus: value.runStatus,
+        workflowName: value.workflowName,
+        idempotencyKey: value.idempotencyKey,
+        ...('cause' in value ? { cause: value.cause } : {}),
+      });
+      // The serialized message already carries its docs frame; building it
+      // again from the fields would lose a backend-supplied message.
+      error.message = value.message;
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
     AggregateError: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
       const error = new global.AggregateError(

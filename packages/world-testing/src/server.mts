@@ -13,6 +13,7 @@ import {
 import { Hono } from 'hono';
 import { ulid } from 'ulid';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
+import { WorkflowRunAlreadyStartedError } from 'workflow/internal/errors';
 import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
 import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
@@ -54,6 +55,21 @@ const Invoke = z.compile(
         workflow: manifest.workflows[file][workflow],
       };
     })
+);
+
+/** Idempotency options for the `/invoke-keyed` route. */
+const KeyedOptions = z.compile(
+  z.object({
+    key: z.string(),
+    reusePolicy: z
+      .enum([
+        'ALLOW_DUPLICATE',
+        'ALLOW_DUPLICATE_FAILED_ONLY',
+        'REJECT_DUPLICATE',
+      ])
+      .optional(),
+    conflictPolicy: z.enum(['USE_EXISTING', 'FAIL']).optional(),
+  })
 );
 
 /** An `attr_set` for the fence routes below to send in-band. */
@@ -168,6 +184,42 @@ const app = new Hono()
     const handler = await start(json.workflow, json.args);
 
     return ctx.json({ runId: handler.runId });
+  })
+  // A keyed start (`experimental_idempotencyKey`). Answers 409 with the
+  // holder when the start is refused under the FAIL conflict policy.
+  .post('/invoke-keyed', async (ctx) => {
+    const body = await ctx.req.json();
+    const json = Invoke.parse(body);
+    const options = KeyedOptions.parse(body.options);
+    try {
+      const handler = await start(json.workflow, json.args, {
+        experimental_idempotencyKey: options.key,
+        ...(options.reusePolicy
+          ? { experimental_idempotencyKeyReusePolicy: options.reusePolicy }
+          : {}),
+        ...(options.conflictPolicy
+          ? {
+              experimental_idempotencyKeyConflictPolicy: options.conflictPolicy,
+            }
+          : {}),
+      });
+      return ctx.json({
+        runId: handler.runId,
+        started: handler.experimental_started ?? null,
+      });
+    } catch (error) {
+      if (WorkflowRunAlreadyStartedError.is(error)) {
+        return ctx.json(
+          {
+            name: error.name,
+            runId: error.runId,
+            runStatus: error.runStatus ?? null,
+          },
+          409
+        );
+      }
+      throw error;
+    }
   })
   .post('/hooks/:token', async (ctx) => {
     const hook = await getHookByToken(ctx.req.param('token'));

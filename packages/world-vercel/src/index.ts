@@ -92,6 +92,18 @@ export function createWorld(config?: APIConfig): World {
       // for large definitions). The server refuses a dynamic `run_created`
       // for a project outside its rollout, so `start()` fails at the write.
       dynamicWorkflowCode: true,
+      // The server claims a run_created's idempotency key in the same
+      // transaction that writes the run row and its event, answers a re-post of
+      // the same run id with the plain workflow-run-exists 409, refuses a key
+      // another run holds with 409 `idempotency-key-conflict`, and echoes
+      // `idempotencyKey` on the run. Static like `hookForceClaim`, because
+      // `start()` decides before any write. Claims live in the run's own
+      // region, so keys are unique per run region. A server that has keys
+      // switched off answers a keyed run_created with 400
+      // `idempotency-keys-disabled` rather than ignoring the key. One that
+      // predates them drops the fields and creates an unkeyed run, which
+      // `start()` detects from the missing echo and logs.
+      runIdempotencyKeys: true,
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by

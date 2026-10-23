@@ -72,6 +72,45 @@ describe('getWorkflowRuns', () => {
   });
 });
 
+describe('run reads of the idempotency key', () => {
+  it.each([
+    'none',
+    'all',
+  ] as const)("parses idempotencyKey with resolveData: '%s'", async (resolveData) => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/wrun_keyed?remoteRefBehavior=${resolveData === 'all' ? 'resolve' : 'lazy'}`,
+        method: 'GET',
+      })
+      .reply(
+        200,
+        () =>
+          encode({
+            runId: 'wrun_keyed',
+            status: 'pending',
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            idempotencyKey: 'order-1',
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+          }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    const run = await getWorkflowRun(
+      'wrun_keyed',
+      { resolveData },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(run.idempotencyKey).toBe('order-1');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('run reads of dynamic workflow code', () => {
   const code = new Uint8Array([10, 10, 10]);
   /** A gzip-prefixed payload that throws if anything tries to decompress it. */

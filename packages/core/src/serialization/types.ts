@@ -153,6 +153,15 @@ export interface SerializableSpecial {
     status?: number;
     url?: string;
   };
+  WorkflowRunAlreadyStartedError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    runId: string;
+    runStatus?: string;
+    workflowName?: string;
+    idempotencyKey?: string;
+  };
   Request: {
     method: string;
     url: string;

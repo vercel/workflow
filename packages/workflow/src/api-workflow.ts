@@ -1,6 +1,8 @@
 export type {
   CancelRunOptions,
   Event,
+  IdempotencyKeyConflictPolicy,
+  IdempotencyKeyReusePolicy,
   StartOptions,
   StopSleepOptions,
   StopSleepResult,

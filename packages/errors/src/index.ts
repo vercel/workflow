@@ -121,6 +121,7 @@ export const ERROR_SLUGS = {
   DEPLOYMENT_MISMATCH: 'deployment-mismatch',
   MAX_EVENTS_EXCEEDED: 'max-events-exceeded',
   REPLAY_TIMEOUT: 'replay-timeout',
+  RUN_ALREADY_STARTED: 'run-already-started',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -209,10 +210,13 @@ export class WorkflowWorldError extends WorkflowError {
       retryAfter?: number;
       field?: string;
       cause?: unknown;
+      /** Docs slug for subclasses that have an errors page. */
+      slug?: ErrorSlug;
     }
   ) {
     super(message, {
       cause: options?.cause,
+      slug: options?.slug,
     });
     this.name = 'WorkflowWorldError';
     this.status = options?.status;
@@ -870,6 +874,114 @@ export class EntityConflictError extends WorkflowWorldError {
   }
 }
 
+/** Error code a World uses for a {@link WorkflowRunAlreadyStartedError} refusal. */
+export const IDEMPOTENCY_KEY_CONFLICT_CODE = 'idempotency-key-conflict';
+
+/**
+ * Error code (HTTP 400) of a keyed `run_created` refused because the backend
+ * has run idempotency keys switched off. Nothing was written. Not retryable:
+ * the same request is refused until the backend switches them back on.
+ */
+export const IDEMPOTENCY_KEYS_DISABLED_CODE = 'idempotency-keys-disabled';
+
+/**
+ * Thrown when `start()` is given an `experimental_idempotencyKey` that another
+ * run already holds, and the key's reuse policy refuses to hand it over (HTTP
+ * 409, `idempotency-key-conflict`).
+ *
+ * Worlds throw it from the `run_created` write. `start()` then applies the
+ * caller's conflict policy: with `'USE_EXISTING'` (the default) it returns a
+ * handle to the holding run instead, and with `'FAIL'` it rethrows this error
+ * so the caller can decide.
+ *
+ * `runId` names the run holding the key. It is never the run the caller tried
+ * to create: a retry of the caller's own `run_created` is an
+ * {@link EntityConflictError}, not this error.
+ *
+ * Use the static `WorkflowRunAlreadyStartedError.is()` method for type-safe
+ * checking in catch blocks; the class identity differs between the workflow
+ * VM and the host, so `instanceof` is not reliable across that boundary.
+ *
+ * The refusal is definitive for the call that got it, so it is `fatal`: when
+ * `start()` runs as a step (called from workflow code), the step is not
+ * retried, and the workflow catches this error with its fields intact rather
+ * than the step executor's retry-exhaustion error. A retry would mint a new
+ * run id and be refused again.
+ *
+ * @example
+ * ```ts
+ * import { WorkflowRunAlreadyStartedError } from "workflow/errors";
+ *
+ * try {
+ *   await start(processOrder, [orderId], {
+ *     experimental_idempotencyKey: orderId,
+ *     experimental_idempotencyKeyConflictPolicy: "FAIL",
+ *   });
+ * } catch (error) {
+ *   if (WorkflowRunAlreadyStartedError.is(error)) {
+ *     console.log(`Order ${orderId} is handled by run ${error.runId}`);
+ *   }
+ * }
+ * ```
+ */
+export class WorkflowRunAlreadyStartedError extends WorkflowWorldError {
+  /** Never retried as a step failure; see the class doc. */
+  fatal = true;
+  /** The run currently holding the idempotency key. */
+  readonly runId: string;
+  /**
+   * The holding run's status when the World refused the write.
+   *
+   * Named `runStatus` rather than `status` because the base
+   * {@link WorkflowWorldError} already carries the HTTP `status`.
+   */
+  readonly runStatus?: string;
+  /** The workflow the key is scoped to, when the World reports it. */
+  readonly workflowName?: string;
+  /** The idempotency key, when the World or the caller reports it. */
+  idempotencyKey?: string;
+
+  constructor(
+    runId: string,
+    options?: {
+      runStatus?: string;
+      workflowName?: string;
+      idempotencyKey?: string;
+      /** Overrides the default message, e.g. with the backend's own. */
+      message?: string;
+      url?: string;
+      cause?: unknown;
+    }
+  ) {
+    super(
+      options?.message ??
+        `The idempotency key is already held by workflow run "${runId}"${
+          options?.runStatus ? ` (${options.runStatus})` : ''
+        }`,
+      {
+        status: 409,
+        code: IDEMPOTENCY_KEY_CONFLICT_CODE,
+        url: options?.url,
+        cause: options?.cause,
+        slug: ERROR_SLUGS.RUN_ALREADY_STARTED,
+      }
+    );
+    this.name = 'WorkflowRunAlreadyStartedError';
+    this.runId = runId;
+    if (options?.runStatus !== undefined) this.runStatus = options.runStatus;
+    if (options?.workflowName !== undefined) {
+      this.workflowName = options.workflowName;
+    }
+    if (options?.idempotencyKey !== undefined) {
+      this.idempotencyKey = options.idempotencyKey;
+    }
+  }
+
+  static is(value: unknown): value is WorkflowRunAlreadyStartedError {
+    return isError(value) && value.name === 'WorkflowRunAlreadyStartedError';
+  }
+}
+
 /**
  * Thrown when a run is no longer available, either because it has been
  * cleaned up, expired, or already reached a terminal state (completed/failed).
@@ -1258,6 +1370,9 @@ const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
 const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
+const WORKFLOW_RUN_ALREADY_STARTED_ERROR_KEY = Symbol.for(
+  '@workflow/errors//WorkflowRunAlreadyStartedError'
+);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1303,6 +1418,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
     Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
       value: StreamError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, WORKFLOW_RUN_ALREADY_STARTED_ERROR_KEY)) {
+    Object.defineProperty(globalThis, WORKFLOW_RUN_ALREADY_STARTED_ERROR_KEY, {
+      value: WorkflowRunAlreadyStartedError,
       writable: false,
       enumerable: false,
       configurable: false,

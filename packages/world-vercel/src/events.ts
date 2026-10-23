@@ -173,6 +173,12 @@ interface SplitEventData {
     /** Ref key of dynamic workflow code uploaded ahead of the write, for
      *  definitions too large to send inline. */
     dynamicWorkflowCodeRef?: string;
+    /** run_created: the run idempotency key this run claims. Plaintext. */
+    idempotencyKey?: string;
+    /** run_created: how long the key stays held after the run closes. */
+    idempotencyKeyTtlMs?: number;
+    /** run_created: whether this start may take over a closed holder's key. */
+    idempotencyKeyReusePolicy?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -229,6 +235,9 @@ type MetaSourceField =
   | 'encryptionPublicKey'
   | 'dynamicWorkflowCode'
   | 'dynamicWorkflowCodeRef'
+  | 'idempotencyKey'
+  | 'idempotencyKeyTtlMs'
+  | 'idempotencyKeyReusePolicy'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -408,6 +417,22 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.dynamicWorkflowCodeRef === 'string') {
     meta.dynamicWorkflowCodeRef = eventData.dynamicWorkflowCodeRef;
+  }
+  // Run idempotency keys, on run_created only: a resilient-start
+  // `run_started` never carries a key, even if a caller put one there. Same
+  // names on the wire: the server's v4 header parser copies them into
+  // `eventData` and claims the key atomically with the run, so they must
+  // never be dropped here: a dropped key is a duplicate run.
+  if (data.eventType === 'run_created') {
+    if (typeof eventData.idempotencyKey === 'string') {
+      meta.idempotencyKey = eventData.idempotencyKey;
+    }
+    if (typeof eventData.idempotencyKeyTtlMs === 'number') {
+      meta.idempotencyKeyTtlMs = eventData.idempotencyKeyTtlMs;
+    }
+    if (typeof eventData.idempotencyKeyReusePolicy === 'string') {
+      meta.idempotencyKeyReusePolicy = eventData.idempotencyKeyReusePolicy;
+    }
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
@@ -984,6 +1009,9 @@ function reconstructRunFromReplayEvents(events: Event[]) {
       input: runCreated.eventData.input,
       attributes,
       encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+      ...(runCreated.eventData.idempotencyKey !== undefined
+        ? { idempotencyKey: runCreated.eventData.idempotencyKey }
+        : {}),
       startedAt: runStarted.createdAt,
       createdAt: runCreated.createdAt,
       updatedAt,

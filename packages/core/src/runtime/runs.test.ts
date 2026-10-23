@@ -278,6 +278,26 @@ describe('recreateRunFromExisting', () => {
     );
   });
 
+  it("never forwards the source run's idempotency key", async () => {
+    // A re-run is a new run by intent; forwarding the key would return the
+    // source run (or refuse) instead of creating one.
+    const world = createMockWorld({
+      run: {
+        runId: 'wrun_source',
+        deploymentId: 'deploy_source',
+        idempotencyKey: 'order-1',
+      },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source');
+
+    const opts = (vi.mocked(start).mock.calls[0] as unknown[])[2] ?? {};
+    for (const key of Object.keys(opts as object)) {
+      expect(key).not.toMatch(/idempotency/i);
+    }
+  });
+
   it('pins the source run spec version for a replay on its own deployment', async () => {
     const world = createMockWorld({
       run: { deploymentId: 'deploy_source', specVersion: 6 },
@@ -759,6 +779,57 @@ describe('Run custom serialization', () => {
     });
     expect(deserialized).toBeInstanceOf(Run);
     expect(deserialized.runId).toBe('wrun_deserialize');
+  });
+
+  it('serializes experimental_started only when it is known', () => {
+    expect(
+      Run[WORKFLOW_SERIALIZE](new Run('wrun_a', { started: true }))
+    ).toEqual({ runId: 'wrun_a', resilientStart: false, started: true });
+    expect(
+      Run[WORKFLOW_SERIALIZE](new Run('wrun_b', { started: false }))
+    ).toEqual({ runId: 'wrun_b', resilientStart: false, started: false });
+    // getRun()-style handles keep the exact pre-existing shape.
+    expect(Run[WORKFLOW_SERIALIZE](new Run('wrun_c'))).toEqual({
+      runId: 'wrun_c',
+      resilientStart: false,
+    });
+  });
+
+  it('deserializes experimental_started, and older payloads without it', () => {
+    expect(
+      Run[WORKFLOW_DESERIALIZE]({ runId: 'wrun_a', started: true })
+        .experimental_started
+    ).toBe(true);
+    expect(
+      Run[WORKFLOW_DESERIALIZE]({ runId: 'wrun_b', started: false })
+        .experimental_started
+    ).toBe(false);
+    const legacy = Run[WORKFLOW_DESERIALIZE]({
+      runId: 'wrun_c',
+      resilientStart: true,
+    });
+    expect(legacy.experimental_started).toBeUndefined();
+    expect(Run[WORKFLOW_SERIALIZE](legacy)).toEqual({
+      runId: 'wrun_c',
+      resilientStart: true,
+    });
+  });
+
+  it('carries experimental_started across the step serialization boundary', async () => {
+    for (const started of [true, false]) {
+      const dehydrated = await dehydrateStepReturnValue(
+        new Run('wrun_roundtrip', { started }),
+        'wrun_parent',
+        undefined
+      );
+      const hydrated = (await hydrateStepReturnValue(
+        dehydrated,
+        'wrun_parent',
+        undefined
+      )) as Run<unknown>;
+      expect(hydrated).toBeInstanceOf(Run);
+      expect(hydrated.experimental_started).toBe(started);
+    }
   });
 
   it('should roundtrip through step serialization boundary', async () => {

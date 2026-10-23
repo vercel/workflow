@@ -23,6 +23,7 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
+import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
@@ -674,6 +675,20 @@ export function getByteUnframingStream(): TransformStream<
 }
 
 /**
+ * The `catch` for a fire-and-forget telemetry span. Telemetry must never fail
+ * the stream it describes, and a promise nothing awaits must never reject
+ * unobserved (an unhandled rejection takes the process down), so a failure to
+ * record a span is logged and dropped.
+ */
+function logSpanFailure(spanName: string): (error: unknown) => void {
+  return (error) => {
+    runtimeLogger.debug('Failed to record a stream telemetry span', {
+      span: spanName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+}
+/**
  * Emit the client-observed end-to-end time-to-first-chunk span for a live read:
  * read dispatch (`startEpochMs`) → the first non-empty chunk reaching the
  * reader, including the network hop. Fire-and-forget; no-op without OTEL.
@@ -701,7 +716,7 @@ function recordReadTimeToFirstChunk(
           : {}),
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.read'));
 }
 
 /**
@@ -724,7 +739,7 @@ function recordStreamReadKeyResolution(
         'workflow.stream.read.key_succeeded': succeeded,
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.read.resolve_key'));
 }
 
 /**
@@ -756,7 +771,7 @@ function recordStreamReadComplete(
           : {}),
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.read.complete'));
 }
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
@@ -1252,7 +1267,7 @@ function recordStreamWriteFlush(
         'workflow.stream.write.chunk_rtt': rpcMs,
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.flush'));
 }
 
 /**
@@ -1275,7 +1290,7 @@ function recordStreamClose(
         'workflow.stream.close.rpc_ms': Date.now() - startEpochMs,
       },
     });
-  })();
+  })().catch(logSpanFailure('workflow.stream.close'));
 }
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
@@ -1978,6 +1993,22 @@ function attachAbortListenerOnce(
 }
 
 /**
+ * Run `pipe` now, or, with a gate, only once it resolves `true`. A `false` or
+ * rejected gate never runs it, and the returned promise still resolves, so
+ * an op that never pipes cannot surface as an unhandled rejection.
+ */
+function afterStreamStartGate(
+  gate: Promise<boolean> | undefined,
+  pipe: () => Promise<void>
+): Promise<void> {
+  if (!gate) return pipe();
+  return gate.then(
+    (open) => (open ? pipe() : undefined),
+    () => undefined
+  );
+}
+
+/**
  * Reducers for serialization boundary from the client side, passing arguments
  * to the workflow handler.
  *
@@ -2009,7 +2040,13 @@ export function getExternalReducers(
   // only finish after the workflow runs, so awaiting it before dispatch would
   // deadlock. Defaults to `ops` for existing callers that flush everything in
   // the background.
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  // A keyed `start()`'s arguments: pipe each stream (upload or readback)
+  // only once this resolves `true`, the run having been created. On `false`
+  // the stream is left untouched, never read, locked, or cancelled, so a
+  // refused duplicate never drains a one-shot source into a run that does
+  // not exist. Undefined everywhere else: pipes start immediately.
+  streamStartGate?: Promise<boolean>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2031,37 +2068,38 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(
-        runId,
-        name,
-        runReadyBarrier
-      );
-      if (type === 'bytes') {
-        if (framedByteStreams) {
-          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
-        } else {
-          ops.push(value.pipeTo(writable));
-        }
-      } else {
-        ops.push(
-          value
-            .pipeThrough(
-              getSerializeStream(
-                getExternalReducers(
-                  global,
-                  ops,
-                  runId,
-                  cryptoKey,
-                  framedByteStreams,
-                  runReadyBarrier,
-                  readbackOps
-                ),
-                cryptoKey
-              )
-            )
-            .pipeTo(writable)
+      // The server sink is opened with the pipe, so a gated stream that never
+      // pipes never touches its server stream either.
+      const pipe = (): Promise<void> => {
+        const writable = new WorkflowServerWritableStream(
+          runId,
+          name,
+          runReadyBarrier
         );
-      }
+        if (type === 'bytes') {
+          return framedByteStreams
+            ? value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+            : value.pipeTo(writable);
+        }
+        return value
+          .pipeThrough(
+            getSerializeStream(
+              getExternalReducers(
+                global,
+                ops,
+                runId,
+                cryptoKey,
+                framedByteStreams,
+                runReadyBarrier,
+                readbackOps,
+                streamStartGate
+              ),
+              cryptoKey
+            )
+          )
+          .pipeTo(writable);
+      };
+      ops.push(afterStreamStartGate(streamStartGate, pipe));
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
@@ -2108,8 +2146,11 @@ export function getExternalReducers(
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
-      const readable = new WorkflowServerReadableStream(runId, name);
-      readbackOps.push(readable.pipeTo(value));
+      readbackOps.push(
+        afterStreamStartGate(streamStartGate, () =>
+          new WorkflowServerReadableStream(runId, name).pipeTo(value)
+        )
+      );
 
       return { name };
     },
@@ -3855,7 +3896,9 @@ export async function dehydrateWorkflowArguments(
   v1Compat = false,
   framedByteStreams = false,
   compression: CompressionMode = false,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  // See getExternalReducers. Only a keyed `start()` passes one.
+  streamStartGate?: Promise<boolean>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3867,7 +3910,8 @@ export async function dehydrateWorkflowArguments(
         key,
         framedByteStreams,
         undefined,
-        readbackOps
+        readbackOps,
+        streamStartGate
       )
     );
     return revive(str);
@@ -3884,7 +3928,8 @@ export async function dehydrateWorkflowArguments(
           key,
           framedByteStreams,
           undefined,
-          readbackOps
+          readbackOps,
+          streamStartGate
         )
       ),
       compression,

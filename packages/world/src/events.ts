@@ -2,6 +2,11 @@ import { z } from 'zod';
 import { AttributeChangesSchema } from './attributes.js';
 import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
+import {
+  IdempotencyKeyReusePolicySchema,
+  IdempotencyKeySchema,
+  IdempotencyKeyTtlMsSchema,
+} from './idempotency.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type {
@@ -559,6 +564,27 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
        * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
        */
       encryptionPublicKey: z.string().optional(),
+      /**
+       * `start({ experimental_idempotencyKey })`: the key this run claims,
+       * scoped to (tenant, `workflowName`). Only a World that declares
+       * `capabilities.runIdempotencyKeys` receives it; that World claims it in
+       * the same atomic write that creates the run (see the capability for
+       * the contract). Plaintext. Never carried by `run_started`: a run
+       * created through the resilient-start path holds no key.
+       */
+      idempotencyKey: IdempotencyKeySchema.optional(),
+      /**
+       * How long the key stays held after this run closes, in milliseconds.
+       * The runtime always sends the resolved value with a key. Requires
+       * `idempotencyKey`.
+       */
+      idempotencyKeyTtlMs: IdempotencyKeyTtlMsSchema.optional(),
+      /**
+       * Whether this start may take the key over from a closed holder still
+       * inside its TTL window. The runtime always sends the resolved value
+       * with a key. Requires `idempotencyKey`.
+       */
+      idempotencyKeyReusePolicy: IdempotencyKeyReusePolicySchema.optional(),
     })
     .refine(
       (value) =>
@@ -568,6 +594,17 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
         path: ['dynamicWorkflowCodeRef'],
         message:
           'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+      }
+    )
+    .refine(
+      (value) =>
+        value.idempotencyKey !== undefined ||
+        (value.idempotencyKeyTtlMs === undefined &&
+          value.idempotencyKeyReusePolicy === undefined),
+      {
+        path: ['idempotencyKey'],
+        message:
+          'idempotencyKeyTtlMs and idempotencyKeyReusePolicy require idempotencyKey',
       }
     ),
 });
