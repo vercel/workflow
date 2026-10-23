@@ -5,7 +5,7 @@
  * holder that loses its lock fails its write as lost.
  */
 
-import { type ChildProcess, fork, spawnSync } from 'node:child_process';
+import { type ChildProcess, fork, spawn, spawnSync } from 'node:child_process';
 import { readlinkSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -163,8 +163,19 @@ describe('fence file lock (world-local)', () => {
     const cases = {
       // A restarted process that got the dead holder's pid back.
       'its pid is this process': () => leaveLock({ pid: process.pid }),
-      // EPERM or a live process that reused the pid.
-      'its pid is alive': () => leaveLock({ pid: 1 }),
+      // A live process that reused the pid (pid 1 would not do: there is
+      // none on Windows).
+      'its pid is alive': () => {
+        const other = spawn(
+          process.execPath,
+          ['-e', 'setInterval(() => {}, 1e3)'],
+          {
+            stdio: 'ignore',
+          }
+        );
+        children.push(other);
+        return leaveLock({ pid: other.pid as number });
+      },
       'it was taken on another host': () =>
         leaveLock({ pid: deadPid(), host: 'another-host' }),
       'it names no holder (an older world-local)': () => leaveLock(),
