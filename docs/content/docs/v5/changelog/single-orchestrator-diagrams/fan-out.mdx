@@ -32,15 +32,19 @@ export async function resizeAll(urls: string[]) {
 
 ## How the creations are split
 
-The suspension's events are the inline steps' creation-bearing `step_started` events first, then the background steps' `step_created` (`packages/core/src/runtime/spec9/step-wait-creation.ts:231`). When they need more than one batch, the inline creations go in batches of their own, so the inline bodies start as soon as the first, small batch commits (`batchChunks`, `step-wait-creation.ts:632`).
+The suspension's events are the inline steps' creation-bearing `step_started` events first, then the background steps' `step_created` (`packages/core/src/runtime/spec9/step-wait-creation.ts`). They go out in batches of up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and 512 KiB, in order, so the inline starts share the first batch with background creations (`batchChunks`). The inline bodies start once that first batch commits.
 
 | `WORKFLOW_MAX_INLINE_STEPS` | Events | Batches | First batch | Later batches | Step-message sends |
 |---|---|---|---|---|---|
-| 3 (default) | 3 starts + 97 `step_created` | 8 | 3 starts | 6 of 16, 1 of 1 | 1 request of 97, after the 7 later batches |
-| 16 | 16 starts + 84 `step_created` | 7 | 16 starts | 5 of 16, 1 of 4 | 1 request of 84 |
-| 0 | 100 `step_created` | 7 | 16 `step_created` | 5 of 16, 1 of 4 | 1 request of 16 after batch 1, 1 request of 84 after the rest |
+| 3 (default) | 3 starts + 97 `step_created` | 2 | 3 starts + 61 `step_created` | 1 of 36 | 61 after batch 1, 36 after batch 2 |
+| 16 | 16 starts + 84 `step_created` | 2 | 16 starts + 48 `step_created` | 1 of 36 | 48 after batch 1, 36 after batch 2 |
+| 0 | 100 `step_created` | 2 | 64 `step_created` | 1 of 36 | 64 after batch 1, 36 after batch 2 |
 
-All batches are in-band writes, so they go out one at a time (`packages/core/src/runtime/spec9/in-band-writer.ts:903`). The later batches run in the background of the delivery (`commitInChunks`, `delivery.ts:3102`); their background steps' messages go out in one `enqueueStepMessages` call once all of them committed (`delivery.ts:3106`). No pass decides while a creation batch is in flight (`delivery.ts:3536`).
+Step messages go out in parallel queue batch requests of at most `STEP_DISPATCH_QUEUE_BATCH_SIZE` (16) messages (`enqueueStepMessages`, `delivery.ts`).
+
+All batches are in-band writes, so they go out one at a time (`packages/core/src/runtime/spec9/in-band-writer.ts`). The later batches run in the background of the delivery (`commitInChunks`); their background steps' messages go out once they committed. An inline step's outcome is queued on the writer only after the last creation batch, so it never holds up a creation batch behind it. No pass decides while a creation batch is in flight.
+
+A background step's first delivery starts its body while its out-of-band `step_started` is in flight, for a step that allows retries; the outcome is written only once that start committed (`spec9/step-handler.ts`).
 
 A fan-out boundary with background steps is never run ahead: a step outside the delivery's inline slots runs elsewhere, so the boundary is not inert (`packages/core/src/runtime/out-of-band-observation.ts:172`).
 
@@ -55,15 +59,15 @@ sequenceDiagram
     participant S as "97 step invocations"
 
     O->>O: replay, suspension with 100 new steps
-    O->>W: batch 1: 3 step_started inline true
+    O->>W: batch 1: 3 step_started inline true, 61 step_created
     W-->>O: committed
     par inline bodies
         O->>O: 3 bodies run in this process
-        O->>W: 3 step_completed, in-band, between batches
-    and later creations
-        O->>W: batches 2 to 7: 16 step_created each
-        O->>W: batch 8: 1 step_created
-        O->>Q: 97 step messages, one batch request
+        O->>W: 3 step_completed, in-band, after batch 2
+    and step messages and later creations
+        O->>Q: 61 step messages, 4 parallel batch requests
+        O->>W: batch 2: 36 step_created
+        O->>Q: 36 step messages, 3 parallel batch requests
     end
     Q->>S: 97 deliveries
     S->>W: step_started, step_completed, out-of-band
@@ -88,10 +92,10 @@ Times below are positions in the delivery, not measurements. The only measuremen
 | Order | What happens | Count |
 |---|---|---|
 | 1 | Replay reaches `Promise.all`; 100 steps, 3 inline slots | 1 replay |
-| 2 | Batch 1 commits; 3 inline bodies start | 1 `createBatch`, 3 events |
-| 3 | Batches 2 to 8 commit, one at a time, while the bodies run | 7 `createBatch`, 97 events |
-| 4 | 97 step messages go out | 1 queue request |
-| 5 | Inline outcomes commit as each body returns | 3 `step_completed`, in-band |
+| 2 | Batch 1 commits; 3 inline bodies start; its 61 step messages go out | 1 `createBatch`, 64 events; 4 queue requests |
+| 3 | Batch 2 commits while the bodies run; its 36 step messages go out | 1 `createBatch`, 36 events; 3 queue requests |
+| 4 | Background steps start their bodies while their `step_started` is in flight | 97 invocations |
+| 5 | Inline outcomes commit behind the last creation batch | 3 `step_completed`, in-band |
 | 6 | Background steps run; each writes start and outcome, reads the log, and sends a wake | 97 invocations, 194 out-of-band writes, 97 log reads |
 | 7 | The orchestrator takes outcomes from the live feed, lingering while steps are open | up to 30 s per idle stretch, never past 60 s after the invocation started with a 2 min window |
 | 8 | The last outcome lands; the workflow returns | 1 `run_completed` |
