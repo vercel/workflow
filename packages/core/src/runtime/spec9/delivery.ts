@@ -1619,8 +1619,11 @@ async function runDelivery(
       return log?.events.some((e) => e.eventId === event.eventId) ?? false;
     };
     const settledInline: InlineSettled[] = [];
-    // Turbo: creation commits still in flight while the bodies
-    // they create run (see `optimisticCreation`).
+    // Creation commits still in flight while the bodies they
+    // create run (turbo's `optimisticCreation`), a fan-out's
+    // later creation batches, and step dispatches sent next to
+    // inline bodies. No pass decides, and the delivery does not
+    // end, before they settled.
     const creationsInFlight = new Set<Promise<unknown>>();
     // A fan-out's later creation batches not yet queued on
     // the writer (`commitInChunks().queued`). An inline step's
@@ -1628,9 +1631,30 @@ async function runDelivery(
     // creation batch rather than between two of them, where
     // it would hold up the background creations behind it.
     const creationBatchesQueuing = new Set<Promise<void>>();
-    // Why a fan-out's later creation batches failed. The
-    // delivery fails with it, so its redelivery writes them.
+    // Why a fan-out's later creation batches, or a step
+    // dispatch that runs next to inline bodies, failed. The
+    // delivery fails with it, so its redelivery writes and
+    // sends what is missing.
     let trailingCreationFailure: unknown;
+    /**
+     * Tracks a creation batch or step dispatch that settles
+     * in the background of the delivery: in
+     * `creationsInFlight` until it settles, its failure kept
+     * in `trailingCreationFailure`.
+     */
+    const trackInFlightCreation = (work: Promise<unknown>): void => {
+      const inFlightCreation = work.then(
+        () => {},
+        (error: unknown) => {
+          trailingCreationFailure ??= error;
+          notifyProgress();
+        }
+      );
+      creationsInFlight.add(inFlightCreation);
+      void inFlightCreation.then(() =>
+        creationsInFlight.delete(inFlightCreation)
+      );
+    };
     // The longest backoff of the inline starts this delivery
     // had refused for load. Once every body has settled the
     // delivery defers the run by it.
@@ -3131,17 +3155,7 @@ async function runDelivery(
             )
           )
         );
-        const inFlightCreation = trailing.then(
-          () => {},
-          (error: unknown) => {
-            trailingCreationFailure ??= error;
-            notifyProgress();
-          }
-        );
-        creationsInFlight.add(inFlightCreation);
-        void inFlightCreation.then(() =>
-          creationsInFlight.delete(inFlightCreation)
-        );
+        trackInFlightCreation(trailing);
       } else {
         created = await plan.commit();
         newInline = created.createdSteps.filter((step) => step.inline);
@@ -3213,7 +3227,6 @@ async function runDelivery(
         dispatchedTiming = resumeTimingForMessage(resumeTracking);
         if (dispatchedTiming) resumeTracking = undefined;
       }
-      await enqueueStepMessages(run, toEnqueue, undefined, dispatchedTiming);
 
       // Inline steps: the ones created inline now, plus inline
       // steps an earlier invocation started and never
@@ -3284,6 +3297,27 @@ async function runDelivery(
               : {}),
           });
         }
+      }
+
+      // The background steps' messages go out while the inline
+      // bodies run: nothing an inline body does depends on them.
+      // Like a fan-out's later creation batches, the dispatch is
+      // in `creationsInFlight`, so no later pass decides, no
+      // timer is armed on suspend and the delivery does not end
+      // before it settled, and a failed dispatch fails the
+      // delivery there, whose redelivery re-sends the steps that
+      // have not started (`stepsToReenqueue`). Without inline
+      // work the dispatch is awaited here.
+      const dispatching = enqueueStepMessages(
+        run,
+        toEnqueue,
+        undefined,
+        dispatchedTiming
+      );
+      if (inlineToRun.length > 0 && toEnqueue.length > 0) {
+        trackInFlightCreation(dispatching);
+      } else {
+        await dispatching;
       }
 
       if (inlineToRun.length > 0) {

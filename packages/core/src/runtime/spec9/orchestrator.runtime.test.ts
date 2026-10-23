@@ -21,6 +21,7 @@ import {
 } from '../../test-support/orchestrator-harness.js';
 import * as workflowModule from '../../workflow.js';
 import {
+  getMaxInlineSteps,
   getMaxQueueDeliveries,
   MAX_IN_BAND_CREATION_BATCH_EVENTS,
   STEP_DISPATCH_QUEUE_BATCH_SIZE,
@@ -448,6 +449,132 @@ describe.each([
 
         await world.runUntilIdle(4 * width);
         expect(await runResult(world)).toBe(expectedSum);
+      });
+
+      const isStepBatch = (
+        messages: readonly { message: unknown; opts?: unknown }[]
+      ) =>
+        messages.some(
+          (entry) => (entry.message as { stepId?: string }).stepId !== undefined
+        );
+
+      // One creation batch, and a fan-out wider than one, whose first
+      // batch carries the inline starts.
+      it.each([
+        ['one creation batch', 2 * STEP_DISPATCH_QUEUE_BATCH_SIZE + 3],
+        ['several creation batches', MAX_IN_BAND_CREATION_BATCH_EVENTS + 3],
+      ])('starts the inline bodies while the background steps are dispatched (%s)', async (_, n) => {
+        vi.unstubAllEnvs();
+        const inline = getMaxInlineSteps();
+        expect(inline).toBeGreaterThan(0);
+        let release: () => void = () => {};
+        const released = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const { world } = await setup(fanOut, [n], {
+          queueBatch: true,
+          async failQueueBatch(messages) {
+            if (isStepBatch(messages)) await released;
+          },
+        });
+        const delivered = world.deliver(world.held[0]!).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        try {
+          // Every inline body ran while no step message went out.
+          await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
+            timeout: 2_000,
+          });
+          expect(stepBatchesOf(world).length).toBeGreaterThan(0);
+          expect(stepMessagesOf(world)).toEqual([]);
+        } finally {
+          // The delivery ends before the next test starts, whatever failed.
+          release();
+          await delivered;
+        }
+        expect(await delivered).toBeUndefined();
+        // Each background step is dispatched once, and the run completes.
+        const sent = stepBatchesOf(world).flat();
+        expect(sent).toHaveLength(n - inline);
+        expect(
+          new Set(sent.map((call) => call.opts?.idempotencyKey)).size
+        ).toBe(n - inline);
+        await world.runUntilIdle(4 * n);
+        expect(await runResult(world)).toBe((n * (n + 1)) / 2);
+        expect(calls.so_add).toBe(n);
+      });
+
+      // A `maxRetries: 0` step's start commits in the creation batch, so a
+      // redelivery may only fail it, never run it: its one attempt has to run
+      // in the delivery that started it, whatever the dispatch of its
+      // siblings does.
+      it('runs an inline maxRetries: 0 step once when the dispatch of its background siblings fails', async () => {
+        vi.unstubAllEnvs();
+        let failed = false;
+        const { world } = await setup(
+          `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+           const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_once");
+           async function workflow(n) {
+             const [o, ...all] = await Promise.all([
+               once(),
+               ...Array.from({ length: n }, (_, i) => add(i, 1)),
+             ]);
+             return [o, all.length];
+           }${transform('workflow')}`,
+          [width],
+          {
+            queueBatch: true,
+            failQueueBatch(messages) {
+              if (failed || !isStepBatch(messages)) return;
+              failed = true;
+              throw new Error('queue unavailable');
+            },
+          }
+        );
+        await expect(world.deliver(world.held[0]!)).rejects.toThrow(
+          'queue unavailable'
+        );
+        await world.runUntilIdle(4 * width);
+        expect(eventsOf(world, 'step_failed')).toEqual([]);
+        expect(await runResult(world)).toEqual(['ran', width]);
+        expect(calls.so_once).toBe(1);
+      });
+
+      it('fails the delivery when the dispatch next to inline bodies fails, and its redelivery sends every step once', async () => {
+        vi.unstubAllEnvs();
+        const inline = getMaxInlineSteps();
+        let failed = false;
+        const { world } = await setup(fanOut, [width], {
+          queueBatch: true,
+          async failQueueBatch(messages) {
+            if (failed || !isStepBatch(messages)) return;
+            // Fail only once the inline bodies ran.
+            await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
+              timeout: 2_000,
+            });
+            failed = true;
+            throw new Error('queue unavailable');
+          },
+        });
+        await expect(world.deliver(world.held[0]!)).rejects.toThrow(
+          'queue unavailable'
+        );
+        expect(failed).toBe(true);
+        // The inline outcomes committed before the delivery failed.
+        expect(
+          eventsOf(world, 'step_completed').map((e) => e.correlationId)
+        ).toHaveLength(inline);
+
+        await world.runUntilIdle(4 * width);
+        expect(await runResult(world)).toBe(expectedSum);
+        // No body ran twice: the redelivery runs no inline step again and
+        // sends each background step that had not started.
+        expect(calls.so_add).toBe(width);
+        expect(
+          new Set(eventsOf(world, 'step_created').map((e) => e.correlationId))
+            .size
+        ).toBe(width - inline);
       });
 
       it('fails the delivery when one queue batch fails, and its redelivery sends every step once', async () => {
