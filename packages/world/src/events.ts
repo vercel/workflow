@@ -1409,6 +1409,12 @@ export interface ListEventsParams {
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: EventsResolveData;
+  /**
+   * Aborted when the caller has given up on the read. A World may stop the
+   * request early and reject; one that ignores it is still correct, since the
+   * caller no longer uses the result.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ListEventsByCorrelationIdParams {

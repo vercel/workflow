@@ -128,7 +128,12 @@ import {
  */
 async function fetchV4(
   url: string,
-  init: { method: string; headers: Headers; body?: Uint8Array },
+  init: {
+    method: string;
+    headers: Headers;
+    body?: Uint8Array;
+    signal?: AbortSignal;
+  },
   config: APIConfig | undefined,
   opName: string,
   attributes?: Record<string, string | number | boolean | string[]>
@@ -149,6 +154,7 @@ async function fetchV4(
       noteEventsTransportOutcome(dispatcher, error),
     deferTransportSuccessUntilBody: true,
     timeoutMs: null,
+    signal: init.signal,
     transportErrorCode: 'STREAM_ERROR',
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
@@ -2051,6 +2057,8 @@ export interface ListEventsV4Params extends PaginationOptions {
    * them).
    */
   remoteRefBehavior?: EventsRemoteRefBehavior;
+  /** Stops the read: the request is aborted and the call rejects. */
+  signal?: AbortSignal;
 }
 
 export interface ListEventsV4Result {
@@ -2298,15 +2306,23 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void,
+  signal?: AbortSignal
 ): Promise<EventFrameStreamResult> {
-  const response = await fetchV4(
-    url,
-    { method: 'GET', headers },
-    config,
-    opName
-  );
-  return consumeEventFrameStream(response, opName, replayEventObserver);
+  try {
+    const response = await fetchV4(
+      url,
+      { method: 'GET', headers, signal },
+      config,
+      opName
+    );
+    return await consumeEventFrameStream(response, opName, replayEventObserver);
+  } catch (error) {
+    // A read the caller gave up on ends with the caller's reason, not with
+    // whatever the cut-off body decoded to.
+    signal?.throwIfAborted();
+    throw error;
+  }
 }
 
 /**
@@ -2373,7 +2389,8 @@ async function consumeListWithSkipFallback(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  replayEventObserver?: (event: Event) => void
+  replayEventObserver?: (event: Event) => void,
+  signal?: AbortSignal
 ): Promise<EventFrameStreamResult> {
   if (
     requested === 'skip-step-inputs' &&
@@ -2385,7 +2402,8 @@ async function consumeListWithSkipFallback(
         headers,
         config,
         opName,
-        replayEventObserver
+        replayEventObserver,
+        signal
       );
     } catch (error) {
       if (!mayRejectSkipStepInputs(error)) throw error;
@@ -2395,7 +2413,8 @@ async function consumeListWithSkipFallback(
       headers,
       config,
       opName,
-      replayEventObserver
+      replayEventObserver,
+      signal
     );
     skipStepInputsSupport.unsupportedSince.set(baseUrl, Date.now());
     return result;
@@ -2405,7 +2424,8 @@ async function consumeListWithSkipFallback(
     headers,
     config,
     opName,
-    replayEventObserver
+    replayEventObserver,
+    signal
   );
 }
 
@@ -2461,6 +2481,7 @@ export async function getWorkflowRunEventsV4(
   const waitOutThrottle = createThrottleWaiter('reading events', 'bounded');
 
   for (;;) {
+    params.signal?.throwIfAborted();
     const pageCursor = cursor ?? undefined;
     try {
       consumed = await consumeListWithSkipFallback(
@@ -2476,11 +2497,12 @@ export async function getWorkflowRunEventsV4(
         headers,
         config,
         'listEvents',
-        replayEventObserver
+        replayEventObserver,
+        params.signal
       );
     } catch (err) {
       if (!fullLog || !ThrottleError.is(err)) throw err;
-      await waitOutThrottle(err);
+      await waitOutThrottle(err, params.signal);
       continue;
     }
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;

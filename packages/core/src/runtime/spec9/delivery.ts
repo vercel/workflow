@@ -180,6 +180,10 @@ import {
   stepCreationOf,
 } from './log-state.js';
 import {
+  getOrchestratorReadTimeoutMs,
+  readWithDeadline,
+} from './read-deadline.js';
+import {
   admitBelowSpeculation,
   disableRunAheadFor,
   isRunAheadDisabledFor,
@@ -746,11 +750,27 @@ async function runDelivery(
    * Incremental load from the log's cursor. Merged in slot
    * order, since the log may already hold this delivery's
    * own writes above the cursor.
+   *
+   * The read runs under a deadline and is sent again when it
+   * runs out (see `readWithDeadline`): this delivery is the
+   * run's only orchestrator, so a read held anywhere between
+   * the World and the process would hold the run, while the
+   * events it waits for may already be in the live feed. A
+   * timed-out attempt is dropped before anything is merged,
+   * so the retry reads the same position into the same log.
    */
   const loadAfter = async (): Promise<LoadedEventLog> => {
     logBehind = false;
     if (!log || log.cursor === null) return fullLoad();
-    const page = await loadWorkflowRunEvents(runId, log.cursor);
+    const cursor = log.cursor;
+    const page = await readWithDeadline(
+      (signal) => loadWorkflowRunEvents(runId, cursor, { signal }),
+      {
+        timeoutMs: getOrchestratorReadTimeoutMs(),
+        label: 'Incremental event log read',
+        runId,
+      }
+    );
     for (const event of page.events) {
       prepareReplayEvent(event);
     }

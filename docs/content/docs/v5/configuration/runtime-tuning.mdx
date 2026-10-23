@@ -138,6 +138,14 @@ An out-of-band terminal event has these effects, all of them benign:
 - Only used on a World with a live event feed (`events.subscribe`), such as the Vercel World. It never runs past the invocation's inline-step deadline.
 - `0` turns it off.
 
+### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
+
+- Default: `5000`
+- How long an orchestrator waits on one read of the event log it has already loaded part of (the events appended since its last read, and each live-feed poll) before it abandons the read and sends it again. Each later attempt waits twice as long as the one before. After three attempts the invocation fails with a retryable error and the queue redelivers the run.
+- The orchestrator is the run's only reader of its log, so a read that never returns would hold the whole run, with the events it waits for already committed. A fresh read of the same position normally returns in tens of milliseconds.
+- Full loads of a run's log, which can be large, are not bounded by it.
+- `0` turns the deadline off.
+
 ### `WORKFLOW_LOG_ORDER_DRAWS`
 
 - Default: enabled

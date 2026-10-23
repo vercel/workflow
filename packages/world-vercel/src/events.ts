@@ -514,6 +514,7 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<EventListResponse> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
+  const signal = 'signal' in params ? params.signal : undefined;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
   // remain on the returned events.
@@ -525,6 +526,7 @@ export async function getWorkflowRunEvents(
         : resolveData === 'skip-step-inputs'
           ? 'skip-step-inputs'
           : 'resolve',
+    ...(signal ? { signal } : {}),
   };
 
   const result = await ('correlationId' in params

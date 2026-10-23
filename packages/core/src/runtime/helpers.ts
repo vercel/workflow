@@ -652,11 +652,15 @@ export function withReplayDelta(
  *   returned (incremental load). If omitted, all events are returned.
  *   The returned cursor can be passed back in on a subsequent call for
  *   incremental loading.
+ * @param options.signal - Abandons the load: handed to every page read, and
+ *   checked between pages.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor?: string
+  afterCursor?: string,
+  options?: { signal?: AbortSignal }
 ): Promise<LoadedEventLog> {
+  const signal = options?.signal;
   const incremental = afterCursor !== undefined;
   return trace('workflow.replay.load', async (span) => {
     span?.setAttributes({
@@ -683,6 +687,7 @@ export async function loadWorkflowRunEvents(
       // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
       // to lazyload the data from the world instead so that we can optimize and make the event log loading
       // much faster and memory efficient
+      signal?.throwIfAborted();
       const pageStart = Date.now();
       const requestedCursor = cursor;
       recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
@@ -696,8 +701,10 @@ export async function loadWorkflowRunEvents(
             cursor: requestedCursor ?? undefined,
           },
           resolveData: REPLAY_RESOLVE_DATA,
+          ...(signal ? { signal } : {}),
         });
       } catch (error) {
+        signal?.throwIfAborted();
         if (
           shouldRetryWithoutEventCursor(
             error,

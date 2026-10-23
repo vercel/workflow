@@ -129,6 +129,10 @@ import {
   stepCreationOf,
 } from './log-state.js';
 import {
+  getOrchestratorReadTimeoutMs,
+  readWithDeadline,
+} from './read-deadline.js';
+import {
   type CallerStart,
   executeStep,
   type StepExecutionResult,
@@ -1271,15 +1275,27 @@ export async function runWorkflowWithQuickJS(params: {
     let listedWithoutCursor = false;
     let hasMore = true;
     while (hasMore) {
-      const response = await world.events.list({
-        runId,
-        pagination: {
-          sortOrder: 'asc',
-          cursor: cursor ?? undefined,
-          limit: 1000,
-        },
-        resolveData: REPLAY_RESOLVE_DATA,
-      });
+      // Under the orchestrator's read deadline, for the reason
+      // `loadAfter` in delivery.ts gives: a held read would hold the run.
+      const pageCursor = cursor ?? undefined;
+      const response = await readWithDeadline(
+        (signal) =>
+          world.events.list({
+            runId,
+            pagination: {
+              sortOrder: 'asc',
+              cursor: pageCursor,
+              limit: 1000,
+            },
+            resolveData: REPLAY_RESOLVE_DATA,
+            ...(signal ? { signal } : {}),
+          }),
+        {
+          timeoutMs: getOrchestratorReadTimeoutMs(),
+          label: 'Event log read',
+          runId,
+        }
+      );
       for (const e of response.data) {
         if (e.eventId && seenEventIds.has(e.eventId)) continue;
         if (e.eventId) seenEventIds.add(e.eventId);

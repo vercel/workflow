@@ -94,6 +94,40 @@ describe('LiveLogFeed', () => {
     feed.stop();
   });
 
+  // A poll held in transit (the World never answers it) ends at the read
+  // deadline, and the next scheduled poll reads from the same cursor.
+  it('keeps polling after a poll the World never answers', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS', '100');
+    let held = 0;
+    const signals: (AbortSignal | undefined)[] = [];
+    const world = seeded({
+      beforeList: (params) => {
+        signals.push(params.signal);
+        if (held++ === 0) return new Promise<void>(() => {});
+      },
+    });
+    const received: string[] = [];
+    const feed = new LiveLogFeed(world.asWorld(), RUN, {
+      afterSlot: 1,
+      cursor: slotToEventId(1),
+      pollIntervalMs: 50,
+      onEvents: (events) => received.push(...events.map((e) => e.eventId)),
+    });
+    feed.start();
+    world.appendOutOfBand(hookReceived('hook_a'));
+    // The first poll starts at 50ms and is held; its deadline ends it at
+    // 150ms, and the next poll starts 50ms later.
+    await vi.advanceTimersByTimeAsync(300);
+    expect(received).toEqual([slotToEventId(2)]);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(world.listCalls[1]?.pagination).toEqual(
+      world.listCalls[0]?.pagination
+    );
+    feed.stop();
+    vi.unstubAllEnvs();
+  });
+
   it('reads the poll interval from the environment', () => {
     expect(getOrchestratorPollIntervalMs({})).toBe(
       DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS

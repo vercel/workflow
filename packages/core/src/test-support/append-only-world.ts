@@ -9,6 +9,7 @@ import {
   type Event,
   type EventListResponse,
   type EventResult,
+  type ListEventsParams,
   orchestratorRunIdOf,
   SPEC_VERSION_CURRENT,
   slotToEventId,
@@ -182,6 +183,12 @@ export class AppendOnlyWorld {
         /** Whether the event is an item of a `createBatch` call. */
         source?: { batch: boolean }
       ) => void | Promise<void>;
+      /**
+       * Called before every `events.list`, after the call is recorded. A test
+       * awaits in it to hold a read back, as a remote World's read that is
+       * held in transit.
+       */
+      beforeList?: (params: ListEventsParams) => void | Promise<void>;
     } = {}
   ) {}
 
@@ -753,6 +760,7 @@ export class AppendOnlyWorld {
       },
       async list(params): Promise<EventListResponse> {
         self.listCalls.push({ ...(params as object) });
+        await self.options.beforeList?.(params);
         const cursor = params.pagination?.cursor;
         const desc = params.pagination?.sortOrder === 'desc';
         let data = self.events.filter((e) => !cursor || e.eventId > cursor);
