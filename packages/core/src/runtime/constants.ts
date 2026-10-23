@@ -468,7 +468,9 @@ export function getOpenWaitClockSkewMs(): number {
  * byte budget over frame meta plus inline-bound payloads) and refuses an
  * oversized one whole, so a suspension's creations go out in batches of at
  * most this many, with a margin under both. A step's `step_created` and the
- * `step_started` behind it stay in one batch.
+ * `step_started` behind it stay in one batch. A fan-out wider than this
+ * commits its background creations in larger batches
+ * ({@link MAX_IN_BAND_CREATION_BATCH_EVENTS}).
  *
  * 16 rather than the World's limit because a smaller batch commits sooner,
  * and the batch's queued branches publish only once it commits. This is the
@@ -482,6 +484,42 @@ export function getOpenWaitClockSkewMs(): number {
  * commits in chunks on the awaited path).
  */
 export const MAX_BATCH_EVENTS = 16;
+
+/**
+ * Ceiling on events per creation batch of a fan-out wider than
+ * {@link MAX_BATCH_EVENTS} on the awaited path (`batchChunks`). The
+ * inline steps' creation-bearing starts still go first in a batch of their
+ * own; the background creations behind them go out in batches of at most
+ * this many.
+ *
+ * Larger than {@link MAX_BATCH_EVENTS} because an in-band writer sends its
+ * batches one at a time: each must commit before the next can name its
+ * expected count, so a fan-out pays one full round trip per batch, in
+ * sequence. On durabench (64 one-step branches on world-vercel) 16 per batch
+ * put the 61 background `step_created` in 4 batches landing ~200-250 ms
+ * apart, ~1 s after `run_started` for the last one. With 64 they go out in
+ * one batch behind the inline batch.
+ *
+ * Bounded by world-vercel's batch limit of 100 events, and by bytes through
+ * {@link MAX_IN_BAND_CREATION_BATCH_BYTES}.
+ */
+export const MAX_IN_BAND_CREATION_BATCH_EVENTS = 64;
+
+/**
+ * Byte ceiling on one creation batch (`batchChunks`), counted as every
+ * event's binary payload bytes plus {@link CREATION_EVENT_META_ALLOWANCE_BYTES}.
+ * world-vercel refuses a batch whose frame meta plus inline-bound payloads
+ * exceed 768 KB, whole, so this stays well under it while counting every
+ * payload byte, including the ones the World would store out of line.
+ */
+export const MAX_IN_BAND_CREATION_BATCH_BYTES = 512 * 1024;
+
+/**
+ * Bytes a creation batch reserves per event for what is not payload (event
+ * type, correlation id, step name, flags) in
+ * {@link MAX_IN_BAND_CREATION_BATCH_BYTES}.
+ */
+export const CREATION_EVENT_META_ALLOWANCE_BYTES = 1024;
 
 /** A step's `maxRetries` when its function declares none. */
 export const DEFAULT_STEP_MAX_RETRIES = 3;

@@ -17,7 +17,11 @@ import {
   setupOrchestratorRun,
   stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
-import { getMaxInlineSteps, MAX_BATCH_EVENTS } from '../constants.js';
+import {
+  getMaxInlineSteps,
+  MAX_BATCH_EVENTS,
+  MAX_IN_BAND_CREATION_BATCH_EVENTS,
+} from '../constants.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -77,7 +81,7 @@ const threeStepWorkflow = `const a = ${step('iw_a')}; const b = ${step('iw_b')};
   }${registerWorkflow()}`;
 
 // More steps at once than one batch may carry, as a fan-out does.
-const FAN_OUT = 100;
+const FAN_OUT = MAX_IN_BAND_CREATION_BATCH_EVENTS + MAX_BATCH_EVENTS;
 const fanOutWorkflow = `const a = ${step('iw_a')};
   async function workflow(n) {
     const results = await Promise.all(Array.from({ length: n }, () => a()));
@@ -382,8 +386,47 @@ describe.each([
     );
     expect(
       Math.max(...world.batches.map((batch) => batch.length))
-    ).toBeLessThanOrEqual(MAX_BATCH_EVENTS);
+    ).toBeLessThanOrEqual(MAX_IN_BAND_CREATION_BATCH_EVENTS);
   });
+
+  // An in-band writer sends its batches one at a time, each a round trip the
+  // next waits on, so every creation batch of a fan-out adds a round trip to
+  // its last branch's start. A latency budget: a 64-wide fan-out (the
+  // durabench fan-out shape) commits its inline steps' starts in one batch
+  // and all its background creations in one more. The QuickJS engine does
+  // not batch a suspension's creations.
+  it.skipIf(engine !== 'node')(
+    'commits a 64-wide fan-out in two creation round trips',
+    async () => {
+      const width = 64;
+      const { world } = await setupOrchestratorRun(
+        fanOutWorkflow,
+        [width],
+        {},
+        engine
+      );
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+      await world.runUntilIdle(4 * width);
+
+      expect(await runResult(world)).toBe(width);
+      const background = width - getMaxInlineSteps();
+      expect(eventsOf(world, 'step_created')).toHaveLength(background);
+      const creationBatches = world.batches.filter((batch) =>
+        batch.includes('step_created')
+      );
+      expect(creationBatches).toEqual([
+        Array.from({ length: background }, () => 'step_created'),
+      ]);
+      // The inline steps' creation-bearing starts went first, on their own.
+      const before = world.batches.slice(
+        0,
+        world.batches.indexOf(creationBatches[0]!)
+      );
+      expect(before).toEqual([
+        Array.from({ length: getMaxInlineSteps() }, () => 'step_started'),
+      ]);
+    }
+  );
 
   // The inline steps ride the first creation batch, so their bodies start
   // once it commits instead of after every batch of the fan-out.
