@@ -1262,14 +1262,18 @@ describe('per-prefix delivery routes', () => {
         workflowPayload
       );
       // The first attempt goes to the flow route, which this app doesn't have.
-      await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0));
+      // The server records the request before the client reads the 404 and
+      // logs it, so wait for the log too.
+      await vi.waitFor(() => {
+        expect(requests.length).toBeGreaterThan(0);
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining('HTTP 404'),
+          expect.objectContaining({
+            hint: expect.stringContaining('world.registerRoute'),
+          })
+        );
+      });
       expect(requests[0]?.path).toBe('/.well-known/workflow/v1/flow');
-      expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('HTTP 404'),
-        expect.objectContaining({
-          hint: expect.stringContaining('world.registerRoute'),
-        })
-      );
 
       localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
       await vi.waitFor(() =>
