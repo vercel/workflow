@@ -62,7 +62,6 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { lock as lockFile } from 'proper-lockfile';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
@@ -85,6 +84,7 @@ import {
   writeJSON,
 } from '../fs.js';
 import { withInProcessLock } from '../util.js';
+import { withFenceFileLock } from './fence-lock.js';
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
@@ -3922,12 +3922,12 @@ export function createEventsStorage(
   // that follows could miss.
   //
   // The count lives in a file (`inBandCountPath`) and every check-and-advance
-  // runs under a lock file on it (proper-lockfile, like the hook token
-  // claim), after an in-process lock shared by every storage instance in the
-  // process: so two processes on one data directory fence each other, as two
-  // storage instances in one process do, and a restart keeps every count.
+  // runs under a lock directory next to it (`withFenceFileLock`), after an
+  // in-process lock shared by every storage instance in the process: so two
+  // processes on one data directory fence each other, as two storage
+  // instances in one process do, and a restart keeps every count.
   // Between its check and its publish an accepted write marks the count
-  // `pending`. A writer that died there (its lock goes stale) leaves the
+  // `pending`. A writer that died there (its lock is taken over) leaves the
   // mark, and the next writer through the lock counts that write as if it
   // landed: it may have, and counting a write that did not land only costs a
   // superseded redelivery, while missing one that did would let a stale
@@ -3990,45 +3990,7 @@ export function createEventsStorage(
     return withInProcessLock(fenceState.locks, fenceKey(runId), async () => {
       const countPath = inBandCountPath(basedir, runId, tag);
       await fs.mkdir(path.dirname(countPath), { recursive: true });
-      let compromised: Error | undefined;
-      let release: () => Promise<void>;
-      try {
-        release = await lockFile(countPath, {
-          realpath: false,
-          stale: 30_000,
-          update: 1_000,
-          retries: {
-            retries: 350,
-            factor: 1,
-            minTimeout: 100,
-            maxTimeout: 100,
-          },
-          onCompromised(error) {
-            compromised = error;
-          },
-        });
-      } catch (error) {
-        throw new WorkflowWorldError(
-          `Could not acquire the in-band fence lock of run ${runId}`,
-          { cause: error }
-        );
-      }
-      let result: T;
-      try {
-        result = await fn();
-      } finally {
-        if (!compromised) await release().catch(() => {});
-      }
-      // Held past its staleness (a stalled process): another writer may have
-      // taken the lock meanwhile, so this write's place in the count is not
-      // known. Not a 4xx, so a writer treats the outcome as unknown.
-      if (compromised) {
-        throw new WorkflowWorldError(
-          `The in-band fence lock of run ${runId} was lost while a write held it`,
-          { cause: compromised }
-        );
-      }
-      return result;
+      return withFenceFileLock(`${countPath}.lock`, runId, fn);
     });
   }
 
