@@ -752,8 +752,9 @@ function parseErrorJson(_errorJson: string | null): SerializedData | null {
  * fields are no longer populated by the current write path.
  */
 function deserializeRunError(run: any): WorkflowRun {
-  // Drop any stale legacy-only fields we might still encounter on read.
-  const { errorStack: _errorStack, ...rest } = run;
+  // Drop any stale legacy-only fields we might still encounter on read, and
+  // the internal `jobPrefix` routing column, which is not part of a run.
+  const { errorStack: _errorStack, jobPrefix: _jobPrefix, ...rest } = run;
   return rest as WorkflowRun;
 }
 
@@ -768,6 +769,80 @@ function deserializeStepError(step: any): Step {
     ...rest,
     startedAt,
   } as Step;
+}
+
+/**
+ * `runs.list`, optionally narrowed by an extra predicate that callers of the
+ * public interface never see.
+ */
+function createRunsList(
+  drizzle: Drizzle,
+  scope?: SQL
+): Storage['runs']['list'] {
+  const { runs } = Schema;
+  return (async (params) => {
+    const limit = params?.pagination?.limit ?? 20;
+    const fromCursor = params?.pagination?.cursor;
+    // Run ids are ULIDs, so id order is creation order.
+    const sortOrder = params?.pagination?.sortOrder ?? 'desc';
+    const orderFn = sortOrder === 'asc' ? asc : desc;
+    const cursorFn = sortOrder === 'asc' ? gt : lt;
+
+    const all = await drizzle
+      .select()
+      .from(runs)
+      .where(
+        and(
+          scope,
+          map(fromCursor, (c) => cursorFn(runs.runId, c)),
+          map(params?.workflowName, (wf) => eq(runs.workflowName, wf)),
+          map(params?.status, (s) =>
+            Array.isArray(s) ? inArray(runs.status, s) : eq(runs.status, s)
+          )
+        )
+      )
+      .orderBy(orderFn(runs.runId))
+      .limit(limit + 1);
+    const values = all.slice(0, limit);
+    const hasMore = all.length > limit;
+
+    const resolveData = params?.resolveData ?? 'all';
+    return {
+      data: values.map((v) => {
+        v.output ||= v.outputJson;
+        v.input ||= v.inputJson;
+        v.executionContext ||= v.executionContextJson;
+        v.error ||= parseErrorJson(v.errorJson);
+        const deserialized = deserializeRunError(compact(v));
+        const parsed = WorkflowRunSchema.parse(deserialized);
+        return filterRunData(parsed, resolveData);
+      }),
+      hasMore,
+      cursor: values.at(-1)?.runId ?? null,
+    };
+  }) as Storage['runs']['list'];
+}
+
+/**
+ * A `runs.list` for startup recovery: only the runs a World with this
+ * `jobPrefix` created, plus runs with no prefix (created before
+ * `workflow_runs.job_prefix` existed, or by storage constructed without a
+ * World).
+ *
+ * Recovery re-enqueues each listed run into this World's own Graphile task,
+ * and this World's runner then drives it. Listing every active run in a
+ * shared database would hand other apps' runs to this runner on every boot,
+ * whatever their `jobPrefix`. The public `runs.list` stays unscoped.
+ */
+export function createRecoverableRunsList(
+  drizzle: Drizzle,
+  jobPrefix: string
+): Storage['runs']['list'] {
+  const { runs } = Schema;
+  return createRunsList(
+    drizzle,
+    or(eq(runs.jobPrefix, jobPrefix), isNull(runs.jobPrefix))
+  );
 }
 
 export function createRunsStorage(
@@ -857,46 +932,7 @@ export function createRunsStorage(
 
       return ids.map((id) => runsById.get(id) ?? null);
     }) as NonNullable<Storage['runs']['getMany']>,
-    list: (async (params) => {
-      const limit = params?.pagination?.limit ?? 20;
-      const fromCursor = params?.pagination?.cursor;
-      // Run ids are ULIDs, so id order is creation order.
-      const sortOrder = params?.pagination?.sortOrder ?? 'desc';
-      const orderFn = sortOrder === 'asc' ? asc : desc;
-      const cursorFn = sortOrder === 'asc' ? gt : lt;
-
-      const all = await drizzle
-        .select()
-        .from(runs)
-        .where(
-          and(
-            map(fromCursor, (c) => cursorFn(runs.runId, c)),
-            map(params?.workflowName, (wf) => eq(runs.workflowName, wf)),
-            map(params?.status, (s) =>
-              Array.isArray(s) ? inArray(runs.status, s) : eq(runs.status, s)
-            )
-          )
-        )
-        .orderBy(orderFn(runs.runId))
-        .limit(limit + 1);
-      const values = all.slice(0, limit);
-      const hasMore = all.length > limit;
-
-      const resolveData = params?.resolveData ?? 'all';
-      return {
-        data: values.map((v) => {
-          v.output ||= v.outputJson;
-          v.input ||= v.inputJson;
-          v.executionContext ||= v.executionContextJson;
-          v.error ||= parseErrorJson(v.errorJson);
-          const deserialized = deserializeRunError(compact(v));
-          const parsed = WorkflowRunSchema.parse(deserialized);
-          return filterRunData(parsed, resolveData);
-        }),
-        hasMore,
-        cursor: values.at(-1)?.runId ?? null,
-      };
-    }) as Storage['runs']['list'],
+    list: createRunsList(drizzle),
 
     experimentalSetAttributes: async (
       runId: string,
@@ -1129,8 +1165,20 @@ async function handleLegacyEventPostgres(
  * The events storage, with the in-band writer fence (see
  * `fencedInsertAttempt`) around `create` and the fence snapshot on `list`.
  */
-export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
-  const events = createUnfencedEventsStorage(drizzle);
+export function createEventsStorage(
+  drizzle: Drizzle,
+  options: {
+    /**
+     * Stamped on every run this storage creates, so that startup recovery
+     * re-enqueues the run only into the task whose runner claims its jobs.
+     * `createWorld` passes its effective `jobPrefix`. Omitted, runs are
+     * created without a prefix and every World recovers them.
+     */
+    jobPrefix?: string;
+  } = {}
+): Storage['events'] {
+  const { jobPrefix } = options;
+  const events = createUnfencedEventsStorage(drizzle, { jobPrefix });
   const unfencedCreate = events.create as (
     runId: string | null,
     data: AnyEventRequest,
@@ -1183,6 +1231,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
         const inTransaction = createUnfencedEventsStorage(tx, {
+          jobPrefix,
           deferTerminalNotify: (terminalRunId) =>
             terminalRuns.push(terminalRunId),
         }).create as (
@@ -1241,6 +1290,8 @@ async function readEventLogSnapshot(
 function createUnfencedEventsStorage(
   drizzle: DrizzleHandle,
   options: {
+    /** See `createEventsStorage`. */
+    jobPrefix?: string;
     /**
      * Takes the run-terminal `NOTIFY` off this handle. A fenced create runs
      * in a transaction, where a failed `NOTIFY` (or one that fails at commit)
@@ -1249,6 +1300,7 @@ function createUnfencedEventsStorage(
     deferTerminalNotify?: (runId: string) => void;
   } = {}
 ): Storage['events'] {
+  const { jobPrefix } = options;
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   const ulid = monotonicFactory();
   const { events } = Schema;
@@ -1477,6 +1529,7 @@ function createUnfencedEventsStorage(
                   // would otherwise be lost for the rest of the run's life.
                   encryptionPublicKey: runInputData.encryptionPublicKey,
                   dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
+                  jobPrefix,
                   status: 'pending',
                 })
                 .onConflictDoNothing()
@@ -1813,6 +1866,7 @@ function createUnfencedEventsStorage(
               attributes: eventData.attributes,
               encryptionPublicKey: eventData.encryptionPublicKey,
               dynamicWorkflowCode: eventData.dynamicWorkflowCode,
+              jobPrefix,
               status: 'pending',
             })
             .onConflictDoNothing()
