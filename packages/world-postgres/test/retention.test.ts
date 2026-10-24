@@ -394,7 +394,7 @@ describe('Retention ($retention: 0)', () => {
       expect(await countRemainingPayloads(runId)).toBe(0);
     });
 
-    it('applies the same deletion path when cancelling a waiting run at its domain deadline', async () => {
+    it('purges a waiting run when the application cancels it', async () => {
       const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
       await events.create(runId, {
         eventType: 'wait_created',
