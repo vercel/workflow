@@ -69,6 +69,11 @@ const PAYLOAD_COLUMNS = {
 } as const;
 
 describe('Retention ($retention: 0)', () => {
+  // The Windows unit lane has no Linux Docker engine, like the other PG suites.
+  if (process.platform === 'win32') {
+    it.skip('requires a Linux PostgreSQL container', () => {});
+    return;
+  }
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
   let pool: TestPool;
   let drizzle: ReturnType<typeof createClient>;
