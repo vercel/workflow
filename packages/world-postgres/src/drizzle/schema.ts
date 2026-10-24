@@ -31,14 +31,22 @@ import { Cbor, type Cborized } from './cbor.js';
 export const schema = pgSchema('workflow');
 
 /** The original terminal delivery survives a rolled-back payload purge. */
-export const terminalRequests = schema.table('workflow_terminal_requests', {
-  runId: varchar('run_id')
-    .primaryKey()
-    .references(() => runs.runId, { onDelete: 'cascade' }),
-  request: Cbor<{ data: AnyEventRequest; params?: CreateEventParams }>()(
-    'request'
-  ).notNull(),
-});
+export const terminalRequests = schema.table(
+  'workflow_terminal_requests',
+  {
+    runId: varchar('run_id')
+      .primaryKey()
+      .references(() => runs.runId, { onDelete: 'cascade' }),
+    request: Cbor<{ data: AnyEventRequest; params?: CreateEventParams }>()(
+      'request'
+    ).notNull(),
+    // Mirror native event constraints before a request becomes durable.
+    specVersion: integer('spec_version'),
+    correlationId: varchar('correlation_id'),
+    errorCode: varchar('error_code'),
+  },
+  (tb) => [index().on(tb.correlationId)]
+);
 
 /** A UTC offset (`+00`, `-07`, `+05:30`) or `Z` at the end of a timestamp. */
 const UTC_OFFSET = /(?:[+-]\d\d(?::?\d\d){0,2}|Z)$/;

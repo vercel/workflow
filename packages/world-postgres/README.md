@@ -328,6 +328,8 @@ or after restart. Committed step events remain available, so recovery does not
 need to rerun completed step effects. Payload writers lock the run before
 writing: a concurrent writer either commits before deletion or is refused after
 expiry. An empty stream EOF can still be written so an open reader can finish.
+Invalid native metadata is rejected before durable admission with status 400;
+correct the terminal request's metadata and retry.
 
 Before queue admission or public storage/stream inspection, the World recovers
 terminal zero-retention runs left by an older release or a restored database.

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
@@ -1270,6 +1271,49 @@ describe('Retention ($retention: 0)', () => {
       await expect(
         events.create(runId, { eventType: 'run_cancelled', specVersion })
       ).rejects.toMatchObject({ status: 400 });
+      expect(
+        (
+          await pool.query(
+            'SELECT count(*)::int AS n FROM workflow.workflow_terminal_requests WHERE run_id = $1',
+            [runId]
+          )
+        ).rows[0].n
+      ).toBe(0);
+      await events.create(runId, { eventType: 'run_cancelled' });
+      expect(await countRemainingPayloads(runId)).toBe(0);
+    });
+
+    it.each([
+      {
+        name: 'error code containing NUL',
+        event: {
+          eventType: 'run_failed' as const,
+          eventData: { error: new Uint8Array([99]), errorCode: 'bad\0code' },
+        },
+      },
+      {
+        name: 'correlation ID containing NUL',
+        event: {
+          eventType: 'run_cancelled' as const,
+          correlationId: 'bad\0correlation',
+        },
+      },
+      {
+        name: 'correlation ID exceeding the native index limit',
+        event: {
+          eventType: 'run_cancelled' as const,
+          correlationId: Array.from({ length: 256 }, (_, i) =>
+            createHash('sha256').update(`correlation-${i}`).digest('hex')
+          ).join(''),
+        },
+      },
+    ])('rejects a terminal $name before retaining its request', async ({
+      event,
+    }) => {
+      const { runId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
+      await expect(events.create(runId, event)).rejects.toMatchObject({
+        status: 400,
+      });
       expect(
         (
           await pool.query(

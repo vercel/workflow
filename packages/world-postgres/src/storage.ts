@@ -1264,28 +1264,31 @@ export function createEventsStorage(
                 );
               }
             }
-            if (
-              data.specVersion !== undefined &&
-              (!Number.isInteger(data.specVersion) ||
-                data.specVersion < -2147483648 ||
-                data.specVersion > 2147483647)
-            ) {
-              throw new WorkflowWorldError(
-                'Terminal event specVersion must be a signed 32-bit integer',
-                { status: 400 }
-              );
-            }
             CreateEventSchema.parse(data);
             await tx.insert(Schema.terminalRequests).values({
               runId,
               request: { data, params },
+              specVersion: data.specVersion,
+              correlationId: data.correlationId,
+              errorCode:
+                data.eventType === 'run_failed'
+                  ? data.eventData.errorCode
+                  : undefined,
             });
             return true;
           }, SLOT_INSERT_TRANSACTION)
           .catch((error) => {
             // Drizzle errors include the serialized terminal request parameters.
-            if (error instanceof DrizzleQueryError)
+            if (error instanceof DrizzleQueryError) {
+              const { code } = pgErrorOf(error);
+              if (code?.startsWith('22') || code === '54000') {
+                throw new WorkflowWorldError(
+                  'Terminal request was not accepted; check specVersion, correlationId and errorCode',
+                  { status: 400 }
+                );
+              }
               throw retentionCleanupError();
+            }
             throw error;
           });
         if (persisted) {
