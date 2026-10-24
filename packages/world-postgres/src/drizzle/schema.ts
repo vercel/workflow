@@ -1,4 +1,6 @@
 import {
+  type AnyEventRequest,
+  type CreateEventParams,
   type Event,
   type Hook,
   type SerializedData,
@@ -27,6 +29,16 @@ import {
 import { Cbor, type Cborized } from './cbor.js';
 
 export const schema = pgSchema('workflow');
+
+/** The original terminal delivery survives a rolled-back payload purge. */
+export const terminalRequests = schema.table('workflow_terminal_requests', {
+  runId: varchar('run_id')
+    .primaryKey()
+    .references(() => runs.runId, { onDelete: 'cascade' }),
+  request: Cbor<{ data: AnyEventRequest; params?: CreateEventParams }>()(
+    'request'
+  ).notNull(),
+});
 
 /** A UTC offset (`+00`, `-07`, `+05:30`) or `Z` at the end of a timestamp. */
 const UTC_OFFSET = /(?:[+-]\d\d(?::?\d\d){0,2}|Z)$/;
@@ -396,4 +408,17 @@ export const streams = schema.table(
     primaryKey({ columns: [tb.streamId, tb.chunkId] }),
     index().on(tb.runId),
   ]
+);
+
+/** Queue envelopes carry references; run payload bytes share run retention. */
+export const queuePayloads = schema.table(
+  'workflow_queue_payloads',
+  {
+    jobId: varchar('job_id').primaryKey(),
+    messageId: varchar('message_id').notNull(),
+    runId: varchar('run_id'),
+    data: bytea('data'),
+    completedAt: timestamptz('completed_at'),
+  },
+  (tb) => [index().on(tb.runId)]
 );

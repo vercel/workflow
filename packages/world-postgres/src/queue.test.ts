@@ -26,6 +26,12 @@ import {
   DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS,
   getDeliveryTimeouts,
 } from './queue.js';
+import {
+  enqueueQueueMessage,
+  loadQueueMessage,
+  settleQueueMessage,
+} from './queue-payloads.js';
+import * as storage from './storage.js';
 
 const transport = new JsonTransport();
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
@@ -39,6 +45,13 @@ const invocationTransport = vi.hoisted(() => ({
 }));
 vi.mock('./invocations.js', () => ({
   createInvocations: () => invocationTransport,
+}));
+
+vi.mock('./queue-payloads.js', () => ({
+  enqueueQueueMessage: vi.fn(),
+  loadQueueMessage: vi.fn(),
+  recoverQueueMessages: vi.fn().mockResolvedValue(undefined),
+  settleQueueMessage: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('graphile-worker', () => ({
@@ -83,6 +96,10 @@ describe('postgres queue http execution', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(enqueueQueueMessage).mockResolvedValue('42');
+    vi.mocked(loadQueueMessage).mockImplementation(
+      async (_db, _jobId, message) => message
+    );
     invocationTransport.pending.mockResolvedValue([]);
     invocationTransport.close.mockResolvedValue(undefined);
     invocationTransport.respondOutcome.mockResolvedValue(undefined);
@@ -109,6 +126,7 @@ describe('postgres queue http execution', () => {
           })
       )
     );
+    vi.restoreAllMocks();
     vi.useRealTimers();
     delete process.env.WORKFLOW_LOCAL_BASE_URL;
     delete process.env.PORT;
@@ -134,6 +152,7 @@ describe('postgres queue http execution', () => {
   });
 
   it('fails a delivery whose handler exceeds an operator-set headers deadline', async () => {
+    const fetchMock = vi.spyOn(nodeHttp, 'nodeHttpFetch');
     const server = await startHangingWorkflowHttpServer('headers');
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
     process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
@@ -147,13 +166,23 @@ describe('postgres queue http execution', () => {
         stepId: 'step_01ABC',
         stepName: 'test-step',
       }),
-      { abortSignal: new AbortController().signal, job: { attempts: 1 } }
+      {
+        abortSignal: new AbortController().signal,
+        job: { id: '42', attempts: 1 },
+      }
     );
 
     // Rejecting hands the job back to Graphile for redelivery; the queue
     // must not schedule a replacement of its own.
-    await expect(execution).rejects.toMatchObject({ code: 'ETIMEDOUT' });
-    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+    await expect(execution).rejects.toMatchObject({
+      status: 503,
+      code: 'QUEUE_DELIVERY_FAILED',
+    });
+    await expect(fetchMock.mock.results[0].value).rejects.toMatchObject({
+      code: 'ETIMEDOUT',
+    });
+    expect(enqueueQueueMessage).not.toHaveBeenCalled();
+    expect(settleQueueMessage).not.toHaveBeenCalled();
   });
 
   it('uses a late-detected local port when the queue starts before PORT is available', async () => {
@@ -198,7 +227,7 @@ describe('postgres queue http execution', () => {
     ]);
   });
 
-  it('keeps the base-url error when env vars and local port detection cannot resolve a target', async () => {
+  it('rejects delivery when env vars and local port detection cannot resolve a target', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
 
@@ -212,9 +241,12 @@ describe('postgres queue http execution', () => {
       idempotencyKey: 'step_01ABC',
     });
 
-    await expect(task(payload, {} as any)).rejects.toThrow(
-      'Unable to resolve base URL for workflow queue.'
-    );
+    await expect(task(payload, {} as any)).rejects.toMatchObject({
+      status: 503,
+      code: 'QUEUE_DELIVERY_FAILED',
+    });
+    expect(enqueueQueueMessage).not.toHaveBeenCalled();
+    expect(settleQueueMessage).not.toHaveBeenCalled();
 
     expect(getWorkflowPort).toHaveBeenCalled();
   });
@@ -261,7 +293,7 @@ describe('postgres queue http execution', () => {
       }),
       {
         abortSignal: controller.signal,
-        job: { attempts: 1 },
+        job: { id: '42', attempts: 1 },
       }
     );
     const outcome = execution.then(
@@ -274,9 +306,13 @@ describe('postgres queue http execution', () => {
 
     await expect(settleWithin(outcome)).resolves.toMatchObject({
       status: 'rejected',
-      error: expect.objectContaining({ name: 'AbortError' }),
+      error: expect.objectContaining({
+        status: 503,
+        code: 'QUEUE_DELIVERY_FAILED',
+      }),
     });
-    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+    expect(enqueueQueueMessage).not.toHaveBeenCalled();
+    expect(settleQueueMessage).not.toHaveBeenCalled();
   });
 
   it('aborts while reading an HTTP response body without scheduling a replacement', async () => {
@@ -312,7 +348,7 @@ describe('postgres queue http execution', () => {
         }),
         {
           abortSignal: controller.signal,
-          job: { attempts: 1 },
+          job: { id: '42', attempts: 1 },
         }
       );
       const outcome = execution.then(
@@ -328,9 +364,13 @@ describe('postgres queue http execution', () => {
 
       await expect(settleWithin(outcome)).resolves.toMatchObject({
         status: 'rejected',
-        error: expect.objectContaining({ name: 'AbortError' }),
+        error: expect.objectContaining({
+          status: 503,
+          code: 'QUEUE_DELIVERY_FAILED',
+        }),
       });
-      expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+      expect(enqueueQueueMessage).not.toHaveBeenCalled();
+      expect(settleQueueMessage).not.toHaveBeenCalled();
     } finally {
       responseChannel.unsubscribe(onResponse);
     }
@@ -418,6 +458,98 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('hydrates a reference-only job before HTTP delivery and settles it afterwards', async () => {
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(requests);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    const message = MessageData.parse(
+      buildMessageData(
+        '__wkf_workflow_test-step',
+        { runId: 'run_01ABC', stepId: 'step_01ABC', stepName: 'test-step' },
+        { headers: { traceparent: 'trace-parent' } }
+      )
+    );
+    vi.mocked(loadQueueMessage).mockResolvedValueOnce(message);
+    const reference = MessageData.encode({
+      id: message.id,
+      messageId: message.messageId,
+      attempt: message.attempt,
+      data: Buffer.alloc(0),
+      payloadVersion: 1,
+      payloadRunId: 'run_01ABC',
+    });
+
+    await getTaskHandler('workflow_flows')(reference, {
+      job: { id: '42', attempts: 2 },
+    });
+
+    expect(loadQueueMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      '42',
+      MessageData.parse(reference)
+    );
+    expect(requests).toHaveLength(1);
+    expect(JSON.parse(requests[0].body)).toEqual({
+      runId: 'run_01ABC',
+      stepId: 'step_01ABC',
+      stepName: 'test-step',
+    });
+    expect(requests[0].headers).toMatchObject({
+      'x-vqs-message-id': message.messageId,
+      'x-vqs-message-attempt': '2',
+      traceparent: 'trace-parent',
+    });
+    expect(settleQueueMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      '42'
+    );
+    expect(enqueueQueueMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'HTTP',
+    'registered handler',
+  ] as const)('skips settled reference redelivery before %s delivery', async (delivery) => {
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(requests);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const fetch = vi.spyOn(nodeHttp, 'nodeHttpFetch');
+    const handler = vi.fn(async () => Response.json({ ok: true }));
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    if (delivery === 'registered handler') {
+      queue.registerHandler('__wkf_workflow_', handler);
+    }
+    await queue.start();
+    vi.mocked(loadQueueMessage).mockResolvedValueOnce(null);
+    const reference = MessageData.encode({
+      id: 'test-workflow',
+      messageId: MessageId.parse('msg_01ABC'),
+      attempt: 1,
+      data: Buffer.alloc(0),
+      payloadVersion: 1,
+      payloadRunId: 'run_01ABC',
+    });
+
+    await expect(
+      getTaskHandler('workflow_flows')(reference, {
+        job: { id: '42', attempts: 2 },
+      })
+    ).resolves.toBeUndefined();
+
+    expect(loadQueueMessage).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(),
+      '42',
+      MessageData.parse(reference)
+    );
+    expect(fetch).not.toHaveBeenCalled();
+    expect(requests).toHaveLength(0);
+    expect(handler).not.toHaveBeenCalled();
+    expect(wrappedHandler).not.toHaveBeenCalled();
+    expect(enqueueQueueMessage).not.toHaveBeenCalled();
+  });
+
   it('uses basePath for local postgres queue HTTP delivery', async () => {
     const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
     const port = await getUnusedLoopbackPort();
@@ -454,7 +586,7 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('queues producer delays and headers in graphile job metadata', async () => {
+  it('passes producer delays and headers to run-owned queue persistence', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
 
@@ -476,7 +608,8 @@ describe('postgres queue http execution', () => {
         }
       );
 
-      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      expect(enqueueQueueMessage).toHaveBeenCalledWith(
+        expect.anything(),
         'workflow_flows',
         expect.objectContaining({
           attempt: 1,
@@ -484,6 +617,7 @@ describe('postgres queue http execution', () => {
           id: 'test-step',
           idempotencyKey: 'step_01ABC',
         }),
+        'run_01ABC',
         expect.objectContaining({
           jobKey: 'step_01ABC',
           maxAttempts: 73,
@@ -499,8 +633,7 @@ describe('postgres queue http execution', () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
     await queue.queue('__wkf_workflow_test', { runId: 'run_01ABC' });
-    const [, data, options] = vi.mocked(workerUtilsMock.addJob).mock
-      .calls[0] as [string, MessageData, { jobKey?: string }];
+    const [, , data, , options] = vi.mocked(enqueueQueueMessage).mock.calls[0];
     expect(new Date(data.createdAt ?? '').getTime()).not.toBeNaN();
     expect(data.idempotencyKey).toBeUndefined();
     // A wake's job key is its own message id, so two wakes never collapse.
@@ -536,7 +669,8 @@ describe('postgres queue http execution', () => {
       'x-vqs-message-attempt': '2',
       'x-vqs-message-created-at': createdAt,
     });
-    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+    expect(enqueueQueueMessage).toHaveBeenCalledWith(
+      expect.anything(),
       'workflow_flows',
       expect.objectContaining({
         messageId,
@@ -544,6 +678,7 @@ describe('postgres queue http execution', () => {
         attempt: 3,
         idempotencyKey: 'step_01ABC',
       }),
+      'run_01ABC',
       expect.objectContaining({ jobKey: 'step_01ABC' })
     );
   });
@@ -595,20 +730,28 @@ describe('postgres queue http execution', () => {
       stepId: 'step_a',
       stepName: 'step',
     });
-    const calls = vi.mocked(workerUtilsMock.addJob).mock.calls;
+    const calls = vi.mocked(enqueueQueueMessage).mock.calls;
     expect(calls[0]).toEqual([
+      expect.anything(),
       'workflow_flows_executor',
       expect.any(Object),
+      'run_a',
       expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' }),
     ]);
-    expect(calls[1][2]).toMatchObject({
+    expect(calls[1][4]).toMatchObject({
       queueName: 'workflow_flows:run_b:executor',
     });
-    expect(calls[2][0]).toBe('workflow_flows');
-    expect(calls[2][2]).not.toHaveProperty('queueName');
+    expect(calls[2][1]).toBe('workflow_flows');
+    expect(calls[2][4]).not.toHaveProperty('queueName');
   });
 
   it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
+    const createEvent = vi.fn().mockResolvedValue(undefined);
+    const storageMock = vi
+      .spyOn(storage, 'createEventsStorage')
+      .mockReturnValue({
+        create: createEvent,
+      } as unknown as ReturnType<typeof storage.createEventsStorage>);
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
@@ -623,7 +766,7 @@ describe('postgres queue http execution', () => {
         {
           runId: 'run_a',
           runInput: {
-            input: new Uint8Array([1]),
+            input: { value: 'input' },
             deploymentId: 'postgres',
             workflowName: 'example',
             specVersion: 7,
@@ -635,17 +778,34 @@ describe('postgres queue http execution', () => {
         job: { attempts: 4, max_attempts: 9 },
       });
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      expect(enqueueQueueMessage).toHaveBeenCalledWith(
+        expect.anything(),
         'workflow_flows_executor',
-        expect.objectContaining({ ...payload, attempt: 4, attemptOffset: 3 }),
+        expect.objectContaining({
+          ...MessageData.parse(payload),
+          attempt: 4,
+          attemptOffset: 3,
+        }),
+        'run_a',
         expect.objectContaining({
           queueName: 'workflow_flows:run_a:executor',
           jobKey: `workflow_flows_executor:transfer:${payload.messageId}`,
           maxAttempts: 6,
         })
       );
+      expect(createEvent).toHaveBeenCalledExactlyOnceWith('run_a', {
+        eventType: 'run_created',
+        specVersion: 7,
+        eventData: {
+          input: { value: 'input' },
+          deploymentId: 'postgres',
+          workflowName: 'example',
+          specVersion: 7,
+        },
+      });
     } finally {
       fetchMock.mockRestore();
+      storageMock.mockRestore();
     }
   });
 
@@ -669,9 +829,11 @@ describe('postgres queue http execution', () => {
         job: { attempts: 49 },
       });
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      expect(enqueueQueueMessage).toHaveBeenCalledWith(
+        expect.anything(),
         'workflow_flows_executor',
         expect.objectContaining({ attempt: 49, attemptOffset: 48 }),
+        'run_a',
         expect.objectContaining({ maxAttempts: 25 })
       );
     } finally {
@@ -685,15 +847,20 @@ describe('postgres queue http execution', () => {
       pool
     );
     await queue.start();
-    vi.mocked(workerUtilsMock.addJob).mockRejectedValueOnce(
+    vi.mocked(enqueueQueueMessage).mockRejectedValueOnce(
       new Error('transfer failed')
     );
     await expect(
       getTaskHandler('workflow_flows')(
         buildMessageData('__wkf_workflow_example', { runId: 'run_a' }),
-        { job: { attempts: 1 } }
+        { job: { id: '42', attempts: 1 } }
       )
-    ).rejects.toThrow('transfer failed');
+    ).rejects.toMatchObject({
+      status: 503,
+      code: 'QUEUE_DELIVERY_FAILED',
+    });
+    expect(enqueueQueueMessage).toHaveBeenCalledOnce();
+    expect(settleQueueMessage).not.toHaveBeenCalled();
   });
 
   it('only forwards executor provenance for a job on the expected named queue', async () => {
@@ -731,9 +898,11 @@ describe('postgres queue http execution', () => {
       const execute = getTaskHandler('workflow_flows_executor');
       await execute(payload, helpers);
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      expect(enqueueQueueMessage).toHaveBeenCalledWith(
+        expect.anything(),
         'workflow_flows_executor',
         expect.anything(),
+        'run_a',
         expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
       );
       helpers.getQueueName.mockResolvedValue('workflow_flows:run_a:executor');
@@ -772,7 +941,7 @@ describe('postgres queue http execution', () => {
             },
           }
         ),
-        { job: { attempts: 1 } }
+        { job: { id: '42', attempts: 1 } }
       );
       const headers = new Headers(fetchMock.mock.calls[0][1]?.headers);
       expect(headers.has('x-workflow-postgres-executor-job')).toBe(false);
@@ -836,13 +1005,15 @@ describe('postgres queue http execution', () => {
     await receive(request({}, { runId: 'run_a', __healthCheck: false }));
     expect(handler).not.toHaveBeenCalled();
     expect(invocationTransport.pending).not.toHaveBeenCalled();
-    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+    expect(enqueueQueueMessage).toHaveBeenCalledWith(
+      expect.anything(),
       'workflow_flows_executor',
       expect.objectContaining({
         messageId: 'msg_receiver',
         attempt: 3,
         attemptOffset: 2,
       }),
+      'run_a',
       expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
     );
   });
@@ -937,13 +1108,15 @@ describe('postgres queue http execution', () => {
       }
     );
 
-    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+    expect(enqueueQueueMessage).toHaveBeenCalledWith(
+      expect.anything(),
       'workflow_flows',
       expect.objectContaining({
         attempt: 1,
         id: 'test-step',
         idempotencyKey: 'step_01ABC',
       }),
+      'run_01ABC',
       expect.objectContaining({
         jobKey: 'step_01ABC',
         maxAttempts: 73,
@@ -962,8 +1135,8 @@ describe('postgres queue http execution', () => {
     await queue.queue('__wkf_workflow_myWorkflow', { runId: 'run_01DEF' });
 
     const jobs = vi
-      .mocked(workerUtilsMock.addJob)
-      .mock.calls.map(([, payload]) => MessageData.parse(payload));
+      .mocked(enqueueQueueMessage)
+      .mock.calls.map(([, , payload]) => payload);
     expect(jobs).toEqual([
       expect.objectContaining({
         id: 'session',
@@ -996,7 +1169,7 @@ describe('postgres queue http execution', () => {
 
     await getTaskHandler('workflow_flows')(
       buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
-      { job: { attempts: 1 } }
+      { job: { id: '42', attempts: 1 } }
     );
 
     expect(requests).toEqual([
@@ -1030,7 +1203,7 @@ describe('postgres queue http execution', () => {
         { runId: 'run_01ABC' },
         { route: '/api/agent/queue' }
       ),
-      { job: { attempts: 1 } }
+      { job: { id: '42', attempts: 1 } }
     );
 
     expect(requests.map((r) => r.url)).toEqual(['/api/agent/queue']);
@@ -1051,7 +1224,7 @@ describe('postgres queue http execution', () => {
 
     await getTaskHandler('workflow_flows')(
       buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
-      { job: { attempts: 1 } }
+      { job: { id: '42', attempts: 1 } }
     );
 
     expect(requests.map((r) => r.url)).toEqual([
@@ -1085,7 +1258,7 @@ describe('postgres queue http execution', () => {
         { runId: 'run_01ABC' },
         { legacy: true }
       ),
-      { job: { attempts: 1 } }
+      { job: { id: '42', attempts: 1 } }
     );
 
     expect(requests[0]?.headers['x-vqs-queue-name']).toBe(
@@ -1118,7 +1291,7 @@ describe('postgres queue http execution', () => {
 
     await getTaskHandler('workflow_flows')(
       buildMessageData('__agent_wkf_workflow_session', { runId: 'run_01ABC' }),
-      { job: { attempts: 1 } }
+      { job: { id: '42', attempts: 1 } }
     );
 
     expect(requests).toHaveLength(0);
@@ -1130,9 +1303,9 @@ describe('postgres queue http execution', () => {
       },
     ]);
     // `{ timeoutSeconds }` reschedules the same message under its prefix.
-    const [, rescheduled, options] =
-      vi.mocked(workerUtilsMock.addJob).mock.calls[0] ?? [];
-    expect(MessageData.parse(rescheduled)).toMatchObject({
+    const [, , rescheduled, , options] =
+      vi.mocked(enqueueQueueMessage).mock.calls[0] ?? [];
+    expect(rescheduled).toMatchObject({
       id: 'session',
       prefix: '__agent_wkf_workflow_',
     });
@@ -1161,7 +1334,7 @@ describe('postgres queue http execution', () => {
 
     await queue.queue('__wkf_workflow_example', { runId: 'run_01ABC' });
 
-    const [, , options] = vi.mocked(workerUtilsMock.addJob).mock.calls[0];
+    const [, , , , options] = vi.mocked(enqueueQueueMessage).mock.calls[0];
     expect(options?.maxAttempts).toBeGreaterThan(49);
   });
 });
@@ -1170,7 +1343,7 @@ function buildQueue(
   config: Parameters<typeof createQueue>[0],
   pgPool: Parameters<typeof createQueue>[1]
 ) {
-  const queue = createQueue(config, pgPool);
+  const queue = createQueue(config, pgPool, async () => {});
   createdQueues.push(queue);
   return queue;
 }
@@ -1204,7 +1377,7 @@ function buildMessageData(
   });
 }
 
-function getTaskHandler(name: 'workflow_flows') {
+function getTaskHandler(name: 'workflow_flows' | 'workflow_flows_executor') {
   const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
   const task = taskList?.[name];
   expect(task).toBeTypeOf('function');

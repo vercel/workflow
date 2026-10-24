@@ -2,7 +2,11 @@ import { connect } from 'node:net';
 import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  RunExpiredError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   captureInvocationOutcome,
   isTerminalInvocationError,
@@ -44,9 +48,18 @@ import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
+import { createClient } from './drizzle/index.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
+import {
+  enqueueQueueMessage,
+  loadQueueMessage,
+  recoverQueueMessages,
+  settleQueueMessage,
+} from './queue-payloads.js';
+import { recoverRunUserData } from './retention.js';
+import { createEventsStorage, recoverTerminalRequests } from './storage.js';
 
 /**
  * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
@@ -204,6 +217,7 @@ function executorInput(message: unknown) {
  * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
 export type PostgresQueue = Queue & {
+  prepare(): Promise<void>;
   start(): Promise<void>;
   close(): Promise<void>;
   /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
@@ -217,7 +231,12 @@ export type PostgresQueue = Queue & {
 
 export function createQueue(
   config: PostgresWorldConfig,
-  pool: Pool
+  pool: Pool,
+  recoverPayloads: () => Promise<void> = async () => {
+    const drizzle = createClient(pool);
+    await recoverTerminalRequests(drizzle);
+    await recoverRunUserData(drizzle);
+  }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createWorld({ dataDir: undefined, port });
@@ -272,7 +291,9 @@ export function createQueue(
     return `${jobPrefix}flows`;
   }
 
-  const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  const invocations = config.enableInvoke
+    ? createInvocations(pool, recoverPayloads)
+    : undefined;
   /**
    * The Workflow SDK prefix this World serves: messages on it (and jobs that
    * predate the stored prefix) are workflow runs, which the run-scoped
@@ -289,7 +310,10 @@ export function createQueue(
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
 
-  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+  const createUncheckedQueueHandler: Queue['createQueueHandler'] = (
+    prefix,
+    handler
+  ) => {
     if (!invocations || prefix !== ownPrefix())
       return localWorld.createQueueHandler(prefix, handler);
     return async (req) => {
@@ -401,6 +425,14 @@ export function createQueue(
     };
   };
 
+  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+    const delivery = createUncheckedQueueHandler(prefix, handler);
+    return async (request) => {
+      await recoverPayloads();
+      return delivery(request);
+    };
+  };
+
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
   };
@@ -412,6 +444,7 @@ export function createQueue(
   let runnerStart: RunnerStart | null = null;
   let closing = false;
   let startPromise: Promise<void> | null = null;
+  let preparePromise: Promise<void> | null = null;
 
   function markMessageCompleted(idempotencyKey: string) {
     completedMessages.delete(idempotencyKey);
@@ -467,30 +500,51 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
-    await utils.addJob(
-      executorRunId ? executorTask() : getJobQueueName(),
-      MessageData.encode({
-        id: queueId,
-        ...(prefix ? { prefix } : {}),
-        ...(route ? { route } : {}),
-        data: Buffer.from(body),
-        attempt,
-        ...(attemptOffset !== undefined ? { attemptOffset } : {}),
-        ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
-        messageId,
-        ...(createdAt ? { createdAt } : {}),
-        idempotencyKey,
-        headers,
-      }),
-      {
-        ...(jobKey ? { jobKey } : {}),
-        ...(runAt ? { runAt } : {}),
-        maxAttempts,
-        ...(executorRunId
-          ? { queueName: executorQueueName(executorRunId) }
-          : {}),
+    const envelope = {
+      id: queueId,
+      ...(prefix ? { prefix } : {}),
+      ...(route ? { route } : {}),
+      data: Buffer.from(body),
+      attempt,
+      ...(attemptOffset !== undefined ? { attemptOffset } : {}),
+      ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
+      messageId,
+      ...(createdAt ? { createdAt } : {}),
+      idempotencyKey,
+      headers,
+    };
+    const jobOptions = {
+      ...(jobKey ? { jobKey } : {}),
+      ...(runAt ? { runAt } : {}),
+      maxAttempts,
+      ...(executorRunId ? { queueName: executorQueueName(executorRunId) } : {}),
+    };
+    const identifier = executorRunId ? executorTask() : getJobQueueName();
+    const decodedBody = await deserializeMessageBody(Buffer.from(body));
+    if (!QueuePayloadSchema.safeParse(decodedBody).success) {
+      throw new WorkflowWorldError('Invalid workflow queue payload', {
+        status: 400,
+        code: 'QUEUE_MESSAGE_INVALID',
+      });
+    }
+    const decoded = WorkflowInvokePayloadSchema.safeParse(decodedBody);
+    const runId = decoded.success ? decoded.data.runId : undefined;
+    const runInput = decoded.success ? decoded.data.runInput : undefined;
+    const db = createClient(pool);
+    if (runInput && runId) {
+      // Preserve resilient start while keeping all argument bytes in the
+      // run-scoped store before publishing a reference-only queue envelope.
+      try {
+        await createEventsStorage(db).create(runId, {
+          eventType: 'run_created',
+          specVersion: runInput.specVersion,
+          eventData: runInput,
+        });
+      } catch (error) {
+        if (!(error instanceof EntityConflictError)) throw error;
       }
-    );
+    }
+    await enqueueQueueMessage(db, identifier, envelope, runId, jobOptions);
   }
 
   async function transferToExecutor(
@@ -834,6 +888,25 @@ export function createQueue(
     await promise;
   }
 
+  async function prepare(): Promise<void> {
+    if (!preparePromise) {
+      preparePromise = (async () => {
+        workerUtils = await makeWorkerUtils({
+          pgPool: pool,
+          logger: graphileLogger,
+        });
+        await workerUtils.migrate();
+        await migratePgBossJobs(workerUtils);
+      })().catch(async (error) => {
+        await workerUtils?.release();
+        workerUtils = null;
+        preparePromise = null;
+        throw error;
+      });
+    }
+    await preparePromise;
+  }
+
   async function start(): Promise<void> {
     if (closing) {
       return;
@@ -842,12 +915,12 @@ export function createQueue(
     if (!startPromise) {
       startPromise = (async () => {
         try {
-          workerUtils = await makeWorkerUtils({
-            pgPool: pool,
-            logger: graphileLogger,
-          });
-          await workerUtils.migrate();
-          await migratePgBossJobs(workerUtils);
+          await prepare();
+          await recoverQueueMessages(
+            createClient(pool),
+            config.jobPrefix || 'workflow_'
+          );
+          await recoverPayloads();
           await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;
@@ -856,6 +929,7 @@ export function createQueue(
       })();
     }
     await startPromise;
+    await recoverPayloads();
     if (!closing && !runner && !runnerStart) {
       await startRunnerWhenExecutorIsReady();
     }
@@ -909,14 +983,28 @@ export function createQueue(
         });
         // The mailbox insertion and wake share this transaction. No job_key:
         // every invoke (including a completed request's retry) gets a wake.
-        await client.query(
-          `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
+        const queued = await client.query<{ id: string }>(
+          `SELECT id::text AS id FROM graphile_worker.add_job(identifier => $1, payload => $2::json,
           queue_name => $3, max_attempts => $4)`,
           [
             executorTask(),
-            JSON.stringify(wake),
+            JSON.stringify({
+              ...wake,
+              data: '',
+              payloadVersion: 1,
+              payloadRunId: runId,
+            }),
             executorQueueName(runId),
             MAX_GRAPHILE_JOB_ATTEMPTS,
+          ]
+        );
+        await client.query(
+          'INSERT INTO workflow.workflow_queue_payloads(job_id, message_id, run_id, data) VALUES ($1, $2, $3, $4)',
+          [
+            queued.rows[0].id,
+            wake.messageId,
+            runId,
+            Buffer.from(JSON.stringify(wake)),
           ]
         );
       }
@@ -929,9 +1017,23 @@ export function createQueue(
   }
 
   function createTaskHandler(queue: QueuePrefix, executor = false) {
-    return async (payload: unknown, helpers: unknown) => {
-      const messageData = MessageData.parse(payload);
+    const handle = async (payload: unknown, helpers: unknown) => {
+      await recoverPayloads();
+      let messageData = MessageData.parse(payload);
       const graphileHelpers = GraphileHelpers.safeParse(helpers);
+      if (messageData.payloadVersion) {
+        if (!graphileHelpers.success || !graphileHelpers.data.job.id)
+          throw new WorkflowWorldError('Missing queue delivery identity', {
+            status: 503,
+          });
+        const hydrated = await loadQueueMessage(
+          createClient(pool),
+          graphileHelpers.data.job.id,
+          messageData
+        );
+        if (!hydrated) return;
+        messageData = hydrated;
+      }
       const attempt = graphileHelpers.success
         ? graphileHelpers.data.job.attempts + (messageData.attemptOffset ?? 0)
         : messageData.attempt;
@@ -1069,6 +1171,23 @@ export function createQueue(
       inflightMessages.set(idempotencyKey, execution);
       await execution;
     };
+    return async (payload: unknown, helpers: unknown) => {
+      try {
+        await handle(payload, helpers);
+        const parsed = GraphileHelpers.safeParse(helpers);
+        if (parsed.success && parsed.data.job.id)
+          await settleQueueMessage(createClient(pool), parsed.data.job.id);
+      } catch (error) {
+        if (!RunExpiredError.is(error)) {
+          // Graphile persists thrown messages as last_error. HTTP response
+          // bodies and user exceptions must not become a second payload store.
+          throw new WorkflowWorldError(
+            'Workflow queue delivery failed; retry after recovery',
+            { status: 503, code: 'QUEUE_DELIVERY_FAILED' }
+          );
+        }
+      }
+    };
   }
 
   async function setupListeners() {
@@ -1115,6 +1234,7 @@ export function createQueue(
       routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
     },
     start,
+    prepare,
     async close() {
       closing = true;
       await invocations?.close();
@@ -1124,6 +1244,7 @@ export function createQueue(
         runnerStart = null;
       }
       await startPromise?.catch(() => {});
+      await preparePromise?.catch(() => {});
       const activeRunner = runner;
       if (activeRunner) {
         try {

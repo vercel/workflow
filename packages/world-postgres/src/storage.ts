@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   EntityConflictError,
   HookForceClaimedError,
@@ -38,6 +39,7 @@ import type {
 import {
   ATTRIBUTE_MAX_PER_RUN,
   AttributeValidationError,
+  CreateEventSchema,
   EVENT_ID_BODY_LENGTH,
   EVENT_ID_PREFIX,
   EventSchema,
@@ -53,6 +55,7 @@ import {
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
+  readRunRetention,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
@@ -70,6 +73,7 @@ import { encode } from 'cbor-x';
 import {
   and,
   asc,
+  DrizzleQueryError,
   desc,
   eq,
   exists,
@@ -91,7 +95,12 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
-import { purgeRunUserDataIfZeroRetention } from './retention.js';
+import {
+  lockRunIdentity,
+  lockRunPayloads,
+  purgeRunUserDataIfZeroRetention,
+  retentionCleanupError,
+} from './retention.js';
 import {
   getRunStatusPollIntervalMs,
   notifyRunTerminal,
@@ -903,81 +912,90 @@ export function createRunsStorage(
       changes: AttributeChange[],
       options?: { allowReservedAttributes?: boolean }
     ): Promise<ExperimentalSetAttributesResult> => {
-      // Load existing attributes so the SDK-shape validator can produce
-      // a precise error message (cap, duplicate keys, reserved prefix,
-      // byte length). The authoritative cap enforcement happens inside
-      // the UPDATE statement below (see the `WHERE` clause), so the
-      // race between this read and the UPDATE cannot push the row past
-      // the per-run cap.
-      const [existing] = await drizzle
-        .select({ attributes: runs.attributes })
-        .from(runs)
-        .where(eq(runs.runId, runId))
-        .limit(1);
-      if (!existing) {
-        throw new WorkflowRunNotFoundError(runId);
-      }
-
-      try {
-        validateAttributeChanges(changes, {
-          existingKeys: Object.keys(existing.attributes ?? {}),
-          allowReservedAttributes: options?.allowReservedAttributes,
-        });
-      } catch (err) {
-        if (err instanceof AttributeValidationError) throw err;
-        throw err;
-      }
-
-      // Build a single SQL expression that applies all changes
-      // atomically. Sets fold into nested `jsonb_set` calls; removes
-      // fold into chained `-` (delete) operators.
-      let expr = sql`COALESCE(${runs.attributes}, '{}'::jsonb)`;
-      for (const { key, value } of changes) {
-        if (value === null) {
-          expr = sql`${expr} - ${key}`;
-        } else {
-          expr = sql`jsonb_set(${expr}, ARRAY[${key}]::text[], to_jsonb(${value}::text), true)`;
-        }
-      }
-
-      // Atomic cap enforcement: only commit the UPDATE if the
-      // post-merge key count fits the per-run cap. Computed against
-      // the *current* row state, so two concurrent writers adding
-      // disjoint keys at the cap boundary cannot both succeed.
-      // Drizzle re-renders `expr` twice in the SQL (`SET attributes =
-      // ...` + the count check); `jsonb_set` is cheap so the
-      // duplication is harmless.
-      const [updated] = await drizzle
-        .update(runs)
-        .set({
-          attributes: expr as any,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(runs.runId, runId),
-            sql`(SELECT COUNT(*) FROM jsonb_object_keys(${expr})) <= ${ATTRIBUTE_MAX_PER_RUN}`
-          )
-        )
-        .returning({ attributes: runs.attributes });
-
-      if (!updated) {
-        // Either the run vanished mid-call, or the cap-check WHERE
-        // clause rejected the UPDATE. Re-read to disambiguate.
-        const [stillThere] = await drizzle
+      return drizzle.transaction(async (tx) => {
+        await lockRunIdentity(tx, runId, 'update');
+        const [pending] = await tx
+          .select({ runId: Schema.terminalRequests.runId })
+          .from(Schema.terminalRequests)
+          .where(eq(Schema.terminalRequests.runId, runId))
+          .limit(1);
+        if (pending) throw retentionCleanupError();
+        // Load existing attributes so the SDK-shape validator can produce
+        // a precise error message (cap, duplicate keys, reserved prefix,
+        // byte length). The authoritative cap enforcement happens inside
+        // the UPDATE statement below (see the `WHERE` clause), so the
+        // race between this read and the UPDATE cannot push the row past
+        // the per-run cap.
+        const [existing] = await tx
           .select({ attributes: runs.attributes })
           .from(runs)
           .where(eq(runs.runId, runId))
           .limit(1);
-        if (!stillThere) {
+        if (!existing) {
           throw new WorkflowRunNotFoundError(runId);
         }
-        throw new AttributeValidationError(
-          `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} after concurrent write`
-        );
-      }
 
-      return { attributes: updated.attributes ?? {} };
+        try {
+          validateAttributeChanges(changes, {
+            existingKeys: Object.keys(existing.attributes ?? {}),
+            allowReservedAttributes: options?.allowReservedAttributes,
+          });
+        } catch (err) {
+          if (err instanceof AttributeValidationError) throw err;
+          throw err;
+        }
+
+        // Build a single SQL expression that applies all changes
+        // atomically. Sets fold into nested `jsonb_set` calls; removes
+        // fold into chained `-` (delete) operators.
+        let expr = sql`COALESCE(${runs.attributes}, '{}'::jsonb)`;
+        for (const { key, value } of changes) {
+          if (value === null) {
+            expr = sql`${expr} - ${key}`;
+          } else {
+            expr = sql`jsonb_set(${expr}, ARRAY[${key}]::text[], to_jsonb(${value}::text), true)`;
+          }
+        }
+
+        // Atomic cap enforcement: only commit the UPDATE if the
+        // post-merge key count fits the per-run cap. Computed against
+        // the *current* row state, so two concurrent writers adding
+        // disjoint keys at the cap boundary cannot both succeed.
+        // Drizzle re-renders `expr` twice in the SQL (`SET attributes =
+        // ...` + the count check); `jsonb_set` is cheap so the
+        // duplication is harmless.
+        const [updated] = await tx
+          .update(runs)
+          .set({
+            attributes: expr as any,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(runs.runId, runId),
+              sql`(SELECT COUNT(*) FROM jsonb_object_keys(${expr})) <= ${ATTRIBUTE_MAX_PER_RUN}`
+            )
+          )
+          .returning({ attributes: runs.attributes });
+
+        if (!updated) {
+          // Either the run vanished mid-call, or the cap-check WHERE
+          // clause rejected the UPDATE. Re-read to disambiguate.
+          const [stillThere] = await tx
+            .select({ attributes: runs.attributes })
+            .from(runs)
+            .where(eq(runs.runId, runId))
+            .limit(1);
+          if (!stillThere) {
+            throw new WorkflowRunNotFoundError(runId);
+          }
+          throw new AttributeValidationError(
+            `Run attribute count would exceed limit ${ATTRIBUTE_MAX_PER_RUN} after concurrent write`
+          );
+        }
+
+        return { attributes: updated.attributes ?? {} };
+      });
     },
   };
 }
@@ -1000,7 +1018,10 @@ async function handleLegacyEventPostgres(
   eventId: string,
   data: any,
   currentRun: { status: string; specVersion: number | null },
-  params?: { resolveData?: ResolveData }
+  params?: {
+    resolveData?: ResolveData;
+    deferTerminalNotify?: (runId: string) => void;
+  }
 ): Promise<EventResult> {
   const resolveData = params?.resolveData ?? 'all';
 
@@ -1047,7 +1068,8 @@ async function handleLegacyEventPostgres(
       // Wake `runs.waitForTerminalStatus` waiters. This shortcut returns
       // before the notify in `createEventsStorage`, so without this a legacy
       // run's cancellation is only noticed by the backstop re-read.
-      await notifyRunTerminal(drizzle, runId);
+      if (params?.deferTerminalNotify) params.deferTerminalNotify(runId);
+      else await notifyRunTerminal(drizzle, runId);
 
       // Return without event (legacy behavior skips event storage)
       // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData
@@ -1125,11 +1147,44 @@ async function handleLegacyEventPostgres(
   }
 }
 
-/**
- * The events storage, with the in-band writer fence (see
- * `fencedInsertAttempt`) around `create` and the fence snapshot on `list`.
- */
-export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
+/** Replay only persisted terminal deliveries; never execute workflow effects. */
+export async function recoverTerminalRequests(drizzle: Drizzle): Promise<void> {
+  try {
+    for (;;) {
+      const pending = await drizzle
+        .select()
+        .from(Schema.terminalRequests)
+        .limit(100);
+      if (!pending.length) return;
+      for (const { runId, request } of pending) {
+        try {
+          const create = createEventsStorage(drizzle, true).create as (
+            runId: string,
+            data: AnyEventRequest,
+            params?: CreateEventParams
+          ) => Promise<EventResult>;
+          await create(runId, request.data, request.params);
+        } catch {
+          // Another instance may have completed the same intent while we waited.
+        }
+        const [remaining] = await drizzle
+          .select({ runId: Schema.terminalRequests.runId })
+          .from(Schema.terminalRequests)
+          .where(eq(Schema.terminalRequests.runId, runId))
+          .limit(1);
+        if (remaining) throw retentionCleanupError();
+      }
+    }
+  } catch {
+    throw retentionCleanupError();
+  }
+}
+
+/** Events storage with the in-band fence and recoverable terminal deletion. */
+export function createEventsStorage(
+  drizzle: Drizzle,
+  replayTerminalRequest = false
+): Storage['events'] {
   const events = createUnfencedEventsStorage(drizzle);
   const unfencedCreate = events.create as (
     runId: string | null,
@@ -1143,20 +1198,101 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       data: AnyEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult> {
-      // `run_created` opens the count and is never fenced itself.
-      if (!params?.inBand || !runId || data.eventType === 'run_created') {
+      if (!runId) {
         return unfencedCreate(runId, data, params);
       }
-      const expected = params.expectedSeqInBand;
+      const expected = params?.expectedSeqInBand;
       if (
-        expected === undefined ||
-        !Number.isSafeInteger(expected) ||
-        expected < 0
+        params?.inBand &&
+        data.eventType !== 'run_created' &&
+        (expected === undefined ||
+          !Number.isSafeInteger(expected) ||
+          expected < 0)
       ) {
         throw new WorkflowWorldError(
           `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
           { status: 400 }
         );
+      }
+      if (!replayTerminalRequest && isTerminalRunEventType(data.eventType)) {
+        const persisted = await drizzle
+          .transaction(async (tx) => {
+            await lockRunIdentity(tx, runId, 'update');
+            const [pending] = await tx
+              .select()
+              .from(Schema.terminalRequests)
+              .where(eq(Schema.terminalRequests.runId, runId))
+              .limit(1);
+            if (pending) {
+              if (!isDeepStrictEqual(pending.request, { data, params })) {
+                throw retentionCleanupError();
+              }
+              return true;
+            }
+            const [run] = await tx
+              .select({
+                status: Schema.runs.status,
+                attributes: Schema.runs.attributes,
+                specVersion: Schema.runs.specVersion,
+                expiredAt: Schema.runs.expiredAt,
+              })
+              .from(Schema.runs)
+              .where(eq(Schema.runs.runId, runId))
+              .for('update')
+              .limit(1);
+            if (
+              !run ||
+              run.expiredAt !== null ||
+              isTerminalWorkflowRunStatus(run.status) ||
+              readRunRetention(run.attributes ?? undefined).mode !== 'none' ||
+              requiresNewerWorld(run.specVersion) ||
+              (isLegacySpecVersion(run.specVersion) &&
+                data.eventType !== 'run_cancelled')
+            )
+              return false;
+            if (params?.inBand && expected !== undefined) {
+              const [slot] = await tx
+                .select({ seqInBand: Schema.eventSlots.seqInBand })
+                .from(Schema.eventSlots)
+                .where(eq(Schema.eventSlots.runId, runId))
+                .for('update')
+                .limit(1);
+              if (slot && slot.seqInBand !== expected) {
+                throw new InBandSupersededError(
+                  `In-band terminal write on run ${runId} was superseded`,
+                  { seqInBand: slot.seqInBand }
+                );
+              }
+            }
+            if (
+              data.specVersion !== undefined &&
+              (!Number.isInteger(data.specVersion) ||
+                data.specVersion < -2147483648 ||
+                data.specVersion > 2147483647)
+            ) {
+              throw new WorkflowWorldError(
+                'Terminal event specVersion must be a signed 32-bit integer',
+                { status: 400 }
+              );
+            }
+            CreateEventSchema.parse(data);
+            await tx.insert(Schema.terminalRequests).values({
+              runId,
+              request: { data, params },
+            });
+            return true;
+          }, SLOT_INSERT_TRANSACTION)
+          .catch((error) => {
+            // Drizzle errors include the serialized terminal request parameters.
+            if (error instanceof DrizzleQueryError)
+              throw retentionCleanupError();
+            throw error;
+          });
+        if (persisted) {
+          const create = createEventsStorage(drizzle, true)
+            .create as typeof unfencedCreate;
+          return create(runId, data, params);
+        }
       }
       // Several event types update their entity row (run status,
       // attributes, a step or wait) ahead of the event insert, so the fence
@@ -1167,33 +1303,119 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // anything: the others find the count moved. Only in-band writers take
       // this lock, so out-of-band writes never wait on it.
       const terminalRuns: string[] = [];
-      const result = await drizzle.transaction(async (tx) => {
-        const [row] = await tx
-          .select({ seqInBand: Schema.eventSlots.seqInBand })
-          .from(Schema.eventSlots)
-          .where(eq(Schema.eventSlots.runId, runId))
-          .for('update')
-          .limit(1);
-        // No slots row: a run that predates slot-numbered ids, which the
-        // fence does not cover (its inserts allocate no slot).
-        if (row && row.seqInBand !== expected) {
-          throw new InBandSupersededError(
-            `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${row.seqInBand}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
-            { seqInBand: row.seqInBand }
+      let deletingPayloads = false;
+      const result = await drizzle
+        .transaction(async (tx) => {
+          const forceClaim =
+            data.eventType === 'hook_created' && data.eventData.force === true;
+          if (forceClaim) {
+            const [candidate] = await tx
+              .select({ runId: Schema.hooks.runId })
+              .from(Schema.hooks)
+              .where(eq(Schema.hooks.token, data.eventData.token))
+              .limit(1);
+            // Reciprocal force-claims must acquire claimant and victim run
+            // locks in the same order, before either hook or event-slot lock.
+            for (const id of [
+              ...new Set(candidate ? [runId, candidate.runId] : [runId]),
+            ].sort()) {
+              await lockRunIdentity(tx, id, 'update');
+            }
+            const [pending] = await tx
+              .select({ runId: Schema.terminalRequests.runId })
+              .from(Schema.terminalRequests)
+              .where(
+                inArray(
+                  Schema.terminalRequests.runId,
+                  candidate ? [runId, candidate.runId] : [runId]
+                )
+              )
+              .limit(1);
+            if (pending) throw retentionCleanupError();
+            await tx
+              .select({ runId: Schema.runs.runId })
+              .from(Schema.runs)
+              .where(
+                inArray(
+                  Schema.runs.runId,
+                  candidate ? [runId, candidate.runId] : [runId]
+                )
+              )
+              .orderBy(Schema.runs.runId)
+              .for('update');
+            const [owner] = await tx
+              .select({ runId: Schema.hooks.runId })
+              .from(Schema.hooks)
+              .where(eq(Schema.hooks.token, data.eventData.token))
+              .limit(1);
+            if (owner?.runId !== candidate?.runId) {
+              throw new WorkflowWorldError(
+                'Hook ownership changed; retry delivery',
+                { status: 503 }
+              );
+            }
+          }
+          // Before any step/hook/slot locks: late payload writers must serialize
+          // with the transaction that expires and clears this run.
+          const mutatesRun =
+            data.eventType.startsWith('run_') ||
+            data.eventType === 'attr_set' ||
+            data.eventType === 'hook_received' ||
+            forceClaim;
+          const retentionRun = await lockRunPayloads(
+            tx,
+            runId,
+            mutatesRun ? 'update' : 'share',
+            replayTerminalRequest
           );
-        }
-        const inTransaction = createUnfencedEventsStorage(tx, {
-          deferTerminalNotify: (terminalRunId) =>
-            terminalRuns.push(terminalRunId),
-        }).create as (
-          runId: string | null,
-          data: AnyEventRequest,
-          params?: CreateEventParams
-        ) => Promise<EventResult>;
-        return pendingFence.run({ runId, expected, consumed: false }, () =>
-          inTransaction(runId, data, params)
-        );
-      }, SLOT_INSERT_TRANSACTION);
+          deletingPayloads =
+            readRunRetention(retentionRun?.attributes ?? undefined).mode ===
+              'none' && isTerminalRunEventType(data.eventType);
+          const inTransaction = createUnfencedEventsStorage(tx, {
+            deferTerminalNotify: (terminalRunId) =>
+              terminalRuns.push(terminalRunId),
+          }).create as (
+            runId: string | null,
+            data: AnyEventRequest,
+            params?: CreateEventParams
+          ) => Promise<EventResult>;
+          if (
+            !params?.inBand ||
+            data.eventType === 'run_created' ||
+            expected === undefined
+          ) {
+            return inTransaction(runId, data, params);
+          }
+          const [row] = await tx
+            .select({ seqInBand: Schema.eventSlots.seqInBand })
+            .from(Schema.eventSlots)
+            .where(eq(Schema.eventSlots.runId, runId))
+            .for('update')
+            .limit(1);
+          // No slots row: a run that predates slot-numbered ids, which the
+          // fence does not cover (its inserts allocate no slot).
+          if (row && row.seqInBand !== expected) {
+            throw new InBandSupersededError(
+              `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${row.seqInBand}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+              { seqInBand: row.seqInBand }
+            );
+          }
+          return pendingFence.run({ runId, expected, consumed: false }, () =>
+            inTransaction(runId, data, params)
+          );
+        }, SLOT_INSERT_TRANSACTION)
+        .catch(async (error) => {
+          // A lost connection can make Drizzle's rollback replace the original
+          // purge error. Preserve the same bounded, retryable failure contract.
+          if (deletingPayloads && error instanceof DrizzleQueryError) {
+            throw retentionCleanupError();
+          }
+          if (RunExpiredError.is(error) && data.eventType === 'run_cancelled') {
+            const run = await createRunsStorage(drizzle).get(runId);
+            if (run.status === 'cancelled') return { run };
+          }
+          throw error;
+        });
       for (const terminalRunId of terminalRuns) {
         await notifyRunTerminal(drizzle, terminalRunId);
       }
@@ -1550,7 +1772,10 @@ function createUnfencedEventsStorage(
             `wevt_${legacyEventUlid()}`,
             data,
             currentRun,
-            params && { resolveData: entityResolveData(params.resolveData) }
+            {
+              resolveData: entityResolveData(params?.resolveData),
+              deferTerminalNotify: options.deferTerminalNotify,
+            }
           );
         }
       }
@@ -1798,6 +2023,7 @@ function createUnfencedEventsStorage(
         // A visible run must already have its slot marker and first event;
         // otherwise a concurrent writer mistakes it for a legacy run.
         const created = await drizzle.transaction(async (tx) => {
+          await lockRunPayloads(tx, effectiveRunId, 'update');
           const [runValue] = await tx
             .insert(Schema.runs)
             .values({
@@ -2047,7 +2273,14 @@ function createUnfencedEventsStorage(
             .delete(Schema.waits)
             .where(eq(Schema.waits.runId, effectiveRunId));
 
-          return insertOwnEvent(tx);
+          const terminalEvent = await insertOwnEvent(tx);
+          await purgeRunUserDataIfZeroRetention(
+            tx,
+            effectiveRunId,
+            runValue?.attributes,
+            now
+          );
+          return terminalEvent;
         }, SLOT_INSERT_TRANSACTION);
       }
 
@@ -3356,20 +3589,6 @@ function createUnfencedEventsStorage(
       // (specVersion < 2) `run_cancelled` shortcut, which returns from
       // `handleLegacyEventPostgres` and notifies for itself.
       if (run && isTerminalWorkflowRunStatus(run.status)) {
-        // Honor `$retention: 0` before the announcement, not after. The
-        // terminal event row committed above is itself payload-bearing
-        // (`run_completed` carries the output), so this is the first point
-        // where a purge can cover the whole run; and going before the notify
-        // means a waiter woken by it re-reads an already-expired run instead
-        // of catching the output on its way out. `run` is only set on the
-        // writer that won the conditional terminal UPDATE, so this fires once
-        // per run rather than on every idempotent retry.
-        await purgeRunUserDataIfZeroRetention(
-          drizzle,
-          effectiveRunId,
-          run.attributes,
-          now
-        );
         if (options.deferTerminalNotify) {
           options.deferTerminalNotify(effectiveRunId);
         } else {

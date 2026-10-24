@@ -88,6 +88,7 @@ describe.skipIf(process.platform === 'win32')(
     let world: World & { start(): Promise<void> };
     let secondWorker: World;
     let server: Server;
+    let handler: ReturnType<typeof workflowEntrypoint>;
     let transport: ReturnType<typeof createInvocations>;
     const active = new Map<string, number>();
     const maximum = new Map<string, number>();
@@ -111,7 +112,7 @@ describe.skipIf(process.platform === 'win32')(
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
-      const handler = workflowEntrypoint(code);
+      handler = workflowEntrypoint(code);
       server = createServer(async (req, res) => {
         const chunks: Buffer[] = [];
         for await (const chunk of req) chunks.push(Buffer.from(chunk));
@@ -195,7 +196,12 @@ describe.skipIf(process.platform === 'win32')(
       await container?.stop();
     });
 
-    async function start(name: string, args: unknown[], engine = 'node') {
+    async function start(
+      name: string,
+      args: unknown[],
+      engine = 'node',
+      attributes?: Record<string, string>
+    ) {
       const runId = `wrun_${ulid()}`;
       const input = await dehydrateWorkflowArguments(args, runId, undefined);
       await world.events.create(runId, {
@@ -205,6 +211,9 @@ describe.skipIf(process.platform === 'win32')(
           deploymentId: 'postgres',
           workflowName: name,
           input,
+          ...(attributes
+            ? { attributes, allowReservedAttributes: true as const }
+            : {}),
           executionContext: {
             workflowCoreVersion: '5.0.0',
             workflowVm: engine,
@@ -253,6 +262,93 @@ describe.skipIf(process.platform === 'win32')(
         expect(maximum.get(runId)).toBe(1);
       });
     }
+
+    it('recovers terminal deletion after a World restart without repeating a committed step effect', async () => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let effects = 0;
+      registerStepFunction('invokeHoldStep', async () => {
+        effects++;
+        entered.resolve();
+        await release.promise;
+        return 'durable-step-effect';
+      });
+      const token = randomUUID();
+      const runId = await start('heldHook', [token], 'node', {
+        $retention: '0',
+      });
+      await entered.promise;
+      await pool.query(`CREATE FUNCTION workflow.fail_terminal_retention() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.input_cbor IS NULL THEN RAISE EXCEPTION 'injected terminal deletion failure'; END IF; RETURN NEW; END $$;
+        CREATE TRIGGER fail_terminal_retention BEFORE UPDATE ON workflow.workflow_steps
+        FOR EACH ROW EXECUTE FUNCTION workflow.fail_terminal_retention()`);
+      try {
+        await hook(token);
+        await resumeHook(token, 'admitted-hook-input');
+        release.resolve();
+        await until(
+          async () =>
+            (
+              await pool.query(
+                `SELECT count(*)::int AS n FROM graphile_worker.jobs j
+           JOIN workflow.workflow_queue_payloads p ON p.job_id = j.id::text
+           WHERE p.run_id = $1 AND j.last_error IS NOT NULL`,
+                [runId]
+              )
+            ).rows[0].n,
+          (count) => count > 0
+        );
+        expect(effects).toBe(1);
+        await expect(world.runs.get(runId)).rejects.toMatchObject({
+          code: 'RETENTION_CLEANUP_FAILED',
+        });
+        expect(
+          (
+            await pool.query(
+              'SELECT status FROM workflow.workflow_runs WHERE id = $1',
+              [runId]
+            )
+          ).rows[0].status
+        ).toBe('running');
+        await until(
+          async () => active.get(runId) ?? 0,
+          (count) => count === 0
+        );
+        await world.close?.();
+        world = createWorld({
+          pool,
+          enableInvoke: true,
+          queueConcurrency: 4,
+          applicationManagedShutdown: true,
+        });
+        setWorld(world);
+        handler = workflowEntrypoint(code);
+        await pool.query(
+          'DROP TRIGGER fail_terminal_retention ON workflow.workflow_steps; DROP FUNCTION workflow.fail_terminal_retention()'
+        );
+        await world.start();
+        const finished = await until(
+          () => world.runs.get(runId),
+          (run) => run.status === 'completed'
+        );
+        expect(finished.expiredAt).toBeInstanceOf(Date);
+        expect(finished.output).toBeUndefined();
+        expect(effects).toBe(1);
+        expect(
+          (
+            await pool.query(
+              'SELECT count(output_cbor)::int AS n FROM workflow.workflow_steps WHERE run_id = $1',
+              [runId]
+            )
+          ).rows[0].n
+        ).toBe(0);
+      } finally {
+        release.resolve();
+        await pool.query(
+          'DROP TRIGGER IF EXISTS fail_terminal_retention ON workflow.workflow_steps; DROP FUNCTION IF EXISTS workflow.fail_terminal_retention()'
+        );
+      }
+    });
 
     it('replays after a slow hook commit even when the invocation has only one wake', async () => {
       const token = randomUUID();
@@ -509,8 +605,8 @@ describe.skipIf(process.platform === 'win32')(
                 task_identifier: string;
                 queue_name: string;
               }>(
-                'SELECT task_identifier, queue_name FROM graphile_worker.jobs WHERE key = $1',
-                [`workflow_flows_executor:transfer:${messageId}`]
+                'SELECT j.task_identifier, j.queue_name FROM graphile_worker.jobs j JOIN workflow.workflow_queue_payloads p ON p.job_id = j.id::text WHERE p.message_id = $1',
+                [messageId]
               )
             ).rows[0],
           (row) => row !== undefined

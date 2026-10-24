@@ -5,6 +5,8 @@ import type { PostgresWorldConfig } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { recoverQueueMessages } from './queue-payloads.js';
+import { recoverRunUserData } from './retention.js';
 import {
   createRunStatusListener,
   type RunStatusListener,
@@ -15,6 +17,7 @@ import {
   createHooksStorage,
   createRunsStorage,
   createStepsStorage,
+  recoverTerminalRequests,
 } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -68,7 +71,34 @@ export function createWorld(
     config.pool || createOwnedPool(config, maxPoolSize, () => closing);
 
   const drizzle = createClient(pool);
-  const queue = createQueue(config, pool);
+  // Share readiness across queue admission and inspection: restored payloads
+  // stay unavailable until cleanup succeeds, including after a failed start.
+  let converted: Promise<void> | undefined;
+  const recoverPayloads = async () => {
+    if (!converted) {
+      converted = (async () => {
+        await queue.prepare();
+        await recoverQueueMessages(drizzle, config.jobPrefix || 'workflow_');
+        await recoverRunUserData(drizzle);
+      })().catch((error) => {
+        converted = undefined;
+        throw error;
+      });
+    }
+    await converted;
+    await recoverTerminalRequests(drizzle);
+  };
+  const afterRecovery = <
+    Operation extends (...args: never[]) => Promise<unknown>,
+  >(
+    operation: Operation
+  ): Operation =>
+    // Forward unchanged to preserve the overloaded resolveData signatures.
+    (async (...args: never[]) => {
+      await recoverPayloads();
+      return operation(...args);
+    }) as Operation;
+  const queue = createQueue(config, pool, recoverPayloads);
   // Opens its `LISTEN` connection lazily, on the first `waitForTerminalStatus`
   // call, so a deployment that never awaits a run never pays for it.
   const runStatusListener = createRunStatusListener(pool);
@@ -94,6 +124,59 @@ export function createWorld(
     ...storage,
     ...streamer,
     ...queue,
+    runs: {
+      ...storage.runs,
+      get: afterRecovery(storage.runs.get),
+      ...(storage.runs.getMany && {
+        getMany: afterRecovery(storage.runs.getMany),
+      }),
+      list: afterRecovery(storage.runs.list),
+      ...(storage.runs.experimentalSetAttributes && {
+        experimentalSetAttributes: afterRecovery(
+          storage.runs.experimentalSetAttributes
+        ),
+      }),
+      ...(storage.runs.waitForTerminalStatus && {
+        waitForTerminalStatus: afterRecovery(
+          storage.runs.waitForTerminalStatus
+        ),
+      }),
+    },
+    events: {
+      ...storage.events,
+      create: afterRecovery(storage.events.create),
+      get: afterRecovery(storage.events.get),
+      list: afterRecovery(storage.events.list),
+      listByCorrelationId: afterRecovery(storage.events.listByCorrelationId),
+    },
+    steps: {
+      get: afterRecovery(storage.steps.get),
+      list: afterRecovery(storage.steps.list),
+    },
+    hooks: {
+      get: afterRecovery(storage.hooks.get),
+      getByToken: afterRecovery(storage.hooks.getByToken),
+      list: afterRecovery(storage.hooks.list),
+    },
+    ...(storage.experimental_snapshots && {
+      experimental_snapshots: {
+        save: afterRecovery(storage.experimental_snapshots.save),
+        load: afterRecovery(storage.experimental_snapshots.load),
+        delete: afterRecovery(storage.experimental_snapshots.delete),
+      },
+    }),
+    streams: {
+      ...streamer.streams,
+      write: afterRecovery(streamer.streams.write),
+      close: afterRecovery(streamer.streams.close),
+      ...(streamer.streams.writeMulti && {
+        writeMulti: afterRecovery(streamer.streams.writeMulti),
+      }),
+      get: afterRecovery(streamer.streams.get),
+      getChunks: afterRecovery(streamer.streams.getChunks),
+      getInfo: afterRecovery(streamer.streams.getInfo),
+      list: afterRecovery(streamer.streams.list),
+    },
     ...(config.streamFlushIntervalMs !== undefined && {
       streamFlushIntervalMs: config.streamFlushIntervalMs,
     }),

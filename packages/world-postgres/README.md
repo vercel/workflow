@@ -304,6 +304,70 @@ would read every converted value shifted.
 
 ### Data retention
 
+For runs started with `experimental_retention: 0` (`$retention: "0"`), the
+terminal transition and payload deletion commit in one PostgreSQL transaction.
+Completion, failure, and cancellation clear run and step inputs, outputs and
+errors, execution context, dynamic workflow code, event payloads, retained Hook
+metadata/resume context, invocation payloads/results/fingerprints, stream bytes,
+VM snapshots, and run-owned queue payloads. Both current CBOR columns and legacy
+JSON columns are cleared. Graphile jobs contain reference envelopes; headers,
+caller idempotency keys, and serialized bodies live in the run-owned store.
+Queue errors persisted by Graphile are content-free. A settled delivery keeps
+an empty receipt so a crash before acknowledgement cannot replay its effects.
+Run, step and event identifiers, timestamps, status, names, routing error codes,
+and run attributes remain; do not put sensitive content in those metadata fields.
+
+If deletion fails, the terminal transition rolls back and the storage operation
+returns `RETENTION_CLEANUP_FAILED` (503), without the underlying database error or
+payload contents. Graphile records the bounded `QUEUE_DELIVERY_FAILED` error at
+the worker-delivery boundary. A run-owned copy of the terminal request survives
+the rollback. Recovery retries that request through the same terminal transaction,
+then removes it with the run's other payloads. Inspection and new admission stay
+closed while the request cannot be completed, including in another World instance
+or after restart. Committed step events remain available, so recovery does not
+need to rerun completed step effects. Payload writers lock the run before
+writing: a concurrent writer either commits before deletion or is refused after
+expiry. An empty stream EOF can still be written so an open reader can finish.
+
+Before queue admission or public storage/stream inspection, the World recovers
+terminal zero-retention runs left by an older release or a restored database.
+Recovery runs in bounded batches and fails closed on deletion failure; retry
+`world.start()` or the blocked operation after recovery. Quiesce the application
+and restart every World instance when restoring a database. Keep external
+admission closed until startup succeeds. This clears online payload storage;
+it does not erase PostgreSQL WAL, backups, replicas, or already delivered bytes.
+Those need their own access, retention and restore policies.
+
+When cleanup fails, keep external admission closed, restore database operation,
+and retry `world.start()`. Pending requests can be inspected without reading their
+payloads:
+
+```sql
+SELECT run_id FROM workflow.workflow_terminal_requests ORDER BY run_id LIMIT 100;
+```
+
+Successful recovery leaves no pending requests and the affected run terminal and
+expired. Do not delete these requests manually or restart workflow effects to
+clear the condition. They may contain serialized output or error data and require
+the same database access and backup controls as other run payloads.
+
+Zero terminal retention does not impose an active-run deadline. Cancel runs at
+their original application deadline, including while waiting or paused; that
+cancellation uses the same atomic deletion path. Persist and enforce those
+absolute deadlines across restart and restore in the application that owns them.
+
+Before upgrading, stop all older World producers and workers and apply database
+migrations, including `0028_run_scoped_queue_payloads`. Startup converts legacy
+queue bodies through Graphile's public administrative functions in bounded
+transactions before admitting reads or work. It preserves scheduling, retry
+budgets, and permanently failed disposition, and discards expired-run copies.
+A locked or malformed legacy job blocks readiness; never unlock a living worker.
+Verify that its owner has exited before using Graphile's administrative recovery
+tools and retrying startup. Do not run old and upgraded workers together, or roll
+back to a version that cannot read reference envelopes while those jobs remain.
+Restore is also a quiesced operation; restoring an older backup repeats this
+conversion before inspection becomes available.
+
 Postgres World does not yet perform general workflow-run cleanup. After a
 retained Hook's run ends and its deadline passes, reads treat the Hook as absent
 and its token can be reused. If the token is never reused, the expired

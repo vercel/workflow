@@ -20,6 +20,7 @@ import {
   invocationDataExpired,
   invocationExpiredError,
 } from './invocation-retention.js';
+import { retentionCleanupError } from './retention.js';
 
 const MAX_BYTES = 1024 * 1024;
 export interface PendingInvocation {
@@ -45,6 +46,15 @@ async function runState(
   client: PoolClient,
   runId: string
 ): Promise<InvocationRunState> {
+  await client.query(
+    'SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))',
+    [runId]
+  );
+  const pending = await client.query(
+    'SELECT 1 FROM workflow.workflow_terminal_requests WHERE run_id = $1',
+    [runId]
+  );
+  if (pending.rowCount) throw retentionCleanupError();
   const { rows } = await client.query<InvocationRunState>(
     `SELECT status, attributes, expired_at AS "expiredAt", name AS "workflowName"
      FROM workflow.workflow_runs WHERE id = $1 FOR SHARE`,
@@ -55,12 +65,16 @@ async function runState(
 }
 
 /** Store invocation inputs and outcomes, deliver pending inputs, and wait for responses. */
-export function createInvocations(pool: Pool) {
+export function createInvocations(
+  pool: Pool,
+  ensureReady: () => Promise<void> = async () => {}
+) {
   const shutdown = new AbortController();
   const feeds = new Set<AbortController>();
   const notifications = createInvocationNotifications(pool);
 
   async function pending(runId: string): Promise<PendingInvocation[]> {
+    await ensureReady();
     return (
       await pool.query<PendingInvocation>(
         `SELECT request_id, payload FROM workflow.workflow_invocations
@@ -83,6 +97,7 @@ export function createInvocations(pool: Pool) {
         run: InvocationRunState
       ) => Promise<void>
     ): Promise<unknown> {
+      await ensureReady();
       shutdown.signal.throwIfAborted();
       const id = options?.idempotencyKey ?? randomUUID();
       const timeoutMs = options?.timeoutMs ?? 30_000;
@@ -142,6 +157,7 @@ export function createInvocations(pool: Pool) {
       );
       try {
         for (;;) {
+          await ensureReady();
           shutdown.signal.throwIfAborted();
           const revision = watch.revision;
           const { rows } = await pool.query<{
@@ -200,6 +216,7 @@ export function createInvocations(pool: Pool) {
       requestId: string,
       outcome: InvocationOutcome
     ): Promise<void> {
+      await ensureReady();
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -273,6 +290,7 @@ export function createInvocations(pool: Pool) {
         },
         async next() {
           while (!stop.signal.aborted) {
+            await ensureReady();
             const row = buffered.shift();
             if (row) {
               if (delivered.has(row.request_id)) continue;

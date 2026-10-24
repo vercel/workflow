@@ -10,6 +10,7 @@ import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
+import { lockRunPayloads } from './retention.js';
 import { Mutex } from './util.js';
 
 const StreamPublishMessage = z.compile(
@@ -340,12 +341,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         const chunkId = genChunkId();
-        await drizzle.insert(streams).values({
-          chunkId,
-          streamId: name,
-          runId,
-          chunkData: toBuffer(chunk),
-          eof: false,
+        await drizzle.transaction(async (tx) => {
+          await lockRunPayloads(tx, runId);
+          await tx.insert(streams).values({
+            chunkId,
+            streamId: name,
+            runId,
+            chunkData: toBuffer(chunk),
+            eof: false,
+          });
         });
         await notifyStream(
           JSON.stringify(
@@ -371,15 +375,18 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         // Batch insert all chunks in a single query
-        await drizzle.insert(streams).values(
-          chunks.map((chunk, i) => ({
-            chunkId: chunkIds[i],
-            streamId: name,
-            runId,
-            chunkData: toBuffer(chunk),
-            eof: false,
-          }))
-        );
+        await drizzle.transaction(async (tx) => {
+          await lockRunPayloads(tx, runId);
+          await tx.insert(streams).values(
+            chunks.map((chunk, i) => ({
+              chunkId: chunkIds[i],
+              streamId: name,
+              runId,
+              chunkData: toBuffer(chunk),
+              eof: false,
+            }))
+          );
+        });
 
         // Notify for each chunk (could be batched in future if needed)
         for (const chunkId of chunkIds) {
@@ -402,6 +409,8 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         const runId = await _runId;
 
         const chunkId = genChunkId();
+        // EOF contains no payload and must remain writable after expiry so
+        // readers of a stream cancelled before close can still finish.
         await drizzle.insert(streams).values({
           chunkId,
           streamId: name,

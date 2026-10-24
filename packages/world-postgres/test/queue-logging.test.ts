@@ -2,7 +2,10 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { createClient } from '../src/drizzle/index.js';
 
 const run = promisify(execFile);
 
@@ -23,13 +26,25 @@ describe('Postgres queue error logs (integration)', () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
+    const pool = new Pool({ connectionString: container.getConnectionUri() });
+    try {
+      await migrate(createClient(pool), {
+        migrationsFolder: fileURLToPath(
+          new URL('../src/drizzle/migrations', import.meta.url)
+        ),
+        migrationsTable: 'workflow_migrations',
+        migrationsSchema: 'workflow_drizzle',
+      });
+    } finally {
+      await pool.end();
+    }
   }, 120_000);
 
   afterAll(async () => {
     await container.stop();
   });
 
-  async function failDelivery(jsonMode: boolean) {
+  async function failDelivery(jsonMode: boolean, failSettlement = false) {
     return await run(
       process.execPath,
       [fileURLToPath(new URL('./fixtures/failing-queue.mjs', import.meta.url))],
@@ -38,6 +53,7 @@ describe('Postgres queue error logs (integration)', () => {
           ...process.env,
           DEBUG: '',
           WORKFLOW_JSON_MODE: jsonMode ? '1' : '0',
+          WORKFLOW_QUEUE_SETTLEMENT_FAILURE: failSettlement ? '1' : '0',
           WORKFLOW_POSTGRES_URL: container.getConnectionUri(),
         },
         timeout: 15_000,
@@ -45,7 +61,7 @@ describe('Postgres queue error logs (integration)', () => {
     );
   }
 
-  test('preserves the delivery error and stack in worker metadata', async () => {
+  test('reports a content-free delivery error and stack in worker metadata', async () => {
     const { stdout, stderr } = await failDelivery(false);
     expect(stdout).toBe('');
     expect(stderr).toContain('[Graphile Worker] Failed task');
@@ -53,18 +69,26 @@ describe('Postgres queue error logs (integration)', () => {
     expect(metadataStart).toBeGreaterThan(-1);
     const metadata = JSON.parse(stderr.slice(metadataStart));
     expect(metadata.error).toMatchObject({
-      name: 'Error',
-      message:
-        '[postgres world] Queue execution failed (503): test queue delivery failure',
+      name: 'WorkflowWorldError',
+      message: 'Workflow queue delivery failed; retry after recovery',
+      code: 'QUEUE_DELIVERY_FAILED',
       stack: expect.stringContaining(
-        'Error: [postgres world] Queue execution failed (503): test queue delivery failure'
+        'WorkflowWorldError: Workflow queue delivery failed; retry after recovery'
       ),
     });
+    expect(stderr).not.toContain('test queue delivery failure');
   });
 
   test('keeps worker output suppressed in CLI JSON mode', async () => {
     const { stdout, stderr } = await failDelivery(true);
     expect(stdout).toBe('');
     expect(stderr).toBe('');
+  });
+
+  test('keeps receipt storage failure details out of persisted errors and worker logs', async () => {
+    const { stdout, stderr } = await failDelivery(false, true);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('QUEUE_DELIVERY_FAILED');
+    expect(stderr).not.toContain('synthetic-sensitive-settlement-detail');
   });
 });

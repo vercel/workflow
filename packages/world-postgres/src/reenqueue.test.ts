@@ -4,6 +4,7 @@ import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
+import { enqueueQueueMessage } from './queue-payloads.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -11,6 +12,16 @@ import {
   createStepsStorage,
 } from './storage.js';
 import { createStreamer } from './streamer.js';
+
+vi.mock('./queue-payloads.js', () => ({
+  enqueueQueueMessage: vi.fn(),
+  recoverQueueMessages: vi.fn(),
+}));
+
+vi.mock('./retention.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./retention.js')>()),
+  recoverRunUserData: vi.fn(),
+}));
 
 vi.mock('graphile-worker', () => ({
   Logger: class Logger {
@@ -47,6 +58,7 @@ vi.mock('./storage.js', () => ({
   createEventsStorage: vi.fn(),
   createHooksStorage: vi.fn(),
   createStepsStorage: vi.fn(),
+  recoverTerminalRequests: vi.fn(),
 }));
 
 vi.mock('./streamer.js', () => ({
@@ -194,15 +206,19 @@ describe('re-enqueue active runs on start', () => {
     const world = createWorld({ connectionString: 'postgres://test', pool });
     await world.start();
 
-    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
-    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+    expect(enqueueQueueMessage).toHaveBeenCalledTimes(2);
+    expect(enqueueQueueMessage).toHaveBeenCalledWith(
+      expect.anything(),
       'workflow_flows',
       expect.objectContaining({ id: 'wfA' }),
+      'wrun_AAA',
       expect.anything()
     );
-    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+    expect(enqueueQueueMessage).toHaveBeenCalledWith(
+      expect.anything(),
       'workflow_flows',
       expect.objectContaining({ id: 'wfB' }),
+      'wrun_BBB',
       expect.anything()
     );
 
@@ -215,9 +231,7 @@ describe('re-enqueue active runs on start', () => {
     const world = createWorld({ connectionString: 'postgres://test', pool });
     await world.start();
 
-    // addJob should only have been called for pgboss migration check, not for
-    // any workflow runs. The migration check uses pool.query, not addJob.
-    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+    expect(enqueueQueueMessage).not.toHaveBeenCalled();
 
     await world.close();
   });
@@ -261,7 +275,7 @@ describe('re-enqueue active runs on start', () => {
     expect(callCount).toBe(2);
 
     // Should have enqueued 2 runs (both statuses from first page).
-    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
+    expect(enqueueQueueMessage).toHaveBeenCalledTimes(2);
 
     await world.close();
   });

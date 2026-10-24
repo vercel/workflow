@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { getQueueTopicPrefix } from '@workflow/world';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { createClient } from '../src/drizzle/index.js';
 import { createQueue } from '../src/queue.js';
 import { TestPool } from './pool.js';
 
@@ -40,6 +43,13 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
     connectionString = container.getConnectionUri();
     pool = new TestPool({ connectionString, max: 4 });
+    await migrate(createClient(pool), {
+      migrationsFolder: fileURLToPath(
+        new URL('../src/drizzle/migrations', import.meta.url)
+      ),
+      migrationsTable: 'workflow_migrations',
+      migrationsSchema: 'workflow_drizzle',
+    });
     server = createServer(async (request, response) => {
       await request.toArray();
       attempts.push(String(request.headers['x-vqs-message-attempt']));
@@ -122,7 +132,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         .poll(
           async () => {
             const jobs = await pool.query(
-              'SELECT count(*)::int AS count FROM graphile_worker._private_jobs WHERE key = $1',
+              "SELECT count(*)::int AS count FROM graphile_worker._private_jobs WHERE payload->>'messageId' = $1",
               [messageId]
             );
             return jobs.rows[0].count;

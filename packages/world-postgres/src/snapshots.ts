@@ -5,6 +5,7 @@ import {
 } from '@workflow/world';
 import { eq } from 'drizzle-orm';
 import { type Drizzle, Schema } from './drizzle/index.js';
+import { lockRunPayloads } from './retention.js';
 
 /**
  * Snapshot storage for world-postgres.
@@ -37,22 +38,25 @@ export function createSnapshotsStorage(
       metadata: SnapshotMetadata
     ): Promise<void> {
       const blob = Buffer.from(encodeSnapshotEnvelope(metadata, data));
-      await drizzle
-        .insert(snapshots)
-        .values({
-          runId,
-          data: blob,
-          eventsCursor: metadata.eventsCursor,
-          createdAt: metadata.createdAt,
-        })
-        .onConflictDoUpdate({
-          target: snapshots.runId,
-          set: {
+      await drizzle.transaction(async (tx) => {
+        await lockRunPayloads(tx, runId);
+        await tx
+          .insert(snapshots)
+          .values({
+            runId,
             data: blob,
             eventsCursor: metadata.eventsCursor,
             createdAt: metadata.createdAt,
-          },
-        });
+          })
+          .onConflictDoUpdate({
+            target: snapshots.runId,
+            set: {
+              data: blob,
+              eventsCursor: metadata.eventsCursor,
+              createdAt: metadata.createdAt,
+            },
+          });
+      });
     },
 
     async load(

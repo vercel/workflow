@@ -47,6 +47,8 @@ export const MessageData = z.compile(
      */
     route: z.string().optional(),
     data: Base64Buffer.describe('The message that was sent'),
+    payloadVersion: z.literal(1).optional(),
+    payloadRunId: z.string().optional(),
   })
 );
 export type MessageData = z.infer<typeof MessageData>;
