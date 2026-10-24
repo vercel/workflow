@@ -25,9 +25,9 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabledForWorkflow } from './ws-transport-enabled.js';
 
 /**
- * Messages per `experimental_sendBatch` request. VQS caps a batch at 100 and
- * rejects the whole request above it, so this is the API's ceiling rather
- * than a tuning knob; `queueBatch` splits anything larger.
+ * Messages per `sendBatch` request. VQS caps a batch at 100 and rejects the
+ * whole request above it, so this is the API's ceiling rather than a tuning
+ * knob; `queueBatch` splits anything larger.
  */
 const MAX_QUEUE_SEND_BATCH = 100;
 
@@ -42,8 +42,7 @@ function isQueueTracePropagationDisabled(): boolean {
 }
 
 /**
- * Maps one `experimental_sendBatch` outcome onto the World's
- * {@link QueueBatchResult}.
+ * Maps one `sendBatch` outcome onto the World's {@link QueueBatchResult}.
  *
  * `undefined` means the server returned fewer results than the batch carried.
  * That is reported as a retryable failure rather than left as a hole the
@@ -51,9 +50,7 @@ function isQueueTracePropagationDisabled(): boolean {
  * is safe, silently dropping a step's message is not.
  */
 function toBatchResult(
-  outcome:
-    | Awaited<ReturnType<QueueClient['experimental_sendBatch']>>[number]
-    | undefined
+  outcome: Awaited<ReturnType<QueueClient['sendBatch']>>[number] | undefined
 ): QueueBatchResult {
   if (outcome === undefined) {
     return {
@@ -695,10 +692,10 @@ export function createQueue(config?: APIConfig): Queue {
     // about to send, and for a single message those headers ARE the message's
     // headers, so VQS stores the `traceparent` and re-emits it at delivery as
     // `x-vercel-queue-traceparent` — which is what lets a consumer attach a
-    // span link back to this producer. `experimental_sendBatch` injects into
-    // the multipart REQUEST headers instead, and the per-part headers it
-    // builds never see it, so a batched message would arrive with no producer
-    // context and the consumer's `vqs.process` span would have no link.
+    // span link back to this producer. `sendBatch` injects into the multipart
+    // REQUEST headers instead, and the per-part headers it builds never see
+    // it, so a batched message would arrive with no producer context and the
+    // consumer's `vqs.process` span would have no link.
     //
     // One injection for the whole call: every message in a batch is published
     // under the same active span, which is exactly what the single send would
@@ -729,7 +726,7 @@ export function createQueue(config?: APIConfig): Queue {
         entries: {
           index: number;
           topic: string;
-          message: Parameters<QueueClient['experimental_sendBatch']>[1][number];
+          message: Parameters<QueueClient['sendBatch']>[1][number];
         }[];
       }
     >();
@@ -763,7 +760,7 @@ export function createQueue(config?: APIConfig): Queue {
           offset += MAX_QUEUE_SEND_BATCH
         ) {
           const chunk = entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH);
-          const sent = await client.experimental_sendBatch(
+          const sent = await client.sendBatch(
             // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
             chunk[0]!.topic,
             chunk.map((entry) => entry.message)
