@@ -36,6 +36,7 @@ import {
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { CHILD_RUN_COMPLETION_VERSION } from './child-run-completion.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
 
@@ -131,6 +132,14 @@ export interface HealthCheckResult {
    */
   hookResumeInputVersion?: number;
   /**
+   * The responding deployment's `CHILD_RUN_COMPLETION_VERSION`: whether a run
+   * it executes resumes its parent's child-run completion hook when it
+   * finishes. A cross-deployment `start()` from a workflow stamps the child to
+   * resume that hook only when the target advertises it. Omitted when the
+   * responding deployment predates the hook, so its parents poll instead.
+   */
+  childRunCompletionVersion?: number;
+  /**
    * The format the responding deployment answered in, set whenever it
    * answered: `'text'` for the plain-text reply of deployments that predate
    * the versioned JSON response (spec 3), `'json'` otherwise. A JSON reply
@@ -223,6 +232,7 @@ export async function handleHealthCheckMessage(
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    childRunCompletionVersion: CHILD_RUN_COMPLETION_VERSION,
     // Advertised only when this deployment has opted in to executing
     // dynamic workflow code; an absent field reads as "unsupported".
     ...(isDynamicWorkflowsEnabled()
@@ -390,6 +400,9 @@ function parseHealthCheckResponse(
   }
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
+  }
+  if (typeof r.childRunCompletionVersion === 'number') {
+    parsed.childRunCompletionVersion = r.childRunCompletionVersion;
   }
   if (typeof r.dynamicWorkflowVersion === 'number') {
     parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;

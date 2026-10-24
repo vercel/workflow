@@ -12,7 +12,7 @@ import {
 } from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
 import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
-import type { Hook, HookOptions } from '../create-hook.js';
+import type { Hook, HookOptions, SystemHookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { webhookLogger } from '../logger.js';
 import {
@@ -126,6 +126,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
+    // SDK-internal hooks (see `SystemHookOptions`) are marked so the runtime
+    // and observability tooling can tell them apart from user hooks.
+    const isSystem =
+      (options as SystemHookOptions).isSystem === true && !isWebhook;
 
     ctx.invocationsQueue.set(correlationId, {
       type: 'hook',
@@ -135,6 +139,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       ...(options.experimental_force === true && { force: true }),
       metadata: options.metadata,
       isWebhook,
+      ...(isSystem && { isSystem: true }),
     });
 
     // Queue of buffered hook payloads (received before the workflow awaited

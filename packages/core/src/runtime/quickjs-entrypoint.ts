@@ -53,6 +53,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../source-map.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
+import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
 import {
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
@@ -2549,6 +2550,7 @@ export async function runWorkflowWithQuickJS(params: {
       throw err;
     }
     dispatchRunCompletedHooks(runId, workflowName);
+    await notifyParentOfRunCompletion(world, workflowRun, 'completed');
   } else if (result.suspended) {
     // Workflow still suspended after the inline loop. All durable side
     // effects for the final suspension state were already dispatched by
@@ -2935,6 +2937,7 @@ export async function runWorkflowWithQuickJS(params: {
       encryptionKey,
       errorCode
     );
+    await notifyParentOfRunCompletion(world, workflowRun, 'failed');
     wfdiag('exit_failed', { result: 'run_failed_written' });
   }
 }

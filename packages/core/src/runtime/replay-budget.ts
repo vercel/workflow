@@ -9,6 +9,7 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
+import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
 import { memoizeEncryptionKey, type SlotSnapshotParams } from './helpers.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
@@ -183,7 +184,7 @@ export async function handleReplayBudgetExhausted(args: {
     runId,
     encryptionKey
   );
-  await world.events.create(
+  const failed = await world.events.create(
     runId,
     {
       eventType: 'run_failed',
@@ -202,4 +203,5 @@ export async function handleReplayBudgetExhausted(args: {
     encryptionKey,
     RUN_ERROR_CODES.REPLAY_TIMEOUT
   );
+  await notifyParentOfRunCompletion(world, failed?.run ?? runId, 'failed');
 }

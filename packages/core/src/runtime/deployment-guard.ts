@@ -12,6 +12,7 @@ import {
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
+import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -235,6 +236,7 @@ export async function guardDeploymentAffinity({
       undefined,
       RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
     );
+    await notifyParentOfRunCompletion(world, run, 'failed');
     return result('failed', run.deploymentId, recoveryAttempts);
   };
 

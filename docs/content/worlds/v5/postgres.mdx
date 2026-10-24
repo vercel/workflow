@@ -274,7 +274,7 @@ Prefix for graphile-worker queue job names. Useful when sharing a database betwe
 
 Number of concurrent workers polling for jobs. Default: `50`.
 
-This value also bounds how many parent→child workflow polls can be in flight simultaneously. Every `await childRun.returnValue` inside a workflow holds a worker slot until the child run terminates. If you expect recursive or highly-fanned-out parent/child workflows, raise this ceiling above the peak number of concurrent polls. With the default of 50, the included `fibonacciWorkflow` end-to-end test (`fib(6)`, about 24 concurrent polls at peak) passes; deeper recursion or larger fanouts need a correspondingly larger setting.
+A parent workflow awaiting `childRun.returnValue` of a child it started does not hold a worker slot: it suspends on a system hook the child resumes when it finishes (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)). A `returnValue` that falls back to polling still does, for example one awaited inside a step, or any await while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. Each of those holds a worker slot until its child run terminates, so raise this ceiling above the peak number of such polls in flight.
 
 ### `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
 
