@@ -64,19 +64,39 @@ export async function processDocumentBatch(documentIds: string[]) {
 
 ### How the parent waits
 
-Awaiting `returnValue` of a run the workflow started does not poll. The SDK waits on a **system hook**, the same handshake you would otherwise write by hand:
+Awaiting `returnValue` of a run the workflow started does not poll. The SDK waits on a **system hook**, the same handshake you would otherwise write by hand, but with one hook for the whole parent rather than one per child:
 
-1. `start()` marks the child so that it resumes its parent when it finishes, and remembers the parent on the returned `Run`.
-2. When the parent awaits `returnValue`, it registers a hook whose token is derived from the child's run ID, then reads the child once. A child that already finished is answered from that read.
-3. Otherwise the parent suspends on the hook. When the child completes, fails, or is canceled, its runtime resumes the hook and the parent reads the result.
+1. `start()` records the parent's run ID on the child, and remembers the parent on the returned `Run`.
+2. When the parent awaits a child, it registers its completion hook (a system hook whose token is derived from the parent's run ID) if it is not already open, then reads every child it started waiting on since its last read, in one step. A child that already finished is answered from that read.
+3. Otherwise the parent suspends on the hook. When a child completes, fails, or is canceled, its runtime resumes the parent's hook with that child's run ID, and the parent reads that child's result.
+4. Once the parent is no longer waiting on any child, it disposes the hook, so children it never awaits do not wake it.
 
 This gives you:
 
 - **Zero compute while waiting**: The parent is suspended rather than waking on a poll interval, and holds no worker slot. Worker-based Worlds such as [Postgres](/worlds/postgres) do not need a slot per waiting parent.
-- **Immediate wake-up**: The parent resumes as soon as the child finishes, not on the next poll tick.
+- **Immediate wake-up**: The parent resumes as soon as a child finishes, not on the next poll tick.
+- **A slim parent log**: Fanning out to many children adds one system hook and one status read to the parent, plus, per child, the notification and the read of its result.
 - **No wiring**: There is no hook to define, no token to pass, and no wrapper workflow to export.
 
-The `Run` keeps this behavior when it travels within the parent: a step of the parent that calls `start()` and returns the `Run` hands the parent a handle it can await the same way. Awaiting the same child twice shares one hook.
+The `Run` keeps this behavior when it travels within the parent: a step of the parent that calls `start()` and returns the `Run` hands the parent a handle it can await the same way. Awaiting the same child twice shares one wait.
+
+### Cancellations that bypass the SDK
+
+<Callout type="warn">
+A parent is notified **immediately** only when the child's own runtime records its outcome, or when the child is canceled through the SDK. A cancellation written to the World without going through the SDK is not delivered to the parent, which keeps waiting until its next safety-net check.
+</Callout>
+
+| How the child finished | Parent resumes |
+| --- | --- |
+| The child completed or failed | Immediately |
+| Canceled with `run.cancel()`, `cancelRun()`, or `cancelRuns()` | Immediately |
+| Canceled with `workflow cancel` or from `workflow web` | Immediately (both call `cancelRun()`) |
+| Canceled by any other tool that writes the cancellation to the World or its backend directly, without the SDK | At the next safety-net check |
+| The child's invocation crashed after recording its outcome but before resuming the parent | At the next safety-net check |
+
+The safety net: while a parent waits on children, it keeps one sleep open and, when it fires, reads every child it is still waiting on. The first check runs 5 minutes after the parent starts waiting, then the interval doubles up to every 6 hours. A missed notification therefore delays the parent but never strands it. Each check costs the parent one sleep and one step, so a child that runs for a day adds about a dozen of each.
+
+If a parent must react to a cancellation faster than that, cancel children through the SDK.
 
 ### When `returnValue` polls instead
 
@@ -224,11 +244,11 @@ export async function reviewDocument(documentId: string) {
 
 ## Tips
 
-- **Await only the children you need**: A child whose parent never awaits its `returnValue` costs one extra hook lookup when it finishes, and nothing in the parent.
+- **Await only the children you need**: A child whose parent is not waiting on any child when it finishes costs one extra hook lookup and nothing in the parent. One that finishes while the parent waits on its siblings adds a notification to the parent's log.
 - **Use chunked spawning for large batches**: Starting 500 children at once can create a large burst of work. Break the work into chunks of 10–50.
-- **Watch the parent's log too**: Each child bounds its own log, but the parent records events for spawning and for collecting every child (the spawn step, the system hook, and the steps that read the child), so the parent's log grows with the number of children. Count those events per child against the parent's own [run limits](/worlds/vercel#per-run-limits); when the parent alone would exceed them, add a layer, so each parent spawns a modest number of intermediate runs that in turn spawn the leaves.
+- **Watch the parent's log too**: Each child bounds its own log, but the parent records events for spawning and for collecting every child (the spawn step, the child's notification on the parent's hook, and the step that reads its result), so the parent's log grows with the number of children. Count those events per child against the parent's own [run limits](/worlds/vercel#per-run-limits); when the parent alone would exceed them, add a layer, so each parent spawns a modest number of intermediate runs that in turn spawn the leaves.
 - **Account for each child's retry semantics**: Steps inside child workflows retry independently. The parent only sees the child's final result or error.
-- **Cancel children through the SDK**: [`run.cancel()`](/docs/api-reference/workflow-api/get-run), `cancelRun()` and `cancelRuns()`, `workflow cancel`, and the `workflow web` UI resume a waiting parent when they cancel its child. A cancellation written to the World directly, bypassing the SDK, does not, and leaves the parent suspended until something resumes the hook.
+- **Cancel children through the SDK**: [`run.cancel()`](/docs/api-reference/workflow-api/get-run), `cancelRun()`, `cancelRuns()`, `workflow cancel`, and `workflow web` resume a waiting parent immediately. Any other cancellation reaches the parent only at its next safety-net check; see [Cancellations that bypass the SDK](#cancellations-that-bypass-the-sdk).
 - **Use `deploymentId: "latest"` when children should run on the most recent deployment**: See [Versioning](/docs/foundations/versioning) for the full model and the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
 
 ## Key APIs

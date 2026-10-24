@@ -18,7 +18,7 @@ const resume = vi.mocked(resumeHookOnWorld);
 describe('notifyParentOfRunCompletion', () => {
   const stamped = {
     runId: 'wrun_child',
-    executionContext: { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true },
+    executionContext: { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: 'wrun_parent' },
   };
   let runsGet: ReturnType<typeof vi.fn>;
   let world: any;
@@ -39,10 +39,11 @@ describe('notifyParentOfRunCompletion', () => {
     resume.mockResolvedValue({} as any);
     await notifyParentOfRunCompletion(world, stamped, 'completed');
 
+    // The parent's one hook, told which of its children finished.
     expect(resume).toHaveBeenCalledWith(
       world,
-      childRunCompletionToken('wrun_child'),
-      { status: 'completed' }
+      childRunCompletionToken('wrun_parent'),
+      { runId: 'wrun_child', status: 'completed' }
     );
     expect(runsGet).not.toHaveBeenCalled();
   });
@@ -62,9 +63,11 @@ describe('notifyParentOfRunCompletion', () => {
     await notifyParentOfRunCompletion(world, 'wrun_child', 'failed');
 
     expect(runsGet).toHaveBeenCalledWith('wrun_child', { resolveData: 'none' });
-    expect(resume).toHaveBeenCalledWith(world, expect.any(String), {
-      status: 'failed',
-    });
+    expect(resume).toHaveBeenCalledWith(
+      world,
+      childRunCompletionToken('wrun_parent'),
+      { runId: 'wrun_child', status: 'failed' }
+    );
   });
 
   it('treats a missing hook as "no parent waiting"', async () => {

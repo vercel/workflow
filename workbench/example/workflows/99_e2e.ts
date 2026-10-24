@@ -3692,6 +3692,20 @@ export async function awaitChildReturnValueWorkflow(
 }
 
 /**
+ * Parent that fans out to several children and awaits them all. Every child
+ * resumes the parent's one completion hook, so the parent's log holds a
+ * single system hook however many children it waits on.
+ */
+export async function awaitChildrenFanOutWorkflow(values: number[]) {
+  'use workflow';
+  const runs = await Promise.all(
+    values.map((value) => start(slowChildWorkflow, [value, false]))
+  );
+  const results = await Promise.all(runs.map((run) => run.returnValue));
+  return { childRunIds: runs.map((run) => run.runId), results };
+}
+
+/**
  * Recursive Fibonacci workflow. start() is called directly to spawn
  * child workflows for fib(n-1) and fib(n-2).
  *

@@ -6,7 +6,12 @@ import {
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
+import {
+  isTerminalWorkflowRunStatus,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+  type World,
+} from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import {
   deriveRunPayloadKeys,
@@ -21,10 +26,7 @@ import {
   tagForwardedWritableTarget,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
-import {
-  awaitChildRunCompletion,
-  type ReturnValueRead,
-} from './child-run-completion.js';
+import { awaitChildRunCompletion } from './child-run-completion.js';
 import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -36,6 +38,9 @@ import {
 } from './runs.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
+
+/** Concurrent run reads in one `Run.readFinishedRunIds` step. */
+const READ_FINISHED_CONCURRENCY = 20;
 const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
   'completed',
   'failed',
@@ -388,27 +393,60 @@ export class Run<TResult> {
    */
   get returnValue(): Promise<TResult> {
     return (
-      awaitChildRunCompletion(this.runId, this.#parentRunId, (wait) =>
-        this.readReturnValue(wait)
-      ) ??
-      this.readReturnValue(true).then(
-        (read) => (read as { value: TResult }).value
-      )
+      awaitChildRunCompletion(
+        this.runId,
+        this.#parentRunId,
+        () => this.readReturnValue(),
+        (runIds) => Run.readFinishedRunIds(runIds)
+      ) ?? this.readReturnValue()
     );
   }
 
   /**
-   * The step behind {@link returnValue}. With `wait`, polls until the run is
-   * terminal; without it, reads the run once and reports `{ done: false }` if
-   * it has not finished yet. Use `returnValue` instead.
+   * The step behind {@link returnValue}: polls until the run is terminal.
+   * Use `returnValue` instead.
    * @internal
    */
-  async readReturnValue(wait: boolean): Promise<ReturnValueRead<TResult>> {
+  async readReturnValue(): Promise<TResult> {
     'use step';
-    if (wait) {
-      return { done: true, value: await this.#pollReturnValue() };
-    }
-    return this.#readReturnValueOnce();
+    return this.#pollReturnValue();
+  }
+
+  /**
+   * Which of `runIds` have finished (completed, failed, or cancelled), in one
+   * step: the batched status read behind the child-run completion hook. A run
+   * that cannot be found is reported as finished, so the caller's
+   * `returnValue` read surfaces the not-found (or retries a resilient start).
+   * @internal
+   */
+  static async readFinishedRunIds(runIds: string[]): Promise<string[]> {
+    'use step';
+    const world = await getWorldLazy();
+    const finished = new Set<string>();
+    let next = 0;
+    const worker = async () => {
+      for (
+        let runId = runIds[next++];
+        runId !== undefined;
+        runId = runIds[next++]
+      ) {
+        try {
+          const run = await world.runs.get(runId, { resolveData: 'none' });
+          if (isTerminalWorkflowRunStatus(run.status)) finished.add(runId);
+        } catch (error) {
+          if (!WorkflowRunNotFoundError.is(error)) throw error;
+          finished.add(runId);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(READ_FINISHED_CONCURRENCY, runIds.length) },
+        worker
+      )
+    );
+    // Input order, so the result does not depend on read timing.
+    return runIds.filter((runId) => finished.has(runId));
   }
 
   /**
@@ -659,35 +697,6 @@ export class Run<TResult> {
     // Terminal statuses are immutable, but if an inconsistent world returns
     // a non-terminal full record, resume polling safely.
     throw new WorkflowRunNotCompletedError(this.runId, run.status);
-  }
-
-  /**
-   * Reads the run once: its return value (or error) when it is terminal,
-   * `{ done: false }` when it is still going.
-   * @internal
-   */
-  async #readReturnValueOnce(): Promise<ReturnValueRead<TResult>> {
-    const world = await this.#lazyWorldPromise;
-    let runMetadata: Awaited<ReturnType<World['runs']['get']>>;
-    try {
-      runMetadata = await world.runs.get(this.runId, { resolveData: 'none' });
-    } catch (error) {
-      // A resilient start may not have created the run yet. It will exist
-      // once its queue message is delivered, and resumes its parent when it
-      // finishes like any other run.
-      if (this.#resilientStart && WorkflowRunNotFoundError.is(error)) {
-        return { done: false };
-      }
-      throw error;
-    }
-    if (runMetadata.status === 'cancelled') {
-      throw new WorkflowRunCancelledError(this.runId);
-    }
-    if (!PAYLOAD_TERMINAL_RUN_STATUSES.has(runMetadata.status)) {
-      return { done: false };
-    }
-    const run = await world.runs.get(this.runId, { resolveData: 'all' });
-    return { done: true, value: await this.#resolveTerminalReturnValue(run) };
   }
 
   /**

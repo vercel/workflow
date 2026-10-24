@@ -48,7 +48,7 @@ describe.each([
       deploymentId: 'test-deployment',
       specVersion: SPEC_VERSION_CURRENT,
       executionContext: {
-        [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true,
+        [CHILD_RUN_COMPLETION_CONTEXT_KEY]: 'wrun_parent',
         ...(engine === 'quickjs' ? { workflowVm: 'quickjs' } : {}),
       },
     };

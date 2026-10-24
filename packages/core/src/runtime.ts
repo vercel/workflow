@@ -1120,7 +1120,7 @@ export function workflowEntrypoint(
                     inert: 0,
                     observedHook: 0,
                     unknownHook: 0,
-                    abortSignal: 0,
+                    systemHook: 0,
                     externalStep: 0,
                     waitDue: 0,
                   };
@@ -4883,8 +4883,8 @@ export function workflowEntrypoint(
                             if (outOfBandObservation.unknownHookCount > 0) {
                               outOfBandBoundaries.unknownHook++;
                             }
-                            if (outOfBandObservation.abortSignalHookCount > 0) {
-                              outOfBandBoundaries.abortSignal++;
+                            if (outOfBandObservation.systemHookCount > 0) {
+                              outOfBandBoundaries.systemHook++;
                             }
                             if (outOfBandObservation.externalStepCount > 0) {
                               outOfBandBoundaries.externalStep++;
@@ -4900,8 +4900,8 @@ export function workflowEntrypoint(
                               outOfBandBoundaries.observedHook,
                             'workflow.out_of_band.unknown_hook_boundaries':
                               outOfBandBoundaries.unknownHook,
-                            'workflow.out_of_band.abort_signal_boundaries':
-                              outOfBandBoundaries.abortSignal,
+                            'workflow.out_of_band.system_hook_boundaries':
+                              outOfBandBoundaries.systemHook,
                             'workflow.out_of_band.external_step_boundaries':
                               outOfBandBoundaries.externalStep,
                             'workflow.out_of_band.wait_due_boundaries':

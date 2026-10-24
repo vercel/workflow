@@ -146,10 +146,13 @@ export interface PendingHook {
   metadata?: unknown;
   hasCreatedEvent: boolean;
   /**
-   * True for internal system hooks (e.g. AbortController's hook), which
-   * are exempt from user-hook token namespace conflict checks.
+   * True for SDK-internal hooks (the AbortController hook, the child-run
+   * completion hook). Recorded on `hook_created`; such hooks are resumed by
+   * writers outside this run, and need not be created at terminal drain.
    */
   isSystem?: boolean;
+  /** True for an AbortController's hook (VM-only; not recorded). */
+  isAbortSignal?: boolean;
   /**
    * Set when the workflow called AbortController.abort() during this
    * invocation. The host must record the abort: create a hook_received
@@ -370,9 +373,11 @@ globalThis.__releaseDisposedHook = function(correlationId) {
   var dispose = globalThis.__findPending(correlationId, "hook_dispose");
   if (dispose) globalThis.__releasePending(dispose);
   var hook = globalThis.__findPending(correlationId, "hook");
+  // An AbortController's hook keeps its op: abort() finds it by
+  // correlationId to request the abort later.
   if (
     hook &&
-    !hook.isSystem &&
+    !hook.isAbortSignal &&
     !hook.abortRequested &&
     !globalThis.__resolvers[correlationId]
   ) {
@@ -820,6 +825,9 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     metadata: options.metadata,
     hasCreatedEvent: false,
   };
+  // SDK-internal hooks (e.g. the child-run completion hook); see
+  // SystemHookOptions on the host.
+  if (options.isSystem === true && !options.isWebhook) pendingOp.isSystem = true;
   globalThis.__pushPending(pendingOp);
 
   // Per-hook lifecycle state backing hook.getConflict(): resolves null
@@ -1058,14 +1066,14 @@ globalThis.AbortController = function WorkflowAbortController() {
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
   var correlationId = "hook_" + globalThis.__generateUlid();
   this[__ABORT_HOOK_CID] = correlationId;
-  // Register an internal system hook. isSystem prevents token namespace
-  // conflicts with user hooks.
+  // Register an internal system hook. Its token is unique by construction.
   globalThis.__pushPending({
     type: "hook",
     correlationId: correlationId,
     token: hookToken,
     isWebhook: false,
     isSystem: true,
+    isAbortSignal: true,
     hasCreatedEvent: false,
   });
   globalThis.__abortSignals[correlationId] = this.signal;

@@ -425,6 +425,36 @@ async function startWorkflowViaHttp(
 // fixture), abort-fetch tests are hermetic, the fibonacci tree fits the
 // scheduler, and source-map assertions are positive-only. A test that
 // genuinely cannot share a deployment can opt out with `test.sequential`.
+/** Every event of a run, across pages. */
+async function allEvents(runId: string) {
+  const world = await getWorld();
+  const events: Awaited<ReturnType<typeof world.events.list>>['data'] = [];
+  let cursor: string | undefined;
+  while (true) {
+    const page = await world.events.list({
+      runId,
+      pagination: { limit: 100, cursor },
+    });
+    events.push(...page.data);
+    if (!page.cursor || !page.hasMore) break;
+    cursor = page.cursor;
+  }
+  return events;
+}
+
+/** The `hook_created` events of a parent's child-run completion hook. */
+function completionHooks(
+  events: Awaited<ReturnType<typeof allEvents>>,
+  parentRunId: string
+) {
+  const token = `wkf_child_run_completion:${parentRunId}`;
+  return events.filter(
+    (e) =>
+      e.eventType === 'hook_created' &&
+      (e.eventData as { token?: string } | undefined)?.token === token
+  );
+}
+
 describe.concurrent('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
@@ -3455,28 +3485,50 @@ describe.concurrent('e2e', () => {
       expect(returnValue.childRunId).toMatch(/^wrun_/);
       trackRun(getRun(returnValue.childRunId));
 
-      // The parent registered the system hook for this child, and the child
-      // resumed it: the parent waited on the hook, not on a polling step.
-      const world = await getWorld();
-      const { data: events } = await world.events.list({
-        runId: run.runId,
-        pagination: { limit: 100 },
-      });
-      const token = `wkf_child_run_completion:${returnValue.childRunId}`;
-      const hookCreated = events.find(
-        (e) =>
-          e.eventType === 'hook_created' &&
-          (e.eventData as { token?: string } | undefined)?.token === token
-      );
-      expect(hookCreated, 'completion hook was registered').toBeDefined();
+      // The parent registered its system hook, and the child resumed it:
+      // the parent waited on the hook, not on a polling step.
+      const events = await allEvents(run.runId);
+      const hooks = completionHooks(events, run.runId);
+      expect(hooks, 'one completion hook was registered').toHaveLength(1);
+      expect(
+        (hooks[0].eventData as { isSystem?: boolean } | undefined)?.isSystem,
+        'the completion hook is a system hook'
+      ).toBe(true);
       expect(
         events.some(
           (e) =>
             e.eventType === 'hook_received' &&
-            e.correlationId === hookCreated?.correlationId
+            e.correlationId === hooks[0].correlationId
         ),
         'the child resumed the completion hook'
       ).toBe(true);
+    }
+  );
+
+  test(
+    "awaitChildrenFanOutWorkflow - every child resumes the parent's one completion hook",
+    { timeout: 120_000 },
+    async () => {
+      const values = [1, 2, 3, 4];
+      const run = await start(await e2e('awaitChildrenFanOutWorkflow'), [
+        values,
+      ]);
+      trackRun(run);
+      const returnValue = await run.returnValue;
+      expect(returnValue.results).toEqual(values.map((v) => v * 2));
+      for (const childRunId of returnValue.childRunIds) {
+        trackRun(getRun(childRunId));
+      }
+
+      const events = await allEvents(run.runId);
+      const hooks = completionHooks(events, run.runId);
+      expect(hooks, 'one hook for all the children').toHaveLength(1);
+      const received = events.filter(
+        (e) =>
+          e.eventType === 'hook_received' &&
+          e.correlationId === hooks[0].correlationId
+      );
+      expect(received).toHaveLength(values.length);
     }
   );
 

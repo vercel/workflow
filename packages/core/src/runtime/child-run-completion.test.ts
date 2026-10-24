@@ -1,8 +1,11 @@
+import { readFileSync } from 'node:fs';
 import type { Event, WorkflowRun } from '@workflow/world';
+import ts from 'typescript';
 import { assert, describe, expect, it } from 'vitest';
 import type {
   HookInvocationQueueItem,
   StepInvocationQueueItem,
+  WaitInvocationQueueItem,
   WorkflowSuspension,
 } from '../global.js';
 import { serialize } from '../serialization/workflow-vm.js';
@@ -14,28 +17,42 @@ import {
 import { runWorkflow } from '../workflow.js';
 import {
   awaitChildRunCompletion,
-  CHILD_RUN_COMPLETION_TOKEN_PREFIX,
   childRunCompletionToken,
+  safetyCheckDelayMs,
 } from './child-run-completion.js';
 import { runQuickJSWorkflow } from './quickjs-runtime.js';
 
 const PARENT_RUN_ID = 'wrun_parent';
-const CHILD_RUN_ID = 'wrun_child';
-const READ_STEP = 'step//test//readReturnValue';
-const TOKEN = childRunCompletionToken(CHILD_RUN_ID);
+const TOKEN = childRunCompletionToken(PARENT_RUN_ID);
+const READ_VALUE = 'step//test//readReturnValue';
+const READ_FINISHED = 'step//test//readFinishedRunIds';
 
-// The helper is evaluated inside the workflow VM in real bundles (it is
-// imported by the workflow-mode `Run`). It imports nothing at runtime, so its
-// source plus the module constants it closes over can be injected as is.
+// In real bundles the module is compiled into the workflow bundle (it is
+// imported by the workflow-mode `Run`). It has no runtime imports, so its
+// transpiled source can be evaluated in the VM as is.
+const moduleSource = ts.transpileModule(
+  readFileSync(new URL('./child-run-completion.ts', import.meta.url), 'utf8'),
+  {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }
+).outputText;
+
 const helperSource = `
-const WORKFLOW_CREATE_HOOK = Symbol.for('WORKFLOW_CREATE_HOOK');
-const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
-const COMPLETION_WAITS = Symbol.for('@workflow/core//childRunCompletionWaits');
-const CHILD_RUN_COMPLETION_TOKEN_PREFIX = ${JSON.stringify(CHILD_RUN_COMPLETION_TOKEN_PREFIX)};
-${childRunCompletionToken.toString()}
-${awaitChildRunCompletion.toString()}
-const readReturnValue = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(READ_STEP)});
+const __completion = (function () {
+  var exports = {};
+  ${moduleSource}
+  return exports;
+})();
+const readReturnValue = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(READ_VALUE)});
+const readFinished = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(READ_FINISHED)});
 `;
+
+/** `run.returnValue` for a child handle whose recorded parent is `parentRunId`. */
+const awaitChild = (childRunId: string, parentRunId = PARENT_RUN_ID) =>
+  `(__completion.awaitChildRunCompletion(${JSON.stringify(childRunId)}, ${JSON.stringify(parentRunId)}, () => readReturnValue(${JSON.stringify(childRunId)}), (ids) => readFinished(ids)) ?? readReturnValue(${JSON.stringify(childRunId)}))`;
 
 function workflowCode(body: string): string {
   return `${helperSource}
@@ -46,9 +63,7 @@ globalThis.__private_workflows = new Map();
 globalThis.__private_workflows.set("workflow", workflow);`;
 }
 
-/** `run.returnValue` for a handle whose recorded parent is `parentRunId`. */
-const awaitChild = (parentRunId = PARENT_RUN_ID) =>
-  `(awaitChildRunCompletion(${JSON.stringify(CHILD_RUN_ID)}, ${JSON.stringify(parentRunId)}, (wait) => readReturnValue(wait)) ?? readReturnValue(true).then((r) => r.value))`;
+const STARTED_AT = new Date('2024-01-01T00:00:00.000Z');
 
 async function makeRun(): Promise<WorkflowRun> {
   return {
@@ -56,9 +71,9 @@ async function makeRun(): Promise<WorkflowRun> {
     workflowName: 'workflow',
     status: 'running',
     input: await dehydrateWorkflowArguments([], PARENT_RUN_ID, undefined, []),
-    createdAt: new Date('2024-01-01T00:00:00.000Z'),
-    updatedAt: new Date('2024-01-01T00:00:00.000Z'),
-    startedAt: new Date('2024-01-01T00:00:00.000Z'),
+    createdAt: STARTED_AT,
+    updatedAt: STARTED_AT,
+    startedAt: STARTED_AT,
     deploymentId: 'test-deployment',
   };
 }
@@ -69,6 +84,7 @@ type Outcome =
       done: false;
       hooks: HookInvocationQueueItem[];
       steps: StepInvocationQueueItem[];
+      waits: WaitInvocationQueueItem[];
     };
 
 async function replay(code: string, events: Event[]): Promise<Outcome> {
@@ -92,8 +108,13 @@ async function replay(code: string, events: Event[]): Promise<Outcome> {
       hooks: items.filter(
         (item): item is HookInvocationQueueItem => item.type === 'hook'
       ),
+      // Only steps still to run: the replay re-reports completed ones.
       steps: items.filter(
-        (item): item is StepInvocationQueueItem => item.type === 'step'
+        (item): item is StepInvocationQueueItem =>
+          item.type === 'step' && !item.hasCreatedEvent
+      ),
+      waits: items.filter(
+        (item): item is WaitInvocationQueueItem => item.type === 'wait'
       ),
     };
   }
@@ -108,203 +129,357 @@ function suspended(outcome: Outcome) {
   return outcome;
 }
 
-let eventSeq = 0;
-function event(fields: Omit<Event, 'eventId' | 'runId' | 'createdAt'>): Event {
-  return {
-    eventId: `evnt_${String(eventSeq++).padStart(4, '0')}`,
-    runId: PARENT_RUN_ID,
-    createdAt: new Date(),
-    ...fields,
-  } as Event;
+/** Drives one parent through its event log, appending what the runtime would. */
+class Log {
+  events: Event[] = [];
+  #seq = 0;
+  #clock = STARTED_AT.getTime();
+
+  constructor(readonly code: string) {}
+
+  replay() {
+    return replay(this.code, this.events);
+  }
+
+  async suspend() {
+    return suspended(await this.replay());
+  }
+
+  #push(fields: Record<string, unknown>, at?: number) {
+    if (at === undefined) {
+      this.#clock += 1_000;
+      at = this.#clock;
+    }
+    this.events.push({
+      eventId: `evnt_${String(this.#seq++).padStart(4, '0')}`,
+      runId: PARENT_RUN_ID,
+      createdAt: new Date(at),
+      ...fields,
+    } as Event);
+  }
+
+  hookCreated(hook: HookInvocationQueueItem) {
+    this.#push({
+      eventType: 'hook_created',
+      correlationId: hook.correlationId,
+      eventData: { token: hook.token, isSystem: true },
+    });
+  }
+
+  hookConflict(hook: HookInvocationQueueItem) {
+    this.#push({
+      eventType: 'hook_conflict',
+      correlationId: hook.correlationId,
+      eventData: { token: hook.token, conflictingRunId: 'wrun_other' },
+    });
+  }
+
+  hookDisposed(hook: HookInvocationQueueItem) {
+    this.#push({
+      eventType: 'hook_disposed',
+      correlationId: hook.correlationId,
+      eventData: {},
+    });
+  }
+
+  async childFinished(hook: HookInvocationQueueItem, runId: string) {
+    this.#push({
+      eventType: 'hook_received',
+      correlationId: hook.correlationId,
+      eventData: {
+        token: hook.token,
+        payload: await dehydrateStepReturnValue(
+          { runId, status: 'completed' },
+          PARENT_RUN_ID,
+          undefined,
+          []
+        ),
+      },
+    });
+  }
+
+  waitCreated(wait: WaitInvocationQueueItem) {
+    this.#push({
+      eventType: 'wait_created',
+      correlationId: wait.correlationId,
+      eventData: { resumeAt: wait.resumeAt },
+    });
+  }
+
+  waitCompleted(wait: WaitInvocationQueueItem) {
+    this.#push(
+      {
+        eventType: 'wait_completed',
+        correlationId: wait.correlationId,
+        eventData: { resumeAt: wait.resumeAt },
+      },
+      wait.resumeAt.getTime()
+    );
+    this.#clock = wait.resumeAt.getTime();
+  }
+
+  async stepCompleted(step: StepInvocationQueueItem, result: unknown) {
+    this.#push({
+      eventType: 'step_started',
+      correlationId: step.correlationId,
+      eventData: { stepName: step.stepName },
+    });
+    this.#push({
+      eventType: 'step_completed',
+      correlationId: step.correlationId,
+      eventData: {
+        stepName: step.stepName,
+        result: await dehydrateStepReturnValue(
+          result,
+          PARENT_RUN_ID,
+          undefined,
+          []
+        ),
+      },
+    });
+  }
 }
 
-const hookCreated = (hook: HookInvocationQueueItem) =>
-  event({
-    eventType: 'hook_created',
-    correlationId: hook.correlationId,
-    eventData: { token: hook.token },
-  } as any);
-
-const hookReceived = async (hook: HookInvocationQueueItem) =>
-  event({
-    eventType: 'hook_received',
-    correlationId: hook.correlationId,
-    eventData: {
-      token: hook.token,
-      payload: await dehydrateStepReturnValue(
-        { status: 'completed' },
-        PARENT_RUN_ID,
-        undefined,
-        []
-      ),
-    },
-  } as any);
-
-const hookConflict = (hook: HookInvocationQueueItem) =>
-  event({
-    eventType: 'hook_conflict',
-    correlationId: hook.correlationId,
-    eventData: { token: hook.token, conflictingRunId: 'wrun_other' },
-  } as any);
-
-const stepCompleted = async (
-  step: StepInvocationQueueItem,
-  result: unknown
-) => [
-  event({
-    eventType: 'step_started',
-    correlationId: step.correlationId,
-    eventData: { stepName: step.stepName },
-  } as any),
-  event({
-    eventType: 'step_completed',
-    correlationId: step.correlationId,
-    eventData: {
-      stepName: step.stepName,
-      result: await dehydrateStepReturnValue(
-        result,
-        PARENT_RUN_ID,
-        undefined,
-        []
-      ),
-    },
-  } as any),
-];
+const stepsNamed = (
+  outcome: { steps: StepInvocationQueueItem[] },
+  name: string
+) => outcome.steps.filter((step) => step.stepName === name);
 
 describe('awaitChildRunCompletion', () => {
   it('returns undefined outside the workflow VM', () => {
     expect(
-      awaitChildRunCompletion(CHILD_RUN_ID, PARENT_RUN_ID, async () => ({
-        done: false,
-      }))
+      awaitChildRunCompletion(
+        'wrun_child',
+        PARENT_RUN_ID,
+        async () => 1,
+        async () => []
+      )
     ).toBeUndefined();
   });
 
   it('returns undefined for a handle with no recorded parent', () => {
     expect(
-      awaitChildRunCompletion(CHILD_RUN_ID, undefined, async () => ({
-        done: false,
-      }))
+      awaitChildRunCompletion(
+        'wrun_child',
+        undefined,
+        async () => 1,
+        async () => []
+      )
     ).toBeUndefined();
   });
 
-  it('suspends on the completion hook while the child runs, then reads the finished child', async () => {
-    const code = workflowCode(`return await ${awaitChild()};`);
-    const events: Event[] = [];
+  it('registers one system hook, reads the child, parks, and reads the value once notified', async () => {
+    const log = new Log(workflowCode(`return await ${awaitChild('wrun_a')};`));
 
-    // 1. The hook is registered before anything reads the child.
-    let outcome = suspended(await replay(code, events));
-    expect(outcome.steps).toHaveLength(0);
-    expect(outcome.hooks).toHaveLength(1);
-    const [hook] = outcome.hooks;
-    expect(hook.token).toBe(TOKEN);
-    expect(hook.token).toBe(`wkf_child_run_completion:${CHILD_RUN_ID}`);
-    expect(hook.hasConflictAwaiter).toBe(true);
-    events.push(hookCreated(hook));
+    // 1. The parent's system hook is registered before anything reads.
+    let s = await log.suspend();
+    expect(s.steps).toHaveLength(0);
+    expect(s.hooks).toHaveLength(1);
+    const [hook] = s.hooks;
+    expect(hook).toMatchObject({
+      token: TOKEN,
+      isSystem: true,
+      hasConflictAwaiter: true,
+    });
+    log.hookCreated(hook);
 
-    // 2. Once registered, the child is read once, without waiting.
-    outcome = suspended(await replay(code, events));
-    expect(outcome.steps).toHaveLength(1);
-    const [check] = outcome.steps;
-    expect(check.stepName).toBe(READ_STEP);
-    expect(check.args).toEqual([false]);
-    events.push(...(await stepCompleted(check, { done: false })));
+    // 2. Then one batched status read.
+    s = await log.suspend();
+    expect(s.steps).toHaveLength(1);
+    expect(s.steps[0]).toMatchObject({
+      stepName: READ_FINISHED,
+      args: [['wrun_a']],
+    });
+    await log.stepCompleted(s.steps[0], []);
 
-    // 3. Still running: the workflow parks on the hook and schedules nothing.
-    outcome = suspended(await replay(code, events));
-    expect(outcome.steps).toHaveLength(0);
+    // 3. Still running: park on the hook, with the safety-net sleep open.
+    s = await log.suspend();
+    expect(s.steps).toHaveLength(0);
+    expect(s.waits).toHaveLength(1);
+    // New waits are stamped from the current time once the log is behind it.
+    expect(
+      Math.abs(
+        s.waits[0].resumeAt.getTime() - Date.now() - safetyCheckDelayMs(0)
+      )
+    ).toBeLessThan(60_000);
+    log.waitCreated(s.waits[0]);
 
-    // 4. The child resumed the hook: read its (now terminal) result.
-    events.push(await hookReceived(hook));
-    outcome = suspended(await replay(code, events));
-    expect(outcome.steps).toHaveLength(1);
-    const [fetch] = outcome.steps;
-    expect(fetch.args).toEqual([true]);
-    events.push(...(await stepCompleted(fetch, { done: true, value: 42 })));
+    // 4. The child resumed the parent's hook: read its result.
+    await log.childFinished(hook, 'wrun_a');
+    s = await log.suspend();
+    expect(s.steps).toHaveLength(1);
+    expect(s.steps[0]).toMatchObject({
+      stepName: READ_VALUE,
+      args: ['wrun_a'],
+    });
+    await log.stepCompleted(s.steps[0], 42);
 
-    expect(await replay(code, events)).toEqual({ done: true, value: 42 });
+    expect(await log.replay()).toEqual({ done: true, value: 42 });
   });
 
-  it('answers from the first read when the child already finished', async () => {
-    const code = workflowCode(`return await ${awaitChild()};`);
-    const events: Event[] = [];
-
-    let outcome = suspended(await replay(code, events));
-    const [hook] = outcome.hooks;
-    events.push(hookCreated(hook));
-
-    outcome = suspended(await replay(code, events));
-    const [check] = outcome.steps;
-    expect(check.args).toEqual([false]);
-    events.push(
-      ...(await stepCompleted(check, { done: true, value: 'early' }))
+  it('shares one hook and one status read across a fan-out', async () => {
+    const log = new Log(
+      workflowCode(`
+        return await Promise.all([${awaitChild('wrun_a')}, ${awaitChild('wrun_b')}, ${awaitChild('wrun_c')}]);
+      `)
     );
+    let s = await log.suspend();
+    expect(s.hooks).toHaveLength(1);
+    const [hook] = s.hooks;
+    log.hookCreated(hook);
 
-    expect(await replay(code, events)).toEqual({ done: true, value: 'early' });
+    s = await log.suspend();
+    expect(stepsNamed(s, READ_FINISHED)).toHaveLength(1);
+    expect(s.steps[0].args).toEqual([['wrun_a', 'wrun_b', 'wrun_c']]);
+    // `b` had already finished.
+    await log.stepCompleted(s.steps[0], ['wrun_b']);
+
+    s = await log.suspend();
+    expect(s.steps.map((step) => step.args)).toEqual([['wrun_b']]);
+    await log.stepCompleted(s.steps[0], 'B');
+    s = await log.suspend();
+    log.waitCreated(s.waits[0]);
+
+    // Children resume the same hook, in any order.
+    await log.childFinished(hook, 'wrun_c');
+    s = await log.suspend();
+    expect(s.steps.map((step) => step.args)).toEqual([['wrun_c']]);
+    await log.stepCompleted(s.steps[0], 'C');
+    await log.childFinished(hook, 'wrun_a');
+    s = await log.suspend();
+    expect(s.steps.map((step) => step.args)).toEqual([['wrun_a']]);
+    await log.stepCompleted(s.steps[0], 'A');
+
+    const done = await log.replay();
+    expect(done).toEqual({ done: true, value: ['A', 'B', 'C'] });
+    // Never more than the one hook.
+    expect(
+      log.events.filter((e) => e.eventType === 'hook_created')
+    ).toHaveLength(1);
   });
 
-  it('disposes the hook once the child has been read', async () => {
-    // A later suspension (a plain step after the await) carries the hook's
-    // disposal, so its token is released while the parent keeps running.
-    const code = workflowCode(`
-      const value = await ${awaitChild()};
-      await readReturnValue('after');
-      return value;
-    `);
-    const events: Event[] = [];
-    let outcome = suspended(await replay(code, events));
-    const [hook] = outcome.hooks;
-    events.push(hookCreated(hook));
-    outcome = suspended(await replay(code, events));
-    events.push(
-      ...(await stepCompleted(outcome.steps[0], { done: true, value: 1 }))
+  it('re-reads pending children when the safety-net sleep fires', async () => {
+    const log = new Log(workflowCode(`return await ${awaitChild('wrun_a')};`));
+    let s = await log.suspend();
+    const [hook] = s.hooks;
+    log.hookCreated(hook);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], []);
+    s = await log.suspend();
+    const [firstWait] = s.waits;
+    log.waitCreated(firstWait);
+
+    // No notification ever arrives (e.g. the child was cancelled without the
+    // SDK). The safety net reads the child again and finds it finished.
+    log.waitCompleted(firstWait);
+    s = await log.suspend();
+    expect(stepsNamed(s, READ_FINISHED).map((step) => step.args)).toEqual([
+      [['wrun_a']],
+    ]);
+    await log.stepCompleted(s.steps[0], []);
+
+    // Still running: the next check is further out.
+    s = await log.suspend();
+    const nextWait = s.waits.find(
+      (wait) => wait.correlationId !== firstWait.correlationId
     );
-
-    outcome = suspended(await replay(code, events));
-    expect(outcome.steps.map((step) => step.args)).toEqual([['after']]);
-    expect(outcome.hooks).toHaveLength(1);
-    expect(outcome.hooks[0].correlationId).toBe(hook.correlationId);
-    expect(outcome.hooks[0].disposed).toBe(true);
+    assert(nextWait);
+    expect(
+      Math.abs(
+        nextWait.resumeAt.getTime() -
+          firstWait.resumeAt.getTime() -
+          (safetyCheckDelayMs(1) - safetyCheckDelayMs(0))
+      )
+    ).toBeLessThan(60_000);
+    log.waitCreated(nextWait);
+    log.waitCompleted(nextWait);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], ['wrun_a']);
+    s = await log.suspend();
+    expect(s.steps.map((step) => step.stepName)).toEqual([READ_VALUE]);
+    await log.stepCompleted(s.steps[0], 'late');
+    expect(await log.replay()).toEqual({ done: true, value: 'late' });
   });
 
-  it('shares one hook between repeated awaits of the same child', async () => {
-    const code = workflowCode(`
-      const [a, b] = await Promise.all([${awaitChild()}, ${awaitChild()}]);
-      return [a, b];
-    `);
-    const outcome = suspended(await replay(code, []));
-    expect(outcome.hooks).toHaveLength(1);
-    expect(outcome.hooks[0].token).toBe(TOKEN);
+  it('disposes the hook between waits and registers it again for a later await', async () => {
+    const log = new Log(
+      workflowCode(`
+        const a = await ${awaitChild('wrun_a')};
+        const b = await ${awaitChild('wrun_b')};
+        return [a, b];
+      `)
+    );
+    let s = await log.suspend();
+    const [first] = s.hooks;
+    log.hookCreated(first);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], ['wrun_a']);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], 'A');
+
+    // The first wait is over: its hook is disposed and a new one registered
+    // for the next child, under the same token.
+    s = await log.suspend();
+    const disposed = s.hooks.find(
+      (hook) => hook.correlationId === first.correlationId
+    );
+    expect(disposed?.disposed).toBe(true);
+    const second = s.hooks.find(
+      (hook) => hook.correlationId !== first.correlationId
+    );
+    assert(second);
+    expect(second).toMatchObject({ token: TOKEN, isSystem: true });
+    log.hookDisposed(first);
+    log.hookCreated(second);
+    s = await log.suspend();
+    expect(s.steps[0].args).toEqual([['wrun_b']]);
+    await log.stepCompleted(s.steps[0], ['wrun_b']);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], 'B');
+    expect(await log.replay()).toEqual({ done: true, value: ['A', 'B'] });
+  });
+
+  it('shares one wait between repeated awaits of the same child', async () => {
+    const log = new Log(
+      workflowCode(
+        `return await Promise.all([${awaitChild('wrun_a')}, ${awaitChild('wrun_a')}]);`
+      )
+    );
+    let s = await log.suspend();
+    log.hookCreated(s.hooks[0]);
+    s = await log.suspend();
+    expect(s.steps[0].args).toEqual([['wrun_a']]);
+    await log.stepCompleted(s.steps[0], ['wrun_a']);
+    s = await log.suspend();
+    expect(s.steps).toHaveLength(1);
+    await log.stepCompleted(s.steps[0], 7);
+    expect(await log.replay()).toEqual({ done: true, value: [7, 7] });
   });
 
   it('polls instead when the awaiting workflow is not the parent', async () => {
-    const code = workflowCode(
-      `return await ${awaitChild('wrun_someone_else')};`
+    const log = new Log(
+      workflowCode(`return await ${awaitChild('wrun_a', 'wrun_someone_else')};`)
     );
-    const events: Event[] = [];
-    const outcome = suspended(await replay(code, events));
-    expect(outcome.hooks).toHaveLength(0);
-    expect(outcome.steps).toHaveLength(1);
-    expect(outcome.steps[0].args).toEqual([true]);
-    events.push(
-      ...(await stepCompleted(outcome.steps[0], { done: true, value: 7 }))
-    );
-    expect(await replay(code, events)).toEqual({ done: true, value: 7 });
+    const s = await log.suspend();
+    expect(s.hooks).toHaveLength(0);
+    expect(s.steps.map((step) => step.stepName)).toEqual([READ_VALUE]);
+    await log.stepCompleted(s.steps[0], 7);
+    expect(await log.replay()).toEqual({ done: true, value: 7 });
   });
 
   it('polls instead when another run holds the token', async () => {
-    const code = workflowCode(`return await ${awaitChild()};`);
-    const events: Event[] = [];
-    let outcome = suspended(await replay(code, events));
-    events.push(hookConflict(outcome.hooks[0]));
-
-    outcome = suspended(await replay(code, events));
-    expect(outcome.steps).toHaveLength(1);
-    expect(outcome.steps[0].args).toEqual([true]);
-    events.push(
-      ...(await stepCompleted(outcome.steps[0], { done: true, value: 'p' }))
+    const log = new Log(
+      workflowCode(
+        `return await Promise.all([${awaitChild('wrun_a')}, ${awaitChild('wrun_b')}]);`
+      )
     );
-    expect(await replay(code, events)).toEqual({ done: true, value: 'p' });
+    let s = await log.suspend();
+    log.hookConflict(s.hooks[0]);
+    s = await log.suspend();
+    expect(s.steps.map((step) => [step.stepName, step.args])).toEqual([
+      [READ_VALUE, ['wrun_a']],
+      [READ_VALUE, ['wrun_b']],
+    ]);
   });
 });
 
@@ -312,7 +487,7 @@ describe('awaitChildRunCompletion in the QuickJS VM', () => {
   const quickJSCode = `${helperSource}
 globalThis.__private_workflows = new Map();
 async function workflow() {
-  return await ${awaitChild()};
+  return await Promise.all([${awaitChild('wrun_a')}, ${awaitChild('wrun_b')}]);
 }
 workflow.workflowId = "workflow//test//workflow";
 globalThis.__private_workflows.set("workflow//test//workflow", workflow);`;
@@ -339,7 +514,7 @@ globalThis.__private_workflows.set("workflow//test//workflow", workflow);`;
     createdAt: new Date('2025-01-01T00:00:00Z'),
   };
 
-  it('registers the completion hook before reading the child', async () => {
+  it('registers one system hook before one batched status read', async () => {
     const first = await runQuickJSWorkflow({
       workflowCode: quickJSCode,
       workflowId: 'workflow//test//workflow',
@@ -348,8 +523,10 @@ globalThis.__private_workflows.set("workflow//test//workflow", workflow);`;
     });
     const ops = first.suspended?.pendingOperations ?? [];
     expect(ops.filter((op) => op.type === 'step')).toHaveLength(0);
-    const hook = ops.find((op) => op.type === 'hook');
-    expect(hook).toMatchObject({ type: 'hook', token: TOKEN });
+    const hooks = ops.filter((op) => op.type === 'hook');
+    expect(hooks).toHaveLength(1);
+    expect(hooks[0]).toMatchObject({ token: TOKEN, isSystem: true });
+    const hook = hooks[0];
     assert(hook);
 
     const second = await runQuickJSWorkflow({
@@ -363,7 +540,7 @@ globalThis.__private_workflows.set("workflow//test//workflow", workflow);`;
           runId: PARENT_RUN_ID,
           eventType: 'hook_created',
           correlationId: hook.correlationId,
-          eventData: { token: TOKEN },
+          eventData: { token: TOKEN, isSystem: true },
           createdAt: new Date('2025-01-01T00:00:01Z'),
         },
       ] as Event[],
@@ -372,6 +549,6 @@ globalThis.__private_workflows.set("workflow//test//workflow", workflow);`;
       (op) => op.type === 'step'
     );
     expect(steps).toHaveLength(1);
-    expect(steps[0]).toMatchObject({ stepId: READ_STEP });
+    expect(steps[0]).toMatchObject({ stepId: READ_FINISHED });
   });
 });

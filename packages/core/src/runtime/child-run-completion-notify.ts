@@ -35,21 +35,27 @@ export function isChildRunCompletionHookEnabled(): boolean {
   return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
-/** Whether a run was stamped to resume its parent's completion hook. */
-export function notifiesParentOnCompletion(
+/**
+ * The parent whose completion hook a run resumes when it finishes, or
+ * `undefined` for a run that was not started from a workflow.
+ */
+export function completionParentRunId(
   executionContext: Record<string, unknown> | undefined
-): boolean {
-  return executionContext?.[CHILD_RUN_COMPLETION_CONTEXT_KEY] === true;
+): string | undefined {
+  const parentRunId = executionContext?.[CHILD_RUN_COMPLETION_CONTEXT_KEY];
+  return typeof parentRunId === 'string' && parentRunId !== ''
+    ? parentRunId
+    : undefined;
 }
 
 type NotifiableRun = Pick<WorkflowRunWithoutData, 'runId' | 'executionContext'>;
 
 /**
- * Resumes the completion hook of the parent waiting on `run`, if `run` was
- * started from a workflow. Call it after the run's terminal event is
- * written: the parent reads the run once after registering its hook, so a
- * resume that finds no hook is only safe once the read would see the run as
- * finished.
+ * Resumes the completion hook of the parent that started `run`, if any, with
+ * `{ runId, status }`; all of a parent's children share that one hook. Call
+ * it after the run's terminal event is written: the parent reads the run
+ * after registering its hook, so a resume that finds no hook is only safe
+ * once that read would see the run as finished.
  *
  * Accepts the run itself when the caller already has it loaded, or its id
  * (read here, metadata only) on paths that do not.
@@ -65,15 +71,17 @@ export async function notifyParentOfRunCompletion(
   status: ChildRunCompletionPayload['status']
 ): Promise<void> {
   const runId = typeof run === 'string' ? run : run.runId;
+  let parentRunId: string | undefined;
   try {
     const loaded =
       typeof run === 'string'
         ? await world.runs.get(run, { resolveData: 'none' })
         : run;
-    if (!notifiesParentOnCompletion(loaded.executionContext)) return;
+    parentRunId = completionParentRunId(loaded.executionContext);
+    if (!parentRunId) return;
 
-    const token = childRunCompletionToken(runId);
-    const payload: ChildRunCompletionPayload = { status };
+    const token = childRunCompletionToken(parentRunId);
+    const payload: ChildRunCompletionPayload = { runId, status };
     for (let attempt = 0; ; attempt++) {
       try {
         await resumeHookOnWorld(world, token, payload);
@@ -84,8 +92,9 @@ export async function notifyParentOfRunCompletion(
           EntityConflictError.is(err) ||
           RunExpiredError.is(err)
         ) {
-          // No parent is waiting (yet, or any longer): its read will see this
-          // run's terminal state instead.
+          // The parent is not waiting on any child right now (or has
+          // finished): when it next awaits this run, its read sees this run's
+          // terminal state instead.
           return;
         }
         const delay = NOTIFY_RETRY_DELAYS_MS[attempt];
@@ -95,10 +104,10 @@ export async function notifyParentOfRunCompletion(
     }
   } catch (err) {
     runtimeLogger.error(
-      'Failed to resume the parent workflow waiting on this run. The parent stays suspended until the token is resumed, for example with resumeHook(token, { status }).',
+      "Failed to resume the parent workflow's child-run completion hook. A parent waiting on this run notices it finished at its next safety-net check.",
       {
         workflowRunId: runId,
-        token: childRunCompletionToken(runId),
+        parentRunId,
         status,
         error: err instanceof Error ? err.message : String(err),
       }

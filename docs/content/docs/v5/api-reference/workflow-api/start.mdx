@@ -154,7 +154,11 @@ export async function parentWorkflow(value: number) {
 The returned `Run` object is fully functional inside a workflow. Each property access or method call (`.status`, `.cancel()`) executes as a separate step. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) for choosing between spawning a child run and awaiting a workflow function directly.
 </Callout>
 
-Awaiting `returnValue` of a run the workflow started does not poll. The parent registers a system hook and suspends on it, and the child resumes that hook when it completes, fails, or is canceled, so the wait costs no compute or worker slot and the parent resumes as soon as the child finishes. The same holds when the `Run` was returned from a step of the parent that called `start()`. See [Child Workflows](/cookbook/advanced/child-workflows#waiting-for-a-child).
+Awaiting `returnValue` of a run the workflow started does not poll. The parent suspends on its system completion hook, a single hook shared by all of its children, and each child resumes it when it completes, fails, or is canceled through the SDK, so the wait costs no compute or worker slot and the parent resumes as soon as the child finishes. The same holds when the `Run` was returned from a step of the parent that called `start()`. See [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits).
+
+<Callout type="warn">
+A child canceled without the SDK (by a tool that writes the cancellation to the World directly) does not notify its parent. The parent finds out at its next safety-net check, 5 minutes after it starts waiting and then at doubling intervals up to 6 hours. See [Cancellations that bypass the SDK](/cookbook/advanced/child-workflows#cancellations-that-bypass-the-sdk).
+</Callout>
 
 `returnValue` still polls when the waiting code is not the parent: a step, an API route, or another workflow handed the `Run`. It also polls for a child on another deployment (`deploymentId`) that predates the system hook, and for every child while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. A polling step holds its worker slot until the child finishes.
 

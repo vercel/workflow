@@ -57,7 +57,7 @@ describe('observeOutOfBandWriters', () => {
 
   it('treats an AbortController system hook as observed', () => {
     const result = observe([hook('abrt', { isSystem: true })]);
-    expect(result).toMatchObject({ abortSignalHookCount: 1, inert: false });
+    expect(result).toMatchObject({ systemHookCount: 1, inert: false });
   });
 
   it('ignores a hook this suspension disposes', () => {

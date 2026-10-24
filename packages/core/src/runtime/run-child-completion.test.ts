@@ -27,62 +27,55 @@ function useWorld(world: Partial<Record<keyof World, unknown>>) {
   vi.mocked(getWorldLazy).mockResolvedValue(world as unknown as World);
 }
 
-describe('Run.readReturnValue (the step behind returnValue)', () => {
-  it('reports a running run as not done without waiting', async () => {
-    const get = vi.fn().mockResolvedValue({ runId: RUN_ID, status: 'running' });
+describe('Run.readFinishedRunIds (the batched status read)', () => {
+  it('reports which runs finished, in input order, reading metadata only', async () => {
+    const statuses: Record<string, string> = {
+      wrun_a: 'running',
+      wrun_b: 'completed',
+      wrun_c: 'failed',
+      wrun_d: 'cancelled',
+      wrun_e: 'pending',
+    };
+    const get = vi.fn(async (runId: string) => ({
+      runId,
+      status: statuses[runId],
+    }));
     useWorld({ runs: { get } });
 
-    await expect(new Run(RUN_ID).readReturnValue(false)).resolves.toEqual({
-      done: false,
-    });
-    expect(get).toHaveBeenCalledExactlyOnceWith(RUN_ID, {
-      resolveData: 'none',
-    });
+    await expect(
+      Run.readFinishedRunIds(['wrun_d', 'wrun_a', 'wrun_b', 'wrun_e', 'wrun_c'])
+    ).resolves.toEqual(['wrun_d', 'wrun_b', 'wrun_c']);
+    for (const call of get.mock.calls) {
+      expect(call[1]).toEqual({ resolveData: 'none' });
+    }
   });
 
-  it('returns the value of a completed run', async () => {
-    const output = await dehydrateWorkflowReturnValue(
-      { answer: 42 },
-      RUN_ID,
-      undefined
-    );
-    const get = vi.fn(async (_runId: string, { resolveData }) =>
-      resolveData === 'none'
-        ? { runId: RUN_ID, status: 'completed' }
-        : { runId: RUN_ID, status: 'completed', output }
-    );
-    useWorld({ runs: { get } });
-
-    await expect(new Run(RUN_ID).readReturnValue(false)).resolves.toEqual({
-      done: true,
-      value: { answer: 42 },
-    });
-  });
-
-  it('rejects for a cancelled run, as returnValue does', async () => {
-    useWorld({
-      runs: {
-        get: vi.fn().mockResolvedValue({ runId: RUN_ID, status: 'cancelled' }),
-      },
-    });
-
-    await expect(new Run(RUN_ID).readReturnValue(false)).rejects.toSatisfy(
-      WorkflowRunCancelledError.is
-    );
-  });
-
-  it('treats a not-yet-created resilient start as not done', async () => {
+  it('reports a missing run as finished, so its returnValue surfaces the error', async () => {
     useWorld({
       runs: {
         get: vi.fn().mockRejectedValue(new WorkflowRunNotFoundError(RUN_ID)),
       },
     });
+    await expect(Run.readFinishedRunIds([RUN_ID])).resolves.toEqual([RUN_ID]);
+  });
 
-    await expect(
-      new Run(RUN_ID, { resilientStart: true }).readReturnValue(false)
-    ).resolves.toEqual({ done: false });
-    await expect(new Run(RUN_ID).readReturnValue(false)).rejects.toSatisfy(
-      WorkflowRunNotFoundError.is
+  it('fails the step on other read errors, so it retries', async () => {
+    useWorld({
+      runs: { get: vi.fn().mockRejectedValue(new Error('transport')) },
+    });
+    await expect(Run.readFinishedRunIds([RUN_ID])).rejects.toThrow('transport');
+  });
+});
+
+describe('Run.returnValue outside a workflow', () => {
+  it('rejects for a cancelled run', async () => {
+    useWorld({
+      runs: {
+        get: vi.fn().mockResolvedValue({ runId: RUN_ID, status: 'cancelled' }),
+      },
+    });
+    await expect(new Run(RUN_ID).returnValue).rejects.toSatisfy(
+      WorkflowRunCancelledError.is
     );
   });
 
@@ -108,7 +101,7 @@ describe('cancellation resumes a waiting parent', () => {
   const stampedRun = {
     runId: RUN_ID,
     specVersion: 2,
-    executionContext: { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true },
+    executionContext: { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: 'wrun_parent' },
   };
 
   it('Run.cancel()', async () => {

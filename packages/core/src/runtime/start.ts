@@ -1073,7 +1073,7 @@ export async function start<TArgs extends unknown[], TResult>(
           ? { dynamicWorkflow: dynamicWorkflow.metadata }
           : {}),
         ...(completionParentRunId
-          ? { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true }
+          ? { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: completionParentRunId }
           : {}),
       };
       // A dynamic run's marker is what can push the context past a World's

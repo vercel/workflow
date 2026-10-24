@@ -108,6 +108,22 @@ export interface Webhook<T extends Request> extends Hook<T> {
   url: string;
 }
 
+/**
+ * Options accepted by the orchestrator's `createHook` for hooks the SDK
+ * itself creates (the `AbortController` signal hook, the child-run completion
+ * hook). Deliberately not part of the public {@link HookOptions}.
+ *
+ * A system hook is an ordinary hook (same tokens, conflicts, resumes and
+ * disposal) that is recorded with `isSystem: true`, so observability can
+ * label it and the runtime can treat it as written by another run: its
+ * resumes come from outside this run's replay.
+ *
+ * @internal
+ */
+export interface SystemHookOptions extends HookOptions {
+  isSystem?: boolean;
+}
+
 export interface HookOptions {
   /**
    * Unique token that is used to associate with the hook.

@@ -119,15 +119,15 @@ describe('start() child-run completion stamping', () => {
     expect(serialized(run)).not.toHaveProperty('parentRunId');
   });
 
-  it('stamps a same-deployment child and records the parent on its Run', async () => {
+  it('stamps a same-deployment child with its parent and records the parent on its Run', async () => {
     const run = await insideRun('wrun_parent', () => start(workflow, []));
 
     expect(stampedContext()).toMatchObject({
-      [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true,
+      [CHILD_RUN_COMPLETION_CONTEXT_KEY]: 'wrun_parent',
     });
     // The resilient-start path re-creates the run from the queue message.
     expect(queuedContext()).toMatchObject({
-      [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true,
+      [CHILD_RUN_COMPLETION_CONTEXT_KEY]: 'wrun_parent',
     });
     expect(serialized(run)).toMatchObject({
       runId: run.runId,
@@ -158,7 +158,7 @@ describe('start() child-run completion stamping', () => {
     );
 
     expect(stampedContext()).toMatchObject({
-      [CHILD_RUN_COMPLETION_CONTEXT_KEY]: true,
+      [CHILD_RUN_COMPLETION_CONTEXT_KEY]: 'wrun_parent',
     });
     expect(serialized(run)).toMatchObject({ parentRunId: 'wrun_parent' });
   });
