@@ -112,6 +112,20 @@ export async function raceThenNext(
   await markerStep(markerPath, 'race-next', 0);
 }
 
+async function timeoutSlowStep() {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 5_000));
+  return 'slow';
+}
+
+export async function timeoutRaceReturnsAtDeadline() {
+  'use workflow';
+  return await Promise.race([
+    timeoutSlowStep(),
+    sleep('1s').then(() => 'timed out'),
+  ]);
+}
+
 async function namedChain(markerPath: string, prefix: string, delayMs: number) {
   for (let index = 1; index <= 3; index++) {
     await markerStep(markerPath, `${prefix}${index}`, delayMs);

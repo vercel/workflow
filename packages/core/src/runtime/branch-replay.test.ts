@@ -11,6 +11,7 @@ import {
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
   analyzePendingStepsForReplay,
+  hasAdvanceOnlyBranchReplayEvidence,
   pendingStepIdsIn,
   runRowFromCreation,
   settlesBranch,
@@ -40,6 +41,72 @@ describe('advanceOnlyReplayIdempotencyKey', () => {
     expect(advanceOnlyReplayIdempotencyKey('run-a', 'step-a')).not.toBe(
       advanceOnlyReplayIdempotencyKey('run-b', 'step-a')
     );
+  });
+});
+
+describe('hasAdvanceOnlyBranchReplayEvidence', () => {
+  it('does not treat a timer winning beside a step as a branch replay', () => {
+    expect(
+      hasAdvanceOnlyBranchReplayEvidence([
+        event('wait_created', 'wait'),
+        event('step_created', 'slow'),
+        event('step_started', 'slow'),
+        event('wait_completed', 'wait'),
+      ])
+    ).toBe(false);
+  });
+
+  it('does not treat a fire-and-forget step alone as a branch replay', () => {
+    expect(
+      hasAdvanceOnlyBranchReplayEvidence([
+        event('step_created', 'detached'),
+        event('step_started', 'detached'),
+      ])
+    ).toBe(false);
+  });
+
+  it.each([
+    'step_created',
+    'hook_created',
+    'wait_created',
+  ] as const)('recognizes %s after a branch settles beside a pending peer', (createdEventType) => {
+    expect(
+      hasAdvanceOnlyBranchReplayEvidence([
+        event('step_created', 'fast'),
+        event('step_started', 'fast'),
+        event('step_created', 'slow'),
+        event('step_started', 'slow'),
+        event('step_completed', 'fast'),
+        event(createdEventType, 'downstream'),
+      ])
+    ).toBe(true);
+  });
+
+  it('requires the peer to remain pending until downstream work is created', () => {
+    expect(
+      hasAdvanceOnlyBranchReplayEvidence([
+        event('step_created', 'fast'),
+        event('step_started', 'fast'),
+        event('step_created', 'slow'),
+        event('step_started', 'slow'),
+        event('step_completed', 'fast'),
+        event('step_completed', 'slow'),
+        event('step_created', 'later'),
+      ])
+    ).toBe(false);
+  });
+
+  it('recognizes an early retry starting while its peer remains pending', () => {
+    expect(
+      hasAdvanceOnlyBranchReplayEvidence([
+        event('step_created', 'retry'),
+        event('step_started', 'retry'),
+        event('step_created', 'slow'),
+        event('step_started', 'slow'),
+        event('step_retrying', 'retry'),
+        event('step_started', 'retry'),
+      ])
+    ).toBe(true);
   });
 });
 

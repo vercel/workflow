@@ -55,6 +55,7 @@ import {
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
   analyzePendingStepsForReplay,
+  hasAdvanceOnlyBranchReplayEvidence,
   pendingStepIdsIn,
   runRowFromCreation,
   settlesBranch,
@@ -1954,6 +1955,13 @@ export function workflowEntrypoint(
                   // second probe there would duplicate the chain on Worlds
                   // whose queue keys are released after delivery.
                   let ownsTerminalSafetyProbe = advanceOnly;
+                  const advanceOnlyTerminalGuardApplies = (
+                    events: readonly Event[]
+                  ): boolean =>
+                    isAdvanceOnlyReplayEnabled() &&
+                    (advanceOnly ||
+                      sentReplayOwnsTerminalSafetyProbe ||
+                      hasAdvanceOnlyBranchReplayEvidence(events));
 
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
@@ -3750,18 +3758,18 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
-                      // Any replay can overlap an executor started by an
-                      // earlier branch replay: hook, wait, wake, and ordinary
-                      // queued continuations do not carry an advance-only
-                      // marker. Derive terminal safety from the event log in
-                      // every replay while the feature is enabled. Creation-
-                      // only terminal-drain rows do not count as executable.
-                      const completionPendingEvents =
-                        isAdvanceOnlyReplayEnabled()
-                          ? eventLog.events
-                          : undefined;
+                      // Apply the stricter terminal guard only after this run
+                      // actually used branch replay. The current invocation's
+                      // flag and successful publishes cover the immediate
+                      // paths. Ordinary hook, wait, wake, and queued replays
+                      // carry no marker, so durable event ordering supplies
+                      // the later evidence. A timer merely winning beside a
+                      // step supplies none and keeps origin/main semantics.
+                      const completionPendingEvents = eventLog.events;
                       if (
-                        completionPendingEvents &&
+                        advanceOnlyTerminalGuardApplies(
+                          completionPendingEvents
+                        ) &&
                         terminalExecutableStepIds(completionPendingEvents)
                           .size > 0
                       ) {
@@ -6307,6 +6315,9 @@ export function workflowEntrypoint(
                               : undefined;
                           if (
                             failurePendingEvents &&
+                            advanceOnlyTerminalGuardApplies(
+                              failurePendingEvents
+                            ) &&
                             terminalExecutableStepIds(failurePendingEvents)
                               .size > 0
                           ) {

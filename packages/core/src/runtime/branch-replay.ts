@@ -83,6 +83,105 @@ export function pendingStepIdsIn(
   return pending;
 }
 
+interface BranchReplayEvidenceState {
+  pendingSteps: Set<string | undefined>;
+  candidatePeers: Set<string | undefined>;
+  retryingBranches: Set<string | undefined>;
+}
+
+function branchWorkCreationProvesReplay(
+  state: BranchReplayEvidenceState,
+  event: Event
+): boolean {
+  // Check before adding this step: the evidence must be an older peer that was
+  // already executable when this branch created new work.
+  if (state.candidatePeers.size > 0) return true;
+  if (event.eventType === 'step_created') {
+    state.pendingSteps.add(event.correlationId);
+  }
+  return false;
+}
+
+function retryStartProvesReplay(
+  state: BranchReplayEvidenceState,
+  stepId: string | undefined
+): boolean {
+  const provesReplay =
+    state.retryingBranches.has(stepId) && state.candidatePeers.size > 0;
+  state.pendingSteps.add(stepId);
+  state.retryingBranches.delete(stepId);
+  return provesReplay;
+}
+
+function recordRetryingBranch(
+  state: BranchReplayEvidenceState,
+  stepId: string | undefined
+): void {
+  let hasPeer = false;
+  for (const pendingStepId of state.pendingSteps) {
+    if (pendingStepId === stepId) continue;
+    state.candidatePeers.add(pendingStepId);
+    hasPeer = true;
+  }
+  if (hasPeer) state.retryingBranches.add(stepId);
+}
+
+function recordSettledBranch(
+  state: BranchReplayEvidenceState,
+  stepId: string | undefined
+): void {
+  state.pendingSteps.delete(stepId);
+  state.candidatePeers.delete(stepId);
+  state.retryingBranches.delete(stepId);
+  for (const pendingStepId of state.pendingSteps) {
+    state.candidatePeers.add(pendingStepId);
+  }
+}
+
+/**
+ * Whether the durable log proves that a branch advanced while a sibling step
+ * was still executable.
+ *
+ * Message flags cover the invocation that performs an advance-only replay.
+ * Later hook, wait, and wake replays carry no such flag, so they need a durable
+ * signal before applying the stricter terminal guard. A settled attempt alone
+ * is not enough: `Promise.race([step(), sleep()])` must retain the ordinary
+ * behavior when the timer wins. The signal is new branch work created after a
+ * step settled (or began a retry) while at least one peer remained pending.
+ */
+export function hasAdvanceOnlyBranchReplayEvidence(
+  events: readonly Event[]
+): boolean {
+  const state: BranchReplayEvidenceState = {
+    pendingSteps: new Set(),
+    candidatePeers: new Set(),
+    retryingBranches: new Set(),
+  };
+
+  for (const event of events) {
+    const stepId = event.correlationId;
+    switch (event.eventType) {
+      case 'step_created':
+      case 'hook_created':
+      case 'wait_created':
+        if (branchWorkCreationProvesReplay(state, event)) return true;
+        break;
+      case 'step_started':
+        if (retryStartProvesReplay(state, stepId)) return true;
+        break;
+      case 'step_retrying':
+        recordRetryingBranch(state, stepId);
+        break;
+      case 'step_completed':
+      case 'step_failed':
+        recordSettledBranch(state, stepId);
+        break;
+    }
+  }
+
+  return false;
+}
+
 export interface PendingStepReplayAnalysis {
   pendingStepIds: Set<string | undefined>;
   currentEpisodePeakPendingStepCount: number;

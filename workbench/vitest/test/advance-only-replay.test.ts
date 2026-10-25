@@ -30,6 +30,7 @@ import {
   sleepAfterRaceLoser,
   slowFirstParallelChains,
   threeParallelChains,
+  timeoutRaceReturnsAtDeadline,
   twoDifferentLeafBenchmark,
   twoDifferentLeafDurations,
   twoLeafBenchmark,
@@ -811,6 +812,49 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         markerAt(markers, label, 'start')
       );
     });
+
+    it.each([
+      ['enabled', '1'],
+      ['kill switch', '0'],
+    ] as const)(
+      'returns a timeout race at its deadline with advance-only replay %s',
+      async (_label, feature) => {
+        const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+        process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = feature;
+        try {
+          const run = await start(timeoutRaceReturnsAtDeadline, []);
+          await waitForSleep(run, { timeout: 10_000, pollInterval: 25 });
+          const startedAt = performance.now();
+          let returnTimeout: ReturnType<typeof setTimeout> | undefined;
+          let result: string;
+          try {
+            result = await Promise.race([
+              run.returnValue,
+              new Promise<never>((_, reject) => {
+                returnTimeout = setTimeout(
+                  () => reject(new Error('timeout race did not return')),
+                  10_000
+                );
+              }),
+            ]);
+          } finally {
+            if (returnTimeout) clearTimeout(returnTimeout);
+          }
+          const elapsedMs = performance.now() - startedAt;
+          expect(result).toBe('timed out');
+          // Leave Windows CI queue-startup headroom around the one-second
+          // deadline while staying close to the documented timeout behavior.
+          expect(elapsedMs).toBeLessThan(1_750);
+        } finally {
+          if (original === undefined) {
+            delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+          } else {
+            process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = original;
+          }
+        }
+      },
+      20_000
+    );
 
     it('does not seal the run while a step started by an advance-only replay is running', async () => {
       for (let run = 0; run < 5; run++) {
