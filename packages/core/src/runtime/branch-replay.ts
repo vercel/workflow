@@ -103,9 +103,10 @@ export function analyzePendingStepsForReplay(
   const settled = new Set<string | undefined>();
   const createdAfterFirstStart = new Set<string>();
   const started = new Set<string | undefined>();
+  const activelyStarted = new Set<string | undefined>();
   let currentEpisodePeakPendingStepCount = 0;
   let pendingSiblingCount: number | undefined;
-  let attemptPeak: number | undefined;
+  let attemptSiblingIds = new Set<string | undefined>();
   let awaitingStart = false;
   let sawFirstStart = false;
 
@@ -117,9 +118,13 @@ export function analyzePendingStepsForReplay(
       }
       if (event.correlationId === stepId) {
         awaitingStart = true;
-        attemptPeak = Math.max(0, pending.size - 1);
+        attemptSiblingIds = new Set(
+          [...pending].filter(
+            (id) => id !== event.correlationId && !activelyStarted.has(id)
+          )
+        );
       } else if (awaitingStart) {
-        attemptPeak = Math.max(attemptPeak ?? 0, pending.size - 1);
+        attemptSiblingIds.add(event.correlationId);
       }
       currentEpisodePeakPendingStepCount = Math.max(
         currentEpisodePeakPendingStepCount,
@@ -128,12 +133,13 @@ export function analyzePendingStepsForReplay(
     } else if (event.eventType === 'step_started') {
       pending.add(event.correlationId);
       started.add(event.correlationId);
+      activelyStarted.add(event.correlationId);
       if (event.correlationId === stepId) {
-        pendingSiblingCount = Math.max(attemptPeak ?? 0, pending.size - 1);
+        pendingSiblingCount = attemptSiblingIds.size;
         awaitingStart = false;
         sawFirstStart = true;
       } else if (awaitingStart) {
-        attemptPeak = Math.max(attemptPeak ?? 0, pending.size - 1);
+        attemptSiblingIds.add(event.correlationId);
       }
       currentEpisodePeakPendingStepCount = Math.max(
         currentEpisodePeakPendingStepCount,
@@ -145,12 +151,16 @@ export function analyzePendingStepsForReplay(
     ) {
       awaitingStart = true;
       pendingSiblingCount = undefined;
-      attemptPeak = Math.max(0, pending.size - 1);
+      activelyStarted.delete(event.correlationId);
+      attemptSiblingIds = new Set(
+        [...attemptSiblingIds].filter((id) => pending.has(id))
+      );
     } else if (
       event.eventType === 'step_completed' ||
       event.eventType === 'step_failed'
     ) {
       pending.delete(event.correlationId);
+      activelyStarted.delete(event.correlationId);
       settled.add(event.correlationId);
       if (pending.size === 0) currentEpisodePeakPendingStepCount = 0;
     }
@@ -175,100 +185,6 @@ export function analyzePendingStepsForReplay(
     pendingSiblingCountAtLatestStart: pendingSiblingCount,
     pendingCreationsFollowFirstStart,
   };
-}
-
-/**
- * How many other steps were pending when `stepId` most recently started.
- *
- * Advance-only eligibility is fixed at attempt start. Rechecking only the
- * current tail of a wide fan-out would make its last few completions suddenly
- * eligible, adding replays even though the original batch was over the bound.
- */
-export function pendingSiblingCountAtLatestStart(
-  events: readonly Event[],
-  stepId: string
-): number | undefined {
-  const pending = new Set<string | undefined>();
-  let count: number | undefined;
-  let peak: number | undefined;
-  let awaitingStart = false;
-  for (const event of events) {
-    if (event.eventType === 'step_created') {
-      pending.add(event.correlationId);
-      if (event.correlationId === stepId) {
-        awaitingStart = true;
-        peak = Math.max(0, pending.size - 1);
-      } else if (awaitingStart) {
-        peak = Math.max(peak ?? 0, pending.size - 1);
-      }
-    } else if (event.eventType === 'step_started') {
-      pending.add(event.correlationId);
-      if (event.correlationId === stepId) {
-        count = Math.max(peak ?? 0, pending.size - 1);
-        awaitingStart = false;
-      } else if (awaitingStart) {
-        peak = Math.max(peak ?? 0, pending.size - 1);
-      }
-    } else if (
-      event.eventType === 'step_retrying' &&
-      event.correlationId === stepId
-    ) {
-      awaitingStart = true;
-      count = undefined;
-      peak = Math.max(0, pending.size - 1);
-    } else if (
-      event.eventType === 'step_completed' ||
-      event.eventType === 'step_failed'
-    ) {
-      pending.delete(event.correlationId);
-    }
-  }
-  return count;
-}
-
-/**
- * Whether every currently pending step is a creation-only row written after
- * this step first started. Such rows can be work a concurrent replay
- * scheduled, or terminal-drain records that no delivery owns. A scoped
- * advance-only probe safely distinguishes them by replaying: awaited work
- * suspends unchanged, while a terminal replay reports its drain-only ids.
- */
-export function pendingCreationsFollowFirstStart(
-  events: readonly Event[],
-  stepId: string,
-  pendingStepIds: ReadonlySet<string | undefined>
-): boolean {
-  if (pendingStepIds.size === 0 || pendingStepIds.has(undefined)) return false;
-
-  const firstStartIndex = events.findIndex(
-    (event) =>
-      event.eventType === 'step_started' && event.correlationId === stepId
-  );
-  if (firstStartIndex < 0) return false;
-
-  const relevantEvents = events.filter(
-    (event) =>
-      event.correlationId !== undefined &&
-      pendingStepIds.has(event.correlationId)
-  );
-  if (relevantEvents.some((event) => event.eventType === 'step_started')) {
-    return false;
-  }
-  const createdAfterStart = new Set(
-    events
-      .slice(firstStartIndex + 1)
-      .filter(
-        (event): event is Event & { correlationId: string } =>
-          event.eventType === 'step_created' &&
-          event.correlationId !== undefined
-      )
-      .map((event) => event.correlationId)
-  );
-
-  return [...pendingStepIds].every(
-    (stepId): stepId is string =>
-      stepId !== undefined && createdAfterStart.has(stepId)
-  );
 }
 
 /** Who is replaying: decides which pending steps an advance-only pass owes. */

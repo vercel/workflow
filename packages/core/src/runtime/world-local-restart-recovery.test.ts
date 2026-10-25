@@ -85,8 +85,15 @@ describe('world-local restart recovery of an inline step', () => {
 
   afterEach(async () => {
     setWorld(undefined);
-    await Promise.all(worlds.splice(0).map((world) => world.close()));
-    await rm(dataDir, { recursive: true, force: true });
+    for (const world of worlds.splice(0)) {
+      await world.close();
+    }
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
   });
 
   function bootWorld(): LocalWorld {

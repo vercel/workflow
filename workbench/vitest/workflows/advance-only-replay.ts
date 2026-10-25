@@ -1,5 +1,12 @@
 import { appendFile } from 'node:fs/promises';
-import { getStepMetadata, getWorkflowMetadata, RetryableError } from 'workflow';
+import {
+  createHook,
+  getStepMetadata,
+  getWorkflowMetadata,
+  RetryableError,
+  setAttributes,
+  sleep,
+} from 'workflow';
 
 async function markerStep(markerPath: string, label: string, delayMs: number) {
   'use step';
@@ -168,6 +175,44 @@ export async function fanoutEpisodeReset(
   );
 }
 
+export async function fourChainsBesideOlderBackground(
+  markerPath: string,
+  fastMs: number,
+  slowMs: number,
+  backgroundMs: number
+) {
+  'use workflow';
+  const background = markerStep(markerPath, 'older-background', backgroundMs);
+  background.catch(() => {});
+  await markerStep(markerPath, 'background-barrier', 0);
+  await Promise.all(
+    Array.from({ length: 4 }, (_, index) =>
+      namedChain(
+        markerPath,
+        index === 0 ? 'background-fast-' : `background-slow-${index}-`,
+        index === 0 ? fastMs : slowMs
+      )
+    )
+  );
+  await background;
+}
+
+export async function attributesThenSleepBesideSlow(
+  markerPath: string,
+  slowMs: number
+) {
+  'use workflow';
+  await Promise.all([
+    (async () => {
+      await markerStep(markerPath, 'attribute-fast', 0);
+      await setAttributes({ phase: 'sleeping' });
+      await sleep('1s');
+      await markerStep(markerPath, 'attribute-after-sleep', 0);
+    })(),
+    markerStep(markerPath, 'attribute-slow', slowMs),
+  ]);
+}
+
 async function retryOnceStep(
   markerPath: string,
   errorKind: 'error' | 'retryable',
@@ -223,18 +268,61 @@ export async function retryRaceWithDetachedDownstream(
   return 'done';
 }
 
+export async function hookAfterRaceLoser(
+  markerPath: string,
+  token: string,
+  loserMs: number
+) {
+  'use workflow';
+  await Promise.race([
+    markerStep(markerPath, 'ordinary-hook-winner', 50),
+    markerStep(markerPath, 'ordinary-hook-loser', loserMs),
+  ]);
+  using hook = createHook<{ resumed: true }>({ token });
+  await hook;
+  await markerStep(markerPath, 'ordinary-hook-after-wake', 0);
+  return 'done';
+}
+
+export async function sleepAfterRaceLoser(markerPath: string, loserMs: number) {
+  'use workflow';
+  await Promise.race([
+    markerStep(markerPath, 'ordinary-sleep-winner', 50),
+    markerStep(markerPath, 'ordinary-sleep-loser', loserMs),
+  ]);
+  await sleep('100ms');
+  await markerStep(markerPath, 'ordinary-sleep-after-wake', 0);
+  return 'done';
+}
+
+export async function wakeUpAfterRaceLoser(
+  markerPath: string,
+  loserMs: number
+) {
+  'use workflow';
+  await Promise.race([
+    markerStep(markerPath, 'ordinary-wake-winner', 50),
+    markerStep(markerPath, 'ordinary-wake-loser', loserMs),
+  ]);
+  await sleep('1h');
+  await markerStep(markerPath, 'ordinary-wake-after-wake', 0);
+  return 'done';
+}
+
 export async function nestedParallelToolsBesideSlowAgent(
   markerPath: string,
-  slowMs: number
+  slowMs: number,
+  toolCount = 2
 ) {
   'use workflow';
   await Promise.all([
     (async () => {
       await markerStep(markerPath, 'agent-model-1', 100);
-      await Promise.all([
-        markerStep(markerPath, 'agent-tool-1', 50),
-        markerStep(markerPath, 'agent-tool-2', 50),
-      ]);
+      await Promise.all(
+        Array.from({ length: toolCount }, (_, index) =>
+          markerStep(markerPath, `agent-tool-${index + 1}`, 50)
+        )
+      );
       await markerStep(markerPath, 'agent-model-2', 0);
     })(),
     markerStep(markerPath, 'agent-slow-sibling', slowMs),

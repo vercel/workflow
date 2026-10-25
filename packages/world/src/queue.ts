@@ -514,13 +514,6 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * terminal deferral. It does not poll or re-arm itself while work is live.
      */
     terminalBackstop: z.literal(true).optional().catch(undefined),
-    /** Probe generation retained for compatibility with earlier producers. */
-    terminalBackstopAttempt: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .catch(undefined),
   })
 );
 

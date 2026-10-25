@@ -488,10 +488,11 @@ export function isAdvanceOnlyReplayEnabled(): boolean {
  * of those replays costs a full pass over a log that grows with the fan-out, so
  * replaying on all of them makes the fan-out quadratic (measured on the Local
  * World: a 64-branch `Promise.all` went from 3.5s to 12.7s, and 256 branches
- * from 32s to more than ten minutes). Eligibility is fixed at attempt start,
- * so a wide batch does not become eligible as it drains. The default covers
- * the common two-branch shape without taxing wider fan-outs; operators can
- * raise it for wider groups of chained branches.
+ * from 32s to more than ten minutes). Eligibility is fixed for one fan-out
+ * episode, so a wide batch does not become eligible as it drains, while a
+ * later episode is evaluated afresh. The default covers up to four branches
+ * without taxing wider fan-outs; operators can raise it for wider groups of
+ * chained branches.
  */
 export const ADVANCE_ONLY_REPLAY_MAX_PENDING = 3;
 

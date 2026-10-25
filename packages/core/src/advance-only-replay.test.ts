@@ -149,6 +149,28 @@ const RETRY_BESIDE_SLOW = workflowSource(`
   return 'done';
 `);
 
+const RETRY_ONLY = workflowSource(`
+  await branchStep('retry');
+  return 'done';
+`);
+
+const FOUR_CHAINS_AFTER_BACKGROUND = workflowSource(`
+  await Promise.race([
+    branchStep('background'),
+    branchStep('barrier'),
+  ]);
+  await Promise.all([
+    (async () => {
+      await branchStep('fast1');
+      await branchStep('fast2');
+    })(),
+    branchStep('slow1'),
+    branchStep('slow2'),
+    branchStep('slow3'),
+  ]);
+  return 'done';
+`);
+
 const DETACHED_AFTER_FAST_BESIDE_SLOW = workflowSource(`
   await Promise.all([
     (async () => {
@@ -467,6 +489,10 @@ const settle = async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 };
+
+beforeEach(() => {
+  process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '1';
+});
 
 afterEach(() => {
   bodyGates.clear();
@@ -1123,20 +1149,10 @@ describe('inline path: an inline step settling while its batch is still running'
       delaySeconds: 860,
       idempotencyKey: `advance-only:terminal-backstop:${runId}`,
     });
-    expect(terminalBackstops(h)[0]).toMatchObject({
-      terminalBackstopAttempt: 0,
-    });
-
     await expect(
       h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop')
     ).resolves.toBeUndefined();
     expect(terminalBackstops(h)).toHaveLength(1);
-    expect(
-      hasExecutionAttribute(
-        'workflow.advance_only.terminal_backstop_attempt',
-        0
-      )
-    ).toBe(true);
 
     // The live step's own handler completes the run; the safety probe never
     // becomes a duration-proportional polling loop.
@@ -1320,6 +1336,48 @@ describe('inline path: an inline step settling while its batch is still running'
     slow.open();
     await flow;
     expect(h.stepMessageFor('retry')).toBeDefined();
+  });
+
+  it('uses only the end-of-batch retry publish for a lone inline step', async () => {
+    const runId = newRunId();
+    bodyFailuresRemaining.set('retry', 1);
+    const h = await setupHarness(runId, RETRY_ONLY);
+
+    await h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    expect(h.stepHas('retry', 'step_retrying')).toBe(true);
+    expect(
+      h.queued.filter((message) => message.stepId !== undefined)
+    ).toHaveLength(1);
+    expect(h.deliveryCount()).toBe(1);
+  });
+
+  it('scopes inline hand-off eligibility to the new fan-out episode', async () => {
+    const runId = newRunId();
+    for (const label of ['background', 'slow1', 'slow2', 'slow3']) {
+      bodyGates.set(label, gate());
+    }
+    const h = await setupHarness(runId, FOUR_CHAINS_AFTER_BACKGROUND);
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    await waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    const agents = h.deliver(handOffs(h)[0], 'msg_agents');
+    await waitFor(() => {
+      expect(h.stepHas('fast1', 'step_completed')).toBe(true);
+    });
+    await waitFor(() => {
+      expect(handOffs(h)).toHaveLength(2);
+    });
+    await h.deliver(handOffs(h)[1], 'msg_fast2');
+
+    expect(h.stepHas('fast2', 'step_completed')).toBe(true);
+    for (const label of ['background', 'slow1', 'slow2', 'slow3']) {
+      expect(h.stepHas(label, 'step_completed')).toBe(false);
+      bodyGates.get(label)?.open();
+    }
+    await Promise.all([agents, flow]);
   });
 
   it('does not infer serialized replays from an unverifiable runtime setting', async () => {

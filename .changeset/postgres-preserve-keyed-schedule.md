@@ -2,4 +2,4 @@
 "@workflow/world-postgres": patch
 ---
 
-Preserve the first delivery time when a keyed queued message is published again, so an immediate duplicate cannot erase a delayed retry's backoff.
+Every keyed job now keeps its first scheduled delivery time (`preserve_run_at`), so an immediate duplicate cannot erase a delayed retry's backoff.

@@ -228,21 +228,6 @@ describe('QueuePayloadSchema', () => {
         terminalBackstop: 'invalid',
       })
     ).toEqual({ runId: 'wrun_01ABC', terminalBackstop: undefined });
-    expect(
-      WorkflowInvokePayloadSchema.parse({
-        runId: 'wrun_01ABC',
-        terminalBackstopAttempt: 3,
-      })
-    ).toMatchObject({ runId: 'wrun_01ABC', terminalBackstopAttempt: 3 });
-    expect(
-      WorkflowInvokePayloadSchema.parse({
-        runId: 'wrun_01ABC',
-        terminalBackstopAttempt: -1,
-      })
-    ).toEqual({
-      runId: 'wrun_01ABC',
-      terminalBackstopAttempt: undefined,
-    });
   });
 
   // Resilient step dispatch: a step message may carry `stepInput` with the

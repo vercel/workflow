@@ -11,8 +11,6 @@ import {
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
   analyzePendingStepsForReplay,
-  pendingCreationsFollowFirstStart,
-  pendingSiblingCountAtLatestStart,
   pendingStepIdsIn,
   runRowFromCreation,
   settlesBranch,
@@ -45,7 +43,7 @@ describe('advanceOnlyReplayIdempotencyKey', () => {
   });
 });
 
-describe('pendingSiblingCountAtLatestStart', () => {
+describe('analyzePendingStepsForReplay', () => {
   it('keeps the attempt-start width after a wide batch drains', () => {
     const events = [
       event('step_created', 'a'),
@@ -57,7 +55,9 @@ describe('pendingSiblingCountAtLatestStart', () => {
       event('step_completed', 'a'),
       event('step_completed', 'b'),
     ];
-    expect(pendingSiblingCountAtLatestStart(events, 'c')).toBe(2);
+    expect(
+      analyzePendingStepsForReplay(events, 'c').pendingSiblingCountAtLatestStart
+    ).toBe(2);
   });
 
   it('keeps a late queued start bound to the width it waited behind', () => {
@@ -73,7 +73,24 @@ describe('pendingSiblingCountAtLatestStart', () => {
       event('step_completed', 'b'),
       event('step_started', 'e'),
     ];
-    expect(pendingSiblingCountAtLatestStart(events, 'e')).toBe(4);
+    expect(
+      analyzePendingStepsForReplay(events, 'e').pendingSiblingCountAtLatestStart
+    ).toBe(4);
+  });
+
+  it('excludes an older started step from the current attempt window', () => {
+    const events = [
+      event('step_created', 'background'),
+      event('step_started', 'background'),
+      event('step_created', 'current'),
+      event('step_created', 'sibling-a'),
+      event('step_created', 'sibling-b'),
+      event('step_created', 'sibling-c'),
+      event('step_started', 'current'),
+    ];
+    const analysis = analyzePendingStepsForReplay(events, 'current');
+    expect(analysis.pendingStepIds.size).toBe(5);
+    expect(analysis.pendingSiblingCountAtLatestStart).toBe(3);
   });
 
   it('uses a fresh retry window and returns undefined without a new start', () => {
@@ -86,14 +103,38 @@ describe('pendingSiblingCountAtLatestStart', () => {
       event('step_retrying', 'a'),
       event('step_started', 'a'),
     ];
-    expect(pendingSiblingCountAtLatestStart(events, 'a')).toBe(0);
+    expect(
+      analyzePendingStepsForReplay(events, 'a').pendingSiblingCountAtLatestStart
+    ).toBe(0);
     events.push(event('step_retrying', 'a'));
-    expect(pendingSiblingCountAtLatestStart(events, 'a')).toBeUndefined();
-    expect(pendingSiblingCountAtLatestStart(events, 'missing')).toBeUndefined();
+    expect(
+      analyzePendingStepsForReplay(events, 'a').pendingSiblingCountAtLatestStart
+    ).toBeUndefined();
+    expect(
+      analyzePendingStepsForReplay(events, 'missing')
+        .pendingSiblingCountAtLatestStart
+    ).toBeUndefined();
   });
-});
 
-describe('analyzePendingStepsForReplay', () => {
+  it('keeps same-episode siblings but not older started work in a retry window', () => {
+    const events = [
+      event('step_created', 'background'),
+      event('step_started', 'background'),
+      event('step_created', 'current'),
+      event('step_created', 'sibling-a'),
+      event('step_created', 'sibling-b'),
+      event('step_started', 'current'),
+      event('step_started', 'sibling-a'),
+      event('step_started', 'sibling-b'),
+      event('step_retrying', 'current'),
+      event('step_started', 'current'),
+    ];
+    expect(
+      analyzePendingStepsForReplay(events, 'current')
+        .pendingSiblingCountAtLatestStart
+    ).toBe(2);
+  });
+
   it('resets the too-wide decision after an episode reaches zero pending steps', () => {
     const events = [
       ...['a', 'b', 'c', 'd', 'e', 'f'].map((id) => event('step_created', id)),
@@ -120,9 +161,6 @@ describe('analyzePendingStepsForReplay', () => {
     const analysis = analyzePendingStepsForReplay(events, 'later-a');
     expect(analysis.currentEpisodePeakPendingStepCount).toBe(6);
   });
-});
-
-describe('pendingCreationsFollowFirstStart', () => {
   it('recognizes only creation-only pending rows written after the attempt began', () => {
     const events = [
       event('step_created', 'current'),
@@ -133,31 +171,33 @@ describe('pendingCreationsFollowFirstStart', () => {
       event('step_started', 'current'),
     ];
     expect(
-      pendingCreationsFollowFirstStart(
-        events,
-        'current',
-        new Set(['later_a', 'later_b'])
-      )
+      analyzePendingStepsForReplay(events, 'current')
+        .pendingCreationsFollowFirstStart
     ).toBe(true);
   });
 
   it('rejects pending work that started or predates the current attempt', () => {
-    const events = [
+    const olderEvents = [
       event('step_created', 'older'),
+      event('step_created', 'current'),
+      event('step_started', 'current'),
+      event('step_completed', 'current'),
+    ];
+    expect(
+      analyzePendingStepsForReplay(olderEvents, 'current')
+        .pendingCreationsFollowFirstStart
+    ).toBe(false);
+
+    const startedLaterEvents = [
       event('step_created', 'current'),
       event('step_started', 'current'),
       event('step_created', 'started_later'),
       event('step_started', 'started_later'),
+      event('step_completed', 'current'),
     ];
     expect(
-      pendingCreationsFollowFirstStart(events, 'current', new Set(['older']))
-    ).toBe(false);
-    expect(
-      pendingCreationsFollowFirstStart(
-        events,
-        'current',
-        new Set(['started_later'])
-      )
+      analyzePendingStepsForReplay(startedLaterEvents, 'current')
+        .pendingCreationsFollowFirstStart
     ).toBe(false);
   });
 });

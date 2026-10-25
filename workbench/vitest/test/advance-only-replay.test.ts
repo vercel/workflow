@@ -1,10 +1,12 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
-import { start } from 'workflow/api';
+import { getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import {
+  attributesThenSleepBesideSlow,
   caughtSlowPromiseChain,
   chainedFanoutBenchmark,
   coalescingWindowStress,
@@ -14,6 +16,8 @@ import {
   failAfterRaceLoser,
   fanoutEpisodeReset,
   fastFirstParallelChains,
+  fourChainsBesideOlderBackground,
+  hookAfterRaceLoser,
   nestedParallelToolsBesideSlowAgent,
   oneStepFanoutBenchmark,
   parallelChainsBenchmark,
@@ -23,12 +27,14 @@ import {
   retryingBranchBesideSlowSibling,
   retryingRaceLoserWithDetachedTerminalDrain,
   retryRaceWithDetachedDownstream,
+  sleepAfterRaceLoser,
   slowFirstParallelChains,
   threeParallelChains,
   twoDifferentLeafBenchmark,
   twoDifferentLeafDurations,
   twoLeafBenchmark,
   twoLeafPromiseAll,
+  wakeUpAfterRaceLoser,
   workflowStartedAtAcrossBackgroundReplay,
 } from '../workflows/advance-only-replay.js';
 
@@ -90,6 +96,8 @@ async function runWithTimeline(
     | typeof raceLoser
     | typeof duplicateProbe
     | typeof fanoutEpisodeReset
+    | typeof fourChainsBesideOlderBackground
+    | typeof attributesThenSleepBesideSlow
     | typeof parallelChainsBenchmark
     | typeof nestedParallelToolsBesideSlowAgent
     | typeof retryingBranchBesideSlowSibling
@@ -270,9 +278,10 @@ async function withUnknownStepCreatedFieldsDropped<T>(fn: () => Promise<T>) {
   }
 }
 
-async function withTerminalBackstopSendCount<T>(
-  fn: () => Promise<T>
-): Promise<{ result: T; sends: number }> {
+async function withTerminalBackstopSendCount<T>(fn: () => Promise<T>): Promise<{
+  result: T;
+  sends: number;
+}> {
   const world = await getWorld();
   const originalQueue = world.queue;
   let sends = 0;
@@ -285,6 +294,58 @@ async function withTerminalBackstopSendCount<T>(
     return { result: await fn(), sends };
   } finally {
     world.queue = originalQueue;
+  }
+}
+
+async function ordinaryWakeTerminalGuard(
+  kind: 'hook' | 'sleep' | 'wakeUp'
+): Promise<{
+  events: Array<{ eventType: string }>;
+  markers: Marker[];
+  returnedAt: number;
+  safetyProbeSends: number;
+}> {
+  const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-terminal-guard-'));
+  const markerPath = join(dir, 'timeline.log');
+  const loserMs = 2_500;
+  const token = `terminal-guard-${kind}-${Math.random().toString(36).slice(2)}`;
+  try {
+    const startedAt = Date.now();
+    const { result, sends } = await withTerminalBackstopSendCount(async () => {
+      const run =
+        kind === 'hook'
+          ? await start(hookAfterRaceLoser, [markerPath, token, loserMs])
+          : kind === 'sleep'
+            ? await start(sleepAfterRaceLoser, [markerPath, loserMs])
+            : await start(wakeUpAfterRaceLoser, [markerPath, loserMs]);
+      if (kind === 'hook') {
+        await waitForHook(run, { token });
+        await resumeHook(token, { resumed: true });
+      } else if (kind === 'wakeUp') {
+        const waitId = await waitForSleep(run);
+        await getRun(run.runId).wakeUp({ correlationIds: [waitId] });
+      }
+      await expect(run.returnValue).resolves.toBe('done');
+      const returnedAt = Date.now();
+      // On a regression the run returns before the loser settles. Keep the
+      // queue wrapper installed long enough to observe its eventual replay.
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.max(100, startedAt + loserMs + 200 - Date.now())
+        )
+      );
+      const world = await getWorld();
+      const { data: events } = await world.events.list({ runId: run.runId });
+      return { events, returnedAt };
+    });
+    return {
+      ...result,
+      markers: parseMarkers(await readFile(markerPath, 'utf8')),
+      safetyProbeSends: sends,
+    };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 }
 
@@ -471,6 +532,98 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       expect(fourGap, timeline).toBeLessThanOrEqual(twoGap * 2 + 100);
     });
 
+    it('scopes four agent chains apart from an older background step', async () => {
+      const world = await getWorld();
+      const originalQueue = world.queue;
+      let handOffs = 0;
+      world.queue = (async (...args: Parameters<typeof originalQueue>) => {
+        const payload = args[1] as { advanceOnly?: unknown };
+        if (payload.advanceOnly === true) handOffs++;
+        return originalQueue.apply(world, args);
+      }) as typeof originalQueue;
+      let markers: Marker[];
+      let timeline: string;
+      try {
+        ({ markers, timeline } = await runWithTimeline(
+          fourChainsBesideOlderBackground,
+          [100, 700, 2_000],
+          'four-chains-older-background'
+        ));
+      } finally {
+        world.queue = originalQueue;
+      }
+      expect(handOffs, timeline).toBeGreaterThanOrEqual(2);
+      expect(
+        markerAt(markers, 'background-fast-2', 'start'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'background-slow-1-1', 'end'));
+      expect(
+        markerAt(markers, 'background-fast-2', 'start'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'older-background', 'end'));
+    });
+
+    it('publishes a sleep continuation across an attribute replay detour', async () => {
+      const { markers, timeline } = await runWithTimeline(
+        attributesThenSleepBesideSlow,
+        [3_000],
+        'attributes-sleep-beside-slow'
+      );
+      expect(
+        markerAt(markers, 'attribute-after-sleep', 'start'),
+        timeline
+      ).toBeLessThan(markerAt(markers, 'attribute-slow', 'end'));
+      const sleepGap =
+        markerAt(markers, 'attribute-after-sleep', 'start') -
+        markerAt(markers, 'attribute-fast', 'end');
+      expect(sleepGap, timeline).toBeGreaterThanOrEqual(900);
+      expect(sleepGap, timeline).toBeLessThan(2_500);
+    });
+
+    it.each([
+      [
+        'hook resume',
+        'hook',
+        'ordinary-hook-loser',
+        'ordinary-hook-after-wake',
+      ],
+      [
+        'timer continuation',
+        'sleep',
+        'ordinary-sleep-loser',
+        'ordinary-sleep-after-wake',
+      ],
+      [
+        'run.wakeUp()',
+        'wakeUp',
+        'ordinary-wake-loser',
+        'ordinary-wake-after-wake',
+      ],
+    ] as const)(
+      'guards terminal writes in an ordinary %s replay while a race loser runs',
+      async (_label, kind, loserLabel, afterWakeLabel) => {
+        const { events, markers, returnedAt, safetyProbeSends } =
+          await ordinaryWakeTerminalGuard(kind);
+        const timeline = formatTimeline(`ordinary-${kind}`, markers);
+        expect(
+          markerAt(markers, afterWakeLabel, 'start'),
+          timeline
+        ).toBeLessThan(markerAt(markers, loserLabel, 'end'));
+        expect(
+          markerAt(markers, loserLabel, 'end'),
+          timeline
+        ).toBeLessThanOrEqual(returnedAt);
+        expect(
+          events.filter((event) => event.eventType === 'run_completed')
+        ).toHaveLength(1);
+        expect(
+          events.filter((event) => event.eventType === 'run_failed')
+        ).toHaveLength(0);
+        expect(safetyProbeSends).toBe(1);
+      },
+      15_000
+    );
+
     it.each([
       ['plain Error', 'error', 0, 900],
       ['RetryableError with retryAfter', 'retryable', 1_200, 1_100],
@@ -582,28 +735,32 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       ).toBeGreaterThan(markerAt(markers, 'retry-race-slow', 'end'));
     }, 15_000);
 
-    it('advances parallel tool calls inside one agent without waiting for a slow agent', async () => {
+    it.each([
+      2, 4, 6,
+    ] as const)('advances %s parallel tool calls inside one agent without waiting for a slow agent', async (toolCount) => {
       const { markers, timeline } = await runWithTimeline(
         nestedParallelToolsBesideSlowAgent,
-        [1_500],
-        'nested-tools-beside-slow-agent'
+        [1_500, toolCount],
+        `nested-${toolCount}-tools-beside-slow-agent`
       );
       expect(
         markerAt(markers, 'agent-model-2', 'start'),
         timeline
       ).toBeLessThan(markerAt(markers, 'agent-slow-sibling', 'end'));
-      expect(
-        markerAt(markers, 'agent-model-2', 'start'),
-        timeline
-      ).toBeGreaterThanOrEqual(markerAt(markers, 'agent-tool-1', 'end'));
-      expect(
-        markerAt(markers, 'agent-model-2', 'start'),
-        timeline
-      ).toBeGreaterThanOrEqual(markerAt(markers, 'agent-tool-2', 'end'));
+      for (let index = 1; index <= toolCount; index++) {
+        expect(
+          markerAt(markers, 'agent-model-2', 'start'),
+          timeline
+        ).toBeGreaterThanOrEqual(
+          markerAt(markers, `agent-tool-${index}`, 'end')
+        );
+      }
       for (const label of [
         'agent-model-1',
-        'agent-tool-1',
-        'agent-tool-2',
+        ...Array.from(
+          { length: toolCount },
+          (_, index) => `agent-tool-${index + 1}`
+        ),
         'agent-model-2',
         'agent-slow-sibling',
       ]) {
@@ -713,7 +870,7 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         queuedRaceLoserWithDetachedTerminalDrain,
         '1',
         'queued-terminal-drain',
-        'queued-race-winner',
+        'queued-race-loser',
       ],
     ] as const)(
       'does not run detached terminal-drain steps when a World drops unknown creation fields (%s)',

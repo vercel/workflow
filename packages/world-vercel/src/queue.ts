@@ -665,8 +665,9 @@ export function createQueue(config?: APIConfig): Queue {
     const prepared = prepareSend(queueName, payload, opts);
     const client = clientFor(prepared);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
-    // returns a fresh message ID and only one of the messages is delivered, so
-    // there is no conflict for the caller to handle here.
+    // returns a fresh message ID and only the first accepted message is
+    // delivered. Its original schedule is therefore retained when a delayed
+    // retry is followed by an immediate duplicate under the same key.
     const { messageId } = await client.send(
       prepared.topic,
       prepared.wrapper,
