@@ -112,16 +112,28 @@ export async function raceThenNext(
   await markerStep(markerPath, 'race-next', 0);
 }
 
-async function timeoutSlowStep() {
+async function timeoutProbeStep(delayMs: number) {
   'use step';
-  await new Promise((resolve) => setTimeout(resolve, 5_000));
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
   return 'slow';
 }
 
 export async function timeoutRaceReturnsAtDeadline() {
   'use workflow';
   return await Promise.race([
-    timeoutSlowStep(),
+    timeoutProbeStep(5_000),
+    sleep('1s').then(() => 'timed out'),
+  ]);
+}
+
+export async function timeoutRaceAfterDrainedBranchEpisode() {
+  'use workflow';
+  await Promise.all([
+    timeoutProbeStep(50).then(() => timeoutProbeStep(50)),
+    timeoutProbeStep(1_500),
+  ]);
+  return await Promise.race([
+    timeoutProbeStep(5_000),
     sleep('1s').then(() => 'timed out'),
   ]);
 }

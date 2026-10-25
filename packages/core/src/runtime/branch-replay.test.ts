@@ -96,6 +96,26 @@ describe('hasAdvanceOnlyBranchReplayEvidence', () => {
     ).toBe(false);
   });
 
+  it('resets after an advancing episode drains before a later timeout race', () => {
+    expect(
+      hasAdvanceOnlyBranchReplayEvidence([
+        event('step_created', 'quick'),
+        event('step_started', 'quick'),
+        event('step_created', 'slow-episode'),
+        event('step_started', 'slow-episode'),
+        event('step_completed', 'quick'),
+        event('step_created', 'quick-2'),
+        event('step_started', 'quick-2'),
+        event('step_completed', 'quick-2'),
+        event('step_completed', 'slow-episode'),
+        event('wait_created', 'timeout'),
+        event('step_created', 'slow-timeout'),
+        event('step_started', 'slow-timeout'),
+        event('wait_completed', 'timeout'),
+      ])
+    ).toBe(false);
+  });
+
   it('recognizes an early retry starting while its peer remains pending', () => {
     expect(
       hasAdvanceOnlyBranchReplayEvidence([

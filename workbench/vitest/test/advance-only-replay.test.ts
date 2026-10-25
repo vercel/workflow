@@ -30,6 +30,7 @@ import {
   sleepAfterRaceLoser,
   slowFirstParallelChains,
   threeParallelChains,
+  timeoutRaceAfterDrainedBranchEpisode,
   timeoutRaceReturnsAtDeadline,
   twoDifferentLeafBenchmark,
   twoDifferentLeafDurations,
@@ -844,6 +845,33 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
           expect(result).toBe('timed out');
           // Leave Windows CI queue-startup headroom around the one-second
           // deadline while staying close to the documented timeout behavior.
+          expect(elapsedMs).toBeLessThan(1_750);
+        } finally {
+          if (original === undefined) {
+            delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+          } else {
+            process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = original;
+          }
+        }
+      },
+      20_000
+    );
+
+    it.each([
+      ['enabled', '1'],
+      ['kill switch', '0'],
+    ] as const)(
+      'returns a timeout race after a drained branch episode with advance-only replay %s',
+      async (_label, feature) => {
+        const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+        process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = feature;
+        try {
+          const run = await start(timeoutRaceAfterDrainedBranchEpisode, []);
+          await waitForSleep(run, { timeout: 10_000, pollInterval: 25 });
+          const startedAt = performance.now();
+          const result = await run.returnValue;
+          const elapsedMs = performance.now() - startedAt;
+          expect(result).toBe('timed out');
           expect(elapsedMs).toBeLessThan(1_750);
         } finally {
           if (original === undefined) {
