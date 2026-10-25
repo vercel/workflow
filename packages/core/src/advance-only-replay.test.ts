@@ -83,9 +83,15 @@ const gate = (): Gate => {
 const bodyGates = new Map<string, Gate>();
 const bodyFinishes = new Set<string>();
 const bodyStarts = new Map<string, number>();
+const bodyFailuresRemaining = new Map<string, number>();
 registerStepFunction('branchStep', async (label: string) => {
   bodyStarts.set(label, (bodyStarts.get(label) ?? 0) + 1);
   await bodyGates.get(label)?.promise;
+  const failuresRemaining = bodyFailuresRemaining.get(label) ?? 0;
+  if (failuresRemaining > 0) {
+    bodyFailuresRemaining.set(label, failuresRemaining - 1);
+    throw new Error(`retry ${label}`);
+  }
   bodyFinishes.add(label);
   return label;
 });
@@ -135,6 +141,11 @@ const CHAIN_BESIDE_SLOW = workflowSource(`
     })(),
     branchStep('slow'),
   ]);
+  return 'done';
+`);
+
+const RETRY_BESIDE_SLOW = workflowSource(`
+  await Promise.all([branchStep('retry'), branchStep('slow')]);
   return 'done';
 `);
 
@@ -461,6 +472,7 @@ afterEach(() => {
   bodyGates.clear();
   bodyFinishes.clear();
   bodyStarts.clear();
+  bodyFailuresRemaining.clear();
   delete process.env.WORKFLOW_MAX_INLINE_STEPS;
   delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
   delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
@@ -1287,6 +1299,27 @@ describe('inline path: an inline step settling while its batch is still running'
     await flow;
     expect(h.stepHas('fast2', 'step_completed')).toBe(true);
     expect(h.events.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it('does not dispatch an early retry on an invoke-capable World', async () => {
+    const runId = newRunId();
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    bodyFailuresRemaining.set('retry', 1);
+    const h = await setupHarness(runId, RETRY_BESIDE_SLOW, {
+      invokeCapable: true,
+    });
+    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
+
+    await waitFor(() => {
+      expect(h.stepHas('retry', 'step_retrying')).toBe(true);
+    });
+    await settle();
+    expect(h.stepMessageFor('retry')).toBeUndefined();
+
+    slow.open();
+    await flow;
+    expect(h.stepMessageFor('retry')).toBeDefined();
   });
 
   it('does not infer serialized replays from an unverifiable runtime setting', async () => {

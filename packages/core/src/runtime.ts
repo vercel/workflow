@@ -5419,7 +5419,8 @@ export function workflowEntrypoint(
                                 async (result) => {
                                   if (
                                     result.type !== 'retry' ||
-                                    !advanceOnlyBatchEligible
+                                    !advanceOnlyBatchEligible ||
+                                    world.capabilities?.invoke
                                   ) {
                                     return false;
                                   }
