@@ -296,6 +296,41 @@ export async function stagedApprovalWorkflow(documentId: string) {
   return `${settled}/${decision.approved ? 'confirmed' : 'reverted'}`;
 }
 
+/**
+ * A registration awaited *beside* a step, then the payload.
+ *
+ * `hook.getConflict()` and a step suspend together. The runtime commits the
+ * hook create and defers the step's own create, so the step's rows
+ * (`step_created` + `step_started`) are written only after the registration
+ * has been observed — unlike `approvalWorkflow`, where they go out in the same
+ * phase as `hook_created` and may precede it.
+ *
+ * That ordering is the whole reason to await a registration: a run that hands
+ * its token to something which resumes it at once needs the token claimed
+ * before the handing-out happens. It also means the payload's arrival is
+ * steerable against the claim as well as the registration, which the
+ * un-awaited shape cannot offer.
+ */
+export async function claimThenApproveWorkflow(documentId: string) {
+  'use workflow';
+
+  using hook = createHook<{ approved: boolean; reviewer: string }>({
+    token: `claim:${documentId}`,
+  });
+
+  const [conflict, reservation] = await Promise.all([
+    hook.getConflict(),
+    reserveInventory(documentId),
+  ]);
+  if (conflict) {
+    return { status: `duplicate:${conflict.runId}`, reviewer: 'none' };
+  }
+
+  const decision = await hook;
+  const status = await settleOrder(reservation, decision.approved);
+  return { status, reviewer: decision.reviewer };
+}
+
 // ---------------------------------------------------------------------------
 // 4. Peek — branching on whether a hook has *already* fired
 // ---------------------------------------------------------------------------
