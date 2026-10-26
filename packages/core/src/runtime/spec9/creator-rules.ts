@@ -208,15 +208,58 @@ export function schedulesWaitTimer(params: {
 }
 
 /**
+ * The timers a delivery sends before it commits the `wait_completed` of each
+ * wait in `completing`: for each, the earliest open wait of its chain that
+ * is not being completed too. A chain's next timer is otherwise armed only
+ * by a delivery that holds the completion in memory (`ownedWaitChains`), so
+ * a delivery that commits the completion and fails before the send would
+ * leave the chain with no timer: its redelivery no longer knows it
+ * completed the wait. Sent first, the timer is either out before the
+ * completion commits, or the send failed, nothing committed, and the
+ * redelivery finds the wait still open and due and decides again. A
+ * duplicate timer finds its wait open and re-arms what is left, or
+ * completed and arms nothing.
+ *
+ * The wait a timer delivery is for (`timerFor`) is left out: a redelivery
+ * of that timer owns its chain anyway. So is a wait with no recorded
+ * creator, whose chain no delivery owns.
+ */
+export function chainTimersBeforeCompletion<
+  W extends { correlationId: string; resumeAtMs: number; event?: Event },
+>(params: {
+  openWaits: readonly W[];
+  completing: Iterable<string>;
+  timerFor: string | undefined;
+}): W[] {
+  const { openWaits, timerFor } = params;
+  const completing = new Set(params.completing);
+  const next = new Map<string, W>();
+  for (const correlationId of completing) {
+    if (correlationId === timerFor) continue;
+    const creator = waitCreatorMessageId(
+      openWaits.find((wait) => wait.correlationId === correlationId)?.event
+    );
+    if (creator === undefined || next.has(creator)) continue;
+    let earliest: W | undefined;
+    for (const wait of openWaits) {
+      if (completing.has(wait.correlationId)) continue;
+      if (waitCreatorMessageId(wait.event) !== creator) continue;
+      if (!earliest || wait.resumeAtMs < earliest.resumeAtMs) earliest = wait;
+    }
+    if (earliest) next.set(creator, earliest);
+  }
+  return [...next.values()];
+}
+
+/**
  * The waits whose timers to arm, out of the open waits a delivery may arm
  * ({@link schedulesWaitTimer}): the earliest of each chain, and the wait a
  * timer delivery is for (`timerFor`). A wait not in the log yet is in the
  * chain of `messageId`.
  *
- * Not covered: a delivery that commits a chain's `wait_completed` and fails
- * before it arms the chain's next timer leaves that chain with no timer,
- * unless it was the timer's own delivery. A redelivery of the creating
- * message would arm it; nothing else does.
+ * A delivery that completes a wait of a chain sends the chain's next timer
+ * before the completion commits ({@link chainTimersBeforeCompletion}), so a
+ * failure after the commit leaves the chain armed.
  */
 export function waitTimersToArm<
   W extends { correlationId: string; resumeAtMs: number; event?: Event },

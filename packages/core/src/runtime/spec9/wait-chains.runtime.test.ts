@@ -149,6 +149,95 @@ describe.each([
     expect(eventsOf(world, 'wait_completed')).toHaveLength(2);
   });
 
+  /**
+   * Delivers a hook wake that completes the first of two sleeps (its timer
+   * coalesced into the wake), with `failure` making that delivery fail
+   * around the completion, then lets every message run.
+   */
+  async function completeFirstSleepThenFail(
+    failure: 'timer-send' | 'lost-completion-response'
+  ) {
+    let world!: AppendOnlyWorld;
+    let firstTimer: HeldMessage | undefined;
+    let failNext = false;
+    const setup = await setupOrchestratorRun(
+      hookAndTwoSleeps,
+      [],
+      {
+        coalesce: true,
+        beforeCreate(data) {
+          if (data.eventType === 'wait_completed' && firstTimer) {
+            world.comeDue(firstTimer);
+          }
+        },
+      },
+      engine
+    );
+    world = setup.world;
+    const { runId, start } = setup;
+    const asWorld = world.asWorld();
+    const queue = asWorld.queue.bind(asWorld);
+    const create = asWorld.events.create.bind(asWorld.events);
+    asWorld.queue = (async (...args: Parameters<typeof queue>) => {
+      const message = args[1] as { waitContinuation?: unknown };
+      if (failure === 'timer-send' && failNext && message.waitContinuation) {
+        failNext = false;
+        throw new Error('timer send failed');
+      }
+      return queue(...args);
+    }) as typeof asWorld.queue;
+    asWorld.events.create = (async (...args: Parameters<typeof create>) => {
+      const result = await create(...args);
+      const data = args[1] as { eventType: string };
+      if (
+        failure === 'lost-completion-response' &&
+        failNext &&
+        data.eventType === 'wait_completed'
+      ) {
+        // Committed, but the delivery never hears back.
+        failNext = false;
+        throw new Error('connection reset');
+      }
+      return result;
+    }) as typeof asWorld.events.create;
+    setWorld(asWorld);
+
+    await world.deliver(start);
+    firstTimer = timers(world)[0];
+    vi.setSystemTime(Date.now() + 90 * 60_000);
+    const wake = await resumeHookOutOfBand(world, runId);
+    failNext = true;
+    await expect(world.deliver(wake)).rejects.toThrow();
+    const completedByFailedDelivery = eventsOf(world, 'wait_completed').length;
+    // The redelivery, and anything else not delayed to a sleep.
+    for (
+      let next = world.held.find((held) => timerFor(held) === undefined);
+      next;
+      next = world.held.find((held) => timerFor(held) === undefined)
+    ) {
+      await world.deliver(next);
+    }
+    vi.setSystemTime(Date.now() + 3 * 60 * 60_000);
+    await world.runUntilIdle();
+    return { world, completedByFailedDelivery };
+  }
+
+  it('arms the next sleep of a chain before committing the completion, so a failed timer send commits nothing', async () => {
+    const { world, completedByFailedDelivery } =
+      await completeFirstSleepThenFail('timer-send');
+    expect(completedByFailedDelivery).toBe(0);
+    expect(await runResult(world)).toBe('done');
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(2);
+  });
+
+  it('keeps the next sleep of a chain armed when the delivery fails after committing the completion', async () => {
+    const { world, completedByFailedDelivery } =
+      await completeFirstSleepThenFail('lost-completion-response');
+    expect(completedByFailedDelivery).toBe(1);
+    expect(await runResult(world)).toBe('done');
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(2);
+  });
+
   it('keeps a sleep longer than one queue hop alive when a hop comes due under a running delivery', async () => {
     vi.stubEnv(
       'WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS',
@@ -220,9 +309,3 @@ describe.each([
     expect(world.held).toEqual([]);
   });
 });
-
-// Known gap, see `waitTimersToArm`: only a redelivery of the creating message
-// re-arms a chain's timer.
-it.todo(
-  'arms the next timer of a chain whose wait_completed committed before the delivery failed'
-);

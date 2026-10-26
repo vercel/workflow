@@ -150,6 +150,7 @@ import {
   recordConsumedPosition,
 } from './consumed-position.js';
 import {
+  chainTimersBeforeCompletion,
   ownedWaitChains,
   schedulesWaitTimer,
   stepsToReenqueue,
@@ -2641,6 +2642,21 @@ async function runDelivery(
           // promise, so it is consumed only after it commits,
           // behind whatever its report says landed below it.
           const due = dueWaits(log.events, Date.now(), wakeUpWaits);
+          // Each completed wait's chain gets its next timer before the
+          // completion commits (`chainTimersBeforeCompletion`): a
+          // failure after the commit would leave the redelivery not
+          // knowing this delivery completed the wait.
+          if (due.length > 0) {
+            for (const next of chainTimersBeforeCompletion({
+              openWaits: openWaits(log.events),
+              completing: due.map((wait) => wait.correlationId),
+              timerFor: waitContinuation?.correlationId,
+            })) {
+              if (!timedWaits.has(next.correlationId)) {
+                await sendWaitTimer(next);
+              }
+            }
+          }
           for (const wait of due) {
             wakeUpWaits.delete(wait.correlationId);
             const completed = await createEvent(

@@ -1,6 +1,7 @@
 import { type Event, slotToEventId } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import {
+  chainTimersBeforeCompletion,
   ownedWaitChains,
   schedulesWaitTimer,
   stepsToReenqueue,
@@ -256,5 +257,28 @@ describe('wait timer ownership', () => {
         .map((wait) => wait.correlationId)
         .sort()
     ).toEqual(['a1', 'a2', 'b1', 'own']);
+  });
+
+  it("names each completing wait's chain's next open wait, except the timer's own and creatorless ones", () => {
+    const open = [
+      { correlationId: 'a1', resumeAtMs: 10, event: wait('a1', 'msg_a') },
+      { correlationId: 'a2', resumeAtMs: 30, event: wait('a2', 'msg_a') },
+      { correlationId: 'a3', resumeAtMs: 20, event: wait('a3', 'msg_a') },
+      { correlationId: 'b1', resumeAtMs: 10, event: wait('b1', 'msg_b') },
+      { correlationId: 'b2', resumeAtMs: 40, event: wait('b2', 'msg_b') },
+      { correlationId: 'c1', resumeAtMs: 10, event: wait('c1', 'msg_c') },
+      { correlationId: 'c2', resumeAtMs: 40, event: wait('c2', 'msg_c') },
+      { correlationId: 'x1', resumeAtMs: 10, event: wait('x1') },
+      { correlationId: 'x2', resumeAtMs: 40, event: wait('x2') },
+    ];
+    const next = (completing: string[], timerFor?: string) =>
+      chainTimersBeforeCompletion({ openWaits: open, completing, timerFor })
+        .map((w) => w.correlationId)
+        .sort();
+    // a1 and a3 complete together: a2 is next.
+    expect(next(['a1', 'a3', 'b1', 'x1'])).toEqual(['a2', 'b2']);
+    expect(next(['a1', 'c1'], 'c1')).toEqual(['a3']);
+    // The last wait of its chain: nothing to arm.
+    expect(next(['b1', 'b2'])).toEqual([]);
   });
 });

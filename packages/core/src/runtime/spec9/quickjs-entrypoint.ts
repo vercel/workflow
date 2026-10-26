@@ -109,6 +109,7 @@ import {
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
 import {
+  chainTimersBeforeCompletion,
   ownedWaitChains,
   schedulesWaitTimer,
   stepsToReenqueue,
@@ -521,6 +522,39 @@ export async function runWorkflowWithQuickJS(params: {
           seconds: Math.max(1, Math.ceil((wait.resumeAtMs - now) / 1000)),
         }))
     );
+  };
+  /**
+   * Sends, before this delivery commits the `wait_completed` of each wait in
+   * `completing`, the next timer of each of their chains
+   * (`chainTimersBeforeCompletion`): a failure after the commit would leave
+   * the redelivery not knowing this delivery completed the wait.
+   */
+  const armChainsBeforeCompletion = async (
+    log: readonly Event[],
+    completing: readonly string[]
+  ): Promise<void> => {
+    if (completing.length === 0) return;
+    const now = Date.now();
+    for (const wait of chainTimersBeforeCompletion({
+      openWaits: openWaits(log),
+      completing,
+      timerFor: waitContinuation?.correlationId,
+    })) {
+      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+      scheduledWaitContinuations.add(wait.correlationId);
+      const seconds = Math.max(1, Math.ceil((wait.resumeAtMs - now) / 1000));
+      try {
+        await queueWaitTimer(wait.correlationId, seconds, wait.resumeAtMs);
+      } catch (err) {
+        scheduledWaitContinuations.delete(wait.correlationId);
+        throw err;
+      }
+      wfdiag('wait_continuation_scheduled', {
+        correlationId: wait.correlationId,
+        delaySeconds: seconds,
+        beforeCompletion: true,
+      });
+    }
   };
   // Standalone-caller fallback (tests): without a runtime.ts carrier
   // accessor, fall back to the current invocation context.
@@ -1015,40 +1049,45 @@ export async function runWorkflowWithQuickJS(params: {
       .filter((e) => e.eventType === 'wait_completed')
       .map((e) => e.correlationId)
   );
-  for (const event of events) {
+  const isElapsedWait = (event: Event): boolean => {
     if (
-      event.eventType === 'wait_created' &&
-      event.correlationId &&
-      !completedWaitIds.has(event.correlationId)
+      event.eventType !== 'wait_created' ||
+      !event.correlationId ||
+      completedWaitIds.has(event.correlationId)
     ) {
-      const eventData =
-        'eventData' in event
-          ? (event.eventData as Record<string, unknown>)
-          : undefined;
-      const resumeAt = eventData?.resumeAt;
-      if (
-        resumeAt &&
-        (now >= new Date(resumeAt as string).getTime() ||
-          params.wakeUpWaits?.has(event.correlationId))
-      ) {
-        try {
-          const result = await createEvent({
-            eventType: 'wait_completed',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: event.correlationId,
-            eventData: { resumeAt: new Date(resumeAt as string) },
-          });
-          completedWaits.add(event.correlationId);
-          if (!logView.tracking && result.event) {
-            // No positions to order by (see QuickJSLogView), so the event
-            // joins the initial log directly, as it always has.
-            events.push(result.event);
-          }
-        } catch (err) {
-          if (EntityConflictError.is(err)) continue;
-          throw err;
-        }
+      return false;
+    }
+    const resumeAt = (event.eventData as Record<string, unknown> | undefined)
+      ?.resumeAt;
+    return (
+      !!resumeAt &&
+      (now >= new Date(resumeAt as string).getTime() ||
+        params.wakeUpWaits?.has(event.correlationId) === true)
+    );
+  };
+  await armChainsBeforeCompletion(
+    events,
+    events.filter(isElapsedWait).map((event) => event.correlationId!)
+  );
+  for (const event of events) {
+    if (!isElapsedWait(event) || event.eventType !== 'wait_created') continue;
+    const correlationId = event.correlationId!;
+    try {
+      const result = await createEvent({
+        eventType: 'wait_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId,
+        eventData: { resumeAt: new Date(event.eventData.resumeAt) },
+      });
+      completedWaits.add(correlationId);
+      if (!logView.tracking && result.event) {
+        // No positions to order by (see QuickJSLogView), so the event
+        // joins the initial log directly, as it always has.
+        events.push(result.event);
       }
+    } catch (err) {
+      if (EntityConflictError.is(err)) continue;
+      throw err;
     }
   }
   // The VM has not started, so whatever those writes handed back (each
@@ -2033,16 +2072,18 @@ export async function runWorkflowWithQuickJS(params: {
       // Complete elapsed waits so their wait_completed events are picked
       // up by the feed below (instead of a queue re-invocation).
       const waitCompletePromises: Promise<void>[] = [];
-      for (const op of pendingOperations) {
-        if (op.type !== 'wait') continue;
-        const wait = op as PendingWait;
-        if (completedWaitIds2.has(wait.correlationId)) continue;
-        if (
-          new Date(wait.resumeAt).getTime() - Date.now() > 0 &&
-          !params.wakeUpWaits?.has(wait.correlationId)
-        ) {
-          continue;
-        }
+      const elapsedWaits = pendingOperations.filter(
+        (op): op is PendingWait =>
+          op.type === 'wait' &&
+          !completedWaitIds2.has(op.correlationId) &&
+          (new Date((op as PendingWait).resumeAt).getTime() - Date.now() <= 0 ||
+            params.wakeUpWaits?.has(op.correlationId) === true)
+      );
+      await armChainsBeforeCompletion(
+        fullLog(),
+        elapsedWaits.map((wait) => wait.correlationId)
+      );
+      for (const wait of elapsedWaits) {
         completedWaitIds2.add(wait.correlationId);
         waitCompletePromises.push(
           (async () => {
