@@ -37,6 +37,10 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
+import {
+  frameAbortStreamPayload,
+  readAbortStreamPacket,
+} from './serialization/abort-stream.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionMode,
@@ -1868,7 +1872,8 @@ function reduceAbortWithListener(
   global: Record<string, any>,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  framedAbortStreams: boolean
 ): AbortSerializedData {
   let streamName = holder[ABORT_STREAM_NAME];
   let hookToken = holder[ABORT_HOOK_TOKEN];
@@ -1890,7 +1895,8 @@ function reduceAbortWithListener(
     streamName,
     runId,
     cryptoKey,
-    ops
+    ops,
+    framedAbortStreams
   );
 
   return {
@@ -1937,7 +1943,8 @@ function attachAbortListenerOnce(
   streamName: string,
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  ops: Promise<void>[]
+  ops: Promise<void>[],
+  framedAbortStreams: boolean
 ): void {
   if (signal.aborted) return;
   if ((signal as any)[ABORT_LISTENER_ATTACHED]) return;
@@ -1965,7 +1972,11 @@ function attachAbortListenerOnce(
               streamName
             );
             const writer = writable.getWriter();
-            await writer.write(payload as Uint8Array);
+            await writer.write(
+              framedAbortStreams
+                ? frameAbortStreamPayload(payload as Uint8Array)
+                : (payload as Uint8Array)
+            );
             await writer.close();
           } catch {
             // Best-effort stream write
@@ -2009,7 +2020,8 @@ export function getExternalReducers(
   // only finish after the workflow runs, so awaiting it before dispatch would
   // deadlock. Defaults to `ops` for existing callers that flush everything in
   // the background.
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2054,7 +2066,8 @@ export function getExternalReducers(
                   cryptoKey,
                   framedByteStreams,
                   runReadyBarrier,
-                  readbackOps
+                  readbackOps,
+                  framedAbortStreams
                 ),
                 cryptoKey
               )
@@ -2127,7 +2140,8 @@ export function getExternalReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
 
@@ -2144,7 +2158,8 @@ export function getExternalReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
   };
@@ -2341,7 +2356,8 @@ function getStepReducers(
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2402,7 +2418,8 @@ function getStepReducers(
                     cryptoKey,
                     framedByteStreams,
                     runReadyBarrier,
-                    readbackOps
+                    readbackOps,
+                    framedAbortStreams
                   ),
                   cryptoKey
                 )
@@ -2466,7 +2483,8 @@ function getStepReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
 
@@ -2483,7 +2501,8 @@ function getStepReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
   };
@@ -2554,34 +2573,25 @@ function setupAbortStreamReader(
 
   ops.push(
     (async () => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
         const readable = new WorkflowServerReadableStream(runId, streamName);
-        const reader = readable.getReader();
+        reader = readable.getReader();
         const result = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true }>((resolve) => {
+          readAbortStreamPacket(reader),
+          new Promise<undefined>((resolve) => {
             if (readerCancel.signal.aborted) {
-              resolve({ value: undefined, done: true });
+              resolve(undefined);
               return;
             }
             readerCancel.signal.addEventListener(
               'abort',
-              () => resolve({ value: undefined, done: true }),
+              () => resolve(undefined),
               { once: true }
             );
           }),
         ]);
-        if (result.value && !result.done) {
-          // An abort packet arrived: propagate it as fast as possible. Release
-          // the lock (synchronous) rather than cancelling here: on a
-          // service-backed World `reader.cancel()` can do a network round-trip,
-          // and awaiting it before `controller.abort()` would delay (or, if it
-          // hangs, drop) real-time abort delivery to the in-flight step.
-          try {
-            reader.releaseLock();
-          } catch {
-            // Reader may already be released; ignore.
-          }
+        if (result) {
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
@@ -2590,7 +2600,7 @@ function setupAbortStreamReader(
             // revives (the hydrate path is encryption-key-tolerant).
             const ctxForKey = contextStorage.getStore();
             const data = (await hydrateStepArguments(
-              result.value,
+              result,
               runId,
               ctxForKey?.encryptionKey
             )) as { reason?: unknown } | undefined;
@@ -2598,20 +2608,15 @@ function setupAbortStreamReader(
           } catch {
             controller.abort();
           }
-        } else {
-          // The step finished (or the reader was cancelled) without an abort.
-          // Cancel (not just release) so the underlying World stream is torn
-          // down: a polling World (e.g. world-local) otherwise leaks a tail
-          // reader (a 100ms filesystem poll plus emitter listeners) per step
-          // invocation for the life of the process, since a signal-bearing step
-          // opens one of these on every revival and usually never aborts. Fire
-          // and forget: a service-backed World's cancel may hit the network,
-          // and this path must not block the step's ops-settle window.
-          void reader.cancel().catch(() => {});
         }
       } catch {
         // Stream read failed: signal won't propagate in real-time,
         // but hook-based propagation on next replay provides fallback
+      } finally {
+        // Transport teardown may require a network round trip. Do not await
+        // it before abort delivery or hold the finishing step open. Cancelling
+        // also stops a pending partial-packet read when the step finishes.
+        void reader?.cancel().catch(() => {});
       }
     })()
   );
@@ -2717,7 +2722,7 @@ function reviveAbortController(
               value.streamName
             );
             const writer = writable.getWriter();
-            await writer.write(payload as Uint8Array);
+            await writer.write(frameAbortStreamPayload(payload as Uint8Array));
             await writer.close();
           } catch {
             // Best-effort stream write
@@ -3844,6 +3849,8 @@ export function deserializePreparedStepError(
  *   byte streams. Should match the target deployment's capability: see
  *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
  *   backwards compatibility with older runs.
+ * @param framedAbortStreams - Whether the target deployment supports length-framed
+ *   abort packets. Unknown/older targets must retain the unframed format.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateWorkflowArguments(
@@ -3855,7 +3862,8 @@ export async function dehydrateWorkflowArguments(
   v1Compat = false,
   framedByteStreams = false,
   compression: CompressionMode = false,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3867,7 +3875,8 @@ export async function dehydrateWorkflowArguments(
         key,
         framedByteStreams,
         undefined,
-        readbackOps
+        readbackOps,
+        framedAbortStreams
       )
     );
     return revive(str);
@@ -3884,7 +3893,8 @@ export async function dehydrateWorkflowArguments(
           key,
           framedByteStreams,
           undefined,
-          readbackOps
+          readbackOps,
+          framedAbortStreams
         )
       ),
       compression,
@@ -4090,6 +4100,8 @@ export async function hydrateStepArguments(
  *   byte streams. Should match the target deployment's capability: see
  *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
  *   backwards compatibility with older runs.
+ * @param framedAbortStreams - Whether the target deployment supports length-framed
+ *   abort packets. Unknown/older targets must retain the unframed format.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateStepReturnValue(
@@ -4105,7 +4117,8 @@ export async function dehydrateStepReturnValue(
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4117,7 +4130,8 @@ export async function dehydrateStepReturnValue(
         key,
         framedByteStreams,
         runReadyBarrier,
-        readbackOps
+        readbackOps,
+        framedAbortStreams
       )
     );
     return revive(str);
@@ -4134,7 +4148,8 @@ export async function dehydrateStepReturnValue(
           key,
           framedByteStreams,
           runReadyBarrier,
-          readbackOps
+          readbackOps,
+          framedAbortStreams
         )
       ),
       compression,

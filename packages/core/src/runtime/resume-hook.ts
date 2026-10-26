@@ -772,7 +772,8 @@ async function resumeHookAttempt<T = any>(
       capabilities.framedByteStreams,
       compression,
       undefined,
-      readbackOps
+      readbackOps,
+      capabilities.framedAbortStreams
     );
     // A hook_received event is not durable while its payload still points
     // at stream uploads in flight. Finish those before committing the
