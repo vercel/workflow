@@ -142,9 +142,11 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
 <Callout type="info">
-  Setting <code>maxRetries = 0</code> means the step will run at most once and
-  will not be retried on failure. If the invocation running it dies after the
-  step started, the step fails instead of running again. The default is
+  Setting <code>maxRetries = 0</code> means the step will not be retried on
+  failure. If the invocation running it dies after the step started, the step
+  fails instead of running again, so it runs at most once per live owner. A
+  duplicate delivery after the queue lease expired can still run it twice, so
+  make a step that must never repeat idempotent. The default is
   <code>maxRetries = 3</code>, meaning the step can run up to 4 times total (1
   initial attempt + 3 retries).
 </Callout>

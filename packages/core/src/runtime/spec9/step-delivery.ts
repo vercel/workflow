@@ -62,8 +62,10 @@ export function firstDeliveryDecision(
  * | otherwise | `step_started` with attempt = starts + 1, run the body |
  *
  * Attempt is the number of `step_started` events for the step plus one. With
- * one owner per step that count is exact, so a `maxRetries: 0` step that
- * already started once is failed instead of run again (at most once).
+ * one live owner per step that count is exact, so a `maxRetries: 0` step
+ * that already started once is failed instead of run again: at most once per
+ * live owner. A duplicate delivery after a lease expiry is a second owner: if
+ * it reads the log before the first `step_started` lands, both run the body.
  */
 export function decideStepDelivery(params: {
   events: readonly Event[];
