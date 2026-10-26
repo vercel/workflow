@@ -59,12 +59,28 @@ export const scenario: ScenarioSpec = {
       events.filter(
         (e) => e.eventType === eventType && nameOf(e.correlationId) === name
       ).length;
+    // A spec 9 step is created by its `step_created` (background) or by its
+    // first attempt's `step_started` (inline). A creation the stalled
+    // delivery decided from speculative state would show up as a second one.
+    // The successor's re-run of loopA is a second attempt, not a creation.
+    const creations = (name: string) =>
+      events.filter(
+        (e) =>
+          nameOf(e.correlationId) === name &&
+          (e.eventType === 'step_created' ||
+            (e.eventType === 'step_started' &&
+              (e.eventData as { attempt?: number } | undefined)?.attempt ===
+                1 &&
+              !events.some(
+                (c) =>
+                  c.eventType === 'step_created' &&
+                  c.correlationId === e.correlationId
+              )))
+      ).length;
     sim.check(
       'every step was created once and completed once',
       ['loopA', 'loopB', 'loopC'].every(
-        (name) =>
-          count('step_created', name) === 1 &&
-          count('step_completed', name) === 1
+        (name) => creations(name) === 1 && count('step_completed', name) === 1
       )
     );
     sim.check(

@@ -5,7 +5,8 @@ export const scenario: ScenarioSpec = {
   name: 'two racing STEPS, two orchestrators: the successor writes first',
   description:
     'The overlap the queue cannot rule out. The orchestrator stalls with its ' +
-    'first `step_created` produced but not committed, its lease expires, and ' +
+    'first step creation (an inline step is created by its first ' +
+    '`step_started`) produced but not committed, its lease expires, and ' +
     'the queue redelivers the same message to a second orchestrator alongside ' +
     'it. The successor loads a log with no steps in it, creates and runs both ' +
     'steps inline itself, decides the fork and finishes the run. When the ' +
@@ -25,12 +26,12 @@ export const scenario: ScenarioSpec = {
   workflow: 'stepVsStepForkWorkflow',
   input: ['doc-27'],
   // The stall must come before the steps start (see above). Turbo's first
-  // delivery starts inline bodies before their `step_created` commits, so it
+  // delivery starts inline bodies before their creating `step_started` commits, so it
   // keeps them waiting for their start here.
   env: { WORKFLOW_OPTIMISTIC_INLINE_START: '0' },
   script: async (sim) => {
     const wf = sim.writer.orchestrator();
-    await wf.runToEventProduced('step_created');
+    await wf.runToEventProduced('step_started');
 
     sim.check(
       'the stalled delivery’s lease expired and its message is pending again',
@@ -44,7 +45,7 @@ export const scenario: ScenarioSpec = {
       sim.world.run(sim.runId)?.status === 'completed' && wf.isHeld()
     );
 
-    const refused = sim.until({ eventType: 'step_created', failed: true });
+    const refused = sim.until({ eventType: 'step_started', failed: true });
     await wf.release();
     const refusal = await refused;
     sim.check(

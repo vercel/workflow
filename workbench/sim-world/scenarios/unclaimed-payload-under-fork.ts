@@ -9,7 +9,7 @@ export const scenario: ScenarioSpec = {
     'A step result is allowed to skip the unclaimed payload — it would ' +
     'otherwise stall until the barrier registry idles — but skipping the ' +
     'wait parked behind that payload inverts the order the log recorded, ' +
-    'and the two branches swap the step_created ids they draw next. ' +
+    'and the two branches swap the step ids they draw next. ' +
     'The timer fires while the step result is held only because the script ' +
     'expires the lease of the delivery holding it: the queue otherwise ' +
     'serializes a run’s orchestrator deliveries. The fence then refuses that ' +
@@ -93,8 +93,8 @@ export const scenario: ScenarioSpec = {
     //    against a log some *other* build wrote, and the invariant that
     //    catches that here is the log disagreeing with itself.
     const events = sim.world.events();
-    // `eventData.stepName` is the fully qualified name and only `step_created`
-    // carries it, so go through the materialized step rows instead: a row's
+    // `eventData.stepName` is the fully qualified name, so go through the
+    // materialized step rows instead: a row's
     // `stepId` is the correlation id every event of that step shares.
     const correlationOf = (shortName: string) =>
       sim.world.steps().find((s) => s.stepName.endsWith(shortName))?.stepId;
@@ -108,8 +108,22 @@ export const scenario: ScenarioSpec = {
       (e) => e.eventType === 'wait_completed'
     );
     const stepResolved = at('step_completed', 'pokedWork');
-    const sleepBranchResumed = at('step_created', 'afterPokedSleep');
-    const stepBranchResumed = at('step_created', 'afterPokedStep');
+    // Where a step's creation sits in the log: its `step_created`, or, for
+    // an inline step, its first `step_started`, which is its creation.
+    const createdAt = (shortName: string) => {
+      const correlationId = correlationOf(shortName);
+      return events.findIndex(
+        (e) =>
+          (e.eventType === 'step_created' || e.eventType === 'step_started') &&
+          e.correlationId === correlationId
+      );
+    };
+    const sleepBranchResumed = createdAt('afterPokedSleep');
+    const stepBranchResumed = createdAt('afterPokedStep');
+    sim.check(
+      'both branches resumed and created their step',
+      sleepBranchResumed >= 0 && stepBranchResumed >= 0
+    );
 
     const waitWasResolvedFirst = waitResolved < stepResolved;
     const sleepBranchResumedFirst = sleepBranchResumed < stepBranchResumed;

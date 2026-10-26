@@ -72,8 +72,22 @@ export const scenario: ScenarioSpec = {
       (e) => e.eventType === 'wait_completed'
     );
     const stepResolved = at('step_completed', 'pokedWork');
-    const sleepBranchResumed = at('step_created', 'afterPokedSleep');
-    const stepBranchResumed = at('step_created', 'afterPokedStep');
+    // Where a step's creation sits in the log: its `step_created`, or, for
+    // an inline step, its first `step_started`, which is its creation.
+    const createdAt = (shortName: string) => {
+      const correlationId = correlationOf(shortName);
+      return events.findIndex(
+        (e) =>
+          (e.eventType === 'step_created' || e.eventType === 'step_started') &&
+          e.correlationId === correlationId
+      );
+    };
+    const sleepBranchResumed = createdAt('afterPokedSleep');
+    const stepBranchResumed = createdAt('afterPokedStep');
+    sim.check(
+      'both branches resumed and created their step',
+      sleepBranchResumed >= 0 && stepBranchResumed >= 0
+    );
 
     const waitWasResolvedFirst = waitResolved < stepResolved;
     const sleepBranchResumedFirst = sleepBranchResumed < stepBranchResumed;

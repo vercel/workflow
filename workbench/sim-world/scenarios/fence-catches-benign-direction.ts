@@ -5,7 +5,8 @@ export const scenario: ScenarioSpec = {
   name: 'fence: two orchestrators, the predecessor writes first',
   description:
     'The other order of the overlap above. The orchestrator stalls with its ' +
-    'first `step_created` produced, its lease expires, and the redelivered ' +
+    'first step creation (the creating `step_started` of an inline step) ' +
+    'produced, its lease expires, and the redelivered ' +
     'message starts a successor, which loads the log and is held at its own ' +
     'first in-band write. The predecessor resumes first: its count is still ' +
     'current, so it is accepted, and it runs the steps, decides the fork and ' +
@@ -21,14 +22,14 @@ export const scenario: ScenarioSpec = {
   input: ['doc-28'],
   script: async (sim) => {
     const wf = sim.writer.orchestrator();
-    await wf.runToEventProduced('step_created');
+    await wf.runToEventProduced('step_started');
 
     sim.check(
       'the stalled delivery’s lease expired and its message is pending again',
       sim.expireLease({ redeliver: true }) === 1
     );
     const successorWrite = sim.park(
-      { eventType: 'step_created', phase: 'before' },
+      { eventType: 'step_started', phase: 'before' },
       'successor’s first in-band write'
     );
     const redelivered = sim.deliverQueued();
@@ -42,7 +43,7 @@ export const scenario: ScenarioSpec = {
       sim.world.run(sim.runId)?.status === 'completed'
     );
 
-    const refused = sim.until({ eventType: 'step_created', failed: true });
+    const refused = sim.until({ eventType: 'step_started', failed: true });
     successor.release();
     const refusal = await refused;
     sim.check(
