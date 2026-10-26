@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from 'node:path';
 import {
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
+  turbopackContentPattern,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
@@ -665,12 +666,11 @@ export function withWorkflow(
                   ...(existingRules[key]?.condition?.all || []),
                   // Exclude generated workflow route files from transformation
                   { not: { path: /[/\\]\.well-known[/\\]workflow[/\\]/ } },
-                  // Match files with workflow directives or custom serialization patterns
-                  // Uses backreferences (\2, \3) to ensure matching quote types
-                  {
-                    content:
-                      /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
-                  },
+                  // Match files with workflow directives or custom serialization
+                  // patterns, including `static [WORKFLOW_SERIALIZE]` computed keys
+                  // (e.g. @ai-sdk/openai). Shared with the builders so the two
+                  // can't drift apart.
+                  { content: turbopackContentPattern },
                 ],
               },
             }
