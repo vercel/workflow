@@ -4,6 +4,7 @@ import {
   StreamError,
   ThrottleError,
   TooEarlyError,
+  WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { EventTypeSchema } from '@workflow/world';
@@ -103,6 +104,16 @@ describe('isRetryableEventPostError', () => {
     expect(isRetryableEventPostError(new RunExpiredError('410'))).toBe(false);
     expect(isRetryableEventPostError(new TooEarlyError('425'))).toBe(false);
     expect(isRetryableEventPostError(new ThrottleError('429'))).toBe(false);
+  });
+
+  it('does not retry an idempotency-key refusal', () => {
+    expect(
+      isRetryableEventPostError(
+        new WorkflowRunAlreadyStartedError('wrun_holder', {
+          runStatus: 'running',
+        })
+      )
+    ).toBe(false);
   });
 
   it('retries a body-parse failure (write may have landed)', () => {

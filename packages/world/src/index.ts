@@ -88,6 +88,21 @@ export {
   HookResumeCapabilitiesSchema,
   HookSchema,
 } from './hooks.js';
+export {
+  decideIdempotencyKeyClaim,
+  IDEMPOTENCY_KEY_MAX_LENGTH,
+  IDEMPOTENCY_KEY_TTL_DEFAULT_MS,
+  IDEMPOTENCY_KEY_TTL_MAX_MS,
+  IDEMPOTENCY_KEY_TTL_MIN_MS,
+  type IdempotencyKeyClaimDecision,
+  type IdempotencyKeyConflictPolicy,
+  IdempotencyKeyConflictPolicySchema,
+  type IdempotencyKeyReusePolicy,
+  IdempotencyKeyReusePolicySchema,
+  IdempotencyKeySchema,
+  IdempotencyKeyTtlMsSchema,
+  isWellFormedString,
+} from './idempotency.js';
 export type * from './interfaces.js';
 export type {
   InvocationOutcome,

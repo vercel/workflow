@@ -13,6 +13,7 @@ export {
   TooEarlyError,
   WorkflowError,
   WorkflowNotRegisteredError,
+  WorkflowRunAlreadyStartedError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,

@@ -163,6 +163,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // on the data directory shares it; see the in-band writer fence in
       // storage/events-storage.ts.
       inBandFence: true,
+      // A keyed run_created claims its key in a claim file under a
+      // cross-process lock, before publishing the run file; see
+      // storage/idempotency-keys.ts.
+      runIdempotencyKeys: true,
     },
     ...queue,
     ...storage,

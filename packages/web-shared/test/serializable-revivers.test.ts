@@ -193,6 +193,21 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     { workflowId: 2 },
     'workflow//example',
   ],
+  WorkflowRunAlreadyStartedError: [
+    ['WorkflowRunAlreadyStartedError', 1],
+    {
+      message: 2,
+      runId: 3,
+      runStatus: 4,
+      workflowName: 5,
+      idempotencyKey: 6,
+    },
+    'Idempotency key "order-1" is already held by run "wrun_holder" (running)',
+    'wrun_holder',
+    'running',
+    'workflow//./src/orders//process',
+    'order-1',
+  ],
   WritableStream: [['WritableStream', 1], { name: 2 }, 'stream-a'],
 };
 

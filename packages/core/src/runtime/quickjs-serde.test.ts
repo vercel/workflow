@@ -19,7 +19,7 @@
 
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { StreamError } from '@workflow/errors';
+import { StreamError, WorkflowRunAlreadyStartedError } from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { serialize as nodeEngineSerialize } from '../serialization/workflow.js';
@@ -44,6 +44,13 @@ afterAll(() => {
   serde.dispose();
   vm.dispose();
 });
+
+/** The message a `WorkflowRunAlreadyStartedError` carries, docs frame included. */
+function refusalMessage(): string {
+  return new WorkflowRunAlreadyStartedError('wrun_holder', {
+    runStatus: 'running',
+  }).message;
+}
 
 /** Serialize the guest value produced by evaluating `expr` in the VM. */
 function serializeGuest(expr: string): Uint8Array {
@@ -196,6 +203,21 @@ describe('wire parity: guest serialize matches the reference codec', () => {
       },
     ],
     [
+      'WorkflowRunAlreadyStartedError',
+      // Like a real instance of the class, the guest error has an own `cause`
+      // (WorkflowError declares the field) even though none was given.
+      `(() => { const e = new Error(${JSON.stringify(refusalMessage())}, { cause: undefined }); e.name = "WorkflowRunAlreadyStartedError"; e.stack = "refusal-stack"; e.runId = "wrun_holder"; e.runStatus = "running"; e.workflowName = "workflow//./src/orders//process"; e.idempotencyKey = "order-1"; return e; })()`,
+      () => {
+        const error = new WorkflowRunAlreadyStartedError('wrun_holder', {
+          runStatus: 'running',
+          workflowName: 'workflow//./src/orders//process',
+          idempotencyKey: 'order-1',
+        });
+        error.stack = 'refusal-stack';
+        return error;
+      },
+    ],
+    [
       'Error with cause',
       '(() => { const c = new Error("cause"); c.stack = "cs"; const e = new Error("outer", { cause: c }); e.stack = "os"; return e; })()',
       () => {
@@ -315,6 +337,50 @@ describe('wire parity: reference-codec bytes revive correctly in the VM', () => 
       stack: 'outer-stack',
       causeIsRangeError: true,
       causeMessage: 'too big',
+    });
+  });
+
+  it('revives a WorkflowRunAlreadyStartedError with its fields, fatal and named', () => {
+    // The shape workflow code gets when a step's start() (FAIL policy) is
+    // refused: `.is()` is a name check, and `runId` names the holder.
+    const refusal = new WorkflowRunAlreadyStartedError('wrun_holder', {
+      runStatus: 'running',
+      workflowName: 'workflow//./src/orders//process',
+      idempotencyKey: 'order-1',
+    });
+    refusal.stack = 'refusal-stack';
+    const bytes = referenceSerialize(refusal);
+    expect(
+      checkInGuest(
+        bytes,
+        `function (e) {
+          return {
+            isError: e instanceof Error,
+            name: e.name,
+            message: e.message,
+            stack: e.stack,
+            runId: e.runId,
+            runStatus: e.runStatus,
+            workflowName: e.workflowName,
+            idempotencyKey: e.idempotencyKey,
+            fatal: e.fatal,
+            status: e.status,
+            code: e.code,
+          };
+        }`
+      )
+    ).toEqual({
+      isError: true,
+      name: 'WorkflowRunAlreadyStartedError',
+      message: refusal.message,
+      stack: 'refusal-stack',
+      runId: 'wrun_holder',
+      runStatus: 'running',
+      workflowName: 'workflow//./src/orders//process',
+      idempotencyKey: 'order-1',
+      fatal: true,
+      status: 409,
+      code: 'idempotency-key-conflict',
     });
   });
 

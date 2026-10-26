@@ -1,7 +1,10 @@
 import os from 'node:os';
 import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
-import { WorkflowWorldError } from '@workflow/errors';
+import {
+  IDEMPOTENCY_KEY_CONFLICT_CODE,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { SerializedData } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { decode, encode } from 'cbor-x';
@@ -571,7 +574,12 @@ export async function makeRequest<T>({
             code: errorCode,
             retryAfter,
             mitigated: response.headers.get('x-vercel-mitigated'),
-            details: errorData.details,
+            // An idempotency-key refusal names the holder top-level on the
+            // body (like the v4 path), not under `details`.
+            details:
+              errorCode === IDEMPOTENCY_KEY_CONFLICT_CODE
+                ? errorData
+                : errorData.details,
           });
           span?.setAttributes({
             ...ErrorType(errorCode || `HTTP ${response.status}`),

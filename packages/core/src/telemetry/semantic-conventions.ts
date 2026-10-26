@@ -513,6 +513,20 @@ export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
   'workflow.deployment_mismatch.recovered'
 );
 
+/** Whether `start()` was given an `experimental_idempotencyKey`. */
+export const WorkflowStartIdempotencyKeyPresent = SemanticConvention<boolean>(
+  'workflow.start.idempotency_key_present'
+);
+
+/**
+ * What a keyed `start()` did: `created` a run (including a retry of its own
+ * write that had already landed), or returned the `existing` run that holds
+ * the key. Absent when the start threw.
+ */
+export const WorkflowStartIdempotencyOutcome = SemanticConvention<
+  'created' | 'existing'
+>('workflow.start.idempotency_outcome');
+
 /** The spec version `start()` stamped on the new run. */
 export const WorkflowRunSpecVersion = SemanticConvention<number>(
   'workflow.run.spec_version'

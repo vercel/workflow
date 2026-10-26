@@ -53,6 +53,13 @@ const TABLES = [
   'workflow_stream_chunks',
 ] as const;
 
+/**
+ * Tables created after 0027, with `created_at` born `timestamp with time
+ * zone`. Not in {@link TABLES}, which the 0027 upgrade tests also read on a
+ * database migrated only up to 5.0.x, where these do not exist yet.
+ */
+const TABLES_AFTER_0027 = ['workflow_run_idempotency_keys'] as const;
+
 function defined<T>(value: T | null | undefined): T {
   expect(value).toBeDefined();
   expect(value).not.toBeNull();
@@ -308,7 +315,11 @@ if (process.platform === 'win32') {
           .filter((c) => c.column_name === 'created_at')
           .map((c) => `${c.table_name} ${c.column_default}`)
           .sort()
-      ).toEqual(TABLES.map((table) => `${table} now()`).sort());
+      ).toEqual(
+        [...TABLES, ...TABLES_AFTER_0027]
+          .map((table) => `${table} now()`)
+          .sort()
+      );
     }, 60_000);
 
     describe('upgrading a database written by 5.0.x', () => {

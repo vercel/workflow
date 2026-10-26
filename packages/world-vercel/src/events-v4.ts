@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import type { Span } from '@opentelemetry/api';
 import {
   CorruptedEventLogError,
+  IDEMPOTENCY_KEY_CONFLICT_CODE,
   IN_BAND_SUPERSEDED_CODE,
   StreamError,
   ThrottleError,
@@ -323,6 +324,17 @@ interface CreateEventV4InputBase {
   /** Ref key of dynamic workflow code uploaded ahead of this write, for
    *  definitions too large to ride the meta inline. */
   dynamicWorkflowCodeRef?: string;
+  /** run_created: the run idempotency key this run claims, scoped to
+   *  (tenant, workflowName). Plaintext. The server claims it in the same
+   *  transaction that creates the run, and refuses a key another run holds
+   *  with 409 `idempotency-key-conflict`. */
+  idempotencyKey?: string;
+  /** run_created: how long the key stays held after the run closes, in ms. */
+  idempotencyKeyTtlMs?: number;
+  /** run_created: whether this start may take over a closed holder's key
+   *  (`ALLOW_DUPLICATE` | `ALLOW_DUPLICATE_FAILED_ONLY` |
+   *  `REJECT_DUPLICATE`). */
+  idempotencyKeyReusePolicy?: string;
   /** Client-measured time-to-first-step ms, riding on the run's first
    *  step_completed / step_failed. Consumed server-side for latency
    *  metrics; not read back. */
@@ -743,6 +755,15 @@ function buildPostFrameMeta(
   if (input.dynamicWorkflowCodeRef !== undefined) {
     meta.dynamicWorkflowCodeRef = input.dynamicWorkflowCodeRef;
   }
+  if (input.idempotencyKey !== undefined) {
+    meta.idempotencyKey = input.idempotencyKey;
+  }
+  if (input.idempotencyKeyTtlMs !== undefined) {
+    meta.idempotencyKeyTtlMs = input.idempotencyKeyTtlMs;
+  }
+  if (input.idempotencyKeyReusePolicy !== undefined) {
+    meta.idempotencyKeyReusePolicy = input.idempotencyKeyReusePolicy;
+  }
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;
   if (input.stepCount !== undefined) meta.stepCount = input.stepCount;
@@ -823,6 +844,16 @@ function errorFromV4Response(
     if (statusCode === 409 && code === 'hook-force-claimed') {
       details = { claimedBy: record.claimedBy };
     }
+    // A run_created refused because another run holds its idempotency key:
+    // the holder rides top-level on the body (the server's `responseBody`
+    // channel), like `claimedBy` above.
+    if (statusCode === 409 && code === IDEMPOTENCY_KEY_CONFLICT_CODE) {
+      details = {
+        runId: record.runId,
+        runStatus: record.runStatus,
+        workflowName: record.workflowName,
+      };
+    }
   } else if (text) {
     // body wasn't a structured object, so keep the default message and append
     // whatever the server did send
@@ -850,6 +881,10 @@ interface V4ErrorBody {
   error?: unknown;
   /** 409 hook-force-claimed: the run and hook the token now belongs to. */
   claimedBy?: unknown;
+  /** 409 idempotency-key-conflict: the run holding the key, and its state. */
+  runId?: unknown;
+  runStatus?: unknown;
+  workflowName?: unknown;
   events?: unknown;
   cursor?: unknown;
   /** 412 in-band-superseded: the backend's counters at the refusal. */

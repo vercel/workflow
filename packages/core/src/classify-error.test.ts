@@ -10,6 +10,7 @@ import {
   TooEarlyError,
   WorkflowDeploymentMismatchError,
   WorkflowNotRegisteredError,
+  WorkflowRunAlreadyStartedError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -267,6 +268,18 @@ describe('isRetryableWorldError', () => {
       isRetryableWorldError(
         new WorkflowWorldError('Schema validation failed for POST /events', {
           code: 'SCHEMA_VALIDATION',
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('does NOT treat an idempotency-key refusal as retryable', () => {
+    // A definitive 409 naming the holder: start() applies the conflict
+    // policy to it, it must never take the resilient-start path.
+    expect(
+      isRetryableWorldError(
+        new WorkflowRunAlreadyStartedError('wrun_holder', {
+          runStatus: 'running',
         })
       )
     ).toBe(false);

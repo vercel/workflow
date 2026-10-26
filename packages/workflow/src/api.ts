@@ -38,6 +38,8 @@ export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,
+  type IdempotencyKeyConflictPolicy,
+  type IdempotencyKeyReusePolicy,
   type StartOptions,
   start,
 } from '@workflow/core/runtime/start';

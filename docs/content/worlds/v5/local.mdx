@@ -151,6 +151,8 @@ Each run's event and step files are stored in their own directory (`events/<runI
 
 A directory that mixes both layouts, or holds `.json` files in `events/` or `steps/` that the World did not write, is never deleted: starting fails with a `DataDirLayoutError` that lists the files.
 
+[Idempotency key](/docs/api-reference/workflow-api/start#idempotency-keys) claims live in `idempotency-keys/`, one file per workflow and key. They are never cleaned up: a claim whose run no longer exists is simply free, so the directory only grows until you clear `.workflow-data`. Claims are not scoped by `tag`, so tagged Worlds sharing one data directory share them, and a claim whose run is not visible under a World's tag is free to that World.
+
 ## Limitations
 
 The Local World is designed for development, not production:

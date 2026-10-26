@@ -1,0 +1,79 @@
+---
+title: WorkflowRunAlreadyStartedError
+description: Thrown by start() when another workflow run already holds the idempotency key.
+type: reference
+summary: Catch WorkflowRunAlreadyStartedError when a start() with experimental_idempotencyKeyConflictPolicy 'FAIL' finds its idempotency key held by another run.
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/idempotency
+  - /docs/errors/run-already-started
+---
+
+`WorkflowRunAlreadyStartedError` is thrown by [`start()`](/docs/api-reference/workflow-api/start#idempotency-keys) when another run already holds the call's `experimental_idempotencyKey`, the reuse policy doesn't let the call take the key over, and the call set `experimental_idempotencyKeyConflictPolicy: 'FAIL'`. No run is created. With the default conflict policy, `'USE_EXISTING'`, `start()` returns the holding run instead of throwing. See the [run-already-started](/docs/errors/run-already-started) error guide for how to react.
+
+It extends [`WorkflowWorldError`](/docs/api-reference/workflow-errors/workflow-world-error), with HTTP `status` `409` and `code` `'idempotency-key-conflict'`. It is not an [`EntityConflictError`](/docs/api-reference/workflow-errors/entity-conflict-error), and the runtime does not retry it.
+
+<Callout type="warn">
+Experimental. Idempotency keys may change without a major version bump.
+</Callout>
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { WorkflowRunAlreadyStartedError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+declare const orderId: string; // @setup
+
+try {
+  await start(processOrder, [orderId], {
+    experimental_idempotencyKey: orderId,
+    experimental_idempotencyKeyConflictPolicy: "FAIL",
+  });
+} catch (error) {
+  if (WorkflowRunAlreadyStartedError.is(error)) { // [!code highlight]
+    console.log(`Order ${orderId} is handled by run ${error.runId}`);
+  }
+}
+```
+
+## API signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowRunAlreadyStartedError {
+  /** The run that holds the idempotency key. Never the run this call tried to create. */
+  runId: string;
+  /** The holding run's status when the start was refused, such as "running" or "completed". */
+  runStatus?: string;
+  /** The workflow the key is scoped to, when the World reports it. */
+  workflowName?: string;
+  /** The idempotency key. */
+  idempotencyKey?: string;
+  /** HTTP status: 409. */
+  status?: number;
+  /** Error code: "idempotency-key-conflict". */
+  code?: string;
+  /** The error message. */
+  message: string;
+}
+export default WorkflowRunAlreadyStartedError;`}
+/>
+
+`runStatus` is named that way because the inherited `status` field carries the HTTP status.
+
+### Static methods
+
+#### `WorkflowRunAlreadyStartedError.is(value)`
+
+Type-safe check for `WorkflowRunAlreadyStartedError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
+
+```typescript
+import { WorkflowRunAlreadyStartedError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowRunAlreadyStartedError.is(error)) {
+  // error is typed as WorkflowRunAlreadyStartedError
+}
+```

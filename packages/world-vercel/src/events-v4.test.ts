@@ -7,6 +7,7 @@ import {
   StreamError,
   ThrottleError,
   TooEarlyError,
+  WorkflowRunAlreadyStartedError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { AnyEventRequest } from '@workflow/world';
@@ -14,7 +15,7 @@ import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AfterCommitError } from './event-retry.js';
+import { AfterCommitError, isRetryableEventPostError } from './event-retry.js';
 import { createWorkflowRunEventBatch, splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventsBatchV4,
@@ -79,6 +80,115 @@ describe('throwForErrorResponse', () => {
 
   it('maps 409 to EntityConflictError', () => {
     expect(() => call(409)).toThrowError(EntityConflictError);
+  });
+
+  // Pinned wire contract with workflow-server: a run_created refused because
+  // another run holds its idempotency key is a 409 whose code rides in
+  // `error` and whose holder rides top-level on the body.
+  const keyConflictBody = {
+    success: false,
+    error: 'idempotency-key-conflict',
+    message: 'Idempotency key is held by workflow run wrun_holder',
+    runId: 'wrun_holder',
+    runStatus: 'running',
+    workflowName: 'workflow//./src/orders//process',
+  };
+
+  it('maps a 409 idempotency-key-conflict to WorkflowRunAlreadyStartedError naming the holder', () => {
+    let thrown: unknown;
+    try {
+      call(409, JSON.stringify(keyConflictBody));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(WorkflowRunAlreadyStartedError.is(thrown)).toBe(true);
+    // It must never read as a self-conflict: start() publishes on those.
+    expect(EntityConflictError.is(thrown)).toBe(false);
+    expect(thrown).toMatchObject({
+      status: 409,
+      code: 'idempotency-key-conflict',
+      runId: 'wrun_holder',
+      runStatus: 'running',
+      workflowName: 'workflow//./src/orders//process',
+      url: 'http://x',
+    });
+    expect((thrown as Error).message).toMatch(
+      /^Idempotency key is held by workflow run wrun_holder/
+    );
+  });
+
+  it('maps a CBOR-encoded idempotency-key-conflict body the same way', () => {
+    let thrown: unknown;
+    try {
+      throwForErrorResponse(
+        409,
+        { 'content-type': 'application/cbor' },
+        new Uint8Array(encode(keyConflictBody)),
+        'createEvent',
+        'http://x'
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(WorkflowRunAlreadyStartedError.is(thrown)).toBe(true);
+    expect(thrown).toMatchObject({
+      runId: 'wrun_holder',
+      runStatus: 'running',
+    });
+  });
+
+  // start() validates the runId and refuses fatally on 'unknown' (see
+  // core's start.test.ts), so the placeholder never becomes a Run handle.
+  it('keeps an idempotency-key-conflict without a holder typed as a refusal', () => {
+    let thrown: unknown;
+    try {
+      call(409, '{"error":"idempotency-key-conflict","message":"held"}');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(WorkflowRunAlreadyStartedError.is(thrown)).toBe(true);
+    expect((thrown as WorkflowRunAlreadyStartedError).runId).toBe('unknown');
+    expect(
+      (thrown as WorkflowRunAlreadyStartedError).runStatus
+    ).toBeUndefined();
+  });
+
+  it('maps the 400 idempotency-keys-disabled kill switch to a clear, non-retryable error', () => {
+    let thrown: unknown;
+    try {
+      call(
+        400,
+        '{"success":false,"error":"idempotency-keys-disabled","message":"Run idempotency keys are disabled"}'
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(WorkflowWorldError.is(thrown)).toBe(true);
+    expect(thrown).toMatchObject({
+      status: 400,
+      code: 'idempotency-keys-disabled',
+    });
+    expect((thrown as Error).message).toMatch(
+      /idempotency keys are switched off.*no run was created/i
+    );
+    expect((thrown as Error).message).toContain(
+      'Run idempotency keys are disabled'
+    );
+    expect(isRetryableEventPostError(thrown)).toBe(false);
+    // A start() inside a step is not retried on it.
+    expect((thrown as { fatal?: unknown }).fatal).toBe(true);
+  });
+
+  it('keeps the plain workflow-run-exists 409 an EntityConflictError', () => {
+    // The self-conflict answer for a re-post of the same run id.
+    let thrown: unknown;
+    try {
+      call(409, '{"error":"conflict","message":"Workflow run already exists"}');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(EntityConflictError.is(thrown)).toBe(true);
+    expect(WorkflowRunAlreadyStartedError.is(thrown)).toBe(false);
   });
 
   it('maps 410 to RunExpiredError (terminal run — runtime must not retry)', () => {
@@ -2107,6 +2217,52 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
     expect(wireMeta.encryptionPublicKey).toBe(key);
   });
 
+  it('carries the idempotency key, TTL and reuse policy on run_created', async () => {
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'run_created',
+      specVersion: 8,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'myWorkflow',
+        input: new TextEncoder().encode('"in"'),
+        idempotencyKey: 'order-1',
+        idempotencyKeyTtlMs: 3_600_000,
+        idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    const expected = {
+      idempotencyKey: 'order-1',
+      idempotencyKeyTtlMs: 3_600_000,
+      idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+    };
+    expect(meta).toMatchObject(expected);
+    expect(wireMeta).toMatchObject(expected);
+  });
+
+  it('never carries idempotency fields on run_started', async () => {
+    const { meta, wireMeta } = await postAndCaptureMeta({
+      eventType: 'run_started',
+      specVersion: 8,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'myWorkflow',
+        idempotencyKey: 'order-1',
+        idempotencyKeyTtlMs: 3_600_000,
+        idempotencyKeyReusePolicy: 'ALLOW_DUPLICATE',
+      },
+    } as unknown as Parameters<typeof splitEventDataForV4>[0]);
+
+    for (const key of [
+      'idempotencyKey',
+      'idempotencyKeyTtlMs',
+      'idempotencyKeyReusePolicy',
+    ]) {
+      expect(meta).not.toHaveProperty(key);
+      expect(wireMeta).not.toHaveProperty(key);
+    }
+  });
+
   // Generic guard: whatever the splitter decides belongs in the frame meta must
   // actually reach the wire. This fails for ANY field a future change adds to
   // the splitter but forgets in buildPostFrameMeta, not just this one.
@@ -2121,6 +2277,9 @@ describe('v4 POST frame meta forwards every field the splitter produces', () => 
         attributes: { foo: 'bar' },
         allowReservedAttributes: true,
         executionContext: { traceCarrier: {} },
+        idempotencyKey: 'order-1',
+        idempotencyKeyTtlMs: 86_400_000,
+        idempotencyKeyReusePolicy: 'REJECT_DUPLICATE',
         input: new TextEncoder().encode('"in"'),
       },
     } as unknown as Parameters<typeof splitEventDataForV4>[0]);

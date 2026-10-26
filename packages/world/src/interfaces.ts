@@ -732,6 +732,65 @@ export interface WorldCapabilities {
    * otherwise it is always sent inline.
    */
   dynamicWorkflowCode?: boolean;
+
+  /**
+   * Enforces run idempotency keys: `start({ experimental_idempotencyKey })`.
+   * Within one scope of (tenant, `workflowName`, key), at most one run holds a
+   * key at a time. A `run_created` carrying
+   * `eventData.idempotencyKey` (always sent with the resolved
+   * `idempotencyKeyTtlMs` and `idempotencyKeyReusePolicy`) claims it.
+   *
+   * `start()` fails closed on this: it refuses a keyed start, before any
+   * write, on a World that leaves this unset. A World that would accept the
+   * fields but not enforce them must leave it unset, or keyed starts would
+   * silently create duplicates.
+   *
+   * Declaring it commits the World to all of:
+   *
+   * 1. **Atomic claims.** The key is claimed in the same atomic write that
+   *    creates the run and its `run_created` event, so a claim never names a
+   *    run that was not created, and a created run never lacks the claim it
+   *    asked for.
+   * 2. **Self-conflict first.** "This run id already exists" is checked
+   *    before the key. A re-post of the same run id (a retry of the caller's
+   *    own write that already landed) answers `EntityConflictError`, never
+   *    `WorkflowRunAlreadyStartedError`, even though that run holds the key.
+   * 3. **The decision table.** With H the run currently holding the key:
+   *    - no claim: create; the new run holds the key;
+   *    - a claim whose holder run no longer exists: create; take it over;
+   *    - H closed (`completed`, `failed` or `cancelled`) and
+   *      `now > H.completedAt + ttlMs`, where `ttlMs` is the TTL recorded by
+   *      H's own start: create; take it over (the window expired);
+   *    - H `pending` or `running`: refuse, whatever the TTL or policy;
+   *    - H closed, inside its window: the new caller's
+   *      `idempotencyKeyReusePolicy` decides. `ALLOW_DUPLICATE` takes the key
+   *      over; `ALLOW_DUPLICATE_FAILED_ONLY` takes it over from a `failed` or
+   *      `cancelled` H and refuses for a `completed` one; `REJECT_DUPLICATE`
+   *      refuses.
+   *
+   *    A takeover is conditional on the claim still naming the old holder,
+   *    atomically with creating the new run: of concurrent claimers exactly
+   *    one wins, and the others re-evaluate against the new holder.
+   * 4. **Refusals name the holder.** Otherwise the write throws
+   *    `WorkflowRunAlreadyStartedError` (HTTP 409, `idempotency-key-conflict`)
+   *    with `runId` (H) and `runStatus` (H's status), plus `workflowName` and
+   *    `idempotencyKey` when available, and writes nothing: no run, no event,
+   *    no claim.
+   * 5. **Echo.** The created run returned by `run_created` carries
+   *    `idempotencyKey`, and so does every later read of the run. The runtime
+   *    treats a created run without it as a backend that ignored the key.
+   * 6. **Deleted holders are free.** A claim whose holder run no longer exists
+   *    (deleted, or expired out of storage) does not block a new start.
+   *
+   * Arguments and every other option of a refused start are ignored: the
+   * first writer wins, and arguments are never compared. A `run_started`
+   * never carries a key, so a run created through the resilient-start path
+   * holds none.
+   *
+   * `@workflow/world`'s `test-support/run-idempotency-conformance.ts` checks
+   * each of these against a World's `events` and `runs` storage.
+   */
+  runIdempotencyKeys?: boolean;
 }
 
 /**

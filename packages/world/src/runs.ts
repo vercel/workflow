@@ -122,6 +122,13 @@ export const WorkflowRunBaseSchema = z.compile(
      * implement `getEncryptionKeyForRun` (encryption disabled).
      */
     encryptionPublicKey: z.string().optional(),
+    /**
+     * The idempotency key this run was started with
+     * (`start({ experimental_idempotencyKey })`), echoed by Worlds that
+     * declare `capabilities.runIdempotencyKeys`. Plaintext. Absent on runs
+     * started without a key, and on Worlds that do not support keys.
+     */
+    idempotencyKey: z.string().optional(),
     expiredAt: z.coerce.date().optional(),
     startedAt: z.coerce.date().optional(),
     completedAt: z.coerce.date().optional(),

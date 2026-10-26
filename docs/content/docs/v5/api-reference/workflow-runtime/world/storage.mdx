@@ -28,6 +28,8 @@ keywords:
   - correlation ID
   - parseStepName
   - parseWorkflowName
+  - idempotencyKey
+  - runIdempotencyKeys
 ---
 
 The World storage interface exposes four sub-interfaces for querying workflow data:
@@ -64,6 +66,32 @@ await world.events.create(runId, { // [!code highlight]
 | `params` | `object` | Optional parameters |
 
 **Returns:** `EventResult`, the created event and the affected entity (run/step/hook)
+
+#### Run idempotency keys
+
+<Callout type="warn">
+  Experimental. Backs [`start({ experimental_idempotencyKey })`](/docs/api-reference/workflow-api/start#idempotency-keys).
+</Callout>
+
+A `run_created` event from a keyed `start()` carries three extra `eventData` fields, always together and with defaults already resolved. Only a World that declares `capabilities.runIdempotencyKeys` receives them: `start()` refuses a keyed start, before any write, on a World that doesn't.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `eventData.idempotencyKey` | `string` | The key, 1 to 256 characters (`IDEMPOTENCY_KEY_MAX_LENGTH`), scoped to the run's `workflowName`. Plaintext |
+| `eventData.idempotencyKeyTtlMs` | `number` | How long the key stays held after this run closes, in whole milliseconds, from `IDEMPOTENCY_KEY_TTL_MIN_MS` (1 second) to `IDEMPOTENCY_KEY_TTL_MAX_MS` (30 days). `start()` sends `IDEMPOTENCY_KEY_TTL_DEFAULT_MS` (24 hours) when the caller sets none |
+| `eventData.idempotencyKeyReusePolicy` | `IdempotencyKeyReusePolicy` | `'REJECT_DUPLICATE'`, `'ALLOW_DUPLICATE_FAILED_ONLY'`, or `'ALLOW_DUPLICATE'`. Whether this run may take the key over from a closed holder still inside its TTL window |
+
+The schema rejects `idempotencyKeyTtlMs` or `idempotencyKeyReusePolicy` without `idempotencyKey`. A `run_started` event never carries a key, so a run created through the resilient-start path holds none. The constants, the policy schemas, and their types are exported from `@workflow/world`.
+
+The World claims the key atomically with creating the run, and the write has three outcomes:
+
+| Outcome | Result |
+|---------|--------|
+| The key is free, or this run may take it over | The run is created and holds the key. The returned run, and every later read of it, carries `idempotencyKey` |
+| A run with this `runId` already exists | `EntityConflictError`, checked before the key, so a retry of a write that already landed never looks like a conflict |
+| Another run holds the key and keeps it | `WorkflowRunAlreadyStartedError` (HTTP 409, `idempotency-key-conflict`) with the holding run's `runId` and `runStatus`. Nothing is written |
+
+See [Building a World](/worlds/building-a-world#optional-run-idempotency-keys) for the full contract a World commits to when it declares the capability.
 
 ### events.get()
 
@@ -260,6 +288,7 @@ To cancel a batch in one call, a world may implement the optional `runs.cancelMa
 | `error` | `any` | Error data if the run failed |
 | `startedAt` | `string` | ISO timestamp when the run started |
 | `completedAt` | `string \| null` | ISO timestamp when the run completed |
+| `idempotencyKey` | `string \| undefined` | The [idempotency key](/docs/api-reference/workflow-api/start#idempotency-keys) the run was started with. Absent for runs started without one, and on Worlds that don't support keys. Plaintext |
 
 <Callout type="warn">
   `workflowName` is a machine-readable identifier like `workflow//./src/workflows/order//processOrder`. Use `parseWorkflowName()` from `workflow/observability` to extract a display-friendly name.

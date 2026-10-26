@@ -440,15 +440,20 @@ export async function readHookTokenClaim(
 }
 
 /**
- * Serializes claim handoffs. Exclusive writes admit the first owner, but
- * cannot atomically replace a stale owner across local-world processes.
+ * Run `fn` holding a cross-process lock on a claim file (`proper-lockfile`,
+ * so every process on the data directory takes turns). Exclusive writes admit
+ * the first owner of a claim, but cannot atomically replace a stale owner, so
+ * any read-evaluate-replace of a claim happens under this lock.
+ *
+ * `fn` receives a signal that aborts if the lock is compromised (for example
+ * the process stalled past the stale timeout); check it before each durable
+ * write. `what` names the claim in error messages.
  */
-export async function withHookTokenClaimLock<T>(
-  basedir: string,
-  token: string,
+export async function withClaimFileLock<T>(
+  claimPath: string,
+  what: string,
   fn: (signal: AbortSignal) => Promise<T>
 ): Promise<T> {
-  const claimPath = hookTokenClaimPath(basedir, token);
   await fs.mkdir(path.dirname(claimPath), { recursive: true });
   const controller = new AbortController();
   let release: () => Promise<void>;
@@ -465,14 +470,14 @@ export async function withHookTokenClaimLock<T>(
       },
       onCompromised(error) {
         controller.abort(
-          new WorkflowWorldError('Hook token claim lock was compromised', {
+          new WorkflowWorldError(`${what} lock was compromised`, {
             cause: error,
           })
         );
       },
     });
   } catch (error) {
-    throw new WorkflowWorldError('Could not acquire Hook token claim lock', {
+    throw new WorkflowWorldError(`Could not acquire ${what} lock`, {
       cause: error,
     });
   }
@@ -491,11 +496,26 @@ export async function withHookTokenClaimLock<T>(
   try {
     await release();
   } catch (error) {
-    throw new WorkflowWorldError('Could not release Hook token claim lock', {
+    throw new WorkflowWorldError(`Could not release ${what} lock`, {
       cause: error,
     });
   }
   return result;
+}
+
+/**
+ * Serializes Hook token claim handoffs (see {@link withClaimFileLock}).
+ */
+export async function withHookTokenClaimLock<T>(
+  basedir: string,
+  token: string,
+  fn: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  return withClaimFileLock(
+    hookTokenClaimPath(basedir, token),
+    'Hook token claim',
+    fn
+  );
 }
 
 /**

@@ -233,6 +233,26 @@ export function getCommonReducers(): Partial<Reducers> {
     SyntaxError: makeNamedErrorSubclassReducer('SyntaxError'),
     TypeError: makeNamedErrorSubclassReducer('TypeError'),
     URIError: makeNamedErrorSubclassReducer('URIError'),
+    // Mirrors the host-side common.ts reducer.
+    WorkflowRunAlreadyStartedError: (value) => {
+      const base = makeNamedErrorSubclassReducer(
+        'WorkflowRunAlreadyStartedError'
+      )(value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['WorkflowRunAlreadyStartedError'] = {
+        ...base,
+        runId: (value as any).runId,
+      };
+      for (const field of [
+        'runStatus',
+        'workflowName',
+        'idempotencyKey',
+      ] as const) {
+        const fieldValue = (value as any)[field];
+        if (typeof fieldValue === 'string') reduced[field] = fieldValue;
+      }
+      return reduced;
+    },
     // Base Error reducer: catch-all. Matched LAST after subclass-specific
     // reducers above. Preserves `name` so user Error subclasses without
     // dedicated reducers retain their identity through the round-trip.
@@ -544,6 +564,40 @@ export function getCommonRevivers(): Partial<Revivers> {
     SyntaxError: makeNamedErrorSubclassReviver('SyntaxError'),
     TypeError: makeNamedErrorSubclassReviver('TypeError'),
     URIError: makeNamedErrorSubclassReviver('URIError'),
+    WorkflowRunAlreadyStartedError: (value) => {
+      // Prefer the registered class (see the FatalError reviver above).
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//WorkflowRunAlreadyStartedError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.runId, {
+          runStatus: value.runStatus,
+          workflowName: value.workflowName,
+          idempotencyKey: value.idempotencyKey,
+          ...('cause' in value ? { cause: value.cause } : {}),
+        });
+        // Keep the serialized message (see the host-side reviver).
+        error.message = value.message;
+      } else {
+        error = new Error(value.message);
+        error.name = 'WorkflowRunAlreadyStartedError';
+        (error as any).fatal = true;
+        (error as any).status = 409;
+        (error as any).code = 'idempotency-key-conflict';
+        (error as any).runId = value.runId;
+        for (const field of [
+          'runStatus',
+          'workflowName',
+          'idempotencyKey',
+        ] as const) {
+          if (value[field] !== undefined) (error as any)[field] = value[field];
+        }
+        if ('cause' in value) (error as any).cause = value.cause;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
     Error: (value) => {
       const error = new Error(value.message);
       error.name = value.name;
