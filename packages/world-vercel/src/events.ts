@@ -684,8 +684,11 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
         // The atomic lazy-resume shape is deduplicated server-side by the
         // (runId, resumeId) claim, so its POST is idempotent-on-retry even
         // though plain hook_received is not; see EVENT_RETRY_ELIGIBILITY.
+        // Resolved-route writes run once: a rollback after a lost response
+        // must not turn a committed first attempt into a seemingly safe 404.
         idempotentHookResume:
           data.eventType === 'hook_received' &&
+          params?.requireHookResumeDedup !== true &&
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
         afterStepBody: params?.afterStepBody === true,

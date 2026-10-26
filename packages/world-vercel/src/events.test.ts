@@ -2311,6 +2311,36 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('does not turn an uncertain resolved write into a rollback refusal', async () => {
+    const agent = mockAgent();
+    const reset = Object.assign(new Error('committed response was lost'), {
+      code: 'ECONNRESET',
+    });
+    let rollbackAttempts = 0;
+    const path = '/api/v4/runs/wrun_1/events/hook_received/resolved';
+    agent.get(ORIGIN).intercept({ path, method: 'POST' }).replyWithError(reset);
+    agent
+      .get(ORIGIN)
+      .intercept({ path, method: 'POST' })
+      .reply(() => {
+        rollbackAttempts++;
+        return { statusCode: 404, data: 'route was rolled back' };
+      });
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        hookReceivedRequest(),
+        {
+          resumeId: RESUME_ID,
+          resumePayloadDigest: DIGEST,
+          requireHookResumeDedup: true,
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({ code: 'STREAM_ERROR', status: undefined });
+    expect(rollbackAttempts).toBe(0);
+  });
+
   it('retries the atomic preload write past a transient transport failure', async () => {
     // The (runId, resumeId) claim makes the write idempotent-on-retry, so
     // createWorkflowRunEvent opts this shape into withEventPostRetry — an
