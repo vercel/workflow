@@ -34,6 +34,16 @@ const hookAndTwoSleeps = `const createHook = globalThis[Symbol.for("WORKFLOW_CRE
     return "done";
   }${registerWorkflow()}`;
 
+const SHORT_SLEEP_SECONDS = 30;
+
+const hookAndShortSleep = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow() {
+    const hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+    await Promise.all([sleep("${SHORT_SLEEP_SECONDS}s"), hook]);
+    return "done";
+  }${registerWorkflow()}`;
+
 /** Seconds per queue hop in these tests (see `WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS`). */
 const HOP_SECONDS = 60;
 const LONG_SLEEP_SECONDS = 2 * HOP_SECONDS + 30;
@@ -236,6 +246,56 @@ describe.each([
     expect(completedByFailedDelivery).toBe(1);
     expect(await runResult(world)).toBe('done');
     expect(eventsOf(world, 'wait_completed')).toHaveLength(2);
+  });
+
+  it.each([
+    50, 500,
+  ])('completes a sleep whose timer is coalesced %dms before it is due into a delivery that does not own it', async (earlyMs) => {
+    let world!: AppendOnlyWorld;
+    let dueDuringWake: HeldMessage | undefined;
+    const coalescedResults: boolean[] = [];
+    const setup = await setupOrchestratorRun(
+      hookAndShortSleep,
+      [],
+      { coalesce: true },
+      engine
+    );
+    world = setup.world;
+    const { runId, start } = setup;
+    onEveryList(world, () => {
+      if (dueDuringWake) {
+        coalescedResults.push(world.comeDue(dueDuringWake));
+        dueDuringWake = undefined;
+      }
+    });
+
+    await world.deliver(start);
+    const [timer] = timers(world);
+    expect(timers(world)).toHaveLength(1);
+    const resumeAtMs = +new Date(
+      dataOf(eventsOf(world, 'wait_created')[0])!.resumeAt as Date
+    );
+
+    // The queue's clock runs ahead of the host's: the sleep's only timer
+    // comes due before the sleep is, while a hook wake (which does not own
+    // the sleep's chain) holds the run, and is coalesced into it.
+    vi.setSystemTime(resumeAtMs - earlyMs);
+    dueDuringWake = timer;
+    await world.deliver(await resumeHookOutOfBand(world, runId));
+    expect(coalescedResults).toEqual([true]);
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(0);
+    // The wake found the sleep not yet due and armed it anyway (each re-run
+    // of a coalesced delivery may arm it once).
+    expect(timers(world).length).toBeGreaterThan(0);
+    expect(new Set(timers(world).map(timerFor))).toEqual(
+      new Set([timerFor(timer!)])
+    );
+
+    vi.setSystemTime(resumeAtMs + 1000);
+    await world.runUntilIdle();
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(1);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+    expect(await runResult(world)).toBe('done');
   });
 
   it('keeps a sleep longer than one queue hop alive when a hop comes due under a running delivery', async () => {

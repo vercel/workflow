@@ -104,6 +104,31 @@ const getNearElapsedWaitThresholdSeconds = (): number =>
     NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS
   );
 
+/**
+ * A suspending spec 9 delivery sends a timer for every open wait due within
+ * this many seconds, or the near-elapsed threshold if that is larger,
+ * whichever delivery owns the wait's chain (see
+ * {@link getNearDueWaitWindowSeconds}).
+ */
+export const NEAR_DUE_WAIT_WINDOW_SECONDS = 5;
+
+/**
+ * Seconds within which a suspending spec 9 delivery sends a timer for an
+ * open wait whatever chain it is in: the larger of
+ * {@link NEAR_DUE_WAIT_WINDOW_SECONDS} and the near-elapsed threshold.
+ *
+ * A wait's last timer is due with the wait on the sender's clock, rounded up
+ * to a whole second, so a host whose clock runs behind the queue's can
+ * receive it before the wait is due. Coalesced into a delivery that does not
+ * own the wait's chain, that timer is never delivered on its own, and the
+ * delivery finds nothing due and arms nothing: the wait would never
+ * complete. A duplicate timer is harmless (it finds its wait completed, or
+ * re-arms what is left), so a suspending delivery covers every wait this
+ * close.
+ */
+export const getNearDueWaitWindowSeconds = (): number =>
+  Math.max(getNearElapsedWaitThresholdSeconds(), NEAR_DUE_WAIT_WINDOW_SECONDS);
+
 export interface WaitContinuationDispatch {
   delaySeconds: number;
   idempotencyKey: string;

@@ -106,6 +106,7 @@ import {
   isSnapshotThresholdConfigured,
   isUnencryptedSnapshottingAllowed,
 } from '../vm-mode.js';
+import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
 import { safeWaitUntil } from '../wait-until.js';
 import { getWorld } from '../world.js';
 import {
@@ -2659,6 +2660,23 @@ export async function runWorkflowWithQuickJS(params: {
       wfdiag('exit_suspended', { action: 'unread_self_write_requeue' });
       await requeueImmediately();
       return;
+    }
+
+    // Every wait due within the near-due window gets a timer whatever
+    // chain it is in: this delivery may hold a timer the queue coalesced
+    // into it a little before its wait was due (see
+    // `getNearDueWaitWindowSeconds`).
+    const nearDueHorizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
+    for (const wait of exitSweep) {
+      if (wait.resumeAtMs > nearDueHorizonMs) continue;
+      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
+      scheduledWaitContinuations.add(wait.correlationId);
+      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs);
+      wfdiag('wait_continuation_scheduled', {
+        correlationId: wait.correlationId,
+        delaySeconds: wait.seconds,
+        nearDue: true,
+      });
     }
 
     if (

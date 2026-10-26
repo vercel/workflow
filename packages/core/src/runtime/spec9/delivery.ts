@@ -142,6 +142,7 @@ import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
 import { computeStepLatencyTracking } from '../step-latency.js';
 import { useQuickJSVm } from '../vm-mode.js';
+import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
 import { consumeOwnResolvingWrite } from './consume-after-commit.js';
 import {
   forgetConsumedPosition,
@@ -3605,6 +3606,7 @@ async function runDelivery(
       if (await lingerForExternalWork()) {
         return { type: 'continue', retainSession: retain };
       }
+      await armNearDueTimers(log.events);
       await armTimers(log.events);
       recordConsumedPosition(world, runId, {
         slot: maxEventSlot(log.events) ?? 0,
@@ -4079,6 +4081,20 @@ async function runDelivery(
         creatorMessageId,
         waitContinuation?.correlationId
       )) {
+        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
+      }
+    }
+
+    /**
+     * Arms the timer of every open wait due within the near-due window
+     * (`getNearDueWaitWindowSeconds`), whatever chain it is in, once per
+     * wait: a suspending delivery may hold a timer the queue coalesced
+     * into it a little before its wait was due.
+     */
+    async function armNearDueTimers(events: Event[]): Promise<void> {
+      const horizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
+      for (const wait of openWaits(events)) {
+        if (wait.resumeAtMs > horizonMs) continue;
         if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
       }
     }
