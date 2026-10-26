@@ -149,6 +149,11 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
  * that has no outcome yet. That is a background step, or an inline step that
  * retried: an inline step's retry moves it to its own message, which runs
  * every later attempt.
+ *
+ * Any open hook counts, however rarely it is resumed: a run that keeps a hook
+ * open for its whole life (a cancel or approval hook beside a polling loop)
+ * makes every pass that finds nothing to run linger, even one that just
+ * armed a timer much longer than the linger window.
  */
 export function awaitsExternalWork(events: readonly Event[]): boolean {
   const openHooks = new Set<string>();

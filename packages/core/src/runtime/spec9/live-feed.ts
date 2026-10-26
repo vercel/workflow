@@ -80,7 +80,10 @@ export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
  * finds nothing to run starts the time again, so a burst of resumes or step
  * outcomes is handled by one warm invocation instead of one queued wake each.
  * Only taken on a World with a live feed (`events.subscribe`): without one,
- * waiting costs a function held open for a poll's latency. `0` disables it.
+ * waiting costs a function held open for a poll's latency. Any open hook is
+ * enough to take it (see `awaitsExternalWork`), so a run with a long-lived
+ * hook holds each of its deliveries this long after its last pass. `0`
+ * disables it.
  */
 export function getOrchestratorLingerMs(
   env: Record<string, string | undefined> = process.env

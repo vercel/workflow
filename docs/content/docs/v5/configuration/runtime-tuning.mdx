@@ -144,6 +144,7 @@ An out-of-band terminal event has these effects, all of them benign:
 - When an orchestrator has nothing left to run, but the run is still waiting on an open hook or on a step running from its own queue message, the orchestrator stays live on the World's live event feed for this long before acknowledging its message.
 - Each event another writer commits in that time (a hook payload, a background step's outcome, a cancellation) starts another pass in the same invocation. The next pass that again finds nothing to run starts the time over. A burst of resumes or step outcomes is then handled by one warm invocation instead of one queued wake each.
 - Only used on a World with a live event feed (`events.subscribe`), such as the Vercel World. It never runs past the invocation's inline-step deadline.
+- An open hook alone is enough, however rarely it is resumed. A run that keeps a hook open for its whole life, such as a cancel or approval hook beside a loop of steps and `sleep()` calls, lingers for this long after every pass, including one that just armed a much longer sleep. Each such invocation stays open, and holds the run, for up to this long. Lower it, or set it to `0`, for runs like that; `0` also turns off the linger for background steps, whose outcomes usually arrive within it.
 - `0` turns it off.
 
 ### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
