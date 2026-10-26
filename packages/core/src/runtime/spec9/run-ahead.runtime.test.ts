@@ -1,4 +1,4 @@
-import { InBandSupersededError } from '@workflow/errors';
+import { InBandSupersededError, RetryableError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { type Event, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -164,6 +164,24 @@ const parallelPair = `const inc = ${step};
   async function workflow() {
     const [a, b] = await Promise.all([inc(1), inc(10)]);
     return a + b;
+  }${registerWorkflow()}`;
+
+// An inline step whose first attempt fails, so its retry moves to its own
+// message, beside an inline loop that runs until that step is done.
+registerStepFunction('ra_retried', async () => {
+  throw new RetryableError('transient', {
+    retryAfter: new Date(Date.now() + 3_600_000),
+  });
+});
+const loopBesideRetriedStep = `const inc = ${step};
+  const retried = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_retried");
+  async function workflow() {
+    let done = false;
+    const pending = retried().then(() => { done = true; });
+    let n = 0;
+    while (!done && n < 20) n = await inc(n);
+    await pending;
+    return n;
   }${registerWorkflow()}`;
 
 const STEPS = 6;
@@ -690,6 +708,62 @@ describe('run-ahead against an append-only World (node engine)', () => {
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
+  });
+
+  it('treats an inline step retried on its own message as another writer, so the run replays to its own result', async () => {
+    let injected = false;
+    let outcomes = 0;
+    const { world, runId, start } = await run(loopBesideRetriedStep, [], {
+      async beforeCreate(data) {
+        await slowOutcomes.beforeCreate(data);
+        if (data.eventType !== 'step_completed') return;
+        if (
+          (data as { eventData?: { stepName?: string } }).eventData
+            ?.stepName !== 'ra_inc'
+        ) {
+          return;
+        }
+        // The retried step's own message runs it while an outcome of the
+        // loop is in flight.
+        if (!injected && ++outcomes === 3) {
+          injected = true;
+          const retrying = eventsOf(world, 'step_retrying')[0];
+          world.appendOutOfBand({
+            eventType: 'step_started',
+            correlationId: retrying?.correlationId,
+            eventData: { stepName: 'ra_retried', attempt: 2 },
+          } as unknown as Partial<Event>);
+          world.appendOutOfBand({
+            eventType: 'step_completed',
+            correlationId: retrying?.correlationId,
+            eventData: {
+              stepName: 'ra_retried',
+              workflowName: 'workflow',
+              result: await dehydrateStepReturnValue('ok', runId, undefined),
+            },
+          } as unknown as Partial<Event>);
+        }
+      },
+    });
+    // Only the orchestrator's messages: the retry's own message is the
+    // out-of-band writer above.
+    await world.deliver(start);
+    for (;;) {
+      const wake = world.held.find(
+        (held) => (held.message as { stepId?: string }).stepId === undefined
+      );
+      if (!wake) break;
+      await world.deliver(wake);
+    }
+    expect(injected).toBe(true);
+    const live = await runResult(world);
+    const liveBodies = bodiesStarted;
+    expect(live).toBeDefined();
+    const cold = await coldReplay(world, loopBesideRetriedStep);
+    expect(cold.result).toBe(live);
+    // No body the replayed workflow does not call.
+    expect(bodiesStarted).toBe(liveBodies);
+    expect(liveBodies).toBe(eventsOf(world, 'step_completed').length - 1);
   });
 
   it('drains beside a step another invocation runs', async () => {

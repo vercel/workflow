@@ -1647,9 +1647,31 @@ async function runDelivery(
     // folded in, and that pass must not read the step as an
     // unfinished inline step to run again.
     const ranInline = new Set<string>();
-    // Inline steps whose retry moved to the background: their
-    // later events come from the step's own message.
-    const retriedInBackground = new Set<string>();
+    // Inline steps whose retry moved to the background, with
+    // the attempt whose `step_retrying` moved it. Marked when
+    // that `step_retrying` is sent: every later event of the
+    // step comes from its own message, written out-of-band.
+    const retriedInBackground = new Map<string, number>();
+    /**
+     * Whether only this delivery writes the events of step `id`
+     * (or, given `event`, whether this delivery wrote it): a
+     * step whose body it started, until a retry moves the step
+     * to its own message. After that, only the events of the
+     * attempts it ran are its own. The run-ahead gate, the
+     * hazard check and the live feed's echo filter all decide
+     * from this.
+     */
+    const isSelfWrittenStep = (id: string, event?: Event): boolean => {
+      if (!ranInline.has(id)) return false;
+      const movedAt = retriedInBackground.get(id);
+      if (movedAt === undefined) return true;
+      const attempt = (event?.eventData as { attempt?: unknown } | undefined)
+        ?.attempt;
+      return typeof attempt === 'number' && attempt <= movedAt;
+    };
+    /** The steps whose events only this delivery writes. */
+    const selfWrittenStepIds = (): string[] =>
+      [...ranInline].filter((id) => isSelfWrittenStep(id));
     /**
      * Whether a live-feed event is this delivery's own write
      * echoed back, so it brings the workflow nothing new: a
@@ -1672,8 +1694,7 @@ async function runDelivery(
       if (
         event.eventType.startsWith('step_') &&
         event.correlationId !== undefined &&
-        ranInline.has(event.correlationId) &&
-        !retriedInBackground.has(event.correlationId)
+        isSelfWrittenStep(event.correlationId, event)
       ) {
         return true;
       }
@@ -2009,22 +2030,27 @@ async function runDelivery(
     function checkRunAheadHazard(event: Event, source: string): void {
       if (speculationsBySlot.size === 0) return;
       // Every step this delivery runs inline writes its own
-      // events; the hooks are those any boundary still in
-      // flight was sensitive to.
+      // events, until a retry moves it to its own message; the
+      // hooks are those any boundary still in flight was
+      // sensitive to.
       const sensitiveHookIds = new Set<string>();
-      const selfStepIds = new Set<string>([...ranInline, ...inFlight.keys()]);
+      const selfStepIds = new Set<string>(selfWrittenStepIds());
       for (const context of runAheadContexts) {
         for (const id of context.sensitiveHookIds) {
           sensitiveHookIds.add(id);
         }
         for (const id of context.selfStepIds) {
-          selfStepIds.add(id);
+          if (!retriedInBackground.has(id)) selfStepIds.add(id);
         }
       }
       const reason = runAheadHazard(
         event,
         { sensitiveHookIds, selfStepIds },
-        isOwnOrKnownEvent
+        (below) =>
+          isOwnOrKnownEvent(below) ||
+          (below.eventType.startsWith('step_') &&
+            below.correlationId !== undefined &&
+            isSelfWrittenStep(below.correlationId, below))
       );
       if (!reason) return;
       runAheadStats.hazardStops++;
@@ -2894,9 +2920,9 @@ async function runDelivery(
           ? [item.correlationId]
           : []
       );
+      // `ranInline` holds every step in flight here.
       const selfStepIds = new Set<string>([
-        ...ranInline,
-        ...inFlight.keys(),
+        ...selfWrittenStepIds(),
         ...gateRunnable.map((step) => step.correlationId),
         ...gateNewSteps.slice(0, gateSlots),
       ]);
@@ -3515,6 +3541,16 @@ async function runDelivery(
               executeStep({
                 world,
                 createEvent: async (data, params) => {
+                  if (data.eventType === 'step_retrying') {
+                    // From here on the step's own message runs
+                    // it: no boundary may count it as this
+                    // delivery's, even before the outcome is
+                    // folded in.
+                    retriedInBackground.set(
+                      step.correlationId,
+                      data.eventData.attempt ?? step.attempt
+                    );
+                  }
                   if (
                     data.eventType === 'step_completed' ||
                     data.eventType === 'step_failed' ||
@@ -3704,7 +3740,9 @@ async function runDelivery(
         if (result.type === 'retry') {
           // The retry moves to the background: this is the
           // step's first message, carrying the next attempt.
-          retriedInBackground.add(step.correlationId);
+          if (!retriedInBackground.has(step.correlationId)) {
+            retriedInBackground.set(step.correlationId, step.attempt);
+          }
           await enqueueStepMessages(
             run,
             [
