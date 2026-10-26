@@ -6,7 +6,9 @@ import {
   type CreateEventParams,
   EventSchema,
   mintedSpecVersion,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   slotToEventId,
 } from '@workflow/world';
@@ -16,6 +18,7 @@ import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
+  executorSpecVersionFor,
   getWorkflowRunEvents,
   splitEventDataForV4,
 } from './events.js';
@@ -457,9 +460,13 @@ describe('createWorkflowRunEvent with v1Compat', () => {
  * lower to this value.
  */
 describe('createWorkflowRunEvent executorSpecVersion', () => {
-  async function postRunStartedAndCaptureMeta(
-    extraConfig: { mintedSpecVersion?: number } = {}
-  ): Promise<Record<string, unknown> | undefined> {
+  async function postRunStartedAndCaptureMeta({
+    specVersion = SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+    ...extraConfig
+  }: {
+    mintedSpecVersion?: number;
+    specVersion?: number;
+  } = {}): Promise<Record<string, unknown> | undefined> {
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
     agent
@@ -488,7 +495,7 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
       'wrun_1',
       {
         eventType: 'run_started',
-        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        specVersion,
       } as AnyEventRequest,
       undefined,
       { token: 'test-token', dispatcher: agent, ...extraConfig }
@@ -562,10 +569,40 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it("sends the version this SDK mints next to the caller's stamp", async () => {
+  it("sends the spec 8 orchestrator's version next to the caller's stamp", async () => {
+    // A run below spec 9 is driven by the spec 8 orchestrator, so its
+    // run_started never attests more than spec 8, whatever the World mints.
     const meta = await postRunStartedAndCaptureMeta();
     expect(meta?.specVersion).toBe(SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT);
-    expect(meta?.executorSpecVersion).toBe(mintedSpecVersion());
+    expect(meta?.executorSpecVersion).toBe(
+      Math.min(mintedSpecVersion(), SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM)
+    );
+  });
+
+  it('attests the minted version on a single-orchestrator run_started', async () => {
+    const meta = await postRunStartedAndCaptureMeta({
+      mintedSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    expect(meta?.executorSpecVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+  });
+
+  it('never attests the single-orchestrator version for a spec 8 run', () => {
+    expect(
+      executorSpecVersionFor(
+        SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      )
+    ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    expect(
+      executorSpecVersionFor(undefined, SPEC_VERSION_SINGLE_ORCHESTRATOR)
+    ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    expect(
+      executorSpecVersionFor(
+        SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      )
+    ).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
   });
 
   it('attests the version the World declared at creation, not a later env read', async () => {

@@ -57,6 +57,8 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -866,7 +868,10 @@ async function createWorkflowRunEventInner(
     specVersion: data.specVersion ?? 2,
     ...(data.eventType === 'run_started'
       ? {
-          executorSpecVersion: config?.mintedSpecVersion ?? mintedSpecVersion(),
+          executorSpecVersion: executorSpecVersionFor(
+            data.specVersion,
+            config?.mintedSpecVersion ?? mintedSpecVersion()
+          ),
         }
       : {}),
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
@@ -1049,4 +1054,27 @@ function reconstructRunFromReplayEvents(events: Event[]) {
       updatedAt,
     },
   };
+}
+
+/**
+ * The spec version a `run_started` attests for its executor: the newest
+ * version the orchestrator writing it speaks, capped by what this World
+ * mints.
+ *
+ * The runtime picks the orchestrator from the run's version, and
+ * `run_started` carries that version: a run below
+ * `SPEC_VERSION_SINGLE_ORCHESTRATOR` is driven by the spec 8 orchestrator,
+ * which speaks up to `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`. Attesting the
+ * World's minted version there would let the backend raise a freshly
+ * created spec 8 run across the single-orchestrator version while the spec 8
+ * orchestrator keeps driving it. Raises across capability-only versions
+ * (for example 5 to 8) still happen as before.
+ */
+export function executorSpecVersionFor(
+  runStartedSpecVersion: number | undefined,
+  worldSpecVersion: number
+): number {
+  return (runStartedSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ? worldSpecVersion
+    : Math.min(worldSpecVersion, SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
 }
