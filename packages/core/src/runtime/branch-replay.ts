@@ -50,24 +50,16 @@ export function suspensionHasNewWork(
 }
 
 /**
- * Steps that have executable work in progress: a `step_created` not identified
- * by the current replay as drain-only, or any `step_started`, without a
- * terminal step event. A start is authoritative even when the replay also
- * reports the id as an un-awaited terminal-drain item.
+ * Steps that have executable work in progress: a `step_created` or
+ * `step_started` without a terminal step event.
  */
 export function pendingStepIdsIn(
-  events: readonly Event[],
-  terminalDrainStepIds: ReadonlySet<string> = new Set()
+  events: readonly Event[]
 ): Set<string | undefined> {
   const created = new Set<string | undefined>();
   const settled = new Set<string | undefined>();
   for (const e of events) {
-    if (
-      (e.eventType === 'step_created' &&
-        (e.correlationId === undefined ||
-          !terminalDrainStepIds.has(e.correlationId))) ||
-      e.eventType === 'step_started'
-    ) {
+    if (e.eventType === 'step_created' || e.eventType === 'step_started') {
       created.add(e.correlationId);
     } else if (
       e.eventType === 'step_completed' ||
@@ -81,115 +73,6 @@ export function pendingStepIdsIn(
     if (!settled.has(id)) pending.add(id);
   }
   return pending;
-}
-
-interface BranchReplayEvidenceState {
-  pendingSteps: Set<string | undefined>;
-  candidatePeers: Set<string | undefined>;
-  retryingBranches: Set<string | undefined>;
-  currentEpisodeHasEvidence: boolean;
-}
-
-function recordBranchWorkCreation(
-  state: BranchReplayEvidenceState,
-  event: Event
-): void {
-  // Check before adding this step: the evidence must be an older peer that was
-  // already executable when this branch created new work.
-  if (state.candidatePeers.size > 0) {
-    state.currentEpisodeHasEvidence = true;
-  }
-  if (event.eventType === 'step_created') {
-    state.pendingSteps.add(event.correlationId);
-  }
-}
-
-function recordRetryStart(
-  state: BranchReplayEvidenceState,
-  stepId: string | undefined
-): void {
-  if (state.retryingBranches.has(stepId) && state.candidatePeers.size > 0) {
-    state.currentEpisodeHasEvidence = true;
-  }
-  state.pendingSteps.add(stepId);
-  state.retryingBranches.delete(stepId);
-}
-
-function recordRetryingBranch(
-  state: BranchReplayEvidenceState,
-  stepId: string | undefined
-): void {
-  let hasPeer = false;
-  for (const pendingStepId of state.pendingSteps) {
-    if (pendingStepId === stepId) continue;
-    state.candidatePeers.add(pendingStepId);
-    hasPeer = true;
-  }
-  if (hasPeer) state.retryingBranches.add(stepId);
-}
-
-function recordSettledBranch(
-  state: BranchReplayEvidenceState,
-  stepId: string | undefined
-): void {
-  state.pendingSteps.delete(stepId);
-  state.candidatePeers.delete(stepId);
-  state.retryingBranches.delete(stepId);
-  if (state.pendingSteps.size === 0) {
-    state.candidatePeers.clear();
-    state.retryingBranches.clear();
-    state.currentEpisodeHasEvidence = false;
-    return;
-  }
-  for (const pendingStepId of state.pendingSteps) {
-    state.candidatePeers.add(pendingStepId);
-  }
-}
-
-/**
- * Whether the durable log proves that a branch advanced while a sibling step
- * was still executable.
- *
- * Message flags cover the invocation that performs an advance-only replay.
- * Later hook, wait, and wake replays carry no such flag, so they need a durable
- * signal before applying the stricter terminal guard. The signal is scoped to
- * one pending-step episode and resets when the pending set drains, so a later
- * `Promise.race([step(), sleep()])` retains ordinary behavior when its timer
- * wins. Within an episode, the signal is new branch work created after a step
- * settled (or began a retry) while at least one peer remained pending.
- */
-export function hasAdvanceOnlyBranchReplayEvidence(
-  events: readonly Event[]
-): boolean {
-  const state: BranchReplayEvidenceState = {
-    pendingSteps: new Set(),
-    candidatePeers: new Set(),
-    retryingBranches: new Set(),
-    currentEpisodeHasEvidence: false,
-  };
-
-  for (const event of events) {
-    const stepId = event.correlationId;
-    switch (event.eventType) {
-      case 'step_created':
-      case 'hook_created':
-      case 'wait_created':
-        recordBranchWorkCreation(state, event);
-        break;
-      case 'step_started':
-        recordRetryStart(state, stepId);
-        break;
-      case 'step_retrying':
-        recordRetryingBranch(state, stepId);
-        break;
-      case 'step_completed':
-      case 'step_failed':
-        recordSettledBranch(state, stepId);
-        break;
-    }
-  }
-
-  return state.currentEpisodeHasEvidence;
 }
 
 export interface PendingStepReplayAnalysis {

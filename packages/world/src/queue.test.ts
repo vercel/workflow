@@ -215,21 +215,6 @@ describe('QueuePayloadSchema', () => {
     ).toEqual({ runId: 'wrun_01ABC', advanceOnly: undefined });
   });
 
-  it('preserves a valid terminal backstop marker and ignores a malformed one', () => {
-    expect(
-      WorkflowInvokePayloadSchema.parse({
-        runId: 'wrun_01ABC',
-        terminalBackstop: true,
-      })
-    ).toMatchObject({ runId: 'wrun_01ABC', terminalBackstop: true });
-    expect(
-      WorkflowInvokePayloadSchema.parse({
-        runId: 'wrun_01ABC',
-        terminalBackstop: 'invalid',
-      })
-    ).toEqual({ runId: 'wrun_01ABC', terminalBackstop: undefined });
-  });
-
   // Resilient step dispatch: a step message may carry `stepInput` with the
   // serialized (binary) step input, which the consumer re-ensures the
   // step_created event from. The bytes must survive parsing untouched.

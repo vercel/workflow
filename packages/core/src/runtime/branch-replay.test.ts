@@ -11,7 +11,6 @@ import {
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
   analyzePendingStepsForReplay,
-  hasAdvanceOnlyBranchReplayEvidence,
   pendingStepIdsIn,
   runRowFromCreation,
   settlesBranch,
@@ -41,92 +40,6 @@ describe('advanceOnlyReplayIdempotencyKey', () => {
     expect(advanceOnlyReplayIdempotencyKey('run-a', 'step-a')).not.toBe(
       advanceOnlyReplayIdempotencyKey('run-b', 'step-a')
     );
-  });
-});
-
-describe('hasAdvanceOnlyBranchReplayEvidence', () => {
-  it('does not treat a timer winning beside a step as a branch replay', () => {
-    expect(
-      hasAdvanceOnlyBranchReplayEvidence([
-        event('wait_created', 'wait'),
-        event('step_created', 'slow'),
-        event('step_started', 'slow'),
-        event('wait_completed', 'wait'),
-      ])
-    ).toBe(false);
-  });
-
-  it('does not treat a fire-and-forget step alone as a branch replay', () => {
-    expect(
-      hasAdvanceOnlyBranchReplayEvidence([
-        event('step_created', 'detached'),
-        event('step_started', 'detached'),
-      ])
-    ).toBe(false);
-  });
-
-  it.each([
-    'step_created',
-    'hook_created',
-    'wait_created',
-  ] as const)('recognizes %s after a branch settles beside a pending peer', (createdEventType) => {
-    expect(
-      hasAdvanceOnlyBranchReplayEvidence([
-        event('step_created', 'fast'),
-        event('step_started', 'fast'),
-        event('step_created', 'slow'),
-        event('step_started', 'slow'),
-        event('step_completed', 'fast'),
-        event(createdEventType, 'downstream'),
-      ])
-    ).toBe(true);
-  });
-
-  it('requires the peer to remain pending until downstream work is created', () => {
-    expect(
-      hasAdvanceOnlyBranchReplayEvidence([
-        event('step_created', 'fast'),
-        event('step_started', 'fast'),
-        event('step_created', 'slow'),
-        event('step_started', 'slow'),
-        event('step_completed', 'fast'),
-        event('step_completed', 'slow'),
-        event('step_created', 'later'),
-      ])
-    ).toBe(false);
-  });
-
-  it('resets after an advancing episode drains before a later timeout race', () => {
-    expect(
-      hasAdvanceOnlyBranchReplayEvidence([
-        event('step_created', 'quick'),
-        event('step_started', 'quick'),
-        event('step_created', 'slow-episode'),
-        event('step_started', 'slow-episode'),
-        event('step_completed', 'quick'),
-        event('step_created', 'quick-2'),
-        event('step_started', 'quick-2'),
-        event('step_completed', 'quick-2'),
-        event('step_completed', 'slow-episode'),
-        event('wait_created', 'timeout'),
-        event('step_created', 'slow-timeout'),
-        event('step_started', 'slow-timeout'),
-        event('wait_completed', 'timeout'),
-      ])
-    ).toBe(false);
-  });
-
-  it('recognizes an early retry starting while its peer remains pending', () => {
-    expect(
-      hasAdvanceOnlyBranchReplayEvidence([
-        event('step_created', 'retry'),
-        event('step_started', 'retry'),
-        event('step_created', 'slow'),
-        event('step_started', 'slow'),
-        event('step_retrying', 'retry'),
-        event('step_started', 'retry'),
-      ])
-    ).toBe(true);
   });
 });
 
@@ -605,17 +518,5 @@ describe('pendingStepIdsIn', () => {
         event('step_completed', 'step_a'),
       ]).size
     ).toBe(0);
-  });
-
-  it('ignores replay-derived drain-only creations but counts them once started', () => {
-    const created = event('step_created', 'detached');
-    const started = event('step_started', 'detached');
-    const terminalDrainStepIds = new Set(['detached']);
-    expect(pendingStepIdsIn([created], terminalDrainStepIds)).toEqual(
-      new Set()
-    );
-    expect(pendingStepIdsIn([created, started], terminalDrainStepIds)).toEqual(
-      new Set(['detached'])
-    );
   });
 });

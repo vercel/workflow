@@ -509,11 +509,6 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * value must read as "not advance-only" rather than fail the parse.
      */
     advanceOnly: z.literal(true).optional().catch(undefined),
-    /**
-     * Marks the delayed, per-run safety probe published after an advance-only
-     * terminal deferral. It does not poll or re-arm itself while work is live.
-     */
-    terminalBackstop: z.literal(true).optional().catch(undefined),
   })
 );
 

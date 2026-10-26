@@ -55,7 +55,6 @@ import {
   advanceOnlyLeavesStep,
   advanceOnlyReplayIdempotencyKey,
   analyzePendingStepsForReplay,
-  hasAdvanceOnlyBranchReplayEvidence,
   pendingStepIdsIn,
   runRowFromCreation,
   settlesBranch,
@@ -64,7 +63,6 @@ import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
   getAdvanceOnlyReplayMaxPending,
-  getInlineOwnershipLeaseSeconds,
   getMaxEventsOverride,
   getMaxQueueDeliveries,
   getOpenWaitClockSkewMs,
@@ -254,10 +252,6 @@ const ADVANCE_ONLY_HANDOFF_COALESCE_MS = 10;
 // that burst enough room to settle so leaf-only fan-outs do not publish idle
 // hand-offs, while chained branches still advance well before slow siblings.
 const ADVANCE_ONLY_WIDE_HANDOFF_COALESCE_MS = 50;
-
-function terminalBackstopIdempotencyKey(runId: string): string {
-  return `advance-only:terminal-backstop:${runId}`;
-}
 
 /**
  * Apply the optional client-side event-limit override.
@@ -870,7 +864,6 @@ export function workflowEntrypoint(
           hookResumeTiming,
           waitContinuation,
           advanceOnly: incomingAdvanceOnly,
-          terminalBackstop: incomingTerminalBackstop,
         } = WorkflowInvokePayloadSchema.parse(message_);
 
         // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
@@ -1564,80 +1557,6 @@ export function workflowEntrypoint(
                     return undefined;
                   };
 
-                  /**
-                   * Keep one delayed safety probe independent of another step
-                   * handler's replay eligibility. Pending work normally finishes
-                   * the run through its own live executor or durable queue
-                   * delivery. Spacing this fallback by the inline ownership
-                   * lease avoids polling a healthy long-running or retrying step.
-                   * An early probe deliberately does not re-arm itself: its
-                   * delivery is only a crash-recovery safety net, not a second
-                   * progress driver.
-                   */
-                  const deferTerminalForAdvanceOnlyWork = async (
-                    publishSafetyProbe: boolean
-                  ): Promise<{ timeoutSeconds: number } | undefined> => {
-                    if (
-                      !publishSafetyProbe ||
-                      incomingTerminalBackstop === true
-                    ) {
-                      return undefined;
-                    }
-                    await queueMessage(
-                      world,
-                      getWorkflowQueueName(workflowName, namespace),
-                      {
-                        ...(await replayMessage()),
-                        advanceOnly: true,
-                        terminalBackstop: true,
-                      },
-                      {
-                        delaySeconds: getInlineOwnershipLeaseSeconds(),
-                        idempotencyKey: terminalBackstopIdempotencyKey(runId),
-                      }
-                    );
-                    return undefined;
-                  };
-
-                  const terminalExecutableStepIds = (
-                    events: readonly Event[]
-                  ): Set<string | undefined> => {
-                    const pending = pendingStepIdsIn(
-                      events,
-                      terminalDrainStepIds
-                    );
-                    const latestByStepId = new Map<string | undefined, Event>();
-                    for (const event of events) {
-                      if (
-                        pending.has(event.correlationId) &&
-                        (event.eventType === 'step_created' ||
-                          event.eventType === 'step_started' ||
-                          event.eventType === 'step_retrying' ||
-                          event.eventType === 'step_completed' ||
-                          event.eventType === 'step_failed')
-                      ) {
-                        latestByStepId.set(event.correlationId, event);
-                      }
-                    }
-                    for (const stepId of pending) {
-                      if (stepId === undefined) continue;
-                      const latest = latestByStepId.get(stepId);
-                      // A pre-claimed inline step can remain started when this
-                      // same delivery reaches a terminal hook conflict before
-                      // launching its body. No peer owns that row and this
-                      // invocation has no executor left to settle it.
-                      if (
-                        latest?.eventType === 'step_started' &&
-                        latest.eventData?.ownerMessageId ===
-                          metadata.messageId &&
-                        !inFlightOwnedSteps.has(stepId)
-                      ) {
-                        pending.delete(stepId);
-                      }
-                    }
-                    return pending;
-                  };
-
                   // Precondition (412) recovery: how many times this invocation
                   // has thrown away its replay and started over in-process.
                   let preconditionRestarts = 0;
@@ -1935,34 +1854,14 @@ export function workflowEntrypoint(
                   });
                   const advanceOnlyDelivery: AdvanceOnlyDelivery = {
                     messageId: metadata.messageId,
-                    recoverNeverStarted:
-                      metadata.attempt > 1 && incomingTerminalBackstop !== true,
+                    recoverNeverStarted: metadata.attempt > 1,
                   };
-                  let terminalDrainStepIds: ReadonlySet<string> = new Set();
                   // Set once this invocation has handed a settled inline
                   // branch to another invocation. From then on a peer may
                   // replay this run concurrently, which ends the
                   // single-handler guarantee turbo's forced optimistic start
                   // rests on, so later batches here claim before they run.
                   let concurrentBranchReplayPossible = false;
-                  // A possible peer suppresses optimistic starts even when
-                  // this invocation did not publish it. Only a replay this
-                  // invocation actually sent can own its safety probe.
-                  let sentReplayOwnsTerminalSafetyProbe = false;
-                  // Exactly the advance-only replay that reaches terminal owns
-                  // the one safety probe. The original inline batch still uses
-                  // the guard after publishing its hand-off, but publishing a
-                  // second probe there would duplicate the chain on Worlds
-                  // whose queue keys are released after delivery.
-                  let ownsTerminalSafetyProbe = advanceOnly;
-                  const advanceOnlyTerminalGuardApplies = (
-                    events: readonly Event[]
-                  ): boolean =>
-                    isAdvanceOnlyReplayEnabled() &&
-                    (advanceOnly ||
-                      sentReplayOwnsTerminalSafetyProbe ||
-                      hasAdvanceOnlyBranchReplayEvidence(events));
-
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
                   // from the batch are done. If so, replay inline (saving a queue
@@ -2228,17 +2127,15 @@ export function workflowEntrypoint(
                         const withinAdvanceOnlyBound =
                           advanceOnlyReplaySupported &&
                           pendingSiblingCount <= maxPending;
-                        // The full-log terminal probe is needed only to bypass
-                        // the bound, or on a redelivery where it prevents
-                        // drain-only creations from being recovered as lost
-                        // dispatches. First deliveries already leave every
-                        // never-started sibling alone.
-                        const terminalProbe =
+                        // On redelivery, creations written by terminal drain
+                        // must not be recovered as lost dispatches. First
+                        // deliveries already leave every never-started sibling
+                        // alone.
+                        const drainOnlyReplay =
                           advanceOnlyReplaySupported &&
                           pendingStepIds.size > 0 &&
                           pendingSiblingCount <= maxPending &&
-                          (!withinAdvanceOnlyBound ||
-                            advanceOnlyDelivery.recoverNeverStarted) &&
+                          advanceOnlyDelivery.recoverNeverStarted &&
                           pendingAnalysis?.pendingCreationsFollowFirstStart ===
                             true;
 
@@ -2265,7 +2162,7 @@ export function workflowEntrypoint(
                             );
                           } else if (
                             advanceOnlyReplaySupported &&
-                            (withinAdvanceOnlyBound || terminalProbe)
+                            (withinAdvanceOnlyBound || drainOnlyReplay)
                           ) {
                             // Other steps still in progress. Replay anyway, so
                             // the branch this step belongs to can create its
@@ -2283,8 +2180,7 @@ export function workflowEntrypoint(
                               }
                             );
                             advanceOnly = true;
-                            ownsTerminalSafetyProbe = true;
-                            if (terminalProbe) {
+                            if (drainOnlyReplay) {
                               // These creation-only rows appeared after this
                               // attempt began. Probe their replay state, but
                               // never claim them as redelivery recovery: their
@@ -3693,7 +3589,6 @@ export function workflowEntrypoint(
                         workflowRun,
                         eventLog.events
                       );
-                      terminalDrainStepIds = new Set();
                       let workflowResult: WorkflowResumeResult = retainedSession
                         ? await resumeWorkflow(retainedSession, eventLog.events)
                         : { type: 'replay' };
@@ -3734,9 +3629,6 @@ export function workflowEntrypoint(
                           // events before the terminal `awaitRunReady()` below.
                           runReadyBarrier,
                           worldCapabilities: world.capabilities,
-                          onTerminalDrain: (stepIds) => {
-                            terminalDrainStepIds = stepIds;
-                          },
                         });
                       }
                       await payloadPrewarm;
@@ -3757,37 +3649,6 @@ export function workflowEntrypoint(
                         executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayRecoveryReporter.activate();
-
-                      // Apply the stricter terminal guard only after this run
-                      // actually used branch replay. The current invocation's
-                      // flag and successful publishes cover the immediate
-                      // paths. Ordinary hook, wait, wake, and queued replays
-                      // carry no marker, so durable event ordering supplies
-                      // the later evidence. A timer merely winning beside a
-                      // step supplies none and keeps origin/main semantics.
-                      const completionPendingEvents = eventLog.events;
-                      if (
-                        advanceOnlyTerminalGuardApplies(
-                          completionPendingEvents
-                        ) &&
-                        terminalExecutableStepIds(completionPendingEvents)
-                          .size > 0
-                      ) {
-                        runtimeLogger.debug(
-                          'Workflow reached completion with advance-only work still pending; returning',
-                          {
-                            workflowRunId: runId,
-                            loopIteration,
-                          }
-                        );
-                        span?.setAttributes({
-                          'workflow.advance_only.terminal_exit': true,
-                        });
-                        return await deferTerminalForAdvanceOnlyWork(
-                          ownsTerminalSafetyProbe ||
-                            !sentReplayOwnsTerminalSafetyProbe
-                        );
-                      }
 
                       // Workflow completed. Do NOT reload-and-retry the create
                       // in place: `result` was computed by this replay, so a
@@ -5621,7 +5482,6 @@ export function workflowEntrypoint(
                                     // downstream work while siblings still run
                                     // here, just like an explicit hand-off.
                                     concurrentBranchReplayPossible = true;
-                                    sentReplayOwnsTerminalSafetyProbe = true;
                                     return true;
                                   } catch {
                                     return false;
@@ -5738,7 +5598,6 @@ export function workflowEntrypoint(
                                     ),
                                 }
                               );
-                              sentReplayOwnsTerminalSafetyProbe = true;
                               span?.setAttributes({
                                 'workflow.advance_only.handoff_sent': true,
                               });
@@ -6306,36 +6165,6 @@ export function workflowEntrypoint(
                         let failureKey: PayloadKey | undefined;
                         let dehydratedError: Uint8Array;
                         try {
-                          const failurePendingEvents =
-                            isAdvanceOnlyReplayEnabled() &&
-                            errorCode !== RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
-                              ? eventLog.type === 'loadAll'
-                                ? (await loadWorkflowRunEvents(runId)).events
-                                : eventLog.events
-                              : undefined;
-                          if (
-                            failurePendingEvents &&
-                            advanceOnlyTerminalGuardApplies(
-                              failurePendingEvents
-                            ) &&
-                            terminalExecutableStepIds(failurePendingEvents)
-                              .size > 0
-                          ) {
-                            runtimeLogger.debug(
-                              'Workflow reached failure with advance-only work still pending; returning',
-                              {
-                                workflowRunId: runId,
-                                loopIteration,
-                              }
-                            );
-                            span?.setAttributes({
-                              'workflow.advance_only.terminal_exit': true,
-                            });
-                            return await deferTerminalForAdvanceOnlyWork(
-                              ownsTerminalSafetyProbe ||
-                                !sentReplayOwnsTerminalSafetyProbe
-                            );
-                          }
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
                           await awaitRunReady();

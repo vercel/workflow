@@ -138,6 +138,17 @@ export async function timeoutRaceAfterDrainedBranchEpisode() {
   ]);
 }
 
+export async function timeoutAroundParallelBranchReplay() {
+  'use workflow';
+  return await Promise.race([
+    Promise.all([
+      timeoutProbeStep(100).then(() => timeoutProbeStep(2_500)),
+      timeoutProbeStep(3_000),
+    ]),
+    sleep('1s').then(() => 'timed out'),
+  ]);
+}
+
 async function namedChain(markerPath: string, prefix: string, delayMs: number) {
   for (let index = 1; index <= 3; index++) {
     await markerStep(markerPath, `${prefix}${index}`, delayMs);

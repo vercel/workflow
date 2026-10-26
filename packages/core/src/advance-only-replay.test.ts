@@ -14,6 +14,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { RunExpiredError } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -363,7 +364,26 @@ async function setupHarness(
     };
   };
 
+  const runIsTerminal = () =>
+    events.some(
+      (event) =>
+        event.eventType === 'run_completed' ||
+        event.eventType === 'run_failed' ||
+        event.eventType === 'run_cancelled'
+    );
+
+  const rejectNewWorkAfterTerminal = (data: any): void => {
+    if (
+      runIsTerminal() &&
+      data.eventType !== 'step_completed' &&
+      data.eventType !== 'step_failed'
+    ) {
+      throw new RunExpiredError('run is already terminal');
+    }
+  };
+
   const create = vi.fn(async (_runId: string, data: any) => {
+    rejectNewWorkAfterTerminal(data);
     if (data.eventType === 'run_started') {
       await options.runStartedGate?.promise;
       if (!events.some((event) => event.eventType === 'run_started')) {
@@ -775,21 +795,19 @@ describe('background path: a queued step settling beside pending siblings', () =
         (label) => !h.stepHas(label, 'step_started')
       )
     ).toBe(true);
-    // The queued winner is itself an advance-only replay. It must not seal the
-    // run while the inline loser still has a live executor.
-    expect(h.events.map((event) => event.eventType)).not.toContain(
-      'run_completed'
-    );
-    expect(
-      h.queued.filter((message) => message.terminalBackstop === true)
-    ).toHaveLength(1);
+    // Terminal drain records the un-awaited creations, but does not schedule
+    // their bodies. The run completes immediately, matching main.
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
 
     slow.open();
     await flow;
-    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+    const types = h.events.map((event) => event.eventType);
+    expect(types.indexOf('run_completed')).toBeLessThan(
+      types.lastIndexOf('step_completed')
+    );
   });
 
-  it('guards run_failed on a queued-step advance-only replay', async () => {
+  it('records run_failed before a queued race loser settles', async () => {
     process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
     const runId = newRunId();
     const slow = gate();
@@ -801,16 +819,14 @@ describe('background path: a queued step settling beside pending siblings', () =
     });
 
     await h.deliver(h.stepMessageFor('fast1'), 'msg_fast1');
-    expect(h.events.map((event) => event.eventType)).not.toContain(
-      'run_failed'
-    );
-    expect(
-      h.queued.filter((message) => message.terminalBackstop === true)
-    ).toHaveLength(1);
+    expect(h.events.map((event) => event.eventType)).toContain('run_failed');
 
     slow.open();
     await flow;
-    expect(h.events.map((event) => event.eventType)).toContain('run_failed');
+    const types = h.events.map((event) => event.eventType);
+    expect(types.indexOf('run_failed')).toBeLessThan(
+      types.lastIndexOf('step_completed')
+    );
   });
 
   it('dispatches overflow steps created before an in-process attribute detour', async () => {
@@ -875,9 +891,6 @@ describe('inline path: an inline step settling while its batch is still running'
   }
   const handOffs = (h: Harness) =>
     h.queued.filter((m) => m.advanceOnly === true);
-  const terminalBackstops = (h: Harness) =>
-    h.queued.filter((m) => m.terminalBackstop === true);
-
   it.each([
     ['disabled', '0', 0, 1],
     ['enabled', '1', 1, 2],
@@ -945,6 +958,26 @@ describe('inline path: an inline step settling while its batch is still running'
     ).toBe(true);
     // The step that settled last hands nothing off: the loop replays next.
     expect(handOffs(h)).toHaveLength(1);
+  });
+
+  it('ignores an advance-only hand-off delivered after the run completes', async () => {
+    const { h, slow, flow } = await startInlineBatch(newRunId());
+    await waitFor(() => {
+      expect(handOffs(h)).toHaveLength(1);
+    });
+    const handOff = handOffs(h)[0];
+
+    slow.open();
+    await flow;
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+    const eventCount = h.events.length;
+    const starts = new Map(bodyStarts);
+
+    await expect(
+      h.deliver(handOff, 'msg_late_handoff')
+    ).resolves.toBeUndefined();
+    expect(h.events).toHaveLength(eventCount);
+    expect(bodyStarts).toEqual(starts);
   });
 
   it('hands off only once every claim in the batch has settled', async () => {
@@ -1088,7 +1121,7 @@ describe('inline path: an inline step settling while its batch is still running'
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
   });
 
-  it('does not let the ordinary batch replay seal the run while handed-off detached work is running', async () => {
+  it('records handed-off detached work after the run completes', async () => {
     const runId = newRunId();
     const slow = gate();
     const detached = gate();
@@ -1107,91 +1140,14 @@ describe('inline path: an inline step settling while its batch is still running'
 
     slow.open();
     await flow;
-    expect(h.events.map((event) => event.eventType)).not.toContain(
-      'run_completed'
-    );
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
 
     detached.open();
     await handedOff;
-    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
-  });
-
-  it('schedules one lease-spaced terminal safety probe while live work runs', async () => {
-    const runId = newRunId();
-    const slow = gate();
-    bodyGates.set('slow', slow);
-    const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
-    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-
-    await waitFor(() => {
-      expect(handOffs(h)).toHaveLength(1);
-    });
-    await h.deliver(handOffs(h)[0], 'msg_handoff');
-
-    expect(
-      ['detached1', 'detached2', 'detached3', 'detached4'].some((label) =>
-        h.stepHas(label, 'step_created')
-      )
-    ).toBe(true);
-    expect(
-      ['detached1', 'detached2', 'detached3', 'detached4'].every(
-        (label) => !h.stepHas(label, 'step_started')
-      )
-    ).toBe(true);
-    expect(h.events.map((event) => event.eventType)).not.toContain(
-      'run_completed'
+    const types = h.events.map((event) => event.eventType);
+    expect(types.indexOf('run_completed')).toBeLessThan(
+      types.lastIndexOf('step_completed')
     );
-    expect(terminalBackstops(h)).toHaveLength(1);
-    const backstopCall = h.queue.mock.calls.find(([, message]) =>
-      Object.is(message, terminalBackstops(h)[0])
-    );
-    expect(backstopCall?.[2]).toMatchObject({
-      delaySeconds: 860,
-      idempotencyKey: `advance-only:terminal-backstop:${runId}`,
-    });
-    await expect(
-      h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop')
-    ).resolves.toBeUndefined();
-    expect(terminalBackstops(h)).toHaveLength(1);
-
-    // The live step's own handler completes the run; the safety probe never
-    // becomes a duration-proportional polling loop.
-    slow.open();
-    await flow;
-    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
-  });
-
-  it('does not re-arm an early terminal safety probe', async () => {
-    const runId = newRunId();
-    const slow = gate();
-    bodyGates.set('slow', slow);
-    const h = await setupHarness(runId, RACE_THEN_DETACHED_TERMINAL_DRAIN);
-    const flow = h.deliver({ runId, requestedAt: new Date() }, 'msg_flow');
-
-    await waitFor(() => {
-      expect(handOffs(h)).toHaveLength(1);
-    });
-    await h.deliver(handOffs(h)[0], 'msg_handoff');
-    expect(terminalBackstops(h)).toHaveLength(1);
-
-    await expect(
-      h.deliver(terminalBackstops(h)[0], 'msg_terminal_backstop', 48)
-    ).resolves.toBeUndefined();
-    expect(h.events.map((event) => event.eventType)).not.toContain(
-      'run_failed'
-    );
-    expect(terminalBackstops(h)).toHaveLength(1);
-
-    // A transport redelivery is also a no-op while the live owner remains.
-    await h.deliver(
-      terminalBackstops(h)[0],
-      'msg_terminal_backstop_redelivery',
-      2
-    );
-    expect(terminalBackstops(h)).toHaveLength(1);
-
-    slow.open();
-    await flow;
   });
 
   it('does not recover drain-only steps when a World drops unknown creation fields', async () => {
@@ -1207,13 +1163,6 @@ describe('inline path: an inline step settling while its batch is still running'
       expect(handOffs(h)).toHaveLength(1);
     });
     await h.deliver(handOffs(h)[0], 'msg_handoff');
-    expect(terminalBackstops(h)).toHaveLength(1);
-
-    await h.deliver(
-      terminalBackstops(h)[0],
-      'msg_terminal_backstop_redelivery',
-      2
-    );
 
     const detachedLabels = ['detached1', 'detached2', 'detached3', 'detached4'];
     for (const label of detachedLabels) {
@@ -1229,7 +1178,7 @@ describe('inline path: an inline step settling while its batch is still running'
     expect(h.events.map((event) => event.eventType)).toContain('run_completed');
   });
 
-  it('applies the same live-pending guard before run_failed', async () => {
+  it('records run_failed before an inline race loser settles', async () => {
     const runId = newRunId();
     const slow = gate();
     bodyGates.set('slow', slow);
@@ -1242,16 +1191,13 @@ describe('inline path: an inline step settling while its batch is still running'
       expect(handOffs(h)).toHaveLength(1);
     });
     await h.deliver(handOffs(h)[0], 'msg_handoff');
-    expect(h.events.map((event) => event.eventType)).not.toContain(
-      'run_failed'
-    );
-    expect(terminalBackstops(h)).toHaveLength(1);
+    expect(h.events.map((event) => event.eventType)).toContain('run_failed');
 
     slow.open();
     await flow;
     const types = h.events.map((event) => event.eventType);
-    expect(types.lastIndexOf('step_completed')).toBeLessThan(
-      types.indexOf('run_failed')
+    expect(types.indexOf('run_failed')).toBeLessThan(
+      types.lastIndexOf('step_completed')
     );
   });
 
@@ -1350,6 +1296,35 @@ describe('inline path: an inline step settling while its batch is still running'
       h.queued.filter((message) => message.stepId !== undefined)
     ).toHaveLength(1);
     expect(h.deliveryCount()).toBe(1);
+  });
+
+  it('ignores an early-retry delivery redelivered after the run completes', async () => {
+    const slow = gate();
+    bodyGates.set('slow', slow);
+    bodyFailuresRemaining.set('retry', 1);
+    const h = await setupHarness(newRunId(), RETRY_BESIDE_SLOW);
+    const flow = h.deliver(
+      { runId: h.startMessage.runId, requestedAt: new Date() },
+      'msg_flow'
+    );
+    await waitFor(() => {
+      expect(h.stepMessageFor('retry')).toBeDefined();
+    });
+    const retryMessage = h.stepMessageFor('retry');
+    expect(retryMessage).toBeDefined();
+
+    slow.open();
+    await flow;
+    await h.deliver(retryMessage, 'msg_retry');
+    expect(h.events.map((event) => event.eventType)).toContain('run_completed');
+    expect(bodyStarts.get('retry')).toBe(2);
+    const eventCount = h.events.length;
+
+    await expect(
+      h.deliver(retryMessage, 'msg_retry_redelivery', 2)
+    ).resolves.toBeUndefined();
+    expect(bodyStarts.get('retry')).toBe(2);
+    expect(h.events).toHaveLength(eventCount);
   });
 
   it('scopes inline hand-off eligibility to the new fan-out episode', async () => {

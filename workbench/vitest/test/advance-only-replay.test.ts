@@ -30,6 +30,7 @@ import {
   sleepAfterRaceLoser,
   slowFirstParallelChains,
   threeParallelChains,
+  timeoutAroundParallelBranchReplay,
   timeoutRaceAfterDrainedBranchEpisode,
   timeoutRaceReturnsAtDeadline,
   twoDifferentLeafBenchmark,
@@ -83,6 +84,55 @@ function markerAt(
   return marker.at;
 }
 
+async function waitForMarker(
+  markerPath: string,
+  label: string,
+  phase: Marker['phase'],
+  timeoutMs = 10_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const markers = parseMarkers(
+      await readFile(markerPath, 'utf8').catch(() => '')
+    );
+    if (
+      markers.some((marker) => marker.label === label && marker.phase === phase)
+    ) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for marker: ${label} ${phase}`);
+}
+
+async function waitForLateStepOutcome(
+  runId: string,
+  terminalType: 'run_completed' | 'run_failed',
+  timeoutMs = 10_000
+): Promise<Array<{ eventType: string }>> {
+  const world = await getWorld();
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { data: events } = await world.events.list({ runId });
+    const terminalIndex = events.findIndex(
+      (event) => event.eventType === terminalType
+    );
+    if (
+      terminalIndex >= 0 &&
+      events.some(
+        (event, index) =>
+          index > terminalIndex &&
+          (event.eventType === 'step_completed' ||
+            event.eventType === 'step_failed')
+      )
+    ) {
+      return events;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for a step outcome after ${terminalType}`);
+}
+
 async function runWithTimeline(
   workflow:
     | typeof fastFirstParallelChains
@@ -121,9 +171,15 @@ async function runWithTimeline(
   }
 }
 
-async function runDetachedAfterAdvanceOnlyReplay(
+async function runWithLateTimeline(
+  workflow:
+    | typeof detachedAfterAdvanceOnlyReplay
+    | typeof detachedStep
+    | typeof raceLoser
+    | typeof retryRaceWithDetachedDownstream,
+  args: (number | string)[],
   tag: string,
-  observeAfterReturnMs = 0
+  observeAfterReturnMs: number
 ): Promise<{
   markers: Marker[];
   timeline: string;
@@ -131,12 +187,7 @@ async function runDetachedAfterAdvanceOnlyReplay(
   const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-detached-'));
   const markerPath = join(dir, 'timeline.log');
   try {
-    const run = await start(detachedAfterAdvanceOnlyReplay, [
-      markerPath,
-      100,
-      1_500,
-      600,
-    ]);
+    const run = await start(workflow, [markerPath, ...args] as never);
     await run.returnValue;
     const returnedAt = Date.now();
     if (observeAfterReturnMs > 0) {
@@ -280,71 +331,43 @@ async function withUnknownStepCreatedFieldsDropped<T>(fn: () => Promise<T>) {
   }
 }
 
-async function withTerminalBackstopSendCount<T>(fn: () => Promise<T>): Promise<{
-  result: T;
-  sends: number;
-}> {
-  const world = await getWorld();
-  const originalQueue = world.queue;
-  let sends = 0;
-  world.queue = (async (...args: Parameters<typeof originalQueue>) => {
-    const payload = args[1] as { terminalBackstop?: unknown };
-    if (payload.terminalBackstop === true) sends++;
-    return originalQueue.apply(world, args);
-  }) as typeof originalQueue;
-  try {
-    return { result: await fn(), sends };
-  } finally {
-    world.queue = originalQueue;
-  }
-}
-
-async function ordinaryWakeTerminalGuard(
+async function ordinaryWakeReturnsBeforeLoser(
   kind: 'hook' | 'sleep' | 'wakeUp'
 ): Promise<{
   events: Array<{ eventType: string }>;
   markers: Marker[];
   returnedAt: number;
-  safetyProbeSends: number;
 }> {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-terminal-guard-'));
   const markerPath = join(dir, 'timeline.log');
   const loserMs = 2_500;
   const token = `terminal-guard-${kind}-${Math.random().toString(36).slice(2)}`;
   try {
-    const startedAt = Date.now();
-    const { result, sends } = await withTerminalBackstopSendCount(async () => {
-      const run =
-        kind === 'hook'
-          ? await start(hookAfterRaceLoser, [markerPath, token, loserMs])
-          : kind === 'sleep'
-            ? await start(sleepAfterRaceLoser, [markerPath, loserMs])
-            : await start(wakeUpAfterRaceLoser, [markerPath, loserMs]);
-      if (kind === 'hook') {
-        await waitForHook(run, { token });
-        await resumeHook(token, { resumed: true });
-      } else if (kind === 'wakeUp') {
-        const waitId = await waitForSleep(run);
-        await getRun(run.runId).wakeUp({ correlationIds: [waitId] });
-      }
-      await expect(run.returnValue).resolves.toBe('done');
-      const returnedAt = Date.now();
-      // On a regression the run returns before the loser settles. Keep the
-      // queue wrapper installed long enough to observe its eventual replay.
-      await new Promise((resolve) =>
-        setTimeout(
-          resolve,
-          Math.max(100, startedAt + loserMs + 200 - Date.now())
-        )
-      );
-      const world = await getWorld();
-      const { data: events } = await world.events.list({ runId: run.runId });
-      return { events, returnedAt };
-    });
+    const run =
+      kind === 'hook'
+        ? await start(hookAfterRaceLoser, [markerPath, token, loserMs])
+        : kind === 'sleep'
+          ? await start(sleepAfterRaceLoser, [markerPath, loserMs])
+          : await start(wakeUpAfterRaceLoser, [markerPath, loserMs]);
+    if (kind === 'hook') {
+      await waitForHook(run, { token });
+      await resumeHook(token, { resumed: true });
+    } else if (kind === 'wakeUp') {
+      const waitId = await waitForSleep(run);
+      await getRun(run.runId).wakeUp({ correlationIds: [waitId] });
+    }
+    await expect(run.returnValue).resolves.toBe('done');
+    const returnedAt = Date.now();
+    await waitForMarker(
+      markerPath,
+      `ordinary-${kind === 'wakeUp' ? 'wake' : kind}-loser`,
+      'end'
+    );
+    const events = await waitForLateStepOutcome(run.runId, 'run_completed');
     return {
-      ...result,
+      events,
+      returnedAt,
       markers: parseMarkers(await readFile(markerPath, 'utf8')),
-      safetyProbeSends: sends,
     };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -432,24 +455,6 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         markerAt(markers, 'different-leaf-2', 'end'),
         timeline
       ).toBeGreaterThan(markerAt(markers, 'different-leaf-1', 'end'));
-    });
-
-    it('keeps terminal safety sends constant for a long race loser', async () => {
-      const { sends } = await withTerminalBackstopSendCount(() =>
-        runWithTimeline(raceLoser, [2_000, 0], 'long-race-loser')
-      );
-      expect(sends).toBe(1);
-    });
-
-    it('keeps terminal safety sends constant for a retrying race loser', async () => {
-      const { result, sends } = await withTerminalBackstopSendCount(() =>
-        terminalDrainRaceCompletes(
-          retryingRaceLoserWithDetachedTerminalDrain,
-          'retrying-race-loser'
-        )
-      );
-      expect(result.completed, result.events).toBe(true);
-      expect(sends).toBe(1);
     });
 
     it('completes concurrent batches around the coalescing window without duplicate bodies', async () => {
@@ -602,26 +607,28 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         'ordinary-wake-after-wake',
       ],
     ] as const)(
-      'guards terminal writes in an ordinary %s replay while a race loser runs',
+      'keeps main terminal timing in an ordinary %s replay while a race loser settles late',
       async (_label, kind, loserLabel, afterWakeLabel) => {
-        const { events, markers, returnedAt, safetyProbeSends } =
-          await ordinaryWakeTerminalGuard(kind);
+        const { events, markers, returnedAt } =
+          await ordinaryWakeReturnsBeforeLoser(kind);
         const timeline = formatTimeline(`ordinary-${kind}`, markers);
         expect(
           markerAt(markers, afterWakeLabel, 'start'),
           timeline
         ).toBeLessThan(markerAt(markers, loserLabel, 'end'));
+        expect(returnedAt, timeline).toBeLessThan(
+          markerAt(markers, loserLabel, 'end')
+        );
+        const eventTypes = events.map((event) => event.eventType);
         expect(
-          markerAt(markers, loserLabel, 'end'),
-          timeline
-        ).toBeLessThanOrEqual(returnedAt);
-        expect(
-          events.filter((event) => event.eventType === 'run_completed')
+          eventTypes.filter((eventType) => eventType === 'run_completed')
         ).toHaveLength(1);
         expect(
-          events.filter((event) => event.eventType === 'run_failed')
+          eventTypes.filter((eventType) => eventType === 'run_failed')
         ).toHaveLength(0);
-        expect(safetyProbeSends).toBe(1);
+        expect(eventTypes.indexOf('run_completed')).toBeLessThan(
+          eventTypes.lastIndexOf('step_completed')
+        );
       },
       15_000
     );
@@ -721,20 +728,20 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       }
     });
 
-    it('does not complete after an early retry while detached downstream work is running', async () => {
-      const { markers, timeline } = await runWithTimeline(
+    it('records late detached work after an early-retry workflow completes', async () => {
+      const { markers, timeline } = await runWithLateTimeline(
         retryRaceWithDetachedDownstream,
         ['retryable', 3_000, 200, 4_000],
-        'retry-detached-terminal-guard'
+        'retry-detached-terminal-timing',
+        4_200
       );
       expect(
         markerAt(markers, 'retry-downstream-fast', 'end'),
         timeline
       ).toBeLessThan(markerAt(markers, 'retry-race-slow', 'end'));
-      expect(
-        markerAt(markers, 'retry-downstream-slow', 'end'),
-        timeline
-      ).toBeGreaterThan(markerAt(markers, 'retry-race-slow', 'end'));
+      expect(markerAt(markers, 'workflow', 'return'), timeline).toBeLessThan(
+        markerAt(markers, 'retry-downstream-slow', 'end')
+      );
     }, 15_000);
 
     it.each([
@@ -803,14 +810,15 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
     it.each([
       ['detached step', detachedStep, 'detached'],
       ['Promise.race loser', raceLoser, 'race-loser'],
-    ] as const)('lets a %s finish before the run returns', async (tag, workflow, label) => {
-      const { markers, timeline } = await runWithTimeline(
+    ] as const)('lets a %s settle after the run returns', async (tag, workflow, label) => {
+      const { markers, timeline } = await runWithLateTimeline(
         workflow,
-        [150, 0],
-        tag
+        [500, 0],
+        tag,
+        700
       );
-      expect(markerAt(markers, label, 'end'), timeline).toBeGreaterThanOrEqual(
-        markerAt(markers, label, 'start')
+      expect(markerAt(markers, 'workflow', 'return'), timeline).toBeLessThan(
+        markerAt(markers, label, 'end')
       );
     });
 
@@ -861,6 +869,43 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       ['enabled', '1'],
       ['kill switch', '0'],
     ] as const)(
+      'returns a timeout around parallel branch replay at its deadline with advance-only replay %s',
+      async (_label, feature) => {
+        const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+        process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = feature;
+        try {
+          const run = await start(timeoutAroundParallelBranchReplay, []);
+          await waitForSleep(run, { timeout: 10_000, pollInterval: 25 });
+          const startedAt = performance.now();
+          const result = await run.returnValue;
+          const { data: events } = await (await getWorld()).events.list({
+            runId: run.runId,
+          });
+          expect(result).toBe('timed out');
+          expect(
+            performance.now() - startedAt,
+            events
+              .map(
+                (event) =>
+                  `${event.eventType}:${event.correlationId ?? ''}:${event.createdAt.toISOString()}`
+              )
+              .join('\n')
+          ).toBeLessThan(1_750);
+        } finally {
+          if (original === undefined) {
+            delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
+          } else {
+            process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = original;
+          }
+        }
+      },
+      20_000
+    );
+
+    it.each([
+      ['enabled', '1'],
+      ['kill switch', '0'],
+    ] as const)(
       'returns a timeout race after a drained branch episode with advance-only replay %s',
       async (_label, feature) => {
         const original = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
@@ -884,18 +929,20 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       20_000
     );
 
-    it('does not seal the run while a step started by an advance-only replay is running', async () => {
+    it('records a step started by an advance-only replay after the run completes', async () => {
       for (let run = 0; run < 5; run++) {
-        const { markers, timeline } = await runDetachedAfterAdvanceOnlyReplay(
-          `detached-race-${run}`
+        const { markers, timeline } = await runWithLateTimeline(
+          detachedAfterAdvanceOnlyReplay,
+          [100, 1_500, 600],
+          `detached-race-${run}`,
+          1_200
         );
         expect(markerAt(markers, 'detached-race-d', 'start'), timeline).toBe(
           markerAt(markers, 'detached-race-d', 'start')
         );
-        expect(
-          markerAt(markers, 'detached-race-d', 'end'),
-          timeline
-        ).toBeLessThanOrEqual(markerAt(markers, 'workflow', 'return'));
+        expect(markerAt(markers, 'workflow', 'return'), timeline).toBeLessThan(
+          markerAt(markers, 'detached-race-d', 'end')
+        );
       }
     }, 30_000);
 
@@ -935,14 +982,14 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
         retryingRaceLoserWithDetachedTerminalDrain,
         undefined,
         'flaky-terminal-drain',
-        'flaky-race-loser-2',
+        'flaky-race-winner',
       ],
       [
         'queued race loser',
         queuedRaceLoserWithDetachedTerminalDrain,
         '1',
         'queued-terminal-drain',
-        'queued-race-loser',
+        'queued-race-winner',
       ],
     ] as const)(
       'does not run detached terminal-drain steps when a World drops unknown creation fields (%s)',
@@ -984,14 +1031,13 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
       40_000
     );
 
-    it('records a running race loser before the workflow failure', async () => {
+    it('records a running race loser after the workflow failure', async () => {
       const dir = await mkdtemp(join(tmpdir(), 'workflow-4457-failure-race-'));
       const markerPath = join(dir, 'timeline.log');
       try {
         const run = await start(failAfterRaceLoser, [markerPath]);
         await expect(run.returnValue).rejects.toThrow('boom');
-        const world = await getWorld();
-        const { data: events } = await world.events.list({ runId: run.runId });
+        const events = await waitForLateStepOutcome(run.runId, 'run_failed');
         const completed = events
           .map((event) => event.eventType)
           .reduce<number[]>((indexes, eventType, index) => {
@@ -1002,7 +1048,7 @@ describe.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
           (event) => event.eventType === 'run_failed'
         );
         expect(completed).toHaveLength(2);
-        expect(completed[1]).toBeLessThan(runFailed);
+        expect(runFailed).toBeLessThan(completed[1]);
       } finally {
         await rm(dir, { recursive: true, force: true });
       }
