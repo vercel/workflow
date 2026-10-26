@@ -280,10 +280,10 @@ export function createStreamer(
   // Streams this instance has registered (`<runId>:<name>`), so only a
   // stream's first write touches the run's stream index.
   const registeredStreams = new Set<string>();
-  // Tail of each stream's pending writes. A reader delivers the chunk files
-  // it lists, so a chunk must not land before one with a smaller id: writes
-  // to one stream run one at a time, in the order they took their ids.
-  const streamWriteTails = new Map<string, Promise<void>>();
+  // A reader delivers the chunk files it lists, so a chunk must not land
+  // before one with a smaller id: writes to one stream run one at a time, in
+  // the order they took their ids.
+  const streamWriteLocks = new Map<string, Promise<unknown>>();
   // Serializes this instance's updates to one run's stream index. The file
   // lock in `addToRunStreams` does the same across instances and processes.
   const runStreamsLocks = new Map<string, Promise<unknown>>();
@@ -422,20 +422,6 @@ export function createStreamer(
     });
   }
 
-  /** Runs `task` after every write already queued for stream `name`. */
-  function queueStreamWrite(
-    name: string,
-    task: () => Promise<void>
-  ): Promise<void> {
-    const result = (streamWriteTails.get(name) ?? Promise.resolve()).then(task);
-    const tail = result.catch(() => {});
-    streamWriteTails.set(name, tail);
-    void tail.then(() => {
-      if (streamWriteTails.get(name) === tail) streamWriteTails.delete(name);
-    });
-    return result;
-  }
-
   // Helper to convert a chunk to a Buffer
   function toBuffer(chunk: string | Uint8Array): Buffer {
     if (typeof chunk === 'string') {
@@ -463,7 +449,7 @@ export function createStreamer(
         // when runId is a promise that multiple writes are waiting on.
         const chunkId = `chnk_${monotonicUlid()}`;
         const chunkBuffer = toBuffer(chunk);
-        await queueStreamWrite(name, async () => {
+        await withInProcessLock(streamWriteLocks, name, async () => {
           // Await runId if it's a promise to ensure proper flushing
           await registerStreamForRun(await _runId, name);
           await writeChunk(name, chunkId, chunkBuffer);
@@ -481,7 +467,7 @@ export function createStreamer(
         // This ensures that chunks maintain their order even when runId is a promise.
         const chunkIds = chunks.map(() => `chnk_${monotonicUlid()}`);
         const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
-        await queueStreamWrite(name, async () => {
+        await withInProcessLock(streamWriteLocks, name, async () => {
           await registerStreamForRun(await _runId, name);
           // One at a time: a reader listing the stream mid-group must not see
           // a later chunk before an earlier one.
@@ -494,7 +480,7 @@ export function createStreamer(
       async close(_runId: string | Promise<string>, name: string) {
         // Generate ULID synchronously BEFORE any await to preserve call order.
         const chunkId = `chnk_${monotonicUlid()}`;
-        await queueStreamWrite(name, async () => {
+        await withInProcessLock(streamWriteLocks, name, async () => {
           // Register this stream for the run (in case write wasn't called), and
           // put its name back if a writer outside this instance dropped it.
           await registerStreamForRun(await _runId, name, { verify: true });
@@ -677,8 +663,9 @@ export function createStreamer(
             /** Delivers held live chunks in id order, then a held close. */
             const finishDiskRead = () => {
               isReadingFromDisk = false;
+              // Same code-unit order as a disk read's sorted listing.
               const held = [...bufferedEventChunks].sort(([a], [b]) =>
-                a.localeCompare(b)
+                a < b ? -1 : a > b ? 1 : 0
               );
               bufferedEventChunks.clear();
               for (const [chunkId, chunkData] of held) {
@@ -821,6 +808,7 @@ export function createStreamer(
               if (isPolling || streamClosed) return;
               isPolling = true;
               isReadingFromDisk = true;
+              let readEveryListedFile = false;
               try {
                 const { files: currentFiles, extMap: currentExtMap } =
                   await listChunkFilesForStream(chunksBaseDir, name, tag);
@@ -837,6 +825,7 @@ export function createStreamer(
                   // while the file was read.
                   if (streamClosed) return;
                 }
+                readEveryListedFile = true;
               } catch (err: unknown) {
                 // Silently ignore transient filesystem errors (ENOENT, EACCES, etc.)
                 // Surface unexpected errors so bugs aren't hidden
@@ -845,7 +834,9 @@ export function createStreamer(
                 }
               } finally {
                 isPolling = false;
-                if (isReadingFromDisk && !streamClosed) finishDiskRead();
+                // A poll that failed partway keeps holding live chunks: the
+                // next poll delivers the listed files it did not reach first.
+                if (readEveryListedFile && !streamClosed) finishDiskRead();
               }
             }, 100);
           },

@@ -862,7 +862,8 @@ describe('streamer', () => {
 
       function holdWhen<A extends unknown[], R>(
         method: 'readdir' | 'readFile' | 'writeFile',
-        matches: (...args: A) => boolean
+        matches: (...args: A) => boolean,
+        { fail = false } = {}
       ) {
         const reached = gate();
         const released = gate();
@@ -875,6 +876,11 @@ describe('streamer', () => {
             armed = false;
             reached.open();
             await released.opened;
+            if (fail) {
+              throw Object.assign(new Error('Transient read failure'), {
+                code: 'EIO',
+              });
+            }
           }
           return original(...args);
         }) as never);
@@ -936,6 +942,44 @@ describe('streamer', () => {
         expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
       });
 
+      it('closes a stream behind a write still waiting for its run id', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'close-behind-write';
+        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+        let resolveRunId: (runId: string) => void = () => {};
+        const runId = new Promise<string>((resolve) => {
+          resolveRunId = resolve;
+        });
+
+        const writing = streamer.streams.write(runId, streamName, 'data\n');
+        const closing = streamer.streams.close(TEST_RUN_ID, streamName);
+        await Promise.race([closing, settle()]);
+        resolveRunId(TEST_RUN_ID);
+        await Promise.all([writing, closing]);
+
+        expect(await readAll(stream)).toEqual(['data\n']);
+      });
+
+      it('never delivers a chunk before startIndex, even as a live copy', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const streamName = 'start-index-live-copy';
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
+        const listing = holdWhen(
+          'readdir',
+          (dir: unknown) => dir === chunksDir
+        );
+
+        const stream = await streamer.streams.get(TEST_RUN_ID, streamName, 1);
+        await listing.reached;
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'c0\n');
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'c1\n');
+        listing.release();
+        await settle();
+        await streamer.streams.close(TEST_RUN_ID, streamName);
+
+        expect(await readAll(stream)).toEqual(['c1\n']);
+      });
+
       it('keeps a listed chunk whose live copy arrived during the first disk read in place', async () => {
         const { testDir, streamer } = await setupStreamer();
         // A second instance on the same directory writes like another
@@ -978,6 +1022,30 @@ describe('streamer', () => {
         await settle();
         read.release();
         await settle();
+        await streamer.streams.close(TEST_RUN_ID, streamName);
+
+        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
+      });
+
+      it('keeps holding live chunks after a poll fails partway', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const otherProcess = createStreamer(testDir);
+        const streamName = 'poll-failure-order';
+        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
+        await settle();
+        const read = holdWhen(
+          'readFile',
+          (file: unknown) => String(file).startsWith(chunksDir),
+          { fail: true }
+        );
+        await otherProcess.streams.write(TEST_RUN_ID, streamName, 'first\n');
+
+        await read.reached;
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'second\n');
+        read.release();
+        // Long enough for the next poll to read the file the failed one missed.
+        await new Promise((resolve) => setTimeout(resolve, 250));
         await streamer.streams.close(TEST_RUN_ID, streamName);
 
         expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
