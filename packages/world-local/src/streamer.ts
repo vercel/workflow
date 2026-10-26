@@ -608,7 +608,7 @@ export function createStreamer(
             }
             closeStream();
           };
-          removeListeners = closeListener;
+          removeListeners = closeStream;
 
           // Set up listeners FIRST to avoid missing events
           streamEmitter.on(`chunk:${name}` as const, chunkListener);

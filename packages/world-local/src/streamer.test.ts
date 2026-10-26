@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -940,6 +941,35 @@ describe('streamer', () => {
         await streamer.closeStream(streamName, TEST_RUN_ID);
 
         expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
+      });
+
+      it('removes listeners when cancelled during a poll', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const otherProcess = createStreamer(testDir);
+        const streamName = 'cancel-during-poll';
+        const on = vi.spyOn(EventEmitter.prototype, 'on');
+        onTestFinished(() => on.mockRestore());
+        const stream = await streamer.readFromStream(streamName);
+        await settle();
+        const emitter = on.mock.contexts[
+          on.mock.calls.findIndex(([event]) => event === `chunk:${streamName}`)
+        ];
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const read = holdWhen('readFile', (file: unknown) =>
+          String(file).startsWith(chunksDir)
+        );
+        await otherProcess.writeToStream(streamName, TEST_RUN_ID, 'first\n');
+        await read.reached;
+        await stream.cancel();
+        read.release();
+        await settle();
+        const chunkListeners = emitter.listenerCount(`chunk:${streamName}`);
+        const closeListeners = emitter.listenerCount(`close:${streamName}`);
+        // Clean up even if the cancellation left listeners behind.
+        emitter.removeAllListeners(`chunk:${streamName}`);
+        emitter.removeAllListeners(`close:${streamName}`);
+        expect(chunkListeners).toBe(0);
+        expect(closeListeners).toBe(0);
       });
 
       it('keeps holding live chunks after a poll fails partway', async () => {
