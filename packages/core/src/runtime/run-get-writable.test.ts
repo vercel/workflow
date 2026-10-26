@@ -159,9 +159,9 @@ describe('Run#getWritable', () => {
     const writer = writable.getWriter();
     await writer.write('chunk');
     writer.releaseLock();
-    await expect(Promise.all(ops)).rejects.toMatchObject({
-      cause: expect.any(WorkflowRunNotFoundError),
-    });
+    await expect(Promise.all(ops)).rejects.toBeInstanceOf(
+      WorkflowRunNotFoundError
+    );
     expect(world.streams.write).not.toHaveBeenCalled();
     expect(world.runs.get).toHaveBeenCalledTimes(1);
   });
