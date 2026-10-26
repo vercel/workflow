@@ -510,7 +510,15 @@ export function createQueue(
         headers,
       }),
       {
-        ...(jobKey ? { jobKey } : {}),
+        ...(jobKey
+          ? {
+              jobKey,
+              // A duplicate keyed publish may be an immediate replay of a
+              // delayed retry. Keep the first job's run_at so deduplication
+              // cannot erase the retry backoff.
+              jobKeyMode: 'preserve_run_at' as const,
+            }
+          : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts,
         ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),

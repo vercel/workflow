@@ -759,6 +759,7 @@ export async function start<TArgs extends unknown[], TResult>(
       }
 
       let framedByteStreams: boolean;
+      let framedAbortStreams: boolean;
       let targetCompression: CompressionMode;
       // Node.js version of the runtime that will execute this run, stamped
       // onto it so later cross-deployment writers (hook resumes) know whether
@@ -782,6 +783,7 @@ export async function start<TArgs extends unknown[], TResult>(
       let specVersionSource: SpecVersionSource;
       if (!crossDeployment) {
         framedByteStreams = true;
+        framedAbortStreams = true;
         targetCompression = true;
         targetNodeVersion = getCurrentNodeVersion();
         // Same deployment: this process is the consumer, so its own constant
@@ -791,6 +793,7 @@ export async function start<TArgs extends unknown[], TResult>(
         specVersionSource = 'same-deployment';
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
+        framedAbortStreams = false;
         targetCompression = false;
         targetNodeVersion = undefined;
         // No probe channel to the target, so we cannot attest the consumer
@@ -819,6 +822,7 @@ export async function start<TArgs extends unknown[], TResult>(
           probe?.nodeVersion
         );
         framedByteStreams = capabilities.framedByteStreams;
+        framedAbortStreams = capabilities.framedAbortStreams;
         targetCompression = getCompressionMode(capabilities);
         targetNodeVersion = probe?.nodeVersion;
         // The responder runs inside the target deployment, so its
@@ -1094,7 +1098,9 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        argumentCompression
+        argumentCompression,
+        ops,
+        framedAbortStreams
       );
 
       // Dynamic workflow code goes through the same serialization pipeline as
