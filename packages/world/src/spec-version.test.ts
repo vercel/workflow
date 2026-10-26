@@ -89,35 +89,89 @@ describe('spec version constants', () => {
       );
     });
 
-    it('ignores the removed sealed-log opt-out, and warns once that it does', () => {
-      // The single-orchestrator version requires the sealed log, so the old
-      // `WORKFLOW_SEALED_LOG=0` switch must not lower what gets minted. It
-      // used to mint an earlier version, so a deployment still setting it is
-      // told.
+    it('stamps the slot-identity version when WORKFLOW_SEALED_LOG opts out', () => {
+      for (const raw of ['0', 'false', 'FALSE']) {
+        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
+          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+        );
+      }
+      for (const raw of ['', '1', 'true']) {
+        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
+          SPEC_VERSION_CURRENT
+        );
+      }
+    });
+
+    it('stamps any supported version WORKFLOW_SPEC_VERSION names', () => {
+      for (
+        let v = SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+        v <= SPEC_VERSION_MAX_SUPPORTED;
+        v++
+      ) {
+        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: String(v) })).toBe(v);
+        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ` ${v}\n` })).toBe(v);
+      }
+      expect(
+        mintedSpecVersion({
+          WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM),
+        })
+      ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    });
+
+    it('ignores an unrecognised WORKFLOW_SPEC_VERSION, and warns once per value', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        for (const raw of ['0', 'false', '', '1']) {
-          expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
+        const unsupported = [
+          String(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY - 1),
+          String(SPEC_VERSION_MAX_SUPPORTED + 1),
+          'eight',
+          '8.5',
+          '-8',
+        ];
+        for (const raw of unsupported) {
+          expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw })).toBe(
+            SPEC_VERSION_CURRENT
+          );
+          expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw })).toBe(
             SPEC_VERSION_CURRENT
           );
         }
-        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledTimes(unsupported.length);
         expect(String(warn.mock.calls[0]?.[0])).toContain(
-          'WORKFLOW_SEALED_LOG is no longer read'
+          'Ignoring WORKFLOW_SPEC_VERSION'
+        );
+        // An ignored value falls through to the sealed-log switch.
+        expect(
+          mintedSpecVersion({
+            WORKFLOW_SPEC_VERSION: 'eight',
+            WORKFLOW_SEALED_LOG: '0',
+          })
+        ).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '' })).toBe(
+          SPEC_VERSION_CURRENT
         );
       } finally {
         warn.mockRestore();
       }
     });
 
-    it('stamps spec 8 when WORKFLOW_SPEC_VERSION=8, and ignores other values', () => {
-      expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '8' })).toBe(
-        SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
-      );
-      for (const raw of ['7', '9', '10', '', 'eight']) {
-        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw })).toBe(
-          SPEC_VERSION_CURRENT
+    it('prefers WORKFLOW_SPEC_VERSION over WORKFLOW_SEALED_LOG, and warns once', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const env = {
+          WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM),
+          WORKFLOW_SEALED_LOG: '0',
+        };
+        expect(mintedSpecVersion(env)).toBe(
+          SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
         );
+        expect(mintedSpecVersion(env)).toBe(
+          SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+        );
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toContain('both set');
+      } finally {
+        warn.mockRestore();
       }
     });
 

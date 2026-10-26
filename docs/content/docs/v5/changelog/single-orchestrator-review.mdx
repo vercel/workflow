@@ -119,7 +119,7 @@ During that week the app upgrades to a World that declares spec 9. When the slee
 
 ### Choosing the spec for new runs
 
-`mintedSpecVersion()` returns the current version (9), or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) is set. First-party Worlds call it when they are created, so the variable also works as a kill switch: setting it makes new runs spec 8 without touching runs already in flight. `WORKFLOW_SEALED_LOG` is no longer read: an app that sets `WORKFLOW_SEALED_LOG=0` now mints spec 9 runs, and the runtime warns once that the variable is ignored.
+`mintedSpecVersion()` returns the current version (9), or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) is set. First-party Worlds call it when they are created, so the variable also works as a kill switch: setting it makes new runs spec 8 without touching runs already in flight. `WORKFLOW_SEALED_LOG=0` keeps its meaning while `WORKFLOW_SPEC_VERSION` is unset: new runs are spec 6. `WORKFLOW_SPEC_VERSION` accepts 6 to 9 and warns once on any other value.
 
 ### Writers outside the orchestrator
 

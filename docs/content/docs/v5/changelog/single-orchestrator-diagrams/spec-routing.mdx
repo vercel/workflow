@@ -60,7 +60,7 @@ world-local and world-postgres serialize only spec 9 runs (`singleOrchestratorRu
 
 ## Minting new runs
 
-`mintedSpecVersion()` returns 9, or 8 when `WORKFLOW_SPEC_VERSION=8` (`packages/world/src/spec-version.ts:164`). First-party Worlds call it when they are created, so the variable works as a kill switch: new runs are spec 8, runs in flight keep their version. Any other value is ignored. `WORKFLOW_SEALED_LOG` is no longer read: when it is set, `mintedSpecVersion()` warns once and still mints spec 9 (`packages/world/src/spec-version.ts:167`).
+`mintedSpecVersion()` returns 9, or the version `WORKFLOW_SPEC_VERSION` names (6 to 9), or 6 when `WORKFLOW_SEALED_LOG=0` is set and `WORKFLOW_SPEC_VERSION` is not (`packages/world/src/spec-version.ts`). First-party Worlds call it when they are created, so `WORKFLOW_SPEC_VERSION=8` works as a kill switch: new runs are spec 8, runs in flight keep their version. An unrecognised value is ignored with a one-time warning.
 
 ## Stamps at every send site
 

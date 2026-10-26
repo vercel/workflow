@@ -127,11 +127,11 @@ export function createWorld(): World {
 
 The runtime checks the declaration against a supported range before it creates or replays anything, and refuses a World outside it, naming both the range and what the World declared. The floor is the version that introduced slot-numbered IDs, because a World below it allocates IDs the runtime cannot read positions out of. The ceiling is the highest version the runtime can read.
 
-`mintedSpecVersion()` is a function because the version a World stamps is a deployment choice: it answers with the current version (8) by default, and with the slot-identity version (6) when `WORKFLOW_SEALED_LOG=0` opts new runs out. Both are inside the accepted range. Call it inside `createWorld()` rather than caching it at module load, so one process can create Worlds in both modes.
+`mintedSpecVersion()` is a function because the version a World stamps is a deployment choice: it answers with the current version (9) by default, with the version `WORKFLOW_SPEC_VERSION` names (6 to 9), or with the slot-identity version (6) when `WORKFLOW_SEALED_LOG=0` opts new runs out and `WORKFLOW_SPEC_VERSION` is unset. Both are inside the accepted range. Call it inside `createWorld()` rather than caching it at module load, so one process can create Worlds in both modes.
 
 Its parameter defaults to `process.env`. Where `process` does not exist (a browser, a Worker without `nodejs_compat`) the bare call throws a `ReferenceError`. Pass the environment explicitly: `mintedSpecVersion(config.env ?? globalThis.process?.env ?? {})`.
 
-When an event or run arrives without a `specVersion` and the World fills one in, use the version the World declared, not `SPEC_VERSION_CURRENT`, which ignores `WORKFLOW_SEALED_LOG`.
+When an event or run arrives without a `specVersion` and the World fills one in, use the version the World declared, not `SPEC_VERSION_CURRENT`, which ignores `WORKFLOW_SPEC_VERSION` and `WORKFLOW_SEALED_LOG`.
 
 If `@workflow/world` is only a type-level or peer dependency and the World reimplements `mintedSpecVersion()` locally to avoid a runtime import, the local copy pins a number by another route and falls behind on the next bump. Report it as a finding.
 

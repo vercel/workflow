@@ -5,7 +5,7 @@
  * from @workflow/world rather than using arbitrary numbers.
  */
 
-import { warnOnce } from './env-config.js';
+import { envFlag, warnOnce } from './env-config.js';
 
 declare const SpecVersionBrand: unique symbol;
 
@@ -145,35 +145,75 @@ export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
 
 /**
- * The spec version a World should stamp on the runs it creates:
- * {@link SPEC_VERSION_CURRENT}, or {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM}
- * when `WORKFLOW_SPEC_VERSION=8`.
+ * Environment variable that selects the spec version new runs are created
+ * with; see {@link mintedSpecVersion}.
+ */
+export const SPEC_VERSION_ENV_VAR = 'WORKFLOW_SPEC_VERSION';
+
+/**
+ * Environment variable that opts new runs out of the sealed log: `0` or
+ * `false` creates runs at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}, as it
+ * did before {@link SPEC_VERSION_ENV_VAR} existed. Read only while
+ * {@link SPEC_VERSION_ENV_VAR} is unset.
  *
- * The runtime drives runs of both versions, each with its own orchestrator:
- * spec 9 runs are kept to one writer by the World's in-band fence, spec 8 runs
- * allow several orchestrator invocations to write at once and need no fence.
- * A run keeps the version it was created with, so changing the setting only
- * affects new runs. Any other value is ignored. Earlier releases read
- * `WORKFLOW_SEALED_LOG=0` here instead, which minted runs of an earlier spec
- * version. It is no longer read, so it now mints the current version; a set
- * value is warned about once per process.
+ * @deprecated Set {@link SPEC_VERSION_ENV_VAR} instead.
+ */
+export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
+
+/**
+ * The spec version a World should stamp on the runs it creates.
  *
- * A function rather than a constant so a World reads the setting where it is
+ * - `WORKFLOW_SPEC_VERSION` set to an integer from
+ *   {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to
+ *   {@link SPEC_VERSION_MAX_SUPPORTED} (surrounding whitespace ignored):
+ *   that version. Any other non-empty value is ignored, with a warning once
+ *   per process.
+ * - Otherwise `WORKFLOW_SEALED_LOG=0` (or `false`): the slot-identity
+ *   version, as on earlier releases. A deployment whose readers cannot read
+ *   sealed-log runs yet keeps working.
+ * - Otherwise {@link SPEC_VERSION_CURRENT}.
+ *
+ * When both variables are set, `WORKFLOW_SPEC_VERSION` wins and a warning is
+ * logged once.
+ *
+ * The runtime drives runs of every version in that range: spec 9 runs with
+ * the single orchestrator, kept to one writer by the World's in-band fence,
+ * and earlier runs with the spec 8 orchestrator, which needs no fence. A run
+ * keeps the version it was created with, so changing a setting only affects
+ * new runs.
+ *
+ * A function rather than a constant so a World reads the settings where it is
  * created.
  */
 export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env
 ): SpecVersion {
-  if (env.WORKFLOW_SEALED_LOG !== undefined && env.WORKFLOW_SEALED_LOG !== '') {
+  const sealedLogRaw = env[SEALED_LOG_ENV_VAR];
+  const sealedLogSet = sealedLogRaw !== undefined && sealedLogRaw !== '';
+  const requested = env[SPEC_VERSION_ENV_VAR]?.trim();
+  if (requested !== undefined && requested !== '') {
+    const version = Number(requested);
+    if (
+      /^\d+$/.test(requested) &&
+      version >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
+      version <= SPEC_VERSION_MAX_SUPPORTED
+    ) {
+      if (sealedLogSet) {
+        warnOnce(
+          `${SEALED_LOG_ENV_VAR}+${SPEC_VERSION_ENV_VAR}`,
+          `${SPEC_VERSION_ENV_VAR} and ${SEALED_LOG_ENV_VAR} are both set; new runs use ${SPEC_VERSION_ENV_VAR}=${version} and ${SEALED_LOG_ENV_VAR} is ignored.`
+        );
+      }
+      return version as SpecVersion;
+    }
     warnOnce(
-      'WORKFLOW_SEALED_LOG',
-      'WORKFLOW_SEALED_LOG is no longer read, and new runs use the current spec version whatever its value. Set WORKFLOW_SPEC_VERSION=8 to create runs of the previous spec version.'
+      `${SPEC_VERSION_ENV_VAR}=${requested}`,
+      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}.`
     );
   }
-  return env.WORKFLOW_SPEC_VERSION ===
-    String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM)
-    ? SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
-    : SPEC_VERSION_CURRENT;
+  return envFlag(SEALED_LOG_ENV_VAR, true, env)
+    ? SPEC_VERSION_CURRENT
+    : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
 }
 
 /**
