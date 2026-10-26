@@ -4397,9 +4397,12 @@ async function runDelivery(
 
 /** The spec 9 orchestrator, for the shared entrypoint. */
 export const spec9Orchestrator: Orchestrator = {
-  // A step message is exempt: it is retried in place for its whole life
-  // (each userland retry is a redelivery), so its delivery count is bounded
-  // by the step's retries and the message's retention.
+  // A step message is exempt from failing the run: it is retried in place
+  // for its whole life (each userland retry is a redelivery), so its
+  // delivery count is bounded by the step's retries and the message's
+  // retention. Past the cap, the step's own handler fails the step instead
+  // when no delivery got it started for a long while
+  // (`handleStepMessage`).
   countsTowardMaxDeliveries: (message) => message.stepId === undefined,
   async writeMaxDeliveriesFailure(world, runId, eventData, requestId) {
     // The orchestrator's own terminal write, so in-band: load the log for the

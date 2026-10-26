@@ -2,6 +2,7 @@ import { types } from 'node:util';
 import {
   FatalError,
   RetryableError,
+  RUN_ERROR_CODES,
   RunExpiredError,
   SerializationError,
   ThrottleError,
@@ -288,6 +289,83 @@ export async function failStepForExhaustedRetries(params: {
     if (RunExpiredError.is(err)) return { type: 'gone' };
     throw err;
   }
+}
+
+/**
+ * Writes `step_failed` for a step whose message was delivered past the
+ * delivery cap (`WORKFLOW_MAX_QUEUE_DELIVERIES`) without any delivery
+ * getting the step started (see `stepDeliveryStalled`), so the workflow sees
+ * a failure it can catch instead of a step that never ends. The error is a
+ * `FatalError` whose message names `MAX_DELIVERIES_EXCEEDED`.
+ */
+export async function failStepForExhaustedDeliveries(params: {
+  createEvent: StepEventWriter;
+  workflowRunId: string;
+  stepId: string;
+  stepName: string;
+  attempt: number;
+  deliveries: number;
+  maxDeliveries: number;
+  encryptionKey: PayloadKey | undefined;
+  runSpecVersion?: number;
+}): Promise<StepExecutionResult> {
+  const message = exceededMaxDeliveriesMessage(
+    params.stepName,
+    params.deliveries,
+    params.maxDeliveries
+  );
+  const fields = {
+    workflowRunId: params.workflowRunId,
+    stepName: params.stepName,
+    stepId: params.stepId,
+    deliveries: params.deliveries,
+    maxDeliveries: params.maxDeliveries,
+    errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+  };
+  stepLogger.error(
+    'Step message exceeded max deliveries without starting',
+    fields
+  );
+  try {
+    const result = await params.createEvent({
+      eventType: 'step_failed',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: params.stepId,
+      eventData: {
+        stepName: params.stepName,
+        attempt: params.attempt,
+        error: await dehydrateStepError(
+          new FatalError(message),
+          params.workflowRunId,
+          params.encryptionKey,
+          [],
+          globalThis,
+          (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+        ),
+      },
+    });
+    return { type: 'failed', result };
+  } catch (err) {
+    if (RunExpiredError.is(err)) return { type: 'gone' };
+    stepLogger.error(
+      'Failed to write step_failed for a step message past max deliveries; the queue redelivers it',
+      {
+        ...fields,
+        errorName: err instanceof Error ? err.name : 'UnknownError',
+        errorMessage: err instanceof Error ? err.message : String(err),
+      }
+    );
+    throw err;
+  }
+}
+
+/** The message of a step failed by {@link failStepForExhaustedDeliveries}. */
+export function exceededMaxDeliveriesMessage(
+  stepName: string,
+  deliveries: number,
+  maxDeliveries: number
+): string {
+  return `Step "${stepName}" failed with ${RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED}: its queue message was delivered ${deliveries} times (more than ${maxDeliveries}) without the step starting`;
 }
 
 /**

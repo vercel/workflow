@@ -124,3 +124,63 @@ export function decideStepDelivery(params: {
     ? { action: 'run', attempt, firstStartedAt }
     : { action: 'run', attempt };
 }
+
+/**
+ * How long a background step's log may show no activity before a step
+ * message past the delivery cap is taken to be stuck (see
+ * {@link stepDeliveryStalled}). Far longer than the gaps a healthy step
+ * leaves between its writes: a World redelivers a failed or deferred
+ * delivery within minutes, a step body runs at most for its function's
+ * deadline, and its start is written before the body runs.
+ */
+export const STEP_DELIVERY_STALL_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Whether a step message delivered past the delivery cap is stuck: none of
+ * its deliveries got as far as writing anything for a long while. True when
+ * the step's last event (its creation, start or retry) is older than
+ * `windowMs`, and no `step_retrying` names a `retryAfter` later than
+ * `windowMs` ago (a retry that is pending, or whose time just came).
+ *
+ * A delivery that throws before it writes (its input cannot be read, say)
+ * leaves the log as it was, so its message is redelivered until it expires
+ * with the run still running. One that runs the body writes `step_started`
+ * first, and one that is deferred (a retry not yet due, a throttled start)
+ * follows a recent write or a pending `retryAfter`.
+ */
+export function stepDeliveryStalled(params: {
+  events: readonly Event[];
+  stepId: string;
+  nowMs: number;
+  windowMs?: number;
+}): boolean {
+  const { events, stepId, nowMs } = params;
+  const sinceMs = nowMs - (params.windowMs ?? STEP_DELIVERY_STALL_WINDOW_MS);
+  let lastActivityMs: number | undefined;
+  const note = (ms: number) => {
+    if (
+      Number.isFinite(ms) &&
+      (lastActivityMs === undefined || ms > lastActivityMs)
+    ) {
+      lastActivityMs = ms;
+    }
+  };
+  for (const event of events) {
+    if (event.correlationId !== stepId) continue;
+    switch (event.eventType) {
+      case 'step_created':
+      case 'step_started':
+        note(new Date(event.createdAt).getTime());
+        break;
+      case 'step_retrying': {
+        note(new Date(event.createdAt).getTime());
+        const retryAfter = event.eventData.retryAfter;
+        if (retryAfter) note(new Date(retryAfter).getTime());
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return lastActivityMs === undefined || lastActivityMs < sinceMs;
+}

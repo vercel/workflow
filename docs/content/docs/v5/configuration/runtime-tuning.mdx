@@ -67,6 +67,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `48`
 - Delivery attempts of an orchestrator message before the run is failed gracefully.
 - Step messages are exempt. A step keeps one message for its whole life and retries in place on it, so each userland retry and each early redelivery is another delivery of that message. A step is bounded by its `maxRetries` and its message's retention instead.
+- Past this many deliveries, a step message whose step shows no activity for an hour (no creation, start or retry in that time, and no retry due) fails the step with a `FatalError` naming `MAX_DELIVERIES_EXCEEDED`, which the workflow can catch. That is a step whose every delivery fails before it starts, for example because its input cannot be read. A step past the cap that is still starting or retrying keeps running as before.
 - Can only be lowered. Workflow calibrates the default to record failure before the queue expires the message.
 
 ### `WORKFLOW_MAX_EVENTS`

@@ -12,6 +12,7 @@ import { getStepFunction } from '../../private.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
+  getMaxQueueDeliveries,
   isOptimisticBackgroundStartEnabled,
 } from '../constants.js';
 import {
@@ -28,8 +29,13 @@ import {
   firstDeliveryDecision,
   type StepDeliveryDecision,
   stepDeliveryNeedsLogRead,
+  stepDeliveryStalled,
 } from './step-delivery.js';
-import { executeStep, failStepForExhaustedRetries } from './step-executor.js';
+import {
+  executeStep,
+  failStepForExhaustedDeliveries,
+  failStepForExhaustedRetries,
+} from './step-executor.js';
 import {
   retryOutlivesMessage,
   stepMessageRetentionSeconds,
@@ -56,6 +62,11 @@ export interface StepMessageContext {
   /** The run, when routing the delivery already read it. */
   prefetchedRun?: WorkflowRun;
   meta: {
+    /**
+     * Deliveries of the message that count as attempts (handoffs and
+     * coalesced re-runs left out), as the World reports them.
+     */
+    attempt?: number;
     deliveryCount?: number;
     createdAt?: Date;
     messageId: string;
@@ -124,23 +135,19 @@ export async function handleStepMessage(
   const maxRetries =
     getStepFunction(stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
-  let log: Event[] | undefined;
-  let decision: StepDeliveryDecision;
-  if (
-    stepDeliveryNeedsLogRead({
-      deliveryCount: meta.deliveryCount,
-      stepAttempt: payload.stepAttempt,
-    })
-  ) {
-    log = (await loadWorkflowRunEvents(runId)).events;
-    decision = decideStepDelivery({
-      events: log,
-      stepId,
-      maxRetries,
-      nowMs: Date.now(),
+  const { log, decision, pastCap } = await readDeliveryDecision(
+    ctx,
+    maxRetries
+  );
+  if (pastCap) {
+    return failPastDeliveryCap({
+      ctx,
+      wakeCtx,
+      attempt: pastCap.attempt,
+      deliveries: pastCap.deliveries,
+      maxDeliveries: pastCap.maxDeliveries,
+      runSpecVersion: runIdentity.specVersion,
     });
-  } else {
-    decision = firstDeliveryDecision(payload.stepAttempt);
   }
   // On the span whatever the decision: the `run` path sets the step's
   // attributes again inside `executeStep`, the others leave only these.
@@ -257,6 +264,140 @@ export async function handleStepMessage(
       await wakeOrchestrator(wakeCtx);
       return undefined;
   }
+}
+
+/**
+ * The delivery's decision (`step-delivery.ts`), and the log when it read
+ * one. `pastCap` is set when the step is to be failed for its message's
+ * deliveries instead.
+ *
+ * A step message is not failed by the run's delivery cap: it is redelivered
+ * on purpose while the step retries in place. Past the cap, a delivery reads
+ * the log first, and fails the step if no delivery got it started for a
+ * long while (see `stepDeliveryStalled`): every one of them threw before it
+ * wrote anything.
+ */
+async function readDeliveryDecision(
+  ctx: StepMessageContext,
+  maxRetries: number
+): Promise<{
+  log: Event[] | undefined;
+  decision: StepDeliveryDecision;
+  pastCap?: { attempt: number; deliveries: number; maxDeliveries: number };
+}> {
+  const { runId, payload, meta } = ctx;
+  const { stepId, stepName } = payload;
+  const maxDeliveries = getMaxQueueDeliveries();
+  const deliveries = meta.attempt;
+  const pastDeliveryCap =
+    deliveries !== undefined && deliveries > maxDeliveries;
+  if (pastDeliveryCap) {
+    warnPastDeliveryCap({
+      runId,
+      stepId,
+      stepName,
+      attempt: deliveries,
+      maxDeliveries,
+    });
+  }
+  if (
+    !pastDeliveryCap &&
+    !stepDeliveryNeedsLogRead({
+      deliveryCount: meta.deliveryCount,
+      stepAttempt: payload.stepAttempt,
+    })
+  ) {
+    return {
+      log: undefined,
+      decision: firstDeliveryDecision(payload.stepAttempt),
+    };
+  }
+  const log = (await loadWorkflowRunEvents(runId)).events;
+  const nowMs = Date.now();
+  const decision = decideStepDelivery({
+    events: log,
+    stepId,
+    maxRetries,
+    nowMs,
+  });
+  if (
+    pastDeliveryCap &&
+    decision.action === 'run' &&
+    stepDeliveryStalled({ events: log, stepId, nowMs })
+  ) {
+    return {
+      log,
+      decision,
+      pastCap: { attempt: decision.attempt, deliveries, maxDeliveries },
+    };
+  }
+  return { log, decision };
+}
+
+/**
+ * Fails a step whose message was delivered past the delivery cap without any
+ * delivery getting it started (see `stepDeliveryStalled`), out-of-band, and
+ * wakes the run's orchestrator so the workflow sees the failure. Resolves
+ * `undefined`: the message is acknowledged.
+ */
+async function failPastDeliveryCap(params: {
+  ctx: StepMessageContext;
+  wakeCtx: Parameters<typeof wakeOrchestrator>[0];
+  attempt: number;
+  deliveries: number;
+  maxDeliveries: number;
+  runSpecVersion: number;
+}): Promise<undefined> {
+  const { ctx, wakeCtx } = params;
+  const { world, runId, span } = ctx;
+  const { stepId, stepName } = ctx.payload;
+  span?.setAttributes({
+    ...Attribute.StepId(stepId),
+    ...Attribute.StepName(stepName),
+    ...Attribute.StepDeliveryDecision('fail'),
+    ...Attribute.StepDeliveryReason('max-deliveries'),
+  });
+  const failed = await failStepForExhaustedDeliveries({
+    createEvent: (data, eventParams) =>
+      world.events.create(runId, data, {
+        ...eventParams,
+        inBand: false,
+        ...(ctx.requestId ? { requestId: ctx.requestId } : {}),
+      }),
+    workflowRunId: runId,
+    stepId,
+    stepName,
+    attempt: params.attempt,
+    deliveries: params.deliveries,
+    maxDeliveries: params.maxDeliveries,
+    encryptionKey: await memoizeEncryptionKey(world, runId)(),
+    runSpecVersion: params.runSpecVersion,
+  });
+  if (failed.type !== 'gone') await wakeOrchestrator(wakeCtx);
+  return undefined;
+}
+
+/**
+ * Warns that a step message is delivered past the delivery cap, at the first
+ * delivery past it and then at every power of two past it, so a step whose
+ * deliveries keep failing shows up without a line per delivery.
+ */
+function warnPastDeliveryCap(params: {
+  runId: string;
+  stepId: string;
+  stepName: string;
+  attempt: number;
+  maxDeliveries: number;
+}): void {
+  const past = params.attempt - params.maxDeliveries;
+  if ((past & (past - 1)) !== 0) return;
+  runtimeLogger.warn('Step message delivered past max deliveries', {
+    workflowRunId: params.runId,
+    stepId: params.stepId,
+    stepName: params.stepName,
+    attempt: params.attempt,
+    maxDeliveries: params.maxDeliveries,
+  });
 }
 
 /**

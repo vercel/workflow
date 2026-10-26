@@ -718,7 +718,8 @@ export const StepDispatchPrologue = SemanticConvention<
  * What a background step's delivery did with its message
  * (`spec9/step-delivery.ts`): `run` the body, `ack` without running it,
  * `redeliver` it later (a `retryAfter` not reached yet), or `fail` the step
- * for exceeding its retries. A long `retryAfter` is many `redeliver`
+ * for exceeding its retries, or for a message delivered past the delivery
+ * cap without the step starting. A long `retryAfter` is many `redeliver`
  * deliveries of one message; this tells them apart from the run.
  */
 export const StepDeliveryDecision = SemanticConvention<
@@ -727,7 +728,8 @@ export const StepDeliveryDecision = SemanticConvention<
 
 /**
  * Why a background step's delivery did not run the body: `step-terminal`,
- * `run-terminal`, `retry-after` or `max-retries`. Absent for `run`.
+ * `run-terminal`, `retry-after`, `max-retries` or `max-deliveries`. Absent
+ * for `run`.
  */
 export const StepDeliveryReason = SemanticConvention<string>(
   'step.delivery.reason'

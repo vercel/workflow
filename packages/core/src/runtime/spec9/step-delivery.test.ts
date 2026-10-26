@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   decideStepDelivery,
   firstDeliveryDecision,
+  STEP_DELIVERY_STALL_WINDOW_MS,
   stepDeliveryNeedsLogRead,
+  stepDeliveryStalled,
 } from './step-delivery.js';
 
 const STEP = 'step_a';
@@ -145,5 +147,43 @@ describe('decideStepDelivery', () => {
         nowMs: NOW,
       })
     ).toEqual({ action: 'run', attempt: 1 });
+  });
+});
+
+describe('stepDeliveryStalled', () => {
+  const WINDOW = STEP_DELIVERY_STALL_WINDOW_MS;
+  const at = (ms: number, eventType: string, extra = {}) => ({
+    ...ev(eventType, extra),
+    createdAt: new Date(ms),
+  });
+  const stalled = (events: Event[], nowMs: number) =>
+    stepDeliveryStalled({ events, stepId: STEP, nowMs });
+
+  it('is stalled once the step shows no activity for the whole window', () => {
+    const events = [at(0, 'step_created')];
+    expect(stalled(events, WINDOW - 1)).toBe(false);
+    expect(stalled(events, WINDOW + 1)).toBe(true);
+    // No creation in the log at all (a read behind the write): stalled.
+    expect(stalled([], 0)).toBe(true);
+  });
+
+  it('counts a recent start, and the time a retry was due', () => {
+    expect(
+      stalled([at(0, 'step_created'), at(WINDOW, 'step_started')], WINDOW + 1)
+    ).toBe(false);
+    const retrying = at(0, 'step_retrying', {
+      retryAfter: new Date(3 * WINDOW),
+    });
+    expect(stalled([at(0, 'step_created'), retrying], 3 * WINDOW + 1)).toBe(
+      false
+    );
+    expect(stalled([at(0, 'step_created'), retrying], 4 * WINDOW + 1)).toBe(
+      true
+    );
+  });
+
+  it("ignores other steps' events", () => {
+    const other = { ...at(WINDOW, 'step_started'), correlationId: 'step_b' };
+    expect(stalled([at(0, 'step_created'), other], WINDOW + 1)).toBe(true);
   });
 });
