@@ -231,6 +231,7 @@ An out-of-band terminal event has these effects, all of them benign:
 - Set `8` to make the Vercel, Local and Postgres Worlds create spec version 8 runs, which the runtime drives with the spec 8 orchestrator: several orchestrator invocations may write at once, steps keep entities, and no in-band fence is needed. Use it as the kill switch if the single orchestrator turns out to be at fault.
 - A run keeps the version it was created with, so the setting changes only what new runs get. A run in flight keeps its orchestrator either way.
 - When it is set, it takes precedence over [`WORKFLOW_SEALED_LOG`](#workflow_sealed_log), and the runtime logs a one-time warning if both are set.
+- On the Vercel World, this release reads and writes the events of runs of every spec version through version 5 of the events API. `8` selects the spec 8 orchestrator but does not move event traffic back to the routes earlier releases used.
 - A custom World chooses the version by what it declares as `specVersion` (see [Building a World](/worlds/building-a-world#declaring-the-spec-version)).
 
 ### `WORKFLOW_SEALED_LOG`

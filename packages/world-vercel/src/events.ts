@@ -774,11 +774,16 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
         err.claimedByHookId
       );
     }
-    // 404 on hook_disposed / hook_received → already-disposed hook.
+    // 404 on hook_disposed / hook_received → already-disposed hook. Only a
+    // 404 the backend answered for the entity counts: it carries an error
+    // code. A 404 without one is a route the backend does not serve (an
+    // older backend, or a wrong base URL), and saying the hook does not
+    // exist would hide that.
     if (
       isHookEventRequiringExistence(data.eventType) &&
       WorkflowWorldError.is(err) &&
       err.status === 404 &&
+      err.code !== undefined &&
       data.correlationId
     ) {
       throw new HookNotFoundError(data.correlationId);
