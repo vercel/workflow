@@ -109,8 +109,12 @@ const graphileLogger = createGraphileLogger();
  * the workflow body inline, so response headers arrive only once that work is
  * done, and a bound here declares a slow-but-healthy delivery crashed and
  * redelivers it while the original is still running (two executions of the
- * same steps). Crash recovery is covered by Graphile releasing the job when
- * the worker dies, plus `reenqueueActiveRuns` on start.
+ * same steps). Crash recovery is covered by Graphile's stale-lock reset, which
+ * releases a dead worker's job and its named queue only once the lock is
+ * older than 4 hours (`resetLockedAt` in graphile-worker), plus
+ * `reenqueueActiveRuns` on start. A spec 9 run's orchestrator deliveries all
+ * use the run's named queue, so a hard-killed worker can hold them back for
+ * that long; see the README.
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;

@@ -378,6 +378,14 @@ another wake of the same run aborts it. A delayed job does not hold its queue. T
 queue half of the single-writer guarantee; the other half is the in-band fence
 on event writes, which refuses a stale orchestrator that outlived its job's lock.
 
+A worker that is killed mid-job (`SIGKILL`, out of memory, container eviction)
+leaves that run's named queue locked. Graphile Worker only takes jobs from an
+unlocked queue, and it clears a stale lock only once it is older than 4 hours
+(`resetLockedAt`). Until then every later orchestrator delivery of that run
+(step completions, hook resumes, timers) waits, so a spec 9 run whose worker
+was hard-killed can stall for up to 4 hours. A graceful shutdown releases the
+lock. Spec 8 runs without invocation use no named queue and are not affected.
+
 Each queue instance coalesces in-flight and recently completed deliveries with
 the same idempotency key. Handlers must still tolerate at-least-once delivery
 across worker processes, restarts, or completed-message cache eviction.

@@ -110,6 +110,13 @@ checks can run concurrently. `queueConcurrency` limits total active jobs per
 worker process and defaults to 50. A custom job prefix replaces `workflow_` in
 these names.
 
+A spec 9 run's orchestrator deliveries use the same per-run named queue with
+invocation disabled too. A worker that is killed mid-job (`SIGKILL`, out of
+memory, container eviction) leaves the queue locked, and Graphile Worker only
+clears a stale lock once it is older than 4 hours. Until then the run's later
+deliveries wait, so such a run can stall for up to 4 hours. A graceful shutdown
+releases the lock.
+
 The HTTP receiver checks each execution request against its active Graphile job
 before processing pending inputs. Updated workers and receivers move legacy
 orchestration requests to the run's named queue. Before acknowledging an execution
