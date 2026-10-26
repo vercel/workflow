@@ -12,6 +12,9 @@ import {
  * processing after a world restart. The workflow handler is idempotent
  * (event-log replay), so duplicate enqueues are safe.
  *
+ * Each message carries the run's spec version as `runSpecVersion`, which is
+ * what a World reads to serialize a single-orchestrator run's deliveries.
+ *
  * A run goes back to the queue namespace it recorded when it was created
  * (`executionContext.queueNamespace`, see `getRunQueueNamespace`), so a run
  * started under another namespace, or by a queue consumer other than the
@@ -52,7 +55,18 @@ export async function reenqueueActiveRuns(
           getRunQueueNamespace(run.executionContext) ?? defaultNamespace
         );
         const queueName: ValidQueueName = `${prefix}${run.workflowName}`;
-        await enqueue(queueName, { runId: run.runId });
+        // The run's spec version rides on the message as on every other
+        // orchestrator message, so a World serializes a single-orchestrator
+        // run's recovery delivery behind its other deliveries and treats its
+        // `{ timeoutSeconds: 0 }` as a handoff (`isSingleOrchestratorMessage`).
+        // A run without a recorded version gets no stamp, and the runtime
+        // reads its version from the run.
+        await enqueue(queueName, {
+          runId: run.runId,
+          ...(typeof run.specVersion === 'number' && {
+            runSpecVersion: run.specVersion,
+          }),
+        });
         reenqueued++;
       } catch (err) {
         console.warn(
