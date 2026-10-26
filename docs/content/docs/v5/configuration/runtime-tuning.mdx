@@ -211,6 +211,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `3`
 - Minimum: `0`
 - The most other steps that may have been pending while a step attempt waited to start for its branch to advance at once under [`WORKFLOW_ADVANCE_ONLY_REPLAY`](#workflow_advance_only_replay). In a wider fan-out a branch waits for its siblings, even after the batch drains below the bound. Once every pending step settles, a later fan-out starts a new eligibility episode.
+- Parallel steps nested inside a branch, such as tool calls inside one agent, count toward this pending limit together with sibling branches.
 - The bound exists because an early replay does work only when the settled branch has a step after the one that settled. In a wide fan-out of one-step branches, every settlement but the last replays for nothing, and each replay reads a log that grows with the fan-out. With the bound, such a fan-out pays at most this many extra replays per round.
 - Raise it to let the branches of wider fan-outs advance independently, at the cost of additional replay work when their branches settle at different times.
 
