@@ -69,15 +69,9 @@ function mockStreamResponse(payload: Uint8Array) {
   });
 }
 
-function renderReader(key?: Uint8Array) {
+function renderReader(key?: Uint8Array, streamId = 'strm_test_system_abort') {
   return renderHook(() =>
-    useStreamReader(
-      env,
-      'strm_test_system_abort',
-      'wrun_test',
-      key,
-      'completed'
-    )
+    useStreamReader(env, streamId, 'wrun_test', key, 'completed')
   );
 }
 
@@ -124,13 +118,31 @@ describe('useStreamReader payloads', () => {
   )('decrypts a $mode packet (framed: $framed)', async ({ mode, framed }) => {
     const packet = await encryptedPacket(mode);
     mockStreamResponse(framed ? frame(packet) : packet);
-    const { result } = renderReader(RUN_KEY);
+    const { result } = renderReader(
+      RUN_KEY,
+      framed ? 'strm_test_user' : 'strm_test_system_abort'
+    );
 
     await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
 
     expect(result.current.error).toBeNull();
     expect(result.current.chunks.map(({ value }) => value)).toEqual([
       ABORT_PACKET,
+    ]);
+  });
+
+  it.each([
+    'encrypted text',
+    'encp is plain text',
+    'devl is plain text',
+  ])('keeps legacy user text readable: %s', async (text) => {
+    mockStreamResponse(new TextEncoder().encode(`${text}\nnext line`));
+    const { result } = renderReader(undefined, 'strm_test_user');
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+    expect(result.current.error).toBeNull();
+    expect(result.current.chunks.map(({ value }) => value)).toEqual([
+      text,
+      'next line',
     ]);
   });
 

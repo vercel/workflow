@@ -43,10 +43,15 @@ const YIELD_EVERY_N_FRAMES = 64;
  */
 type StreamEncoding = 'framed' | 'unframed' | 'legacy';
 
-function detectEncoding(data: Uint8Array): StreamEncoding {
+function detectEncoding(data: Uint8Array, streamId: string): StreamEncoding {
   if (data.length < FRAME_HEADER_SIZE) return 'framed';
   const prefix = new TextDecoder().decode(data.subarray(0, FRAME_HEADER_SIZE));
-  if (Object.values(SerializationFormat).some((format) => format === prefix)) {
+  // Only internal abort streams store unframed serialized packets. A user
+  // text stream may begin with e.g. "encrypted", which shares the encr prefix.
+  if (
+    streamId.endsWith('_system_abort') &&
+    Object.values(SerializationFormat).some((format) => format === prefix)
+  ) {
     return 'unframed';
   }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -239,7 +244,7 @@ export function useStreamReader(
         if (encoding === null) {
           appendToBuffer(value);
           if (buffer.length >= FRAME_HEADER_SIZE) {
-            encoding = detectEncoding(buffer);
+            encoding = detectEncoding(buffer, streamId);
           }
           if (encoding === 'legacy') {
             textRemainder = decoder.decode(buffer, { stream: true });
