@@ -1,6 +1,7 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import {
+  EncryptionKeyLookupError,
   FatalError,
   HookConflictError,
   RetryableError,
@@ -6050,10 +6051,16 @@ describe('stream encryption round-trip', () => {
     );
   }
 
-  it('should keep a failed key lookup as its own error, not a SerializationError', async () => {
+  it.each([
+    { label: 'transport failure', options: { code: 'TRANSPORT' } },
+    { label: 'timeout', options: { code: 'TIMEOUT' } },
+    { label: '503', options: { status: 503 } },
+  ])('should pass a key lookup $label through unwrapped so the step retries', async ({
+    options,
+  }) => {
     const lookupError = new WorkflowWorldError(
       'GET /v1/workflow/run-key failed',
-      { code: 'TRANSPORT' }
+      options
     );
 
     const error = await serializeError(() => Promise.reject(lookupError), {
@@ -6061,6 +6068,26 @@ describe('stream encryption round-trip', () => {
     });
 
     expect(error).toBe(lookupError);
+  });
+
+  it.each([
+    {
+      label: '404',
+      lookupError: new WorkflowWorldError('GET /v1/workflow/run-key failed', {
+        status: 404,
+      }),
+    },
+    { label: 'non-world error', lookupError: new Error('bad key material') },
+  ])('should raise a fatal EncryptionKeyLookupError for a key lookup $label', async ({
+    lookupError,
+  }) => {
+    const error = await serializeError(() => Promise.reject(lookupError), {
+      hello: 'world',
+    });
+
+    expect(error).toBeInstanceOf(EncryptionKeyLookupError);
+    expect(FatalError.is(error)).toBe(true);
+    expect((error as EncryptionKeyLookupError).cause).toBe(lookupError);
   });
 
   it('should still raise a SerializationError for a chunk that cannot be serialized', async () => {

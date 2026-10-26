@@ -1,4 +1,5 @@
 import {
+  EncryptionKeyLookupError,
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
@@ -10,6 +11,7 @@ import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { isRetryableWorldError } from './classify-error.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -342,11 +344,24 @@ export function getSerializeStream(
       } catch (error) {
         // Encryption failures must keep their RuntimeDecryptionError
         // identity (RUNTIME_ERROR) rather than be reframed as a
-        // SerializationError (USER_ERROR). So must a failed key lookup:
-        // nothing was serialized yet, and its own error (e.g. a transport
-        // WorkflowWorldError) decides whether the step retries.
-        if (RuntimeDecryptionError.is(error) || !keyState.resolved) {
+        // SerializationError (USER_ERROR).
+        if (RuntimeDecryptionError.is(error)) {
           controller.error(error);
+          return;
+        }
+        // A key lookup failure is not a SerializationError either: nothing
+        // was serialized yet. A transient world error (transport, timeout,
+        // 429, 5xx) passes through unwrapped so the step retries; anything
+        // else (e.g. a 404) becomes a fatal EncryptionKeyLookupError.
+        if (!keyState.resolved) {
+          controller.error(
+            isRetryableWorldError(error)
+              ? error
+              : new EncryptionKeyLookupError(
+                  'Failed to resolve the encryption key for a stream chunk',
+                  { cause: error }
+                )
+          );
           return;
         }
         const { message, hint } = formatSerializationError(
