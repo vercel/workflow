@@ -342,8 +342,10 @@ export function getSerializeStream(
       } catch (error) {
         // Encryption failures must keep their RuntimeDecryptionError
         // identity (RUNTIME_ERROR) rather than be reframed as a
-        // SerializationError (USER_ERROR).
-        if (RuntimeDecryptionError.is(error)) {
+        // SerializationError (USER_ERROR). So must a failed key lookup:
+        // nothing was serialized yet, and its own error (e.g. a transport
+        // WorkflowWorldError) decides whether the step retries.
+        if (RuntimeDecryptionError.is(error) || !keyState.resolved) {
           controller.error(error);
           return;
         }

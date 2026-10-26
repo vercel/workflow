@@ -1178,10 +1178,11 @@ describe('workflow arguments', () => {
 
         const writer = hydrated.getWriter();
         // `write()` early-acks, so the failure lands on `closed` — catchable,
-        // with the world error preserved as the cause.
+        // as the world error itself so its retry semantics survive.
         await writer.write('payload').catch(() => {});
         await expect(writer.closed).rejects.toMatchObject({
-          cause: { code: 'TIMEOUT' },
+          name: 'WorkflowWorldError',
+          code: 'TIMEOUT',
         });
         expect(runsGet).toHaveBeenCalledTimes(1);
 
@@ -6032,6 +6033,42 @@ describe('stream encryption round-trip', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]).toEqual(largeArray);
+  });
+
+  /** Write one chunk through a serialize stream and return the stream's error */
+  async function serializeError(
+    key: Parameters<typeof getSerializeStream>[1],
+    value: unknown
+  ): Promise<unknown> {
+    const serialize = getSerializeStream(reducers, key);
+    const readPromise = serialize.readable.getReader().read();
+    const writer = serialize.writable.getWriter();
+    await writer.write(value).catch(() => {});
+    return readPromise.then(
+      () => expect.fail('expected the serialize stream to error'),
+      (error: unknown) => error
+    );
+  }
+
+  it('should keep a failed key lookup as its own error, not a SerializationError', async () => {
+    const lookupError = new WorkflowWorldError(
+      'GET /v1/workflow/run-key failed',
+      { code: 'TRANSPORT' }
+    );
+
+    const error = await serializeError(() => Promise.reject(lookupError), {
+      hello: 'world',
+    });
+
+    expect(error).toBe(lookupError);
+  });
+
+  it('should still raise a SerializationError for a chunk that cannot be serialized', async () => {
+    const error = await serializeError(async () => cryptoKey, {
+      fn: () => {},
+    });
+
+    expect(error).toBeInstanceOf(SerializationError);
   });
 });
 
