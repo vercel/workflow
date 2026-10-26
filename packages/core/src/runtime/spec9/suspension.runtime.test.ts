@@ -591,11 +591,34 @@ describe.each([
       ).toBe(false);
     });
 
-    // A step that allows retries starts its body on its first delivery
-    // while its start is in flight. The start is refused, so the body's
-    // outcome is discarded: nothing of the step reaches the log.
-    it('acknowledges a background step message of a cancelled run without writing its outcome', async () => {
+    // A step queued before `run.cancel()` is refused at its start, before
+    // its body runs, as on spec 8.
+    it('acknowledges a background step message of a cancelled run without running the body', async () => {
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+      const { store, start } = await setup(`return await add(1, 1);`);
+      await store.deliver(start);
+      const stepMessage = store.held.find(
+        (h) => (h.message as { stepId?: string }).stepId !== undefined
+      );
+      expect(stepMessage).toBeDefined();
+      store.appendOutOfBand({ eventType: 'run_cancelled' } as Partial<Event>);
+
+      const result = await store.deliver(stepMessage!);
+      expect(result).toBeUndefined();
+      expect(calls.ss_add).toBeUndefined();
+      expect(eventsOf(store, 'step_started')).toEqual([]);
+      expect(eventsOf(store, 'step_completed')).toEqual([]);
+      expect(
+        store.held.some((h) => h.messageId === stepMessage!.messageId)
+      ).toBe(false);
+    });
+
+    // Under the opt-in, a step that allows retries starts its body on its
+    // first delivery while its start is in flight. The start is refused, so
+    // the body's outcome is discarded: nothing of the step reaches the log.
+    it('acknowledges a background step message of a cancelled run without writing its outcome under WORKFLOW_OPTIMISTIC_BACKGROUND_START=1', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+      vi.stubEnv('WORKFLOW_OPTIMISTIC_BACKGROUND_START', '1');
       const { store, start } = await setup(`return await add(1, 1);`);
       await store.deliver(start);
       const stepMessage = store.held.find(

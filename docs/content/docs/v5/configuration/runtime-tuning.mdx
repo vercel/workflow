@@ -197,9 +197,17 @@ An out-of-band terminal event has these effects, all of them benign:
 ### `WORKFLOW_OPTIMISTIC_INLINE_START`
 
 - Default: unset
-- Set `0` or `false` to keep step bodies waiting for their start to commit: inline steps on turbo's first delivery and under run-ahead, and background steps on their message's first delivery. `WORKFLOW_TURBO` still backgrounds `run_started` and skips the initial load. Use it when step side effects are not idempotent.
+- Set `0` or `false` to keep step bodies waiting for their start to commit: inline steps on turbo's first delivery and under run-ahead, and background steps under [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start). `WORKFLOW_TURBO` still backgrounds `run_started` and skips the initial load. Use it when step side effects are not idempotent.
 - A step declared with `maxRetries: 0` always waits for its start to commit before its body runs, whatever this is set to: a step that allows no retries is taken not to be idempotent. Steps that allow retries (the default) are taken to survive running again after a lost write.
 - No other value has an effect.
+
+### `WORKFLOW_OPTIMISTIC_BACKGROUND_START`
+
+- Default: unset. A background step (one that runs from its own queue message) starts its body only once its `step_started` committed.
+- Set `1` or `true` to start the body of a background step that allows retries while its `step_started` is in flight, on the first delivery of its message. The outcome is still written only once the start committed.
+- The trade-off is latency against cancel and throttle behaviour. It saves one round trip to the World before each background body. In exchange, a step queued before `run.cancel()` runs its body, side effects included, before the refused start arrives, and a start the World throttles or refuses as too early has already run the body: its outcome is discarded, and a throttled start runs the body again when the message is redelivered. Only turn it on when background step bodies are idempotent and running one after a cancel is acceptable.
+- A step declared with `maxRetries: 0`, and any redelivery or retry of a step's message, always waits for the start. An explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` wins over this setting.
+- Spec 9 runs only. No other value has an effect.
 
 ### `WORKFLOW_RUN_AHEAD_DEPTH`
 

@@ -46,7 +46,7 @@ Step messages go out in parallel queue batch requests of at most `STEP_DISPATCH_
 
 All batches are in-band writes, so they go out one at a time (`packages/core/src/runtime/spec9/in-band-writer.ts`). The later batches run in the background of the delivery (`commitInChunks`); their background steps' messages go out once they committed. An inline step's outcome is queued on the writer only after the last creation batch, so it never holds up a creation batch behind it. No pass decides while a creation batch is in flight.
 
-A background step's first delivery starts its body while its out-of-band `step_started` is in flight, for a step that allows retries; the outcome is written only once that start committed (`spec9/step-handler.ts`).
+A background step's body starts once its out-of-band `step_started` committed. Under the opt-in `WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`, the first delivery of a step that allows retries starts its body while that start is in flight, and writes the outcome only once the start committed (`spec9/step-handler.ts`).
 
 A fan-out boundary with background steps is never run ahead: a step outside the delivery's inline slots runs elsewhere, so the boundary is not inert (`packages/core/src/runtime/out-of-band-observation.ts:172`).
 
@@ -94,7 +94,7 @@ Times below are positions in the delivery, not measurements. Measurements on rec
 | 1 | Replay reaches `Promise.all`; 100 steps, 3 inline slots | 1 replay |
 | 2 | Batch 1 commits; 3 inline bodies start; its 61 step messages go out | 1 `createBatch`, 64 events; 4 queue requests |
 | 3 | Batch 2 commits while the bodies run; its 36 step messages go out | 1 `createBatch`, 36 events; 3 queue requests |
-| 4 | Background steps start their bodies while their `step_started` is in flight | 97 invocations |
+| 4 | Background steps write their `step_started` and start their bodies once it committed | 97 invocations |
 | 5 | Inline outcomes commit behind the last creation batch | 3 `step_completed`, in-band |
 | 6 | Background steps run; each writes start and outcome and sends a wake, without reading the log | 97 invocations, 194 out-of-band writes, 97 wakes |
 | 7 | The orchestrator takes outcomes from the live feed, lingering while steps are open | up to 30 s per idle stretch, never past 60 s after the invocation started with a 2 min window |
@@ -115,7 +115,7 @@ durabench's fan-out TTLS is measured to the last branch's body start. On a 64-br
 | Background creations | 4 batches of 16, one round trip each, about 200 to 250 ms apart | The same first batch: 3 starts and 61 `step_created`, one round trip (#5030, `3c7440e344`) |
 | Inline outcomes | Could be queued on the writer between two creation batches | Queued only after the last creation batch is queued (`5b53481478`) |
 | Step messages | One queue request of 61 messages | 4 parallel requests of at most 16 (`e277334dbc`) |
-| Background `step_started` | Awaited before the body | In flight while the body starts (`83ee22003e`) |
+| Background `step_started` | Awaited before the body | Still awaited by default; in flight while the body starts only under `WORKFLOW_OPTIMISTIC_BACKGROUND_START=1` (`83ee22003e` made it the default, later reverted to an opt-in) |
 
 Cold world-vercel backend instances behind the step invocations' events WebSockets explain the p90 outliers of about 4 s: 5 of 25 runs on this PR, 0 of 25 on `main`. Why only this PR hits them is not verified.
 

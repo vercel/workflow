@@ -1039,73 +1039,134 @@ describe.each([
       bodyStarted = () => {};
     });
 
-    it('starts the body of a step that allows retries before its step_started commits', async () => {
-      const { world } = await setup(
-        workflowOf('so_record'),
-        [],
-        holdStartForBody(5_000)
-      );
-      const { result } = await deliverStepMessage(world);
-      expect(await result).toBeUndefined();
-      expect(startOrder).toEqual(['body', 'step_started']);
-      // The outcome still follows the start in the log.
-      const stepEvents = world.events
-        .filter((e) => e.eventType.startsWith('step_'))
-        .map((e) => e.eventType);
-      expect(stepEvents).toEqual([
-        'step_created',
-        'step_started',
-        'step_completed',
-      ]);
-      await world.runUntilIdle();
-      expect(await runResult(world)).toBe('recorded');
-    });
-
-    it('starts the body of a maxRetries: 0 step only once its step_started committed', async () => {
-      const { world } = await setup(
-        workflowOf('so_once_record'),
-        [],
-        holdStartForBody(50)
-      );
-      const { result } = await deliverStepMessage(world);
-      expect(await result).toBeUndefined();
-      expect(startOrder).toEqual(['step_started', 'body']);
-    });
-
-    it('writes no outcome for a body whose start the World throttled', async () => {
-      const { world } = await setup(workflowOf('so_record'), [], {
+    async function throttledStart() {
+      return setup(workflowOf('so_record'), [], {
         async beforeCreate(data, params) {
           if (isBackgroundStart(data, params)) {
             throw new ThrottleError('slow down', { retryAfter: 7 });
           }
         },
       });
-      const { result } = await deliverStepMessage(world);
-      // Redelivered after the World's backoff, as an awaited start would be.
-      expect(await result).toEqual({ timeoutSeconds: 7 });
-      expect(calls.so_record).toBe(1);
-      expect(eventsOf(world, 'step_started')).toEqual([]);
-      expect(eventsOf(world, 'step_completed')).toEqual([]);
-    });
+    }
 
-    it('writes no outcome for a body whose start failed without an answer', async () => {
-      const { world } = await setup(workflowOf('so_record'), [], {
+    async function failingStart() {
+      return setup(workflowOf('so_record'), [], {
         async beforeCreate(data, params) {
           if (isBackgroundStart(data, params)) {
             throw new Error('socket hang up');
           }
         },
       });
-      const { stepMessage, result } = await deliverStepMessage(world);
-      await expect(result).rejects.toThrow('socket hang up');
-      expect(calls.so_record).toBe(1);
+    }
+
+    it('starts the body of a step that allows retries only once its step_started committed', async () => {
+      const { world } = await setup(
+        workflowOf('so_record'),
+        [],
+        holdStartForBody(50)
+      );
+      const { result } = await deliverStepMessage(world);
+      expect(await result).toBeUndefined();
+      expect(startOrder).toEqual(['step_started', 'body']);
+      await world.runUntilIdle();
+      expect(await runResult(world)).toBe('recorded');
+    });
+
+    it('runs no body when the World throttles the start', async () => {
+      const { world } = await throttledStart();
+      const { result } = await deliverStepMessage(world);
+      // Redelivered after the World's backoff.
+      expect(await result).toEqual({ timeoutSeconds: 7 });
+      expect(calls.so_record).toBeUndefined();
       expect(eventsOf(world, 'step_started')).toEqual([]);
       expect(eventsOf(world, 'step_completed')).toEqual([]);
-      // The message stays, for a redelivery that checks the log first.
+    });
+
+    it('runs no body when the start fails without an answer', async () => {
+      const { world } = await failingStart();
+      const { stepMessage, result } = await deliverStepMessage(world);
+      await expect(result).rejects.toThrow('socket hang up');
+      expect(calls.so_record).toBeUndefined();
+      expect(eventsOf(world, 'step_completed')).toEqual([]);
       expect(
         world.held.find((held) => held.messageId === stepMessage.messageId)
           ?.deliveryCount
       ).toBe(2);
+    });
+
+    describe('with WORKFLOW_OPTIMISTIC_BACKGROUND_START=1', () => {
+      beforeEach(() => {
+        vi.stubEnv('WORKFLOW_OPTIMISTIC_BACKGROUND_START', '1');
+      });
+
+      it('starts the body of a step that allows retries before its step_started commits', async () => {
+        const { world } = await setup(
+          workflowOf('so_record'),
+          [],
+          holdStartForBody(5_000)
+        );
+        const { result } = await deliverStepMessage(world);
+        expect(await result).toBeUndefined();
+        expect(startOrder).toEqual(['body', 'step_started']);
+        // The outcome still follows the start in the log.
+        const stepEvents = world.events
+          .filter((e) => e.eventType.startsWith('step_'))
+          .map((e) => e.eventType);
+        expect(stepEvents).toEqual([
+          'step_created',
+          'step_started',
+          'step_completed',
+        ]);
+        await world.runUntilIdle();
+        expect(await runResult(world)).toBe('recorded');
+      });
+
+      it('starts the body of a maxRetries: 0 step only once its step_started committed', async () => {
+        const { world } = await setup(
+          workflowOf('so_once_record'),
+          [],
+          holdStartForBody(50)
+        );
+        const { result } = await deliverStepMessage(world);
+        expect(await result).toBeUndefined();
+        expect(startOrder).toEqual(['step_started', 'body']);
+      });
+
+      it('keeps the awaited start under an explicit WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
+        vi.stubEnv('WORKFLOW_OPTIMISTIC_INLINE_START', '0');
+        const { world } = await setup(
+          workflowOf('so_record'),
+          [],
+          holdStartForBody(50)
+        );
+        const { result } = await deliverStepMessage(world);
+        expect(await result).toBeUndefined();
+        expect(startOrder).toEqual(['step_started', 'body']);
+      });
+
+      it('writes no outcome for a body whose start the World throttled', async () => {
+        const { world } = await throttledStart();
+        const { result } = await deliverStepMessage(world);
+        // Redelivered after the World's backoff, as an awaited start would be.
+        expect(await result).toEqual({ timeoutSeconds: 7 });
+        expect(calls.so_record).toBe(1);
+        expect(eventsOf(world, 'step_started')).toEqual([]);
+        expect(eventsOf(world, 'step_completed')).toEqual([]);
+      });
+
+      it('writes no outcome for a body whose start failed without an answer', async () => {
+        const { world } = await failingStart();
+        const { stepMessage, result } = await deliverStepMessage(world);
+        await expect(result).rejects.toThrow('socket hang up');
+        expect(calls.so_record).toBe(1);
+        expect(eventsOf(world, 'step_started')).toEqual([]);
+        expect(eventsOf(world, 'step_completed')).toEqual([]);
+        // The message stays, for a redelivery that checks the log first.
+        expect(
+          world.held.find((held) => held.messageId === stepMessage.messageId)
+            ?.deliveryCount
+        ).toBe(2);
+      });
     });
   });
 

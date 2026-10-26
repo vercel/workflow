@@ -5,6 +5,7 @@ import {
   getMaxInlineSteps,
   getMaxQueueDeliveries,
   getReplayTimeoutMs,
+  isOptimisticBackgroundStartEnabled,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
   MAX_QUEUE_DELIVERIES,
@@ -200,5 +201,26 @@ describe('getMaxQueueDeliveries', () => {
     // may only lower it, never raise it.
     process.env[ENV] = String(MAX_QUEUE_DELIVERIES + 100);
     expect(getMaxQueueDeliveries()).toBe(MAX_QUEUE_DELIVERIES);
+  });
+});
+
+describe('isOptimisticBackgroundStartEnabled', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is off unless set', () => {
+    vi.stubEnv('WORKFLOW_OPTIMISTIC_BACKGROUND_START', '');
+    expect(isOptimisticBackgroundStartEnabled()).toBe(false);
+  });
+
+  it.each(['1', 'true', 'TRUE'])('is on for %s', (value) => {
+    vi.stubEnv('WORKFLOW_OPTIMISTIC_BACKGROUND_START', value);
+    expect(isOptimisticBackgroundStartEnabled()).toBe(true);
+  });
+
+  it.each(['0', 'false', 'yes'])('is off for %s', (value) => {
+    vi.stubEnv('WORKFLOW_OPTIMISTIC_BACKGROUND_START', value);
+    expect(isOptimisticBackgroundStartEnabled()).toBe(false);
   });
 });

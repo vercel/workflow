@@ -169,8 +169,9 @@ export interface StepExecutorParams {
    * start), for a step that allows retries (see {@link mayRunBeforeItsStart}).
    * Set by turbo mode for the inline steps of a run's first delivery, where
    * no other orchestrator of the run can exist yet, so the start cannot be
-   * refused by the in-band fence after the body ran; under run-ahead; and by
-   * a background step's plain first delivery, whose start is out-of-band and
+   * refused by the in-band fence after the body ran; under run-ahead; and,
+   * only with the opt-in `WORKFLOW_OPTIMISTIC_BACKGROUND_START`, by a
+   * background step's plain first delivery, whose start is out-of-band and
    * fence-free. The `step_started` write still goes out, after
    * {@link runReadyBarrier} and {@link startAfter}, and the outcome write
    * waits for it: if the start fails, the body's outcome is discarded and the

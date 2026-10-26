@@ -304,10 +304,11 @@ export function isVmRetentionEnabled(): boolean {
 /**
  * Whether an operator has explicitly disabled optimistic start with
  * `WORKFLOW_OPTIMISTIC_INLINE_START=0` / `=false`. Turbo mode starts the first
- * delivery's inline step bodies before their `step_started` commits, and a
- * background step's first delivery starts its body while its out-of-band
- * `step_started` is in flight; this opt-out keeps turbo's other shortcuts
- * and makes those bodies wait for the commit instead.
+ * delivery's inline step bodies before their `step_started` commits (and,
+ * under {@link isOptimisticBackgroundStartEnabled}, a background step's first
+ * delivery starts its body while its out-of-band `step_started` is in
+ * flight); this opt-out keeps turbo's other shortcuts and makes those bodies
+ * wait for the commit instead. It wins over the background opt-in.
  *
  * Only the opt-out is read. On single-orchestrator runs there is no general
  * optimistic inline start to turn on: a body that runs before its
@@ -320,6 +321,26 @@ export function isOptimisticInlineStartExplicitlyDisabled(): boolean {
   const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
   if (raw === undefined || raw === '') return false;
   return raw === '0' || raw.toLowerCase() === 'false';
+}
+
+/**
+ * Whether a spec 9 background step's plain first delivery starts its body
+ * while its out-of-band `step_started` is in flight
+ * (`WORKFLOW_OPTIMISTIC_BACKGROUND_START=1` / `=true`). Off by default: the
+ * body then runs only once its start committed, as on spec 8, so a step
+ * queued before `run.cancel()` is refused before its body runs, and a start
+ * the World throttles or refuses as too early runs no body. Turning it on
+ * saves the start's round trip before the body, and in exchange such a body
+ * can run (its side effects included) when its start is then refused, with
+ * its outcome discarded and, for a throttled start, the body run again on
+ * the redelivery. A step declared with `maxRetries: 0` and every delivery
+ * that reads the log keep the awaited start either way, and an explicit
+ * `WORKFLOW_OPTIMISTIC_INLINE_START=0` wins. Reads the env var lazily.
+ */
+export function isOptimisticBackgroundStartEnabled(): boolean {
+  const raw = process.env.WORKFLOW_OPTIMISTIC_BACKGROUND_START;
+  if (raw === undefined || raw === '') return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
 }
 
 /**

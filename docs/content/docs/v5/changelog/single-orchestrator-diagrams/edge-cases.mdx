@@ -148,7 +148,7 @@ sequenceDiagram
 
 ## Background body before a refused start
 
-On a plain first delivery, a background step that allows retries starts its body while its `step_started` is in flight (commit `83ee22003e`).
+Only under the opt-in `WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`: on a plain first delivery, a background step that allows retries starts its body while its `step_started` is in flight. Commit `83ee22003e` made this the default; it is now off by default, and the body runs only once its start committed.
 
 ```mermaid
 sequenceDiagram
@@ -170,7 +170,7 @@ sequenceDiagram
     end
 ```
 
-**Outcome.** Accepted behavior change: on a cancelled run or under throttling the body runs before the refusal arrives, where the awaited start used to be refused first. A `maxRetries: 0` step and every delivery that reads the log keep the awaited start, and `WORKFLOW_OPTIMISTIC_INLINE_START=0` restores it for all steps (`forceOptimisticStart`, `packages/core/src/runtime/spec9/step-handler.ts`; `mayRunBeforeItsStart`, `packages/core/src/runtime/spec9/step-executor.ts:79`). Tests in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts` and `suspension.runtime.test.ts`. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+**Outcome.** By default the awaited start is refused first and the body never runs, as on spec 8. With the opt-in, on a cancelled run or under throttling the body runs before the refusal arrives, and a throttled start runs the body again on the redelivery. A `maxRetries: 0` step and every delivery that reads the log keep the awaited start even with the opt-in, and `WORKFLOW_OPTIMISTIC_INLINE_START=0` wins over it (`forceOptimisticStart`, `packages/core/src/runtime/spec9/step-handler.ts`; `isOptimisticBackgroundStartEnabled`, `packages/core/src/runtime/constants.ts`; `mayRunBeforeItsStart`, `packages/core/src/runtime/spec9/step-executor.ts:79`). Tests in `packages/core/src/runtime/spec9/orchestrator.runtime.test.ts` and `suspension.runtime.test.ts`. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
 
 ## Uncoalesced wakes on world-local and world-postgres
 

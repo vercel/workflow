@@ -10,7 +10,10 @@ import type {
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
-import { DEFAULT_STEP_MAX_RETRIES } from '../constants.js';
+import {
+  DEFAULT_STEP_MAX_RETRIES,
+  isOptimisticBackgroundStartEnabled,
+} from '../constants.js';
 import {
   getWorkflowQueueName,
   loadWorkflowRunEvents,
@@ -80,10 +83,11 @@ export interface StepMessageContext {
  * 1. decides from the delivery (and, on any delivery but a plain first one,
  *    from the run's full log) whether to run the body, using the table in
  *    `orchestrator/step-delivery.ts`;
- * 2. writes `step_started`, runs the body, and writes the outcome, all
- *    out-of-band (`inBand: false`). On a plain first delivery a step that
- *    allows retries starts its body while `step_started` is in flight, and
- *    its outcome is written only once that start committed;
+ * 2. writes `step_started`, runs the body once it committed, and writes the
+ *    outcome, all out-of-band (`inBand: false`). Under the opt-in
+ *    `WORKFLOW_OPTIMISTIC_BACKGROUND_START`, a plain first delivery of a step
+ *    that allows retries starts its body while `step_started` is in flight,
+ *    and its outcome is written only once that start committed;
  * 3. wakes the run's orchestrator with an unkeyed message.
  *
  * Its result is queue control, per the World's `createQueueHandler`
@@ -220,12 +224,16 @@ export async function handleStepMessage(
         ? { firstStartedAt: decision.firstStartedAt }
         : {}),
       input,
-      // A plain first delivery (no log read) starts the body while its
-      // `step_started` is in flight, for a step that allows retries (see
-      // `mayRunBeforeItsStart`); the outcome waits for the start, and a
-      // start that did not commit discards it. A redelivery, a retry's
-      // message and a `maxRetries: 0` step write the start first.
-      forceOptimisticStart: log === undefined,
+      // The body runs once its `step_started` committed, so a cancelled
+      // run's or a throttled start runs no body. With the opt-in
+      // `WORKFLOW_OPTIMISTIC_BACKGROUND_START`, a plain first delivery (no
+      // log read) starts the body while its start is in flight, for a step
+      // that allows retries (see `mayRunBeforeItsStart`); the outcome waits
+      // for the start, and a start that did not commit discards it. A
+      // redelivery, a retry's message and a `maxRetries: 0` step write the
+      // start first either way.
+      forceOptimisticStart:
+        log === undefined && isOptimisticBackgroundStartEnabled(),
       retryOutlivesMessage: (retryAtMs) =>
         retryOutlivesMessage({
           messageCreatedAt: meta.createdAt,
