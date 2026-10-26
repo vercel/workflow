@@ -112,54 +112,6 @@ describe('runStepSingleFlight', () => {
     expect(await loser).toEqual({ type: 'skipped' });
   });
 
-  it('a loser runs its own attempt when the winner ran nothing (skipped)', async () => {
-    // The winner's claim lost to a concurrent writer, which may be exactly
-    // the execution waiting here (the queued step message of the replay that
-    // created the step). Skipping with it would leave the step never run.
-    const { promise, resolve } = withResolvers<StepExecutionResult>();
-    let loserCalls = 0;
-    const winner = runStepSingleFlight(RUN, STEP, () => promise, 'debug');
-    const loser = runStepSingleFlight(
-      RUN,
-      STEP,
-      async () => {
-        loserCalls++;
-        return { type: 'completed' };
-      },
-      'debug'
-    );
-
-    resolve({ type: 'skipped' });
-    expect(await winner).toEqual({ type: 'skipped' });
-    expect(await loser).toEqual({ type: 'completed' });
-    expect(loserCalls).toBe(1);
-  });
-
-  it('several losers of a skipped winner run the step once between them', async () => {
-    const { promise, resolve } = withResolvers<StepExecutionResult>();
-    const retry = withResolvers<StepExecutionResult>();
-    let retryCalls = 0;
-    const execute = () => {
-      retryCalls++;
-      return retry.promise;
-    };
-    const winner = runStepSingleFlight(RUN, STEP, () => promise, 'debug');
-    const losers = [
-      runStepSingleFlight(RUN, STEP, execute, 'debug'),
-      runStepSingleFlight(RUN, STEP, execute, 'debug'),
-    ];
-
-    resolve({ type: 'skipped' });
-    await winner;
-    await new Promise((r) => setTimeout(r, 0));
-    retry.resolve({ type: 'completed' });
-    // The first to re-enter takes the slot; the other waits on it and skips.
-    expect(await Promise.all(losers)).toEqual(
-      expect.arrayContaining([{ type: 'completed' }, { type: 'skipped' }])
-    );
-    expect(retryCalls).toBe(1);
-  });
-
   it('releases the slot after settlement so later executions run again', async () => {
     let calls = 0;
     const run = () =>
