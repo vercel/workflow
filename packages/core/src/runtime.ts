@@ -188,7 +188,7 @@ export {
 export {
   getHookByToken,
   type Hook,
-  HookResumeHandleSchema,
+  parseHookResumeHandle,
   type ResumedHook,
   resumeHook,
   resumeWebhook,

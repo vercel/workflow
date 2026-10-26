@@ -68,10 +68,15 @@ async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
 type ResumableHook = Omit<WorldHook, 'metadata'>;
 
 /** Validates a hook carried across requests without user metadata or live capabilities. */
-export const HookResumeHandleSchema = HookSchema.omit({
+const HookResumeHandleSchema = HookSchema.omit({
   metadata: true,
   resumeCapabilities: true,
 });
+
+/** Parse an opaque hook snapshot without reading metadata or trusting live capabilities. */
+export function parseHookResumeHandle(value: unknown): ResumableHook {
+  return HookResumeHandleSchema.parse(value);
+}
 
 /**
  * A hook as returned by {@link getHookByToken} and {@link resumeHook}: the
