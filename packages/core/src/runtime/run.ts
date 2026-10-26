@@ -8,6 +8,7 @@ import {
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
+import { isLegacySpecVersion } from '@workflow/world/spec-version';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -310,13 +311,21 @@ export class Run<TResult> {
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
     const run = await world.runs.get(this.runId, { resolveData: 'none' });
-    await world.events.create(this.runId, {
-      eventType: 'run_cancelled',
-      specVersion: specVersionForRunWrite(run.specVersion),
-      ...(options?.cancelReason !== undefined
-        ? { eventData: { cancelReason: options.cancelReason } }
-        : {}),
-    });
+    const specVersion = specVersionForRunWrite(run.specVersion);
+    // A run that predates event sourcing is cancelled through the legacy
+    // entity endpoint, as `cancelRun()` does; the event-sourced route has no
+    // event to write for it.
+    await world.events.create(
+      this.runId,
+      {
+        eventType: 'run_cancelled',
+        specVersion,
+        ...(options?.cancelReason !== undefined
+          ? { eventData: { cancelReason: options.cancelReason } }
+          : {}),
+      },
+      { v1Compat: isLegacySpecVersion(specVersion) }
+    );
   }
 
   /**
