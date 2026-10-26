@@ -631,8 +631,67 @@ What the flip does not change: it reduces exposure, not correctness. The livenes
 - Decide the release channel: a 5.x minor or a v6 beta.
 - Decide whether to close the earlier stacked PRs that this one supersedes.
 - Decide whether coalescing in world-local and world-postgres has to land before they mint spec 9 runs by default, or ships as a follow-up (section 7, "world-local and world-postgres do not coalesce").
-- Deferred, not required for merge:
-  - orchestrator-message coalescing in world-local and world-postgres, with re-runs under the held gate, the coalesced count, `invocationStartedAt`, and a handoff that goes to the front of the run's queue (section 7); world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has the same uncoalesced shape;
-  - further sharing of the spec 8 and spec 9 delivery bodies and step executors;
-  - a spec 8 conformance suite for world-postgres, as world-local has.
-- Remove this page.
+- Deferred, not required for merge: the follow-ups in section 12.
+- File the section 12 follow-ups as GitHub issues, then remove this page.
+
+## 12. Follow-ups after merge (to file as GitHub issues)
+
+One entry per larger follow-up, to be opened as an issue each once this PR merges with spec 9 opt-in. Items this PR implements are not listed. Links are to the review comments that raised them.
+
+### 1. Liveness anchor: who re-sends and re-arms after a lost delivery (pending decision)
+
+Spec 9 relies on one rule for liveness: only a redelivery of the message that created a step re-sends it if it was never sent, and only the delivery that owns a wait chain (or holds the just-completed wait in memory) arms the chain's next timer. The review found several ways that anchor breaks, most reproduced on both engines: a fence-refused delivery acknowledges while a sibling delivery of the same message still owes a send ([4365355467](https://github.com/vercel/workflow/pull/4661#discussion_r4365355467)); the creator's redelivery coalesced into another holder after a crash, lease lapse or handoff gap ([4365355501](https://github.com/vercel/workflow/pull/4661#discussion_r4365355501)); world-local's in-memory queue lost on restart, whose recovery wake owns no chain ([4365355546](https://github.com/vercel/workflow/pull/4661#discussion_r4365355546)); a delivery that commits `wait_completed` and fails before arming the chain's next timer ([4365355506](https://github.com/vercel/workflow/pull/4661#discussion_r4365355506)); and an early final-hop timer coalesced into a holder that finds the wait not yet due ([4365355504](https://github.com/vercel/workflow/pull/4661#discussion_r4365355504)). Related: a spec 9 run continues on one message through every handoff and can outlive the message's retention ([4365355515](https://github.com/vercel/workflow/pull/4661#discussion_r4365355515)); step messages are exempt from the delivery cap, so a step handler that throws before writing anything is retried until retention with the run silently `running` ([4365355481](https://github.com/vercel/workflow/pull/4661#discussion_r4365355481)); the fence-refusal loop has no ceiling ([4365355583](https://github.com/vercel/workflow/pull/4661#discussion_r4365355583)), and its docs need rewriting once the fix lands ([4365355600](https://github.com/vercel/workflow/pull/4661#discussion_r4365355600)). The proposed hybrid: fence refusal ends in a counted redelivery of the same message; a bounded recovery sweep re-sends unstarted background steps older than the lease on redeliveries, first coalesced re-runs and recovery wakes; the chain's next timer is sent before `wait_completed` commits, and a suspending delivery arms any open wait due within a few seconds; the orchestrator message rotates to a new keyed message near retention; a step past the delivery cap gets an out-of-band `step_failed`. **Pending decision** on whether to take this design, and whether it lands before or after merge.
+
+### 2. Per-run events API routing and the opt-in flip (if not done at merge)
+
+Section 10's plan: capability-gated minting under `WORKFLOW_SPEC_VERSION`, `SPEC_VERSION_CURRENT` back to 8, the `specVersionForRunWrite` cap at `SPEC_VERSION_MAX_SUPPORTED`, the `start()` error wording, the rollback floor, world-vercel routing each run's events by its spec version (v4 below spec 9), and the dedicated spec 9 e2e lane with the variable in both the deploy and the test-runner env and a `specVersion === 9` assertion. Planned to land before merge; this entry exists only if any part slips. [4365355530](https://github.com/vercel/workflow/pull/4661#discussion_r4365355530), [4365355532](https://github.com/vercel/workflow/pull/4661#discussion_r4365355532), [4365355548](https://github.com/vercel/workflow/pull/4661#discussion_r4365355548).
+
+### 3. Durable `run.wakeUp()` on spec 9
+
+`wakeUp()` names the sleeps to complete on a keyed orchestrator message, so one that is folded into a running or lingering delivery is dropped while `stoppedCount` still counts it. This release keeps it best-effort (section 7). The thorough fix is an out-of-band "wake requested" event, written like `hook_received` and turned into an in-band `wait_completed` by the orchestrator, so a coalesced wake loses nothing. It needs a new event type and world-vercel backend support. A confirm-and-resend loop was rejected. [4365355511](https://github.com/vercel/workflow/pull/4661#discussion_r4365355511).
+
+### 4. Hook-linger policy
+
+Any open, undisposed hook makes every spec 9 pass linger for up to `WORKFLOW_ORCHESTRATOR_LINGER_MS`, even right after arming a long timer, so a run with a long-lived approval or cancel hook beside a polling `sleep()` holds a function for the window on every wake (documented in `runtime-tuning.mdx`). Before default-on, linger on hooks only while a burst is plausible: a `hook_received` within one linger window, or one handled by this delivery. Background steps keep the full linger. Optionally a separate `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`. It also shrinks the window in which `wakeUp()` is dropped. [4365355574](https://github.com/vercel/workflow/pull/4661#discussion_r4365355574).
+
+### 5. Back off the no-push tail poll
+
+On a World without `events.subscribe` (world-local, world-postgres), and on world-vercel after feed trouble, the orchestrator's tail poll runs at a flat `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS` (2 s) for the whole of every inline body; it never backs off. Before default-on, back off empty polls to about 10 s, and reset on a poll that delivered events, a failed poll, feed trouble or a write by this delivery. Trade-off: on world-local and world-postgres a background outcome reaches a running delivery up to the cap later; no event is lost. The main concern is Postgres read load for self-hosters who opt in. [4365355575](https://github.com/vercel/workflow/pull/4661#discussion_r4365355575).
+
+### 6. `events.subscribe` for world-postgres via LISTEN/NOTIFY
+
+world-postgres has no live event feed, so a spec 9 delivery there never lingers and picks up other writers' events only through the tail poll. Implementing `events.subscribe` with Postgres LISTEN/NOTIFY (notify per appended event, slot order, `onError` on a dropped connection) gives it warm handling of bursts and removes most polling. Before default-on. [4365355575](https://github.com/vercel/workflow/pull/4661#discussion_r4365355575).
+
+### 7. world-postgres stale named-queue lock after a hard kill
+
+Every spec 9 orchestrator delivery on world-postgres goes through a Graphile named queue. A worker killed mid-job leaves the queue row locked until Graphile's `resetLockedAt` clears locks older than 4 hours, so the run stalls for up to 4 hours (documented in the README, `4ed4f074ca`). Fix before default-on: each worker writes a heartbeat row, and on start and periodically the World calls `forceUnlockWorkers` for worker ids whose heartbeat expired. A blind short-TTL sweep is not safe, since a live delivery can hold the lock longer. Test: SIGKILL a worker mid-delivery and assert a later wake is delivered within the bound. [4365355604](https://github.com/vercel/workflow/pull/4661#discussion_r4365355604).
+
+### 8. Incremental log state in the node engine
+
+Each in-band write rescans the whole log (`maxEventSlot`, `appendUniqueEvents`, a full sort in `mergeReportedEvents`, `findEventSlotGap`), so CPU per step grows with log length, about O(n) per write and O(n²) per delivery. The duplicate `slotSnapshot()` is gone (`b489e7561b`). Before default-on: a running max slot, an id `Set` owned by the log and a dense-prefix watermark, reset on full load and repair, plus a ms-per-step benchmark at 250 against 2000 steps. Spec 8 has the same linear shape at a smaller constant. [4365355561](https://github.com/vercel/workflow/pull/4661#discussion_r4365355561).
+
+### 9. Monitor full-log reads on background step retry hops and redeliveries
+
+Every non-first delivery of a background step's message, each retry hop included, reads the run's whole log to decide, so N retrying steps cost O(N x log length) reads, and a long `retryAfter` pays one full read per 900-second hop on world-vercel. A per-step read is not a cheaper replacement, because it is also an event-log read on the same backend. Performance looks acceptable so far, so this is a post-release monitoring item: watch read volume and latency for runs with many retrying background steps, and revisit if it shows up. [4365355492](https://github.com/vercel/workflow/pull/4661#discussion_r4365355492).
+
+### 10. Not coalescing speculative creations under run-ahead (measure first)
+
+The run-ahead hazard check runs on a write that has already committed, and coalesced run-ahead writes can commit an outcome together with the next boundary's speculative creation. A hazard stop therefore detects a classification gap (logged at error level with `possibleLogCorruption: true`, `2b02860bed`) but cannot undo the writes committed with it. Not coalescing speculative creations would turn it back into a recovery, at the cost of run-ahead's per-turn batching, which is its latency win. Measure that cost first, and add a test that injects a path-changing event below a speculative write. [4365355527](https://github.com/vercel/workflow/pull/4661#discussion_r4365355527).
+
+### 11. world-local and world-postgres: resolve an unstamped message's spec from the run row
+
+Both Worlds gate and key a spec 9 run's orchestrator messages by the spec stamp on the message. A message from a producer that does not stamp it (an older SDK's `resumeHook()` or `cancel()`) skips the run gate and runs next to the live delivery, where the fence keeps it safe at the cost of an overlapping invocation. Before default-on, the Worlds read the run's spec from their own run row before gating an unstamped orchestrator message. [4365355540](https://github.com/vercel/workflow/pull/4661#discussion_r4365355540).
+
+### 12. Orchestrator-message coalescing in world-local and world-postgres
+
+Neither World coalesces a run's orchestrator messages, so every background completion's wake is its own delivery behind the run's gate (a 97-step fan-out gets 97 deliveries), and a handoff goes behind waiting wakes. Coalescing needs re-runs under the held gate with the coalesced count, the same `attempt` and the first run's `invocationStartedAt`, a re-run cap with handoff, and a handoff that goes to the front of the run's queue (section 7, "world-local and world-postgres do not coalesce").
+
+### 13. Verify: an inline step's long retry can run twice
+
+An inline step whose retry moves to its own message with a `retryAfter` beyond the queue's 24-hour deduplication window can have that message sent again after the window, and then two messages own one step's body. Reported by a reviewer, predates this PR, not verified. Reproduce first, then decide whether the retry should chain shorter delayed messages.
+
+### 14. Smaller deferred work
+
+- A spec 8 conformance suite for world-postgres, as world-local has.
+- Further sharing of the spec 8 and spec 9 delivery bodies and step executors, once spec 8 is on its way out.
+- world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has the same uncoalesced shape as entry 12: spec 9 messages go unkeyed on per-run topics, one invocation per wake.
