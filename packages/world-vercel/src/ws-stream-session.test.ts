@@ -1791,6 +1791,25 @@ describe('experimental WebSocket write pipelining', () => {
     expect(writeHttp).not.toHaveBeenCalled();
   });
 
+  it('releases the socket only after outstanding writes are acknowledged', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '2';
+    const { session, socket } = await openSession();
+    const first = session.write(0, ['a']);
+    const second = session.write(1, ['b']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    let released = false;
+    const releasing = Promise.resolve(session.release?.()).then(() => {
+      released = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(released).toBe(false);
+    expect(socket.closed).toEqual([]);
+    reply(socket, { type: 'write_ack', reqId: 1 });
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    await Promise.all([first, second, releasing]);
+    expect(socket.closed).toContainEqual([1000, 'stream writer released']);
+  });
+
   it('poisons every outstanding write when the socket closes before replies', async () => {
     process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '3';
     const { session, socket, writeHttp } = await openSession();

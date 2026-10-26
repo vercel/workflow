@@ -561,6 +561,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
 
   release(): Promise<void> {
     return this.enqueue(async () => {
+      // Pipelined writes still need their replies on this socket.
+      await this.settleOutstanding();
       if (this.mode === 'closed' || this.mode === 'poisoned') return;
       // A released handle remains usable over HTTP with the same sequence
       // space, without retaining or reconnecting its idle socket.
