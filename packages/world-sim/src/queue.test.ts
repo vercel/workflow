@@ -1,4 +1,8 @@
-import { ValidQueueName } from '@workflow/world';
+import {
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  ValidQueueName,
+} from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { createIdFactory } from './ids.js';
 import { createSimQueue } from './queue.js';
@@ -98,17 +102,27 @@ describe('sim queue', () => {
   });
 });
 
+const SPEC9_A = {
+  runId: 'wrun_a',
+  runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+};
+const SPEC9_B = {
+  runId: 'wrun_b',
+  runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+};
+
 describe('sim queue: one orchestrator delivery per run', () => {
   it('skips a run’s orchestrator message while that run holds a lease', async () => {
     const { queue } = setup();
-    await queue.queue(TOPIC, { runId: 'wrun_a' });
-    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    await queue.queue(TOPIC, SPEC9_A);
+    await queue.queue(TOPIC, SPEC9_A);
     await queue.queue(TOPIC, {
       runId: 'wrun_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       stepId: 'step_1',
       stepName: 'add',
     });
-    await queue.queue(TOPIC, { runId: 'wrun_b' });
+    await queue.queue(TOPIC, SPEC9_B);
 
     const first = queue.takeNext();
     const lease = await queue.acquireLease(first!);
@@ -117,18 +131,18 @@ describe('sim queue: one orchestrator delivery per run', () => {
     // The second orchestrator message of wrun_a waits; the step message and
     // the other run do not.
     expect(queue.takeNext()?.payload).toMatchObject({ stepId: 'step_1' });
-    expect(queue.takeNext()?.payload).toMatchObject({ runId: 'wrun_b' });
+    expect(queue.takeNext()?.payload).toMatchObject(SPEC9_B);
     expect(queue.takeNext()).toBeUndefined();
     expect(queue.gated()).toHaveLength(1);
 
     queue.releaseLease(lease);
-    expect(queue.takeNext()?.payload).toMatchObject({ runId: 'wrun_a' });
+    expect(queue.takeNext()?.payload).toMatchObject(SPEC9_A);
   });
 
   it('makes a second lease of the run wait for the first', async () => {
     const { queue } = setup();
-    await queue.queue(TOPIC, { runId: 'wrun_a' });
-    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    await queue.queue(TOPIC, SPEC9_A);
+    await queue.queue(TOPIC, SPEC9_A);
     const first = await queue.acquireLease(queue.takeNext()!);
     const waitedFor: string[] = [];
     const second = queue.acquireLease(queue.pending()[0]!, (holder) =>
@@ -147,8 +161,8 @@ describe('sim queue: one orchestrator delivery per run', () => {
 
   it('frees the run when a lease expires, and can redeliver its message', async () => {
     const { queue } = setup();
-    await queue.queue(TOPIC, { runId: 'wrun_a' });
-    await queue.queue(TOPIC, { runId: 'wrun_a' }, { delaySeconds: 60 });
+    await queue.queue(TOPIC, SPEC9_A);
+    await queue.queue(TOPIC, SPEC9_A, { delaySeconds: 60 });
     const message = queue.takeNext()!;
     message.deliveries++;
     const lease = await queue.acquireLease(message);
@@ -167,5 +181,26 @@ describe('sim queue: one orchestrator delivery per run', () => {
     expect(queue.isDeliverable(queue.pending()[0]!)).toBe(false);
     queue.releaseLease(successor);
     expect(queue.isDeliverable(queue.pending()[0]!)).toBe(true);
+  });
+
+  it('gates only messages that say they belong to a spec 9 run', async () => {
+    const { queue } = setup();
+    await queue.queue(TOPIC, SPEC9_A);
+    // An unstamped wake and a spec 8 run's message are not serialized, as on
+    // world-local and world-postgres.
+    await queue.queue(TOPIC, { runId: 'wrun_a' });
+    await queue.queue(TOPIC, {
+      runId: 'wrun_a',
+      runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+    });
+    const lease = await queue.acquireLease(queue.takeNext()!);
+    expect(lease).toMatchObject({ runId: 'wrun_a' });
+    expect(queue.takeNext()?.payload).toEqual({ runId: 'wrun_a' });
+    const spec8 = queue.takeNext()!;
+    expect(spec8.payload).toMatchObject({
+      runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+    });
+    await expect(queue.acquireLease(spec8)).resolves.toBeUndefined();
+    queue.releaseLease(lease);
   });
 });

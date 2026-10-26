@@ -13,23 +13,28 @@
  * which is what lets a scenario containing `sleep('30d')` finish in
  * microseconds.
  *
- * A run's orchestrator deliveries (see `orchestratorRunIdOf`) go one at a
- * time, as on a per-run topic consumed with `maxConcurrency: 1`: a delivery
+ * A single-orchestrator run's orchestrator deliveries (see
+ * `singleOrchestratorRunIdOf`) go one at a time, as on a per-run topic
+ * consumed with `maxConcurrency: 1` and as world-local and world-postgres
+ * gate them: a delivery
  * holds its run's lease from the moment it is handed to the handler until the
  * handler responds, and no other orchestrator message of that run is handed
- * out meanwhile. Step messages are never gated. The one way past the gate is
+ * out meanwhile. Step messages are never gated, and neither is a message
+ * that does not say it belongs to a spec 9 run: an unstamped wake, or any
+ * message of an earlier run, runs beside the lease holder exactly as it does
+ * on the real Worlds. The one way past the gate is
  * `expireLeases`, which models a delivery that outlived its lease: the queue
  * treats the run as free while that delivery keeps running.
  */
 
 import {
   MessageId,
-  orchestratorRunIdOf,
   parseQueueName,
   type Queue,
   type QueueOptions,
   type QueuePayload,
   type QueuePrefix,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
 } from '@workflow/world';
 import type { IdFactory } from './ids.js';
@@ -178,7 +183,7 @@ export function createSimQueue(opts: {
       changeWaiters.push(resolve);
     });
   const isDeliverable = (message: QueuedMessage) => {
-    const runId = orchestratorRunIdOf(message.payload);
+    const runId = singleOrchestratorRunIdOf(message.payload);
     return runId === undefined || !leases.has(runId);
   };
 
@@ -291,7 +296,7 @@ export function createSimQueue(opts: {
     },
     isDeliverable,
     async acquireLease(message, onWait) {
-      const runId = orchestratorRunIdOf(message.payload);
+      const runId = singleOrchestratorRunIdOf(message.payload);
       if (runId === undefined) return undefined;
       let waited = false;
       for (let holder = leases.get(runId); holder; holder = leases.get(runId)) {
