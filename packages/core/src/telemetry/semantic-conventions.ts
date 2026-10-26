@@ -714,6 +714,30 @@ export const StepDispatchPrologue = SemanticConvention<
   'run_context' | 'runs_get'
 >('workflow.step.dispatch_prologue');
 
+/**
+ * What a background step's delivery did with its message
+ * (`spec9/step-delivery.ts`): `run` the body, `ack` without running it,
+ * `redeliver` it later (a `retryAfter` not reached yet), or `fail` the step
+ * for exceeding its retries. A long `retryAfter` is many `redeliver`
+ * deliveries of one message; this tells them apart from the run.
+ */
+export const StepDeliveryDecision = SemanticConvention<
+  'run' | 'ack' | 'redeliver' | 'fail'
+>('step.delivery.decision');
+
+/**
+ * Why a background step's delivery did not run the body: `step-terminal`,
+ * `run-terminal`, `retry-after` or `max-retries`. Absent for `run`.
+ */
+export const StepDeliveryReason = SemanticConvention<string>(
+  'step.delivery.reason'
+);
+
+/** The delay a `redeliver` delivery asked the queue for, in seconds. */
+export const StepDeliveryTimeoutSeconds = SemanticConvention<number>(
+  'step.delivery.timeout_seconds'
+);
+
 // Hook-triggered time-to-resume (TTR) attributes
 //
 // Set on the `step.execute <name>` span of the FIRST durable step following a

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
+import * as telemetry from '../../telemetry.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   expectAcknowledged,
@@ -836,6 +837,83 @@ describe.each([
       // One message for the whole retry span.
       expect(new Set(stepDeliveries.map((d) => d.messageId)).size).toBe(1);
     } finally {
+      nowSpy.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('records each step delivery decision on its span', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    longRetryFailures = 1;
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    const original = telemetry.trace;
+    const spans: Record<string, unknown>[] = [];
+    const traceSpy = vi.spyOn(telemetry, 'trace').mockImplementation(((
+      name: string,
+      ...args: unknown[]
+    ) => {
+      if (!name.startsWith('workflow.execute')) {
+        return (original as (...a: unknown[]) => Promise<unknown>)(
+          name,
+          ...args
+        );
+      }
+      const fn = args[args.length - 1] as (span: unknown) => Promise<unknown>;
+      const attributes: Record<string, unknown> = {};
+      spans.push(attributes);
+      return fn({
+        setAttributes: (attrs: Record<string, unknown>) =>
+          Object.assign(attributes, attrs),
+        setAttribute: (key: string, value: unknown) => {
+          attributes[key] = value;
+        },
+        setStatus: () => {},
+        recordException: () => {},
+        addEvent: () => {},
+        end: () => {},
+        isRecording: () => true,
+        spanContext: () => ({ traceId: '0', spanId: '0', traceFlags: 0 }),
+      });
+    }) as never);
+    try {
+      const { world } = await setup(
+        `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_long_retry");
+         async function workflow() { return await step(); }${transform('workflow')}`,
+        [],
+        {
+          advanceClock: (seconds) => {
+            // A queue that caps each redelivery delay.
+            offsetMs += Math.min(seconds, 900) * 1000;
+          },
+        }
+      );
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      const decided = spans.filter(
+        (attributes) => attributes['step.delivery.decision'] !== undefined
+      );
+      const stepId = eventsOf(world, 'step_created')[0]?.correlationId;
+      for (const attributes of decided) {
+        expect(attributes).toMatchObject({
+          'step.id': stepId,
+          'step.name': 'so_long_retry',
+        });
+      }
+      const redelivered = decided.filter(
+        (attributes) => attributes['step.delivery.decision'] === 'redeliver'
+      );
+      expect(redelivered.length).toBeGreaterThan(0);
+      for (const attributes of redelivered) {
+        expect(attributes['step.delivery.reason']).toBe('retry-after');
+        expect(attributes['step.delivery.timeout_seconds']).toBeGreaterThan(0);
+      }
+      expect(decided.map((a) => a['step.delivery.decision'])).toContain('run');
+    } finally {
+      traceSpy.mockRestore();
       nowSpy.mockRestore();
       vi.unstubAllEnvs();
     }

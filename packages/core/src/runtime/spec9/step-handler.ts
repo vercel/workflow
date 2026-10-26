@@ -138,11 +138,25 @@ export async function handleStepMessage(
   } else {
     decision = firstDeliveryDecision(payload.stepAttempt);
   }
+  // On the span whatever the decision: the `run` path sets the step's
+  // attributes again inside `executeStep`, the others leave only these.
+  span?.setAttributes({
+    ...Attribute.StepId(stepId),
+    ...Attribute.StepName(stepName),
+    ...Attribute.StepDeliveryDecision(decision.action),
+    ...('reason' in decision
+      ? Attribute.StepDeliveryReason(decision.reason)
+      : {}),
+    ...(decision.action === 'redeliver'
+      ? Attribute.StepDeliveryTimeoutSeconds(decision.timeoutSeconds)
+      : {}),
+  });
   runtimeLogger.debug('Step delivery decision', {
     workflowRunId: runId,
     stepId,
     deliveryCount: meta.deliveryCount,
     decision: decision.action,
+    ...('reason' in decision ? { reason: decision.reason } : {}),
   });
 
   const createEvent = <T extends CreateEventRequest>(
