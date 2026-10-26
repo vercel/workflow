@@ -2171,6 +2171,10 @@ export async function runWorkflowWithQuickJS(params: {
       }
     }
   } finally {
+    // Every exit, a throw included, lets running inline bodies settle and
+    // stops the live feed before the VM goes away; otherwise the feed keeps
+    // polling and holds its subscription for as long as the process lives.
+    await drainInline();
     session.dispose();
   }
 
