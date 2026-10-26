@@ -396,10 +396,11 @@ describe('waitForWorkflowRunTerminalStatus', () => {
   });
 
   describe('honors the caller signal on the plain-read fallback', () => {
-    // The plain read is held for longer than the caller is willing to wait, so
-    // the only way the call settles quickly is if the abort reaches it.
+    // The caller's signal times out long before the held reply lands, so the
+    // call rejects only if the plain read carries the signal. Without it the
+    // reply lands and the call resolves.
     const HELD_READ_MS = 2_000;
-    const ABORT_AFTER_MS = 50;
+    const CALLER_TIMEOUT_MS = 50;
 
     function interceptHeldPlainRead(agent: MockAgent) {
       agent
@@ -412,22 +413,30 @@ describe('waitForWorkflowRunTerminalStatus', () => {
         .delay(HELD_READ_MS);
     }
 
-    async function expectAbortedPromptly(promise: Promise<unknown>) {
-      const startedAt = Date.now();
-      await expect(promise).rejects.toThrow();
-      expect(Date.now() - startedAt).toBeLessThan(HELD_READ_MS / 2);
+    async function expectCallerTimeout(
+      promise: Promise<unknown>,
+      signal: AbortSignal
+    ) {
+      const error = await promise.then(
+        () => expect.fail('expected the caller timeout to reject the call'),
+        (error: unknown) => error
+      );
+      expect(error).toBeInstanceOf(WorkflowWorldError);
+      expect((error as WorkflowWorldError).cause).toBe(signal.reason);
     }
 
     it('when there is no budget to wait with', async () => {
       const agent = mockAgent();
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
       interceptHeldPlainRead(agent);
 
-      await expectAbortedPromptly(
+      await expectCallerTimeout(
         waitForWorkflowRunTerminalStatus(
           RUN_ID,
-          { signal: AbortSignal.timeout(ABORT_AFTER_MS) },
+          { signal },
           { token: 'test-token', dispatcher: agent }
-        )
+        ),
+        signal
       );
     });
 
@@ -454,13 +463,15 @@ describe('waitForWorkflowRunTerminalStatus', () => {
         config
       );
 
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
       interceptHeldPlainRead(agent);
-      await expectAbortedPromptly(
+      await expectCallerTimeout(
         waitForWorkflowRunTerminalStatus(
           RUN_ID,
-          { timeoutMs: 25_000, signal: AbortSignal.timeout(ABORT_AFTER_MS) },
+          { timeoutMs: 25_000, signal },
           config
-        )
+        ),
+        signal
       );
     });
 
@@ -473,14 +484,16 @@ describe('waitForWorkflowRunTerminalStatus', () => {
           method: 'GET',
         })
         .reply(404, { error: 'not-found', message: 'No route matches GET …' });
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
       interceptHeldPlainRead(agent);
 
-      await expectAbortedPromptly(
+      await expectCallerTimeout(
         waitForWorkflowRunTerminalStatus(
           RUN_ID,
-          { timeoutMs: 25_000, signal: AbortSignal.timeout(ABORT_AFTER_MS) },
+          { timeoutMs: 25_000, signal },
           { token: 'test-token', dispatcher: agent }
-        )
+        ),
+        signal
       );
     });
   });
