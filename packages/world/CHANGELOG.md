@@ -1,5 +1,29 @@
 # @workflow/world
 
+## 5.0.5
+
+### Patch Changes
+
+- [#4916](https://github.com/vercel/workflow/pull/4916) [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix cross-deployment `start()` to 4.x deployments being misread as a run invocation, and keep replayed runs in the original run's region.
+
+- [#4870](https://github.com/vercel/workflow/pull/4870) [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Exempt QuickJS runs with a positive snapshot threshold from the default per-run event limit, matching the Vercel World
+
+- [#4895](https://github.com/vercel/workflow/pull/4895) [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Avoid redundant history reads when independent hooks register concurrently. Keep existing single-event requests parallel and reconcile their committed events together before continuing, with the normal history reload when the responses do not cover a complete consecutive suffix.
+
+## 5.0.4
+
+### Patch Changes
+
+- [#4733](https://github.com/vercel/workflow/pull/4733) [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `InBandSupersededError` and optional `inBand`/`expectedSeqInBand` event-create params for the in-band writer fence. `@workflow/world-vercel` forwards them, does not retry a fenced write in-process, and records the fence on its event spans. The runtime does not use them yet.
+
+- [#4835](https://github.com/vercel/workflow/pull/4835) [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349) Thanks [@pranaygp](https://github.com/pranaygp)! - Add optional `Queue.registerRoute()` and `Queue.registerHandler()`, implemented by `@workflow/world-local` and `@workflow/world-postgres`, so a queue consumer other than the Workflow SDK receives its own prefix's messages on its own route or in process. `reenqueueActiveRuns()` re-enqueues a run to the queue namespace it recorded, and `@workflow/world-postgres` keeps a job's queue prefix.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Implement the optional in-band writer fence and list snapshot in `@workflow/world-local` and `@workflow/world-postgres`, declared with the new `inBandFence` capability.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report `deliveryCount` and `createdAt` in queue handler meta on `@workflow/world-local` and `@workflow/world-postgres`.
+
+- [#4833](https://github.com/vercel/workflow/pull/4833) [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3) Thanks [@pranaygp](https://github.com/pranaygp)! - `@workflow/world-vercel` declares the `inBandFence` capability (its backend refuses a stale in-band write on every run with an event sequencer, and answers an in-band write on an older run with a 400), and passes on the in-band counts its backend reports: `snapshot` on `events.list` and `allocated` on a single `events.create`. The `inBandFence` contract lets a World list no snapshot when its refusals carry both counters, and `@workflow/world-testing` takes the counters from a refusal for such a World.
+
 ## 5.0.3
 
 ### Patch Changes

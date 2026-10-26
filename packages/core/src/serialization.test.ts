@@ -190,6 +190,23 @@ describe('workflow arguments', () => {
     expect(hydrated.getTime()).toEqual(date.getTime());
   });
 
+  it('should round-trip strings with unpaired surrogates', async () => {
+    const value = ['a\ud800b', 'c\udfffd', '😀'];
+    const serialized = await dehydrateWorkflowArguments(
+      value,
+      mockRunId,
+      noEncryptionKey,
+      []
+    );
+    const hydrated = await hydrateWorkflowArguments(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+    expect(hydrated).toEqual(value);
+  });
+
   it('should work with invalid Date', async () => {
     const date = new Date('asdf');
     const serialized = await dehydrateWorkflowArguments(
@@ -1011,8 +1028,14 @@ describe('workflow arguments', () => {
       await writer.close();
       await Promise.all(ops);
 
-      expect(runsGet).toHaveBeenCalledWith('wrun_parent');
-      expect(getEncryptionKeyForRun).toHaveBeenCalledWith(parentRun);
+      // Metadata only: the lookup needs the owner's deploymentId, not its
+      // payloads (#4645).
+      expect(runsGet).toHaveBeenCalledWith('wrun_parent', {
+        resolveData: 'none',
+      });
+      expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_parent', {
+        deploymentId: parentRun.deploymentId,
+      });
     } finally {
       vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
     }

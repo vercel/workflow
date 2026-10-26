@@ -12,6 +12,7 @@ import {
   PARENT_RUN_ID_ATTRIBUTE,
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
+  resolveQueueNamespace,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -67,7 +68,7 @@ import {
 import { Run } from './run.js';
 import { isSingleOwnerRun, SINGLE_OWNER_ATTRIBUTE } from './single-owner.js';
 import {
-  getSnapshotThresholdFromEnv,
+  getSnapshotThresholdForStart,
   getWorkflowVmFromEnv,
 } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -427,6 +428,23 @@ export interface StartOptionsBase {
    * Defaults to `WORKFLOW_DURABLE_RUN_CREATED=1`.
    */
   experimental_durableRunCreated?: boolean;
+
+  /**
+   * Set to `false` to store the run's arguments uncompressed.
+   *
+   * Arguments are compressed by default when the target run can decode
+   * them. The attempt costs CPU proportional to the input size and is
+   * wasted on incompressible data (media, encrypted or random bytes),
+   * so callers that know their inputs will not shrink can skip it.
+   *
+   * `true` is the default and does not force compression: a target that
+   * cannot decode compressed payloads, or a process with
+   * `WORKFLOW_DISABLE_COMPRESSION=1` set, still stores them uncompressed.
+   * This option is the per-call counterpart of that environment variable
+   * and only affects the arguments; a dynamic workflow's code is
+   * compressed regardless.
+   */
+  compressArguments?: boolean;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -1025,10 +1043,12 @@ export async function start<TArgs extends unknown[], TResult>(
       // If WORKFLOW_VM / WORKFLOW_SNAPSHOT_THRESHOLD are set on the client
       // starting the run, stamp them into the run's executionContext so the
       // run keeps the engine and snapshot policy it started with (the same
-      // deployment can serve both VM engines). Unknown values throw; see
+      // deployment can serve both VM engines). QuickJS runs always get an
+      // explicit threshold (the default when unset) because the World keys
+      // the per-run event limit exemption on it. Unknown values throw; see
       // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
-      const snapshotThreshold = getSnapshotThresholdFromEnv();
+      const snapshotThreshold = getSnapshotThresholdForStart(workflowVm);
       // A single-owner run (`single-owner.ts`) needs this deployment and a
       // World that can invoke its owner: the run is stored for its owner
       // alone, so it must never be written another way. The default only
@@ -1050,9 +1070,14 @@ export async function start<TArgs extends unknown[], TResult>(
         throw new WorkflowRuntimeError(
           'Dynamic workflows cannot be started as single-owner runs ($experimentalSingleOwner)'
         );
+      // The queue namespace the run's messages travel on, recorded so a World
+      // that re-enqueues active runs on restart (world-local, world-postgres)
+      // sends this run back to its own namespace's consumer.
+      const queueNamespace = resolveQueueNamespace(opts.namespace);
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
+        ...(queueNamespace ? { queueNamespace } : {}),
         ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),
         features: { encryption: !!encryptionKey },
         ...(targetHookResumeInputVersion !== undefined
@@ -1080,14 +1105,17 @@ export async function start<TArgs extends unknown[], TResult>(
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
-      // Compress workflow arguments only when the run itself is marked as
-      // possibly containing compressed payloads (specVersion >= 5) AND the
-      // target deployment can decode them (same-deployment, or probed
-      // capability for cross-deployment starts).
+      // Compress only when the run itself is marked as possibly containing
+      // compressed payloads (specVersion >= 5) AND the target deployment can
+      // decode them (same-deployment, or probed capability for
+      // cross-deployment starts). The caller's `compressArguments: false` opt-out
+      // applies to the arguments alone, not to dynamic workflow code.
       const compression: CompressionMode =
         specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION
           ? targetCompression
           : false;
+      const argumentCompression: CompressionMode =
+        opts.compressArguments === false ? false : compression;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -1096,7 +1124,7 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        compression
+        argumentCompression
       );
 
       // Dynamic workflow code goes through the same serialization pipeline as

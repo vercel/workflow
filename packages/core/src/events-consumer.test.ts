@@ -974,10 +974,10 @@ describe('EventsConsumer', () => {
       });
     });
 
-    it('does not let one class suppress another for the same entity', async () => {
-      // The step's outcome is in the log but its first attempt never wrote a
-      // step_started, so this one is not a repeat of anything and divergence
-      // is the right answer.
+    it('treats any event after the entity closed as inert', async () => {
+      // Terminal-inert: the step's outcome is in the log, so a later start is
+      // inert even though no earlier start repeats it (a background step
+      // invocation stalled past its lease can write one).
       const corr = 'step_A';
       const events = [
         realEvent('step_created', corr),
@@ -993,13 +993,70 @@ describe('EventsConsumer', () => {
 
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
       await afterDeferredCheck(() => {
-        expect(consumer.eventIndex).toBe(2);
-        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(consumer.eventIndex).toBe(3);
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[2],
+          'step_completed'
+        );
+      });
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('treats a payload behind a hook disposal as inert', async () => {
+      // `hook_received` belongs to no class, so only the closed entity covers
+      // it: the hook's consumer deregistered on `hook_disposed` and nothing
+      // can claim a payload under its id afterwards.
+      const corr = 'hook_A';
+      const events = [
+        realEvent('hook_created', corr),
+        realEvent('hook_received', corr),
+        realEvent('hook_disposed', corr),
+        realEvent('hook_received', corr),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
       });
 
+      consumer.subscribe(entityConsumer(corr, 'hook_disposed'));
       await afterDeferredCheck(() => {
-        expect(onUnconsumedEvent).toHaveBeenCalledWith(events[2]);
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(consumer.parkedSummary).toBeUndefined();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[3],
+          'hook_disposed'
+        );
       });
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('leaves every attempt of a retried step to its consumer', async () => {
+      const corr = 'step_A';
+      const events = [
+        realEvent('step_created', corr),
+        realEvent('step_started', corr),
+        realEvent('step_retrying', corr),
+        realEvent('step_started', corr),
+        realEvent('step_completed', corr),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const onConsumedEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+        onConsumedEvent,
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'step_completed'));
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(onConsumedEvent).toHaveBeenCalledTimes(events.length);
+      });
+      expect(onDuplicateEvent).not.toHaveBeenCalled();
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
 
     it('skips a second attr_set for an id the walk already resolved', async () => {

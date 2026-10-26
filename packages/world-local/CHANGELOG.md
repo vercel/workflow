@@ -1,5 +1,40 @@
 # @workflow/world-local
 
+## 5.1.2
+
+### Patch Changes
+
+- [#4922](https://github.com/vercel/workflow/pull/4922) [`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Restore missing `run_created` events for interrupted local run creation.
+
+- [#4870](https://github.com/vercel/workflow/pull/4870) [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Exempt QuickJS runs with a positive snapshot threshold from the default per-run event limit, matching the Vercel World
+
+- [#4924](https://github.com/vercel/workflow/pull/4924) [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Fix an edge case in `createHook({ experimental_force: true })` where a racing `resumeHook` could be dropped during the handover
+- Updated dependencies [[`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7)]:
+  - @workflow/world@5.0.5
+  - @workflow/errors@5.0.5
+
+## 5.1.1
+
+### Patch Changes
+
+- [#4835](https://github.com/vercel/workflow/pull/4835) [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349) Thanks [@pranaygp](https://github.com/pranaygp)! - Add optional `Queue.registerRoute()` and `Queue.registerHandler()`, implemented by `@workflow/world-local` and `@workflow/world-postgres`, so a queue consumer other than the Workflow SDK receives its own prefix's messages on its own route or in process. `reenqueueActiveRuns()` re-enqueues a run to the queue namespace it recorded, and `@workflow/world-postgres` keeps a job's queue prefix.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Implement the optional in-band writer fence and list snapshot in `@workflow/world-local` and `@workflow/world-postgres`, declared with the new `inBandFence` capability.
+
+- [#4838](https://github.com/vercel/workflow/pull/4838) [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae) Thanks [@fazxes](https://github.com/fazxes)! - Fix `initDataDir()` crashing on Bun for a new data directory: Bun's `opendir()` reports a missing directory on the first read, not when it is opened.
+
+- [#4834](https://github.com/vercel/workflow/pull/4834) [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix in-band event count conflicts when multiple processes write events, and fix count not surviving world restarts
+
+- [#4754](https://github.com/vercel/workflow/pull/4754) [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f) Thanks [@pranaygp](https://github.com/pranaygp)! - Register a run's stream names under a lock so `streams.list` no longer drops a stream when several of the run's streams first write at once. A stream written again after `clear()` is listed again.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report a message's cumulative `deliveryCount` across `{ timeoutSeconds }` redeliveries on `@workflow/world-postgres`.
+
+- [#4821](https://github.com/vercel/workflow/pull/4821) [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Report `deliveryCount` and `createdAt` in queue handler meta on `@workflow/world-local` and `@workflow/world-postgres`.
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/utils@5.0.2
+
 ## 5.1.0
 
 ### Minor Changes

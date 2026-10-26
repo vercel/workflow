@@ -15,6 +15,23 @@ result to the owner through invoke. The request resolves once the owner has
 accepted the result. A delivery without a response leaves the outcome unknown;
 HTTP failures keep their status.
 
+## Concurrent hook registrations
+
+Concurrent independent hook registrations use the existing single-event
+requests. The Node.js runtime defers per-request history catch-up and reconciles
+the committed events after all requests settle. The adapter supplies an optional
+`eventCursor` in Vercel's cursor format and honors resolved hook metadata for this
+path. A consecutive suffix needs no history read; missing or intervening events
+retain the normal reload before continuation. No server upgrade or batch
+registration endpoint is required.
+
+The runtime applies this optimization only to hooks-only suspensions whose
+registrations are all independent. Mixed suspensions, forced claims, and
+same-token lifecycle operations keep the normal catch-up path without resolving
+metadata for unused mutation responses. Runtime spans record
+`workflow.concurrent_hooks.carried_forward` and, on fallback,
+`workflow.concurrent_hooks.fallback_reason`; debug logs include the same outcome.
+
 ## Connection failures
 
 Backend connection failures and interrupted event streams follow existing retry policies, including failures with unrecognized error codes. Repeated HTTP/2 session failures rebuild the shared events connection pool. Invalid backend URL protocols, embedded credentials, Fetch-blocked ports, and unsupported request headers fail immediately. Interrupted event writes retain their existing in-process retries; caller cancellations are excluded.
@@ -225,7 +242,7 @@ with its owner.
 
 ## Custom dispatcher
 
-Storage and queue HTTP requests default to a shared undici `RetryAgent` that handles connection pooling and retries. Direct invocation does not use this retrying default. Pass a custom `dispatcher` to override the HTTP dispatcher, for example, to tune undici on newer Node.js runtimes:
+HTTP requests (including the queue) use shared undici dispatchers for connection pooling. Pass a custom `dispatcher` to override them, for example, to tune undici on newer Node.js runtimes:
 
 ```ts
 import { Agent } from 'undici';

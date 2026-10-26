@@ -18,3 +18,39 @@ export function once<T>(fn: () => T) {
   };
   return result;
 }
+
+/**
+ * In-process per-key async mutex backed by a caller-supplied `Map`.
+ * Used by `createEventsStorage` to serialize same-key event writes
+ * (`step_*` for the same step, `hook_created` for the same hook) and by
+ * `createStreamer` to serialize updates to a run's stream index.
+ * The map is instantiated per instance: different
+ * instances do NOT share locks, so two instances sharing one data
+ * directory behave exactly like two separate OS processes from the
+ * locking standpoint. Cross-instance / cross-process arbitration
+ * relies on the on-disk constraint / claim / lock files instead.
+ */
+export function withInProcessLock<T>(
+  locks: Map<string, Promise<unknown>>,
+  key: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prev = locks.get(key);
+  const taskBox: { task?: Promise<T> } = {};
+  const task = (async () => {
+    if (prev) {
+      // Wait for the previous task to settle; don't inherit its errors.
+      await prev.catch(() => undefined);
+    }
+    try {
+      return await fn();
+    } finally {
+      if (locks.get(key) === taskBox.task) {
+        locks.delete(key);
+      }
+    }
+  })();
+  taskBox.task = task;
+  locks.set(key, task);
+  return task;
+}

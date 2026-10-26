@@ -761,6 +761,7 @@ function recordStreamReadComplete(
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
+  #cancelled = false;
 
   constructor(runId: string, name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
@@ -790,9 +791,20 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         if (!reader) {
           if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
+          // Cancelled while the World loaded: don't open a read just to close it.
+          if (this.#cancelled) return;
           const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
           connectMs = Date.now() - connectStart;
+          if (this.#cancelled) {
+            // Cancelled while connecting: `cancel` below found no reader to
+            // tear down, so the World stream (on world-vercel, a live GET) is
+            // ours to close. Left open it would be held until the server's
+            // max duration. The stream is already closed to the consumer, so
+            // there is nothing to enqueue.
+            await stream.cancel().catch(() => {});
+            return;
+          }
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -839,6 +851,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         }
       },
       cancel: async (reason) => {
+        this.#cancelled = true;
         if (this.#reader) {
           await this.#reader.cancel(reason).catch(() => {});
           this.#reader = undefined;
@@ -2802,7 +2815,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 
 /**
  * Resolves the owner's encryption key, preferring its public key, then its
- * deployment, and finally its run record.
+ * deployment, and finally the deployment on its run record.
  * @internal
  */
 export async function getForwardedWritableEncryptionKey(
@@ -2816,9 +2829,16 @@ export async function getForwardedWritableEncryptionKey(
   const world = await getWorldLazy();
   if (!world.getEncryptionKeyForRun) return undefined;
 
-  const rawKey = deploymentId
-    ? await world.getEncryptionKeyForRun(runId, { deploymentId })
-    : await world.getEncryptionKeyForRun(await world.runs.get(runId));
+  // A descriptor minted before deployment ids were carried on the wire has to
+  // read the owning run for that one field, so it reads metadata only:
+  // `getEncryptionKeyForRun` needs nothing but the run's id and deployment,
+  // and the default `resolveData` would resolve its input and output too.
+  const ownerDeploymentId =
+    deploymentId ??
+    (await world.runs.get(runId, { resolveData: 'none' })).deploymentId;
+  const rawKey = await world.getEncryptionKeyForRun(runId, {
+    deploymentId: ownerDeploymentId,
+  });
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 

@@ -18,7 +18,15 @@ an extra queued continuation unless other background operations remain pending.
 Hook registration acknowledgements and token conflicts participate in replay
 delivery ordering alongside step results, hook payloads, and sleep completions.
 Concurrent branches awaiting `hook.getConflict()` preserve their step correlation
-IDs when replaying an extended event history.
+IDs when replaying an extended event history. `setAttributes()` acknowledgements
+take part in the same ordering, so a branch awaiting `setAttributes()` while
+another branch is in flight keeps its own step results on replay.
+
+Hook disposals pending when a workflow completes or fails rely on the terminal
+event's hook cleanup, avoiding redundant `hook_disposed` events. Disposals still
+persist when the workflow suspends, a later pending registration needs the
+same token, or explicit disposal releases a retained token early. Final
+`AbortController.abort()` calls still propagate to steps.
 
 Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
 
@@ -49,11 +57,14 @@ your app. Handlers receive the workflow name without a backend read, a lazy `Run
 instance, and, for failures, an error hydrated from the persisted payload.
 Callbacks are not retried; the event log remains the system of record.
 Hook-property getters and reporting failures are isolated from terminal writes.
-The callback's `waitUntil` scope also drains background operations for streams
-hydrated from the persisted failure, including when a handler throws.
+On Vercel, the callback's `waitUntil` scope also drains background operations for
+streams hydrated from the persisted failure, including when a handler throws.
+Cancel readers and release locks when finished; a leaked reader can hold that
+scope open until the invocation's duration limit. Streams hydrated through
+`run.returnValue` are not included in that drain.
 Register in the workflow executor's host startup, never from workflow or step
 code. Framework-specific support, hot-reload behavior, and stream cleanup are
-documented in the [lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks).
+documented in the [lifecycle hooks guide](https://workflow-sdk.dev/docs/observability/lifecycle-hooks).
 
 ### Single-owner runs (experimental)
 

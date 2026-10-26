@@ -46,6 +46,7 @@ import {
   type Event,
   type EventBatchResult,
   type EventDataPayloadField,
+  type EventListResponse,
   type EventResult,
   entityResolveData,
   type GetEventParams,
@@ -54,7 +55,6 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
-  type PaginatedResponse,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -496,7 +496,7 @@ export async function getEvent(
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Event>> {
+): Promise<EventListResponse> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
@@ -535,6 +535,9 @@ export async function getWorkflowRunEvents(
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
     hasMore: result.hasMore,
+    // The in-band fence's counters, read before the listing, when the
+    // backend reports them (see `capabilities.inBandFence` in index.ts).
+    ...(result.snapshot ? { snapshot: result.snapshot } : {}),
   };
 }
 
@@ -810,11 +813,14 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
-    data.eventType
-  )
-    ? 'resolve'
-    : 'lazy';
+  const remoteRefBehavior: 'resolve' | 'lazy' =
+    eventsNeedingResolve.has(data.eventType) ||
+    // Concurrent hook reconciliation consumes the committed event directly.
+    // Honor its explicit request for replay-ready metadata; other mutation
+    // responses keep their existing lightweight entity-only behavior.
+    (data.eventType === 'hook_created' && params?.resolveData === 'all')
+      ? 'resolve'
+      : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
 
@@ -939,12 +945,18 @@ async function createWorkflowRunEventInner(
     };
   }
 
-  return createWorkflowRunEventV4(
+  const result = await createWorkflowRunEventV4(
     data.eventType === 'run_started'
       ? { ...input, eventType: 'run_started', skipPreload: true }
       : { ...input, eventType: data.eventType },
     config
   );
+  // This cursor addresses the committed event, not a complete history page.
+  // Construct it here, where the Vercel cursor format is owned, so the runtime
+  // can reconcile concurrent responses without interpreting opaque cursors.
+  return result.event
+    ? { ...result, eventCursor: `eid:${result.event.eventId}` }
+    : result;
 }
 
 /**

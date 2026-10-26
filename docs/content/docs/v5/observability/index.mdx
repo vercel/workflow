@@ -80,6 +80,8 @@ To inspect workflows running on Vercel, ensure you're logged in to the Vercel CL
 npx workflow inspect runs --backend vercel
 ```
 
+Without an interactive `vercel login`, such as in CI, pass the auth token, project ID, team ID, and environment explicitly. See [Connecting from outside a deployment](/worlds/vercel#connecting-from-outside-a-deployment).
+
 When deployed to Vercel, workflow data is [encrypted end-to-end](/docs/how-it-works/encryption). Encrypted fields display as locked placeholders until you choose to decrypt them using the **Decrypt** button in the web UI or the `--decrypt` flag in the CLI.
 
 ## More observability features

@@ -1,7 +1,6 @@
 import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
-import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
@@ -9,6 +8,7 @@ import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { createSeededNanoid } from './seeded-nanoid.js';
 import {
   dehydrateStepError,
   dehydrateStepReturnValue,
@@ -60,9 +60,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
-    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
-    ),
+    generateNanoid: createSeededNanoid(() => context.globalThis.Math.random()),
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
@@ -534,6 +532,46 @@ describe('createUseStep', () => {
 
     // Queue item should still exist (step_started doesn't remove it)
     expect(ctx.invocationsQueue.size).toBe(1);
+  });
+
+  it('should mark hasCreatedEvent when the step_started has no step_created before it', async () => {
+    // A World may record an inline step's creation on its step_started alone.
+    // The suspension handler must then see the step as created, or it would
+    // write a step_created for a step that already exists.
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_started',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          stepName: 'add',
+          workflowName: 'workflow',
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const workflowError = withResolvers<Error>();
+    ctx.onWorkflowError = workflowError.reject;
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+
+    let error: Error | undefined;
+    try {
+      await Promise.race([add(1, 2), workflowError.promise]);
+    } catch (err_) {
+      error = err_ as Error;
+    }
+
+    expect(error).toBeInstanceOf(WorkflowSuspension);
+    const queueItem = [...ctx.invocationsQueue.values()][0];
+    expect(queueItem).toMatchObject({
+      type: 'step',
+      stepName: 'add',
+      hasCreatedEvent: true,
+    });
   });
 
   it('should consume step_retrying event and continue waiting', async () => {

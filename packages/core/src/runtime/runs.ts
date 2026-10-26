@@ -32,6 +32,14 @@ export interface RecreateRunOptions {
    * for is never picked up.
    */
   namespace?: string;
+  /**
+   * Region for the new run. Defaults to the source run's region, as reported
+   * by `World.regionForRunId`, so a replay is placed where the original run's
+   * data lives instead of in whatever region the calling process runs in.
+   * When the world can't derive one, `start()`'s own region resolution
+   * applies.
+   */
+  region?: string;
 }
 
 export interface StopSleepResult {
@@ -129,6 +137,7 @@ export async function recreateRunFromExisting(
       (deploymentId === run.deploymentId
         ? (run.specVersion ?? SPEC_VERSION_LEGACY)
         : undefined);
+    const region = options.region ?? world.regionForRunId?.(runId) ?? undefined;
 
     const newRun = await start(
       { workflowId: run.workflowName },
@@ -139,6 +148,7 @@ export async function recreateRunFromExisting(
         specVersion,
         replayedFromRunId: runId,
         namespace: options.namespace,
+        ...(region !== undefined ? { region } : {}),
       }
     );
     return newRun.runId;

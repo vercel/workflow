@@ -1,7 +1,7 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
-import { createRunId, describeRun } from './create-run-id.js';
+import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { validateRunExecutionContext } from './execution-context.js';
@@ -74,6 +74,17 @@ export function createWorld(config?: APIConfig): World {
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
       ...(invocationConfig(config) ? { invoke: true } : {}),
+      // The backend fences in-band writes on every sealed-log run (spec >= 7,
+      // the backend's event sequencer): a stale one is refused with 412
+      // `in-band-superseded`, carrying the run's `seq` and `seqInBand`
+      // (`InBandSupersededError`), and nothing is allocated for it. On an
+      // older run an in-band write is a 400 `in-band-fence-unsupported`,
+      // never an unfenced write, so a client fences by the run's spec
+      // version. A list response carries `snapshot` and a single create
+      // carries `allocated` where the backend reports them (events-v4.ts); a
+      // run whose list carries no snapshot is still fenced, and its refusals
+      // carry the counters.
+      inBandFence: true,
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })` (workflow-server
       // docs/hook-force-claim.md). Static rather than attested per lookup,
@@ -109,6 +120,7 @@ export function createWorld(config?: APIConfig): World {
         : createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
+    regionForRunId,
     describeRun,
     // Reports the environment this client's writes land in, so `start()` can
     // stamp it into the queue message and the consuming deployment can detect

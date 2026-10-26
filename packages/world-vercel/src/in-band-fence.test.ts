@@ -1,16 +1,26 @@
+import { Buffer } from 'node:buffer';
 import {
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
   PreconditionFailedError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { decode, encode } from 'cbor-x';
+import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   createWorkflowRunEventBatch,
+  getWorkflowRunEvents,
 } from './events.js';
-import { throwForErrorResponse } from './events-v4.js';
+import {
+  createWorkflowRunEventV4,
+  throwForErrorResponse,
+} from './events-v4.js';
+import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { errorForResponse, recordInBandRefusal } from './http-core.js';
+import { createWorld } from './index.js';
+import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 vi.mock('./get-deadline.js', () => ({
   getDeadline: vi.fn(async () => undefined),
@@ -248,5 +258,200 @@ describe('in-band writer fence (world-vercel)', () => {
     recordInBandRefusal(span, new InBandSupersededError('superseded'));
     recordInBandRefusal(span, new PreconditionFailedError('stale'));
     expect(span.setAttributes).not.toHaveBeenCalled();
+  });
+
+  it('declares the fence', () => {
+    expect(createWorld(config).capabilities?.inBandFence).toBe(true);
+  });
+
+  it('surfaces an in-band write on a run without the fence as a 400, not a refusal', () => {
+    // The backend fences sealed-log runs only (spec >= 7). On an older run it
+    // answers an in-band write with a 400 rather than writing it unfenced.
+    let thrown: unknown;
+    try {
+      throwForErrorResponse(
+        400,
+        { 'content-type': 'application/json' },
+        new TextEncoder().encode(
+          JSON.stringify({
+            error: 'in-band-fence-unsupported',
+            message:
+              'Run wrun_1 has specVersion 6, which has no event sequencer; in-band writes need a sealed-log run.',
+          })
+        ),
+        'createEvent',
+        'http://x'
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(WorkflowWorldError.is(thrown)).toBe(true);
+    expect(InBandSupersededError.is(thrown)).toBe(false);
+    expect(PreconditionFailedError.is(thrown)).toBe(false);
+    expect(thrown).toMatchObject({
+      status: 400,
+      code: 'in-band-fence-unsupported',
+    });
+  });
+});
+
+describe('in-band writer fence counts (world-vercel)', () => {
+  const origin = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+  const CREATED_AT = '2026-06-10T00:00:00.000Z';
+  const runCreated = encodeFrame(
+    {
+      eventId: 'evnt_1',
+      runId: 'wrun_1',
+      eventType: 'run_created',
+      createdAt: CREATED_AT,
+      eventData: { deploymentId: 'dpl_1', workflowName: 'w', input: null },
+    },
+    new Uint8Array([1])
+  );
+
+  function listing(
+    end: Record<string, unknown>,
+    headers: Record<string, string> = {}
+  ) {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(origin)
+      .intercept({
+        path: (path) => path.startsWith('/api/v4/runs/wrun_1/events'),
+        method: 'GET',
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          runCreated,
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_1', hasMore: false, ...end },
+            new Uint8Array(0)
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE, ...headers } }
+      );
+    return agent;
+  }
+
+  it("passes on the snapshot a list response's end frame carries", async () => {
+    const agent = listing({ snapshot: { seq: 1, seqInBand: 1 } });
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(page.data).toHaveLength(1);
+    expect(page.snapshot).toEqual({ seq: 1, seqInBand: 1 });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('takes the snapshot from the headers when the end frame has none', async () => {
+    const agent = listing(
+      {},
+      { 'x-wf-snapshot-seq': '7', 'x-wf-snapshot-seq-in-band': '3' }
+    );
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(page.snapshot).toEqual({ seq: 7, seqInBand: 3 });
+  });
+
+  it('lists no snapshot when the backend reports none, or a malformed one', async () => {
+    const headerPairs: [string, string][] = [
+      ['-1', '3'],
+      ['', '0'],
+      ['  ', '0'],
+      ['0x2', '1'],
+      ['1e1', '1'],
+      ['7', '3.5'],
+      // `seqInBand` counts a subset of the positions `seq` does.
+      ['1', '5'],
+    ];
+    for (const agent of [
+      listing({}),
+      listing({}, { 'x-wf-snapshot-seq': '7' }),
+      ...headerPairs.map(([seq, seqInBand]) =>
+        listing(
+          {},
+          {
+            'x-wf-snapshot-seq': seq,
+            'x-wf-snapshot-seq-in-band': seqInBand,
+          }
+        )
+      ),
+      // A malformed end-frame snapshot lists none, and does not fail the page.
+      listing({ snapshot: { seq: 1, seqInBand: 5 } }),
+      listing({ snapshot: { seq: '7', seqInBand: 3 } }),
+    ]) {
+      const page = await getWorkflowRunEvents(
+        { runId: 'wrun_1' },
+        { token: 'test-token', dispatcher: agent }
+      );
+      expect(page.data).toHaveLength(1);
+      expect(page).not.toHaveProperty('snapshot');
+    }
+  });
+
+  it('falls back to the headers when the end frame carries a malformed snapshot', async () => {
+    const agent = listing(
+      { snapshot: { seq: 1, seqInBand: 5 } },
+      { 'x-wf-snapshot-seq': '7', 'x-wf-snapshot-seq-in-band': '3' }
+    );
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1' },
+      { token: 'test-token', dispatcher: agent }
+    );
+    expect(page.snapshot).toEqual({ seq: 7, seqInBand: 3 });
+  });
+
+  it('passes on the positions a create allocated, when the backend reports them', async () => {
+    for (const allocated of [2, undefined]) {
+      const agent = new MockAgent();
+      agent.disableNetConnect();
+      agent
+        .get(origin)
+        .intercept({
+          path: '/api/v4/runs/wrun_1/events/step_completed',
+          method: 'POST',
+        })
+        .reply(
+          200,
+          encode({
+            event: {
+              eventType: 'step_completed',
+              specVersion: 7,
+              correlationId: 'step_1',
+              eventData: {},
+              eventId: 'evnt_3',
+              runId: 'wrun_1',
+              createdAt: CREATED_AT,
+            },
+            ...(allocated !== undefined ? { allocated } : {}),
+          }),
+          {
+            headers: {
+              'x-wf-event-id': 'evnt_3',
+              'x-wf-run-id': 'wrun_1',
+              'x-wf-created-at': CREATED_AT,
+            },
+          }
+        );
+      const result = await createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'step_completed',
+          specVersion: 7,
+          correlationId: 'step_1',
+          inBand: true,
+          expectedSeqInBand: 1,
+          payload: new TextEncoder().encode('"ok"'),
+        },
+        { token: 'test-token', dispatcher: agent }
+      );
+      expect(result.allocated).toBe(allocated);
+      agent.assertNoPendingInterceptors();
+    }
   });
 });

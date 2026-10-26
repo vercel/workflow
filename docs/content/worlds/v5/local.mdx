@@ -86,6 +86,12 @@ Whether queue deliveries go out through Node's built-in `node:http` and `node:ht
 
 Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
 
+Recovery also hands back to the queue any step that was running inline when the previous process exited. The step runs again right away instead of after the inline-ownership lease (about 14 minutes), and the interrupted attempt counts toward its retries. A step with `maxRetries: 0` that was interrupted mid-body therefore fails on restart with an "exceeded max retries" error instead of running again once the lease expires, as it already does after a crash on the Vercel World.
+
+If you turn recovery off and re-enqueue runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it.
+
+A step counts as abandoned only if it started before the Local World loaded in the current process or worker thread. Steps started since then are never released, so runs this process picks up during or after recovery are not affected, and calling `releaseOrphanedSteps()` late is safe. Recovery assumes that nothing else is running workflows on the same data directory and `tag`. That includes an earlier worker thread of the same process: some dev servers reload into a new worker thread, and until the old one stops, the new one may dispatch a step the old one is still running, so the step can run twice. If several processes or workers run workflows on one data directory, turn recovery off or give each one its own `tag`.
+
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Local World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during local development.
@@ -116,6 +122,28 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
 `createWorld()` also accepts `tag`, which scopes local storage files to a suffix. It is mainly used by test harnesses that share one `.workflow-data` directory.
+
+### Queue consumers other than the Workflow SDK
+
+The Local World delivers queue messages over HTTP to the app, and by default every message goes to the Workflow SDK's flow route, `/.well-known/workflow/v1/flow`. A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix (`__{namespace}_wkf_workflow_`) and tells the World where those go:
+
+```typescript title="lib/agent-queue.ts" lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const PREFIX = "__agent_wkf_workflow_";
+
+export async function registerAgentQueue(
+  handler: (req: Request) => Promise<Response>
+) {
+  const world = await getWorld();
+  // Over HTTP: deliveries for this prefix go to the app's own route.
+  world.registerRoute?.(PREFIX, "/api/agent/queue");
+  // In this process: deliveries skip HTTP entirely.
+  world.registerHandler?.(PREFIX, handler);
+}
+```
+
+`registerHandler()` takes precedence over `registerRoute()` for the same prefix. A prefix with neither still goes to the flow route, which answers `400` for a prefix it does not handle, and the Local World retries the message every five seconds, so a route registered later takes the next attempt. When the World restarts, `start()` re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`), so register the route or handler before calling `start()`.
 
 ## Data directory layout
 

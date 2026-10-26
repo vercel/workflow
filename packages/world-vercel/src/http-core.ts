@@ -34,6 +34,7 @@ import {
 } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
+import { createThrottleWaiter, sleep } from './event-retry.js';
 import {
   getNodeHttpAgents,
   NODE_HTTP_BODY_TIMEOUT_MS,
@@ -327,13 +328,17 @@ export function logCurlRepro(
   );
 }
 
-/** Parse a `Retry-After` header value (seconds). Used by 425 and 429. */
+/** Parse `Retry-After` seconds or an HTTP date into seconds. Used by 425 and 429. */
 export function parseRetryAfter(
   value: string | null | undefined
 ): number | undefined {
   if (!value) return undefined;
   const parsed = parseInt(value, 10);
-  return Number.isNaN(parsed) ? undefined : parsed;
+  if (!Number.isNaN(parsed)) return parsed;
+  const date = Date.parse(value);
+  return Number.isNaN(date)
+    ? undefined
+    : Math.max(0, (date - Date.now()) / 1000);
 }
 
 /**
@@ -680,6 +685,12 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
   timeoutMs?: number | null;
   /** Optional caller abort signal, composed with the timeout. */
   signal?: AbortSignal;
+  /**
+   * Retry confirmed 429 append rejections and pre-connect failures with fresh
+   * requests. Only enable for the default stream dispatcher, whose own retries
+   * are disabled. Custom dispatchers and node:http keep their retry behavior.
+   */
+  retryStreamAppend?: boolean;
   /** Inject W3C trace context onto the request headers. Default true. */
   injectTraceContext?: boolean;
   /** Set the X-Request-Time cache-bust header. Default true. */
@@ -719,15 +730,79 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
   /**
    * Called synchronously after the request promise is created, before awaiting
    * its response. This observes local dispatch only; it does not imply that any
-   * bytes reached the origin. Must not throw.
+   * bytes reached the origin. Called once, before any append retries. Must not
+   * throw.
    */
   onRequestDispatched?: () => void;
   /** Error code used when the request itself fails before a response arrived. */
   transportErrorCode?: 'TRANSPORT' | 'STREAM_ERROR';
 }
 
+const STREAM_APPEND_MAX_RETRIES = 5;
+// These failures happen before a connection is established, so no append was
+// sent. Resets, broken pipes and request timeouts can follow persistence.
+const STREAM_APPEND_CONNECT_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+async function fetchStreamAppend(
+  request: (retry: number) => Promise<Response>,
+  signal?: AbortSignal
+): Promise<Response> {
+  let response: Response;
+  const waitOutThrottle = createThrottleWaiter(
+    'appending stream chunks',
+    'bounded',
+    async () => {
+      // Release the connection before waiting, even if the diagnostic body
+      // never finishes. A failed body does not undo the rejection.
+      await response.body?.cancel().catch(() => {});
+    }
+  );
+  for (let retry = 0; ; retry++) {
+    try {
+      response = await request(retry);
+    } catch (error) {
+      const code = getTransientTransportCode(error);
+      if (
+        retry === STREAM_APPEND_MAX_RETRIES ||
+        !code ||
+        !STREAM_APPEND_CONNECT_ERROR_CODES.has(code)
+      ) {
+        throw error;
+      }
+      await sleep(500 * 2 ** retry, signal);
+      continue;
+    }
+    if (
+      response.status !== 429 ||
+      isFirewallChallenge429(
+        response.status,
+        response.headers.get('x-vercel-mitigated')
+      ) ||
+      retry === STREAM_APPEND_MAX_RETRIES
+    ) {
+      return response;
+    }
+    // The append service rejects 429s before persistence. Apply the same
+    // throttle budget and deadline rules as the WebSocket stream transport.
+    const throttle = {
+      retryAfter: parseRetryAfter(response.headers.get('Retry-After')),
+    };
+    try {
+      await waitOutThrottle(throttle, signal);
+    } catch (error) {
+      if (error === throttle) return response;
+      throw error;
+    }
+  }
+}
+
 /**
- * Issue a single instrumented request through the global `fetch` (so Vercel's
+ * Issue an instrumented request through the global `fetch` (so Vercel's
  * observability "outgoing requests" view picks it up) with a caller-supplied
  * undici dispatcher.
  *
@@ -749,6 +824,7 @@ export async function instrumentedFetch(
     peerService,
     timeoutMs = getRequestTimeoutMs(),
     signal: callerSignal,
+    retryStreamAppend = false,
     injectTraceContext = true,
     cacheBust = true,
     logLabel,
@@ -763,6 +839,12 @@ export async function instrumentedFetch(
   } = opts;
   const label = logLabel ?? url;
   validateHttpUrl(url);
+  const retryAppend = retryStreamAppend && method === 'PUT' && !!dispatcher;
+  // Fetch turns materialized bytes into a one-shot reader. Keep our own bytes
+  // above fetch so each retry gets a new reader, even if the caller mutates a
+  // Buffer between attempts. Buffer.slice() would retain the caller's storage.
+  const requestBody =
+    retryAppend && body instanceof Uint8Array ? Uint8Array.from(body) : body;
 
   return withHttpClientSpan(
     { method, url, peerService, spanName, attributes },
@@ -772,11 +854,6 @@ export async function instrumentedFetch(
       // bypasses ambient auto-instrumentation. No-ops when no OTEL SDK is
       // registered.
       if (injectTraceContext) await injectTraceContextIntoHeaders(headers);
-
-      // Unique header per attempt to bypass RSC/Next fetch memoization (and to
-      // avoid replaying a memoized truncated body). See:
-      // https://github.com/vercel/workflow/issues/618
-      if (cacheBust) headers.set('X-Request-Time', Date.now().toString());
 
       const timeoutSignal =
         timeoutMs != null ? AbortSignal.timeout(timeoutMs) : undefined;
@@ -802,12 +879,17 @@ export async function instrumentedFetch(
 
       const start = Date.now();
       let response: Response;
-      try {
-        const request = nodeAgents
+      const request = (retry = 0) => {
+        signal?.throwIfAborted();
+        // Unique header per attempt to bypass RSC/Next fetch memoization (and to
+        // avoid replaying a memoized truncated body). See:
+        // https://github.com/vercel/workflow/issues/618
+        if (cacheBust) headers.set('X-Request-Time', Date.now().toString());
+        const pending = nodeAgents
           ? nodeHttpFetch(url, {
               method,
               headers,
-              body,
+              body: requestBody,
               signal,
               agents: nodeAgents,
               // Match undici's per-phase defaults (which the undici agents
@@ -820,13 +902,25 @@ export async function instrumentedFetch(
           : fetch(url, {
               method,
               headers,
-              body,
+              body: requestBody,
               signal,
+              // Every Worlds endpoint answers directly, so a 3xx is a
+              // misdirected request, not a hop to take. Following it would
+              // re-send `x-vercel-trusted-oidc-idp-token` to whatever host the
+              // `Location` names — fetch only strips `Authorization` across
+              // origins, not other credential headers. Matches the node:http
+              // transport, which never follows redirects.
+              redirect: 'manual',
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
               dispatcher,
             } as any);
-        onRequestDispatched?.();
-        response = await request;
+        if (retry === 0) onRequestDispatched?.();
+        return pending;
+      };
+      try {
+        response = await (retryAppend
+          ? fetchStreamAppend(request, signal)
+          : request());
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the
