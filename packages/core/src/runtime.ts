@@ -2508,6 +2508,9 @@ export function workflowEntrypoint(
                               dynamicWorkflowCode: runInput.dynamicWorkflowCode,
                               dynamicWorkflowCodeRef:
                                 runInput.dynamicWorkflowCodeRef,
+                              // Without the key, a run this event creates
+                              // could never receive sealed writes.
+                              encryptionPublicKey: runInput.encryptionPublicKey,
                             },
                           }
                         : {}),
