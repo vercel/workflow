@@ -633,6 +633,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
         }
       },
     });
+    // The run's logger prints errors through `console.error`.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     // Bodies started before the restart in place.
     let startedBeforeRestart: number | undefined;
     const info = vi.spyOn(runtimeLogger, 'info');
@@ -645,6 +647,14 @@ describe('run-ahead against an append-only World (node engine)', () => {
     // finishes the run: one delivery, and no orchestrator message.
     expect(await world.deliver(start)).toBeUndefined();
     info.mockRestore();
+    // The stop names itself a possible classification gap.
+    const stops = errors.mock.calls
+      .map(([line]) => String(line))
+      .filter((line) => line.includes('Run-ahead stopped: an event'));
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toContain('possibleLogCorruption');
+    expect(stops[0]).toContain('wait_completed');
+    errors.mockRestore();
     expect(startedBeforeRestart).toBeDefined();
     // Run-ahead stays off for the rest of the delivery (see
     // `MAX_RUN_AHEAD_RESTARTS`): each later body starts only once the

@@ -2050,8 +2050,12 @@ async function runDelivery(
      * unconfirmed speculative write and would have made the
      * boundary it ran ahead of path-changing. The
      * classification and the in-band fence rule this out, so
-     * it is loud: the writer stops before anything else is
-     * written, and the redelivery decides from the log.
+     * it detects a classification gap rather than recovering
+     * from one, and it is loud. The writer stops the
+     * delivery's further decisions; writes that committed
+     * together with the one that reported the event (a
+     * coalesced run-ahead group) are already in the log, and
+     * the cold replay that follows reads them.
      */
     function checkRunAheadHazard(event: Event, source: string): void {
       if (speculationsBySlot.size === 0) return;
@@ -2081,9 +2085,15 @@ async function runDelivery(
       if (!reason) return;
       runAheadStats.hazardStops++;
       recordRunAheadSpan();
-      runLogger.warn(
+      // An error, not a warning: the boundaries were classified so
+      // that no such event could land, so this is a classification
+      // gap, and the writes already committed above the event were
+      // decided without it. The stop keeps further decisions from
+      // the World; it cannot take back those.
+      runLogger.error(
         'Run-ahead stopped: an event that could change the workflow landed below a speculative write',
         {
+          possibleLogCorruption: true,
           reason,
           source,
           eventType: event.eventType,
