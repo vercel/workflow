@@ -324,6 +324,8 @@ export async function digest(userId: string) {
 
 If the `wait_completed` committed below `fetchUpdates`'s outcome, the live run saw the step first and the replay sees the wait first. A reliable wake-up under a running orchestrator would be a new out-of-band "wake requested" event, written like `hook_received` and turned into an in-band `wait_completed` by the orchestrator. Not implemented.
 
+**Decision (2026-10-26).** `wakeUp()` on spec 9 stays best-effort for this release. The post-pass linger makes the drop window common rather than rare: a run with an open hook or a background step keeps a delivery live for up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` after each pass, and a wake-up in that window is folded away while `stoppedCount` still counts it. That is documented (`594cc5f6e5`: `wakeUpRun`, `Run.wakeUp()`, `StopSleepResult.stoppedCount`, the `getRun` docs and Known limitations on the permanent page). The durable "wake requested" event above is the more thorough fix and a possible follow-up (section 12). A confirm-and-resend loop was rejected: it makes `wakeUp()` block for at least a linger window and still has no upper bound if every resend lands in one.
+
 Callers of `run.wakeUp()`: the public API (`Run.wakeUp()`), `@workflow/vitest`'s `waitForSleep()` pattern, the local observability UI (`packages/web`), and the Vercel dashboard's wake-up action. The dashboard calls `wakeUpRun` from a pinned `@workflow/core` release that writes `wait_completed` out-of-band, which the backend refuses on spec 9 runs. Its wake-up therefore does not work on spec 9 runs until it moves to a release with this change.
 
 ### A second concurrent sleep lost its timer (fixed twice)
