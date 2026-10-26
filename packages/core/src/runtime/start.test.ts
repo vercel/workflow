@@ -40,6 +40,7 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import { serializeTraceCarrier } from '../telemetry.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
@@ -56,6 +57,8 @@ vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
   trace: vi.fn((_name, fn) => fn(undefined)),
   getActiveSpan: vi.fn().mockResolvedValue(undefined),
+  recordElapsedSpan: vi.fn().mockResolvedValue(undefined),
+  getSpanKind: vi.fn().mockResolvedValue(2),
 }));
 
 describe('start', () => {
@@ -2283,6 +2286,7 @@ async function workflow() {
           workflowCoreVersion: '0.0.0-test',
           ...extra,
         });
+        const write = vi.fn().mockResolvedValue(undefined);
         setWorld({
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
@@ -2290,6 +2294,8 @@ async function workflow() {
           queue: mockQueue,
           getEncryptionKeyForRun,
           streams: {
+            write,
+            close: vi.fn().mockResolvedValue(undefined),
             get: vi.fn(
               async () =>
                 new ReadableStream<Uint8Array>({
@@ -2301,7 +2307,28 @@ async function workflow() {
             ),
           },
         });
+        return write;
       }
+
+      it.each([
+        undefined,
+        '5.2.3',
+        '5.3.0',
+      ])('uses the probed target for abort framing without changing the recorded client version: %s', async (targetVersion) => {
+        const write = worldWithProbe({ workflowCoreVersion: targetVersion });
+        const source = new AbortController();
+        await start(validWorkflow, [source.signal], {
+          deploymentId: 'dpl_other',
+        });
+        const executionContext =
+          mockEventsCreate.mock.calls[0][1].eventData.executionContext;
+        expect(executionContext.workflowCoreVersion).toBe(workflowCoreVersion);
+        source.abort('cancel');
+        await vi.waitFor(() => expect(write).toHaveBeenCalled());
+        expect(peekFormatPrefix(write.mock.calls[0][2])).toBe(
+          targetVersion === '5.3.0' ? null : SerializationFormat.DEVALUE_V1
+        );
+      });
 
       it('asks the probe for the run it is about to create', async () => {
         // The runId has to be minted before the probe for this to work, so

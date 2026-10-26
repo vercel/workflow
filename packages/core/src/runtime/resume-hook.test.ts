@@ -75,6 +75,47 @@ describe('resumeHook', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
+  it.each([
+    undefined,
+    '5.2.3',
+    '5.3.0',
+  ])('keeps hook payload abort packets compatible even with a newer starting client: %s', async (workflowCoreVersion) => {
+    const hook = {
+      runId: 'wrun_abort',
+      hookId: 'hook_abort',
+      token: 'abort-test',
+      ownerId: 'owner',
+      projectId: 'project',
+      environment: 'production',
+      createdAt: new Date(),
+      specVersion: SPEC_VERSION_CURRENT,
+      resumeContext: {
+        deploymentId: 'dpl_target',
+        workflowName: 'abort-test',
+        runSpecVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion,
+      },
+    } as Hook;
+    const write = vi.fn().mockResolvedValue(undefined);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken: vi.fn().mockResolvedValue(hook) },
+      runs: { get: vi.fn() },
+      events: { create: vi.fn().mockResolvedValue(undefined) },
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue: vi.fn().mockResolvedValue(undefined),
+      getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+    } as unknown as World);
+    const source = new AbortController();
+    await resumeHook(hook.token, source.signal);
+    source.abort('cancel');
+    await vi.waitFor(() => expect(write).toHaveBeenCalled());
+    expect(peekFormatPrefix(write.mock.calls[0][2])).toBe(
+      SerializationFormat.DEVALUE_V1
+    );
+  });
+
   describe('payload encryption', () => {
     const RUN_KEY_MATERIAL = new Uint8Array(32).fill(0x4d);
 
