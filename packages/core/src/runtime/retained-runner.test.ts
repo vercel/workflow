@@ -412,6 +412,49 @@ it('dispatches admitted steps, executes concurrent workers without worker writes
   ).toHaveLength(2);
 });
 
+it('re-sends an uncertain step enqueue with the same idempotency key', async () => {
+  registerStepFunction('queuedWork', async (value) => value as number);
+  const fixture = await setup(parallelCode, false, true);
+  fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
+  let failed = false;
+  const queue = vi
+    .spyOn(fixture.world, 'queue')
+    .mockImplementation(async (_name, message) => {
+      // The first step enqueue fails as a transport error would: the owner
+      // cannot tell whether the queue kept it.
+      if (!failed && 'stepId' in message) {
+        failed = true;
+        throw new WorkflowWorldError('socket hang up', { status: 503 });
+      }
+      return { messageId: null };
+    });
+  fixture.world.invoke = vi.fn(async (runId, input, options) =>
+    fixture.owner.submit(
+      { runId, invoke: true, input, requestId: options?.idempotencyKey },
+      fixture.metadata
+    )
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('fanout', 'start');
+  const stepCalls = () =>
+    queue.mock.calls.filter(([, message]) => 'stepId' in message);
+  await vi.waitFor(() => expect(stepCalls()).toHaveLength(3));
+  const [failedCall, ...rest] = stepCalls();
+  const resent = rest.find(
+    ([, message]) =>
+      (message as { stepId: string }).stepId ===
+      (failedCall[1] as { stepId: string }).stepId
+  );
+  // The same message and options again: the queue dedupes on the key.
+  expect(resent?.[2]?.idempotencyKey).toBe(failedCall[2]?.idempotencyKey);
+  for (const [, message] of rest)
+    await executeOwnedStep(fixture.world, asQueued(message), fixture.metadata);
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
+
 it('answers a direct dispatch once the body starts and returns its result through invoke', async () => {
   const gate = Promise.withResolvers<void>();
   const body = vi.fn(async (n) => {
@@ -963,8 +1006,14 @@ it('recovers an uncertain remote dispatch by timing out its admitted attempt, wi
     .spyOn(f.world, 'queue')
     .mockImplementation(async (_name, message) => {
       if ('stepId' in message) {
-        if (!uncertain) {
-          uncertain = message.input as OwnedStepExecution;
+        // Every enqueue of this one execution fails, the owner's re-sends
+        // (same idempotency key) included, so its fallback is exercised.
+        if (
+          !uncertain ||
+          (message.input as OwnedStepExecution).executionId ===
+            uncertain.executionId
+        ) {
+          uncertain ??= message.input as OwnedStepExecution;
           throw new WorkflowWorldError('Result delivery unavailable', {
             status: 503,
             code: 'INVOCATION_OUTCOME_UNKNOWN',
@@ -982,10 +1031,28 @@ it('recovers an uncertain remote dispatch by timing out its admitted attempt, wi
       f.owner.events.filter((e) => e.eventType === 'step_completed')
     ).toHaveLength(3)
   );
-  // Drain the serialized delivery-failed notification after local completions.
-  await f.owner.enqueue('settle-dispatch', async () => {});
+  // The owner re-sends the failed enqueue (same key) three times before it
+  // gives up, about 3 s, and only then handles the failure.
+  await vi.waitFor(
+    () =>
+      expect(
+        queue.mock.calls.filter(
+          ([, message]) =>
+            'stepId' in message &&
+            (message.input as OwnedStepExecution).executionId ===
+              uncertain!.executionId
+        )
+      ).toHaveLength(4),
+    { timeout: 8000 }
+  );
+  // Drain the serialized delivery-failed notification.
+  await vi.waitFor(async () => {
+    await f.owner.enqueue('settle-dispatch', async () => {});
+    expect(queue.mock.calls.some(([, , opts]) => opts?.delaySeconds)).toBe(
+      true
+    );
+  });
   expect((await f.world.runs.get(f.runId)).status).toBe('running');
-  expect(queue.mock.calls.some(([, , opts]) => opts?.delaySeconds)).toBe(true);
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(uncertain!.deadline + 1);
   await f.owner.submit({ runId: f.runId }, f.metadata);
@@ -1023,8 +1090,14 @@ it.each([
     .spyOn(f.world, 'queue')
     .mockImplementation(async (_name, message) => {
       if ('stepId' in message) {
-        if (!uncertain) {
-          uncertain = message.input as OwnedStepExecution;
+        // Every enqueue of this one execution fails, the owner's re-sends
+        // (same idempotency key) included, so its fallback is exercised.
+        if (
+          !uncertain ||
+          (message.input as OwnedStepExecution).executionId ===
+            uncertain.executionId
+        ) {
+          uncertain ??= message.input as OwnedStepExecution;
           throw new WorkflowWorldError('Direct step HTTP delivery failed', {
             status,
           });
@@ -1041,10 +1114,28 @@ it.each([
       f.owner.events.filter((e) => e.eventType === 'step_completed')
     ).toHaveLength(3)
   );
-  // Drain the serialized delivery-failed notification after local completions.
-  await f.owner.enqueue('settle-dispatch', async () => {});
+  // The owner re-sends the failed enqueue (same key) three times before it
+  // gives up, about 3 s, and only then handles the failure.
+  await vi.waitFor(
+    () =>
+      expect(
+        queue.mock.calls.filter(
+          ([, message]) =>
+            'stepId' in message &&
+            (message.input as OwnedStepExecution).executionId ===
+              uncertain!.executionId
+        )
+      ).toHaveLength(4),
+    { timeout: 8000 }
+  );
+  // Drain the serialized delivery-failed notification.
+  await vi.waitFor(async () => {
+    await f.owner.enqueue('settle-dispatch', async () => {});
+    expect(queue.mock.calls.some(([, , opts]) => opts?.delaySeconds)).toBe(
+      true
+    );
+  });
   expect((await f.world.runs.get(f.runId)).status).toBe('running');
-  expect(queue.mock.calls.some(([, , opts]) => opts?.delaySeconds)).toBe(true);
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(Date.now() + 1100);
   expect(Date.now()).toBeLessThan(uncertain!.deadline - 50_000);

@@ -200,7 +200,26 @@ export async function executeOwnedStep(
   // A direct dispatch from the owner is acknowledged once its body has started
   // (see below); a duplicate of one still running needs no second answer.
   const direct = input.executionMode === 'remote';
-  if (entry?.done) return;
+  const workerLog = (event: string, fields: Record<string, unknown> = {}) =>
+    console.info(
+      JSON.stringify({
+        component: 'workflow-step-worker',
+        event,
+        at: new Date().toISOString(),
+        processInstanceId: COMPUTE_INSTANCE_ID,
+        runId: envelope.runId,
+        stepId: step.stepId,
+        executionId: input.executionId,
+        attempt: input.attempt,
+        deliveryCount: metadata.attempt,
+        ...fields,
+      })
+    );
+  if (entry?.done) {
+    // Acknowledged without running: this process already finished the attempt.
+    workerLog('step_delivery_already_done');
+    return;
+  }
   if (entry?.work) return direct ? undefined : entry.work;
   const prior = !!entry;
   if (!entry) {
@@ -227,6 +246,11 @@ export async function executeOwnedStep(
         if (receipt.status === 'pending')
           throw new WorkflowWorldError('Step outcome not committed', {
             status: 503,
+          });
+        // The owner did not record this outcome; the message is acknowledged.
+        if (receipt.status === 'superseded')
+          workerLog('step_result_superseded', {
+            outcome: payload.outcome.eventType,
           });
       },
       // Worker-side evidence of each failed delivery attempt (for example an
@@ -282,6 +306,11 @@ export async function executeOwnedStep(
         )
       );
       if (receipt.status !== 'pending') {
+        // Acknowledged without running: the owner settled the attempt.
+        workerLog('step_status_settled', {
+          receipt: receipt.status,
+          lost: metadata.attempt > 1,
+        });
         current.done = true;
         return;
       }

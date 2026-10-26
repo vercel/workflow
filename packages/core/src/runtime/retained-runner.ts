@@ -168,6 +168,26 @@ const MAX_MAILBOX_BATCH = 100;
  * happens before a request reaches it. Raise this only with fan-in that
  * batches results before they reach the owner. */
 const MAX_RUNNING_STEPS = 64;
+
+/** Waits before re-sending an uncertain step enqueue (same idempotency key). */
+const DISPATCH_RETRY_MS = [250, 1000, 2000];
+
+/** Loggable fields of a dispatch or delivery error. */
+function describeError(error: unknown): Record<string, unknown> {
+  const e = error as {
+    name?: unknown;
+    message?: unknown;
+    status?: unknown;
+    code?: unknown;
+  };
+  return {
+    errorName: typeof e?.name === 'string' ? e.name : undefined,
+    errorMessage:
+      typeof e?.message === 'string' ? e.message.slice(0, 300) : String(error),
+    httpStatus: e?.status,
+    errorCode: e?.code,
+  };
+}
 /** Inputs an owner queues before refusing more with a fast 429 (the caller
  * keeps its input and retries). Each queued input holds its request open
  * until committed, so this bounds the owner's concurrent inbound requests. */
@@ -2025,6 +2045,21 @@ export class RetainedRunner {
     if (!result.success && !status.success)
       throw new InputRejected('Invalid step input', { status: 400 });
     const input = result.success ? result.data : status.data!;
+    const superseded = (reason: string) => {
+      ownerLog('step_input_superseded', {
+        runId: this.runId,
+        ownerId: this.id,
+        stepId: input.stepId,
+        executionId: input.executionId,
+        attempt: input.attempt,
+        input: result.success ? 'result' : 'status',
+        reason,
+        stepStatus: this.steps.get(input.stepId)?.status,
+        currentExecutionId: this.stepStarts.get(input.stepId)?.event.eventId,
+        currentAttempt: this.stepStarts.get(input.stepId)?.attempt,
+      });
+      return { status: 'superseded' as const };
+    };
     let digest: string | undefined;
     try {
       if (result.success) digest = stepOutcomeDigest(result.data.outcome);
@@ -2049,7 +2084,7 @@ export class RetainedRunner {
           prior.event.eventType !== 'step_completed' ||
           this.stepStarts.get(input.stepId)?.event.eventId !== input.executionId
         )
-          return { status: 'superseded' };
+          return superseded('outcome_of_replaced_attempt');
         throw new RunnerFault(
           'conflict',
           new Error('Step result identity reused'),
@@ -2060,7 +2095,7 @@ export class RetainedRunner {
     }
     const start = this.stepStarts.get(input.stepId);
     if (isTerminalWorkflowRunStatus(this.run.status))
-      return { status: 'superseded' };
+      return superseded('run_terminal');
     if (!start)
       throw new InputRejected(
         'Step execution is absent from the owner snapshot',
@@ -2073,7 +2108,7 @@ export class RetainedRunner {
       start.event.eventId !== input.executionId ||
       start.attempt !== input.attempt
     ) {
-      if (input.attempt < start.attempt) return { status: 'superseded' };
+      if (input.attempt < start.attempt) return superseded('older_attempt');
       throw new InputRejected(
         'Step execution does not match the owner snapshot',
         {
@@ -2083,7 +2118,7 @@ export class RetainedRunner {
       );
     }
     const step = this.steps.get(input.stepId);
-    if (step?.status !== 'running') return { status: 'superseded' };
+    if (step?.status !== 'running') return superseded('step_not_running');
     if (!result.success) {
       // A queue redelivery of a remote step means the earlier delivery's
       // lease ended without an acknowledgement: that worker is gone, so the
@@ -2306,18 +2341,51 @@ export class RetainedRunner {
           await this.observed(
             'step_dispatch',
             async () => {
-              const result = await this.backend.queue(
-                this.metadata.queueName,
-                message,
-                opts
-              );
-              if ('error' in result && result.error)
-                throw new WorkflowWorldError('Remote step delivery failed', {
-                  status:
-                    'retryable' in result && result.retryable === true
-                      ? 503
-                      : 400,
-                });
+              // An uncertain enqueue is retried with the same options, so the
+              // queue dedupes on the unchanged idempotency key: a retry can
+              // never create a second message, and turns "maybe enqueued"
+              // into "enqueued" instead of waiting for the attempt bound.
+              for (let attempt = 1; ; attempt++) {
+                try {
+                  const result = await this.backend.queue(
+                    this.metadata.queueName,
+                    message,
+                    opts
+                  );
+                  if ('error' in result && result.error)
+                    throw new WorkflowWorldError(
+                      'Remote step delivery failed',
+                      {
+                        status:
+                          'retryable' in result && result.retryable === true
+                            ? 503
+                            : 400,
+                      }
+                    );
+                  return;
+                } catch (error) {
+                  const retryInMs = DISPATCH_RETRY_MS[attempt - 1];
+                  const retry =
+                    retryInMs !== undefined &&
+                    isRetryableOwnerDelivery(error) &&
+                    !this.closing &&
+                    !this.fault;
+                  ownerLog('step_dispatch_error', {
+                    runId: this.runId,
+                    ownerId: this.id,
+                    stepId: message.stepId,
+                    executionId: message.input.executionId,
+                    attempt: message.input.attempt,
+                    dispatchAttempt: attempt,
+                    ...describeError(error),
+                    ...(retry ? { retryInMs } : {}),
+                  });
+                  if (!retry) throw error;
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, retryInMs)
+                  );
+                }
+              }
             },
             { parentSpanId, stepId: message.stepId, executionMode: 'queued' }
           );
@@ -2336,8 +2404,18 @@ export class RetainedRunner {
                 !isRetryableOwnerDelivery(cause) &&
                 WorkflowWorldError.is(cause) &&
                 [400, 401, 403].includes(cause.status ?? 0)
-              )
+              ) {
+                ownerLog('step_dispatch_failed', {
+                  runId: this.runId,
+                  ownerId: this.id,
+                  stepId: message.stepId,
+                  executionId: message.input.executionId,
+                  attempt: message.input.attempt,
+                  ...describeError(cause),
+                  handling: 'fault',
+                });
                 throw cause;
+              }
               // No outcome is not evidence of a failed body. Keep the
               // admitted attempt running until recovery supersedes it. A
               // platform refusal before any worker received the invocation
@@ -2353,6 +2431,16 @@ export class RetainedRunner {
                 : message.input.deadline;
               if (refused)
                 this.undelivered.set(message.input.executionId, retryAt);
+              ownerLog('step_dispatch_failed', {
+                runId: this.runId,
+                ownerId: this.id,
+                stepId: message.stepId,
+                executionId: message.input.executionId,
+                attempt: message.input.attempt,
+                ...describeError(cause),
+                handling: refused ? 'retry_soon' : 'await_attempt_timeout',
+                recoveryAt: new Date(retryAt).toISOString(),
+              });
               this.observe('step_delivery', 'end', randomUUID(), {
                 parentSpanId,
                 stepId: message.stepId,
