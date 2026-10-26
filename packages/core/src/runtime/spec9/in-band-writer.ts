@@ -351,6 +351,19 @@ export class InBandWriter {
     return this.stoppedBy;
   }
 
+  /**
+   * Runs `read` in the writer's queue: after every write queued before it has
+   * settled (its position counted or refused), and before any write queued
+   * after it is sent. A full load reads the run's in-band count and adopts it
+   * ({@link adoptSnapshot}) inside one, so no write commits between the read
+   * and the adoption and is then counted twice, or not at all. Waiting for
+   * {@link idle} first is not enough: a write queued while the read is in
+   * flight would be sent beside it.
+   */
+  exclusive<T>(read: () => Promise<T>): Promise<T> {
+    return this.serialize(0, read);
+  }
+
   /** Resolves once every write queued so far has settled. */
   idle(): Promise<void> {
     return this.tail.then(() => {});

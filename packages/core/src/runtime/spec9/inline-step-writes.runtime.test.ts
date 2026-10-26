@@ -41,6 +41,11 @@ registerStepFunction('iw_a', async () => {
   onStepA?.();
   return 1;
 });
+registerStepFunction('iw_slow', async () => {
+  count('iw_slow');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  return 2;
+});
 registerStepFunction('iw_b', async () => {
   count('iw_b');
   return 2;
@@ -414,6 +419,42 @@ describe.each([
     expect(calls.iw_attributes).toBe(1);
     expect(eventsOf(world, 'step_started')).toHaveLength(1);
     expect(eventsOf(world, 'attr_set')).toHaveLength(2);
+  });
+
+  // A full load reads the run's in-band count while a sibling's outcome
+  // write is in flight: the count the writer adopts must not take that
+  // write again when its response arrives.
+  it('keeps the fence count across a full load that overlaps an inline outcome write', async () => {
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+    let world: AppendOnlyWorld | undefined;
+    const setup = await setupOrchestratorRun(
+      `const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("iw_a");
+       const slow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("iw_slow");
+       async function workflow() {
+         const [x, y] = await Promise.all([a(), slow()]);
+         return x + y;
+       }${registerWorkflow()}`,
+      [],
+      {
+        reportIncomplete: true,
+        createDelayMs: 100,
+        async beforeList() {
+          // A remote read: every load after the first takes a while.
+          if ((world?.listCalls.length ?? 0) > 1) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        },
+      },
+      engine
+    );
+    world = setup.world;
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(3);
+    // The run's only orchestrator is never refused by its own fence.
+    expect(world.deliveries).toHaveLength(1);
+    expect(calls.iw_a).toBe(1);
+    expect(calls.iw_slow).toBe(1);
   });
 
   // A World refuses an oversized batch whole, so a fan-out wider than one

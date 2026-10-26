@@ -756,16 +756,24 @@ async function runDelivery(
       },
       (p) => writeInBand(data, p)
     );
-  /** Full load: replaces the log and adopts its fence snapshot. */
+  /**
+   * Full load: replaces the log and adopts its fence snapshot. The read and
+   * the adoption run in the writer's queue (`exclusive`): an inline body's
+   * write in flight beside the read would otherwise be counted by the
+   * snapshot and again by its own response.
+   */
   const fullLoad = async (): Promise<LoadedEventLog> => {
-    const loaded = await loadWorkflowRunEvents(runId);
+    const loaded = await writer.exclusive(async () => {
+      const read = await loadWorkflowRunEvents(runId);
+      // Throws a World contract error for a log without a
+      // snapshot, except a resilient start's empty one.
+      writer.adoptSnapshot(requireLoadSnapshot(runId, read));
+      return read;
+    });
     for (const event of loaded.events) {
       prepareReplayEvent(event);
     }
     logBehind = false;
-    // Throws a World contract error for a log without a
-    // snapshot, except a resilient start's empty one.
-    writer.adoptSnapshot(requireLoadSnapshot(runId, loaded));
     log = { events: loaded.events, cursor: loaded.cursor };
     return log;
   };
