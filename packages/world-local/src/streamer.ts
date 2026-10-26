@@ -280,6 +280,10 @@ export function createStreamer(
   // Streams this instance has registered (`<runId>:<name>`), so only a
   // stream's first write touches the run's stream index.
   const registeredStreams = new Set<string>();
+  // Tail of each stream's pending writes. A reader delivers the chunk files
+  // it lists, so a chunk must not land before one with a smaller id: writes
+  // to one stream run one at a time, in the order they took their ids.
+  const streamWriteTails = new Map<string, Promise<void>>();
   // Serializes this instance's updates to one run's stream index. The file
   // lock in `addToRunStreams` does the same across instances and processes.
   const runStreamsLocks = new Map<string, Promise<unknown>>();
@@ -393,6 +397,45 @@ export function createStreamer(
     return !compromised;
   }
 
+  function chunkPath(name: string, chunkId: string): string {
+    return path.join(
+      chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
+      `${chunkId}${tagSuffix}.bin`
+    );
+  }
+
+  /** Writes one data chunk's file, then tells this instance's readers. */
+  async function writeChunk(
+    name: string,
+    chunkId: string,
+    chunkBuffer: Buffer
+  ): Promise<void> {
+    await write(
+      chunkPath(name, chunkId),
+      serializeChunk({ chunk: chunkBuffer, eof: false })
+    );
+    // Copy so a reader's enqueue cannot detach the caller's ArrayBuffer.
+    streamEmitter.emit(`chunk:${name}` as const, {
+      streamName: name,
+      chunkData: Uint8Array.from(chunkBuffer),
+      chunkId,
+    });
+  }
+
+  /** Runs `task` after every write already queued for stream `name`. */
+  function queueStreamWrite(
+    name: string,
+    task: () => Promise<void>
+  ): Promise<void> {
+    const result = (streamWriteTails.get(name) ?? Promise.resolve()).then(task);
+    const tail = result.catch(() => {});
+    streamWriteTails.set(name, tail);
+    void tail.then(() => {
+      if (streamWriteTails.get(name) === tail) streamWriteTails.delete(name);
+    });
+    return result;
+  }
+
   // Helper to convert a chunk to a Buffer
   function toBuffer(chunk: string | Uint8Array): Buffer {
     if (typeof chunk === 'string') {
@@ -419,35 +462,11 @@ export function createStreamer(
         // This ensures that chunks written in sequence maintain their order even
         // when runId is a promise that multiple writes are waiting on.
         const chunkId = `chnk_${monotonicUlid()}`;
-
-        // Await runId if it's a promise to ensure proper flushing
-        const runId = await _runId;
-
-        // Register this stream for the run
-        await registerStreamForRun(runId, name);
-
-        // Convert chunk to buffer for serialization
         const chunkBuffer = toBuffer(chunk);
-
-        const serialized = serializeChunk({
-          chunk: chunkBuffer,
-          eof: false,
-        });
-
-        const chunkPath = path.join(
-          chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-          `${chunkId}${tagSuffix}.bin`
-        );
-
-        await write(chunkPath, serialized);
-
-        // Emit real-time event with Uint8Array (create copy to prevent ArrayBuffer detachment)
-        const chunkData = Uint8Array.from(chunkBuffer);
-
-        streamEmitter.emit(`chunk:${name}` as const, {
-          streamName: name,
-          chunkData,
-          chunkId,
+        await queueStreamWrite(name, async () => {
+          // Await runId if it's a promise to ensure proper flushing
+          await registerStreamForRun(await _runId, name);
+          await writeChunk(name, chunkId, chunkBuffer);
         });
       },
 
@@ -461,73 +480,30 @@ export function createStreamer(
         // Generate all ULIDs synchronously BEFORE any await to preserve call order.
         // This ensures that chunks maintain their order even when runId is a promise.
         const chunkIds = chunks.map(() => `chnk_${monotonicUlid()}`);
-
-        // Await runId if it's a promise
-        const runId = await _runId;
-
-        // Register this stream for the run
-        await registerStreamForRun(runId, name);
-
-        // Prepare chunk data for parallel writes
         const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
-
-        // Write all chunks in parallel for efficiency, but track individual completion
-        const writePromises = chunkBuffers.map(async (chunkBuffer, i) => {
-          const chunkId = chunkIds[i];
-
-          const serialized = serializeChunk({
-            chunk: chunkBuffer,
-            eof: false,
-          });
-
-          const chunkPath = path.join(
-            chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-            `${chunkId}${tagSuffix}.bin`
-          );
-
-          await write(chunkPath, serialized);
-
-          // Return data needed for event emission
-          return {
-            chunkId,
-            chunkData: Uint8Array.from(chunkBuffer),
-          };
+        await queueStreamWrite(name, async () => {
+          await registerStreamForRun(await _runId, name);
+          // One at a time: a reader listing the stream mid-group must not see
+          // a later chunk before an earlier one.
+          for (const [i, chunkBuffer] of chunkBuffers.entries()) {
+            await writeChunk(name, chunkIds[i], chunkBuffer);
+          }
         });
-
-        // Emit events in order, waiting for each chunk's write to complete
-        // This ensures events are emitted in order while writes happen in parallel
-        for (const writePromise of writePromises) {
-          const { chunkId, chunkData } = await writePromise;
-
-          streamEmitter.emit(`chunk:${name}` as const, {
-            streamName: name,
-            chunkData,
-            chunkId,
-          });
-        }
       },
 
       async close(_runId: string | Promise<string>, name: string) {
         // Generate ULID synchronously BEFORE any await to preserve call order.
         const chunkId = `chnk_${monotonicUlid()}`;
-
-        // Await runId if it's a promise to ensure proper flushing
-        const runId = await _runId;
-
-        // Register this stream for the run (in case write wasn't called), and
-        // put its name back if a writer outside this instance dropped it.
-        await registerStreamForRun(runId, name, { verify: true });
-        const chunkPath = path.join(
-          chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-          `${chunkId}${tagSuffix}.bin`
-        );
-
-        await write(
-          chunkPath,
-          serializeChunk({ chunk: Buffer.from([]), eof: true })
-        );
-
-        streamEmitter.emit(`close:${name}` as const, { streamName: name });
+        await queueStreamWrite(name, async () => {
+          // Register this stream for the run (in case write wasn't called), and
+          // put its name back if a writer outside this instance dropped it.
+          await registerStreamForRun(await _runId, name, { verify: true });
+          await write(
+            chunkPath(name, chunkId),
+            serializeChunk({ chunk: Buffer.from([]), eof: true })
+          );
+          streamEmitter.emit(`close:${name}` as const, { streamName: name });
+        });
       },
 
       async list(runId: string) {
@@ -665,44 +641,88 @@ export function createStreamer(
 
         return new ReadableStream<Uint8Array>({
           async start(controller) {
-            // Track chunks delivered via events to prevent duplicates and maintain order.
+            const chunksDir = chunkDirForStream(chunksBaseDir, name);
+            // Ids of chunks this reader has delivered, or must never deliver.
             const deliveredChunkIds = new Set<string>();
-            // Buffer for chunks that arrive via events during disk reading
-            const bufferedEventChunks: Array<{
-              chunkId: string;
-              chunkData: Uint8Array;
-            }> = [];
+            // Live chunks that arrive while a disk read is in flight, by id. A
+            // disk read delivers the files it lists in id order; holding live
+            // chunks until it finishes keeps one from overtaking a listed chunk
+            // with a smaller id.
+            const bufferedEventChunks = new Map<string, Uint8Array>();
+            // True during the initial disk read and during each poll.
             let isReadingFromDisk = true;
             // Buffer close event if it arrives during disk reading
             let pendingClose = false;
+
+            const deliver = (chunkId: string, chunkData: Uint8Array) => {
+              if (streamClosed || deliveredChunkIds.has(chunkId)) return;
+              deliveredChunkIds.add(chunkId);
+              // Empty chunks are skipped, matching what a disk read delivers.
+              if (chunkData.byteLength) {
+                // Create a copy to prevent ArrayBuffer detachment
+                controller.enqueue(Uint8Array.from(chunkData));
+              }
+            };
+
+            const closeStream = () => {
+              streamClosed = true;
+              teardown();
+              try {
+                controller.close();
+              } catch {
+                // Ignore if controller is already closed (e.g., from cancel())
+              }
+            };
+
+            /** Delivers held live chunks in id order, then a held close. */
+            const finishDiskRead = () => {
+              isReadingFromDisk = false;
+              const held = [...bufferedEventChunks].sort(([a], [b]) =>
+                a.localeCompare(b)
+              );
+              bufferedEventChunks.clear();
+              for (const [chunkId, chunkData] of held) {
+                deliver(chunkId, chunkData);
+              }
+              if (pendingClose) closeStream();
+            };
+
+            /** Delivers one listed chunk file; resolves `true` at end of stream. */
+            const deliverFile = async (
+              file: string,
+              ext: string
+            ): Promise<boolean> => {
+              // Files are sharded per stream, so the key is already the chunk id
+              // (no stream-name prefix, tag suffix already stripped).
+              const chunkId = file;
+              if (deliveredChunkIds.has(chunkId)) return false;
+              const live = bufferedEventChunks.get(chunkId);
+              if (live !== undefined) {
+                deliver(chunkId, live);
+                return false;
+              }
+              const chunk = deserializeChunk(
+                await readBuffer(path.join(chunksDir, `${file}${ext}`))
+              );
+              if (chunk?.eof === true) return true;
+              deliver(chunkId, chunk.chunk);
+              return false;
+            };
 
             const chunkListener = (event: {
               streamName: string;
               chunkData: Uint8Array;
               chunkId: string;
             }) => {
-              // Skip empty chunks to maintain consistency with disk reading behavior
-              if (event.chunkData.byteLength === 0) {
-                deliveredChunkIds.add(event.chunkId);
+              if (isReadingFromDisk) {
+                // Create a copy to prevent ArrayBuffer detachment when enqueued later
+                bufferedEventChunks.set(
+                  event.chunkId,
+                  Uint8Array.from(event.chunkData)
+                );
                 return;
               }
-
-              if (isReadingFromDisk) {
-                deliveredChunkIds.add(event.chunkId);
-                // Buffer chunks that arrive during disk reading to maintain order
-                // Create a copy to prevent ArrayBuffer detachment when enqueued later
-                bufferedEventChunks.push({
-                  chunkId: event.chunkId,
-                  chunkData: Uint8Array.from(event.chunkData),
-                });
-              } else if (!deliveredChunkIds.has(event.chunkId)) {
-                // Guard against duplicates: polling may have already claimed this
-                // chunk between its has() check and readBuffer() yield.
-                deliveredChunkIds.add(event.chunkId);
-                // After disk reading is complete, deliver chunks immediately
-                // Create a copy to prevent ArrayBuffer detachment
-                controller.enqueue(Uint8Array.from(event.chunkData));
-              }
+              deliver(event.chunkId, event.chunkData);
             };
 
             const closeListener = () => {
@@ -711,14 +731,7 @@ export function createStreamer(
                 pendingClose = true;
                 return;
               }
-              // Remove listeners before closing
-              streamClosed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Ignore if controller is already closed (e.g., from cancel() or EOF)
-              }
+              closeStream();
             };
             // Tear down listeners and the poll unconditionally. Unlike
             // closeListener this never defers on isReadingFromDisk, so cancel()
@@ -737,11 +750,8 @@ export function createStreamer(
             streamEmitter.on(`close:${name}` as const, closeListener);
 
             // Now load existing chunks from disk.
-            const {
-              files: chunkFiles,
-              extMap: fileExtMap,
-              dir: chunksDir,
-            } = await listChunkFilesForStream(chunksBaseDir, name, tag);
+            const { files: chunkFiles, extMap: fileExtMap } =
+              await listChunkFilesForStream(chunksBaseDir, name, tag);
 
             // Resolve negative startIndex relative to the number of data chunks
             // (excluding the trailing EOF marker chunk, if present).
@@ -768,78 +778,29 @@ export function createStreamer(
                 ? Math.max(0, dataChunkCount + startIndex)
                 : startIndex;
 
-            // Process existing chunks, skipping any already delivered via events
-            let isComplete = false;
-            for (let i = resolvedStartIndex; i < chunkFiles.length; i++) {
-              const file = chunkFiles[i];
-              // Files are sharded per stream, so the key is already the chunk id
-              // (no stream-name prefix, tag suffix already stripped).
-              const chunkId = file;
-
-              // Skip if already delivered via event
-              if (deliveredChunkIds.has(chunkId)) {
-                continue;
-              }
-
-              const ext = fileExtMap.get(file) ?? '.bin';
-              const chunk = deserializeChunk(
-                await readBuffer(path.join(chunksDir, `${file}${ext}`))
-              );
-              if (chunk?.eof === true) {
-                isComplete = true;
-                break;
-              }
-              // Track as handled so polling doesn't re-deliver
-              deliveredChunkIds.add(chunkId);
-              if (chunk.chunk.byteLength) {
-                // Create a copy to prevent ArrayBuffer detachment
-                controller.enqueue(Uint8Array.from(chunk.chunk));
-              }
-            }
-
-            // Finished reading from disk - now deliver buffered event chunks in chronological order
-            isReadingFromDisk = false;
-
-            // Sort buffered chunks by ULID (chronological order)
-            bufferedEventChunks.sort((a, b) =>
-              a.chunkId.localeCompare(b.chunkId)
-            );
-            for (const buffered of bufferedEventChunks) {
-              // Create a copy for defense in depth (already copied at storage, but be extra safe)
-              controller.enqueue(Uint8Array.from(buffered.chunkData));
-            }
-
-            if (isComplete) {
-              streamClosed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Ignore if controller is already closed (e.g., from closeListener event)
-              }
-              return;
-            }
-
-            // Process any pending close event that arrived during disk reading
-            if (pendingClose) {
-              streamClosed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Ignore if controller is already closed
-              }
-              return;
-            }
-
-            // Track pre-startIndex chunks so polling doesn't re-deliver them
+            // Chunks before startIndex are never delivered, not even as a
+            // live copy that arrives during the read.
             for (
               let i = 0;
               i < resolvedStartIndex && i < chunkFiles.length;
               i++
             ) {
-              // Files are sharded per stream: the key is already the chunk id.
               deliveredChunkIds.add(chunkFiles[i]);
+            }
+
+            let isComplete = false;
+            for (let i = resolvedStartIndex; i < chunkFiles.length; i++) {
+              const file = chunkFiles[i];
+              if (await deliverFile(file, fileExtMap.get(file) ?? '.bin')) {
+                isComplete = true;
+                break;
+              }
+            }
+            finishDiskRead();
+
+            if (isComplete) {
+              closeStream();
+              return;
             }
 
             // If the reader was already cancelled/closed while we were reading
@@ -857,42 +818,24 @@ export function createStreamer(
             // the shared filesystem is the fallback delivery mechanism.
             let isPolling = false;
             pollInterval = setInterval(async () => {
-              if (isPolling) return;
+              if (isPolling || streamClosed) return;
               isPolling = true;
+              isReadingFromDisk = true;
               try {
                 const { files: currentFiles, extMap: currentExtMap } =
                   await listChunkFilesForStream(chunksBaseDir, name, tag);
 
                 for (const file of currentFiles) {
-                  // Files are sharded per stream: the key is already the chunk id.
-                  const chunkId = file;
-
-                  if (deliveredChunkIds.has(chunkId)) continue;
-                  deliveredChunkIds.add(chunkId);
-
-                  const ext = currentExtMap.get(file) ?? '.bin';
-                  const chunk = deserializeChunk(
-                    await readBuffer(path.join(chunksDir, `${file}${ext}`))
-                  );
-
-                  if (chunk?.eof === true) {
-                    streamClosed = true;
-                    teardown();
-                    try {
-                      controller.close();
-                    } catch {
-                      // Ignore if controller is already closed
-                    }
+                  if (
+                    await deliverFile(file, currentExtMap.get(file) ?? '.bin')
+                  ) {
+                    finishDiskRead();
+                    closeStream();
                     return;
                   }
-
-                  // Guard against enqueue-after-close: closeListener may have
-                  // fired between our readBuffer() yield and this point.
+                  // closeListener or cancel() may have closed the stream
+                  // while the file was read.
                   if (streamClosed) return;
-
-                  if (chunk.chunk.byteLength) {
-                    controller.enqueue(Uint8Array.from(chunk.chunk));
-                  }
                 }
               } catch (err: unknown) {
                 // Silently ignore transient filesystem errors (ENOENT, EACCES, etc.)
@@ -902,6 +845,7 @@ export function createStreamer(
                 }
               } finally {
                 isPolling = false;
+                if (isReadingFromDisk && !streamClosed) finishDiskRead();
               }
             }, 100);
           },
