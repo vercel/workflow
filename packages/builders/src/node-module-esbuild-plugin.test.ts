@@ -20,6 +20,7 @@ import {
   createNodeModuleErrorPlugin,
   escapeRegExp,
   getImportedIdentifier,
+  getImportedIdentifiers,
   getPackageName,
   getViolationLocation,
 } from './node-module-esbuild-plugin.js';
@@ -755,6 +756,29 @@ describe('workflow-node-module-error helper functions', () => {
     });
   });
 
+  describe('getImportedIdentifiers', () => {
+    it('should extract all named imports and their local aliases', () => {
+      expect(
+        getImportedIdentifiers('{ readFile, writeFile as write, stat }')
+      ).toEqual(['readFile', 'write', 'stat']);
+    });
+
+    it('should skip inline type-only specifiers', () => {
+      expect(
+        getImportedIdentifiers('{ type Something, typeof Other, writeFile }')
+      ).toEqual(['writeFile']);
+      expect(getImportedIdentifiers('{ type as localType }')).toEqual([
+        'localType',
+      ]);
+    });
+
+    it('should preserve namespace, default, and empty imports', () => {
+      expect(getImportedIdentifiers('* as fs')).toEqual(['fs']);
+      expect(getImportedIdentifiers('fs')).toEqual(['fs']);
+      expect(getImportedIdentifiers('{}')).toEqual([]);
+    });
+  });
+
   describe('getImportedIdentifier', () => {
     it('should extract namespace import identifier', () => {
       expect(getImportedIdentifier('* as fs')).toBe('fs');
@@ -864,6 +888,36 @@ describe('workflow-node-module-error helper functions', () => {
       // Since the identifier is never referenced (only imported), we should
       // not produce a location preview.
       expect(location).toBeUndefined();
+    });
+
+    it.each([
+      '{ readFile, writeFile }',
+      '{ type Something, writeFile }',
+      '{ readFile, writeFile as write }',
+    ])('should find a later named import usage in %s', async (specifier) => {
+      const tempDir = mkdtempSync(join(realTmpdir, 'violation-location-'));
+      const identifier = specifier.includes(' as write')
+        ? 'write'
+        : 'writeFile';
+      const lineText = `export const value = ${identifier};`;
+      writeFileSync(
+        join(tempDir, 'file.ts'),
+        `import ${specifier} from "node:fs";\n\n${lineText}\n`
+      );
+
+      try {
+        expect(
+          await getViolationLocation(tempDir, 'file.ts', 'node:fs')
+        ).toEqual({
+          file: 'file.ts',
+          line: 3,
+          column: 'export const value = '.length,
+          lineText,
+          length: identifier.length,
+        });
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     });
 
     it('should find the usage of a multi-line named import', async () => {

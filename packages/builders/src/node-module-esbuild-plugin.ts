@@ -116,42 +116,43 @@ export function escapeRegExp(value: string) {
 /**
  * Get the imported identifier from a specifier.
  * @param specifier - The specifier to get the imported identifier from.
- * @returns The imported identifier.
+ * @returns The first imported identifier.
  */
 export function getImportedIdentifier(specifier: string) {
+  return getImportedIdentifiers(specifier)[0];
+}
+
+/**
+ * Get the imported identifiers from a specifier.
+ * @param specifier - The specifier to get the imported identifiers from.
+ * @returns The imported identifiers.
+ */
+export function getImportedIdentifiers(specifier: string): string[] {
   const namespaceMatch = specifier.match(/\*\s+as\s+([A-Za-z0-9_$]+)/);
   if (namespaceMatch) {
-    return namespaceMatch[1];
+    return [namespaceMatch[1]];
   }
 
   if (specifier.includes('{')) {
     const inside = specifier.replace(/^[^{]*\{/, '').replace(/\}.*$/, '');
-    const firstNamed = inside
-      .split(',')
-      .map((token) => token.trim())
-      .find(Boolean);
-
-    if (firstNamed) {
-      const aliasMatch = firstNamed.match(
+    return inside.split(',').flatMap((token) => {
+      const named = token.trim();
+      if (/^(?:type|typeof)\s+(?!as\b)/.test(named)) {
+        return [];
+      }
+      const aliasMatch = named.match(
         /([A-Za-z0-9_$]+)\s+as\s+([A-Za-z0-9_$]+)/
       );
       if (aliasMatch) {
-        return aliasMatch[2];
+        return [aliasMatch[2]];
       }
-      // Validate that firstNamed is a valid identifier (not empty braces or whitespace)
-      const identifierMatch = firstNamed.match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
-      if (identifierMatch) {
-        return identifierMatch[0];
-      }
-    }
-    // Empty braces or no valid identifier found - return undefined
-    return undefined;
+      const identifierMatch = named.match(/^[A-Za-z_$][A-Za-z0-9_$]*/);
+      return identifierMatch ? [identifierMatch[0]] : [];
+    });
   }
 
   const defaultPart = specifier.split(',')[0]?.trim();
-  if (defaultPart && defaultPart !== '*') {
-    return defaultPart;
-  }
+  return defaultPart && defaultPart !== '*' ? [defaultPart] : [];
 }
 
 /**
@@ -259,8 +260,8 @@ export async function getViolationLocation(
       const endLine = startLine + importMatch[0].split(/\r?\n/).length - 1;
 
       const specifier = importMatch[1].trim();
-      const identifier = getImportedIdentifier(specifier);
-      if (identifier) {
+      const identifiers = getImportedIdentifiers(specifier);
+      for (const identifier of identifiers) {
         const usage = findIdentifierUsage(lines, endLine + 1, identifier);
         if (usage) {
           return {
@@ -271,8 +272,9 @@ export async function getViolationLocation(
             length: identifier.length,
           };
         }
-
-        // Identifier exists but is never referenced; surface no location
+      }
+      if (identifiers.length > 0) {
+        // Identifiers exist but are never referenced; surface no location
         return undefined;
       }
 
