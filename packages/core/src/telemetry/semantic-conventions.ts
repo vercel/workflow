@@ -246,6 +246,24 @@ export const WorkflowSuperseded = SemanticConvention<boolean>(
   'workflow.superseded'
 );
 
+/**
+ * Why a spec 9 orchestrator delivery ended before the run suspended or
+ * finished: `superseded`, `deadline`, `hook-conflict`, `pending-stream-ops`,
+ * `quickjs-continue`, `run-ahead-restart`, `run-ahead-stop-handoff`. Unset
+ * when the delivery ran to a suspension or the run's end.
+ */
+export const WorkflowDeliveryExitReason = SemanticConvention<string>(
+  'workflow.delivery.exit_reason'
+);
+
+/**
+ * Whether a spec 9 orchestrator delivery handed the run to a fresh delivery
+ * of the same message (`{ timeoutSeconds: 0 }`).
+ */
+export const WorkflowDeliveryHandoff = SemanticConvention<boolean>(
+  'workflow.delivery.handoff'
+);
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'

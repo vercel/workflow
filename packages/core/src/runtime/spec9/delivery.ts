@@ -279,18 +279,22 @@ export async function runSpec9Delivery(
 ): Promise<DeliveryResult> {
   const continuation: { handoff: boolean; exit?: string } = { handoff: false };
   const result = await runDelivery(delivery, continuation);
-  // TEMPORARY diagnostic for the e2e webhook duplicate-start investigation;
-  // remove before merge.
-  if (
-    continuation.exit !== undefined ||
-    continuation.handoff ||
-    (delivery.metadata.deliveryCount ?? 1) > delivery.metadata.attempt
-  ) {
-    runtimeLogger.warn('[diag] spec9 delivery exit', {
+  // Why the delivery ended early, if it did. The reason's prefix goes on the
+  // span (bounded values); the full reason, which can carry an error message,
+  // only reaches the debug log.
+  if (continuation.exit !== undefined || continuation.handoff) {
+    delivery.span?.setAttributes({
+      ...(continuation.exit !== undefined
+        ? Attribute.WorkflowDeliveryExitReason(
+            continuation.exit.split(':', 1)[0] ?? continuation.exit
+          )
+        : {}),
+      ...Attribute.WorkflowDeliveryHandoff(continuation.handoff),
+    });
+    runtimeLogger.debug('Spec 9 delivery ended early', {
       workflowRunId: delivery.message.runId,
       exit: continuation.exit,
       handoff: continuation.handoff,
-      result: JSON.stringify(result),
       deliveryCount: delivery.metadata.deliveryCount,
       attempt: delivery.metadata.attempt,
       messageId: delivery.metadata.messageId,
@@ -3291,8 +3295,7 @@ async function runDelivery(
         }
         for (const step of runnableInline) {
           if (step.starts > 0) {
-            // TEMPORARY diagnostic; remove before merge.
-            runtimeLogger.warn('[diag] re-running an open inline step', {
+            runtimeLogger.debug('Re-running an open inline step', {
               workflowRunId: runId,
               correlationId: step.correlationId,
               starts: step.starts,
