@@ -1033,14 +1033,24 @@ describe.concurrent('e2e', () => {
   );
 
   test.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
-    'earlyRetryDetachedTerminalGuardWorkflow',
+    'earlyRetryDetachedStepCompletesAfterRunWorkflow',
     { timeout: 60_000 },
     async () => {
       const run = await start(
-        await e2e('earlyRetryDetachedTerminalGuardWorkflow'),
+        await e2e('earlyRetryDetachedStepCompletesAfterRunWorkflow'),
         []
       );
       await run.returnValue;
+      await waitForRunEvents(
+        run.runId,
+        (event) =>
+          event.eventType === 'step_completed' &&
+          event.eventData.stepName.endsWith('//earlyRetryDownstreamSlow'),
+        {
+          timeoutMs: 30_000,
+          description: 'late earlyRetryDownstreamSlow step_completed',
+        }
+      );
       const world = await getWorld();
       const { data: events } = await world.events.list({ runId: run.runId });
       const downstreamSlowCompleted = events.findIndex(
@@ -1052,7 +1062,8 @@ describe.concurrent('e2e', () => {
         (event) => event.eventType === 'run_completed'
       );
       expect(downstreamSlowCompleted).toBeGreaterThanOrEqual(0);
-      expect(runCompleted).toBeGreaterThan(downstreamSlowCompleted);
+      expect(runCompleted).toBeGreaterThanOrEqual(0);
+      expect(runCompleted).toBeLessThan(downstreamSlowCompleted);
     }
   );
 

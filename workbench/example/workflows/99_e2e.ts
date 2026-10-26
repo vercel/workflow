@@ -322,9 +322,10 @@ async function earlyRetryDownstreamFast() {
 
 /**
  * The early retry wins a race and starts detached work. The original race
- * loser must not seal the run while that downstream body is still running.
+ * winner returns while that detached body is still running, so the body's
+ * step_completed event is recorded after run_completed.
  */
-export async function earlyRetryDetachedTerminalGuardWorkflow() {
+export async function earlyRetryDetachedStepCompletesAfterRunWorkflow() {
   'use workflow';
   await Promise.race([
     retryOnceWithTiming('retryable', 200),

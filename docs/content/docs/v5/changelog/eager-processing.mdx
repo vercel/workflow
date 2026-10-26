@@ -90,6 +90,8 @@ Both replays are **advance-only**: they act on the work their own replay creates
 
 This changes one timing-dependent edge case. If workflow code calls a step without `await` after an awaited branch step, that detached step may now start during the branch's early replay. Previously, the lockstep replay could skip it because another branch was still running. Use `await` when later work must be part of the workflow's completion contract.
 
+`Promise.race` can now resolve to the branch that truly settles first, where lockstep replay could previously let a slower step win.
+
 Terminal behavior is unchanged. The runtime records `run_completed` or `run_failed` as soon as the workflow returns or throws, even if a `Promise.race` loser or a step called without `await` is still running. Those in-flight steps may record `step_completed` or `step_failed` after the run's terminal event. Advance-only deliveries that arrive after the run is terminal exit without creating or starting more work.
 
 An advance-only replay still drives the steps no one else would: one its own message claimed inline (owned recovery), and, on a redelivery, any step created but never started, which the delivery being retried may have created before it crashed.
