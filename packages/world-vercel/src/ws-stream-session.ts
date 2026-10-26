@@ -85,7 +85,7 @@ const MAX_PIPELINE_DEPTH = 4;
  * is fail-stop. Read per session.
  */
 export function getStreamWsPipelineDepth(): number {
-  return envNumber('WORKFLOW_STREAM_WS_PIPELINE_DEPTH', 1, {
+  return envNumber('WORKFLOW_STREAM_WS_PIPELINE_DEPTH', 2, {
     integer: true,
     min: 1,
     max: MAX_PIPELINE_DEPTH,
