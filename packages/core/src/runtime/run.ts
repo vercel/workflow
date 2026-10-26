@@ -25,6 +25,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
   wakeRunAfterOutOfBandWrite,
@@ -311,17 +312,18 @@ export class Run<TResult> {
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
     const run = await world.runs.get(this.runId, { resolveData: 'none' });
-    await world.events.create(
-      this.runId,
-      {
-        eventType: 'run_cancelled',
-        specVersion: specVersionForRunWrite(run.specVersion),
-        ...(options?.cancelReason !== undefined
-          ? { eventData: { cancelReason: options.cancelReason } }
-          : {}),
-      },
-      { inBand: false }
-    );
+    const cancelled = {
+      eventType: 'run_cancelled' as const,
+      specVersion: specVersionForRunWrite(run.specVersion),
+      ...(options?.cancelReason !== undefined
+        ? { eventData: { cancelReason: options.cancelReason } }
+        : {}),
+    };
+    if (isSingleOrchestratorRun(run)) {
+      await world.events.create(this.runId, cancelled, { inBand: false });
+    } else {
+      await world.events.create(this.runId, cancelled);
+    }
     await wakeRunAfterOutOfBandWrite(world, run);
   }
 

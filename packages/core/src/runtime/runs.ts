@@ -164,11 +164,25 @@ export async function recreateRunFromExisting(
 }
 
 /**
- * Wakes a run's orchestrator after an out-of-band write (a cancellation), so
- * a live or later orchestrator observes it. No idempotency key: a duplicate
- * wake costs a cheap delivery, a key could lose the wakeup. Best effort: the
- * write already committed, and the next delivery of the run reads it either
- * way.
+ * Whether `run` has a single orchestrator (spec version 9 and later), whose
+ * writes are classified in-band or out-of-band. Older runs make neither
+ * distinction, and their writes go out as they always did.
+ */
+export function isSingleOrchestratorRun(
+  run: Pick<WorkflowRun, 'specVersion'>
+): boolean {
+  return (
+    (run.specVersion ?? SPEC_VERSION_LEGACY) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+  );
+}
+
+/**
+ * Wakes a single-orchestrator run's orchestrator after an out-of-band write
+ * (a cancellation), so a live or later orchestrator observes it. No
+ * idempotency key: a duplicate wake costs a cheap delivery, a key could lose
+ * the wakeup. Best effort: the write already committed, and the next
+ * delivery of the run reads it either way. Older runs are not woken: their
+ * next delivery observes the write, as it always did.
  */
 export async function wakeRunAfterOutOfBandWrite(
   world: World,
@@ -177,6 +191,7 @@ export async function wakeRunAfterOutOfBandWrite(
     'runId' | 'workflowName' | 'deploymentId' | 'specVersion'
   >
 ): Promise<void> {
+  if (!isSingleOrchestratorRun(run)) return;
   try {
     await world.queue(
       getWorkflowQueueName(run.workflowName),
@@ -227,7 +242,7 @@ export async function cancelRun(
     };
     await world.events.create(runId, eventRequest, {
       v1Compat: compatMode,
-      inBand: false,
+      ...(isSingleOrchestratorRun(run) ? { inBand: false } : {}),
     });
     await wakeRunAfterOutOfBandWrite(world, run);
   } catch (err) {
