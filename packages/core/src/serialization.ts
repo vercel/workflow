@@ -761,6 +761,8 @@ function recordStreamReadComplete(
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
+  #canceled = false;
+  #cancelReason: unknown;
 
   constructor(runId: string, name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
@@ -790,8 +792,15 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         if (!reader) {
           if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
+          if (this.#canceled) return;
           const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
+          // cancel() ran while the connection was pending, so nothing holds
+          // this stream: cancel it here instead of attaching a reader.
+          if (this.#canceled) {
+            await stream.cancel(this.#cancelReason).catch(() => {});
+            return;
+          }
           connectMs = Date.now() - connectStart;
           reader = this.#reader = stream.getReader();
         }
@@ -839,6 +848,8 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         }
       },
       cancel: async (reason) => {
+        this.#canceled = true;
+        this.#cancelReason = reason;
         if (this.#reader) {
           await this.#reader.cancel(reason).catch(() => {});
           this.#reader = undefined;
