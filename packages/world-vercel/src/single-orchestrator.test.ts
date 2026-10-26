@@ -207,6 +207,30 @@ describe('single-orchestrator meta fields on the v5 frame', () => {
     expect(meta).toMatchObject({ stepName: 'add', attempt: 3 });
   });
 
+  it('carries creatorMessageId on an in-band step_retrying', async () => {
+    const { meta } = await postAndCaptureMeta(
+      {
+        eventType: 'step_retrying',
+        correlationId: 'step_1',
+        specVersion: SPEC,
+        eventData: {
+          stepName: 'add',
+          attempt: 1,
+          error: new Uint8Array([9]),
+          creatorMessageId: 'msg_orchestrator',
+        },
+      } as AnyEventRequest,
+      { inBand: true, expectedSeqInBand: 5 }
+    );
+    expect(meta).toMatchObject({
+      stepName: 'add',
+      attempt: 1,
+      creatorMessageId: 'msg_orchestrator',
+      inBand: true,
+      expectedSeqInBand: 5,
+    });
+  });
+
   it('carries creatorMessageId on wait_created', async () => {
     const { meta } = await postAndCaptureMeta(
       {

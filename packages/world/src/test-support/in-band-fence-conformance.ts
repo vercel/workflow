@@ -28,7 +28,8 @@ import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
  *   wins.
  * - An in-band write with no expected count is refused with a 400.
  * - The single-orchestrator step bookkeeping (`inline`, `creatorMessageId`,
- *   `stepName`, `attempt`) survives the round trip.
+ *   `stepName`, `attempt`) survives the round trip, including the
+ *   `creatorMessageId` of an inline step's `step_retrying`.
  * - An in-band write is stored with the `occurredAt` it was sent with as its
  *   `createdAt`.
  *
@@ -375,6 +376,53 @@ export function inBandFenceConformance(
       expect(started?.eventData).toMatchObject({
         stepName: 'add',
         attempt: 1,
+      });
+    });
+
+    test("keeps the creator on an inline step's step_retrying", async () => {
+      const events = options.events();
+      const runId = await createRun(events);
+      const stepId = uniqueId('step');
+      await (events.create as CreateAny)(
+        runId,
+        {
+          eventType: 'step_started',
+          correlationId: stepId,
+          specVersion: SPEC,
+          eventData: {
+            stepName: 'add',
+            workflowName: 'fenceConformance',
+            input: new Uint8Array([1]),
+            inline: true,
+            attempt: 1,
+          },
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: atRunCreation }
+      );
+      // The orchestrator moves the failed attempt's retry to the background.
+      await (events.create as CreateAny)(
+        runId,
+        {
+          eventType: 'step_retrying',
+          correlationId: stepId,
+          specVersion: SPEC,
+          eventData: {
+            stepName: 'add',
+            attempt: 1,
+            error: new Uint8Array([2]),
+            creatorMessageId: 'msg_orchestrator',
+          },
+        } as AnyEventRequest,
+        { inBand: true, expectedSeqInBand: atRunCreation + 1 }
+      );
+      const page = await events.list({ runId });
+      const retrying = page.data.find(
+        (event) => event.eventType === 'step_retrying'
+      );
+      expect(retrying?.eventData).toMatchObject({
+        stepName: 'add',
+        attempt: 1,
+        creatorMessageId: 'msg_orchestrator',
       });
     });
 

@@ -304,6 +304,14 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
     retryAfter: z.coerce.date().optional(),
     /** The attempt that failed (spec >= 9). */
     attempt: z.number().int().positive().optional(),
+    /**
+     * Queue message id of the orchestrator delivery that wrote this event
+     * (spec >= 9): set only when an inline step's failed attempt moves its
+     * retry to the background. Only a redelivery of this same message
+     * enqueues the step's message again, and only while this is the step's
+     * last event. Absent when the step's own message wrote it.
+     */
+    creatorMessageId: z.string().optional(),
   }),
 });
 
