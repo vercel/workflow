@@ -32,7 +32,14 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   let pool: TestPool;
   let connectionString: string;
   let server: Server;
-  let phase: 'headers' | 'body' | 'abort' | 'hook' | 'serial' | 'reschedule';
+  let phase:
+    | 'headers'
+    | 'body'
+    | 'abort'
+    | 'hook'
+    | 'serial'
+    | 'reschedule'
+    | 'reject-then-handoff';
   let serialStarts: string[] = [];
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
@@ -58,6 +65,19 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         response.end(
           attempts.length < 3 ? JSON.stringify({ timeoutSeconds: 0 }) : '{}'
         );
+        return;
+      }
+      if (phase === 'reject-then-handoff') {
+        // Reject the first delivery, hand the redelivery off, then
+        // acknowledge.
+        if (attempts.length === 1) {
+          response.statusCode = 500;
+          response.end('rejected');
+        } else {
+          response.end(
+            attempts.length === 2 ? JSON.stringify({ timeoutSeconds: 0 }) : '{}'
+          );
+        }
         return;
       }
       if (phase === 'hook') {
@@ -171,11 +191,8 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         runId: `run_${randomUUID()}`,
         runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       });
-      // Each replacement job is a new Graphile job whose own attempt count
-      // starts over. `deliveryCount` keeps counting the message's
-      // deliveries; `attempt`, which core counts against its max-deliveries
-      // cap, starts over with the job, so a step retried in place many times
-      // on one message is not failed by that cap.
+      // `deliveryCount` keeps counting the message's deliveries; a handoff
+      // is not an attempt, so `attempt` stays where it was.
       await expect.poll(() => attempts, { timeout: 10_000 }).toHaveLength(3);
       expect(deliveryCounts).toEqual(['1', '2', '3']);
       expect(attempts).toEqual(['1', '1', '1']);
@@ -184,6 +201,35 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       await pool.query('TRUNCATE graphile_worker._private_jobs');
     }
   });
+
+  // A crash or a rejected delivery counts as an attempt, and a handoff that
+  // follows it must not hide that from the next delivery: core reads a
+  // redelivery from `attempt`.
+  test('a { timeoutSeconds: 0 } handoff after a rejected delivery keeps its attempt', async () => {
+    phase = 'reject-then-handoff';
+    attempts = [];
+    deliveryCounts = [];
+    const queue = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 1,
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+    try {
+      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
+        runId: `run_${randomUUID()}`,
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      });
+      await expect.poll(() => attempts, { timeout: 30_000 }).toHaveLength(3);
+      expect(deliveryCounts).toEqual(['1', '2', '3']);
+      expect(attempts).toEqual(['1', '2', '2']);
+    } finally {
+      await queue.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  }, 60_000);
 
   test('a same-run wake of a spec 8 run can release an inline step before its delivery finishes', async () => {
     phase = 'hook';

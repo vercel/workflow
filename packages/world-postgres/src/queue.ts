@@ -17,6 +17,7 @@ import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  isSingleOrchestratorMessage,
   MessageId,
   parseQueueName,
   parseQueueRoute,
@@ -1042,6 +1043,14 @@ export function createQueue(
         }
 
         if (result.type === 'reschedule') {
+          // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a
+          // handoff: the next delivery continues this one and reports the
+          // same `attempt` (see `Queue.createQueueHandler`). Core derives a
+          // delivery's creator identity from `attempt`, so a crash
+          // redelivery that hands off must stay a redelivery for its
+          // successor.
+          const handoff =
+            result.timeoutSeconds === 0 && isSingleOrchestratorMessage(body);
           // Schedule the follow-up job before we return so a crash cannot
           // lose the wake-up request.
           await addGraphileJob({
@@ -1053,10 +1062,14 @@ export function createQueue(
             // replacement is a new Graphile job whose own attempt count
             // starts again at 1; the deliveries made so far ride along as
             // `deliveryOffset`, so the handler sees the next deliveryCount.
+            // A handoff also carries the attempts so far as
+            // `attemptOffset`; any other reschedule starts `attempt` over,
+            // so a step retried in place many times on one message is not
+            // failed by core's max-deliveries cap.
             messageId: messageData.messageId,
             createdAt: messageData.createdAt,
-            attempt: attempt + 1,
-            attemptOffset: messageData.attemptOffset,
+            attempt: handoff ? attempt : attempt + 1,
+            attemptOffset: handoff ? attempt - 1 : messageData.attemptOffset,
             deliveryOffset: deliveryCount,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
