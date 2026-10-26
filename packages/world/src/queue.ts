@@ -177,6 +177,11 @@ export const RunInputSchema = z.compile(
        */
       allowReservedAttributes: z.literal(true).optional(),
       /**
+       * The run's X25519 public key, mirrored from `run_created` so a run the
+       * resilient-start path creates can still receive sealed writes.
+       */
+      encryptionPublicKey: z.string().optional(),
+      /**
        * The environment the creating client's writes are attributed to, as
        * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
        * `'production' | 'preview' | 'development'`).

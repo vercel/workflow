@@ -500,3 +500,18 @@ describe('getRunQueueNamespace', () => {
     expect(getRunQueueNamespace(executionContext)).toBeUndefined();
   });
 });
+
+describe('RunInputSchema encryptionPublicKey', () => {
+  const baseRunInput = {
+    input: { foo: 'bar' },
+    deploymentId: 'dpl_123',
+    workflowName: 'myWorkflow',
+    specVersion: 5,
+  };
+
+  it('keeps the run public key, so a resilient start can forward it', () => {
+    expect(
+      RunInputSchema.parse({ ...baseRunInput, encryptionPublicKey: 'pk' })
+    ).toEqual({ ...baseRunInput, encryptionPublicKey: 'pk' });
+  });
+});

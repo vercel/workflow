@@ -77,13 +77,13 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 ## Per-run limits
 
-The Vercel World caps how large a single run can get. It caps the run's [event log](/docs/how-it-works/event-sourcing), and separately caps how many steps one run may create; see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the current values. A run that exhausts its event budget fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
+The Vercel World supplies a per-run [event limit](/docs/how-it-works/event-sourcing). Each step adds events to that log, so the event budget also constrains how many steps a run can execute. See [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the published default limits and sizing guidance. A run that exhausts its event budget fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
 
-Treat both caps as backstops, not budgets. Replay cost grows with the log, so a run slows down well before it fails. We recommend splitting a run into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. Size for that recommendation rather than for the cap.
+On the default runtime, replay cost can grow with the event log. For workflows with many steps or frequent resumes, consider the experimental [QuickJS runtime](/docs/configuration/runtime-tuning#workflow_vm). Set `WORKFLOW_VM=quickjs` in your project's environment variables and redeploy. Only runs started after the change use the new runtime.
 
-Runs started on the QuickJS engine with snapshotting enabled (`WORKFLOW_VM=quickjs`) are exempt from the event cap. Snapshotting keeps their resume cost flat as the log grows. See [max-events-exceeded](/docs/errors/max-events-exceeded).
+QuickJS runs are exempt from the default event cap, allowing larger event logs and more steps. They restore workflow state and replay only events recorded since the last snapshot, reducing replay overhead as the log grows. This does not speed up the work inside individual steps or remove payload, storage, and request rate limits. See [max-events-exceeded](/docs/errors/max-events-exceeded) for eligibility and compatibility details.
 
-Vercel raises the per-run event and step limits on request, so an unusually large run that genuinely cannot be split is worth raising with support rather than working around.
+Use [child workflows](/cookbook/advanced/child-workflows) when independent units of work benefit from separate run histories and failure boundaries. To write fewer events, [process multiple items within each step](/cookbook/common-patterns/batching#tips), accounting for retries of the whole group.
 
 ## Multi-region
 
