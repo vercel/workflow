@@ -1,6 +1,6 @@
 ---
 title: Single orchestrator
-description: One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. Replaces lazy inline start, batched claims, inline step ownership and resilient step dispatch.
+description: One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. Replaces lazy inline start, batched claims and inline step ownership on spec 9 runs.
 ---
 
 # Single orchestrator
@@ -44,7 +44,7 @@ Runs created at spec version 8 and below keep the previous orchestrator, which t
 
 ## What spec 9 runs no longer use
 
-Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, and the precondition guard. They remain on spec 8 runs, and their settings are listed under [Settings for spec 8 runs](/docs/configuration/runtime-tuning#settings-for-spec-8-runs). Resilient step dispatch is removed.
+Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, and the precondition guard. They remain on spec 8 runs, and their settings are listed under [Settings for spec 8 runs](/docs/configuration/runtime-tuning#settings-for-spec-8-runs).
 
 ## Costs
 

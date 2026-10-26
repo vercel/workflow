@@ -205,7 +205,7 @@ An out-of-band terminal event has these effects, all of them benign:
 
 - Default: `10`
 - Clamp: `0` to `16`
-- Node.js VM engine only, on Worlds that record an in-band write at the time the orchestrator sent with it (world-local does). When no other writer could change what the workflow does next (no hook the workflow waits on, no `AbortController`, no step running elsewhere, no wait due within the invocation), an inline step's outcome reaches the workflow as soon as its body returns, and the next step's creation and body start before that outcome's write commits. Every write still lands in the order the workflow made it.
+- Node.js VM engine only, on Worlds that record an in-band write at the time the orchestrator sent with it (world-local, world-postgres and world-vercel do). When no other writer could change what the workflow does next (no hook the workflow waits on, no `AbortController`, no step running elsewhere, no wait due within the invocation), an inline step's outcome reaches the workflow as soon as its body returns, and the next step's creation and body start before that outcome's write commits. Every write still lands in the order the workflow made it.
 - At most this many step outcomes are unconfirmed at once. When a boundary is not eligible, the orchestrator waits for its writes to commit and reads what landed below them before it continues, and runs ahead again at the next eligible boundary.
 - A refused or failed write while running ahead stops the delivery's decisions before anything else is written. The outcomes of steps whose start committed are still written. The delivery then continues in place: it reloads the log and replays from cold, with run-ahead off for the rest of the delivery. A fence refusal is handled as for any in-band write (see [One orchestrator per run](#one-orchestrator-per-run-and-the-in-band-fence)).
 - An event from another writer that could change the workflow's path and lands below a speculative write stops the delivery the same way, but it is a detector, not a recovery. The boundary was classified so that no such event could land there, and writes that committed together with the one that reported the event were decided without it. The cold replay that follows may then diverge from the log. The orchestrator logs the stop at error level with `possibleLogCorruption: true` and counts it in the `workflow.run_ahead.hazard_stops` span attribute; report one with the workflow's code.
@@ -253,8 +253,7 @@ Only the spec 8 orchestrator reads these. Spec 9 runs ignore them.
 
 These no longer exist. Remove them if you set them.
 
-- `WORKFLOW_RESILIENT_STEP_DISPATCH`: a background step's message is enqueued once, after its `step_created` commits.
-- `WORKFLOW_FENCE_REDELIVERY_DELAY_SECONDS`: an orchestrator delivery the in-band fence refuses is no longer delivered again. It sends what its own writes owe the queue and acknowledges (see [One orchestrator per run](#one-orchestrator-per-run-and-the-in-band-fence)).
+- `WORKFLOW_RESILIENT_STEP_DISPATCH` (removed in an earlier release): a background step's message is enqueued once, after its `step_created` commits.
 
 `WORKFLOW_SEQUENTIAL_REPLAYS` (Vercel World) is still read. Spec 9 runs are kept to one orchestrator at a time by a queue concurrency key without it; the setting serializes spec 8 runs too. See [Vercel World](/worlds/vercel#workflow_sequential_replays).
 
