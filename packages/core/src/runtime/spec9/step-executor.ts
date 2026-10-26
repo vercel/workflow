@@ -790,7 +790,10 @@ export async function executeStep(
           // A returned stream is piped to the World after the body, within
           // this step's op flush: gate its first write on the run-ready
           // barrier. Undefined on the awaited path.
-          optimisticStart ? params.runReadyBarrier : undefined
+          optimisticStart ? params.runReadyBarrier : undefined,
+          ops,
+          // Step-initiated aborts are read by this deployment's runtime.
+          true
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({

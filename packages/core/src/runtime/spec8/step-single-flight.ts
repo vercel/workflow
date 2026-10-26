@@ -18,6 +18,15 @@ import type { StepExecutionResult } from './step-executor.js';
  * waiting, its message redelivers and re-checks, degrading gracefully to
  * polling.
  *
+ * The exception is a winner that itself came back `skipped`. That outcome
+ * means it never ran the body: its claim lost to a concurrent writer, or the
+ * step had already settled. It owned nothing, so nothing on its side will
+ * drive the step, and the loser may be the very execution the claim lost to
+ * (say, the queued step message of the replay that created the step, while a
+ * racing replay of the same run tried to claim it inline). Skipping with it
+ * would leave the step created and never run. The loser runs its own attempt
+ * instead, which its claim gates like any other.
+ *
  * Cross-instance duplicates are what the ownership lease bounds on platforms
  * where it is a death proof, and the documented residual risk on
  * multi-instance self-hosted worlds (mitigate by raising
@@ -34,6 +43,7 @@ export function runStepSingleFlight(
     correlationId,
     execute,
     () => ({ type: 'skipped' }),
-    logLevel
+    logLevel,
+    (winner) => winner.type === 'skipped'
   );
 }

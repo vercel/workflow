@@ -22,6 +22,7 @@ import {
 import { importKey } from '../encryption.js';
 import type { HookInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import { runtimeLogger } from '../logger.js';
+import { frameAbortStreamPayload } from '../serialization/abort-stream.js';
 import {
   GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
   type GuestCodeStats,
@@ -378,7 +379,7 @@ export async function startSuspensionHookWrites({
         await world.streams.write(
           runId,
           streamName,
-          abortPayload as Uint8Array
+          frameAbortStreamPayload(abortPayload as Uint8Array)
         );
         await world.streams.close(runId, streamName);
       } catch {

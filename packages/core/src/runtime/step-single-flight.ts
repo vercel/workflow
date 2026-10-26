@@ -27,14 +27,16 @@ const singleFlight = globalSingleton(
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
  * already in flight in this process; a loser gets `loserResult()` once the
- * winner settled.
+ * winner settled, unless `rerunAfter(winner)` says the winner ran nothing, in
+ * which case the loser re-enters and tries the step itself.
  */
 export async function runSingleFlight<R>(
   runId: string,
   correlationId: string,
   execute: () => Promise<R>,
   loserResult: () => R,
-  logLevel: 'debug' | 'warn' = 'warn'
+  logLevel: 'debug' | 'warn' = 'warn',
+  rerunAfter?: (winner: R) => boolean
 ): Promise<R> {
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
@@ -45,11 +47,24 @@ export async function runSingleFlight<R>(
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
     );
+    let winner: { settled: R } | undefined;
     try {
-      await existing;
+      winner = { settled: (await existing) as R };
     } catch {
-      // The winner failed (typically a transient world error). The loser's
-      // outcome does not depend on how the winner settled.
+      // The winner failed (typically a transient world error). A failure
+      // never makes the loser rerun: the winner's own message redelivers.
+    }
+    if (winner && rerunAfter?.(winner.settled)) {
+      // Re-enter rather than call `execute` directly: another caller may
+      // have taken the slot while this one waited.
+      return runSingleFlight(
+        runId,
+        correlationId,
+        execute,
+        loserResult,
+        logLevel,
+        rerunAfter
+      );
     }
     return loserResult();
   }
