@@ -1,5 +1,5 @@
 import {
-  EncryptionKeyLookupError,
+  NonTransientEncryptionKeyLookupError,
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
@@ -352,12 +352,12 @@ export function getSerializeStream(
         // A key lookup failure is not a SerializationError either: nothing
         // was serialized yet. A transient world error (transport, timeout,
         // 429, 5xx) passes through unwrapped so the step retries; anything
-        // else (e.g. a 404) becomes a fatal EncryptionKeyLookupError.
+        // else (e.g. a 404) becomes a fatal NonTransientEncryptionKeyLookupError.
         if (!keyState.resolved) {
           controller.error(
             isRetryableWorldError(error)
               ? error
-              : new EncryptionKeyLookupError(
+              : new NonTransientEncryptionKeyLookupError(
                   'Failed to resolve the encryption key for a stream chunk',
                   { cause: error }
                 )

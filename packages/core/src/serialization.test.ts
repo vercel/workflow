@@ -1,9 +1,9 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import {
-  EncryptionKeyLookupError,
   FatalError,
   HookConflictError,
+  NonTransientEncryptionKeyLookupError,
   RetryableError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
@@ -6078,16 +6078,18 @@ describe('stream encryption round-trip', () => {
       }),
     },
     { label: 'non-world error', lookupError: new Error('bad key material') },
-  ])('should raise a fatal EncryptionKeyLookupError for a key lookup $label', async ({
+  ])('should raise a fatal NonTransientEncryptionKeyLookupError for a key lookup $label', async ({
     lookupError,
   }) => {
     const error = await serializeError(() => Promise.reject(lookupError), {
       hello: 'world',
     });
 
-    expect(error).toBeInstanceOf(EncryptionKeyLookupError);
+    expect(error).toBeInstanceOf(NonTransientEncryptionKeyLookupError);
     expect(FatalError.is(error)).toBe(true);
-    expect((error as EncryptionKeyLookupError).cause).toBe(lookupError);
+    expect((error as NonTransientEncryptionKeyLookupError).cause).toBe(
+      lookupError
+    );
   });
 
   it('should still raise a SerializationError for a chunk that cannot be serialized', async () => {
