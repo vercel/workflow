@@ -49,6 +49,14 @@ export interface StreamWriteSession {
    */
   write(chunkSeq: number, chunks: (string | Uint8Array)[]): Promise<void>;
 
+  /**
+   * Experimental. How many `write` calls core may have outstanding right now.
+   * Absent, or 1, means core awaits each write before issuing the next. A
+   * session returning more must send concurrent writes in call order and
+   * apply them in that order; the value may change between calls.
+   */
+  pipelineDepth?(): number;
+
   /** Close this writer lifetime after all prior writes are durable. */
   close(): Promise<void>;
 

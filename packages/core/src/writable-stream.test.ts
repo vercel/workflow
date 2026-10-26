@@ -589,6 +589,162 @@ describe('WorkflowServerWritableStream', () => {
     });
   });
 
+  describe('experimental pipelined writes', () => {
+    function deferred() {
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    function pipeliningSession(depth: number) {
+      const acks: Array<ReturnType<typeof deferred>> = [];
+      const session = {
+        pipelineDepth: vi.fn(() => depth),
+        write: vi.fn(() => {
+          const ack = deferred();
+          acks.push(ack);
+          return ack.promise;
+        }),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+      return { session, acks };
+    }
+
+    it('sends a chunk that arrives while a write is in flight without waiting for its ack', async () => {
+      const { session, acks } = pipeliningSession(2);
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      // Let the session resolve, as an open socket would be by now.
+      await waitFor(() =>
+        expect(mockStreams.createWriteSession).toHaveBeenCalled()
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      await writer.write(new Uint8Array([2]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+      // Depth 2 is full: the third chunk waits and then rides with the fourth.
+      await writer.write(new Uint8Array([3]));
+      await writer.write(new Uint8Array([4]));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(session.write).toHaveBeenCalledTimes(2);
+      acks[0]!.resolve();
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(3));
+      acks[1]!.resolve();
+      acks[2]!.resolve();
+      const closing = writer.close();
+      await closing;
+
+      expect(session.write).toHaveBeenNthCalledWith(1, 0, [
+        new Uint8Array([1]),
+      ]);
+      expect(session.write).toHaveBeenNthCalledWith(2, 1, [
+        new Uint8Array([2]),
+      ]);
+      expect(session.write).toHaveBeenNthCalledWith(3, 2, [
+        new Uint8Array([3]),
+        new Uint8Array([4]),
+      ]);
+      expect(session.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds close until every outstanding write is acknowledged', async () => {
+      const { session, acks } = pipeliningSession(3);
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      // Let the session resolve, as an open socket would be by now.
+      await waitFor(() =>
+        expect(mockStreams.createWriteSession).toHaveBeenCalled()
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      await writer.write(new Uint8Array([2]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+      let closed = false;
+      const closing = writer.close().then(() => {
+        closed = true;
+      });
+      acks[1]!.resolve();
+      await new Promise((r) => setTimeout(r, 5));
+      expect(closed).toBe(false);
+      expect(session.close).not.toHaveBeenCalled();
+      acks[0]!.resolve();
+      await closing;
+      expect(session.close).toHaveBeenCalledTimes(1);
+    });
+
+    it('makes a failed pipelined write sticky after the others settle', async () => {
+      const { session, acks } = pipeliningSession(2);
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      // Let the session resolve, as an open socket would be by now.
+      await waitFor(() =>
+        expect(mockStreams.createWriteSession).toHaveBeenCalled()
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      await writer.write(new Uint8Array([2]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+      const boom = new Error('unknown outcome');
+      acks[0]!.reject(boom);
+      acks[1]!.reject(boom);
+      await expect(writer.close()).rejects.toBe(boom);
+      expect(session.write).toHaveBeenCalledTimes(2);
+      expect(session.close).not.toHaveBeenCalled();
+    });
+
+    it('switches from the serial chain to pipelining once the session allows it', async () => {
+      const { session, acks } = pipeliningSession(1);
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      await writer.write(new Uint8Array([2]));
+      // The socket opens while the first (serial) write is in flight.
+      session.pipelineDepth.mockReturnValue(2);
+      acks[0]!.resolve();
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+      await writer.write(new Uint8Array([3]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(3));
+      acks[1]!.resolve();
+      acks[2]!.resolve();
+      await writer.close();
+      expect(session.write).toHaveBeenNthCalledWith(2, 1, [
+        new Uint8Array([2]),
+      ]);
+      expect(session.write).toHaveBeenNthCalledWith(3, 2, [
+        new Uint8Array([3]),
+      ]);
+    });
+
+    it('stays serial while the session reports depth 1', async () => {
+      const { session, acks } = pipeliningSession(1);
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      // Let the session resolve, as an open socket would be by now.
+      await waitFor(() =>
+        expect(mockStreams.createWriteSession).toHaveBeenCalled()
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      await writer.write(new Uint8Array([2]));
+      await new Promise((r) => setTimeout(r, 5));
+      expect(session.write).toHaveBeenCalledTimes(1);
+      acks[0]!.resolve();
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+      acks[1]!.resolve();
+      await writer.close();
+    });
+  });
+
   describe('public writer transport cleanup', () => {
     function makePipe() {
       const session = {
