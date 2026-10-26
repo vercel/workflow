@@ -24,6 +24,7 @@ import {
 
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
+  type CreateEventRequest,
   type Event,
   type EventResult,
   ROOT_RUN_ID_ATTRIBUTE,
@@ -80,7 +81,10 @@ import {
   warnOnce,
 } from '../quickjs-delivery-shared.js';
 import { QuickJSLogView } from '../quickjs-log-view.js';
-import { dispatchPendingOps } from '../quickjs-pending-ops.js';
+import {
+  type CreationBatches,
+  dispatchPendingOps,
+} from '../quickjs-pending-ops.js';
 import {
   BASELINE_BUNDLE_FILENAME,
   type PendingHook,
@@ -917,6 +921,45 @@ export async function runWorkflowWithQuickJS(params: {
    */
   const terminalCreateEvent: EventCreator = (data, eventParams) =>
     writeEvent(data, eventParams);
+  /**
+   * Sends one creation batch of a pass (see `CreationBatches`) through the
+   * in-band writer and folds it into the log view as {@link createEvent}
+   * folds a single write: the batch's skipped-slot report, then each
+   * committed creation. Absent without a writer or a World `createBatch`.
+   */
+  const writeCreationBatch = params.writer?.supportsBatch
+    ? async (events: CreateEventRequest[]) => {
+        const written = await params.writer!.createBatch(
+          events.map((event) => ({ event })),
+          {
+            ...(requestId ? { requestId } : {}),
+            ...logView.snapshotParams(),
+          }
+        );
+        const report = logView.absorb({
+          events: written.events,
+          hasMore: written.hasMore,
+        });
+        if (report.truncated) {
+          runtimeLogger.debug(
+            'QuickJS runtime: dropped a truncated skipped-slot report',
+            {
+              workflowRunId: runId,
+              eventType: 'creation_batch',
+              offered: written.events?.length ?? 0,
+            }
+          );
+        }
+        for (const item of written.results) {
+          if (item.error !== undefined) continue;
+          logView.absorb(
+            { event: item.event },
+            { deliverEvent: deliversOwnEvent(item.event.eventType) }
+          );
+        }
+        return written;
+      }
+    : undefined;
 
   // Event-limit guard: fail a runaway run once its log reaches the
   // server-supplied ceiling. With a restored snapshot `events` is only
@@ -1875,6 +1918,52 @@ export async function runWorkflowWithQuickJS(params: {
       // promiseRaceStressTestWorkflow hanging in the quickjs CI legs). The
       // step-identity-scoped idempotency key makes repeats harmless.
       const overflowSteps = healthySteps.slice(inlineCandidates.length);
+      const overflowCids = new Set(
+        overflowSteps.map((step) => step.correlationId)
+      );
+      const sendOverflowStep = (
+        step: PendingStep,
+        createdEventId: string | undefined,
+        input: Uint8Array | undefined
+      ): Promise<void> => {
+        queuedStepIds.add(step.correlationId);
+        return queueStepMessage({
+          world,
+          runId,
+          workflowRun,
+          step,
+          namespace,
+          nextTraceCarrier,
+          purpose: 'dispatch',
+          onSent: params.onStepMessageSent,
+          ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
+          ...(input &&
+          input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
+          (workflowRun.specVersion ?? 0) >=
+            SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+            ? { stepInput: input }
+            : {}),
+          wfdiag,
+        });
+      };
+      // A fan-out's creations go out as creation batches, as on the node
+      // engine, and each batch's overflow steps are sent as soon as it
+      // committed, while the batches behind it go out.
+      const creationBatches: CreationBatches | undefined = writeCreationBatch
+        ? {
+            write: writeCreationBatch,
+            onStepsCreated: async (created) => {
+              await Promise.all(
+                created.flatMap(({ step, eventId, input }) =>
+                  overflowCids.has(step.correlationId) &&
+                  !queuedStepIds.has(step.correlationId)
+                    ? [sendOverflowStep(step, eventId, input)]
+                    : []
+                )
+              );
+            },
+          }
+        : undefined;
       const dispatched = await dispatchPendingOps({
         eventSpecVersion: SPEC_VERSION_CURRENT,
         stampCreations: true,
@@ -1901,6 +1990,7 @@ export async function runWorkflowWithQuickJS(params: {
         writtenOpIds,
         creatorMessageId: ownerMessageId,
         finalizeUnserializableSteps: true,
+        ...(creationBatches ? { creationBatches } : {}),
         wfdiag,
       });
       if (
@@ -1924,32 +2014,20 @@ export async function runWorkflowWithQuickJS(params: {
         }
       }
 
+      // The overflow steps no creation batch sent: every one written as a
+      // single write, and any whose creation already existed.
       await Promise.all(
-        overflowSteps.map((step) => {
-          queuedStepIds.add(step.correlationId);
-          const createdEventId = dispatched.createdStepEventIds.get(
-            step.correlationId
-          );
-          const input = dispatched.createdStepInputs.get(step.correlationId);
-          return queueStepMessage({
-            world,
-            runId,
-            workflowRun,
-            step,
-            namespace,
-            nextTraceCarrier,
-            purpose: 'dispatch',
-            onSent: params.onStepMessageSent,
-            ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
-            ...(input &&
-            input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
-            (workflowRun.specVersion ?? 0) >=
-              SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
-              ? { stepInput: input }
-              : {}),
-            wfdiag,
-          });
-        })
+        overflowSteps.flatMap((step) =>
+          dispatched.reportedStepCids.has(step.correlationId)
+            ? []
+            : [
+                sendOverflowStep(
+                  step,
+                  dispatched.createdStepEventIds.get(step.correlationId),
+                  dispatched.createdStepInputs.get(step.correlationId)
+                ),
+              ]
+        )
       );
 
       // Complete elapsed waits so their wait_completed events are picked

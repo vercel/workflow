@@ -22,9 +22,13 @@ import {
   EntityConflictError,
   HookNotFoundError,
   RunExpiredError,
+  ThrottleError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 
 import {
+  type CreateEventRequest,
+  type EventBatchResult,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
@@ -54,6 +58,7 @@ import type {
   PendingWait,
 } from './quickjs-runtime.js';
 
+import { batchChunks } from './spec9/step-wait-creation.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
 import type { getWorld } from './world.js';
@@ -151,6 +156,12 @@ export async function dispatchPendingOps(params: {
    * and reports it in `createdHookConflict`.
    */
   requeueOnHookConflict?: boolean;
+  /**
+   * Writes the pass's `step_created` and `wait_created` events as creation
+   * batches rather than one write each (the spec 9 orchestrator, on a World
+   * with `createBatch`). See {@link CreationBatches}.
+   */
+  creationBatches?: CreationBatches;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
 }): Promise<{
   createdAttributeEvent: boolean;
@@ -172,6 +183,11 @@ export async function dispatchPendingOps(params: {
   createdStepEventIds: Map<string, string>;
   /** Serialized inputs of the steps this dispatch created. */
   createdStepInputs: Map<string, Uint8Array>;
+  /**
+   * Steps whose creation committed in a creation batch and that were handed
+   * to {@link CreationBatches.onStepsCreated}.
+   */
+  reportedStepCids: Set<string>;
 }> {
   const {
     world,
@@ -442,16 +458,88 @@ export async function dispatchPendingOps(params: {
   // before the wake is repaid by the next replay from the forced
   // `hook_created` itself, which `forcedCreationsOwingWake` finds wherever it
   // sits in the log, so no row written after it can hide the debt.
+  const hookGroups: Promise<void>[] = [];
   for (const group of hookOpsByToken.values()) {
-    opsPromises.push(runHookGroup(group));
+    const running = runHookGroup(group);
+    hookGroups.push(running);
+    opsPromises.push(running);
   }
 
+  const stepCreatedEvent = (
+    step: PendingStep,
+    input: Uint8Array | unknown
+  ): CreateEventRequest => ({
+    eventType: 'step_created',
+    specVersion: params.eventSpecVersion,
+    correlationId: step.correlationId,
+    eventData: {
+      stepName: step.stepId,
+      input: input as Uint8Array,
+      ...(params.stampCreations && {
+        workflowName: workflowRun.workflowName,
+        inline: false,
+      }),
+      ...(creatorMessageId ? { creatorMessageId } : {}),
+    },
+  });
+  const waitCreatedEvent = (wait: PendingWait): CreateEventRequest => ({
+    eventType: 'wait_created',
+    specVersion: params.eventSpecVersion,
+    correlationId: wait.correlationId,
+    eventData: {
+      resumeAt: new Date(wait.resumeAt),
+      ...(creatorMessageId ? { creatorMessageId } : {}),
+    },
+  });
+
+  // The pass's step and wait creations, when they go out as creation
+  // batches: more than one of them, and no attribute write in the pass. A
+  // World orders an attribute write against the steps of its pass only when
+  // they are single writes (see `Storage.events.createBatch`), as the node
+  // engine never batches a suspension that carries one. A lone creation
+  // stays a single write, as on the node engine.
+  const createsStep = (op: PendingOperation): boolean =>
+    op.type === 'step' &&
+    !op.hasCreatedEvent &&
+    !skipStepCreation?.has(op.correlationId);
+  const createsWait = (op: PendingOperation): boolean =>
+    op.type === 'wait' &&
+    !op.hasCreatedEvent &&
+    !params.writtenOpIds?.has(op.correlationId);
+  const batches =
+    params.creationBatches &&
+    !pendingOperations.some(
+      (op) =>
+        op.type === 'attribute' &&
+        !op.hasCreatedEvent &&
+        !params.writtenOpIds?.has(op.correlationId)
+    ) &&
+    pendingOperations.filter(
+      (op) =>
+        createsWait(op) ||
+        (createsStep(op) && !(op as PendingStep).serializationError)
+    ).length > 1
+      ? params.creationBatches
+      : undefined;
+  const batchedCreations: Promise<BatchedCreation>[] = [];
+  const reportedStepCids = new Set<string>();
+
   for (const op of pendingOperations) {
-    if (
-      op.type === 'step' &&
-      !op.hasCreatedEvent &&
-      !skipStepCreation?.has(op.correlationId)
-    ) {
+    if (batches && createsStep(op) && !(op as PendingStep).serializationError) {
+      const step = op as PendingStep;
+      batchedCreations.push(
+        encryptSerializedData(step.input, encryptionKey).then((input) => ({
+          event: stepCreatedEvent(step, input),
+          step,
+          input,
+        }))
+      );
+    } else if (batches && createsWait(op)) {
+      params.writtenOpIds?.add(op.correlationId);
+      batchedCreations.push(
+        Promise.resolve({ event: waitCreatedEvent(op as PendingWait) })
+      );
+    } else if (createsStep(op)) {
       const step = op as PendingStep;
       opsPromises.push(
         (async () => {
@@ -558,20 +646,9 @@ export async function dispatchPendingOps(params: {
           );
 
           try {
-            const created = await createEvent({
-              eventType: 'step_created',
-              specVersion: params.eventSpecVersion,
-              correlationId: step.correlationId,
-              eventData: {
-                stepName: step.stepId,
-                input: encryptedInput,
-                ...(params.stampCreations && {
-                  workflowName: workflowRun.workflowName,
-                  inline: false,
-                }),
-                ...(creatorMessageId ? { creatorMessageId } : {}),
-              },
-            });
+            const created = await createEvent(
+              stepCreatedEvent(step, encryptedInput)
+            );
             if (created.event) {
               createdStepEventIds.set(
                 step.correlationId,
@@ -636,15 +713,7 @@ export async function dispatchPendingOps(params: {
       opsPromises.push(
         (async () => {
           try {
-            await createEvent({
-              eventType: 'wait_created',
-              specVersion: params.eventSpecVersion,
-              correlationId: wait.correlationId,
-              eventData: {
-                resumeAt: new Date(wait.resumeAt),
-                ...(creatorMessageId ? { creatorMessageId } : {}),
-              },
-            });
+            await createEvent(waitCreatedEvent(wait));
           } catch (err) {
             if (EntityConflictError.is(err)) return;
             throw err;
@@ -652,6 +721,29 @@ export async function dispatchPendingOps(params: {
         })()
       );
     }
+  }
+
+  if (batches && batchedCreations.length > 0) {
+    opsPromises.push(
+      (async () => {
+        const creations = await Promise.all(batchedCreations);
+        await commitCreationBatches({
+          runId,
+          batches,
+          creations,
+          // A step message goes out only once every hook write of the pass
+          // settled, as it does when each creation is a single write.
+          hooksSettled: Promise.allSettled(hookGroups).then(() => {}),
+          onStepCreated: (step, eventId, input) => {
+            createdStepEventIds.set(step.correlationId, eventId);
+            if (input instanceof Uint8Array) {
+              createdStepInputs.set(step.correlationId, input);
+            }
+            reportedStepCids.add(step.correlationId);
+          },
+        });
+      })()
+    );
   }
 
   // Per-op dispatch runs in parallel.
@@ -664,5 +756,130 @@ export async function dispatchPendingOps(params: {
     failedSerializationStepCids,
     createdStepEventIds,
     createdStepInputs,
+    reportedStepCids,
   };
+}
+
+/**
+ * How {@link dispatchPendingOps} writes a pass's step and wait creations as
+ * creation batches.
+ */
+export interface CreationBatches {
+  /**
+   * Sends one creation batch through the orchestrator's in-band writer and
+   * folds what it committed into the log view. A whole-batch failure
+   * rejects.
+   */
+  write(events: CreateEventRequest[]): Promise<EventBatchResult>;
+  /**
+   * Called once per committed batch with the steps it created, as soon as
+   * it committed: the caller sends their step messages while the batches
+   * behind it go out. Never called for a step whose creation did not commit.
+   */
+  onStepsCreated(steps: CreatedBatchStep[]): Promise<void>;
+}
+
+/** A step a creation batch created. */
+export interface CreatedBatchStep {
+  step: PendingStep;
+  /** The committed `step_created`'s event id. */
+  eventId: string;
+  /** The step's serialized (possibly encrypted) input. */
+  input: Uint8Array | undefined;
+}
+
+interface BatchedCreation {
+  event: CreateEventRequest;
+  /** The step a `step_created` creates. Absent on a `wait_created`. */
+  step?: PendingStep;
+  input?: unknown;
+}
+
+/**
+ * Writes a pass's creations in the batches the node engine writes a
+ * suspension's (`batchChunks`): up to `MAX_IN_BAND_CREATION_BATCH_EVENTS`
+ * events and `MAX_IN_BAND_CREATION_BATCH_BYTES` bytes each, one after
+ * another, in order. Each batch's steps are reported as soon as it
+ * committed, while the next batch goes out.
+ *
+ * A batch item answered 409 already exists, as a single write's
+ * `EntityConflictError` says: it is skipped, and its step is not reported,
+ * so the caller handles it as it handles a conflicted single write's.
+ * Any other item refusal fails the pass with the error a single write of
+ * that status throws (429 a `ThrottleError`, 410 a `RunExpiredError`, else a
+ * `WorkflowWorldError`), and the batches behind it are not sent. A spec 9
+ * batch is not atomic, so the items around a refusal may have committed:
+ * the redelivery re-derives the missing creations and re-sends the steps
+ * this message created that never got a message (`stepsToReenqueue`). The
+ * reports already made settle before the pass fails. A report waits for the
+ * pass's hook writes to settle.
+ */
+async function commitCreationBatches(params: {
+  runId: string;
+  batches: CreationBatches;
+  creations: BatchedCreation[];
+  hooksSettled: Promise<void>;
+  onStepCreated: (step: PendingStep, eventId: string, input: unknown) => void;
+}): Promise<void> {
+  const { batches, creations } = params;
+  const reports: Promise<void>[] = [];
+  let failure: { error: unknown } | undefined;
+  let offset = 0;
+  for (const chunk of batchChunks(creations.map((c) => c.event))) {
+    const members = creations.slice(offset, offset + chunk.length);
+    offset += chunk.length;
+    let result: EventBatchResult;
+    try {
+      result = await batches.write(chunk);
+    } catch (error) {
+      failure = { error };
+      break;
+    }
+    const created: CreatedBatchStep[] = [];
+    result.results.forEach((item, index) => {
+      const member = members[index];
+      if (!member) return;
+      if (item.error === undefined) {
+        if (member.step) {
+          params.onStepCreated(member.step, item.event.eventId, member.input);
+          created.push({
+            step: member.step,
+            eventId: item.event.eventId,
+            input:
+              member.input instanceof Uint8Array ? member.input : undefined,
+          });
+        }
+        return;
+      }
+      if (item.status === 409 || failure) return;
+      runtimeLogger.warn('QuickJS runtime: creation batch item refused', {
+        workflowRunId: params.runId,
+        eventType: member.event.eventType,
+        correlationId: (member.event as { correlationId?: string })
+          .correlationId,
+        status: item.status,
+        error: item.error,
+      });
+      const message = `Creation batch item failed with ${item.status}: ${item.message}`;
+      failure = {
+        error:
+          item.status === 429
+            ? new ThrottleError(message)
+            : item.status === 410
+              ? new RunExpiredError(message)
+              : new WorkflowWorldError(message, { status: item.status }),
+      };
+    });
+    if (created.length > 0) {
+      reports.push(
+        params.hooksSettled.then(() => batches.onStepsCreated(created))
+      );
+    }
+    if (failure) break;
+  }
+  if (failure) {
+    await Promise.allSettled(reports);
+    throw failure.error;
+  }
+  await Promise.all(reports);
 }
