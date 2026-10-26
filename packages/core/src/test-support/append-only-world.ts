@@ -127,6 +127,8 @@ export class AppendOnlyWorld {
   coalescedMessages = 0;
   /** Deliveries handed off past `maxCoalescedReruns`, in `coalesce` mode. */
   coalescedHandoffs = 0;
+  /** Handoffs continued on a new message (see `rotateHandoff`). */
+  rotations = 0;
 
   constructor(
     readonly options: {
@@ -176,6 +178,13 @@ export class AppendOnlyWorld {
        * served without `input`. The log and the created event keep it.
        */
       skipStepInputs?: boolean;
+      /**
+       * Whether a handoff (`{ timeoutSeconds: 0 }`) of `held` continues on a
+       * new message instead, as world-vercel does for a message close to its
+       * expiry: the held message is acknowledged, and a new one with the
+       * same payload (fresh id, first delivery) is held in its place.
+       */
+      rotateHandoff?: (held: HeldMessage) => boolean;
       /**
        * Called with the delay of every `{ timeoutSeconds }` result, so a
        * test with fake timers can let that time pass before the redelivery.
@@ -599,6 +608,17 @@ export class AppendOnlyWorld {
       );
       const handedOff =
         (result as { timeoutSeconds: number }).timeoutSeconds === 0;
+      if (handedOff && this.options.rotateHandoff?.(held)) {
+        this.rotations++;
+        this.held.push({
+          message: held.message,
+          messageId: `msg_rotated_${this.rotations}_of_${held.messageId}`,
+          queueName: held.queueName,
+          deliveryCount: 1,
+          createdAt: new Date(),
+        });
+        return result;
+      }
       const {
         coalescedRerun: _rerun,
         invocationStartedAt: _startedAt,

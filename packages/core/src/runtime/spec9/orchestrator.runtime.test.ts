@@ -29,6 +29,7 @@ import {
   MAX_IN_BAND_CREATION_BATCH_EVENTS,
   STEP_DISPATCH_QUEUE_BATCH_SIZE,
 } from '../constants.js';
+import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
 import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
@@ -1331,6 +1332,107 @@ describe.each([
       await world.runUntilIdle();
       expect(eventsOf(world, 'run_completed')).toHaveLength(1);
       expect(calls).toMatchObject({ so_slow_add: 1, so_add: 1 });
+    }
+  );
+
+  it.runIf(engine === 'node')(
+    'continues a run on a new message when a World rotates an old message instead of handing it off',
+    async () => {
+      const code = `const slow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_slow_add");
+       const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow(a, b) {
+         const nap = sleep("1h");
+         const first = await slow(a, b);
+         const second = await add(first, 10);
+         await nap;
+         return second;
+       }${transform('workflow')}`;
+      const MESSAGE_AGE_MS = 23 * 60 * 60_000;
+      const { world, start } = await setup(code, [1, 2], {
+        // A message this old is close to its expiry: a handoff of it
+        // continues on a new message, which owes nothing to the old one.
+        rotateHandoff: (held) => Date.now() - +held.createdAt >= MESSAGE_AGE_MS,
+      });
+      start.createdAt = new Date(Date.now() - MESSAGE_AGE_MS);
+
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
+      const clock = mockClock();
+      try {
+        expect(await world.deliver(start)).toEqual({ timeoutSeconds: 0 });
+        expect(world.rotations).toBe(1);
+        const [rotated] = world.held.filter(
+          (held) =>
+            (held.message as { runId?: string }).runId !== undefined &&
+            !(held.message as { waitContinuation?: unknown }).waitContinuation
+        );
+        expect(rotated).toMatchObject({ deliveryCount: 1 });
+        expect(rotated!.messageId).not.toBe(start.messageId);
+        expect(world.held.map((held) => held.messageId)).not.toContain(
+          start.messageId
+        );
+        // The sleep's timer went out with the old message's delivery.
+        expect(
+          world.held.filter(
+            (held) =>
+              (held.message as { waitContinuation?: unknown })
+                .waitContinuation !== undefined
+          )
+        ).toHaveLength(1);
+
+        await world.deliver(rotated!);
+        clockOffsetMs += 2 * 60 * 60_000;
+        await world.runUntilIdle();
+      } finally {
+        clock.mockRestore();
+        vi.unstubAllEnvs();
+      }
+      expect(await runResult(world)).toBe(13);
+      expect(calls).toMatchObject({ so_slow_add: 1, so_add: 1 });
+    }
+  );
+
+  it.runIf(engine === 'quickjs')(
+    'arms the timer of a wait it created before a handoff, so a rotated message is not left without it',
+    async () => {
+      const code = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+       async function workflow() {
+         await sleep("1h");
+         return "done";
+       }${transform('workflow')}`;
+      const { world, start } = await setup(code, [], {
+        rotateHandoff: (held) => held.messageId === start.messageId,
+      });
+      // The replay budget runs out right after the pass that created the
+      // sleep, so the delivery hands its message off before it suspends.
+      let exhaustAfterWait = true;
+      const exhausted = vi
+        .spyOn(ReplayBudget.prototype, 'isExhausted')
+        .mockImplementation(
+          () => exhaustAfterWait && eventsOf(world, 'wait_created').length > 0
+        );
+      const timerCount = () =>
+        world.held.filter(
+          (held) =>
+            (held.message as { waitContinuation?: unknown })
+              .waitContinuation !== undefined
+        ).length;
+      try {
+        expect(await world.deliver(start)).toEqual({ timeoutSeconds: 0 });
+        exhaustAfterWait = false;
+        expect(world.rotations).toBe(1);
+        expect(timerCount()).toBe(1);
+        const rotated = world.held.find(
+          (held) =>
+            (held.message as { waitContinuation?: unknown })
+              .waitContinuation === undefined
+        );
+        await world.deliver(rotated!);
+        expect(eventsOf(world, 'wait_completed')).toHaveLength(0);
+        expect(timerCount()).toBeGreaterThan(0);
+      } finally {
+        exhausted.mockRestore();
+      }
     }
   );
 

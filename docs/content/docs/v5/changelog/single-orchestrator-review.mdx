@@ -206,7 +206,7 @@ export async function nightlyReport() {
 }
 ```
 
-The run needs about 12 minutes of inline work, longer than one invocation's inline budget. Near the deadline, the orchestrator ends its delivery and the next invocation continues from the log: with a handoff when an inline step runs into the deadline, or through one background step when the inline-start margin comes first (section 7). A year of handoffs counts as zero attempts, so the run is not failed by the delivery cap (`WORKFLOW_MAX_QUEUE_DELIVERIES`, 48 by default).
+The run needs about 12 minutes of inline work, longer than one invocation's inline budget. Near the deadline, the orchestrator ends its delivery and the next invocation continues from the log: with a handoff when an inline step runs into the deadline, or through one background step when the inline-start margin comes first (section 7). A handoff is not an attempt, so handoffs do not fail the run through the delivery cap (`WORKFLOW_MAX_QUEUE_DELIVERIES`, 48 by default). They do not extend the message's life either: a handoff keeps the message, its retention counts from its first send, and the queue bounds how often one message can be handed off. On world-vercel, a handoff of a message close to its expiry or to that bound continues the run on a new message instead: the old one is acknowledged once the new one, delayed by a second, is sent. Nothing is lost with the old message, because the delivery sent every message its writes owe, and the timers of the waits it created, before it asked for the handoff.
 
 **Example: a webhook whose response stream is still flushing.**
 

@@ -88,7 +88,14 @@ import {
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import {
   createQueue,
+  DEFAULT_MESSAGE_RETENTION_SECONDS,
+  logHandoffOutcome,
   MAX_REDELIVERY_DELAY_SECONDS,
+  ORCHESTRATOR_ROTATION_DELAY_SECONDS,
+  ORCHESTRATOR_ROTATION_EXPIRY_MARGIN_SECONDS,
+  ORCHESTRATOR_ROTATION_HANDOFF_MARGIN,
+  orchestratorMessageRotation,
+  QUEUE_MAX_HANDOFFS_PER_MESSAGE,
   recordStepExecution,
   resolveMessageLifetime,
 } from './queue.js';
@@ -1334,6 +1341,202 @@ describe('createQueue', () => {
         expect(consoleErrorSpy).not.toHaveBeenCalled();
       } finally {
         consoleErrorSpy.mockRestore();
+      }
+    });
+
+    describe('a spec 9 message close to its expiry or handoff bound', () => {
+      const NOW = Date.UTC(2026, 9, 26, 12);
+      /** `createdAt` of a message that expires `seconds` from now. */
+      const expiringIn = (seconds: number) =>
+        new Date(NOW - (DEFAULT_MESSAGE_RETENTION_SECONDS - seconds) * 1000);
+      const margin = ORCHESTRATOR_ROTATION_EXPIRY_MARGIN_SECONDS;
+      const handoffLimit =
+        QUEUE_MAX_HANDOFFS_PER_MESSAGE - ORCHESTRATOR_ROTATION_HANDOFF_MARGIN;
+
+      beforeEach(() => {
+        vi.stubEnv('VERCEL_DEPLOYMENT_ID', 'dpl_test');
+        mockSend.mockResolvedValue({ messageId: 'msg-rotated' });
+      });
+      afterEach(() => {
+        vi.unstubAllEnvs();
+        vi.useRealTimers();
+      });
+
+      it('rotates by the default retention, the queue-reported expiry, or the handoff count', () => {
+        const rotation = (
+          meta: Parameters<typeof orchestratorMessageRotation>[0]
+        ) => orchestratorMessageRotation(meta, NOW);
+        expect(rotation({ createdAt: expiringIn(margin + 1) })).toBeUndefined();
+        expect(rotation({ createdAt: expiringIn(margin) })).toBe('expiry');
+        expect(
+          rotation({
+            createdAt: new Date(NOW),
+            expiresAt: new Date(NOW + (margin - 1) * 1000),
+          })
+        ).toBe('expiry');
+        expect(
+          rotation({
+            createdAt: new Date(NOW),
+            experimental_handoffCount: handoffLimit - 1,
+          })
+        ).toBeUndefined();
+        expect(
+          rotation({
+            createdAt: new Date(NOW),
+            experimental_handoffCount: handoffLimit,
+          })
+        ).toBe('handoff-bound');
+      });
+
+      it.each([
+        { createdAt: () => expiringIn(margin - 60), handoffCount: 3 },
+        { createdAt: () => new Date(NOW), handoffCount: handoffLimit },
+      ])('continues on a new delayed keyed message instead of handing off (%#)', async ({
+        createdAt,
+        handoffCount,
+      }) => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(NOW);
+        const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+        try {
+          const { handler } = captureHandler({ timeoutSeconds: 0 });
+          const payload = spec9({
+            runId: 'wrun_abc',
+            runContext: {
+              deploymentId: 'dpl_original',
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            },
+          });
+          // Resolves: the message is acknowledged once the new one is out.
+          await handler(
+            {
+              payload,
+              queueName: '__wkf_workflow_test',
+              deploymentId: 'dpl_original',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: handoffCount + 1,
+              experimental_handoffCount: handoffCount,
+              createdAt: createdAt(),
+            }
+          );
+          expect(mockSend).toHaveBeenCalledTimes(1);
+          const [, wrapper, sendOpts] = mockSend.mock.calls[0];
+          expect(wrapper).toMatchObject({
+            payload,
+            queueName: '__wkf_workflow_test',
+            deploymentId: 'dpl_original',
+          });
+          expect(sendOpts).toMatchObject({
+            delaySeconds: ORCHESTRATOR_ROTATION_DELAY_SECONDS,
+            experimental_concurrencyKey: 'wrun_abc',
+          });
+          expect(sendOpts.idempotencyKey).toBeUndefined();
+          expect(infoSpy).toHaveBeenCalledTimes(1);
+        } finally {
+          infoSpy.mockRestore();
+        }
+      });
+
+      it('still redelivers the same message for a delayed redelivery', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(NOW);
+        const { handler, retry } = captureHandler({ timeoutSeconds: 30 });
+        const thrown = await handler(
+          {
+            payload: spec9({ runId: 'wrun_abc' }),
+            queueName: '__wkf_workflow_test',
+          },
+          { messageId: 'msg-123', deliveryCount: 1, createdAt: expiringIn(60) }
+        ).catch((err: unknown) => err);
+        expect(
+          retry(thrown, { messageId: 'msg-123', deliveryCount: 1 })
+        ).toEqual({
+          afterSeconds: 30,
+        });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it('hands off on the same message when the new one cannot be sent', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(NOW);
+        mockSend.mockRejectedValueOnce(new Error('send failed'));
+        const { handler } = captureHandler({ timeoutSeconds: 0 });
+        await expect(
+          handler(
+            {
+              payload: spec9({ runId: 'wrun_abc' }),
+              queueName: '__wkf_workflow_test',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 1,
+              createdAt: expiringIn(60),
+            }
+          )
+        ).rejects.toThrow('send failed');
+      });
+    });
+
+    it('logs what the queue did with a handoff', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+      try {
+        const changeVisibility = vi.fn(
+          async (options: { experimental_handoff?: boolean }) => ({
+            success: true,
+            ...(options.experimental_handoff && {
+              experimental_handoff: 'limit_reached',
+            }),
+          })
+        );
+        // biome-ignore lint/complexity/useArrowFunction: needs to be newable
+        MockQueueClient.mockImplementationOnce(function () {
+          return {
+            send: mockSend,
+            sendBatch: mockSendBatch,
+            handleCallback: mockHandleCallback,
+            [Symbol.for('@vercel/queue.apiClient')]: { changeVisibility },
+          };
+        });
+        mockHandleCallback.mockImplementation(() => async () => new Response());
+        createQueue().createQueueHandler(
+          '__wkf_workflow_',
+          async () => undefined
+        );
+        const api =
+          MockQueueClient.mock.results.at(-1)?.value[
+            Symbol.for('@vercel/queue.apiClient')
+          ];
+        await api.changeVisibility({
+          messageId: 'msg-1',
+          visibilityTimeoutSeconds: 5,
+        });
+        expect(warn).not.toHaveBeenCalled();
+        await api.changeVisibility({
+          messageId: 'msg-1',
+          visibilityTimeoutSeconds: 0,
+          experimental_handoff: true,
+        });
+        expect(changeVisibility).toHaveBeenCalledTimes(2);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining('"msg-1": limit_reached')
+        );
+
+        logHandoffOutcome('msg-2', 'not_immediate');
+        expect(info).toHaveBeenCalledWith(
+          expect.stringContaining('"msg-2": not_immediate')
+        );
+        logHandoffOutcome('msg-3', 'accepted');
+        expect(debug).toHaveBeenCalledWith(
+          expect.stringContaining('"msg-3": accepted')
+        );
+      } finally {
+        warn.mockRestore();
+        info.mockRestore();
+        debug.mockRestore();
       }
     });
 

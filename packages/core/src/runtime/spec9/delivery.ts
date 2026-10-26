@@ -540,6 +540,11 @@ async function runDelivery(
    * still owe. Registered by each orchestrator pass once the run is known.
    */
   let sendUnsentMessages: (() => Promise<void>) | undefined;
+  /**
+   * Sends the timers a handoff owes (`armCreatedWaitTimers`). Registered
+   * with {@link sendUnsentMessages}.
+   */
+  let sendHandoffTimers: (() => Promise<void>) | undefined;
   // Turbo mode fast-paths the first delivery of the run's
   // first orchestrator message: the one `start()` enqueued,
   // the only one that carries `runInput`, on its first
@@ -865,6 +870,7 @@ async function runDelivery(
   ): Promise<void> => {
     const delayed = delaySeconds !== undefined && delaySeconds > 0;
     if (!delayed && extra === undefined) {
+      await sendHandoffTimers?.();
       continuation.handoff = true;
       return;
     }
@@ -1226,6 +1232,7 @@ async function runDelivery(
     turboRunStarted = undefined;
     runReadyBarrier = undefined;
     sendUnsentMessages = undefined;
+    sendHandoffTimers = undefined;
   }
 
   /**
@@ -1531,6 +1538,7 @@ async function runDelivery(
     startWorkflowCompile(workflowRun);
     const runForMessages = workflowRun;
     sendUnsentMessages = () => sendOwedMessages(runForMessages);
+    sendHandoffTimers = armCreatedWaitTimers;
     span?.setAttributes({
       ...Attribute.WorkflowRunStatus('running'),
       ...Attribute.WorkflowStartedAt(workflowStartedAt),
@@ -4082,6 +4090,43 @@ async function runDelivery(
         waitContinuation?.correlationId
       )) {
         if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
+      }
+    }
+
+    /**
+     * Arms, before a handoff, the timer of each chain of this delivery's
+     * message whose earliest open wait this delivery created and sent no
+     * timer for. A World may continue a handed-off run on a new message
+     * (one close to its expiry), and that message's deliveries do not own
+     * this message's chain, so the delivery that created the wait is the
+     * last one that knows its timer is owed. A wait an earlier delivery of
+     * the message created got its timer from that delivery, so nothing is
+     * sent twice.
+     */
+    async function armCreatedWaitTimers(): Promise<void> {
+      if (ownOpenWaits.size === 0) return;
+      const events = [
+        ...(log?.events ?? []),
+        ...[...ownOpenWaits.values()].filter(
+          (wait) => !log?.events.some((event) => event.eventId === wait.eventId)
+        ),
+      ];
+      const ownChain = openWaits(events).filter(
+        (wait) =>
+          (waitCreatorMessageId(wait.event) ?? creatorMessageId) ===
+          creatorMessageId
+      );
+      for (const wait of waitTimersToArm(
+        ownChain,
+        creatorMessageId,
+        undefined
+      )) {
+        if (
+          ownOpenWaits.has(wait.correlationId) &&
+          !timedWaits.has(wait.correlationId)
+        ) {
+          await sendWaitTimer(wait);
+        }
       }
     }
 

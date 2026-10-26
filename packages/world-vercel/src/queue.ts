@@ -9,6 +9,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   isSingleOrchestratorMessage,
   MessageId,
+  messageRunSpecVersion,
   orchestratorRunIdOf,
   parseQueueName,
   type Queue,
@@ -232,17 +233,25 @@ const MessageWrapper = z.compile(
  * `MAX_DELAY_SECONDS` can be overridden via an environment variable for
  * testing.
  */
+/** Kept between a message's delay and its expiry, so it is not delivered
+ *  just as it expires. */
+const RETENTION_DELAY_BUFFER_SECONDS = 60 * 60;
+
+/**
+ * Retention of a message sent without `retentionSeconds` (every orchestrator
+ * message): the queue's default.
+ */
+export const DEFAULT_MESSAGE_RETENTION_SECONDS = 24 * 60 * 60;
+
 const MAX_DELAY_SECONDS = Number(
-  process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before the default 24h message TTL
+  process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS ||
+    // 23 hours: a 1h buffer before the default retention.
+    DEFAULT_MESSAGE_RETENTION_SECONDS - RETENTION_DELAY_BUFFER_SECONDS
 );
 
 /** VQS bounds on `retentionSeconds`. */
 const MIN_RETENTION_SECONDS = 60;
 const MAX_RETENTION_SECONDS = 7 * 24 * 60 * 60;
-
-/** Kept between a message's delay and its expiry, so it is not delivered
- *  just as it expires. */
-const RETENTION_DELAY_BUFFER_SECONDS = 60 * 60;
 
 /**
  * The `delaySeconds` / `retentionSeconds` a send carries. Exported for unit
@@ -307,6 +316,126 @@ class RedeliverSameMessage extends Error {
     );
     this.name = 'RedeliverSameMessage';
     this.handoff = afterSeconds === 0;
+  }
+}
+
+/**
+ * How long before its message expires a single-orchestrator run stops
+ * handing the message off and continues on a new one (see
+ * {@link orchestratorMessageRotation}). A handoff keeps the message, and so
+ * its expiry: retention is counted from the first send, and an orchestrator
+ * message is sent with the default retention
+ * ({@link DEFAULT_MESSAGE_RETENTION_SECONDS}), so a run that hands off for
+ * that long without a quiet pass would lose its message, and every message
+ * coalesced into it. The margin leaves room for the delivery that rotates to
+ * run out its function's deadline, and for redeliveries before it.
+ */
+export const ORCHESTRATOR_ROTATION_EXPIRY_MARGIN_SECONDS = 4 * 60 * 60;
+
+/**
+ * The most handoffs the queue makes of one message; past them a handoff is an
+ * ordinary reschedule, which counts as an attempt (see `RetryDirective` in
+ * `@vercel/queue`).
+ */
+export const QUEUE_MAX_HANDOFFS_PER_MESSAGE = 10_000;
+
+/**
+ * Handoffs short of {@link QUEUE_MAX_HANDOFFS_PER_MESSAGE} at which a
+ * single-orchestrator run continues on a new message instead.
+ */
+export const ORCHESTRATOR_ROTATION_HANDOFF_MARGIN = 100;
+
+/**
+ * Delay of the new message a rotation sends: due after the old message's
+ * acknowledgment, so the queue does not coalesce it into the delivery that
+ * sent it.
+ */
+export const ORCHESTRATOR_ROTATION_DELAY_SECONDS = 1;
+
+/**
+ * Why a single-orchestrator message asked to hand off continues on a new
+ * message instead, or `undefined` to hand it off:
+ *
+ * - `'expiry'`: it expires within
+ *   {@link ORCHESTRATOR_ROTATION_EXPIRY_MARGIN_SECONDS} (by the queue's
+ *   `expiresAt`, else `createdAt` plus the default retention);
+ * - `'handoff-bound'`: it is within {@link ORCHESTRATOR_ROTATION_HANDOFF_MARGIN}
+ *   handoffs of {@link QUEUE_MAX_HANDOFFS_PER_MESSAGE}.
+ *
+ * Exported for unit tests.
+ */
+export function orchestratorMessageRotation(
+  metadata: {
+    createdAt?: Date;
+    expiresAt?: Date;
+    experimental_handoffCount?: number;
+  },
+  nowMs = Date.now()
+): 'expiry' | 'handoff-bound' | undefined {
+  const createdAtMs = metadata.createdAt?.getTime();
+  const expiresAtMs =
+    metadata.expiresAt?.getTime() ??
+    (createdAtMs === undefined
+      ? undefined
+      : createdAtMs + DEFAULT_MESSAGE_RETENTION_SECONDS * 1000);
+  if (
+    expiresAtMs !== undefined &&
+    nowMs >= expiresAtMs - ORCHESTRATOR_ROTATION_EXPIRY_MARGIN_SECONDS * 1000
+  ) {
+    return 'expiry';
+  }
+  if (
+    (metadata.experimental_handoffCount ?? 0) >=
+    QUEUE_MAX_HANDOFFS_PER_MESSAGE - ORCHESTRATOR_ROTATION_HANDOFF_MARGIN
+  ) {
+    return 'handoff-bound';
+  }
+  return undefined;
+}
+
+/**
+ * Logs what the queue did with each handoff `client` asks for: `accepted`,
+ * `not_immediate` (applied as an ordinary reschedule), or `limit_reached`
+ * (past the per-message bound, so counted as an attempt). `@vercel/queue`
+ * reads the outcome from the lease change but does not hand it to the
+ * `retry` hook, so the client's API object is wrapped where it exposes one.
+ */
+function observeHandoffOutcomes(client: QueueClient): void {
+  const api = (client as unknown as Record<symbol, unknown>)[
+    Symbol.for('@vercel/queue.apiClient')
+  ] as
+    | {
+        changeVisibility?: (options: {
+          messageId: string;
+          experimental_handoff?: boolean;
+        }) => Promise<{ experimental_handoff?: string } | undefined>;
+      }
+    | undefined;
+  const changeVisibility = api?.changeVisibility;
+  if (!api || typeof changeVisibility !== 'function') return;
+  api.changeVisibility = async (options) => {
+    const result = await changeVisibility.call(api, options);
+    if (options.experimental_handoff) {
+      logHandoffOutcome(options.messageId, result?.experimental_handoff);
+    }
+    return result;
+  };
+}
+
+/** Exported for unit tests. */
+export function logHandoffOutcome(
+  messageId: string,
+  outcome: string | undefined
+): void {
+  const line = `[workflow] Handoff of message "${messageId}": ${outcome ?? 'unreported'}`;
+  if (outcome === 'limit_reached') {
+    console.warn(
+      `${line}; the queue's handoff bound for this message is reached, so further handoffs count as attempts`
+    );
+  } else if (outcome === 'not_immediate') {
+    console.info(`${line}; redelivered as an ordinary reschedule`);
+  } else {
+    console.debug(line);
   }
 }
 
@@ -914,6 +1043,7 @@ export function createQueue(config?: APIConfig): Queue {
     handler
   ) => {
     const client = new QueueClient(clientOptions);
+    observeHandoffOutcomes(client);
     const vqsHandler = client.handleCallback(
       async (message: unknown, metadata) => {
         if (!message || !metadata) {
@@ -1009,6 +1139,28 @@ export function createQueue(config?: APIConfig): Queue {
             const afterSeconds = Number.isFinite(result.timeoutSeconds)
               ? Math.max(0, Math.ceil(result.timeoutSeconds))
               : MAX_REDELIVERY_DELAY_SECONDS;
+            const rotation =
+              afterSeconds === 0
+                ? orchestratorMessageRotation(metadata)
+                : undefined;
+            if (rotation !== undefined) {
+              // A handoff would keep a message about to expire, or to
+              // exhaust its handoffs: continue on a new one instead, and
+              // acknowledge this one. The runtime asks for a handoff only
+              // once every message its committed writes owe was sent, so
+              // this message's id owes nothing more. The new message is the
+              // same payload (spec stamp, run context, so the same
+              // concurrency key), delayed past this acknowledgment.
+              await queue(queueName, payload, {
+                deploymentId,
+                delaySeconds: ORCHESTRATOR_ROTATION_DELAY_SECONDS,
+                specVersion: messageRunSpecVersion(payload),
+              });
+              console.info(
+                `[workflow] Continuing run "${getRunIdFromPayload(payload)}" on a new message instead of handing off message "${metadata.messageId}" (${rotation}; handoffs: ${metadata.experimental_handoffCount ?? 0})`
+              );
+              return;
+            }
             throw new RedeliverSameMessage(afterSeconds);
           }
         } finally {
@@ -1039,6 +1191,9 @@ export function createQueue(config?: APIConfig): Queue {
             // one. Hand the message off: its next delivery replays from the
             // log, which holds what those messages were sent for, and it is
             // not counted as an attempt.
+            console.debug(
+              `[workflow] Handing off message "${messageId}" with coalesced messages still pending after ${MAX_COALESCED_RERUNS} re-runs (delivery ${deliveryCount})`
+            );
             return { afterSeconds: 0, experimental_handoff: true };
           }
           const afterSeconds = getHandlerErrorRetryAfterSeconds(
