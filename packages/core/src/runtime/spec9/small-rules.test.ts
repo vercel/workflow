@@ -1,3 +1,4 @@
+import type { Event } from '@workflow/world';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   __resetConsumedPositionsForTests,
@@ -9,6 +10,7 @@ import {
   getInlineStepDeadlineMarginMs,
   mayStartInlineStep,
 } from './deadline.js';
+import { analyzeLogSteps, awaitsExternalWork } from './log-state.js';
 import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
   retryOutlivesMessage,
@@ -98,5 +100,41 @@ describe('cheap no-op deliveries', () => {
     expect(
       isNoopDelivery({ world, runId: 'wrun_b', tailSlot: 7, nowMs: 0 })
     ).toBe(false);
+  });
+});
+
+describe('inline steps in the log', () => {
+  let slot = 0;
+  const event = (
+    eventType: string,
+    eventData: Record<string, unknown> = {}
+  ): Event =>
+    ({
+      eventType,
+      correlationId: 'step_a',
+      eventId: `evnt_${String(++slot).padStart(26, '0')}`,
+      runId: 'wrun_a',
+      createdAt: new Date(slot * 1000),
+      eventData: { stepName: 'a', ...eventData },
+    }) as unknown as Event;
+  const inlineStart = () =>
+    event('step_started', { attempt: 1, inline: true, workflowName: 'w' });
+
+  it('runs an open inline step again in the orchestrator', () => {
+    const [step] = analyzeLogSteps([inlineStart()]);
+    expect(step).toMatchObject({ starts: 1, runnableInline: true });
+  });
+
+  it('leaves an inline step to its own message once it retried, after its next start too', () => {
+    const retried = [inlineStart(), event('step_retrying', { attempt: 1 })];
+    expect(analyzeLogSteps(retried)[0]?.runnableInline).toBe(false);
+    const restarted = [...retried, event('step_started', { attempt: 2 })];
+    expect(analyzeLogSteps(restarted)[0]).toMatchObject({
+      starts: 2,
+      lastIsRetrying: false,
+      runnableInline: false,
+    });
+    // The same rule as the run's external work.
+    expect(awaitsExternalWork(restarted)).toBe(true);
   });
 });

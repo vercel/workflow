@@ -56,7 +56,10 @@ export interface LogStepState {
   lastIsRetrying: boolean;
   /**
    * An inline-mode step that is open and has not moved to the background:
-   * the current orchestrator runs it (again) in its own process.
+   * the current orchestrator runs it (again) in its own process. A
+   * `step_retrying` moves it to its own message for good: that message runs
+   * every later attempt, so a later attempt's `step_started` does not make
+   * it runnable inline again (see {@link awaitsExternalWork}).
    */
   runnableInline: boolean;
 }
@@ -98,6 +101,7 @@ export function stepCreationOf(
 
 export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
   const steps = new Map<string, LogStepState>();
+  const retried = new Set<string>();
   for (const event of events) {
     const cid = event.correlationId;
     if (!cid) continue;
@@ -127,6 +131,7 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
         break;
       case 'step_retrying':
         step.lastIsRetrying = true;
+        retried.add(cid);
         break;
       case 'step_completed':
       case 'step_failed':
@@ -138,7 +143,8 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
   }
   const out = [...steps.values()];
   for (const step of out) {
-    step.runnableInline = step.inline && !step.terminal && !step.lastIsRetrying;
+    step.runnableInline =
+      step.inline && !step.terminal && !retried.has(step.correlationId);
   }
   return out;
 }
