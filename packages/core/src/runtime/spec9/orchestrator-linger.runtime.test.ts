@@ -54,7 +54,12 @@ describe.each([
   'node',
   'quickjs',
 ] as const)('orchestrator linger (%s engine)', (engine) => {
-  async function start(options: { subscribe?: boolean } = {}) {
+  async function start(
+    options: {
+      subscribe?: boolean;
+      subscribeFailure?: 'microtask' | 'throw';
+    } = {}
+  ) {
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
     return setupOrchestratorRun(hookWorkflow, [], options, engine);
   }
@@ -187,6 +192,24 @@ describe.each([
 
     expect(Date.now() - startedAt).toBeLessThan(5000);
     expect(eventsOf(world, 'hook_created')).toHaveLength(1);
+  });
+
+  // A World can define `subscribe` and still fail it asynchronously, as
+  // world-vercel does when its push transport is unavailable. Lingering on
+  // the tail poll alone would hold the invocation for the whole window.
+  it.each([
+    'microtask',
+    'throw',
+  ] as const)('stops lingering once the live feed goes down (%s)', async (subscribeFailure) => {
+    const lingerMs = 10_000;
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', String(lingerMs));
+    const { world, start: message } = await start({ subscribeFailure });
+    const startedAt = Date.now();
+    await world.deliver(message);
+
+    expect(Date.now() - startedAt).toBeLessThan(lingerMs / 2);
+    expect(eventsOf(world, 'hook_created')).toHaveLength(1);
+    expect(eventsOf(world, 'run_completed')).toHaveLength(0);
   });
 
   it('does not linger when turned off', async () => {

@@ -1882,6 +1882,8 @@ async function runDelivery(
           pendingFeedEvents.push(...events);
           notifyProgress();
         },
+        // Ends a linger waiting on a push that will not come.
+        onFeedDown: notifyProgress,
       });
       liveFeed.start();
     };
@@ -2509,7 +2511,9 @@ async function runDelivery(
      * `getOrchestratorLingerMs`). Resolves `true` once
      * another writer appended an event or a wait fell due,
      * so the caller runs another pass, and `false` when the
-     * time ran out without either.
+     * time ran out without either, or the live feed is not
+     * (or stops being) live: lingering on the tail poll
+     * alone holds the invocation for a poll's latency.
      */
     const lingerForExternalWork = async (): Promise<boolean> => {
       const lingerMs = getOrchestratorLingerMs();
@@ -2527,6 +2531,12 @@ async function runDelivery(
       );
       if (untilMs <= Date.now()) return false;
       ensureLiveFeed();
+      if (!liveFeed?.isLive) {
+        runtimeLogger.debug('Not lingering: live event feed is down', {
+          workflowRunId: runId,
+        });
+        return false;
+      }
       const startedAtMs = Date.now();
       // Waiting is not replay work.
       replayBudget.pause();
@@ -2552,6 +2562,16 @@ async function runDelivery(
               lingeredMs: Date.now() - startedAtMs,
             });
             return true;
+          }
+          if (!liveFeed?.isLive) {
+            runtimeLogger.debug(
+              'Lingering delivery ended: live event feed went down',
+              {
+                workflowRunId: runId,
+                lingeredMs: Date.now() - startedAtMs,
+              }
+            );
+            return false;
           }
         }
       } finally {

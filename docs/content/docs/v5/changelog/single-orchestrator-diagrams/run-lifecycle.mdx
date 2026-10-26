@@ -159,7 +159,7 @@ flowchart TD
     X -->|"no"| SU["Drain writes, read what landed"]
     SU --> SV{"Foreign event above what the pass consumed?"}
     SV -->|"yes"| L
-    SV -->|"no"| LI{"Linger: live feed and external work?"}
+    SV -->|"no"| LI{"Linger: live feed up and external work?"}
     LI -->|"new event or due wait"| L
     LI -->|"no"| AT["Arm owned timers, record the position"] --> ACK
     S2 -.->|"fence refusal"| FR["Send owed messages, one plain wake, acknowledge"]
@@ -181,7 +181,7 @@ The dotted exits are exceptions caught around the whole pass (`delivery.ts:1007`
 - **Stream writes still flushing.** An inline step that returned with stream writes pending makes the delivery hand off once no body runs (`delivery.ts:3629`).
 - **Hook conflict.** A hook conflict the workflow has to consume in a fresh pass hands off (`delivery.ts:2927`).
 - **An event that landed after the VM decided.** Before suspending, a foreign event above the pass's consumed slot starts another pass instead of acknowledging, because its own wake would find the position already recorded (`delivery.ts:3339`).
-- **Linger.** On a World with a live feed, a delivery with an open hook or a background step stays live up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` (30s), capped by the inline-start margin, and runs a pass for each foreign event (`delivery.ts:2336`, `packages/core/src/runtime/spec9/live-feed.ts:41`).
+- **Linger.** While the World's live feed is up (`LiveLogFeed.isLive`), a delivery with an open hook or a background step stays live up to `WORKFLOW_ORCHESTRATOR_LINGER_MS` (30s), capped by the inline-start margin, and runs a pass for each foreign event (`delivery.ts:2336`, `packages/core/src/runtime/spec9/live-feed.ts:41`).
 - **Throttled inline start.** A throttled inline start defers the run by the longest backoff once every sibling settled (`delivery.ts:3572`).
 - **Out-of-band terminal event first.** A `run_completed` that loses to an earlier `run_cancelled` or `run_failed` by position does not dispatch completion hooks (`delivery.ts:2615`).
 - **Background step after its body.** The step's invocation writes its outcome once its `step_started` committed (on a plain first delivery the body started while that start was in flight), then sends one plain orchestrator wake without reading the log (`packages/core/src/runtime/spec9/step-handler.ts`, `wakeOrchestrator`). That wake is the only thing that moves the run on. A redelivery of the step message that finds the step terminal sends the wake again, so a wake whose send failed is not lost; one that finds the run terminal sends nothing (commit `76643fe621`).

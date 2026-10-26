@@ -131,6 +131,13 @@ export class AppendOnlyWorld {
   constructor(
     readonly options: {
       subscribe?: boolean;
+      /**
+       * How the live feed's `subscribe` fails, as on a World whose push
+       * transport is unavailable: `microtask` accepts the subscription and
+       * reports an error through `onError` in a microtask; `throw` throws
+       * from `subscribe`. Implies `subscribe`.
+       */
+      subscribeFailure?: 'microtask' | 'throw';
       /** Raw AES-256 key returned for every run, so payloads are encrypted. */
       encryptionKey?: Uint8Array;
       /**
@@ -814,9 +821,18 @@ export class AppendOnlyWorld {
         );
         return { data, cursor: null, hasMore: false };
       },
-      ...(self.options.subscribe
+      ...(self.options.subscribe || self.options.subscribeFailure
         ? {
-            subscribe(_runId: string, afterSlot: number, onEvent) {
+            subscribe(_runId: string, afterSlot: number, onEvent, opts) {
+              if (self.options.subscribeFailure === 'throw') {
+                throw new Error('live feed unavailable');
+              }
+              if (self.options.subscribeFailure === 'microtask') {
+                queueMicrotask(() =>
+                  opts?.onError?.(new Error('live feed unavailable'))
+                );
+                return () => {};
+              }
               const sub = { afterSlot, onEvent };
               self.subscribers.add(sub);
               return () => {

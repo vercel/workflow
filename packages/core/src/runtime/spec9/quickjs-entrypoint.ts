@@ -1378,6 +1378,8 @@ export async function runWorkflowWithQuickJS(params: {
         logView.absorb({ events: fed });
         notifyProgress();
       },
+      // Ends a linger waiting on a push that will not come.
+      onFeedDown: () => notifyProgress(),
     });
     inlineFeed.start();
   };
@@ -1699,7 +1701,7 @@ export async function runWorkflowWithQuickJS(params: {
    * Keeps this delivery live while the run waits on work done elsewhere (see
    * `getOrchestratorLingerMs`). `true` once the feed delivered an event or a
    * wait fell due, so the loop takes another turn; `false` when the time ran
-   * out without either.
+   * out without either, or the live feed is not (or stops being) live.
    */
   const lingerForExternalWork = async (
     awaitsExternal: boolean,
@@ -1718,6 +1720,10 @@ export async function runWorkflowWithQuickJS(params: {
     const untilMs = Math.min(Date.now() + lingerMs, params.lingerDeadlineMs);
     if (untilMs <= Date.now()) return false;
     ensureInlineFeed();
+    if (!inlineFeed?.isLive) {
+      wfdiag('linger', { outcome: 'feed-down', lingeredMs: 0 });
+      return false;
+    }
     const fedBefore = fedEventCount;
     const startedAtMs = Date.now();
     budget.pause();
@@ -1744,6 +1750,13 @@ export async function runWorkflowWithQuickJS(params: {
             lingeredMs: Date.now() - startedAtMs,
           });
           return true;
+        }
+        if (!inlineFeed?.isLive) {
+          wfdiag('linger', {
+            outcome: 'feed-down',
+            lingeredMs: Date.now() - startedAtMs,
+          });
+          return false;
         }
       }
     } finally {

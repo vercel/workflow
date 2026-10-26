@@ -131,6 +131,87 @@ describe('LiveLogFeed', () => {
     vi.unstubAllEnvs();
   });
 
+  it('reports whether the push is live, and calls onFeedDown once when it goes down', () => {
+    const world = seeded({});
+    const base = world.asWorld();
+    let onError: ((error: unknown) => void) | undefined;
+    const feedWorld = {
+      ...base,
+      events: {
+        ...base.events,
+        subscribe: (
+          _r: string,
+          _a: number,
+          _onEvent: (e: Event) => void,
+          options?: { onError?: (error: unknown) => void }
+        ) => {
+          onError = options?.onError;
+          return () => {};
+        },
+      },
+    } as typeof base;
+    const onFeedDown = vi.fn();
+    const feed = new LiveLogFeed(feedWorld, RUN, {
+      afterSlot: 1,
+      cursor: slotToEventId(1),
+      pollIntervalMs: 0,
+      onEvents: () => {},
+      onFeedDown,
+    });
+    expect(feed.isLive).toBe(false);
+    feed.start();
+    expect(feed.isLive).toBe(true);
+    onError?.(new Error('socket closed'));
+    onError?.(new Error('socket closed again'));
+    expect(feed.isLive).toBe(false);
+    expect(onFeedDown).toHaveBeenCalledTimes(1);
+    feed.stop();
+  });
+
+  it('is never live without a subscribe, and calls onFeedDown for a throwing one but not for stop()', () => {
+    const plain = new LiveLogFeed(seeded({}).asWorld(), RUN, {
+      afterSlot: 1,
+      cursor: slotToEventId(1),
+      pollIntervalMs: 0,
+      onEvents: () => {},
+      onFeedDown: () => {
+        throw new Error('not expected');
+      },
+    });
+    plain.start();
+    expect(plain.isLive).toBe(false);
+    plain.stop();
+
+    const throwingDown = vi.fn();
+    const throwing = new LiveLogFeed(
+      seeded({ subscribeFailure: 'throw' }).asWorld(),
+      RUN,
+      {
+        afterSlot: 1,
+        cursor: slotToEventId(1),
+        pollIntervalMs: 0,
+        onEvents: () => {},
+        onFeedDown: throwingDown,
+      }
+    );
+    throwing.start();
+    expect(throwing.isLive).toBe(false);
+    expect(throwingDown).toHaveBeenCalledTimes(1);
+
+    const liveDown = vi.fn();
+    const live = new LiveLogFeed(seeded({ subscribe: true }).asWorld(), RUN, {
+      afterSlot: 1,
+      cursor: slotToEventId(1),
+      pollIntervalMs: 0,
+      onEvents: () => {},
+      onFeedDown: liveDown,
+    });
+    live.start();
+    live.stop();
+    expect(live.isLive).toBe(false);
+    expect(liveDown).not.toHaveBeenCalled();
+  });
+
   it('reads the poll interval from the environment', () => {
     expect(getOrchestratorPollIntervalMs({})).toBe(
       DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS

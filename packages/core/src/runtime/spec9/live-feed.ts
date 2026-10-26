@@ -79,8 +79,10 @@ export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
  * in that time starts a new pass in the same delivery, and the next pass that
  * finds nothing to run starts the time again, so a burst of resumes or step
  * outcomes is handled by one warm invocation instead of one queued wake each.
- * Only taken on a World with a live feed (`events.subscribe`): without one,
- * waiting costs a function held open for a poll's latency. Any open hook is
+ * Only taken while the World's live feed (`events.subscribe`) is live: a
+ * World without one, a subscription that failed, or one that goes down
+ * during the linger ends it, since waiting on the poll alone costs a
+ * function held open for a poll's latency (`LiveLogFeed.isLive`). Any open hook is
  * enough to take it (see `awaitsExternalWork`), so a run with a long-lived
  * hook holds each of its deliveries this long after its last pass. `0`
  * disables it.
@@ -152,6 +154,12 @@ export class LiveLogFeed {
        */
       feedPollIntervalMs?: number;
       onEvents: (events: Event[]) => void;
+      /**
+       * Called once when a live push subscription goes down: `onError`, or
+       * `subscribe` throwing. Not called for {@link stop}, nor when the World
+       * has no `events.subscribe` (the feed is then never live).
+       */
+      onFeedDown?: () => void;
     }
   ) {
     this.nextSlot = options.afterSlot + 1;
@@ -163,6 +171,17 @@ export class LiveLogFeed {
     );
     this.currentIntervalMs = options.pollIntervalMs;
     this.onEvents = options.onEvents;
+    this.onFeedDown = options.onFeedDown;
+  }
+
+  /**
+   * Whether the World's push subscription is live: it was opened and has
+   * reported no error, and the feed is not stopped. A subscription that
+   * never acknowledges and never errors still counts as live; the capped
+   * poll backoff bounds what it can miss.
+   */
+  get isLive(): boolean {
+    return this.feedLive && !this.stopped;
   }
 
   /** The interval the next scheduled poll waits, in milliseconds. */
@@ -173,6 +192,7 @@ export class LiveLogFeed {
   private readonly pollIntervalMs: number;
   private readonly feedPollIntervalMs: number;
   private readonly onEvents: (events: Event[]) => void;
+  private readonly onFeedDown: (() => void) | undefined;
 
   start(): void {
     const subscribe = this.world.events.subscribe;
@@ -188,25 +208,35 @@ export class LiveLogFeed {
           (event) => this.offer([event], 'push'),
           {
             onError: (error) => {
+              const wasLive = this.feedLive;
               this.feedLive = false;
               this.feedTrouble();
               runtimeLogger.debug('Live event feed stopped; polling only', {
                 workflowRunId: this.runId,
                 error: error instanceof Error ? error.message : String(error),
               });
+              if (wasLive) this.feedDown();
             },
           }
         );
       } catch (error) {
+        const wasLive = this.feedLive;
         this.feedLive = false;
         runtimeLogger.debug('Live event feed unavailable; polling only', {
           workflowRunId: this.runId,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (wasLive) this.feedDown();
       }
     }
     if (this.feedLive) this.currentIntervalMs = this.feedPollIntervalMs;
     this.schedulePoll();
+  }
+
+  /** Reports a subscription that went down, unless the feed is stopped. */
+  private feedDown(): void {
+    if (this.stopped) return;
+    this.onFeedDown?.();
   }
 
   stop(): void {
