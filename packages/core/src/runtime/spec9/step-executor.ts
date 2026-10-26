@@ -153,8 +153,9 @@ export interface StepExecutorParams {
   terminalEventParams?: CreateEventParams;
   /**
    * Whether a retry at `retryAtMs` would land after the step's queue message
-   * expires. The step is then failed instead of retried. Background steps
-   * only; an inline step's retry creates a fresh message.
+   * expires. The step is then failed instead of retried. For an inline step
+   * the message is the one its retry is about to be sent on, so the check is
+   * measured from now.
    */
   retryOutlivesMessage?: (retryAtMs: number) => boolean;
   /**

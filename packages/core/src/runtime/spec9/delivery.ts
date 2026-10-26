@@ -203,7 +203,10 @@ import {
 } from './run-ahead.js';
 import { executeStep, mayRunBeforeItsStart } from './step-executor.js';
 import { handleStepMessage } from './step-handler.js';
-import { stepMessageRetentionSeconds } from './step-retention.js';
+import {
+  retryOutlivesMessage,
+  stepMessageRetentionSeconds,
+} from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 import {
   type CreatedStep,
@@ -3632,6 +3635,20 @@ async function runDelivery(
                 ...(runReadyBarrier ? { runReadyBarrier } : {}),
                 ...(step.startAfter ? { startAfter: step.startAfter } : {}),
                 beforeBody: () => writer.assertActive(),
+                // A retry moves the step to a message of its
+                // own, sent once the retry is written, with a
+                // step message's retention: a retry that would
+                // land after it expires fails the step, as it
+                // does for a background step.
+                retryOutlivesMessage: (retryAtMs) =>
+                  retryOutlivesMessage({
+                    messageCreatedAt: new Date(),
+                    retentionSeconds: stepMessageRetentionSeconds(
+                      getStepFunction(step.stepName)?.maxRetries ??
+                        DEFAULT_STEP_MAX_RETRIES
+                    ),
+                    retryAtMs,
+                  }),
                 // Every step of the batch shares it: the
                 // first to reach user code reports, so a
                 // refused first step does not lose it.

@@ -28,6 +28,7 @@ import {
   STEP_DISPATCH_QUEUE_BATCH_SIZE,
 } from '../constants.js';
 import { setWorld } from '../world.js';
+import { MAX_STEP_MESSAGE_RETENTION_SECONDS } from './step-retention.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -83,6 +84,14 @@ registerStepFunction('so_long_retry', async () => {
     });
   }
   return 'ok';
+});
+registerStepFunction('so_retry_past_retention', async () => {
+  count('so_retry_past_retention');
+  throw new RetryableError('come back after the message expired', {
+    retryAfter: new Date(
+      Date.now() + (MAX_STEP_MESSAGE_RETENTION_SECONDS + 3600) * 1000
+    ),
+  });
 });
 const once = Object.assign(
   async () => {
@@ -618,6 +627,26 @@ describe.each([
       });
     }
   );
+
+  it('fails an inline step whose retry would land after its message expires', async () => {
+    const { world } = await setup(
+      `const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_retry_past_retention");
+       async function workflow() {
+         try { return await step(); } catch (error) { return "failed: " + error.message; }
+       }${transform('workflow')}`,
+      []
+    );
+    await world.runUntilIdle();
+
+    expect(calls.so_retry_past_retention).toBe(1);
+    expect(eventsOf(world, 'step_retrying')).toEqual([]);
+    expect(eventsOf(world, 'step_failed')).toHaveLength(1);
+    // No retry message that would outlive its own retention.
+    expect(stepMessagesOf(world)).toEqual([]);
+    expect(await runResult(world)).toMatch(
+      /past the retention of its queue message/
+    );
+  });
 
   it('retries a background step in place on its own message', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');

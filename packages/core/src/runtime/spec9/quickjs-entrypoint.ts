@@ -139,7 +139,10 @@ import {
   executeStep,
   type StepExecutionResult,
 } from './step-executor.js';
-import { stepMessageRetentionSeconds } from './step-retention.js';
+import {
+  retryOutlivesMessage,
+  stepMessageRetentionSeconds,
+} from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 import { waitTimerMessage } from './wait-timer.js';
 
@@ -1556,6 +1559,19 @@ export async function runWorkflowWithQuickJS(params: {
             ? { startAfter: startAfter as Promise<CallerStart | undefined> }
             : {}),
           beforeBody: () => params.writer?.assertActive(),
+          // A retry moves the step to a message of its own, sent once the
+          // retry is written, with a step message's retention: a retry that
+          // would land after it expires fails the step, as it does for a
+          // background step.
+          retryOutlivesMessage: (retryAtMs) =>
+            retryOutlivesMessage({
+              messageCreatedAt: new Date(),
+              retentionSeconds: stepMessageRetentionSeconds(
+                getStepFunction(step.stepId)?.maxRetries ??
+                  DEFAULT_STEP_MAX_RETRIES
+              ),
+              retryAtMs,
+            }),
         });
       },
       'debug'
