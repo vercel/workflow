@@ -135,6 +135,69 @@ export async function executeOwnedStep(
   message: unknown,
   metadata: Parameters<Parameters<World['createQueueHandler']>[1]>[1]
 ): Promise<unknown> {
+  // One line when a step message arrives and one when its handler returns or
+  // throws, so a stalled attempt shows whether its message ever reached a
+  // worker, and whether that worker finished.
+  const parsed = WorkflowInvokePayloadSchema.safeParse(message);
+  const execution = parsed.success
+    ? OwnedStepExecutionSchema.safeParse(parsed.data.input)
+    : undefined;
+  const fields = {
+    runId: parsed.success ? parsed.data.runId : undefined,
+    stepId: parsed.success ? parsed.data.stepId : undefined,
+    executionId: execution?.success ? execution.data.executionId : undefined,
+    attempt: execution?.success ? execution.data.attempt : undefined,
+    executionMode: execution?.success
+      ? (execution.data.executionMode ?? 'queued')
+      : undefined,
+    deliveryCount: metadata.attempt,
+    messageId: metadata.messageId,
+    requestId: metadata.requestId,
+  };
+  const log = (event: string, extra: Record<string, unknown> = {}) =>
+    console.info(
+      JSON.stringify({
+        component: 'workflow-step-worker',
+        event,
+        at: new Date().toISOString(),
+        processInstanceId: COMPUTE_INSTANCE_ID,
+        ...fields,
+        ...extra,
+      })
+    );
+  const startedAt = Date.now();
+  log('step_delivery_received');
+  try {
+    const result = await executeOwnedStepUnlogged(world, message, metadata);
+    const retryIn =
+      result && typeof result === 'object' && 'timeoutSeconds' in result
+        ? (result as { timeoutSeconds?: unknown }).timeoutSeconds
+        : undefined;
+    log('step_delivery_finished', {
+      outcome: retryIn === undefined ? 'acknowledged' : 'redeliver',
+      ...(retryIn === undefined ? {} : { timeoutSeconds: retryIn }),
+      elapsedMs: Date.now() - startedAt,
+    });
+    return result;
+  } catch (error) {
+    log('step_delivery_finished', {
+      outcome: 'threw',
+      elapsedMs: Date.now() - startedAt,
+      errorName: (error as { name?: unknown })?.name,
+      errorMessage: String(
+        (error as { message?: unknown })?.message ?? error
+      ).slice(0, 300),
+      httpStatus: (error as { status?: unknown })?.status,
+    });
+    throw error;
+  }
+}
+
+async function executeOwnedStepUnlogged(
+  world: World,
+  message: unknown,
+  metadata: Parameters<Parameters<World['createQueueHandler']>[1]>[1]
+): Promise<unknown> {
   const envelope = WorkflowInvokePayloadSchema.parse(message);
   const input = OwnedStepExecutionSchema.parse(envelope.input);
   const step = input.step;
