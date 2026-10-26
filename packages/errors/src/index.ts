@@ -499,6 +499,30 @@ export class RuntimeDecryptionError extends WorkflowRuntimeError {
   }
 }
 
+/**
+ * Thrown when a stream's encryption key cannot be resolved and retrying will
+ * not help: the key lookup failed with something other than a transient world
+ * error (e.g. a `404`, or the run that owns the stream does not exist). The
+ * original failure is the `cause`.
+ *
+ * Transient lookup failures (transport, timeout, `429`, `5xx`) are not
+ * wrapped in this error; they surface as themselves so the step retries.
+ *
+ * Fatal, so the step skips the retry loop.
+ */
+export class EncryptionKeyLookupError extends WorkflowRuntimeError {
+  readonly fatal = true;
+
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, { cause: options?.cause });
+    this.name = 'EncryptionKeyLookupError';
+  }
+
+  static is(value: unknown): value is EncryptionKeyLookupError {
+    return isError(value) && value.name === 'EncryptionKeyLookupError';
+  }
+}
+
 interface WorkflowBuildErrorOptions extends ErrorOptions {
   /**
    * An optional actionable hint appended to the main message, explaining how
