@@ -234,6 +234,7 @@ function eventsV4Url(
 export type EventsRemoteRefBehavior = 'resolve' | 'lazy' | 'skip-step-inputs';
 
 interface CreateEventV4InputBase {
+  requireHookResumeDedup?: boolean;
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
   /** Opaque payload bytes. Pass undefined for events that don't carry
@@ -1036,7 +1037,9 @@ async function postWorkflowRunEventV4(
     input.payload ?? new Uint8Array(0)
   );
 
-  const url = eventsV4Url(baseUrl, input.runId, input.eventType);
+  const url =
+    eventsV4Url(baseUrl, input.runId, input.eventType) +
+    (input.requireHookResumeDedup ? '/resolved' : '');
   return fetchV4(
     url,
     { method: 'POST', headers, body: frame },
@@ -1122,7 +1125,7 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
-  if (isWsEventsTransportPossible()) {
+  if (!input.requireHookResumeDedup && isWsEventsTransportPossible()) {
     // Absent means no socket was resolvable for this run, not that the write
     // failed, so fall through to HTTP. Under a per-workflow override that is
     // every run of a workflow that isn't listed.

@@ -559,7 +559,7 @@ describe('resumeHook durable resume', () => {
     expect(queue).toHaveBeenCalledTimes(1);
   });
 
-  it('only trusts dynamic backend capability from the current token lookup', async () => {
+  it('requires a deduplicated endpoint when reusing a resolved hook', async () => {
     const hook = {
       ...baseHook,
       resumeContext: currentContext,
@@ -574,11 +574,15 @@ describe('resumeHook durable resume', () => {
     await resumeHook(hook.token, { foo: 'fresh' });
     expect(first.createEvent.mock.calls[0][2].resumeId).toBeDefined();
 
-    // Hook object: possibly cached before a server rollback; the stale
-    // attestation is ignored and the write stays claim-less.
+    // Cached capabilities are ignored; the endpoint itself enforces dedup.
     const second = makeWorld(hook, {}, {});
     await resumeHook(hook, { foo: 'stale' });
-    expect(second.createEvent.mock.calls[0][2].resumeId).toBeUndefined();
+    expect(second.getByToken).not.toHaveBeenCalled();
+    expect(second.createEvent.mock.calls[0][2]).toMatchObject({
+      requireHookResumeDedup: true,
+      resumeId: expect.any(String),
+      resumePayloadDigest: expect.any(String),
+    });
   });
 
   it('uses the same durable path for webhooks', async () => {

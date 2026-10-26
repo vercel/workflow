@@ -9,6 +9,7 @@ import {
 import {
   HOOK_RESUME_DEDUP_VERSION,
   type HookResumeContext,
+  HookSchema,
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_LEGACY,
@@ -65,6 +66,12 @@ async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
  * whose `metadata` is a Promise.
  */
 type ResumableHook = Omit<WorldHook, 'metadata'>;
+
+/** Validates a hook carried across requests without user metadata or live capabilities. */
+export const HookResumeHandleSchema = HookSchema.omit({
+  metadata: true,
+  resumeCapabilities: true,
+});
 
 /**
  * A hook as returned by {@link getHookByToken} and {@link resumeHook}: the
@@ -336,14 +343,12 @@ export type ResumedHook = Hook & {
  * leaves the executor's outcome unknown; do not retry by directly writing an
  * event. Event and response persistence may be separate backend operations.
  *
- * Prefer passing the token string over a cached {@link Hook} object. A token
- * is looked up fresh, so the live backend can attest its atomic resume claim
- * and the durable write becomes idempotent-on-retry (transport retries of the
- * same write converge on one event). A supplied Hook object may carry a stale
- * attestation, so it is deliberately ignored and the write is claim-less —
- * meaning a lost response cannot be retried safely: retrying at the
- * application level mints a fresh claim and can commit a second
- * `hook_received`.
+ * A resolved Hook with resumeContext can be carried across requests and passed
+ * here to omit the token lookup. Its write requires the server's resolved-hook
+ * endpoint, which enforces deduplication and rejects unsupported servers before
+ * writing. Mutable resumeCapabilities on a cached object are never trusted.
+ * An old hook without resumeContext retains the historical fallback behavior.
+ * A lost response still must not be retried as a NEW resumeHook invocation.
  *
  * @param tokenOrHook - The unique token identifying the hook, or the hook object itself
  * @param payload - The data payload to send to the hook
@@ -373,15 +378,9 @@ export async function resumeHook<T = any>(
   payload: T,
   encryptionKeyOverride?: PayloadKey
 ): Promise<ResumedHook> {
-  // Public entry point. It never attests hook freshness, so a Hook object
-  // supplied here (which may carry a `resumeCapabilities` cached before a
-  // server rollback or kill switch) is ignored by the dynamic-dedup gate and
-  // fails closed to a plain, claim-less write. Only `resumeWebhook`, which
-  // fetches the hook by token in-line during the same resume, reaches the
-  // internal implementation with the fresh attestation set. Keeping the
-  // freshness flag off the exported signature prevents a caller from passing a
-  // stale Hook plus `true` and reactivating dynamic dedup against a
-  // rolled-back backend.
+  // Caller-supplied hooks never attest live capabilities. Resolved handles
+  // instead require an endpoint whose write contract enforces deduplication;
+  // older servers and the kill switch reject that route before writing.
   //
   // T0 of the hook-resume TTR window is taken HERE, at the public entry point,
   // rather than inside the implementation; see the parameter's doc comment.
@@ -878,7 +877,10 @@ async function resumeHookAttempt<T = any>(
     // on exactly one committed event via the backend's (runId, resumeId)
     // constraint. Without it the write is a plain single-shot create,
     // exactly as before dedup existed.
+    const resolvedHandle =
+      !hookResumeCapabilitiesAreFresh && hook.resumeContext !== undefined;
     const backendDedupSupported =
+      resolvedHandle ||
       (hookResumeCapabilitiesAreFresh
         ? (hook.resumeCapabilities?.hookResumeDedupVersion ?? 0)
         : 0) >= HOOK_RESUME_DEDUP_VERSION ||
@@ -940,6 +942,9 @@ async function resumeHookAttempt<T = any>(
           v1Compat,
           ...(resumeId && payloadDigest
             ? { resumeId, resumePayloadDigest: payloadDigest }
+            : {}),
+          ...(resolvedHandle && canClaimResume
+            ? { requireHookResumeDedup: true }
             : {}),
         }
       );
