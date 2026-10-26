@@ -113,9 +113,9 @@ export interface Orchestrator {
   countsTowardMaxDeliveries(message: WorkflowInvokePayload): boolean;
   /**
    * Writes the `run_failed` that ends a run past its max queue deliveries.
-   * Resolves `'superseded'` when another orchestrator invocation is writing
-   * the run, which is then not stuck and is left to it. Otherwise throws what
-   * the World threw.
+   * Resolves `'superseded'` when the in-band fence refused the write, which
+   * does not prove another orchestrator is running; the caller has the queue
+   * redeliver the message to retry it. Otherwise throws what the World threw.
    */
   writeMaxDeliveriesFailure(
     world: World,

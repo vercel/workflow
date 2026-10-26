@@ -373,6 +373,9 @@ export function workflowEntrypoint(
           );
           let encryptionKey: PayloadKey | undefined;
           let dehydratedError: Uint8Array;
+          const fenceRefused = new Error(
+            `Max-deliveries failure of run "${runId}" was refused by the in-band fence; redelivering to retry it`
+          );
           try {
             const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
@@ -395,15 +398,22 @@ export function workflowEntrypoint(
               requestId
             );
             if (written === 'superseded') {
-              // Another orchestrator invocation is writing this run, so it
-              // is not stuck; leave the run to it and consume this message.
-              runLogger.info(
-                'Max-deliveries failure superseded by a live orchestrator; acknowledging',
+              // A refusal does not prove that another orchestrator is
+              // running: the World also refuses a write whose own position it
+              // sealed, and then nothing else is queued for the run. Throw so
+              // the queue redelivers this message. The redelivery is still
+              // past the ceiling, so it only retries this terminal write from
+              // a fresh load, and finds the run terminal (and acknowledges) if
+              // a live orchestrator did finish it. A fresh wake would restart
+              // the delivery count instead.
+              runLogger.warn(
+                'Max-deliveries failure refused by the in-band fence; retrying via queue redelivery',
                 { attempt: metadata.attempt }
               );
-              return;
+              throw fenceRefused;
             }
           } catch (err) {
+            if (err === fenceRefused) throw err;
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
               // Run already finished, consume the message silently
               return;

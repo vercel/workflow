@@ -1,4 +1,5 @@
 import {
+  InBandSupersededError,
   RetryableError,
   RUN_ERROR_CODES,
   ThrottleError,
@@ -1166,6 +1167,51 @@ describe.each([
       inBand: true,
       expectedSeqInBand: expect.any(Number),
     });
+  });
+
+  it('redelivers a past-the-cap delivery whose run_failed the fence refuses, and the redelivery fails the run', async () => {
+    // The World seals the writer's own position (its write outlived the
+    // staleness bound): the in-band count moves past it and the write is
+    // refused, with no other orchestrator of the run.
+    let refused = 0;
+    const { world, start } = await setup(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+       async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
+      [1, 2],
+      {
+        beforeCreate(event) {
+          if (event.eventType !== 'run_failed' || refused > 0) return;
+          refused++;
+          const current = currentWorld!;
+          current.seqInBand++;
+          current.appendOutOfBand({ eventType: 'noop' } as Partial<Event>);
+          throw new InBandSupersededError('in-band-superseded', {
+            seq: current.seq,
+            seqInBand: current.seqInBand,
+          });
+        },
+      }
+    );
+    const cap = getMaxQueueDeliveries();
+    // This delivery stands for the start message's redelivery past the cap.
+    world.held.splice(world.held.indexOf(start), 1);
+    await expect(
+      world.deliver({ ...start, deliveryCount: cap + 1 })
+    ).rejects.toThrow(/refused by the in-band fence/);
+    expect(refused).toBe(1);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(0);
+    // Not acknowledged: the queue holds the message for its redelivery, and
+    // no wake was sent in its place.
+    const redelivery = world.held.find((h) => h.messageId === start.messageId);
+    expect(redelivery?.deliveryCount).toBe(cap + 2);
+    expect(world.queueCalls).toHaveLength(0);
+
+    await world.deliver(redelivery!);
+    expect(eventsOf(world, 'run_failed')).toHaveLength(1);
+    expect(data(eventsOf(world, 'run_failed')[0])).toMatchObject({
+      errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+    });
+    expect(world.held).toHaveLength(0);
   });
 
   it('keeps advancing the workflow while an inline step body runs', async () => {
