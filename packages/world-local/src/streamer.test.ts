@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { decodeTime } from 'ulid';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createStreamer,
   deserializeChunk,
@@ -755,6 +755,215 @@ describe('streamer', () => {
         // Verify chunks are in exact chronological order (not just all present)
         const content = chunks.join('');
         expect(content).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
+      });
+    });
+
+    describe('chunk order', () => {
+      function gate() {
+        let open = () => {};
+        const opened = new Promise<void>((resolve) => {
+          open = resolve;
+        });
+        return { open, opened };
+      }
+
+      async function readAll(stream: ReadableStream<Uint8Array>) {
+        const chunks: string[] = [];
+        for await (const chunk of stream) {
+          chunks.push(Buffer.from(chunk).toString());
+        }
+        return chunks;
+      }
+
+      function holdWhen<A extends unknown[], R>(
+        method: 'readdir' | 'readFile' | 'writeFile',
+        matches: (...args: A) => boolean,
+        { fail = false } = {}
+      ) {
+        const reached = gate();
+        const released = gate();
+        const original = fs[method] as unknown as (...args: A) => Promise<R>;
+        let armed = true;
+        const spy = vi.spyOn(fs, method).mockImplementation((async (
+          ...args: A
+        ) => {
+          if (armed && matches(...args)) {
+            armed = false;
+            reached.open();
+            await released.opened;
+            if (fail) {
+              throw Object.assign(new Error('Transient read failure'), {
+                code: 'EIO',
+              });
+            }
+          }
+          return original(...args);
+        }) as never);
+        onTestFinished(() => spy.mockRestore());
+        return { reached: reached.opened, release: released.open };
+      }
+
+      // Long enough for an unordered write or delivery to land first.
+      const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+      it('writeToStreamMulti lands a group in id order for a reader that opens mid-group', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'write-multi-order';
+        const held = holdWhen(
+          'writeFile',
+          (_file: unknown, data: unknown) =>
+            Buffer.isBuffer(data) && data.subarray(1).toString() === 'first\n'
+        );
+
+        const writing = streamer.writeToStreamMulti(streamName, TEST_RUN_ID, [
+          'first\n',
+          'second\n',
+          'third\n',
+        ]);
+        await held.reached;
+        await settle();
+        const stream = await streamer.readFromStream(streamName);
+        held.release();
+        await writing;
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        expect(await readAll(stream)).toEqual([
+          'first\n',
+          'second\n',
+          'third\n',
+        ]);
+      });
+
+      it('lands concurrent writes in the order they were called', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'concurrent-write-order';
+        const stream = await streamer.readFromStream(streamName);
+        let resolveRunId: (runId: string) => void = () => {};
+        const runId = new Promise<string>((resolve) => {
+          resolveRunId = resolve;
+        });
+
+        const first = streamer.writeToStream(streamName, runId, 'first\n');
+        const second = streamer.writeToStream(
+          streamName,
+          TEST_RUN_ID,
+          'second\n'
+        );
+        await Promise.race([second, settle()]);
+        resolveRunId(TEST_RUN_ID);
+        await Promise.all([first, second]);
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
+      });
+
+      it('closes a stream behind a write still waiting for its run id', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'close-behind-write';
+        const stream = await streamer.readFromStream(streamName);
+        let resolveRunId: (runId: string) => void = () => {};
+        const runId = new Promise<string>((resolve) => {
+          resolveRunId = resolve;
+        });
+
+        const writing = streamer.writeToStream(streamName, runId, 'data\n');
+        const closing = streamer.closeStream(streamName, TEST_RUN_ID);
+        await Promise.race([closing, settle()]);
+        resolveRunId(TEST_RUN_ID);
+        await Promise.all([writing, closing]);
+
+        expect(await readAll(stream)).toEqual(['data\n']);
+      });
+
+      it('never delivers a chunk before startIndex, even as a live copy', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const streamName = 'start-index-live-copy';
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const listing = holdWhen(
+          'readdir',
+          (dir: unknown) => dir === chunksDir
+        );
+
+        const stream = await streamer.readFromStream(streamName, 1);
+        await listing.reached;
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'c0\n');
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'c1\n');
+        listing.release();
+        await settle();
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        expect(await readAll(stream)).toEqual(['c1\n']);
+      });
+
+      it('keeps a listed chunk whose live copy arrived during the first disk read in place', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        // A second instance on the same directory writes like another
+        // process: its chunks reach the reader only through the filesystem.
+        const otherProcess = createStreamer(testDir);
+        const streamName = 'startup-order';
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        const listing = holdWhen(
+          'readdir',
+          (dir: unknown) => dir === chunksDir
+        );
+
+        const stream = await streamer.readFromStream(streamName);
+        await listing.reached;
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'first\n');
+        await otherProcess.writeToStream(streamName, TEST_RUN_ID, 'second\n');
+        listing.release();
+        await settle();
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
+      });
+
+      it('holds live chunks while a poll is reading an earlier chunk', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const otherProcess = createStreamer(testDir);
+        const streamName = 'poll-order';
+        const stream = await streamer.readFromStream(streamName);
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        // Let the first disk read finish so the poll picks up the next file.
+        await settle();
+        // Only a reader reads chunk files; writers write them.
+        const read = holdWhen('readFile', (file: unknown) =>
+          String(file).startsWith(chunksDir)
+        );
+        await otherProcess.writeToStream(streamName, TEST_RUN_ID, 'first\n');
+
+        await read.reached;
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'second\n');
+        await settle();
+        read.release();
+        await settle();
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
+      });
+
+      it('keeps holding live chunks after a poll fails partway', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const otherProcess = createStreamer(testDir);
+        const streamName = 'poll-failure-order';
+        const stream = await streamer.readFromStream(streamName);
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        await settle();
+        const read = holdWhen(
+          'readFile',
+          (file: unknown) => String(file).startsWith(chunksDir),
+          { fail: true }
+        );
+        await otherProcess.writeToStream(streamName, TEST_RUN_ID, 'first\n');
+
+        await read.reached;
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'second\n');
+        read.release();
+        // Long enough for the next poll to read the file the failed one missed.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
       });
     });
 
