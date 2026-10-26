@@ -10,6 +10,7 @@ export interface InvocationRunState {
   expiredAt: Date | null;
   attributes: Record<string, string> | null;
   workflowName: string;
+  deploymentId: string;
 }
 
 export function invocationDataExpired(

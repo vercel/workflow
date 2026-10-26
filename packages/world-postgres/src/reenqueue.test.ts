@@ -4,6 +4,7 @@ import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
+import { MessageData } from './message.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -86,7 +87,7 @@ describe('re-enqueue active runs on start', () => {
     runsByStatus: Partial<
       Record<
         'pending' | 'running',
-        Array<{ runId: string; workflowName: string }>
+        Array<{ runId: string; workflowName: string; deploymentId?: string }>
       >
     >
   ) {
@@ -98,7 +99,11 @@ describe('re-enqueue active runs on start', () => {
             ? [params.status as 'pending' | 'running']
             : (['pending', 'running'] as const);
         const data = statuses.flatMap((status) =>
-          (runsByStatus[status] ?? []).map((r) => ({ ...r, status }))
+          (runsByStatus[status] ?? []).map((r) => ({
+            deploymentId: 'postgres',
+            ...r,
+            status,
+          }))
         );
         return { data, hasMore: false, cursor: null };
       }),
@@ -130,6 +135,9 @@ describe('re-enqueue active runs on start', () => {
     delete process.env.WORKFLOW_POSTGRES_URL;
     delete process.env.DATABASE_URL;
     delete process.env.PORT;
+    delete process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING;
+    delete process.env.WORKFLOW_DEPLOYMENT_ID;
+    delete process.env.WORKFLOW_POSTGRES_INVOKE;
   });
 
   it('falls back to DATABASE_URL when WORKFLOW_POSTGRES_URL is unset', async () => {
@@ -185,6 +193,70 @@ describe('re-enqueue active runs on start', () => {
     await world.close();
   });
 
+  it('stays the single postgres deployment unless routing is enabled', async () => {
+    process.env.WORKFLOW_DEPLOYMENT_ID = 'build_a';
+
+    const world = createWorld();
+    await world.start();
+
+    expect(await world.getDeploymentId()).toBe('postgres');
+    expect(world.capabilities).not.toHaveProperty('deploymentAffinity');
+    expect(
+      Object.keys(vi.mocked(run).mock.calls[0]?.[0]?.taskList ?? {})
+    ).toEqual(['workflow_flows']);
+
+    await world.close();
+  });
+
+  it('runs as WORKFLOW_DEPLOYMENT_ID when routing is enabled', async () => {
+    process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING = '1';
+    process.env.WORKFLOW_DEPLOYMENT_ID = 'build_a';
+
+    const world = createWorld();
+    await world.start();
+
+    expect(await world.getDeploymentId()).toBe('build_a');
+    expect(world.capabilities.deploymentAffinity).toBe(true);
+    expect(
+      Object.keys(vi.mocked(run).mock.calls[0]?.[0]?.taskList ?? {})
+    ).toEqual(['workflow_flows@build_a']);
+
+    await world.close();
+  });
+
+  it('refuses to enable routing with invocation delivery on', () => {
+    process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING = '1';
+    process.env.WORKFLOW_DEPLOYMENT_ID = 'build_a';
+    process.env.WORKFLOW_POSTGRES_INVOKE = '1';
+
+    expect(() => createWorld()).toThrow(
+      'Deployment routing requires WORKFLOW_POSTGRES_INVOKE to be unset on every process sharing the database. Unset it (or enableInvoke) on deployment "build_a"'
+    );
+    expect(() =>
+      createWorld({ pool, deploymentId: 'build_a', enableInvoke: true })
+    ).toThrow('Deployment routing requires WORKFLOW_POSTGRES_INVOKE');
+  });
+
+  it('refuses to enable routing without WORKFLOW_DEPLOYMENT_ID', () => {
+    process.env.WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING = '1';
+
+    expect(() => createWorld()).toThrow(
+      'WORKFLOW_POSTGRES_DEPLOYMENT_ROUTING=1 requires WORKFLOW_DEPLOYMENT_ID'
+    );
+  });
+
+  it.each([
+    'postgres',
+    'latest',
+    'build a',
+    'build/a',
+    'x'.repeat(65),
+  ])('rejects the deployment id %j', (deploymentId) => {
+    expect(() => createWorld({ pool, deploymentId })).toThrow(
+      'Invalid Postgres World deployment id'
+    );
+  });
+
   it('re-enqueues active runs via graphile-worker on start', async () => {
     mockRunsList({
       pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
@@ -205,6 +277,32 @@ describe('re-enqueue active runs on start', () => {
       expect.objectContaining({ id: 'wfB' }),
       expect.anything()
     );
+
+    await world.close();
+  });
+
+  it.each([
+    [undefined, 'wrun_LEGACY', 'workflow_flows'],
+    ['build_a', 'wrun_A', 'workflow_flows@build_a'],
+  ])('recovers only the runs of deployment %s', async (deploymentId, runId, task) => {
+    mockRunsList({
+      running: [
+        { runId: 'wrun_LEGACY', workflowName: 'wf' },
+        { runId: 'wrun_A', workflowName: 'wf', deploymentId: 'build_a' },
+        { runId: 'wrun_B', workflowName: 'wf', deploymentId: 'build_b' },
+      ],
+    });
+
+    const world = createWorld({ pool, deploymentId });
+    await world.start();
+
+    const jobs = vi
+      .mocked(workerUtilsMock.addJob)
+      .mock.calls.map(([identifier, payload]) => [
+        identifier,
+        JSON.parse(MessageData.parse(payload).data.toString()).runId,
+      ]);
+    expect(jobs).toEqual([[task, runId]]);
 
     await world.close();
   });
@@ -237,11 +335,13 @@ describe('re-enqueue active runs on start', () => {
                 runId: 'wrun_page1_pending',
                 workflowName: 'paginatedWf',
                 status: 'pending',
+                deploymentId: 'postgres',
               },
               {
                 runId: 'wrun_page1_running',
                 workflowName: 'paginatedWf',
                 status: 'running',
+                deploymentId: 'postgres',
               },
             ],
             hasMore: true,

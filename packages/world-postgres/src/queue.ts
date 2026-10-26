@@ -44,6 +44,12 @@ import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
+import {
+  deploymentTaskName,
+  isRoutableDeploymentId,
+  LEGACY_DEPLOYMENT_ID,
+  ROUTING_REQUIRES_INVOKE_OFF,
+} from './deployment.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
@@ -267,9 +273,31 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(): string {
-    const jobPrefix = config.jobPrefix || 'workflow_';
-    return `${jobPrefix}flows`;
+  const deploymentId = config.deploymentId ?? LEGACY_DEPLOYMENT_ID;
+  const jobQueueName = `${config.jobPrefix || 'workflow_'}flows`;
+  const flowsTask = (target: string) =>
+    deploymentTaskName(jobQueueName, target);
+  const executorTask = (target: string) =>
+    deploymentTaskName(`${jobQueueName}_executor`, target);
+  /**
+   * The deployment a producer addressed, or this one. Every deployment sends
+   * to the others, including in single-deployment mode: a `'postgres'`
+   * process can start or hand off a run on an opted-in one.
+   *
+   * An id no deployment can have stays here rather than throwing: `start()`
+   * writes `run_created` alongside the queue, so a throw would leave a pending
+   * run that nothing recovers. A `'postgres'` process runs it, as before
+   * routing; a routed one's deployment affinity guard fails it.
+   */
+  function targetDeploymentId(requested: string | undefined): string {
+    if (
+      requested === undefined ||
+      requested === 'latest' ||
+      !isRoutableDeploymentId(requested)
+    ) {
+      return deploymentId;
+    }
+    return requested;
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
@@ -285,9 +313,10 @@ export function createQueue(
   const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
+  // Serializes one run's executions. It names no deployment, so a run's jobs
+  // share it even if one lands on another deployment's task.
   const executorQueueName = (runId: string) =>
-    `${getJobQueueName()}:${runId}:executor`;
-  const executorTask = () => `${getJobQueueName()}_executor`;
+    `${jobQueueName}:${runId}:executor`;
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     if (!invocations || prefix !== ownPrefix())
@@ -341,7 +370,7 @@ export function createQueue(
            AND locked_by = $4 AND attempts = $5 AND locked_at IS NOT NULL`,
             [
               proof.id,
-              executorTask(),
+              executorTask(deploymentId),
               executorQueueName(input.runId),
               proof.worker,
               proof.attempt,
@@ -401,9 +430,7 @@ export function createQueue(
     };
   };
 
-  const getDeploymentId: Queue['getDeploymentId'] = async () => {
-    return 'postgres';
-  };
+  const getDeploymentId: Queue['getDeploymentId'] = async () => deploymentId;
 
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
@@ -439,6 +466,7 @@ export function createQueue(
     attemptOffset,
     deliveryOffset,
     createdAt,
+    target = deploymentId,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
   }: {
     queueId: string;
@@ -455,6 +483,8 @@ export function createQueue(
     executorRunId?: string;
     attemptOffset?: number;
     deliveryOffset?: number;
+    /** The deployment whose task carries the job. */
+    target?: string;
     maxAttempts?: number;
   }) {
     const utils = workerUtils;
@@ -468,7 +498,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      executorRunId ? executorTask() : getJobQueueName(),
+      executorRunId ? executorTask(target) : flowsTask(target),
       MessageData.encode({
         id: queueId,
         ...(prefix ? { prefix } : {}),
@@ -515,7 +545,7 @@ export function createQueue(
       idempotencyKey: message.idempotencyKey,
       headers: message.headers,
       // A distinct key avoids replacing the legacy job that is still locked.
-      jobKey: `${executorTask()}:transfer:${message.messageId}`,
+      jobKey: `${executorTask(deploymentId)}:transfer:${message.messageId}`,
       executorRunId: runId,
     });
   }
@@ -866,8 +896,12 @@ export function createQueue(
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
+    const target = targetDeploymentId(opts?.deploymentId);
+    // Only this deployment can have an executor task: a routed deployment
+    // cannot enable invoke. Every deployment consumes its flows task, and a
+    // `'postgres'` one with invoke on moves orchestration to its executor.
     const input =
-      invocations && prefix === ownPrefix()
+      invocations && target === deploymentId && prefix === ownPrefix()
         ? executorInput(message)
         : undefined;
     await addGraphileJob({
@@ -884,6 +918,7 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
+      target,
       ...(input ? { executorRunId: input.runId } : {}),
     });
     return { messageId };
@@ -901,6 +936,16 @@ export function createQueue(
       payload,
       options,
       async (client, _id, run) => {
+        // Only this deployment has an executor: a routed one cannot enable
+        // invoke (see `assertRoutingCompatible`), so no process would answer
+        // an input for another deployment's run. Throwing rolls back the
+        // mailbox insertion.
+        if (targetDeploymentId(run.deploymentId) !== deploymentId) {
+          throw new WorkflowWorldError(
+            `Cannot invoke run ${runId}: it belongs to deployment ${JSON.stringify(run.deploymentId)}, so this database uses deployment routing. ${ROUTING_REQUIRES_INVOKE_OFF}`,
+            { status: 409 }
+          );
+        }
         const wake = MessageData.encode({
           id: run.workflowName,
           data: transport.serialize({ runId }) as Buffer,
@@ -913,7 +958,7 @@ export function createQueue(
           `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
           queue_name => $3, max_attempts => $4)`,
           [
-            executorTask(),
+            executorTask(deploymentId),
             JSON.stringify(wake),
             executorQueueName(runId),
             MAX_GRAPHILE_JOB_ATTEMPTS,
@@ -959,7 +1004,8 @@ export function createQueue(
         if (
           !executor ||
           !graphileHelpers.success ||
-          graphileHelpers.data.job.task_identifier !== executorTask() ||
+          graphileHelpers.data.job.task_identifier !==
+            executorTask(deploymentId) ||
           actualQueue !== executorQueueName(orchestration.runId)
         ) {
           const job = graphileHelpers.success
@@ -1078,9 +1124,12 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
+    taskList[flowsTask(deploymentId)] = createTaskHandler(workflowPrefix);
     if (invocations)
-      taskList[executorTask()] = createTaskHandler(workflowPrefix, true);
+      taskList[executorTask(deploymentId)] = createTaskHandler(
+        workflowPrefix,
+        true
+      );
 
     runner = await run({
       pgPool: pool,

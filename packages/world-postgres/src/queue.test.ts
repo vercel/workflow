@@ -608,6 +608,143 @@ describe('postgres queue http execution', () => {
     expect(calls[2][2]).not.toHaveProperty('queueName');
   });
 
+  it("keeps a routed deployment's jobs on its own flows task", async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', deploymentId: 'build_a' },
+      pool
+    );
+    await queue.start();
+    expect(await queue.getDeploymentId()).toBe('build_a');
+    expect(
+      Object.keys(vi.mocked(run).mock.calls[0]?.[0]?.taskList ?? {})
+    ).toEqual(['workflow_flows@build_a']);
+
+    await queue.queue('__wkf_workflow_example', { runId: 'run_a' });
+    await queue.queue('__wkf_workflow_example', {
+      runId: 'run_a',
+      stepId: 'step_a',
+      stepName: 'step',
+    });
+    const calls = vi.mocked(workerUtilsMock.addJob).mock.calls;
+    expect(calls.map(([identifier]) => identifier)).toEqual([
+      'workflow_flows@build_a',
+      'workflow_flows@build_a',
+    ]);
+    expect(calls[0][2]).not.toHaveProperty('queueName');
+  });
+
+  it.each([
+    [undefined, undefined, 'workflow_flows'],
+    [undefined, 'build_b', 'workflow_flows@build_b'],
+    ['build_a', 'postgres', 'workflow_flows'],
+    ['build_a', 'build_b', 'workflow_flows@build_b'],
+    ['build_a', undefined, 'workflow_flows@build_a'],
+    ['build_a', 'latest', 'workflow_flows@build_a'],
+  ])('a %s process queues for deployment %s on %s', async (self, target, task) => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', deploymentId: self },
+      pool
+    );
+    await queue.start();
+
+    await queue.queue(
+      '__wkf_workflow_example',
+      { runId: 'run_a' },
+      { deploymentId: target }
+    );
+
+    expect(vi.mocked(workerUtilsMock.addJob).mock.calls[0][0]).toBe(task);
+  });
+
+  it.each([
+    [undefined, 'workflow_flows'],
+    ['build_a', 'workflow_flows@build_a'],
+  ])('a %s process keeps a job for a deployment id no deployment can have', async (self, task) => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', deploymentId: self },
+      pool
+    );
+    await queue.start();
+
+    await queue.queue(
+      '__wkf_workflow_example',
+      { runId: 'run_a' },
+      { deploymentId: 'build/a' }
+    );
+
+    expect(vi.mocked(workerUtilsMock.addJob).mock.calls[0][0]).toBe(task);
+  });
+
+  it.each([
+    'postgres',
+    'build/a',
+  ])('wakes an invoked run of deployment %s on the executor task', async (runDeployment) => {
+    const client = { query: vi.fn() };
+    invocationTransport.invoke.mockImplementation(
+      async (_runId, _payload, _options, enqueue) => {
+        await enqueue(client, 'inv_1', {
+          workflowName: 'example',
+          deploymentId: runDeployment,
+        });
+      }
+    );
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+
+    await queue.invoke?.('run_a', { value: 1 });
+
+    expect(client.query).toHaveBeenCalledWith(expect.any(String), [
+      'workflow_flows_executor',
+      expect.any(String),
+      'workflow_flows:run_a:executor',
+      expect.any(Number),
+    ]);
+  });
+
+  it('refuses to invoke a run of a routed deployment', async () => {
+    const client = { query: vi.fn() };
+    invocationTransport.invoke.mockImplementation(
+      async (_runId, _payload, _options, enqueue) => {
+        await enqueue(client, 'inv_1', {
+          workflowName: 'example',
+          deploymentId: 'build_b',
+        });
+      }
+    );
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+
+    await expect(queue.invoke?.('run_a', { value: 1 })).rejects.toThrow(
+      'Cannot invoke run run_a: it belongs to deployment "build_b", so this database uses deployment routing. Deployment routing requires WORKFLOW_POSTGRES_INVOKE to be unset on every process sharing the database.'
+    );
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it('sends orchestration for a routed deployment to its flows task with invoke on', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+
+    await queue.queue(
+      '__wkf_workflow_example',
+      { runId: 'run_b' },
+      { deploymentId: 'build_b' }
+    );
+
+    const [identifier, , options] = vi.mocked(workerUtilsMock.addJob).mock
+      .calls[0];
+    expect(identifier).toBe('workflow_flows@build_b');
+    expect(options).not.toHaveProperty('queueName');
+  });
+
   it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },
@@ -1204,7 +1341,7 @@ function buildMessageData(
   });
 }
 
-function getTaskHandler(name: 'workflow_flows') {
+function getTaskHandler(name: string) {
   const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
   const task = taskList?.[name];
   expect(task).toBeTypeOf('function');
