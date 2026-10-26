@@ -665,6 +665,62 @@ describe.each([
     }
   });
 
+  it('stamps the inline retry it moves to the background with its message, and only a redelivery of that message re-sends it', async () => {
+    // Inline attempt 1 fails in the orchestrator, attempt 2 fails on the
+    // step's own message, attempt 3 succeeds.
+    flakyFailures = 2;
+    let offsetMs = 0;
+    const realNow = Date.now.bind(Date);
+    const nowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const { world, start } = await setup(
+        `const flaky = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_flaky");
+         async function workflow() { return await flaky(); }${transform('workflow')}`,
+        [],
+        {
+          advanceClock: (seconds) => {
+            offsetMs += seconds * 1000;
+          },
+        }
+      );
+      // The orchestrator dies between its `step_retrying` and the send of
+      // the step's retry message.
+      const asWorld = world.asWorld();
+      const queue = asWorld.queue.bind(asWorld);
+      let failStepSend = true;
+      asWorld.queue = async (name, message, opts) => {
+        if (
+          failStepSend &&
+          (message as { stepId?: string }).stepId !== undefined
+        ) {
+          failStepSend = false;
+          throw new Error('queue unavailable');
+        }
+        return queue(name, message, opts);
+      };
+      setWorld(asWorld);
+      await expect(world.deliver(start)).rejects.toThrow('queue unavailable');
+      const [moved] = eventsOf(world, 'step_retrying');
+      expect(data(moved)).toMatchObject({
+        attempt: 1,
+        creatorMessageId: start.messageId,
+      });
+
+      // The redelivery of that message re-sends it, and the step's own
+      // message carries the retries from there.
+      await world.runUntilIdle();
+      expect(eventsOf(world, 'run_completed')).toHaveLength(1);
+      expect(calls.so_flaky).toBe(3);
+      const retries = eventsOf(world, 'step_retrying');
+      expect(retries).toHaveLength(2);
+      expect(data(retries[1])?.creatorMessageId).toBeUndefined();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('waits out a retryAfter longer than one queue hop across several redeliveries', async () => {
     vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
     longRetryFailures = 1;

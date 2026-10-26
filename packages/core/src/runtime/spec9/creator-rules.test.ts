@@ -5,6 +5,7 @@ import {
   schedulesWaitTimer,
   stepsToReenqueue,
   waitTimersToArm,
+  withRetryCreator,
 } from './creator-rules.js';
 
 let slot = 0;
@@ -84,18 +85,80 @@ describe('stepsToReenqueue', () => {
     ).toEqual([]);
   });
 
-  it('re-enqueues an inline step whose retry moved to the background', () => {
+  it('re-enqueues an inline step whose retry moved to the background, on a redelivery of the message that moved it', () => {
     expect(
       stepsToReenqueue({
         events: [
           created('step_a', { inline: true }),
           ev('step_started', 'step_a'),
-          ev('step_retrying', 'step_a'),
+          ev('step_retrying', 'step_a', { creatorMessageId: MSG }),
         ],
         messageId: MSG,
         deliveryCount: 2,
       })
     ).toEqual(['step_a']);
+  });
+
+  it('never re-enqueues a background retry for another message, or for a World with no delivery count', () => {
+    // The step's own message retries in place past the dedupe window; an
+    // unrelated orchestrator redelivery must not send it a second message.
+    const events = [
+      created('step_a', { inline: true, creatorMessageId: 'msg_orch1' }),
+      ev('step_started', 'step_a'),
+      ev('step_retrying', 'step_a', { creatorMessageId: 'msg_orch1' }),
+      ev('step_started', 'step_a'),
+      ev('step_retrying', 'step_a'),
+    ];
+    for (const deliveryCount of [2, undefined]) {
+      expect(
+        stepsToReenqueue({
+          events,
+          messageId: 'msg_unrelated_hook',
+          deliveryCount,
+        })
+      ).toEqual([]);
+      // Nor the orchestrator that moved it, once the step's own message has
+      // started it: that message owns it until it ends.
+      expect(
+        stepsToReenqueue({ events, messageId: 'msg_orch1', deliveryCount })
+      ).toEqual([]);
+    }
+  });
+
+  it('never re-enqueues an inline retry another message moved, or one without a recorded creator', () => {
+    const moved = (extra: Record<string, unknown>) => [
+      created('step_a', { inline: true }),
+      ev('step_started', 'step_a'),
+      ev('step_retrying', 'step_a', extra),
+    ];
+    expect(
+      stepsToReenqueue({
+        events: moved({ creatorMessageId: 'msg_orch1' }),
+        messageId: 'msg_other',
+        deliveryCount: 2,
+      })
+    ).toEqual([]);
+    expect(
+      stepsToReenqueue({ events: moved({}), messageId: MSG, deliveryCount: 2 })
+    ).toEqual([]);
+  });
+});
+
+describe('withRetryCreator', () => {
+  it('stamps only a step_retrying', () => {
+    expect(
+      withRetryCreator(
+        { eventType: 'step_retrying', eventData: { attempt: 1 } },
+        MSG
+      )
+    ).toEqual({
+      eventType: 'step_retrying',
+      eventData: { attempt: 1, creatorMessageId: MSG },
+    });
+    const completed = { eventType: 'step_completed', eventData: {} };
+    expect(withRetryCreator(completed, MSG)).toBe(completed);
+    const retrying = { eventType: 'step_retrying', eventData: {} };
+    expect(withRetryCreator(retrying, undefined)).toBe(retrying);
   });
 });
 

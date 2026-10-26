@@ -110,6 +110,7 @@ import {
   stepsToReenqueue,
   waitCreatorMessageId,
   waitTimersToArm,
+  withRetryCreator,
 } from './creator-rules.js';
 import {
   type InBandWriter,
@@ -1522,10 +1523,13 @@ export async function runWorkflowWithQuickJS(params: {
         return executeStep({
           world,
           createEvent: async (data, eventParams) => {
-            const written = await writeEvent(data, {
-              ...eventParams,
-              ...logView.snapshotParams(),
-            });
+            const written = await writeEvent(
+              withRetryCreator(data, ownerMessageId),
+              {
+                ...eventParams,
+                ...logView.snapshotParams(),
+              }
+            );
             logView.absorb(written, {
               deliverEvent: deliversOwnEvent(data.eventType),
             });

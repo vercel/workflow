@@ -15,9 +15,15 @@ import { stepCreationOf } from './log-state.js';
  * still retrying past the dedupe window, which is a second owner of its body.
  *
  * Inline steps are never enqueued here, with one exception: an inline step
- * whose last event is a `step_retrying` has moved to the background, and the
- * crash window between that write and the enqueue of its retry message is
- * closed the same way, by a redelivery.
+ * whose last event is the `step_retrying` that moved it to the background.
+ * The orchestrator delivery that ran the failed attempt writes it and stamps
+ * it with its own message (`creatorMessageId`, see
+ * {@link withRetryCreator}); the crash window between that write and the
+ * enqueue of the step's retry message is closed the same way, by a
+ * redelivery of that message. A `step_retrying` the step's own message
+ * wrote (a later attempt) carries no creator: that message stays
+ * unacknowledged until the step ends, so no orchestrator re-sends it. Nor
+ * does one from a log written before the stamp existed.
  */
 export function stepsToReenqueue(params: {
   events: readonly Event[];
@@ -34,6 +40,8 @@ export function stepsToReenqueue(params: {
       started: boolean;
       terminal: boolean;
       lastIsRetrying: boolean;
+      /** The `creatorMessageId` of the last event, if a `step_retrying`. */
+      retryCreator?: string;
     }
   >();
   for (const event of events) {
@@ -58,12 +66,16 @@ export function stepsToReenqueue(params: {
         if (step) {
           step.started = true;
           step.lastIsRetrying = false;
+          step.retryCreator = undefined;
         }
         break;
       }
       case 'step_retrying': {
         const step = steps.get(cid);
-        if (step) step.lastIsRetrying = true;
+        if (step) {
+          step.lastIsRetrying = true;
+          step.retryCreator = retryCreatorMessageId(event);
+        }
         break;
       }
       case 'step_completed':
@@ -81,11 +93,39 @@ export function stepsToReenqueue(params: {
     if (step.terminal) continue;
     if (!step.inline) {
       if (!step.started && step.creator === messageId) out.push(cid);
-    } else if (step.lastIsRetrying) {
+    } else if (step.lastIsRetrying && step.retryCreator === messageId) {
       out.push(cid);
     }
   }
   return out;
+}
+
+/**
+ * `data` with this orchestrator delivery's message (`messageId`) stamped as
+ * the creator when it is a `step_retrying`: the write that moves an inline
+ * step's retry to the background, which only a redelivery of `messageId`
+ * may re-send (see {@link stepsToReenqueue}). Any other event is returned
+ * as is.
+ */
+export function withRetryCreator<
+  T extends { eventType: string; eventData?: unknown },
+>(data: T, messageId: string | undefined): T {
+  if (data.eventType !== 'step_retrying' || messageId === undefined) {
+    return data;
+  }
+  return {
+    ...data,
+    eventData: {
+      ...(data.eventData as Record<string, unknown>),
+      creatorMessageId: messageId,
+    },
+  };
+}
+
+function retryCreatorMessageId(event: Event): string | undefined {
+  const creator = (event.eventData as { creatorMessageId?: unknown })
+    ?.creatorMessageId;
+  return typeof creator === 'string' ? creator : undefined;
 }
 
 /**

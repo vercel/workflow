@@ -153,6 +153,7 @@ import {
   stepsToReenqueue,
   waitCreatorMessageId,
   waitTimersToArm,
+  withRetryCreator,
 } from './creator-rules.js';
 import {
   getInlineStepDeadlineMarginMs,
@@ -3524,11 +3525,14 @@ async function runDelivery(
                       return writeOutcomeAhead(data, params, runAhead);
                     }
                   }
-                  const result = await writer.create(data, {
-                    ...params,
-                    ...slotSnapshot(),
-                    resolveData: REPLAY_RESOLVE_DATA,
-                  });
+                  const result = await writer.create(
+                    withRetryCreator(data, creatorMessageId),
+                    {
+                      ...params,
+                      ...slotSnapshot(),
+                      resolveData: REPLAY_RESOLVE_DATA,
+                    }
+                  );
                   pendingAbsorbs.push(result);
                   return result;
                 },
