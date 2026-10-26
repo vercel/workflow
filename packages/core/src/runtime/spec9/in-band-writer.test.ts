@@ -3,7 +3,10 @@ import { SPEC_VERSION_CURRENT, type WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { loadWorkflowRunEventsFrom } from '../../test-support/load-events.js';
-import { MAX_BATCH_EVENTS } from '../constants.js';
+import {
+  MAX_BATCH_EVENTS,
+  MAX_IN_BAND_CREATION_BATCH_BYTES,
+} from '../constants.js';
 import {
   InBandWriter,
   OrchestratorSupersededError,
@@ -408,6 +411,32 @@ describe('InBandWriter', () => {
       expect(world.events.slice(1).map((e) => e.correlationId)).toEqual(
         Array.from({ length: MAX_BATCH_EVENTS + 2 }, (_, i) => `w${i}`)
       );
+    });
+
+    it('starts a new batch rather than send more than MAX_IN_BAND_CREATION_BATCH_BYTES in one', async () => {
+      const { world, writer, releaseAll } = await ready();
+      // Each write alone fits a batch; any two together do not.
+      const sized = (cid: string) => ({
+        ...waitCreated(cid),
+        eventData: {
+          resumeAt: new Date(),
+          payload: new Uint8Array(
+            Math.ceil(MAX_IN_BAND_CREATION_BATCH_BYTES * 0.6)
+          ),
+        },
+      });
+      const writes = ['w1', 'w2', 'w3'].map((cid) =>
+        writer.createAhead(sized(cid) as never, {}, () => {})
+      );
+      await releaseAll();
+      // The World refuses an oversized batch whole.
+      await Promise.all(writes);
+      expect(world.batches.every((batch) => batch.length === 1)).toBe(true);
+      expect(world.events.slice(1).map((e) => e.correlationId)).toEqual([
+        'w1',
+        'w2',
+        'w3',
+      ]);
     });
 
     it('does not move a run-ahead write past a plain write queued before it', async () => {

@@ -84,6 +84,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
   MAX_BATCH_EVENTS,
+  MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_RUN_AHEAD_RESTARTS,
   STEP_DISPATCH_QUEUE_BATCH_SIZE,
 } from '../constants.js';
@@ -206,6 +207,7 @@ import { stepMessageRetentionSeconds } from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 import {
   type CreatedStep,
+  creationBatchBytes,
   planStepsAndWaits,
   type StartedInBatch,
 } from './step-wait-creation.js';
@@ -3155,9 +3157,13 @@ async function runDelivery(
         plan.failedCount === 0 &&
         plan.waitCount === 0 &&
         plan.steps.every((step) => step.inline) &&
-        // One speculative batch; a larger fan-out commits
-        // in chunks on the awaited path.
+        // One speculative batch; a larger fan-out, by events
+        // or by bytes, commits in chunks on the awaited path.
         plan.events.length <= MAX_BATCH_EVENTS &&
+        plan.events.reduce(
+          (sum, event) => sum + creationBatchBytes(event),
+          0
+        ) <= MAX_IN_BAND_CREATION_BATCH_BYTES &&
         withinRunAheadDepth();
       if (speculativeCreation && boundaryRunAhead) {
         const starts = writeCreationAhead(plan.events, boundaryRunAhead);

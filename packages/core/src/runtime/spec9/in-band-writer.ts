@@ -16,8 +16,12 @@ import type {
   World,
 } from '@workflow/world';
 import { eventIdToSlot, IN_BAND_SEQ_AT_RUN_CREATION } from '@workflow/world';
-import { MAX_BATCH_EVENTS } from '../constants.js';
+import {
+  MAX_BATCH_EVENTS,
+  MAX_IN_BAND_CREATION_BATCH_BYTES,
+} from '../constants.js';
 import { assertWorldSupportsInBandFence } from '../world-compatibility.js';
+import { creationBatchBytes } from './step-wait-creation.js';
 
 /**
  * Thrown by an {@link InBandWriter} once the World has refused one of its
@@ -132,7 +136,9 @@ export const RESILIENT_START_SNAPSHOT: EventLogSnapshot = Object.freeze({
  *   not atomic, but every World orders it per entity (see `Storage.events`):
  *   it refuses a step's outcome behind its refused creation itself, so a
  *   group may carry several writes for one step. A group stays within
- *   {@link MAX_BATCH_EVENTS} events.
+ *   {@link MAX_BATCH_EVENTS} events and, counted as a creation batch is,
+ *   {@link MAX_IN_BAND_CREATION_BATCH_BYTES} bytes: a World refuses an
+ *   oversized batch whole.
  * - The first refusal stops the writer for good: every later write throws
  *   {@link OrchestratorSupersededError} without reaching the World. The value
  *   the error carries is never adopted.
@@ -480,7 +486,9 @@ export class InBandWriter {
       this.pendingPositions += member.events.length;
       if (
         this.openGroup &&
-        groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS
+        groupSize(this.openGroup) + member.events.length <= MAX_BATCH_EVENTS &&
+        groupBytes(this.openGroup) + groupBytes([member]) <=
+          MAX_IN_BAND_CREATION_BATCH_BYTES
       ) {
         this.openGroup.push(member);
         return;
@@ -937,6 +945,18 @@ export class InBandWriter {
 /** How many events a group of run-ahead writes would send. */
 function groupSize(group: AheadWrite[]): number {
   return group.reduce((sum, write) => sum + write.events.length, 0);
+}
+
+/**
+ * What a group of run-ahead writes counts against a World's batch byte
+ * budget, as a creation batch is counted ({@link creationBatchBytes}).
+ */
+function groupBytes(group: AheadWrite[]): number {
+  let bytes = 0;
+  for (const write of group) {
+    for (const item of write.events) bytes += creationBatchBytes(item.event);
+  }
+  return bytes;
 }
 
 /** A run-ahead write waiting in an open group (see {@link InBandWriter}). */

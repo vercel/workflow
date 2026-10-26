@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { InBandSupersededError, RetryableError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { type Event, SPEC_VERSION_CURRENT } from '@workflow/world';
@@ -18,7 +19,12 @@ import {
   runResult,
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
-import { RUN_AHEAD_DEPTH } from '../constants.js';
+import {
+  MAX_IN_BAND_CREATION_BATCH_BYTES,
+  MAX_MAX_INLINE_STEPS,
+  MAX_RUN_AHEAD_DEPTH,
+  RUN_AHEAD_DEPTH,
+} from '../constants.js';
 import {
   SLOT_GAP_RECHECK_ATTEMPTS,
   SLOT_GAP_RECHECK_BASE_DELAY_MS,
@@ -182,6 +188,20 @@ const loopBesideRetriedStep = `const inc = ${step};
     while (!done && n < 20) n = await inc(n);
     await pending;
     return n;
+  }${registerWorkflow()}`;
+
+let sizedBodies = 0;
+registerStepFunction('ra_sized', async (input: string) => {
+  sizedBodies++;
+  return input.length;
+});
+// A fan-out after a first step, so its creations may run ahead.
+const sizedFanOut = `const inc = ${step};
+  const sized = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ra_sized");
+  async function workflow(inputs) {
+    const n = await inc(0);
+    const lengths = await Promise.all(inputs.map((input) => sized(input)));
+    return lengths.length + n;
   }${registerWorkflow()}`;
 
 const STEPS = 6;
@@ -764,6 +784,28 @@ describe('run-ahead against an append-only World (node engine)', () => {
     // No body the replayed workflow does not call.
     expect(bodiesStarted).toBe(liveBodies);
     expect(liveBodies).toBe(eventsOf(world, 'step_completed').length - 1);
+  });
+
+  it('commits a fan-out whose inputs exceed one batch by bytes on the awaited path, and runs each body once', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', String(MAX_MAX_INLINE_STEPS));
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(MAX_RUN_AHEAD_DEPTH));
+    sizedBodies = 0;
+    const width = MAX_MAX_INLINE_STEPS;
+    // Random, so the inputs do not compress: together well over one
+    // batch's byte budget, each well under it.
+    const inputs = Array.from({ length: width }, () =>
+      randomBytes(
+        Math.ceil((2 * MAX_IN_BAND_CREATION_BATCH_BYTES) / width)
+      ).toString('base64')
+    );
+    const { world, start } = await run(sizedFanOut, [inputs]);
+    // The World refuses an oversized batch whole; a delivery that sent one
+    // would fail, and every redelivery would decide the same way.
+    expect(await world.deliver(start)).toBeUndefined();
+    await world.runUntilIdle();
+    expect(world.deliveries).toHaveLength(1);
+    expect(await runResult(world)).toBe(width + 1);
+    expect(sizedBodies).toBe(width);
   });
 
   it('drains beside a step another invocation runs', async () => {
