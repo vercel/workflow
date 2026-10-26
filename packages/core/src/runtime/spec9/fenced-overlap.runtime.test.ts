@@ -2,6 +2,7 @@ import { InBandSupersededError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
 import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateStepReturnValue } from '../../serialization.js';
@@ -18,6 +19,7 @@ import {
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
 import { setWorld } from '../world.js';
+import { REPEATED_FENCE_REFUSAL_WARN_THRESHOLD } from './fence-refusals.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -334,10 +336,23 @@ describe.each([
     );
     current = world;
 
+    const warn = vi.spyOn(runtimeLogger, 'warn');
     await world.deliver(start);
     // Each pass sent one wake, which was coalesced into the delivery; past
     // the bound the message was handed off instead of running again.
     expect(world.deliveries).toHaveLength(maxCoalescedReruns + 1);
+    // The streak is reported at warn once it is long enough, with the
+    // counts the refusal carried.
+    const streakWarnings = warn.mock.calls.filter(([message]) =>
+      String(message).includes('keep being refused by the in-band fence')
+    );
+    expect(streakWarnings.length).toBeGreaterThan(0);
+    expect(streakWarnings[0]?.[1]).toMatchObject({
+      consecutiveRefusals: REPEATED_FENCE_REFUSAL_WARN_THRESHOLD,
+      expectedSeqInBand: expect.any(Number),
+      refusalSeqInBand: expect.any(Number),
+    });
+    warn.mockRestore();
     expect(world.coalescedHandoffs).toBe(1);
     expect(world.held).toEqual([
       expect.objectContaining({

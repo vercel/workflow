@@ -282,6 +282,14 @@ export const WorkflowDeliveryHandoff = SemanticConvention<boolean>(
   'workflow.delivery.handoff'
 );
 
+/**
+ * Consecutive in-band fence refusals of this run's orchestrator deliveries in
+ * this process, set once the streak is long enough to log at warn.
+ */
+export const WorkflowConsecutiveFenceRefusals = SemanticConvention<number>(
+  'workflow.consecutive_fence_refusals'
+);
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'

@@ -160,6 +160,11 @@ import {
   mayStartInlineStep,
 } from './deadline.js';
 import {
+  clearFenceRefusals,
+  noteFenceRefusal,
+  warnsOnFenceRefusal,
+} from './fence-refusals.js';
+import {
   InBandWriter,
   OrchestratorSupersededError,
   RESILIENT_START_SNAPSHOT,
@@ -1032,7 +1037,9 @@ async function runDelivery(
 
   while (true) {
     try {
-      return await orchestrate();
+      const result = await orchestrate();
+      clearFenceRefusals(runId);
+      return result;
     } catch (caught) {
       // A failed turbo `run_started` decides the delivery, as
       // a failed awaited `run_started` does on the normal path,
@@ -1056,6 +1063,28 @@ async function runDelivery(
           }
         );
         span?.setAttributes(Attribute.WorkflowSuperseded(true));
+        const consecutiveRefusals = noteFenceRefusal(runId);
+        if (warnsOnFenceRefusal(consecutiveRefusals)) {
+          // Each pass alone is expected; a streak is not, and nothing else
+          // surfaces it (see `fence-refusals.ts`).
+          const refusal = writer.stopCause as
+            | { seq?: number; seqInBand?: number }
+            | undefined;
+          runtimeLogger.warn(
+            'Orchestrator writes of this run keep being refused by the in-band fence',
+            {
+              workflowRunId: runId,
+              consecutiveRefusals,
+              deliveryCount: creatorDeliveryCount,
+              expectedSeqInBand: writer.expectedSeqInBand,
+              refusalSeq: refusal?.seq,
+              refusalSeqInBand: refusal?.seqInBand,
+            }
+          );
+          span?.setAttributes(
+            Attribute.WorkflowConsecutiveFenceRefusals(consecutiveRefusals)
+          );
+        }
         continuation.exit = `superseded:${(err as Error)?.message?.slice(0, 200)}`;
         // What this delivery's committed writes owe the queue goes out
         // first: no other delivery is their creator, so none would send
