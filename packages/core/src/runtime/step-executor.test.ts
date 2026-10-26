@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FatalError } from '@workflow/errors';
+import { FatalError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
@@ -13,7 +13,11 @@ import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import { getWritable } from '../step/writable-stream.js';
-import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
+import {
+  STREAM_NAME_SYMBOL,
+  STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
+} from '../symbols.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { executeStep } from './step-executor.js';
 import {
@@ -1374,5 +1378,132 @@ describe('executeStep — thrown errors with a read-only stack', () => {
     );
     const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
     expect(hydrated.message).toBe('constraint violated');
+  });
+});
+
+describe('executeStep — forwarded writable key lookup failures', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    counter += 1;
+  });
+
+  const OWNER_RUN_ID = 'wrun_forwarded_owner';
+
+  /**
+   * Runs a step that writes to a writable forwarded from another run, with
+   * the owner's key lookup (`getEncryptionKeyForRun`) failing with `lookupError`
+   * on the first attempt and succeeding on any later one.
+   */
+  async function runForwardedWritableStep(lookupError: Error) {
+    const world = makeWorld();
+    setWorld(world);
+    world.streams.write = vi.fn(async () => {}) as typeof world.streams.write;
+    let ownerLookups = 0;
+    world.getEncryptionKeyForRun = vi.fn(async (runId: string) => {
+      if (runId !== OWNER_RUN_ID) return undefined;
+      ownerLookups += 1;
+      if (ownerLookups === 1) throw lookupError;
+      return undefined;
+    }) as World['getEncryptionKeyForRun'];
+
+    const forwarded = new WritableStream<string>();
+    Object.defineProperty(forwarded, STREAM_NAME_SYMBOL, {
+      value: 'strm_forwarded',
+    });
+    Object.defineProperty(forwarded, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: OWNER_RUN_ID,
+    });
+    // Carrying the owner's deployment skips the `runs.get` fallback, so the
+    // only owner request is the key lookup under test.
+    Object.defineProperty(forwarded, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: 'dpl_owner',
+    });
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+      stepArgs: [forwarded],
+    });
+    registerStepFunction(
+      stepName,
+      Object.assign(
+        async (writable: WritableStream<string>) => {
+          const writer = writable.getWriter();
+          await writer.write('forwarded snapshot');
+          // `write()` early-acks, so a key lookup failure errors the stream
+          // after it returns, and `close()` on an errored stream rejects with
+          // a generic TypeError. `closed` rejects with the lookup error
+          // itself; awaiting it makes the step throw that error.
+          await writer.close().catch(() => {});
+          await writer.closed;
+          return 'ok';
+        },
+        { maxRetries: MAX_RETRIES }
+      )
+    );
+
+    const execute = (attempt: number) =>
+      executeStep({
+        world,
+        workflowRunId: runId,
+        workflowName: 'wf',
+        workflowStartedAt: Date.now(),
+        stepId,
+        stepName,
+        authoritativeAttempt: attempt,
+      });
+    return { world, runId, stepId, execute };
+  }
+
+  async function errorOf(
+    world: World,
+    runId: string,
+    stepId: string,
+    eventType: 'step_retrying' | 'step_failed'
+  ): Promise<Error> {
+    const events = await eventsFor(world, runId, stepId, eventType);
+    expect(events).toHaveLength(1);
+    return (await hydrateStepError(
+      (events[0].eventData as { error: unknown }).error,
+      runId,
+      undefined
+    )) as Error;
+  }
+
+  it('retries the step when the key lookup fails transiently, and the retry completes', async () => {
+    const { world, runId, stepId, execute } = await runForwardedWritableStep(
+      new WorkflowWorldError('GET /v1/workflow/run-key failed', {
+        code: 'TRANSPORT',
+      })
+    );
+
+    expect((await execute(1)).type).toBe('retry');
+    expect(await eventsFor(world, runId, stepId, 'step_failed')).toHaveLength(
+      0
+    );
+    const retried = await errorOf(world, runId, stepId, 'step_retrying');
+    expect(retried.name).toBe('WorkflowWorldError');
+
+    expect((await execute(2)).type).toBe('completed');
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+  });
+
+  it('fails the step without retrying when the key lookup fails with a 404', async () => {
+    const { world, runId, stepId, execute } = await runForwardedWritableStep(
+      new WorkflowWorldError('GET /v1/workflow/run-key failed', {
+        status: 404,
+      })
+    );
+
+    expect((await execute(1)).type).toBe('failed');
+    expect(await eventsFor(world, runId, stepId, 'step_retrying')).toHaveLength(
+      0
+    );
+    const failed = await errorOf(world, runId, stepId, 'step_failed');
+    expect(failed.name).toBe('NonTransientEncryptionKeyLookupError');
   });
 });
