@@ -542,6 +542,14 @@ export function workflowEntrypoint(
                     ...Attribute.WorkflowRunId(runId),
                     ...Attribute.WorkflowTracePropagated(!!traceContext),
                     ...Attribute.WorkflowTraceMode(traceMode),
+                    // Which orchestrator handles the delivery, and how the
+                    // queue counts it: a coalesced re-run or a handoff
+                    // keeps `attempt` and advances `deliveryCount`.
+                    ...Attribute.WorkflowRunSpecVersion(runSpec.specVersion),
+                    ...Attribute.WorkflowDeliveryAttempt(metadata.attempt),
+                    ...(metadata.deliveryCount !== undefined
+                      ? Attribute.WorkflowDeliveryCount(metadata.deliveryCount)
+                      : {}),
                   });
                   return orchestrator.runDelivery({
                     message,

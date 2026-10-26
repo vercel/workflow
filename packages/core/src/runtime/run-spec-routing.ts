@@ -5,6 +5,7 @@ import {
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
+import { trace } from '../telemetry.js';
 import { getWorld } from './world.js';
 
 /** How many runs' spec versions a process remembers. */
@@ -64,9 +65,9 @@ export async function resolveRunSpec(
   if (known !== undefined) return { specVersion: known };
   const world = await getWorld();
   try {
-    const run = (await world.runs.get(message.runId, {
-      resolveData: 'none',
-    })) as WorkflowRun | undefined;
+    const run = (await trace('workflow.route.resolve_spec', () =>
+      world.runs.get(message.runId, { resolveData: 'none' })
+    )) as WorkflowRun | undefined;
     if (!run) return { specVersion: world.specVersion };
     const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
     rememberRunSpecVersion(message.runId, specVersion);

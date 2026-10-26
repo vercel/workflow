@@ -247,6 +247,24 @@ export const WorkflowSuperseded = SemanticConvention<boolean>(
 );
 
 /**
+ * The queue's `attempt` for this delivery, which the delivery cap counts:
+ * `deliveryCount` less the deliveries that followed a handoff and less
+ * coalesced re-runs (see `Queue` in `@workflow/world`).
+ */
+export const WorkflowDeliveryAttempt = SemanticConvention<number>(
+  'workflow.delivery.attempt'
+);
+
+/**
+ * The queue's `deliveryCount` for this delivery, when the World reports it:
+ * every delivery of the message, handoffs and coalesced re-runs included.
+ * Above `workflow.delivery.attempt` on a handoff or a coalesced re-run.
+ */
+export const WorkflowDeliveryCount = SemanticConvention<number>(
+  'workflow.delivery.count'
+);
+
+/**
  * Why a spec 9 orchestrator delivery ended before the run suspended or
  * finished: `superseded`, `deadline`, `hook-conflict`, `pending-stream-ops`,
  * `quickjs-continue`, `run-ahead-restart`, `run-ahead-stop-handoff`. Unset
@@ -541,7 +559,11 @@ export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
   'workflow.deployment_mismatch.recovered'
 );
 
-/** The spec version `start()` stamped on the new run. */
+/**
+ * The run's spec version: on `start()`, the version it stamped on the new
+ * run; on a `workflow.execute` span, the version that picked the
+ * orchestrator handling the delivery.
+ */
 export const WorkflowRunSpecVersion = SemanticConvention<number>(
   'workflow.run.spec_version'
 );
