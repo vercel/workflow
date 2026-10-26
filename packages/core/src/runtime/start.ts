@@ -753,9 +753,6 @@ export async function start<TArgs extends unknown[], TResult>(
       // it decodes zstd. `undefined` when it could not be attested, which
       // restricts those writers to gzip.
       let targetNodeVersion: string | undefined;
-      // Later hook producers must use the consumer's version, not this
-      // caller's: a newer SDK can explicitly start on an older deployment.
-      let targetWorkflowCoreVersion: string | undefined;
       // The consumer's hook-resume protocol version, stamped onto the new
       // run. Current producers write the hook_received event durably before
       // publishing the wake and never read it; OLDER producers gate their
@@ -774,7 +771,6 @@ export async function start<TArgs extends unknown[], TResult>(
       if (!crossDeployment) {
         framedByteStreams = true;
         framedAbortStreams = true;
-        targetWorkflowCoreVersion = workflowCoreVersion;
         targetCompression = true;
         targetNodeVersion = getCurrentNodeVersion();
         // Same deployment: this process is the consumer, so its own constant
@@ -785,7 +781,6 @@ export async function start<TArgs extends unknown[], TResult>(
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         framedAbortStreams = false;
-        targetWorkflowCoreVersion = undefined;
         targetCompression = false;
         targetNodeVersion = undefined;
         // No probe channel to the target, so we cannot attest the consumer
@@ -809,7 +804,6 @@ export async function start<TArgs extends unknown[], TResult>(
           namespace: opts.namespace,
         });
         probedRunPublicKey = probe?.encryptionPublicKey;
-        targetWorkflowCoreVersion = probe?.workflowCoreVersion;
         const capabilities = getRunCapabilities(
           probe?.workflowCoreVersion,
           probe?.nodeVersion
@@ -1037,9 +1031,7 @@ export async function start<TArgs extends unknown[], TResult>(
       const queueNamespace = resolveQueueNamespace(opts.namespace);
       const executionContext = {
         traceCarrier,
-        ...(targetWorkflowCoreVersion
-          ? { workflowCoreVersion: targetWorkflowCoreVersion }
-          : {}),
+        workflowCoreVersion,
         ...(queueNamespace ? { queueNamespace } : {}),
         ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),
         features: { encryption: !!encryptionKey },

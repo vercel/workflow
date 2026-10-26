@@ -216,7 +216,7 @@ describe('real abort reducers and revivers', () => {
   it.each([
     false,
     true,
-  ])('propagates a split encrypted packet through the real step reader (framed=%s)', async (framed) => {
+  ])('propagates a split encrypted packet before stream close (framed=%s)', async (framed) => {
     const key = await deriveRunPayloadKeys(new Uint8Array(32).fill(8));
     const input = await dehydrateWorkflowArguments(
       new AbortController().signal,
@@ -229,8 +229,14 @@ describe('real abort reducers and revivers', () => {
       key
     )) as Uint8Array;
     const wire = framed ? frameAbortStreamPayload(payload) : payload;
-    world.streams.get.mockImplementationOnce(async () =>
-      chunksStream(Array.from(wire, (byte) => new Uint8Array([byte])))
+    world.streams.get.mockImplementationOnce(
+      async () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const byte of wire) controller.enqueue(new Uint8Array([byte]));
+            // close() is a separate, best-effort writer RPC. Never provide EOF.
+          },
+        })
     );
     const ctx = stepContext(key);
     await contextStorage.run(ctx, async () => {
@@ -276,7 +282,10 @@ describe('real abort reducers and revivers', () => {
     });
   });
 
-  it('propagates a framed abort without waiting for transport close or cancellation', async () => {
+  it.each([
+    false,
+    true,
+  ])('propagates abort without waiting for transport close or cancellation (framed=%s)', async (framed) => {
     const input = await dehydrateWorkflowArguments(
       new AbortController().signal,
       runId,
@@ -292,7 +301,9 @@ describe('real abort reducers and revivers', () => {
       async () =>
         new ReadableStream<Uint8Array>({
           start(controller) {
-            controller.enqueue(frameAbortStreamPayload(payload));
+            controller.enqueue(
+              framed ? frameAbortStreamPayload(payload) : payload
+            );
           },
           cancel,
         })

@@ -79,7 +79,7 @@ describe('resumeHook', () => {
     undefined,
     '5.2.3',
     '5.3.0',
-  ])('uses the receiving run version for abort streams in a hook payload: %s', async (workflowCoreVersion) => {
+  ])('keeps hook payload abort packets compatible even with a newer starting client: %s', async (workflowCoreVersion) => {
     const hook = {
       runId: 'wrun_abort',
       hookId: 'hook_abort',
@@ -112,7 +112,7 @@ describe('resumeHook', () => {
     source.abort('cancel');
     await vi.waitFor(() => expect(write).toHaveBeenCalled());
     expect(peekFormatPrefix(write.mock.calls[0][2])).toBe(
-      workflowCoreVersion === '5.3.0' ? null : SerializationFormat.DEVALUE_V1
+      SerializationFormat.DEVALUE_V1
     );
   });
 

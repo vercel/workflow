@@ -31,9 +31,11 @@ same token, or explicit disposal releases a retained token early. Final
 Real-time abort streams use a 4-byte big-endian length envelope around the
 existing serialized payload. Encryption and durable hook events are unchanged.
 Readers accept both framed packets and older unframed packets, reassembling
-split transport reads before hydration. Cross-deployment `start()` and
-`resumeHook()` keep unframed writes for targets whose core version predates
-abort framing or cannot be established.
+split transport reads before hydration. Complete legacy packets propagate
+without waiting for stream close. Cross-deployment `start()` keeps unframed
+writes for targets whose core version predates abort framing or cannot be
+established. `resumeHook()` retains unframed abort writes until its resume
+context can attest the receiving runtime separately from the starting client.
 
 Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
 

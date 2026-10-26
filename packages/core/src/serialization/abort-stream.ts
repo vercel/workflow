@@ -19,11 +19,13 @@ export function frameAbortStreamPayload(payload: Uint8Array): Uint8Array {
 /**
  * Read one abort packet independently of transport chunk boundaries.
  * New packets have the usual big-endian length envelope; older writers send
- * a format-prefixed packet directly and close the stream. Wait for EOF only
- * for that legacy format, whose length cannot be known ahead of time.
+ * a format-prefixed packet directly. Try decoding those after each read so a
+ * complete legacy packet does not depend on the separate best-effort close.
+ * Without a decoder, only EOF establishes the end of an unframed packet.
  */
 export async function readAbortStreamPacket(
-  reader: ReadableStreamDefaultReader<Uint8Array>
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  tryDecode?: (packet: Uint8Array) => Promise<void>
 ): Promise<Uint8Array | undefined> {
   const chunks: Uint8Array[] = [];
   const header = new Uint8Array(HEADER_SIZE);
@@ -70,6 +72,16 @@ export async function readAbortStreamPacket(
     }
     if (packetLength !== undefined && size >= HEADER_SIZE + packetLength) {
       return packet(HEADER_SIZE, packetLength);
+    }
+    if (raw && tryDecode) {
+      const candidate = packet(0, size);
+      try {
+        await tryDecode(candidate);
+        return candidate;
+      } catch {
+        // A split serialized/encrypted packet cannot decode yet. Keep reading;
+        // EOF retains the previous best-effort fallback for malformed packets.
+      }
     }
   }
 }

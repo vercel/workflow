@@ -2577,8 +2577,17 @@ function setupAbortStreamReader(
       try {
         const readable = new WorkflowServerReadableStream(runId, streamName);
         reader = readable.getReader();
+        const ctxForKey = contextStorage.getStore();
+        let decoded: { reason?: unknown } | undefined;
+        const decodePacket = async (packet: Uint8Array) => {
+          decoded = (await hydrateStepArguments(
+            packet,
+            runId,
+            ctxForKey?.encryptionKey
+          )) as { reason?: unknown } | undefined;
+        };
         const result = await Promise.race([
-          readAbortStreamPacket(reader),
+          readAbortStreamPacket(reader, decodePacket),
           new Promise<undefined>((resolve) => {
             if (readerCancel.signal.aborted) {
               resolve(undefined);
@@ -2598,13 +2607,10 @@ function setupAbortStreamReader(
             // comes from the step context, set up by the step executor before
             // this reader runs. Fallback to undefined for external-context
             // revives (the hydrate path is encryption-key-tolerant).
-            const ctxForKey = contextStorage.getStore();
-            const data = (await hydrateStepArguments(
-              result,
-              runId,
-              ctxForKey?.encryptionKey
-            )) as { reason?: unknown } | undefined;
-            controller.abort(data?.reason);
+            // Legacy packets were already hydrated to establish completeness.
+            // Framed packets have a known length and can hydrate once here.
+            if (decoded === undefined) await decodePacket(result);
+            controller.abort(decoded?.reason);
           } catch {
             controller.abort();
           }

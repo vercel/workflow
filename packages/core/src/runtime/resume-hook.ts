@@ -773,7 +773,10 @@ async function resumeHookAttempt<T = any>(
       compression,
       undefined,
       readbackOps,
-      capabilities.framedAbortStreams
+      // resumeContext.workflowCoreVersion describes the run's starting client,
+      // which may differ from its pinned deployment. Keep abort packets raw
+      // until the resume context can attest the receiving runtime separately.
+      false
     );
     // A hook_received event is not durable while its payload still points
     // at stream uploads in flight. Finish those before committing the

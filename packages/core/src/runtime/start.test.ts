@@ -40,6 +40,7 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import { serializeTraceCarrier } from '../telemetry.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
@@ -2313,7 +2314,7 @@ async function workflow() {
         undefined,
         '5.2.3',
         '5.3.0',
-      ])('uses the target version for abort framing and records it for future hook resumes: %s', async (targetVersion) => {
+      ])('uses the probed target for abort framing without changing the recorded client version: %s', async (targetVersion) => {
         const write = worldWithProbe({ workflowCoreVersion: targetVersion });
         const source = new AbortController();
         await start(validWorkflow, [source.signal], {
@@ -2321,7 +2322,7 @@ async function workflow() {
         });
         const executionContext =
           mockEventsCreate.mock.calls[0][1].eventData.executionContext;
-        expect(executionContext.workflowCoreVersion).toBe(targetVersion);
+        expect(executionContext.workflowCoreVersion).toBe(workflowCoreVersion);
         source.abort('cancel');
         await vi.waitFor(() => expect(write).toHaveBeenCalled());
         expect(peekFormatPrefix(write.mock.calls[0][2])).toBe(
