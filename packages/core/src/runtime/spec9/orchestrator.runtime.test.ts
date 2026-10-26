@@ -22,13 +22,17 @@ import {
 } from '../../test-support/orchestrator-harness.js';
 import * as workflowModule from '../../workflow.js';
 import {
+  DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
   getMaxQueueDeliveries,
   MAX_IN_BAND_CREATION_BATCH_EVENTS,
   STEP_DISPATCH_QUEUE_BATCH_SIZE,
 } from '../constants.js';
 import { setWorld } from '../world.js';
-import { MAX_STEP_MESSAGE_RETENTION_SECONDS } from './step-retention.js';
+import {
+  MAX_STEP_MESSAGE_RETENTION_SECONDS,
+  stepMessageRetentionSeconds,
+} from './step-retention.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -646,6 +650,44 @@ describe.each([
     expect(await runResult(world)).toMatch(
       /past the retention of its queue message/
     );
+  });
+
+  it('re-routes a step message to its pinned deployment with a step message retention and without its dispatch key', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    try {
+      const { world } = await setup(
+        `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
+         async function workflow() { return await add(1, 2); }${transform('workflow')}`,
+        []
+      );
+      await world.deliver(world.held[0]!);
+      const stepMessage = world.held.find(
+        (held) => (held.message as { stepId?: string }).stepId !== undefined
+      );
+      expect(stepMessage).toBeDefined();
+      // The step's message lands on a deployment other than the run's.
+      setWorld({
+        ...world.asWorld(),
+        capabilities: { inBandFence: true, deploymentAffinity: true },
+        getDeploymentId: async () => 'dpl_elsewhere',
+      } as never);
+      const before = world.queueCalls.length;
+      await world.deliver(stepMessage!);
+      const rerouted = world.queueCalls
+        .slice(before)
+        .filter(
+          (call) => (call.message as { stepId?: string }).stepId !== undefined
+        );
+      expect(rerouted).toHaveLength(1);
+      expect(calls.so_add).toBeUndefined();
+      expect(rerouted[0]?.opts).toMatchObject({
+        deploymentId: 'dpl_test',
+        retentionSeconds: stepMessageRetentionSeconds(DEFAULT_STEP_MAX_RETRIES),
+      });
+      expect(rerouted[0]?.opts).not.toHaveProperty('idempotencyKey');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('retries a background step in place on its own message', async () => {

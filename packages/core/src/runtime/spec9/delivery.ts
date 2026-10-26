@@ -885,17 +885,29 @@ async function runDelivery(
         deploymentMismatchRetryCount: retryCount,
         delaySeconds,
       }: ReenqueueArgs) => {
+        const payload = await reenqueuePayload();
         await queueMessage(
           world,
           getWorkflowQueueName(workflowName, namespace),
-          {
-            ...(await reenqueuePayload()),
-            deploymentMismatchRetryCount: retryCount,
-          },
+          { ...payload, deploymentMismatchRetryCount: retryCount },
           {
             deploymentId,
             specVersion: specVersion ?? runSpecVersion,
             delaySeconds,
+            // A step message's copy runs the step's later retries in
+            // place, and its handler sizes them by a step message's
+            // retention, so the copy gets that retention. It does not
+            // take the step's dispatch key: the queue holds that key for
+            // the original message's lifetime and would drop the copy as
+            // a duplicate of the message this delivery acknowledges.
+            ...(payload.stepId !== undefined && payload.stepName !== undefined
+              ? {
+                  retentionSeconds: stepMessageRetentionSeconds(
+                    getStepFunction(payload.stepName)?.maxRetries ??
+                      DEFAULT_STEP_MAX_RETRIES
+                  ),
+                }
+              : {}),
           }
         );
       },
