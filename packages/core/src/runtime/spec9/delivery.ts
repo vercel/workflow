@@ -729,12 +729,18 @@ async function runDelivery(
     if (result.event) prepareReplayEvent(result.event);
     return result;
   };
-  /** The in-band writer, folding each accepted write into the log. */
+  /**
+   * The in-band writer, folding each accepted write into the log. The log
+   * position a caller already named (`createEvent`) is not computed again:
+   * that is a scan of the whole log.
+   */
   const writeInBand: EventCreator = async (data, params) => {
-    const result = await writer.create(data, {
-      ...slotSnapshot(),
-      ...params,
-    });
+    const result = await writer.create(
+      data,
+      params?.eventCount !== undefined
+        ? params
+        : { ...slotSnapshot(), ...params }
+    );
     absorbWrite(result);
     return result;
   };
