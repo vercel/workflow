@@ -140,6 +140,12 @@ export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
  * Bumping this does not touch runs already created: their stamped version is
  * persisted, every version test in the runtime is `>=`, and a World resolves a
  * run's identity scheme from what is stored rather than from this constant.
+ *
+ * Planned before merge of the single-orchestrator change (spec 9 opt-in):
+ * this goes back to {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM} (8), its
+ * previous value and meaning, so a World that pinned it keeps minting spec 8
+ * runs. The spec 9 runtime then stamps `SPEC_VERSION_SINGLE_ORCHESTRATOR`
+ * explicitly instead of this constant.
  */
 export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
@@ -184,6 +190,14 @@ export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
  *
  * A function rather than a constant so a World reads the settings where it is
  * created.
+ *
+ * Planned before merge (spec 9 opt-in): this takes
+ * `{ inBandFence?: boolean }`, and returns 9 only for
+ * `WORKFLOW_SPEC_VERSION=9` on a World that passes `inBandFence: true`
+ * (warning once and returning 8 otherwise); unset returns 8. A call with no
+ * options, as a World written to the earlier "Building a World" guide makes,
+ * can then never return 9. The flag gates minting only: reads, routing and
+ * writes to an existing run follow that run's stamped version.
  */
 export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env

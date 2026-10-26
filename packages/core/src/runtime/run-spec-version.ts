@@ -13,6 +13,11 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world/spec-version';
  *
  * `whenUnknown` is used for a run with no recorded version. It defaults to this
  * SDK's; callers that treat such a run as legacy pass `SPEC_VERSION_LEGACY`.
+ *
+ * Planned before merge (spec 9 opt-in, with `SPEC_VERSION_CURRENT` back at
+ * 8): the cap moves to `SPEC_VERSION_MAX_SUPPORTED`. Otherwise a process that
+ * mints spec 8 runs would stamp 8 on the `hook_received`, `run_cancelled` and
+ * wake events it writes to a spec 9 run created while the flag was on.
  */
 export function specVersionForRunWrite(
   runSpecVersion: number | undefined,

@@ -651,6 +651,10 @@ export async function start<TArgs extends unknown[], TResult>(
       assertWorldSupportsRuntimeProtocol(world);
       // A World that mints single-orchestrator runs must provide their fence,
       // so a misconfigured one fails before anything is read or written.
+      // Planned before merge (spec 9 opt-in): once `mintedSpecVersion()`
+      // returns 9 only for a World that passes `inBandFence: true`, this is
+      // reachable only by a World that hard-codes 9, and its error names the
+      // capability and `WORKFLOW_SPEC_VERSION`.
       if (world.specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
         assertWorldSupportsInBandFence(world);
       }

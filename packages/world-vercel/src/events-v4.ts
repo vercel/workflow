@@ -225,6 +225,12 @@ const EVENT_ID_HEADER = 'x-wf-event-id';
  *
  * The by-correlation-id read stays on v4: it is a read, which every version
  * serves for every run.
+ *
+ * Planned before merge (spec 9 opt-in): the route follows each run's spec
+ * version, never the `WORKFLOW_SPEC_VERSION` flag. Writes for runs at spec 9
+ * or above use v5 and every other run's writes use v4; reads use v4 unless
+ * the spec 9 orchestrator asks for the v5 snapshot. Default users' event
+ * traffic then stays on the routes earlier releases use.
  */
 export const EVENTS_API_VERSION = 'v5';
 const MAX_EVENTS_HEADER = 'x-wf-max-events';

@@ -119,7 +119,7 @@ During that week the app upgrades to a World that declares spec 9. When the slee
 
 ### Choosing the spec for new runs
 
-`mintedSpecVersion()` returns the current version (9), or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) is set. First-party Worlds call it when they are created, so the variable also works as a kill switch: setting it makes new runs spec 8 without touching runs already in flight. `WORKFLOW_SEALED_LOG=0` keeps its meaning while `WORKFLOW_SPEC_VERSION` is unset: new runs are spec 6. `WORKFLOW_SPEC_VERSION` accepts 6 to 9 and warns once on any other value.
+`mintedSpecVersion()` returns the current version (9), or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) is set. First-party Worlds call it when they are created, so the variable also works as a kill switch: setting it makes new runs spec 8 without touching runs already in flight. `WORKFLOW_SEALED_LOG=0` keeps its meaning while `WORKFLOW_SPEC_VERSION` is unset: new runs are spec 6. `WORKFLOW_SPEC_VERSION` accepts 6 to 9 and warns once on any other value. Before merge this flips to opt-in, with spec 8 as the default (section 10).
 
 ### Writers outside the orchestrator
 
@@ -557,7 +557,68 @@ After 32 re-runs, a refused acknowledgment used to go to the retry handler, whic
 
 The rule now keeps no per-entity record. Within one batch of events, the host holds each id's first terminal position. Across batches it reads closure from state the VM already has: a step, wait or attribute id the VM has drawn with no resolver left, an outcome buffered for an id not drawn yet, or a user hook whose entry has been released or force-claimed. Only terminals that VM state cannot show (a disposal that reached the log before this VM disposed the hook, an `AbortController` hook, an id outside the ULID scheme) go into a small heap record, dropped once VM state shows them, so it survives a snapshot. Six tests cover a live session and a snapshot restore. Residual: that record still grows by one entry per hook disposed before this VM reached its `dispose()` and never matched later (a hook force-claimed before this VM created it, for example), which I expect to be rare in production but have not measured.
 
-## 10. Before merge
+## 10. Planned before merge: opt-in
+
+Decided, not implemented yet. Once the PR is approved, spec 9 becomes opt-in: spec 8 stays the default for new runs, and one e2e lane runs spec 9. Until then the code on this branch mints spec 9 by default, as the rest of this page describes. The sites that change carry a "Planned before merge (spec 9 opt-in)" comment.
+
+### Principle
+
+One knob, `WORKFLOW_SPEC_VERSION`, gates minting only: the version a World stamps on a new run. Nothing that reads, routes, gates or writes to an existing run reads the flag; every such decision follows the run's stamped version. That is what makes turning the flag off safe for runs already created as spec 9.
+
+| `WORKFLOW_SPEC_VERSION` | World passes `inBandFence: true` | minted |
+|---|---|---|
+| unset | any | 8 (6 when `WORKFLOW_SEALED_LOG=0`) |
+| `9` | yes | 9 |
+| `9` | no | 8, warning once ("World does not declare the in-band fence") |
+| `6` to `8` | any | that value |
+| any other value | any | the default above, warning once |
+
+### Steps
+
+1. **Capability-gated minting.** `mintedSpecVersion(env, { inBandFence })` implements the table. A call with no options can never return 9, so a custom World written to the earlier "Building a World" guide (`specVersion: mintedSpecVersion()`) keeps minting spec 8 runs now and after a later default-on. world-local, world-postgres and world-vercel pass their real capability. Add `SPEC_VERSION_DEFAULT_MINTED` (8) as the documented default.
+2. **`SPEC_VERSION_CURRENT` back to 8**, its previous value and documented meaning. The spec 9 runtime stamps `SPEC_VERSION_SINGLE_ORCHESTRATOR` explicitly (a mechanical change across `runtime/spec9/*.ts`, world-sim and tests that use `SPEC_VERSION_CURRENT` to mean 9). The smaller alternative, keeping `CURRENT = 9` and changing only minting, leaves a World that pinned `SPEC_VERSION_CURRENT` throwing on upgrade and the constant's docstring false.
+3. **`specVersionForRunWrite` caps at `SPEC_VERSION_MAX_SUPPORTED`**, not `SPEC_VERSION_CURRENT`. Load-bearing: without it, a flag-off process stamps 8 on the `hook_received`, `run_cancelled` and wake events it writes to a spec 9 run.
+4. **`start()` keeps the fence assertion**, now reachable only by a World that hard-codes 9, with an error naming `capabilities.inBandFence` and `WORKFLOW_SPEC_VERSION`. Cross-deployment `start()` already stamps `min(target, caller)`, so the docs say to set the variable on every deployment and process that calls `start()`, not only on the target.
+5. **Events API routing follows the run (1a, option B).** On world-vercel, writes for runs at spec 9 or above use v5 of the events API and every other run's writes use v4; reads use v4 unless the spec 9 orchestrator asks for the v5 snapshot. The route never reads the flag. "Opt-in" then means a default user's runs behave as on `main`, wire included. Cost: two client routes stay maintained until default-on, and one more conditional per events call. The 404-to-`HookNotFoundError` narrowing already landed (`80972c8d9c`).
+6. **Rollback floor.** Rolling back below this release is not safe for runs created as spec 9: an older SDK cannot write to them. Documented next to the env var.
+7. **Wording.** The changeset and docs describe spec 9 as opt-in (`.changeset/single-orchestrator-runtime.md`, `building-a-world.mdx`, `upgrading-to-v5.mdx`, `runtime-tuning.mdx`, the World migration skill).
+8. **A dedicated spec 9 e2e lane (1b).** A new job `e2e-vercel-spec9` (nextjs-turbopack), cloned from `e2e-vercel-ws-transport`, the existing pattern for a second deployment with its own env:
+   - `WORKFLOW_SPEC_VERSION=9` in the deploy env **and** in the "Run E2E Tests" step env. The test runner's own World caps a cross-deployment start at `min(target, caller)`, so with only the deploy env set the lane silently tests spec 8.
+   - One assertion that a run created in the lane has `specVersion === 9`, so the lane fails loudly if the variable stops propagating.
+   - Added to `summary.needs` and `e2e-required-check.needs`.
+   - Optional: a world-postgres cell with the flag on, since several findings are postgres-specific. If it runs through turbo, `WORKFLOW_SPEC_VERSION` may need turbo pass-through; not verified.
+   - The `.github/workflows` edit needs a token with the `workflow` scope.
+
+### Runs already created as spec 9 when the flag is turned off
+
+Assuming the deployment that turns it off runs this release or newer:
+
+| Path | Behaviour |
+|---|---|
+| Orchestrator deliveries | Spec 9 orchestrator: routing uses the run's stamp, or `runs.get`. Skew protection keeps the run on its creating deployment anyway. |
+| Hook resumes and webhooks from the flag-off deployment | Work: `hook_received` is stamped with the run's spec (needs step 3), and the wake goes to the run's deployment with its spec version. |
+| `cancel()` | Works: stamped via `specVersionForRunWrite(run.specVersion)`. |
+| `wakeUp()` | Works, best-effort as for any spec 9 run. |
+| world-local and world-postgres gate | Serialized: the gate reads the message stamp, and recovery messages are stamped (`dd5037fef7`). |
+| Rollback below this release | Not safe (step 6). |
+
+### Files touched by the flip
+
+- `packages/world/src/spec-version.ts`, `index.ts`, `recovery.ts`, with `recovery.test.ts` and the spec-version tests
+- `packages/world-local/src/index.ts`, with the spec 9 rows of `core/src/runtime/world-local-restart-recovery.test.ts`
+- `packages/world-postgres/src/index.ts`, `queue.ts`, README, with `test/queue-http.test.ts`
+- `packages/world-vercel/src/index.ts`, `events.ts`, `events-v4.ts`, `utils.ts` (comment)
+- `packages/core/src/runtime/start.ts`, `world-compatibility.ts` (error message and comment), `run-spec-version.ts`, `helpers.ts`, `resume-hook.ts`, `hook-wake.ts`, `run-spec-routing.ts`, `spec9/*.ts` (the constant rename), and a new test in `start.test.ts` for a World written to the earlier guide
+- `packages/world-sim/src/queue.ts`, `scenario.ts`, `store.ts`, and the fenced `workbench/sim-world/scenarios/*`
+- `packages/world-testing`: a queue handoff conformance case
+- Docs: `runtime-tuning.mdx`, `building-a-world.mdx`, `upgrading-to-v5.mdx`, `single-orchestrator-diagrams/spec-routing.mdx`, this page, `skills/migrating-world-v4-to-v5/SKILL.md`
+- `.changeset/single-orchestrator-runtime.md`
+- `.github/scripts/vercel-e2e-matrix.js` (and its test), `.github/workflows/tests.yml`
+- The PR description's "Known gaps"
+
+What the flip does not change: it reduces exposure, not correctness. The liveness and semantics items in section 12 still apply to opted-in runs and to the spec 9 lane.
+
+## 11. Before merge
 
 - Remove the temporary `[diag]` warn logs in `packages/core/src/runtime/spec9/delivery.ts`.
 - Keep the Vercel e2e lanes green on the final head. CI on `c9446d4c09` passed every check, including E2E Required Check and the nest lanes, which `d617404712` fixed by pinning the nest workbench to Node 24.
