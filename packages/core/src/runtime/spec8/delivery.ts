@@ -79,6 +79,7 @@ import {
   getMaxInlineDurationMs,
   getRetentionDecision,
   getWorkflowSetupErrorCode,
+  handOffToRunOrchestrator,
   hasRecordedTerminalRunEvent,
   type Orchestrator,
   type ResolvedWorkflowCode,
@@ -1480,6 +1481,19 @@ export async function runSpec8Delivery(
           );
           return;
         }
+        // A single-orchestrator run reached here on a wrong routing
+        // hint: hand the message to its orchestrator.
+        if (
+          await handOffToRunOrchestrator({
+            world,
+            message: delivery.message,
+            metadata,
+            run: result.run,
+            singleOrchestrator: false,
+          })
+        ) {
+          return;
+        }
         workflowRun = result.run;
         startWorkflowCompile(workflowRun);
         maxEventsLimit = clampMaxEvents(result.maxEvents);
@@ -1710,6 +1724,19 @@ export async function runSpec8Delivery(
           throw setupError;
         }
         const result = await replayLoad;
+        // A single-orchestrator run reached here on a wrong routing
+        // hint: hand the message to its orchestrator.
+        if (
+          await handOffToRunOrchestrator({
+            world,
+            message: delivery.message,
+            metadata,
+            run: result.run,
+            singleOrchestrator: false,
+          })
+        ) {
+          return;
+        }
         workflowRun = result.run;
         maxEventsLimit = clampMaxEvents(result.maxEvents);
         // Anchors RSFS, see the declaration above.

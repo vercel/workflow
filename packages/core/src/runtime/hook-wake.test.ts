@@ -1,5 +1,6 @@
 import {
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   type World,
 } from '@workflow/world';
@@ -66,6 +67,23 @@ describe('publishForceClaimVictimWake', () => {
     // An older run replays in full on every delivery, so the claimer's
     // republishes collapse into one wake.
     expect(options).toMatchObject({
+      idempotencyKey: 'hook-force-claim-hook_claimer',
+    });
+  });
+
+  it("leaves the routing hint off when the victim's version is unknown", async () => {
+    const queue = vi.fn().mockResolvedValue(undefined);
+    const { runSpecVersion: _unknown, ...claimedFrom } = hook.claimedFrom;
+    await publishForceClaimVictimWake(worldWithQueue(queue), 'wrun_claimer', {
+      ...hook,
+      claimedFrom,
+    });
+    const [, message, options] = queue.mock.calls[0];
+    // Routing reads the run instead of trusting a guessed version.
+    expect(message).toEqual({ runId: 'wrun_victim' });
+    // The transport still takes the legacy format every deployment reads.
+    expect(options).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
       idempotencyKey: 'hook-force-claim-hook_claimer',
     });
   });

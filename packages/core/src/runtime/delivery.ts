@@ -25,6 +25,7 @@ import {
   type CreateEventRequest,
   type Event,
   type resolveQueueNamespace,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
@@ -51,11 +52,12 @@ import {
   dynamicWorkflowName,
   readDynamicWorkflowMetadata,
 } from './dynamic-workflow.js';
-import { memoizeEncryptionKey } from './helpers.js';
+import { memoizeEncryptionKey, queueMessage } from './helpers.js';
 import type { RunInputActivity } from './invocations.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
+import { rememberRunSpecVersion } from './run-spec-routing.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 
 type QueueHandler = Parameters<Queue['createQueueHandler']>[1];
@@ -105,6 +107,58 @@ export interface WorkflowDelivery {
    * reads the run's spec off the payload never sees an unstamped one.
    */
   readonly runSpecVersion: number;
+}
+
+/**
+ * Whether this delivery reached the orchestrator of another spec than its
+ * run's, by the run row the orchestrator loaded, and if so hands it on.
+ *
+ * Routing trusts a message's `runSpecVersion` hint (see `resolveRunSpec`),
+ * so a wrong hint can deliver a run's message to the other orchestrator. The
+ * row is authoritative: this records it for the process, so later messages of
+ * the run route by it, and sends the message again with the run's version as
+ * its hint, which the next delivery routes to the right orchestrator. The
+ * caller acknowledges its message without writing anything else.
+ *
+ * A first delivery (`runInput`) is never handed on: its version is the one
+ * `start()` stamped the run with. Nor is a delivery whose run row records no
+ * version.
+ */
+export async function handOffToRunOrchestrator(params: {
+  world: World;
+  message: WorkflowInvokePayload;
+  metadata: DeliveryMetadata;
+  run: WorkflowRun;
+  /** Whether the delivering orchestrator is the single orchestrator. */
+  singleOrchestrator: boolean;
+}): Promise<boolean> {
+  const { world, message, metadata, run, singleOrchestrator } = params;
+  // A row that records no version proves nothing about the run's
+  // orchestrator, so the routing decision stands.
+  if (message.runInput || typeof run.specVersion !== 'number') return false;
+  const runSpecVersion = run.specVersion;
+  if (
+    runSpecVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR ===
+    singleOrchestrator
+  ) {
+    return false;
+  }
+  rememberRunSpecVersion(run.runId, runSpecVersion);
+  runtimeLogger.warn(
+    "Delivery reached the orchestrator of another spec version than its run's; handing it on",
+    {
+      workflowRunId: run.runId,
+      runSpecVersion,
+      messageRunSpecVersion: message.runSpecVersion,
+    }
+  );
+  await queueMessage(
+    world,
+    metadata.queueName as Parameters<Queue['queue']>[0],
+    { ...message, runSpecVersion },
+    { deploymentId: run.deploymentId, specVersion: runSpecVersion }
+  );
+  return true;
 }
 
 /** What the shared entrypoint needs from the orchestrator of a run's spec. */

@@ -94,6 +94,7 @@ import {
   getMaxInlineDurationMs,
   getRetentionDecision,
   getWorkflowSetupErrorCode,
+  handOffToRunOrchestrator,
   hasRecordedTerminalRunEvent,
   type Orchestrator,
   type ResolvedWorkflowCode,
@@ -1407,6 +1408,20 @@ async function runDelivery(
           workflowRunId: runId,
           status: run.status,
         });
+        return undefined;
+      }
+      // A run of an earlier spec reached here on a wrong routing hint:
+      // hand the message to its orchestrator before writing anything.
+      if (
+        run &&
+        (await handOffToRunOrchestrator({
+          world,
+          message: delivery.message,
+          metadata,
+          run,
+          singleOrchestrator: true,
+        }))
+      ) {
         return undefined;
       }
       assert(log, 'The event log is loaded before setup');

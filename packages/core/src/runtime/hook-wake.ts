@@ -138,7 +138,12 @@ export async function publishForceClaimVictimWake(
           getWorkflowQueueName(from.workflowName as string),
           {
             runId: from.runId,
-            runSpecVersion: from.runSpecVersion ?? SPEC_VERSION_LEGACY,
+            // Left off when the victim's version is unknown, so routing
+            // reads the run instead of trusting a guess; the transport
+            // below still takes the legacy format every deployment reads.
+            ...(from.runSpecVersion !== undefined && {
+              runSpecVersion: from.runSpecVersion,
+            }),
           } satisfies WorkflowInvokePayload,
           {
             ...(from.deploymentId !== undefined && {

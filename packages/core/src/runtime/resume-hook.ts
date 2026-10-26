@@ -853,6 +853,10 @@ async function resumeHookAttempt<T = any>(
     }
 
     const queueName = getWorkflowQueueName(resumeContext.workflowName);
+    // `specVersion` picks the queue transport, so an unknown version takes
+    // the legacy one every deployment reads. The routing hint on the payload
+    // is left off instead: a guessed version would route the wake to the
+    // wrong orchestrator, and without one the runtime reads the run.
     const queueOptions = {
       deploymentId: resumeContext.deploymentId,
       specVersion: resumeContext.runSpecVersion ?? SPEC_VERSION_LEGACY,
@@ -968,7 +972,9 @@ async function resumeHookAttempt<T = any>(
           queueName,
           {
             runId: hook.runId,
-            runSpecVersion: queueOptions.specVersion,
+            ...(resumeContext.runSpecVersion !== undefined && {
+              runSpecVersion: resumeContext.runSpecVersion,
+            }),
             traceCarrier: resumeContext.traceCarrier ?? undefined,
             hookResumeTiming: {
               resumeRequestedAtMs,
