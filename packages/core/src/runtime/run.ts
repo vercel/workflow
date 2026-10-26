@@ -294,6 +294,9 @@ export class Run<TResult> {
    * @param options - Optional settings to target specific sleep calls by correlation ID.
    *   If not provided, all pending sleep calls will be interrupted.
    * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
+   *   On a single-orchestrator run it is the number of sleep calls the run's
+   *   orchestrator was asked to complete, which is best-effort while an
+   *   orchestrator invocation of the run is live (see `wakeUpRun`).
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
     'use step';

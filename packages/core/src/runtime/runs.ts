@@ -46,7 +46,12 @@ export interface RecreateRunOptions {
 }
 
 export interface StopSleepResult {
-  /** Number of pending sleeps that were stopped */
+  /**
+   * Number of pending sleeps the call stopped. On a single-orchestrator run
+   * (spec version 9 and later) it is the number the call asked the run's
+   * orchestrator to complete, which may not complete early (see
+   * {@link wakeUpRun}).
+   */
   stoppedCount: number;
 }
 
@@ -458,6 +463,11 @@ function rememberWakeUp(
  * `wait_completed` lands shortly after. That is best-effort: a queue that
  * coalesces the run's orchestrator messages into a delivery already running
  * (world-vercel) drops the names, and the waits then run their full length.
+ * A delivery is running not only while it has work: after a pass with
+ * nothing left to run it stays live while the run waits on an open hook or
+ * a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`), so a wake sent just
+ * after a run was active can be dropped too. `stoppedCount` then still
+ * counts the waits it asked to complete.
  * A queue that holds the message until the running delivery ends (the Local
  * and Postgres Worlds) delivers it after that delivery. Older runs get
  * `wait_completed` written here.
@@ -510,8 +520,9 @@ export async function wakeUpRun(
     // message instead of writing `wait_completed` beside it. The names live
     // only on that message, and it is keyed like every orchestrator message:
     // coalesced into a delivery that is already running, which re-reads only
-    // the log, the names are lost. `stoppedCount` counts the waits it asked
-    // to complete.
+    // the log, the names are lost, including while that delivery lingers
+    // after its last pass. `stoppedCount` counts the waits it asked to
+    // complete, not completions.
     if ((run.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
       const correlationIds = pendingWaits.flatMap((event) =>
         event.correlationId ? [event.correlationId] : []
