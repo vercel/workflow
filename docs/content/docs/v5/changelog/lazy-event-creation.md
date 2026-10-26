@@ -25,7 +25,7 @@ Steps that are *queued* (not run inline) keep their eager `step_created` and are
 
 - `handleSuspension` selects exactly one step to defer: the first uncreated step (`stepItems.find(item => stepsNeedingCreation.has(...))`), which matches the inline candidate the caller would have picked.
 - For that step it **skips** the `step_created` write and instead returns it as `lazyInlineStep = { correlationId, stepName, dehydratedInput }`. It is **not** added to `createdStepCorrelationIds` because ownership is no longer decided here.
-- A `lazyInlineStep` is designated only when there is no `hook.getConflict()` awaiter (`hasAwaitedHookCreation === false`). With an awaiter present nothing runs inline, so nothing is deferred.
+- With a `hook.getConflict()` awaiter present, the deferred step is held until the awaiter settles; see [`hook.getConflict()` awaiter](#hookgetconflict-awaiter).
 
 ### `executeStep`
 
@@ -75,7 +75,9 @@ This is a small behavioral improvement: previously the eager `step_created` left
 
 ### `hook.getConflict()` awaiter
 
-When a `hook.getConflict()` awaiter is present, no `lazyInlineStep` is designated, nothing runs inline, every step gets its eager `step_created` and is queued, and the handler re-invokes immediately so replay resolves the awaiter. This is identical to the pre-change behavior. The deferral never serializes the awaiter's parallel continuation behind an inline step.
+Steps started beside an awaited `hook.getConflict()` are deferred like any other inline candidate. The invocation commits the hook, settles the awaiter, and runs those steps inline on the pass after it, so they start after the registration is recorded and need no queue round trip. The awaiter's continuation is never serialized behind an inline step. Steps past `WORKFLOW_MAX_INLINE_STEPS` keep their eager `step_created` and are queued alongside the hook. See [`createHook()`](/docs/api-reference/workflow/create-hook#registering-a-hook-before-a-step-uses-it).
+
+Originally, an awaiter disabled the deferral: every step got its eager `step_created` and was queued, and the handler re-invoked so replay could resolve the awaiter.
 
 ## Rollout and compatibility
 
