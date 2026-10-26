@@ -10,6 +10,7 @@ import {
   type Event,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +43,7 @@ import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
   cancelRun,
   cancelRuns,
+  pendingWakeUpWaits,
   recreateRunFromExisting,
   reenqueueRun,
   wakeUpRun,
@@ -259,6 +261,52 @@ describe('writes to a run started by a newer SDK', () => {
     expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
       specVersion: SPEC_VERSION_LEGACY,
     });
+  });
+});
+
+describe('wakeUpRun pending-wake marks', () => {
+  const openWait = (runId: string, correlationId: string): Event =>
+    ({
+      eventId: `evnt_${correlationId}`,
+      runId,
+      eventType: 'wait_created',
+      correlationId,
+      eventData: { resumeAt: new Date(Date.now() + 3_600_000) },
+      createdAt: new Date(),
+    }) as Event;
+
+  function singleOrchestratorWorld(runId: string, events: Event[]) {
+    const world = createMockWorld({
+      run: { runId, specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+      events,
+    });
+    return world;
+  }
+
+  it('leaves a sleep open to waitForSleep after a wake whose publish failed', async () => {
+    const runId = 'wrun_wake_publish_failed';
+    const world = singleOrchestratorWorld(runId, [openWait(runId, 'wait_a')]);
+    vi.mocked(world.queue).mockRejectedValueOnce(new Error('queue down'));
+
+    await expect(wakeUpRun(world, runId)).rejects.toThrow('queue down');
+
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(pendingWakeUpWaits(runId).has('wait_a')).toBe(false);
+  });
+
+  it('keeps the mark of an earlier published wake when a later one fails', async () => {
+    const runId = 'wrun_wake_earlier_mark';
+    const world = singleOrchestratorWorld(runId, [
+      openWait(runId, 'wait_a'),
+      openWait(runId, 'wait_b'),
+    ]);
+    await wakeUpRun(world, runId, { correlationIds: ['wait_a'] });
+    expect(pendingWakeUpWaits(runId).has('wait_a')).toBe(true);
+
+    vi.mocked(world.queue).mockRejectedValueOnce(new Error('queue down'));
+    await expect(wakeUpRun(world, runId)).rejects.toThrow('queue down');
+
+    expect([...pendingWakeUpWaits(runId)]).toEqual(['wait_a']);
   });
 });
 

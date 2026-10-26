@@ -408,14 +408,32 @@ const wakeUps = globalSingleton(
  * orchestrator to complete. On a single-orchestrator run `wakeUp` returns
  * before the orchestrator writes their `wait_completed`; a caller looking for
  * the run's next pending sleep skips these.
+ *
+ * A wait stays here only once its wake message was published. It also stays
+ * when a queue that coalesces the run's orchestrator messages merged that
+ * message into a delivery that was already running, which drops its names
+ * (see {@link wakeUpRun}): the wait then runs its full length while it is
+ * listed here, and a caller skipping it misses a sleep that is still open.
+ * world-local and world-postgres deliver the message after the running
+ * delivery, so this does not happen there.
  */
 export function pendingWakeUpWaits(runId: string): ReadonlySet<string> {
   return wakeUps.byRun.get(runId) ?? new Set();
 }
 
-function rememberWakeUp(runId: string, correlationIds: readonly string[]) {
+/**
+ * Lists `correlationIds` as being woken, before their wake is published so a
+ * caller reading meanwhile already skips them. Returns the rollback for a
+ * publish that failed: it forgets the ids this call added, and keeps any an
+ * earlier wake listed.
+ */
+function rememberWakeUp(
+  runId: string,
+  correlationIds: readonly string[]
+): () => void {
   const waits = wakeUps.byRun.get(runId) ?? new Set<string>();
-  for (const id of correlationIds) waits.add(id);
+  const added = correlationIds.filter((id) => !waits.has(id));
+  for (const id of added) waits.add(id);
   wakeUps.byRun.delete(runId);
   wakeUps.byRun.set(runId, waits);
   while (wakeUps.byRun.size > MAX_TRACKED_WAKE_UP_RUNS) {
@@ -423,6 +441,12 @@ function rememberWakeUp(runId: string, correlationIds: readonly string[]) {
     if (oldest === undefined) break;
     wakeUps.byRun.delete(oldest);
   }
+  return () => {
+    const current = wakeUps.byRun.get(runId);
+    if (!current) return;
+    for (const id of added) current.delete(id);
+    if (current.size === 0) wakeUps.byRun.delete(runId);
+  };
 }
 
 /**
@@ -493,22 +517,30 @@ export async function wakeUpRun(
         event.correlationId ? [event.correlationId] : []
       );
       if (correlationIds.length > 0) {
-        rememberWakeUp(runId, correlationIds);
-        await world.queue(
-          getWorkflowQueueName(run.workflowName, options?.namespace),
-          {
-            runId,
-            runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
-            completeWaits: correlationIds,
-          },
-          {
-            deploymentId: run.deploymentId,
-            specVersion: specVersionForRunWrite(
-              run.specVersion,
-              SPEC_VERSION_LEGACY
-            ),
-          }
-        );
+        const forget = rememberWakeUp(runId, correlationIds);
+        try {
+          await world.queue(
+            getWorkflowQueueName(run.workflowName, options?.namespace),
+            {
+              runId,
+              runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+              completeWaits: correlationIds,
+            },
+            {
+              deploymentId: run.deploymentId,
+              specVersion: specVersionForRunWrite(
+                run.specVersion,
+                SPEC_VERSION_LEGACY
+              ),
+            }
+          );
+        } catch (err) {
+          // Nothing was published, or the outcome is unknown: either way a
+          // later `waitForSleep` must still see the sleep as open. Waking it
+          // again is harmless.
+          forget();
+          throw err;
+        }
       }
       return { stoppedCount: correlationIds.length };
     }
