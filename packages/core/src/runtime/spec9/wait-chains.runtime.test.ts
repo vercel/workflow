@@ -220,3 +220,9 @@ describe.each([
     expect(world.held).toEqual([]);
   });
 });
+
+// Known gap, see `waitTimersToArm`: only a redelivery of the creating message
+// re-arms a chain's timer.
+it.todo(
+  'arms the next timer of a chain whose wait_completed committed before the delivery failed'
+);

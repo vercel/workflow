@@ -1060,6 +1060,12 @@ async function runDelivery(
         // first: no other delivery is their creator, so none would send
         // them. A crash before they do redelivers this message, whose
         // creator rules re-send them.
+        //
+        // Not covered: when this delivery outlived its lease and a second
+        // delivery of the same message is running, the acknowledgment below
+        // lands while that delivery may still owe a step or timer send of
+        // its own. What the queue does with the acknowledgment of a lapsed
+        // lease is not specified by the `Queue` contract and not verified.
         await sendUnsentMessages?.();
         // Then one plain orchestrator wake, because a refusal does not prove
         // that another orchestrator is running: the World also refuses a

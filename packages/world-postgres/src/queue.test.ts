@@ -1416,3 +1416,8 @@ async function getUnusedLoopbackPort(): Promise<number> {
 
   return address.port;
 }
+
+// Known gap, see `createTaskHandler`: a reschedule starts `attempt` over.
+it.todo(
+  'keeps attempt across a { timeoutSeconds: 0 } handoff of a spec 9 orchestrator message'
+);

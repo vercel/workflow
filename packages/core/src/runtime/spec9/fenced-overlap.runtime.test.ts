@@ -347,3 +347,9 @@ describe.each([
     ]);
   });
 });
+
+// Known gap, see the supersede path in `delivery.ts`: the `Queue` contract
+// does not say what an acknowledgment of a lapsed lease does.
+it.todo(
+  'acknowledging a fence-refused delivery whose lease lapsed does not drop a send the overlapping delivery of the same message still owes'
+);

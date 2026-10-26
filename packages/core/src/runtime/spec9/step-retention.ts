@@ -21,6 +21,12 @@ export const STEP_RETRY_EXPIRY_SLACK_SECONDS = 30 * 60;
  * `RetryableError` names its own `retryAfter`), so a step that may retry gets
  * the queue's maximum, and a step that never retries gets one day.
  * {@link retryOutlivesMessage} covers a span that exceeds even the maximum.
+ *
+ * A step's message is sent with an idempotency key, and a queue's dedupe
+ * window can be shorter than this retention (`QueueOptions.idempotencyKey`).
+ * An inline step whose retry moved to its own message with a `retryAfter`
+ * past that window can have the message sent a second time after the window
+ * closed, and two messages then own one step's body. Not verified.
  */
 export function stepMessageRetentionSeconds(maxRetries: number): number {
   return maxRetries > 0 ? MAX_STEP_MESSAGE_RETENTION_SECONDS : DAY_SECONDS;

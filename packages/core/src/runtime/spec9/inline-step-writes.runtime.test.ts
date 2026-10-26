@@ -815,3 +815,9 @@ describe.each([
     }
   );
 });
+
+// Known gap, see `stepMessageRetentionSeconds`: a retry message can outlive
+// its queue's dedupe window.
+it.todo(
+  "runs an inline step's background retry once when its retryAfter outlives the queue's dedupe window"
+);

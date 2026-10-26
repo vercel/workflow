@@ -172,6 +172,11 @@ export function schedulesWaitTimer(params: {
  * ({@link schedulesWaitTimer}): the earliest of each chain, and the wait a
  * timer delivery is for (`timerFor`). A wait not in the log yet is in the
  * chain of `messageId`.
+ *
+ * Not covered: a delivery that commits a chain's `wait_completed` and fails
+ * before it arms the chain's next timer leaves that chain with no timer,
+ * unless it was the timer's own delivery. A redelivery of the creating
+ * message would arm it; nothing else does.
  */
 export function waitTimersToArm<
   W extends { correlationId: string; resumeAtMs: number; event?: Event },
