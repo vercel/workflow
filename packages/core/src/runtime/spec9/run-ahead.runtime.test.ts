@@ -204,6 +204,16 @@ const sizedFanOut = `const inc = ${step};
     return lengths.length + n;
   }${registerWorkflow()}`;
 
+// A far-future sleep, then a fan-out of inline steps after a first step.
+const fanOutBesideSleep = `const inc = ${step};
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow(width) {
+    const timer = sleep("1h");
+    const n = await inc(0);
+    const all = await Promise.all(Array.from({ length: width }, () => inc(n)));
+    return all.length;
+  }${registerWorkflow()}`;
+
 const STEPS = 6;
 
 /**
@@ -687,6 +697,37 @@ describe('run-ahead against an append-only World (node engine)', () => {
         )
       ).toHaveLength(1);
     }
+  });
+
+  it.each([
+    1, 2,
+  ])('runs at most WORKFLOW_RUN_AHEAD_DEPTH (%i) bodies twice when a hazard stops a fan-out', async (runAheadDepth) => {
+    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', String(runAheadDepth));
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', String(MAX_MAX_INLINE_STEPS));
+    const width = MAX_MAX_INLINE_STEPS - runAheadDepth + 1;
+    let injected = false;
+    const { world, runId, start } = await run(fanOutBesideSleep, [width], {
+      async beforeCreate(data) {
+        if (data.eventType !== 'step_completed' || injected) return;
+        injected = true;
+        // The first outcome is held while another writer completes the
+        // far-future sleep: a hazard below whatever ran ahead of it.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        world.appendOutOfBand({
+          eventType: 'wait_completed',
+          runId,
+          correlationId: eventsOf(world, 'wait_created')[0]?.correlationId,
+          eventData: {},
+        } as unknown as Partial<Event>);
+      },
+    });
+    await world.deliver(start);
+    await world.runUntilIdle();
+    expect(injected).toBe(true);
+    expect(await runResult(world)).toBe(width);
+    const steps = width + 1;
+    expect(eventsOf(world, 'step_completed')).toHaveLength(steps);
+    expect(bodiesStarted).toBeLessThanOrEqual(steps + runAheadDepth);
   });
 
   it('drains while the workflow waits on a hook, and runs ahead again once it resolved', async () => {

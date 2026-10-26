@@ -3198,7 +3198,16 @@ async function runDelivery(
           (sum, event) => sum + creationBatchBytes(event),
           0
         ) <= MAX_IN_BAND_CREATION_BATCH_BYTES &&
-        withinRunAheadDepth();
+        // Every body of the batch starts before it commits, and
+        // a stop that refuses it runs each of them again, so its
+        // steps count against the depth. The first is the step a
+        // sequential loop runs ahead with, which the depth has
+        // always allowed beside its unconfirmed outcomes; the
+        // rest of a fan-out counts, so one stop runs at most
+        // `WORKFLOW_RUN_AHEAD_DEPTH` bodies again.
+        withinRunAheadDepth(
+          plan.steps.slice(1).map((step) => step.correlationId)
+        );
       if (speculativeCreation && boundaryRunAhead) {
         const starts = writeCreationAhead(plan.events, boundaryRunAhead);
         created = {
