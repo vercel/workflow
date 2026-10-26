@@ -909,25 +909,20 @@ async function inlineClaimRejectionScenario() {
 describe('precondition guard through the real replay loop', () => {
   let originalRestartBound: string | undefined;
   let originalInlineCap: string | undefined;
-  let originalAdvanceOnlyLimit: string | undefined;
 
   beforeEach(() => {
     originalRestartBound =
       process.env.WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS;
     originalInlineCap = process.env.WORKFLOW_MAX_INLINE_STEPS;
-    originalAdvanceOnlyLimit =
-      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING;
     // The inline-claim scenario needs a whole two-step batch to run inline,
     // which the default cap allows.
     delete process.env.WORKFLOW_MAX_INLINE_STEPS;
-    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING = '0';
   });
 
   afterEach(() => {
     for (const [name, value] of [
       ['WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS', originalRestartBound],
       ['WORKFLOW_MAX_INLINE_STEPS', originalInlineCap],
-      ['WORKFLOW_ADVANCE_ONLY_REPLAY_MAX_PENDING', originalAdvanceOnlyLimit],
     ] as const) {
       if (value !== undefined) {
         process.env[name] = value;

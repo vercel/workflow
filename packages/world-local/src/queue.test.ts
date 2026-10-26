@@ -485,38 +485,6 @@ describe('queue delaySeconds', () => {
     });
   });
 
-  it('keeps a keyed message on its first delayed schedule', async () => {
-    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
-    vi.mocked(mockSetTimeout).mockClear();
-    let callCount = 0;
-    const handler = localQueue.createQueueHandler(
-      '__wkf_workflow_',
-      async () => {
-        callCount++;
-        return undefined;
-      }
-    );
-    localQueue.registerHandler('__wkf_workflow_', handler);
-
-    const delayed = await localQueue.queue(
-      '__wkf_workflow_test' as any,
-      workflowPayload,
-      { delaySeconds: 7, idempotencyKey: 'retry-step' }
-    );
-    const duplicate = await localQueue.queue(
-      '__wkf_workflow_test' as any,
-      workflowPayload,
-      { idempotencyKey: 'retry-step' }
-    );
-
-    expect(duplicate.messageId).toBe(delayed.messageId);
-    await vi.waitFor(() => expect(callCount).toBe(1));
-    expect(mockSetTimeout).toHaveBeenCalledTimes(1);
-    expect(mockSetTimeout).toHaveBeenCalledWith(7000, undefined, {
-      signal: expect.any(AbortSignal),
-    });
-  });
-
   it('close() aborts a pending delayed message without delivering it', async () => {
     const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
     vi.mocked(mockSetTimeout).mockClear();

@@ -1438,11 +1438,9 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
   // `getMaxInlineSteps()` both would run inline and nothing would be queued.)
   beforeEach(() => {
     process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
-    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
   });
   afterEach(() => {
     delete process.env.WORKFLOW_MAX_INLINE_STEPS;
-    delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
     setWorld(undefined);
     vi.clearAllMocks();
     waitUntilPromises.length = 0;
@@ -1981,15 +1979,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
 });
 
 describe('workflowEntrypoint queued step consumption', () => {
-  // These tests cover the queued step's prologue and nothing after it. With
-  // advance-only replay on, a step that settles beside a pending sibling
-  // replays advance-only, which this harness's log (no `run_created`) cannot
-  // support; that path has its own tests in advance-only-replay.test.ts.
-  beforeEach(() => {
-    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = '0';
-  });
   afterEach(() => {
-    delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
     setWorld(undefined);
     vi.clearAllMocks();
   });
@@ -1999,9 +1989,8 @@ describe('workflowEntrypoint queued step consumption', () => {
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
   // The workflow body is never replayed by these tests: the seeded log keeps
-  // an unrelated step pending, so the background-step path (with eager
-  // branch replay off, above) returns right after executing the message's
-  // step.
+  // an unrelated step pending, so the background-step path returns right
+  // after executing the message's step.
   const queuedStepWorkflow = `const queuedAdd = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("queuedAdd");
     async function workflow() {
       return await queuedAdd(2, 3);
@@ -2458,8 +2447,6 @@ describe('workflowEntrypoint fan-out last completer (fetch-free prologue)', () =
 describe('workflowEntrypoint turbo mode', () => {
   const ORIG_TURBO = process.env.WORKFLOW_TURBO;
   const ORIG_OPT = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
-  const ORIG_ADVANCE_ONLY = process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
-  const ORIG_MAX_INLINE = process.env.WORKFLOW_MAX_INLINE_STEPS;
 
   // Default: turbo ON (unset) and the global optimistic flag OFF (unset).
   // Any optimistic behavior observed in these tests therefore comes from
@@ -2476,16 +2463,6 @@ describe('workflowEntrypoint turbo mode', () => {
       delete process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
     } else {
       process.env.WORKFLOW_OPTIMISTIC_INLINE_START = ORIG_OPT;
-    }
-    if (ORIG_ADVANCE_ONLY === undefined) {
-      delete process.env.WORKFLOW_ADVANCE_ONLY_REPLAY;
-    } else {
-      process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = ORIG_ADVANCE_ONLY;
-    }
-    if (ORIG_MAX_INLINE === undefined) {
-      delete process.env.WORKFLOW_MAX_INLINE_STEPS;
-    } else {
-      process.env.WORKFLOW_MAX_INLINE_STEPS = ORIG_MAX_INLINE;
     }
     setWorld(undefined);
     vi.clearAllMocks();
@@ -2507,9 +2484,6 @@ describe('workflowEntrypoint turbo mode', () => {
 
   const oneStepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboStep");
     async function workflow() { return await s(); }${xform('workflow')}`;
-
-  const twoStepWorkflow = `const s = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turboStep");
-    async function workflow() { return await Promise.all([s(), s()]); }${xform('workflow')}`;
 
   // A step raced against a sleep: the suspension creates a wait, which makes
   // turbo exit (no forced optimistic start) for the inline step.
@@ -2541,7 +2515,6 @@ describe('workflowEntrypoint turbo mode', () => {
     attempt: number;
     source: string;
     runStartedGate?: Promise<void>;
-    stepStartedGate?: Promise<void>;
     currentDeploymentId?: string;
     encryptionKeyError?: Error;
   }) {
@@ -2579,7 +2552,6 @@ describe('workflowEntrypoint turbo mode', () => {
       }
       if (data.eventType === 'step_started') {
         order.push('step_started_called');
-        if (opts.stepStartedGate) await opts.stepStartedGate;
         const d = data.eventData as { stepName?: string; input?: unknown };
         if (d?.input !== undefined) {
           rec({
@@ -2696,40 +2668,6 @@ describe('workflowEntrypoint turbo mode', () => {
       (c) => (c[1] as any).eventType === 'run_started'
     );
     expect(runStartedCreates).toHaveLength(1);
-  });
-
-  it.each([
-    ['enabled', '1', false],
-    ['disabled', '0', true],
-  ] as const)('only latches optimistic start for a lazy inline claim beside an external step when advance-only replay is %s', async (_label, feature, bodyRunsBeforeStart) => {
-    process.env.WORKFLOW_ADVANCE_ONLY_REPLAY = feature;
-    process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-
-    const { handlerPromise, order } = await driveTurbo({
-      runId: `wrun_turbo_external_${feature}`,
-      attempt: 1,
-      source: twoStepWorkflow,
-      stepStartedGate: gate,
-    });
-
-    await vi.waitFor(() => expect(order).toContain('step_started_called'), {
-      timeout: 15_000,
-    });
-    if (bodyRunsBeforeStart) {
-      await vi.waitFor(() => expect(order).toContain('body'), {
-        timeout: 15_000,
-      });
-    } else {
-      expect(order).not.toContain('body');
-    }
-
-    release();
-    await handlerPromise;
-    expect(order).toContain('body');
   });
 
   it('handles a speculative key rejection when turbo exits before replay', async () => {

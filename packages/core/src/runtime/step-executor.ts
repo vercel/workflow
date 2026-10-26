@@ -276,18 +276,6 @@ export interface StepExecutorParams {
   authoritativeAttempt?: number;
   /** One-shot recovery telemetry activated by the orchestrator replay. */
   replayRecoveryReporter?: ReplayRecoveryReporter;
-  /**
-   * Called once, as soon as this execution's `step_started` claim has settled
-   * either way: the claim's response came back, or a pre-claimed start
-   * arrived already settled. Under optimistic start that is usually well
-   * before the body finishes. Not called when the executor returns before
-   * sending a claim; a caller waiting on it also waits on the execution.
-   *
-   * The inline loop uses it to tell when every claim in a parallel batch is
-   * durable, the point after which another invocation's replay can no longer
-   * win one of them out from under a body that is already running.
-   */
-  onClaimSettled?: () => void;
 }
 
 /**
@@ -753,14 +741,6 @@ export async function executeStep(
       return mapped;
     };
 
-    // See StepExecutorParams.onClaimSettled.
-    let startSettledReported = false;
-    const reportStartSettled = (): void => {
-      if (startSettledReported) return;
-      startSettledReported = true;
-      params.onClaimSettled?.();
-    };
-
     if (params.preclaimedStart?.owned) {
       // Pre-claimed inline start: the suspension handler's batched fan-out
       // already committed this step's `step_created` + `step_started` pair,
@@ -769,7 +749,6 @@ export async function executeStep(
       // the terminal write below has no in-flight claim to reconcile. The
       // batch timestamps stand in for the claim's: the POST instant anchors
       // RSFS, the response instant is TTR's claim completion (T6).
-      reportStartSettled();
       step = params.preclaimedStart.step;
       stepStartPostSentAtMs = params.preclaimedStart.batchPostSentAtMs;
       stepClaimCompletedAtMs = params.preclaimedStart.claimCompletedAtMs;
@@ -808,14 +787,8 @@ export async function executeStep(
         }
       );
       optimisticStartSettled = startedPromise.then(
-        () => {
-          reportStartSettled();
-          return { ok: true as const };
-        },
-        (err) => {
-          reportStartSettled();
-          return { ok: false as const, err };
-        }
+        () => ({ ok: true as const }),
+        (err) => ({ ok: false as const, err })
       );
       const now = new Date();
       step = {
@@ -884,11 +857,9 @@ export async function executeStep(
           startEventParams
         );
         stepClaimCompletedAtMs = Date.now();
-        reportStartSettled();
 
         step = startResult.step;
       } catch (err) {
-        reportStartSettled();
         const mapped = startErrorToResult(err);
         if (mapped) return mapped;
         throw err;

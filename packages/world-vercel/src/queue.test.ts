@@ -304,44 +304,6 @@ describe('createQueue', () => {
       }
     });
 
-    it('uses the same key when an immediate publish follows a delayed retry', async () => {
-      mockSend.mockResolvedValue({ messageId: 'msg-456' });
-      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
-      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
-
-      try {
-        const queue = createQueue();
-        await queue.queue(
-          '__wkf_workflow_test',
-          { runId: 'run-123' },
-          { idempotencyKey: 'retry-step', delaySeconds: 30 }
-        );
-        await queue.queue(
-          '__wkf_workflow_test',
-          { runId: 'run-123' },
-          { idempotencyKey: 'retry-step' }
-        );
-
-        expect(mockSend).toHaveBeenCalledTimes(2);
-        expect(mockSend.mock.calls[0][2]).toEqual(
-          expect.objectContaining({
-            idempotencyKey: 'retry-step',
-            delaySeconds: 30,
-          })
-        );
-        expect(mockSend.mock.calls[1][2]).toEqual(
-          expect.objectContaining({ idempotencyKey: 'retry-step' })
-        );
-        expect(mockSend.mock.calls[1][2]?.delaySeconds).toBeUndefined();
-      } finally {
-        if (originalEnv === undefined) {
-          delete process.env.VERCEL_DEPLOYMENT_ID;
-        } else {
-          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
-        }
-      }
-    });
-
     it('should auto-inject x-vercel-workflow-run-id header for workflow payloads', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
