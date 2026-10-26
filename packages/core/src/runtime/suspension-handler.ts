@@ -34,7 +34,6 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
-import { frameAbortStreamPayload } from '../serialization/abort-stream.js';
 import {
   GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
   type GuestCodeExecution,
@@ -987,7 +986,7 @@ export async function handleSuspension({
         await world.streams.write(
           runId,
           streamName,
-          frameAbortStreamPayload(abortPayload as Uint8Array)
+          abortPayload as Uint8Array
         );
         await world.streams.close(runId, streamName);
       } catch {

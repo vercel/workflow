@@ -38,7 +38,6 @@ import {
 } from '@workflow/world';
 import { classifyRunError } from '../classify-error.js';
 import { runtimeLogger } from '../logger.js';
-import { frameAbortStreamPayload } from '../serialization/abort-stream.js';
 import {
   deriveRunPayloadKeys,
   encrypt as encryptSerializedData,
@@ -534,11 +533,7 @@ async function dispatchPendingOps(params: {
       if (hook.token.startsWith('abrt_') && abortPayload) {
         const streamName = `strm_${hook.token.slice('abrt_'.length)}_system_abort`;
         try {
-          await world.streams.write(
-            runId,
-            streamName,
-            frameAbortStreamPayload(abortPayload)
-          );
+          await world.streams.write(runId, streamName, abortPayload);
           await world.streams.close(runId, streamName);
         } catch {
           // Best-effort: the hook event provides the durable
