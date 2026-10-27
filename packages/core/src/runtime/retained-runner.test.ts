@@ -213,9 +213,9 @@ it.each([
 });
 
 it('starts the first steps of a wide fan-out before every step is created', async () => {
-  // Above the old 128-input mailbox; below this test process's shared
-  // 256-entry worker cache (each worker is its own invocation in production).
-  const count = 250;
+  // Above the old 128-input mailbox, and more finished attempts than this
+  // test process's worker runs at once (256): finished ones don't count.
+  const count = 300;
   const createdAtFirstBody: number[] = [];
   let fixture!: Awaited<ReturnType<typeof setup>>;
   registerStepFunction('wideWork', async (n) => {

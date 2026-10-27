@@ -122,6 +122,13 @@ type WorkerEntry = {
   outcome?: OwnedStepResult;
   done?: boolean;
 };
+/** Step bodies one process runs at once; beyond this a delivery is refused
+ * (429) and redelivered, ideally to another instance. */
+const WORKER_CAPACITY = 256;
+/** Attempts remembered for duplicate deliveries (running or finished). When
+ * full, the oldest finished ones are forgotten first: a later duplicate of a
+ * forgotten attempt asks its owner, or re-runs and the owner discards it. */
+const RETAINED_ENTRIES = 4096;
 const workers = globalSingleton(
   '@workflow/core//ownedStepWorkers',
   1,
@@ -238,8 +245,13 @@ async function executeOwnedStepUnlogged(
     cache = new Map();
     workers.set(world, cache);
   }
+  // Only running bodies count against capacity: finished attempts are kept for
+  // duplicate deliveries, and counting them refused every new step on a busy
+  // instance until they expired.
+  let active = 0;
   for (const [key, value] of cache)
-    if (!value.work && value.expiresAt < Date.now()) cache.delete(key);
+    if (value.work) active++;
+    else if (value.expiresAt < Date.now()) cache.delete(key);
   const key = `${envelope.runId}:${input.executionId}`;
   const fingerprint = createHash('sha256')
     .update(
@@ -286,10 +298,11 @@ async function executeOwnedStepUnlogged(
   if (entry?.work) return direct ? undefined : entry.work;
   const prior = !!entry;
   if (!entry) {
-    if (cache.size >= 256)
+    if (active >= WORKER_CAPACITY)
       throw new WorkflowWorldError('Step worker capacity exceeded', {
         status: 429,
       });
+    if (cache.size >= RETAINED_ENTRIES) forgetOldest(cache);
     entry = { expiresAt: input.deadline + 60_000, fingerprint };
     cache.set(key, entry);
   }
@@ -497,4 +510,17 @@ async function executeOwnedStepUnlogged(
   } finally {
     current.work = undefined;
   }
+}
+
+/** Make room for one entry: oldest finished attempts first, then any idle one.
+ * Running bodies are never forgotten. */
+function forgetOldest(cache: Map<string, WorkerEntry>) {
+  for (const idle of [
+    (entry: WorkerEntry) => !!entry.done,
+    (entry: WorkerEntry) => !entry.work,
+  ])
+    for (const [key, entry] of cache) {
+      if (cache.size < RETAINED_ENTRIES) return;
+      if (idle(entry)) cache.delete(key);
+    }
 }
