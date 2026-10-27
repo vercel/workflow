@@ -117,6 +117,8 @@ export {
   QueuePrefix,
   RunInputSchema,
   resolveQueueNamespace,
+  SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS,
+  singleOrchestratorContinuationPayload,
   singleOrchestratorRunIdOf,
   ValidQueueName,
   WORKFLOW_FLOW_ROUTE,

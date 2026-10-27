@@ -734,6 +734,98 @@ export function singleOrchestratorRunIdOf(
     : undefined;
 }
 
+/**
+ * What a single-orchestrator continuation message takes from the message it
+ * replaces, field by field of {@link WorkflowInvokePayload} (see
+ * {@link singleOrchestratorContinuationPayload}). Typed as a record of every
+ * payload field, so a new field fails the typecheck until it is classified
+ * here.
+ *
+ * - `'carry'`: copied. The run (`runId`), its identity on step messages
+ *   (`runContext`), the trace link (`traceCarrier`), and what the message is
+ *   a wake for: the wait a timer is for (`waitContinuation`), the waits a
+ *   `run.wakeUp()` names (`completeWaits`), and a legacy hook resume
+ *   (`hookInput`, which the orchestrator writes deduplicated by its
+ *   `resumeId`, so a second copy writes nothing).
+ * - `'stamp'`: `runSpecVersion`, set to the spec version the replaced
+ *   message carried in any of its fields ({@link messageRunSpecVersion}), so
+ *   the continuation is routed and serialized as the run's other messages
+ *   are, even though it drops `runInput`.
+ * - `'drop'`: not copied. `runInput` marks the run's first orchestrator
+ *   message, and with a first delivery count it is what selects the
+ *   runtime's fresh-start path, which assumes a log holding only
+ *   `run_created`; a continuation always continues a progressed run.
+ *   `requestedAt` and `hookResumeTiming` measure the request that sent the
+ *   replaced message. `recovery` asks a delivery to re-send everything a lost
+ *   queue held, which the replaced message's delivery did. `invoke`,
+ *   `requestId` and `input` are a request/response invocation, not a
+ *   continuation. The retry counters (`replayDivergence`,
+ *   `preconditionReinvocations`, `serverErrorRetryCount`,
+ *   `deploymentMismatchRetryCount`) belong to runs below spec 9 or to one
+ *   chain of re-enqueues. The step fields (`stepId` and the rest) are never
+ *   on an orchestrator message.
+ */
+export const SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS = {
+  runId: 'carry',
+  runContext: 'carry',
+  traceCarrier: 'carry',
+  waitContinuation: 'carry',
+  completeWaits: 'carry',
+  hookInput: 'carry',
+  runSpecVersion: 'stamp',
+  runInput: 'drop',
+  requestedAt: 'drop',
+  hookResumeTiming: 'drop',
+  recovery: 'drop',
+  invoke: 'drop',
+  requestId: 'drop',
+  input: 'drop',
+  replayDivergence: 'drop',
+  preconditionReinvocations: 'drop',
+  serverErrorRetryCount: 'drop',
+  deploymentMismatchRetryCount: 'drop',
+  stepId: 'drop',
+  stepName: 'drop',
+  stepAttempt: 'drop',
+  stepCreatedEventId: 'drop',
+  stepCreatedAt: 'drop',
+  stepInput: 'drop',
+} as const satisfies Record<
+  keyof WorkflowInvokePayload,
+  'carry' | 'stamp' | 'drop'
+>;
+
+/**
+ * The payload a World sends when it continues a single-orchestrator run's
+ * orchestrator message on a new message instead of handing it off (as
+ * world-vercel does for a message close to its expiry), or `undefined` when
+ * `payload` is not an orchestrator message of a single-orchestrator run
+ * ({@link singleOrchestratorRunIdOf}), which a World hands off instead.
+ *
+ * Built from an explicit list of fields
+ * ({@link SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS}), never by copying: the
+ * replaced message may be the run's start message, and a copy of its
+ * `runInput` on a message delivered for the first time would take the
+ * runtime's fresh-start path over a log that already holds the run's
+ * progress, and could run completed step bodies again.
+ */
+export function singleOrchestratorContinuationPayload(
+  payload: unknown
+): WorkflowInvokePayload | undefined {
+  if (singleOrchestratorRunIdOf(payload) === undefined) return undefined;
+  const source = payload as Record<string, unknown>;
+  const continuation: Record<string, unknown> = {};
+  for (const [field, rule] of Object.entries(
+    SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS
+  )) {
+    if (rule === 'carry' && source[field] !== undefined) {
+      continuation[field] = source[field];
+    }
+  }
+  continuation.runSpecVersion = messageRunSpecVersion(payload);
+  return continuation as WorkflowInvokePayload;
+}
+
 export interface QueueOptions {
   deploymentId?: string;
   /**

@@ -12,6 +12,8 @@ import {
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
+  SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS,
+  singleOrchestratorContinuationPayload,
   singleOrchestratorRunIdOf,
   ValidQueueName,
   WorkflowInvokePayloadSchema,
@@ -458,6 +460,78 @@ describe('messageRunSpecVersion', () => {
       singleOrchestratorRunIdOf({ runId: 'wrun_a', runSpecVersion: SPEC - 1 })
     ).toBeUndefined();
     expect(singleOrchestratorRunIdOf({ runId: 'wrun_a' })).toBeUndefined();
+  });
+});
+
+describe('singleOrchestratorContinuationPayload', () => {
+  const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
+
+  it('classifies every payload field', () => {
+    expect(Object.keys(SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS).sort()).toEqual(
+      Object.keys(WorkflowInvokePayloadSchema.shape).sort()
+    );
+  });
+
+  it("drops the start message's runInput and keeps its spec stamp", () => {
+    const traceCarrier = { traceparent: '00-abc-def-01' };
+    const continuation = singleOrchestratorContinuationPayload({
+      runId: 'wrun_a',
+      requestedAt: new Date(),
+      traceCarrier,
+      runInput: { specVersion: SPEC, workflowName: 'w' },
+    });
+    expect(continuation).toEqual({
+      runId: 'wrun_a',
+      runSpecVersion: SPEC,
+      traceCarrier,
+    });
+    expect(WorkflowInvokePayloadSchema.parse(continuation)).toEqual(
+      continuation
+    );
+    expect(singleOrchestratorRunIdOf(continuation)).toBe('wrun_a');
+  });
+
+  it('keeps what a wake is for, and drops the rest', () => {
+    const wake = {
+      runId: 'wrun_a',
+      runSpecVersion: SPEC,
+      runContext: { specVersion: SPEC, deploymentId: 'dpl_a' },
+      waitContinuation: { correlationId: 'wait_1', attempt: 2 },
+      completeWaits: ['wait_2'],
+      hookInput: { hookId: 'hook_1', resumeId: 'r_1', token: 't', payload: 1 },
+      recovery: true,
+      hookResumeTiming: { resumedAt: 1 },
+      deploymentMismatchRetryCount: 2,
+      serverErrorRetryCount: 3,
+    };
+    const continuation = singleOrchestratorContinuationPayload(wake);
+    expect(continuation).toEqual({
+      runId: wake.runId,
+      runSpecVersion: SPEC,
+      runContext: wake.runContext,
+      waitContinuation: wake.waitContinuation,
+      completeWaits: wake.completeWaits,
+      hookInput: wake.hookInput,
+    });
+  });
+
+  it('is undefined for step messages and runs below spec 9', () => {
+    expect(
+      singleOrchestratorContinuationPayload({
+        runId: 'wrun_a',
+        stepId: 'step_1',
+        runSpecVersion: SPEC,
+      })
+    ).toBeUndefined();
+    expect(
+      singleOrchestratorContinuationPayload({
+        runId: 'wrun_a',
+        runSpecVersion: SPEC - 1,
+      })
+    ).toBeUndefined();
+    expect(
+      singleOrchestratorContinuationPayload({ runId: 'wrun_a' })
+    ).toBeUndefined();
   });
 });
 

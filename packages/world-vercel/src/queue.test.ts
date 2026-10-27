@@ -1439,6 +1439,75 @@ describe('createQueue', () => {
         }
       });
 
+      it("continues the run's start message on a continuation without its runInput", async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(NOW);
+        const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+        try {
+          const { handler } = captureHandler({ timeoutSeconds: 0 });
+          const traceCarrier = { traceparent: '00-abc-def-01' };
+          // The message `start()` sent: no `runSpecVersion`, the spec stamp
+          // rides in `runInput`.
+          const payload = {
+            runId: 'wrun_abc',
+            requestedAt: new Date(NOW - 20 * 60 * 60_000),
+            traceCarrier,
+            runInput: {
+              input: new Uint8Array([1]),
+              deploymentId: 'dpl_original',
+              workflowName: 'workflow',
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            },
+          };
+          await handler(
+            {
+              payload,
+              queueName: '__wkf_workflow_test',
+              deploymentId: 'dpl_original',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 4,
+              experimental_handoffCount: 3,
+              createdAt: expiringIn(margin - 60),
+            }
+          );
+          expect(mockSend).toHaveBeenCalledTimes(1);
+          const [, wrapper, sendOpts] = mockSend.mock.calls[0];
+          expect(wrapper.payload).toEqual({
+            runId: 'wrun_abc',
+            runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            traceCarrier,
+          });
+          expect(sendOpts).toMatchObject({
+            experimental_concurrencyKey: 'wrun_abc',
+          });
+        } finally {
+          infoSpy.mockRestore();
+        }
+      });
+
+      it('hands a step message off on the same message, never on a new one', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(NOW);
+        const { handler, retry } = captureHandler({ timeoutSeconds: 0 });
+        const thrown = await handler(
+          {
+            payload: spec9({
+              runId: 'wrun_abc',
+              stepId: 'step_1',
+              stepName: 'step',
+            }),
+            queueName: '__wkf_workflow_test',
+          },
+          { messageId: 'msg-123', deliveryCount: 1, createdAt: expiringIn(60) }
+        ).catch((err: unknown) => err);
+        expect(
+          retry(thrown, { messageId: 'msg-123', deliveryCount: 1 })
+        ).toEqual({ afterSeconds: 0, experimental_handoff: true });
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
       it('still redelivers the same message for a delayed redelivery', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         vi.setSystemTime(NOW);

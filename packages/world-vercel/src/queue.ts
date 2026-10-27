@@ -9,7 +9,6 @@ import { globalSingleton } from '@workflow/utils';
 import {
   isSingleOrchestratorMessage,
   MessageId,
-  messageRunSpecVersion,
   orchestratorRunIdOf,
   parseQueueName,
   type Queue,
@@ -19,6 +18,7 @@ import {
   QueuePayloadSchema,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  singleOrchestratorContinuationPayload,
   ValidQueueName,
 } from '@workflow/world';
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
@@ -1143,18 +1143,27 @@ export function createQueue(config?: APIConfig): Queue {
               afterSeconds === 0
                 ? orchestratorMessageRotation(metadata)
                 : undefined;
-            if (rotation !== undefined) {
+            // Only an orchestrator message continues on a new one: a step
+            // message keeps its own (its idempotency key would drop a copy).
+            const continuation =
+              rotation === undefined
+                ? undefined
+                : singleOrchestratorContinuationPayload(payload);
+            if (rotation !== undefined && continuation !== undefined) {
               // A handoff would keep a message about to expire, or to
               // exhaust its handoffs: continue on a new one instead, and
               // acknowledge this one. The runtime asks for a handoff only
               // once every message its committed writes owe was sent, so
-              // this message's id owes nothing more. The new message is the
-              // same payload (spec stamp, run context, so the same
-              // concurrency key), delayed past this acknowledgment.
-              await queue(queueName, payload, {
+              // this message's id owes nothing more. The new message is a
+              // continuation (spec stamp, run context, so the same
+              // concurrency key, and what the message is a wake for), never
+              // a copy: the run's start message carries `runInput`, which on
+              // a first delivery selects the runtime's fresh-start path. It
+              // is delayed past this acknowledgment.
+              await queue(queueName, continuation, {
                 deploymentId,
                 delaySeconds: ORCHESTRATOR_ROTATION_DELAY_SECONDS,
-                specVersion: messageRunSpecVersion(payload),
+                specVersion: continuation.runSpecVersion,
               });
               console.info(
                 `[workflow] Continuing run "${getRunIdFromPayload(payload)}" on a new message instead of handing off message "${metadata.messageId}" (${rotation}; handoffs: ${metadata.experimental_handoffCount ?? 0})`

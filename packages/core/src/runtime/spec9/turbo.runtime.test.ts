@@ -11,7 +11,11 @@ import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
-import { expectRefusalRedelivery } from '../../test-support/orchestrator-harness.js';
+import {
+  expectRefusalRedelivery,
+  runResult,
+} from '../../test-support/orchestrator-harness.js';
+import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -405,6 +409,72 @@ describe.each([
       2
     );
     expect(world.events.at(-1)?.eventType).toBe('run_completed');
+  });
+
+  it("continues on a World's rotated start message without running a completed step's body again", async () => {
+    // The start message hands off right after the first step completes: past
+    // the function's deadline (node), or out of replay budget (QuickJS). Its
+    // message is old, so the World continues the run on a new message (a
+    // first delivery) instead of handing it off.
+    const MESSAGE_AGE_MS = 23 * 60 * 60_000;
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const clock = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => realNow() + offsetMs);
+    // A `run_started` a delivery of the new message writes is held until a
+    // body runs (or for a second): a fresh-start path over this log would
+    // run the first step's body again while that write is in flight, before
+    // the fence refuses it.
+    let release: () => void = () => {};
+    const bodyRan = new Promise<void>((resolve) => {
+      release = resolve;
+      setTimeout(resolve, 1000);
+    });
+    try {
+      if (engine === 'node') {
+        onBody = () => {
+          offsetMs += 30 * 60_000;
+        };
+      }
+      const { world, start } = await setup(twoSteps, [1, 2], {
+        rotateHandoff: (held) => realNow() - +held.createdAt >= MESSAGE_AGE_MS,
+        async beforeCreate(data) {
+          if (data.eventType === 'run_started' && world.rotations > 0) {
+            onBody = () => release();
+            await bodyRan;
+          }
+        },
+      });
+      start.createdAt = new Date(realNow() - MESSAGE_AGE_MS);
+      if (engine === 'quickjs') {
+        vi.spyOn(ReplayBudget.prototype, 'isExhausted').mockImplementation(
+          () =>
+            world.rotations === 0 &&
+            world.events.some((e) => e.eventType === 'step_completed')
+        );
+      }
+
+      expect(await world.deliver(start)).toEqual({ timeoutSeconds: 0 });
+      expect(world.rotations).toBe(1);
+      expect(bodies).toHaveLength(1);
+      const [rotated] = world.held;
+      expect(rotated).toMatchObject({ deliveryCount: 1 });
+
+      await world.runUntilIdle();
+      expect(world.events.at(-1)?.eventType).toBe('run_completed');
+      // One body per step: the rotated message loaded the log.
+      expect(bodies).toHaveLength(2);
+      expect(types(world.events).filter((t) => t === 'step_started')).toEqual([
+        'step_started',
+        'step_started',
+      ]);
+      expect(await runResult(world)).toBe(13);
+      expect(rotated!.message).not.toHaveProperty('runInput');
+    } finally {
+      clock.mockRestore();
+      vi.restoreAllMocks();
+    }
   });
 
   // Turbo runs a first step's body before its start commits, unless the

@@ -13,6 +13,7 @@ import {
   orchestratorRunIdOf,
   type QueueBatchResult,
   SPEC_VERSION_CURRENT,
+  singleOrchestratorContinuationPayload,
   slotToEventId,
   type WorkflowRun,
   type World,
@@ -191,8 +192,9 @@ export class AppendOnlyWorld {
       /**
        * Whether a handoff (`{ timeoutSeconds: 0 }`) of `held` continues on a
        * new message instead, as world-vercel does for a message close to its
-       * expiry: the held message is acknowledged, and a new one with the
-       * same payload (fresh id, first delivery) is held in its place.
+       * expiry: the held message is acknowledged, and a new one (fresh id,
+       * first delivery) is held in its place, with the payload
+       * `singleOrchestratorContinuationPayload` builds from the held one.
        */
       rotateHandoff?: (held: HeldMessage) => boolean;
       /**
@@ -645,7 +647,10 @@ export class AppendOnlyWorld {
       if (handedOff && this.options.rotateHandoff?.(held)) {
         this.rotations++;
         this.held.push({
-          message: held.message,
+          // What world-vercel sends: the continuation fields only, never the
+          // start message's `runInput`.
+          message:
+            singleOrchestratorContinuationPayload(held.message) ?? held.message,
           messageId: `msg_rotated_${this.rotations}_of_${held.messageId}`,
           queueName: held.queueName,
           deliveryCount: 1,
