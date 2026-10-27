@@ -165,9 +165,10 @@ const MAX_MAILBOX_BATCH = 100;
  * the platform's admission (seconds into a fan-out, with no error in the
  * function), and the run stalls until that instance stops; about 100 at once
  * is absorbed. Rejecting early in the owner cannot help, since admission
- * happens before a request reaches it. Raise this only with fan-in that
- * batches results before they reach the owner. */
-const MAX_RUNNING_STEPS = 64;
+ * happens before a request reaches it. Since the platform stopped retiring
+ * busy cells, the limit is the instance's request rate instead (about 65-80
+ * req/s, with slow 503s from about 150 concurrent); 128 is being measured. */
+const MAX_RUNNING_STEPS = 128;
 
 /** Heartbeats name the running steps once this few remain. */
 const RUNNING_DETAIL_LIMIT = 3;
@@ -196,7 +197,9 @@ function describeError(error: unknown): Record<string, unknown> {
 /** Inputs an owner queues before refusing more with a fast 429 (the caller
  * keeps its input and retries). Each queued input holds its request open
  * until committed, so this bounds the owner's concurrent inbound requests. */
-const MAILBOX_CAPACITY = 64;
+// Step results are inputs: kept at MAX_RUNNING_STEPS so the mailbox is not
+// the narrower bound.
+const MAILBOX_CAPACITY = 128;
 /** A remote step runs under its queue delivery's lease: a lost worker is
  * redelivered and reported (`step_status` with `lost`). This bound only
  * recovers an attempt whose delivery itself never surfaces again. */

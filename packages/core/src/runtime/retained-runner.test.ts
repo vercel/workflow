@@ -1016,9 +1016,9 @@ it('refuses inputs beyond its mailbox capacity with a retryable 429', async () =
     40
   );
   // One synchronous burst of distinct inputs: the default mailbox answers at
-  // most 64 at a time, counting the one already running.
+  // most 128 at a time, counting the one already running.
   const replies = await Promise.allSettled(
-    Array.from({ length: 65 }, (_, i) =>
+    Array.from({ length: 129 }, (_, i) =>
       owner.submit(
         { runId: fixture.runId },
         { ...fixture.metadata, messageId: MessageId.parse(`wake-${i}`) }
