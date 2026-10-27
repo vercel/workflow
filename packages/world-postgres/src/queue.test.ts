@@ -611,6 +611,69 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it("deduplicates a spec 9 run's keyed message against any job holding its key", async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    const spec9 = { runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR };
+    // A step's execution message, and a near-due wait timer.
+    await queue.queue(
+      '__wkf_workflow_test-step',
+      { runId: 'run_01ABC', stepId: 'step_01ABC', stepName: 'step', ...spec9 },
+      { idempotencyKey: 'step_01ABC' }
+    );
+    await queue.queue(
+      '__wkf_workflow_test',
+      {
+        runId: 'run_01ABC',
+        waitContinuation: { correlationId: 'wait_01ABC', attempt: 0 },
+        ...spec9,
+      },
+      { idempotencyKey: 'wait:wait_01ABC:1', delaySeconds: 3 }
+    );
+    // A wake carries no key: its job key is its message id, whatever mode.
+    await queue.queue('__wkf_workflow_test', { runId: 'run_01ABC', ...spec9 });
+    const modes = vi
+      .mocked(workerUtilsMock.addJob)
+      .mock.calls.map(
+        (call) => (call[2] as { jobKeyMode?: string } | undefined)?.jobKeyMode
+      );
+    expect(modes).toEqual([
+      'unsafe_dedupe',
+      'unsafe_dedupe',
+      'preserve_run_at',
+    ]);
+  });
+
+  it('keeps replace semantics for a rescheduled spec 9 delivery, which is sent while its job is locked', async () => {
+    const server = await startWorkflowHttpServer([], 0, undefined, undefined, {
+      timeoutSeconds: 7,
+    });
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+    await getTaskHandler('workflow_flows')(
+      buildMessageData(
+        '__wkf_workflow_test-step',
+        {
+          runId: 'run_01ABC',
+          stepId: 'step_01ABC',
+          stepName: 'test-step',
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+        { idempotencyKey: 'step_01ABC' }
+      ),
+      { job: { attempts: 1 } }
+    );
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.anything(),
+      expect.objectContaining({
+        jobKey: 'step_01ABC',
+        jobKeyMode: 'preserve_run_at',
+      })
+    );
+  });
+
   it('stamps createdAt on a new message and keeps an idempotency key off a wake', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();

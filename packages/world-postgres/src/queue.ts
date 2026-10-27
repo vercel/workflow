@@ -463,6 +463,7 @@ export function createQueue(
     deliveryOffset,
     createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
+    jobKeyMode = 'preserve_run_at',
   }: {
     queueId: string;
     prefix?: QueuePrefix;
@@ -482,6 +483,14 @@ export function createQueue(
     attemptOffset?: number;
     deliveryOffset?: number;
     maxAttempts?: number;
+    /**
+     * What a job already holding `jobKey` does with this one (see
+     * {@link jobKeyModeFor}). `'preserve_run_at'` replaces an unlocked job
+     * (keeping its `run_at` while it has no attempts), and next to a locked
+     * one inserts a second job. `'unsafe_dedupe'` makes the add a no-op
+     * while any job holds the key, locked or not.
+     */
+    jobKeyMode?: 'preserve_run_at' | 'unsafe_dedupe';
   }) {
     const utils = workerUtils;
     if (!utils) {
@@ -510,15 +519,7 @@ export function createQueue(
         headers,
       }),
       {
-        ...(jobKey
-          ? {
-              jobKey,
-              // A duplicate keyed publish may be an immediate replay of a
-              // delayed retry. Keep the first job's run_at so deduplication
-              // cannot erase the retry backoff.
-              jobKeyMode: 'preserve_run_at' as const,
-            }
-          : {}),
+        ...(jobKey ? { jobKey, jobKeyMode } : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts,
         ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
@@ -894,6 +895,32 @@ export function createQueue(
     }
   }
 
+  /**
+   * The Graphile job-key mode of a publish (`queue`). A follow-up job the
+   * queue schedules itself (a reschedule, a transfer to the executor) keeps
+   * `'preserve_run_at'`: it is sent while the job it continues is locked,
+   * and must be inserted next to it.
+   *
+   * - A single-orchestrator run's keyed message (spec >= 9: a step's
+   *   execution message, a near-due wait timer) is sent with a key only to
+   *   be deduplicated: the runtime sends it again from later deliveries of
+   *   the run (the re-send rule), and a second job would be a second owner
+   *   of the step's body. `'unsafe_dedupe'` makes the send a no-op while any
+   *   job holds the key: a locked one (being delivered), one waiting out its
+   *   delay, or one in retry backoff, whose attempts and `run_at` it keeps.
+   *   The key is free again once the job completes and is deleted.
+   * - Any other keyed publish keeps `'preserve_run_at'`: a duplicate may be
+   *   an immediate replay of a delayed retry, and keeping the first job's
+   *   `run_at` keeps that backoff.
+   */
+  const jobKeyModeFor = (
+    message: unknown,
+    idempotencyKey: string | undefined
+  ): 'preserve_run_at' | 'unsafe_dedupe' =>
+    idempotencyKey !== undefined && isSingleOrchestratorMessage(message)
+      ? 'unsafe_dedupe'
+      : 'preserve_run_at';
+
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
     const { prefix, id: queueId } = parseQueueName(queue);
@@ -917,6 +944,7 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
+      jobKeyMode: jobKeyModeFor(message, opts?.idempotencyKey),
       // Only the SDK's own prefix carries workflow runs; a queue consumer's
       // own messages are never serialized by run.
       ...(input
