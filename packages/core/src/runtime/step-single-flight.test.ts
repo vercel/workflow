@@ -211,7 +211,9 @@ describe('runStepSingleFlight', () => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { promise, resolve } = withResolvers<StepExecutionResult>();
       const winner = runStepSingleFlight(RUN, STEP, () => promise, {
-        retryPublishedUnderDispatchKey: winnerFlagged,
+        retryPublishedUnderDispatchKeyAfter: winnerFlagged
+          ? Promise.resolve()
+          : undefined,
       });
       const losers = loserCarries.map((carryFoldedRetry) =>
         runStepSingleFlight(RUN, STEP, async () => ({ type: 'completed' }), {
@@ -250,6 +252,31 @@ describe('runStepSingleFlight', () => {
     ] as const)('a $type winner is not carried', async (winnerResult) => {
       const { losers } = await race(winnerResult, true, [true]);
       expect(losers).toEqual([{ type: 'skipped' }]);
+    });
+
+    it('the carrier waits for the winner to publish its retry', async () => {
+      const published = withResolvers<void>();
+      const { promise, resolve } = withResolvers<StepExecutionResult>();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const winner = runStepSingleFlight(RUN, STEP, () => promise, {
+        retryPublishedUnderDispatchKeyAfter: published.promise,
+      });
+      const carrier = runStepSingleFlight(
+        RUN,
+        STEP,
+        async () => ({ type: 'completed' }),
+        { carryFoldedRetry: true }
+      );
+      let carrierSettled = false;
+      carrier.then(() => {
+        carrierSettled = true;
+      });
+      resolve(RETRY);
+      await winner;
+      await new Promise((r) => setTimeout(r, 10));
+      expect(carrierSettled).toBe(false);
+      published.resolve();
+      expect(await carrier).toEqual(RETRY);
     });
   });
 });

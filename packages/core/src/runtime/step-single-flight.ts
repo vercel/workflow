@@ -43,7 +43,7 @@ const singleFlight = globalSingleton(
 
 interface InFlightStepExecution {
   settlement: Promise<StepExecutionResult>;
-  retryPublishedUnderDispatchKey: boolean;
+  retryPublishedUnderDispatchKeyAfter: Promise<unknown> | undefined;
   retryCarried: boolean;
 }
 
@@ -56,21 +56,27 @@ export interface StepSingleFlightOptions {
   logLevel?: 'debug' | 'warn';
   /**
    * Set by a winner that publishes its own `retry` under the step's dispatch
-   * key (stepDispatchIdempotencyKey): the node engine's inline executions.
-   * A queued delivery of the same step that is waiting on it was published
-   * under that same key and is still in flight, so the queue folds the retry
-   * into it (world-local returns the in-flight message's id, queues dedupe a
-   * key while its message is in flight, and world-postgres drops a later job
-   * whose key it has already completed). The QuickJS engine publishes its
-   * retries under their own keys, so its winners leave this unset.
+   * key (stepDispatchIdempotencyKey) once this promise settles: the node
+   * engine's inline executions, which publish after their whole inline batch
+   * settles. A queued delivery of the same step that is waiting on it was
+   * published under that same key and is still in flight, so the queue folds
+   * the retry into it (world-local returns the in-flight message's id, queues
+   * dedupe a key while its message is in flight, and world-postgres replaces
+   * an unlocked job with the same key or drops a later job whose key it has
+   * already completed). The QuickJS engine publishes its retries under their
+   * own keys, so its winners leave this unset.
    */
-  retryPublishedUnderDispatchKey?: boolean;
+  retryPublishedUnderDispatchKeyAfter?: Promise<unknown>;
   /**
-   * Set by the queued-step delivery. When it loses to a winner flagged
-   * `retryPublishedUnderDispatchKey` and that winner returns `retry`, it
-   * returns the `retry` instead of `skipped`, so its message redelivers after
-   * the backoff and runs the attempt the folded publish can no longer drive
-   * (workflow#4728). At most one loser carries a given retry.
+   * Set by the queued-step delivery. When it loses to a winner that sets
+   * `retryPublishedUnderDispatchKeyAfter` and that winner returns `retry`, it
+   * waits for that promise and then returns the `retry` instead of `skipped`,
+   * so its message redelivers after the backoff and runs the attempt the
+   * folded publish can no longer drive (workflow#4728). Waiting keeps the
+   * message in flight until the publish is out, so the publish never lands on
+   * a key the message already spent by acking (a sibling of the winner that
+   * outlasts the backoff would otherwise let the carried attempt finish and
+   * ack first). At most one loser carries a given retry.
    */
   carryFoldedRetry?: boolean;
 }
@@ -125,10 +131,11 @@ export async function runStepSingleFlight(
     if (
       settled?.type === 'retry' &&
       options.carryFoldedRetry &&
-      existing.retryPublishedUnderDispatchKey &&
+      existing.retryPublishedUnderDispatchKeyAfter &&
       !existing.retryCarried
     ) {
       existing.retryCarried = true;
+      await existing.retryPublishedUnderDispatchKeyAfter;
       return settled;
     }
     return { type: 'skipped' };
@@ -136,8 +143,8 @@ export async function runStepSingleFlight(
 
   const execution: InFlightStepExecution = {
     settlement: execute(),
-    retryPublishedUnderDispatchKey:
-      options.retryPublishedUnderDispatchKey ?? false,
+    retryPublishedUnderDispatchKeyAfter:
+      options.retryPublishedUnderDispatchKeyAfter,
     retryCarried: false,
   };
   singleFlight.inFlight.set(key, execution);
