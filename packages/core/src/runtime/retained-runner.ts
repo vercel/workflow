@@ -536,27 +536,37 @@ export class RetainedRunner {
               return this.creationGate(() => this.commit(event, options));
             return this.commit(event, options);
           }
-          return this.enqueue(`event:${event.eventType}`, async () => {
-            if (
-              this.runState &&
-              isTerminalWorkflowRunStatus(this.runState.status)
-            )
-              throw new InputRejected('Workflow is terminal', { status: 410 });
-            const result = await this.commit(event, options);
-            if (
-              event.eventType === 'step_completed' ||
-              event.eventType === 'step_failed'
-            ) {
-              // The outcome is committed; past the handoff point the next
-              // owner advances from it.
-              try {
-                await this.advance();
-              } catch (error) {
-                if (!(error instanceof HandoffPending)) throw error;
+          // The owner's own background work (a local step body) writes as
+          // internal work; anything else is an input like any other.
+          const internal = this.inTurn.getStore() === false;
+          return this.enqueue(
+            `event:${event.eventType}`,
+            async () => {
+              if (
+                this.runState &&
+                isTerminalWorkflowRunStatus(this.runState.status)
+              )
+                throw new InputRejected('Workflow is terminal', {
+                  status: 410,
+                });
+              const result = await this.commit(event, options);
+              if (
+                event.eventType === 'step_completed' ||
+                event.eventType === 'step_failed'
+              ) {
+                // The outcome is committed; past the handoff point the next
+                // owner advances from it.
+                try {
+                  await this.advance();
+                } catch (error) {
+                  if (!(error instanceof HandoffPending)) throw error;
+                }
               }
-            }
-            return result;
-          });
+              return result;
+            },
+            undefined,
+            { internal }
+          );
         }) as World['events']['create'],
         // Let suspension handling use its ordinary single-event path. It must
         // not classify a partially accepted batch as a concurrency recovery.
@@ -600,10 +610,18 @@ export class RetainedRunner {
       });
   }
 
+  /**
+   * Queue an operation on the owner's serialized loop. The mailbox bound
+   * (`mailboxCapacity`) applies to inputs from outside the owner, whose
+   * callers retry a 429. `internal` work is the owner's own (its local step
+   * bodies' writes, their error and recovery handling): nothing retries it, so
+   * it is never refused for capacity and does not count against it.
+   */
   enqueue(
     id: string,
     operation: () => Promise<unknown>,
-    batch?: MailboxBatch
+    batch?: MailboxBatch,
+    options?: { internal?: boolean }
   ): Promise<unknown> {
     if (this.fault)
       return Promise.reject(
@@ -616,16 +634,19 @@ export class RetainedRunner {
       );
     // Counts every accepted, unanswered input: queued, running, or taken
     // into a batch. Each one holds its caller's request open.
-    if (this.unanswered >= this.mailboxCapacity)
+    const internal = options?.internal === true;
+    if (!internal && this.unanswered >= this.mailboxCapacity)
       return Promise.reject(
         new WorkflowWorldError('Runner mailbox is full', { status: 429 })
       );
-    this.unanswered++;
     const completion = withResolvers<unknown>();
-    const settle = () => {
-      this.unanswered--;
-    };
-    completion.promise.then(settle, settle);
+    if (!internal) {
+      this.unanswered++;
+      const settle = () => {
+        this.unanswered--;
+      };
+      completion.promise.then(settle, settle);
+    }
     this.pending.push({
       id,
       run: AsyncResource.bind((batchedOperation?: () => Promise<unknown>) =>
@@ -2047,10 +2068,20 @@ export class RetainedRunner {
       });
       // Same mailbox as every other input. If the owner is retiring or full,
       // the queued backstop delivers the wake instead.
-      this.enqueue(`local-timer:${waitId}`, async () => {
-        if (this.runState && !isTerminalWorkflowRunStatus(this.runState.status))
-          await this.advance();
-      }).catch(() => {});
+      this.enqueue(
+        `local-timer:${waitId}`,
+        async () => {
+          if (
+            this.runState &&
+            !isTerminalWorkflowRunStatus(this.runState.status)
+          )
+            await this.advance();
+        },
+        undefined,
+        { internal: true }
+      ).catch((error) =>
+        this.logInternalRejection(`local-timer:${waitId}`, error)
+      );
       // Timers may fire marginally before the wall clock reaches resumeAt.
     }, delayMs + 5);
     this.localTimers.set(waitId, timer);
@@ -2452,21 +2483,49 @@ export class RetainedRunner {
             { parentSpanId, stepId: message.stepId, executionMode: 'queued' }
           );
         } catch (cause) {
-          await this.enqueue('step.delivery_failed', async () => {
-            // A lost HTTP reply after a committed callback is not a lost step.
-            if (
-              !this.stepOutcomes.has(message.input.executionId) &&
-              !isTerminalWorkflowRunStatus(this.run.status)
-            ) {
-              // Only a definite rejection of the delivery itself is a bug.
-              // Anything else (platform/transport failure, a worker whose
-              // result reached a superseded owner) leaves the body's
-              // outcome unknown.
+          await this.enqueue(
+            'step.delivery_failed',
+            async () => {
+              // A lost HTTP reply after a committed callback is not a lost step.
               if (
-                !isRetryableOwnerDelivery(cause) &&
-                WorkflowWorldError.is(cause) &&
-                [400, 401, 403].includes(cause.status ?? 0)
+                !this.stepOutcomes.has(message.input.executionId) &&
+                !isTerminalWorkflowRunStatus(this.run.status)
               ) {
+                // Only a definite rejection of the delivery itself is a bug.
+                // Anything else (platform/transport failure, a worker whose
+                // result reached a superseded owner) leaves the body's
+                // outcome unknown.
+                if (
+                  !isRetryableOwnerDelivery(cause) &&
+                  WorkflowWorldError.is(cause) &&
+                  [400, 401, 403].includes(cause.status ?? 0)
+                ) {
+                  ownerLog('step_dispatch_failed', {
+                    runId: this.runId,
+                    ownerId: this.id,
+                    stepId: message.stepId,
+                    executionId: message.input.executionId,
+                    attempt: message.input.attempt,
+                    ...describeError(cause),
+                    handling: 'fault',
+                  });
+                  throw cause;
+                }
+                // No outcome is not evidence of a failed body. Keep the
+                // admitted attempt running until recovery supersedes it. A
+                // platform refusal before any worker received the invocation
+                // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED, or a 508 the proxy's
+                // loop detection returns) retries soon as a new attempt; other
+                // unknown outcomes wait for the timeout. A late result from the
+                // superseded attempt is ignored.
+                const status = (cause as { status?: unknown })?.status;
+                const refused =
+                  status === 500 || status === 502 || status === 508;
+                const retryAt = refused
+                  ? Date.now() + 1000
+                  : message.input.deadline;
+                if (refused)
+                  this.undelivered.set(message.input.executionId, retryAt);
                 ownerLog('step_dispatch_failed', {
                   runId: this.runId,
                   ownerId: this.id,
@@ -2474,48 +2533,31 @@ export class RetainedRunner {
                   executionId: message.input.executionId,
                   attempt: message.input.attempt,
                   ...describeError(cause),
-                  handling: 'fault',
+                  handling: refused ? 'retry_soon' : 'await_attempt_timeout',
+                  recoveryAt: new Date(retryAt).toISOString(),
                 });
-                throw cause;
+                this.observe('step_delivery', 'end', randomUUID(), {
+                  parentSpanId,
+                  stepId: message.stepId,
+                  executionId: message.input.executionId,
+                  outcome: 'uncertain',
+                  status: 'error',
+                  errorCode: (cause as { code?: unknown })?.code,
+                  httpStatus: status,
+                  recoveryAt: retryAt,
+                });
+                await this.armStepRecovery(retryAt);
               }
-              // No outcome is not evidence of a failed body. Keep the
-              // admitted attempt running until recovery supersedes it. A
-              // platform refusal before any worker received the invocation
-              // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED, or a 508 the proxy's
-              // loop detection returns) retries soon as a new attempt; other
-              // unknown outcomes wait for the timeout. A late result from the
-              // superseded attempt is ignored.
-              const status = (cause as { status?: unknown })?.status;
-              const refused =
-                status === 500 || status === 502 || status === 508;
-              const retryAt = refused
-                ? Date.now() + 1000
-                : message.input.deadline;
-              if (refused)
-                this.undelivered.set(message.input.executionId, retryAt);
-              ownerLog('step_dispatch_failed', {
-                runId: this.runId,
-                ownerId: this.id,
-                stepId: message.stepId,
-                executionId: message.input.executionId,
-                attempt: message.input.attempt,
-                ...describeError(cause),
-                handling: refused ? 'retry_soon' : 'await_attempt_timeout',
-                recoveryAt: new Date(retryAt).toISOString(),
-              });
-              this.observe('step_delivery', 'end', randomUUID(), {
-                parentSpanId,
-                stepId: message.stepId,
-                executionId: message.input.executionId,
-                outcome: 'uncertain',
-                status: 'error',
-                errorCode: (cause as { code?: unknown })?.code,
-                httpStatus: status,
-                recoveryAt: retryAt,
-              });
-              await this.armStepRecovery(retryAt);
-            }
-          }).catch(() => {});
+            },
+            undefined,
+            { internal: true }
+          ).catch((error) =>
+            this.logInternalRejection(
+              'step.delivery_failed',
+              error,
+              message.stepId
+            )
+          );
         } finally {
           this.workers.delete(message.stepId);
           this.signal?.();
@@ -2588,9 +2630,23 @@ export class RetainedRunner {
               !this.runState ||
               !isTerminalWorkflowRunStatus(this.runState.status)
             ) {
-              await this.enqueue('step.error', async () => {
-                throw cause;
-              }).catch(() => {});
+              let reported = false;
+              await this.enqueue(
+                'step.error',
+                async () => {
+                  reported = true;
+                  throw cause;
+                },
+                undefined,
+                { internal: true }
+              ).catch((error) => {
+                // Run in the loop, the error faults the run. Refused before it
+                // ran, nothing would report this attempt: end it as lost.
+                if (!reported) {
+                  this.logInternalRejection('step.error', error, step.stepId);
+                  return this.endedWithoutOutcome(step, startedFor, 'threw');
+                }
+              });
             }
           } finally {
             this.localWorkers.delete(step.stepId);
@@ -2624,19 +2680,43 @@ export class RetainedRunner {
       resultType,
     });
     if (!startedFor) return;
-    await this.enqueue('step.no_outcome', async () => {
-      const current = this.stepStarts.get(step.stepId);
-      const live = this.steps.get(step.stepId);
-      if (
-        isTerminalWorkflowRunStatus(this.run.status) ||
-        live?.status !== 'running' ||
-        current?.event.eventId !== startedFor.event.eventId ||
-        this.stepOutcomes.has(startedFor.event.eventId)
-      )
-        return;
-      await this.supersedeAttempt(live, current, 'lost');
-      await this.advance();
-    }).catch(() => {});
+    await this.enqueue(
+      'step.no_outcome',
+      async () => {
+        const current = this.stepStarts.get(step.stepId);
+        const live = this.steps.get(step.stepId);
+        if (
+          isTerminalWorkflowRunStatus(this.run.status) ||
+          live?.status !== 'running' ||
+          current?.event.eventId !== startedFor.event.eventId ||
+          this.stepOutcomes.has(startedFor.event.eventId)
+        )
+          return;
+        await this.supersedeAttempt(live, current, 'lost');
+        await this.advance();
+      },
+      undefined,
+      { internal: true }
+    ).catch((error) =>
+      this.logInternalRejection('step.no_outcome', error, step.stepId)
+    );
+  }
+
+  /** The owner's own work refused by its loop (faulted or retiring). */
+  private logInternalRejection(
+    operation: string,
+    error: unknown,
+    stepId?: string
+  ) {
+    ownerLog('internal_operation_refused', {
+      runId: this.runId,
+      ownerId: this.id,
+      operation,
+      ...(stepId ? { stepId } : {}),
+      ...describeError(error),
+      closing: this.closing,
+      fault: this.fault?.kind,
+    });
   }
 
   /** One serialized, contiguous mailbox prefix; never skip an intervening input. */

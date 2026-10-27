@@ -332,6 +332,45 @@ it('retries a local step whose body ended without recording an outcome', async (
   ).toBe(true);
 });
 
+it("commits a local step's outcome even when the mailbox is full", async () => {
+  const values: unknown[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  registerStepFunction('retainedWrite', async (value) => {
+    if (values.length === 0) await gate;
+    values.push(value);
+  });
+  const fixture = await setup(code, false, false, 500);
+  const owner = fixture.owner as unknown as { mailboxCapacity: number };
+  const capacity = owner.mailboxCapacity;
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const sent = fixture.send('one', 'one');
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.some((e) => e.eventType === 'step_started')
+    ).toBe(true)
+  );
+  // External inputs fill the mailbox while the local body runs; its outcome
+  // is the owner's own work and must not be refused with them.
+  owner.mailboxCapacity = 0;
+  release();
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.some((e) => e.eventType === 'step_completed')
+    ).toBe(true)
+  );
+  owner.mailboxCapacity = capacity;
+  await sent;
+  for (const value of ['two', 'three']) await fixture.send(value, value);
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+  expect(values).toEqual(['one', 'two', 'three']);
+});
+
 it('registers the owner lifetime with waitUntil once, not once per input', async () => {
   const values: unknown[] = [];
   registerStepFunction('retainedWrite', async (value) => {
