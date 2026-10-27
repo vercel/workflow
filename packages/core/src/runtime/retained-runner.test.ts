@@ -283,6 +283,55 @@ it('starts the first steps of a wide fan-out before every step is created', asyn
   );
 });
 
+it('retries a local step whose body ended without recording an outcome', async () => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup(code, false, false, 500);
+  const create = fixture.owner.facade.events.create.bind(
+    fixture.owner.facade.events
+  );
+  let refused = false;
+  // The first local completion is refused as already finished, which the
+  // executor reports as `skipped`: no outcome is recorded for the attempt.
+  vi.spyOn(fixture.owner.facade.events, 'create').mockImplementation(
+    async (runId, event, params) => {
+      if (!refused && event.eventType === 'step_completed') {
+        refused = true;
+        throw new EntityConflictError('Step already finished');
+      }
+      return create(runId, event, params);
+    }
+  );
+  const info = vi.spyOn(console, 'info');
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('one', 'one');
+  // The refused attempt is ended at once, well before the attempt bound.
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.filter((e) => e.eventType === 'step_retrying')
+    ).toHaveLength(1)
+  );
+  // Its retry is due after the usual delay; the recovery wake brings it.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(Date.now() + 1100);
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  vi.useRealTimers();
+  await vi.waitFor(() => expect(values).toEqual(['one', 'one']));
+  for (const value of ['two', 'three']) await fixture.send(value, value);
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+  expect(values).toEqual(['one', 'one', 'two', 'three']);
+  expect(
+    info.mock.calls.some(([line]) =>
+      String(line).includes('"local_step_ended_without_outcome"')
+    )
+  ).toBe(true);
+});
+
 it('registers the owner lifetime with waitUntil once, not once per input', async () => {
   const values: unknown[] = [];
   registerStepFunction('retainedWrite', async (value) => {

@@ -2527,6 +2527,8 @@ export class RetainedRunner {
 
   private startStep(step: Step, claimed?: Step & { startedAt: Date }) {
     this.localWorkers.add(step.stepId);
+    // The attempt this body runs: its start is staged before the body starts.
+    const startedFor = this.stepStarts.get(step.stepId);
     const stepSpanId = randomUUID();
     const parentSpanId = this.currentTurnId;
     const work = Promise.resolve().then(() =>
@@ -2573,6 +2575,8 @@ export class RetainedRunner {
                   delaySeconds: result.timeoutSeconds,
                 }
               );
+            else if (result.type !== 'completed' && result.type !== 'failed')
+              await this.endedWithoutOutcome(step, startedFor, result.type);
           } catch (cause) {
             this.observe('step', 'end', stepSpanId, {
               parentSpanId,
@@ -2597,6 +2601,42 @@ export class RetainedRunner {
       )
     );
     this.workers.set(step.stepId, work);
+  }
+
+  /**
+   * A local body returned without recording an outcome (the executor's
+   * `skipped` or `gone`). Nothing else will report this attempt, so if it is
+   * still the step's current running attempt, end it as lost now: it is
+   * retried after the usual delay instead of after the attempt bound.
+   */
+  private async endedWithoutOutcome(
+    step: Step,
+    startedFor: { event: Event; attempt: number } | undefined,
+    resultType: string
+  ) {
+    ownerLog('local_step_ended_without_outcome', {
+      runId: this.runId,
+      ownerId: this.id,
+      stepId: step.stepId,
+      stepName: step.stepName,
+      executionId: startedFor?.event.eventId,
+      attempt: startedFor?.attempt,
+      resultType,
+    });
+    if (!startedFor) return;
+    await this.enqueue('step.no_outcome', async () => {
+      const current = this.stepStarts.get(step.stepId);
+      const live = this.steps.get(step.stepId);
+      if (
+        isTerminalWorkflowRunStatus(this.run.status) ||
+        live?.status !== 'running' ||
+        current?.event.eventId !== startedFor.event.eventId ||
+        this.stepOutcomes.has(startedFor.event.eventId)
+      )
+        return;
+      await this.supersedeAttempt(live, current, 'lost');
+      await this.advance();
+    }).catch(() => {});
   }
 
   /** One serialized, contiguous mailbox prefix; never skip an intervening input. */
