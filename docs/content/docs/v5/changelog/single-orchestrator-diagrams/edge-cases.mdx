@@ -24,6 +24,9 @@ Each scenario has a timeline, the outcome, and the page that explains the mechan
 | [Background body before a refused start](#background-body-before-a-refused-start) | Behavior change, accepted |
 | [Uncoalesced wakes on world-local and world-postgres](#uncoalesced-wakes-on-world-local-and-world-postgres) | Open follow-up |
 | [Coalesced timer losing its re-arm](#coalesced-timer-losing-its-re-arm) | Fixed |
+| [Rotated start message re-entering turbo](#rotated-start-message-re-entering-turbo) | Fixed (`1a02e52b42`) |
+| [Near-due re-arms on every delivery](#near-due-re-arms-on-every-delivery) | Fixed (`dcddeb7378`) |
+| [world-postgres re-send next to a locked job](#world-postgres-re-send-next-to-a-locked-job) | Fixed (`ab3713146b`) |
 | [Two concurrent sleeps](#two-concurrent-sleeps) | Fixed |
 | [Run-ahead stop re-runs step bodies](#run-ahead-stop-re-runs-step-bodies) | Accepted, bounded |
 | [Replay divergence recovered in place](#replay-divergence-recovered-in-place) | Handled |
@@ -278,7 +281,65 @@ sequenceDiagram
     Note over H: current rule, H completed w1 and owns the chain, arms w2
 ```
 
-**Outcome.** Fixed: the delivery that completes a wait owns its chain, whatever message it is (`ownedWaitChains`, `packages/core/src/runtime/spec9/creator-rules.ts:116`). The same loss hit a coalesced intermediate hop of a long sleep, which is why intermediate hops are unkeyed. Tests: `packages/core/src/runtime/spec9/wait-chains.runtime.test.ts`. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
+**Outcome.** Fixed: the delivery that completes a wait owns its chain, whatever message it is (`ownedWaitChains`, `packages/core/src/runtime/spec9/creator-rules.ts:116`). A final timer coalesced a little before its wait is due, into a delivery that does not own it, is covered by the near-due rule: the holder's re-run re-arms every wait due within a few seconds, under a key (`66b355d28c`, `dcddeb7378`). The same loss hit a coalesced intermediate hop of a long sleep, which is why intermediate hops are unkeyed. Tests: `packages/core/src/runtime/spec9/wait-chains.runtime.test.ts`. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
+
+## Rotated start message re-entering turbo
+
+A run's start message hands off for hours, and world-vercel continues it on a new message near its expiry.
+
+```mermaid
+sequenceDiagram
+    participant Q as Vercel Queues
+    participant O as Delivery of the new message
+    participant W as World
+    Note over W: progressed log, step S1 completed
+    Q->>O: first delivery, attempt 1, deliveryCount 1
+    Note over O: earlier rotation: a copy, with runInput
+    O->>O: turbo, synthesized run_created-only log
+    O->>W: run_started, in flight
+    O->>O: S1 body starts again, optimistic
+    W-->>O: refused, in-band-superseded
+    Note over O: current rotation: a continuation without runInput, loads the log, S1 not re-run
+```
+
+**Outcome.** Fixed (`1a02e52b42`): a rotation sends `singleOrchestratorContinuationPayload(payload)`, which drops `runInput` and the other first-delivery and per-request fields and stamps the spec version; a step message is not rotated. Tests: `packages/core/src/runtime/spec9/turbo.runtime.test.ts`, both engines. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology#rotation-near-expiry).
+
+## Near-due re-arms on every delivery
+
+A fan-out of `step(i); sleep('3s')` whose outcomes each wake the run in their own delivery. Every sleep is near-due as soon as it is created.
+
+```mermaid
+sequenceDiagram
+    participant S as Step invocations
+    participant O as Orchestrator deliveries
+    participant Q as Queue
+    S->>O: outcome 1, delivery 1 creates w1
+    O->>Q: timer w1
+    S->>O: outcome 2, delivery 2 creates w2
+    Note over O: earlier rule: re-arm w1 too, unkeyed
+    O->>Q: timer w2, timer w1 again
+    Note over O: delivery k sent k timers, n(n+1)/2 in all
+    Note over O: current rule: a first delivery re-arms nothing, a re-run re-arms under wait:id:resumeAt:second
+```
+
+**Outcome.** Fixed (`dcddeb7378`): 210 timers became 20 at width 20, and 1600 became 1 on QuickJS at width 40 with every step done before the first wake. Tests: `packages/core/src/runtime/spec9/near-due-timers.runtime.test.ts`, both engines, on a clock that honours delays and keys. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits#the-near-due-re-arm-key).
+
+## world-postgres re-send next to a locked job
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator, process A
+    participant G as Graphile
+    participant B as Worker, process B
+    Note over G: step job J1 locked, its body running
+    O->>G: re-send, same key
+    Note over G: earlier: preserve_run_at clears J1's key, inserts J2
+    G->>B: J2, a first delivery, no log read
+    B->>B: step_started again, body runs twice
+    Note over G: current: unsafe_dedupe, J1 holds the key, no J2
+```
+
+**Outcome.** Fixed (`ab3713146b`): a spec 9 run's keyed sends use `unsafe_dedupe`, so a re-send next to a locked job adds nothing, and one next to a job in retry backoff keeps its attempts and `run_at`. Spec 8 keyed sends keep `preserve_run_at` and the same exposure, unverified. Tests: `packages/world-postgres/test/queue-dedupe.test.ts`, against Docker Postgres. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology#world-local-and-world-postgres).
 
 ## Two concurrent sleeps
 

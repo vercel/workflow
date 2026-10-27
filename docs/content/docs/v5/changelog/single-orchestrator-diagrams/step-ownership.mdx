@@ -104,7 +104,7 @@ A background step's message is sent once, right after its `step_created` commits
 - once per invocation (`invocationResends`: coalesced re-runs share the invocation through `invocationStartedAt`, and later passes of a delivery skip what it re-sent);
 - in batches, on both engines;
 - under the step's stable idempotency key, so a re-send whose first message lives is deduped;
-- only while the step's `step_created` is younger than 23 hours (`STEP_RESEND_MAX_AGE_MS`), inside the queue's 24-hour dedupe window, so a re-send never makes a second live message. The World does not refuse a second `step_started`, so this bound is what keeps two messages from both starting the step.
+- only while the step's `step_created` is younger than 23 hours (`STEP_RESEND_MAX_AGE_MS`: `QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS` in `@workflow/world`, the 24 hours every World must dedupe a step key while its first message lives, less `STEP_RESEND_DEDUPE_MARGIN_MS`; world-postgres dedupes with `unsafe_dedupe` while the job exists), so a re-send never makes a second live message. The World does not refuse a second `step_started`, so this bound is what keeps two messages from both starting the step.
 
 The queue guarantees the pass: a delivery that dies is redelivered, or its message is coalesced into a running delivery whose re-run reports the next count. The span records `workflow.reenqueue.count` and `workflow.reenqueue.skipped_too_old`. An inline step whose last event is the `step_retrying` that moved it to the background is re-sent only by a later delivery of the message that wrote that `step_retrying` (its `creatorMessageId`), within the same bound from the `step_retrying`.
 

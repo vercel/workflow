@@ -145,6 +145,10 @@ sequenceDiagram
 
 A message the orchestrator sent itself would be coalesced into its own delivery and re-run in the same invocation, which is why a spec 9 delivery hands off instead (`packages/core/src/runtime/spec9/delivery.ts:268`).
 
+### Rotation near expiry
+
+A handoff keeps the message, and so its expiry and its handoff count. When the runtime asks for a handoff of an orchestrator message that expires within 4 hours, or is within 100 handoffs of the queue's bound, world-vercel sends a new message a second later and acknowledges the old one (`orchestratorMessageRotation`, `packages/world-vercel/src/queue.ts`). The new message is never a copy: it is `singleOrchestratorContinuationPayload(payload)` from `@workflow/world`, built from a fixed record of every payload field (`SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS`). It carries `runId`, `runContext`, `traceCarrier`, `waitContinuation`, `completeWaits` and `hookInput`, stamps `runSpecVersion`, and drops everything else, `runInput` first: on the run's start message, `runInput` plus the new message's first delivery count would satisfy turbo's first-delivery predicate, and the fresh-start path would replay a progressed run against a synthesized log and run completed step bodies again. A step message is not rotated; it hands off on its own message. The handoff world-vercel makes itself after 32 coalesced re-runs does not check for rotation yet (open, P2).
+
 ## Attempt accounting
 
 world-vercel computes `attempt` as `max(1, deliveryCount - handoffCount)` and reports `deliveryCount + rerun` as the delivery count (`packages/world-vercel/src/queue.ts:956`). A re-run is not a queue delivery, so it never raises `attempt`. The spec 9 re-send rule reads `meta.deliveryCount`: every delivery counted above 1 re-sends unstarted background steps, once per invocation. A timer's redelivery owning its chain still reads `min(deliveryCount, attempt)`.
@@ -186,6 +190,7 @@ Both declare the fence, mint spec 9 runs by default (`mintedSpecVersion()`, `pac
 | Handoff | Same message, `handoffs++`, `attempt = delivery + 1 - handoffs` (`packages/world-local/src/queue.ts:358`, `:448`), up to 10,000 handoffs. The delivery releases the run gate and takes it again in FIFO order, so orchestrator messages already waiting run first | Reschedule on a new Graphile job with the same `messageId`, no delay, on the run's named queue behind jobs already there (`packages/world-postgres/src/queue.ts:1040`) |
 | `attempt` after a handoff | Unchanged | Reset to the new job's count (known gap, below) |
 | Coalescing | None | None |
+| Dedupe of a keyed send | While the first message lives | While a Graphile job holds the key: `unsafe_dedupe` for a spec 9 run's keyed sends, `preserve_run_at` for a reschedule and for earlier runs |
 | Re-runs with the gate held, coalesced count | None | None |
 | `invocationStartedAt` | Not passed | Not passed |
 
@@ -225,5 +230,6 @@ Intermediate wait hops are already ungated and must stay that way, since a hop's
 - Vercel Queues bounds handoffs per message and past the bound applies an ordinary reschedule (`limit_reached`), which counts as an attempt; world-local mirrors this with `MAX_LOCAL_HANDOFFS` (`packages/world-local/src/queue.ts:333`).
 - The client logs the queue's answer to a handoff (`accepted` at debug, `not_immediate` at info, `limit_reached` at warn) by wrapping the `@vercel/queue` API object found under `Symbol.for('@vercel/queue.apiClient')`; if a `@vercel/queue` release moves that object, the lines stop silently (`observeHandoffOutcomes`, `packages/world-vercel/src/queue.ts:403`).
 - A spec 8 continuation sends its new message before acknowledging, so a crash in between duplicates the wake instead of losing it (`packages/world-vercel/src/queue.ts:997`).
+- world-postgres publishes a spec 9 run's keyed message (a step message, a near-due re-arm) with Graphile's `unsafe_dedupe`, a no-op while any job holds the key. With `preserve_run_at` a re-send next to a locked job inserted a second job, which another worker ran as a first delivery, and a re-send next to a job in backoff reset its attempts and `run_at`. A reschedule keeps `preserve_run_at`, because it is sent while the job it continues is locked and must insert one (`jobKeyModeFor`, `packages/world-postgres/src/queue.ts`).
 - world-postgres starts `attempt` over on a delayed reschedule, because the new Graphile job starts its own count and `attemptOffset` is carried unchanged; a spec 9 handoff carries `attempt` over (`attemptOffset: attempt - 1`, `1f7b912923`), and `deliveryCount` carries over on both (`deliveryOffset`) (`packages/world-postgres/src/queue.ts:974`, `:1079`). See [Edge cases](/docs/changelog/single-orchestrator-diagrams/edge-cases).
 - An intermediate wait hop has no key, so it is delivered beside a running orchestrator; its delivery writes nothing (`packages/world/src/queue.ts:620`). See [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).

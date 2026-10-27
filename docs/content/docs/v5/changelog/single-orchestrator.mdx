@@ -16,7 +16,7 @@ Runs created at spec version 9 follow one rule: **only the run's orchestrator de
 - A background step's message carries when its step was created, and its `step_started` reports that time, so the latency from a step's creation to its start can be read off the start alone.
 - A background step keeps one queue message for its whole life and retries in place on it. Any delivery other than a plain first one reads the log before running the body, so a committed outcome is not run again and a `maxRetries: 0` step runs at most once per live owner (a duplicate delivery after a lease expiry can still run it twice).
 - Step events carry `stepName`, and `step_started` carries `attempt`.
-- Wakes carry no idempotency key, and a wake with nothing new exits without a replay. A sleep's timer is armed by the delivery that created the wait, or by the one that completed an earlier wait it was created with, which sends the next timer before it commits the completion; a suspending delivery also arms any wait due within a few seconds.
+- Wakes carry no idempotency key, and a wake with nothing new exits without a replay. A sleep's timer is armed by the delivery that created the wait, or by the one that completed an earlier wait it was created with, which sends the next timer before it commits the completion; a suspending delivery that may hold a coalesced timer (any but its message's first) also arms any wait due within a few seconds, under an idempotency key (`wait:<correlationId>:<resumeAt>:<second>`) so the re-arms of a fan-out stay linear.
 
 ## Why
 

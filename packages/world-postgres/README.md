@@ -390,6 +390,18 @@ Each queue instance coalesces in-flight and recently completed deliveries with
 the same idempotency key. Handlers must still tolerate at-least-once delivery
 across worker processes, restarts, or completed-message cache eviction.
 
+A message sent with an idempotency key becomes a Graphile job with that job
+key. A spec 9 run's keyed messages (a step's execution message, a near-due wait
+timer) use the `unsafe_dedupe` job key mode: a send is a no-op while any job
+holds the key, locked (being delivered), delayed, or in retry backoff, so a
+re-send from a later orchestrator delivery never adds a second job for a step,
+which another worker could run, and never resets a job's attempts or `run_at`.
+The key is free once the job completes and is deleted. This meets the queue
+contract's dedupe window (`QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS` in
+`@workflow/world`) while the step's message lives. A reschedule (a handoff, a
+retry in place) is sent while its job is locked, and keyed messages of earlier
+runs keep their behaviour, so both use `preserve_run_at`.
+
 With invocation enabled, each Graphile worker pool registers two task
 identifiers. A task identifier selects a handler. A named queue controls which
 jobs can execute concurrently. The default job prefix produces these names:

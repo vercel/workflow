@@ -9,7 +9,7 @@ description: How a spec 9 run's sleeps are timed, who arms each timer, how long 
 This page is temporary review material for the pull request that introduces spec version 9, and is removed before merge. The written review is [Review: single orchestrator](/docs/changelog/single-orchestrator-review).
 </Callout>
 
-On spec 9, the orchestrator writes both events of a sleep in-band: `wait_created` when the workflow reaches `sleep()`, and `wait_completed` at the top of a pass once the wait is due (`dueWaits`, `packages/core/src/runtime/spec9/delivery.ts:2452`). Between the two, a timer message wakes the run. A timer is a delayed orchestrator message carrying `waitContinuation`, the wait it is for. Spec 9 timers carry no idempotency key (`packages/core/src/runtime/spec9/wait-timer.ts:19`).
+On spec 9, the orchestrator writes both events of a sleep in-band: `wait_created` when the workflow reaches `sleep()`, and `wait_completed` at the top of a pass once the wait is due (`dueWaits`, `packages/core/src/runtime/spec9/delivery.ts:2452`). Between the two, a timer message wakes the run. A timer is a delayed orchestrator message carrying `waitContinuation`, the wait it is for. Spec 9 timers carry no idempotency key, except the near-due rule's re-arms ("The near-due re-arm key" below).
 
 The pieces:
 
@@ -30,7 +30,7 @@ Each `wait_created` records `creatorMessageId`, the queue message of the deliver
 Two more rules cover the gaps chain ownership left:
 
 - A delivery that is about to commit the `wait_completed` of a wait it does not own through `timerFor` first sends the timer of the chain's next open wait (`chainTimersBeforeCompletion`, `3ba56bbd43`). A failure after the commit then leaves the chain armed; a failed send commits nothing, and the redelivery decides again.
-- A suspending delivery arms every open wait due within `max(5s, WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS)`, whatever its chain (`getNearDueWaitWindowSeconds`, `66b355d28c`), so a final timer coalesced slightly before its wait is due, into a delivery that does not own it, is not lost.
+- A suspending delivery that may hold a coalesced timer (any delivery but its message's first) arms every open wait due within `max(5s, WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS)`, whatever its chain (`getNearDueWaitWindowSeconds`, `66b355d28c`), so a final timer coalesced slightly before its wait is due, into a delivery that does not own it, is not lost. Each such re-arm carries an idempotency key, so the cost stays linear in the number of waits ("The near-due re-arm key" below).
 
 A recovery delivery (world-local after a restart, `recovery: true` on the message) owns every chain and arms the earliest open wait of each: the timers died with the queue.
 
@@ -151,6 +151,45 @@ sequenceDiagram
 
 If the key was released before a keyed timer came due, the review states that Vercel Queues compares the timer's due time with the release and delivers it normally. That is queue server behavior and is not verified here.
 
+## The near-due re-arm key
+
+The near-due rule's re-arms are the only spec 9 timers with an idempotency key: `wait:<correlationId>:<resumeAtMs>:<second>`, where the second is `floor(nowMs / 1000)` on the sender's clock (`nearDueTimerIdempotencyKey`, `packages/core/src/runtime/spec9/wait-timer.ts`). It identifies one re-arm of one wait, for one deadline, within one second.
+
+**Why the rule needed one.** Without a key, every suspending delivery sent a timer for every open wait due within the window, and nothing deduplicated them across deliveries. A fan-out of `step(i); sleep('3s')` whose outcomes each woke the run in its own delivery (no coalescing and no live feed: world-local, world-postgres, world-vercel without the push transport) sent `n(n + 1) / 2` timers instead of `n`. On QuickJS a wake that brought nothing new re-armed too.
+
+**Who re-arms now.** Only a delivery that may hold a coalesced timer: any delivery but its message's first (`mayHoldCoalescedTimer`, `packages/core/src/runtime/spec9/delivery.ts`; `armsNearDueWaits` in `quickjs-entrypoint.ts`). A coalesced message never reaches the first run of the delivery that absorbs it: the holder runs again, and the re-run reports the next `deliveryCount`. A process also sends each key once (`sendNearDueTimerOnce`, the 10,000 newest keys), so a busy run's re-runs do not each pay a queue round trip per near-due wait.
+
+**Which sends carry it.** Only the near-due re-arm. These stay unkeyed:
+
+- the timer a wait's own chain arms (at creation, or after the chain's previous wait completes). A re-arm is sent by the delivery the queue may have coalesced that timer into, while that timer is still being delivered, so sharing its key would drop the re-arm against the very timer it covers;
+- the chain timers sent before a `wait_completed` commits (`3ba56bbd43`), and a timer delivery's own re-arm, each sent once by the delivery that owns the chain;
+- intermediate hops: never coalesced, so never re-armed by this rule, and a key spent by an early hop would drop the next one.
+
+**How each World deduplicates it.**
+
+| World | A second send under the key |
+|---|---|
+| world-vercel | Dropped for `min(retention, 24h)` after the first send, acknowledged or not |
+| world-local | Dropped while the first message lives (held, delayed or being delivered) |
+| world-postgres | Dropped while a Graphile job holds the key (`unsafe_dedupe`: waiting, locked or in backoff); each worker also skips a key it completed recently |
+
+**Why the second.** A re-arm is sent with a delay of at least a second, since its wait is not yet due on the sender's clock. If it is itself delivered early and coalesced into another non-owner, that delivery re-arms in a later second of its clock, under a fresh key. A key of the wait alone would be spent by the first re-arm (for a day on world-vercel), and the next one dropped. A sender and receiver whose clocks differ by more than the re-arm's delay can still share a second; spec 8's near-elapsed keys have the same second bucket and the same limit.
+
+**Why `resumeAt`.** Two deadlines must never share a key. Today they cannot: `resumeAt` is fixed by `wait_created`, `run.wakeUp()` completes a wait (`wait_completed`) instead of moving it, and every `sleep()` mints a fresh correlation id (`wait_${ctx.generateUlid()}`, `packages/core/src/workflow/sleep.ts`). The deadline in the key guards against a later change to either.
+
+**Alternatives considered.** The gate alone (on world-vercel every coalesced re-run of a busy run would still send a timer per near-due wait); the key alone (every first delivery of every wake would send a re-arm the queue then drops); deduplication within one delivery (the quadratic case); no re-arm (the coalesced-early hole comes back); and the same key on the chain's own timer (drops the re-arm, above).
+
+**Cost**, measured on `AppendOnlyWorld.runOnClock`, which honours delays and keys (`packages/core/src/runtime/spec9/near-due-timers.runtime.test.ts`; timers sent / timers delivered / all deliveries):
+
+| Fan-out of `step(i); sleep('3s')` | Before | After |
+|---|---|---|
+| 20 wide, one outcome per delivery, both engines | 210 / 210 / 251 | 20 / 20 / 61 |
+| 40 wide, the same | 820 / 820 / 901 | 40 / 40 / 121 |
+| 40 wide, every step done before the first wake, QuickJS | 1600 / 1600 / 1681 | 1 / 1 / 82 |
+| 40 wide, the same, node | 40 / 40 / 121 | 1 / 1 / 82 |
+| 40 wide, every delivery a coalesced re-run, frozen clock | | 40 / 40 / 121 |
+| 20 and 40 wide, coalesced re-runs a quarter second apart | | node 80 and 120, QuickJS 38 and 36 |
+
 ## Timers inside a live delivery
 
 A delivery that is still running inline steps, or lingering on a live feed, completes a due wait itself. `waitForProgress` sleeps at most until the earliest open wait's deadline (`nextTimerAt`, `packages/core/src/runtime/spec9/delivery.ts:1697`), and the next pass writes `wait_completed`. The timer message also goes out before the delivery waits (`armTimers` in `awaitInlineProgress`, `packages/core/src/runtime/spec9/delivery.ts:3533`), so the wait is covered if the delivery ends first. When it comes due while the delivery still holds the key, it is coalesced and costs a re-run that finds nothing to do.
@@ -213,6 +252,7 @@ If a `wait_completed` committed below `fetchUpdates`'s outcome, the live run saw
 - A timer delivery skips the no-op fast path, because an early one must still arm the next hop (`packages/core/src/runtime/spec9/delivery.ts:978`).
 - A delivery that owns waits of two chains arms the earliest of each chain, not the earliest of all (`packages/core/src/runtime/spec9/creator-rules.ts:176`).
 - An intermediate hop for a run that ended stops the chain without writing anything (`packages/core/src/runtime/spec9/delivery.ts:885`).
-- Spec 9 timers have no idempotency key, so a duplicate timer is possible and costs one delivery that finds its wait completed (`packages/core/src/runtime/spec9/wait-timer.ts:19`).
+- Spec 9 timers have no idempotency key, except near-due re-arms, so a duplicate timer is possible and costs one delivery that finds its wait completed (`waitTimerMessage`, `packages/core/src/runtime/spec9/wait-timer.ts`).
+- A near-due re-arm that is itself delivered early and coalesced into a non-owner is re-armed under a fresh key in a later second; clocks that differ by more than its delay can make the keys collide. Not covered by a test.
 - `run.wakeUp()` is lost on world-vercel while an orchestrator delivery holds the key, and `stoppedCount` still counts the waits (`packages/core/src/runtime/runs.ts:468`).
 - The review states that the Vercel dashboard's wake-up action calls a pinned `@workflow/core` that writes `wait_completed` out-of-band, which the backend refuses on spec 9 runs; not verified here.

@@ -17,7 +17,7 @@ The runtime keeps two orchestrators side by side: `runtime/spec8/` (the previous
 
 1. `runInput.specVersion`, on a run's first delivery from `start()`.
 2. `runContext.specVersion`, on a step message.
-3. `runSpecVersion`, the hint on every other message of a run.
+3. `runSpecVersion`, the hint on every other message of a run, a world-vercel rotation's continuation included: it drops the start message's `runInput` and stamps the version `runInput` carried (`singleOrchestratorContinuationPayload` in `@workflow/world`).
 4. A per-process cache of 10,000 run spec versions (`RUN_SPEC_VERSION_CACHE_SIZE`), on `globalThis` so every bundled copy shares it. A carried version is remembered here.
 5. `runs.get(runId, { resolveData: 'none' })`. A run without a stored version is `SPEC_VERSION_LEGACY`. A run that is not found takes the World's own spec version, and the orchestrator handles the missing run. The run read here is handed on, so the orchestrator does not read it again.
 
@@ -53,7 +53,7 @@ The World decides the queue side from the payload alone, with `messageRunSpecVer
 | world-vercel topic | `__wkf_workflow_<name>`, unkeyed | Same topic, orchestrator messages keyed by run id |
 | world-vercel `{ timeoutSeconds: n }` | New message, up to 23 hours | Same message redelivered; `0` is a handoff |
 | world-local, world-postgres | Not serialized per run | Serialized per run (run gate, Graphile named queue) |
-| Wake idempotency keys | `hook-<resumeId>`, `hook-force-claim-<hookId>` | None on wakes |
+| Wake idempotency keys | `hook-<resumeId>`, `hook-force-claim-<hookId>` | None on wakes; a near-due timer re-arm carries `wait:<correlationId>:<resumeAt>:<second>` |
 | `run.wakeUp()` | Writes `wait_completed` out-of-band | Sends `completeWaits` to the orchestrator |
 
 world-local and world-postgres serialize only spec 9 runs (`singleOrchestratorRunIdOf`, `packages/world/src/queue.ts:705`). A spec 8 delivery can hold an inline step until another wake of the same run aborts it, and a per-run gate would hold that wake back.
