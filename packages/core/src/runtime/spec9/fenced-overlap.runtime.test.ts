@@ -1,4 +1,5 @@
-import { InBandSupersededError } from '@workflow/errors';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { InBandSupersededError, RUN_ERROR_CODES } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,12 +13,15 @@ import {
   dataOf,
   eventsOf,
   expectAcknowledged,
+  expectRefusalRedelivery,
   ORCHESTRATOR_QUEUE,
   orchestratorMessagesOf,
   registerWorkflow,
   runResult,
   setupOrchestratorRun,
+  stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
+import { getMaxQueueDeliveries } from '../constants.js';
 import { setWorld } from '../world.js';
 import { REPEATED_FENCE_REFUSAL_WARN_THRESHOLD } from './fence-refusals.js';
 
@@ -39,6 +43,10 @@ registerStepFunction('fo_s2', async () => {
 });
 registerStepFunction('fo_a', async () => 10);
 registerStepFunction('fo_b', async () => 20);
+registerStepFunction('fo_bg', async () => {
+  calls.fo_bg = (calls.fo_bg ?? 0) + 1;
+  return 7;
+});
 
 const step = (name: string) =>
   `globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(name)})`;
@@ -64,6 +72,9 @@ const waitWakeWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")]
 
 const twoStepWorkflow = `const a = ${step('fo_a')}; const b = ${step('fo_b')};
   async function workflow() { return (await a()) + (await b()); }${registerWorkflow()}`;
+
+const backgroundStepWorkflow = `const s = ${step('fo_bg')};
+  async function workflow() { return await s(); }${registerWorkflow()}`;
 
 const isStepMessage = (message: unknown) =>
   (message as { stepId?: string }).stepId !== undefined;
@@ -166,16 +177,24 @@ describe.each([
     const orchestratorCalls = orchestratorMessagesOf(world).length;
     gate.resolve();
     const [resultA, resultB] = await Promise.all([deliveryA, deliveryB]);
-    // Both acknowledge, and the one that stands down sends one plain wake.
-    // Usually A stands down: B's view included every in-band write, and B
-    // finishes the run. Or A's run-ahead hit the wake's event below a
-    // speculative write and still wrote s1's outcome (a hazard stops
-    // decisions, not outcomes), and that write took the fence first: then B
-    // stands down, and A continues in place from a fresh load and finishes
-    // the run. The wake then finds the run finished.
-    expectAcknowledged(world, resultA, start);
-    expectAcknowledged(world, resultB, wakeMessage);
-    expectAcknowledged(world, undefined, start, orchestratorCalls, 1);
+    // One acknowledges, and the one that stands down asks for a redelivery
+    // of its own message, with no wake. Usually A stands down: B's view
+    // included every in-band write, and B finishes the run. Or A's run-ahead
+    // hit the wake's event below a speculative write and still wrote s1's
+    // outcome (a hazard stops decisions, not outcomes), and that write took
+    // the fence first: then B stands down, and A continues in place from a
+    // fresh load and finishes the run. The redelivery then finds the run
+    // finished.
+    const outcomes = [
+      { result: resultA, message: start },
+      { result: resultB, message: wakeMessage },
+    ];
+    const refused = outcomes.filter(({ result }) => result !== undefined);
+    expect(refused).toHaveLength(1);
+    for (const { result, message } of outcomes) {
+      if (result === undefined) expectAcknowledged(world, result, message);
+      else expectRefusalRedelivery(world, result, message, orchestratorCalls);
+    }
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(1019);
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
@@ -210,7 +229,7 @@ describe.each([
     ]);
   });
 
-  it('discards the retained session when a later write is fenced out, and the delivery of its wake replays to the same result', async () => {
+  it('discards the retained session when a later write is fenced out, and the redelivery replays to the same result', async () => {
     const { world, start } = await setupOrchestratorRun(
       twoStepWorkflow,
       [],
@@ -237,9 +256,9 @@ describe.each([
       new Request('https://example.test')
     );
 
-    expectAcknowledged(world, await world.deliver(start), start, 0, 1);
+    expectRefusalRedelivery(world, await world.deliver(start), start, 0);
     expect(eventsOf(world, 'run_completed')).toHaveLength(0);
-    // The fenced-out delivery sent one wake; its delivery finishes the run.
+    // The fenced-out delivery's message is redelivered and finishes the run.
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(30);
     expect(eventsOf(world, 'step_completed')).toHaveLength(2);
@@ -283,7 +302,7 @@ describe.each([
   'node',
   'quickjs',
 ] as const)('a write the fence refuses with no other orchestrator of the run (%s engine)', (engine) => {
-  it('acknowledges with one plain wake, whose delivery completes the run (serialized queue)', async () => {
+  it('asks for a redelivery of its message, whose delivery completes the run (serialized queue)', async () => {
     let current: AppendOnlyWorld | undefined;
     const { world, start } = await setupOrchestratorRun(
       twoStepWorkflow,
@@ -293,16 +312,16 @@ describe.each([
     );
     current = world;
 
-    expectAcknowledged(world, await world.deliver(start), start, 0, 1);
+    expectRefusalRedelivery(world, await world.deliver(start), start, 0);
     expect(eventsOf(world, 'run_completed')).toHaveLength(0);
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(30);
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
-    // One orchestrator message: the wake. Nothing else stood in.
-    expect(orchestratorMessagesOf(world)).toHaveLength(1);
+    // No orchestrator message: the redelivery stood in.
+    expect(orchestratorMessagesOf(world)).toEqual([]);
   });
 
-  it('runs again from a fresh load in the same delivery when the wake is coalesced into it (coalescing queue)', async () => {
+  it('does not run again in place on a coalescing queue: the redelivery completes the run', async () => {
     let current: AppendOnlyWorld | undefined;
     const { world, start } = await setupOrchestratorRun(
       twoStepWorkflow,
@@ -312,35 +331,50 @@ describe.each([
     );
     current = world;
 
-    expect(await world.deliver(start)).toBeUndefined();
-    // The wake was coalesced into the refused delivery itself, which ran
-    // again and finished the run: no message is left.
-    expect(world.coalescedMessages).toBe(1);
+    const redelivery = expectRefusalRedelivery(
+      world,
+      await world.deliver(start),
+      start,
+      0
+    );
+    // Nothing was sent to be coalesced into the refused delivery.
+    expect(world.coalescedMessages).toBe(0);
+    await world.deliver(redelivery);
     expect(world.held).toEqual([]);
     expect(await runResult(world)).toBe(30);
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
   });
 
-  it('hands the message off once a delivery refused on every pass runs out of coalesced re-runs', async () => {
-    const maxCoalescedReruns = 3;
+  it('fails the run at the delivery cap when every pass is refused, and warns about the streak', async () => {
     let current: AppendOnlyWorld | undefined;
     const { world, start } = await setupOrchestratorRun(
       twoStepWorkflow,
       [],
-      {
-        coalesce: true,
-        maxCoalescedReruns,
-        ...refuseOwnStepCompleted(() => current!, Number.POSITIVE_INFINITY),
-      },
+      refuseOwnStepCompleted(() => current!, Number.POSITIVE_INFINITY),
       engine
     );
     current = world;
 
+    // Long enough for the streak warning, and short of the inline step's
+    // retry budget, which every refused pass spends one attempt of.
+    vi.stubEnv(
+      'WORKFLOW_MAX_QUEUE_DELIVERIES',
+      String(REPEATED_FENCE_REFUSAL_WARN_THRESHOLD)
+    );
     const warn = vi.spyOn(runtimeLogger, 'warn');
-    await world.deliver(start);
-    // Each pass sent one wake, which was coalesced into the delivery; past
-    // the bound the message was handed off instead of running again.
-    expect(world.deliveries).toHaveLength(maxCoalescedReruns + 1);
+    const cap = getMaxQueueDeliveries();
+    await world.runUntilIdle(cap + 2);
+    // Every refused pass asked for a redelivery of the same message, each an
+    // attempt, until the cap failed the run in-band.
+    expect(world.deliveries).toHaveLength(cap + 1);
+    expect(
+      new Set(world.deliveries.map((delivery) => delivery.messageId))
+    ).toEqual(new Set([start.messageId]));
+    expect(eventsOf(world, 'run_failed')).toHaveLength(1);
+    expect(dataOf(eventsOf(world, 'run_failed')[0]!)).toMatchObject({
+      errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+    });
+    expect(orchestratorMessagesOf(world)).toEqual([]);
     // The streak is reported at warn once it is long enough, with the
     // counts the refusal carried.
     const streakWarnings = warn.mock.calls.filter(([message]) =>
@@ -353,18 +387,68 @@ describe.each([
       refusalSeqInBand: expect.any(Number),
     });
     warn.mockRestore();
-    expect(world.coalescedHandoffs).toBe(1);
-    expect(world.held).toEqual([
-      expect.objectContaining({
-        messageId: start.messageId,
-        handoffCount: 1,
-      }),
-    ]);
   });
 });
 
-// Known gap, see the supersede path in `delivery.ts`: the `Queue` contract
-// does not say what an acknowledgment of a lapsed lease does.
-it.todo(
-  'acknowledging a fence-refused delivery whose lease lapsed does not drop a send the overlapping delivery of the same message still owes'
-);
+describe.each([
+  'node',
+  'quickjs',
+] as const)('two deliveries of one message after a lease lapse (%s engine)', (engine) => {
+  it('re-sends the background step the dead delivery committed and never sent, and the run completes', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    // D1 and D2 are two deliveries of the start message: D1 outlived its
+    // lease. Both load the same log; D2 writes only after D1 committed the
+    // step's creation, so D2 is refused.
+    const delivering = new AsyncLocalStorage<'D1' | 'D2'>();
+    let lists = 0;
+    const bothListed = withResolvers<void>();
+    const d1Committed = withResolvers<void>();
+    const { world, start } = await setupOrchestratorRun(
+      backgroundStepWorkflow,
+      [],
+      {
+        beforeList: async () => {
+          if (++lists === 2) bothListed.resolve();
+          if (lists <= 2) await bothListed.promise;
+        },
+        beforeCreate: async () => {
+          if (delivering.getStore() === 'D2') await d1Committed.promise;
+        },
+      },
+      engine
+    );
+    // D1 dies in the step's send, after its step_created committed.
+    const asWorld = world.asWorld();
+    const queue = asWorld.queue.bind(asWorld);
+    let d1Died = false;
+    asWorld.queue = (async (...args: Parameters<typeof queue>) => {
+      if (isStepMessage(args[1]) && !d1Died) {
+        d1Died = true;
+        d1Committed.resolve();
+        return new Promise<never>(() => {});
+      }
+      return queue(...args);
+    }) as typeof queue;
+    setWorld(asWorld);
+    await workflowEntrypoint(backgroundStepWorkflow)(
+      new Request('https://example.test')
+    );
+
+    void delivering.run('D1', () => world.deliver(start));
+    const d2 = { ...start, deliveryCount: 2 };
+    const result = await delivering.run('D2', () => world.deliver(d2));
+    expect(d1Died).toBe(true);
+    expect(eventsOf(world, 'step_created')).toHaveLength(1);
+    // D2 is refused and asks for a redelivery of the message, which is not
+    // the message's first delivery: it re-sends the step D1 never sent.
+    expectRefusalRedelivery(world, result, d2, 0);
+    await world.runUntilIdle();
+    expect(
+      stepMessagesOf(world).map(
+        (call) => (call.message as { stepId: string }).stepId
+      )
+    ).toEqual([eventsOf(world, 'step_created')[0]!.correlationId]);
+    expect(calls.fo_bg).toBe(1);
+    expect(await runResult(world)).toBe(7);
+  });
+});

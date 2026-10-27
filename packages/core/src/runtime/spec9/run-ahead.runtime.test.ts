@@ -12,7 +12,7 @@ import {
   creationsOf,
   dataOf,
   eventsOf,
-  expectAcknowledged,
+  expectRefusalRedelivery,
   ORCHESTRATOR_QUEUE,
   orchestratorMessagesOf,
   registerWorkflow,
@@ -912,7 +912,7 @@ describe('run-ahead against an append-only World (node engine)', () => {
       },
     });
 
-    expectAcknowledged(world, await world.deliver(start), start, 0, 1);
+    expectRefusalRedelivery(world, await world.deliver(start), start, 0);
     // Nothing after the refused write reached the World, and every outcome
     // that did has its creation.
     expect(committedAtRefusal).toBeDefined();
@@ -922,8 +922,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
       expect(created.has(completed.correlationId)).toBe(true);
     }
 
-    // No other orchestrator exists: the wake the refused delivery sent
-    // finishes the run.
+    // No other orchestrator exists: the redelivery the refused delivery
+    // asked for finishes the run.
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);

@@ -167,6 +167,7 @@ import {
 } from './deadline.js';
 import {
   clearFenceRefusals,
+  FENCE_REFUSAL_REDELIVERY_SECONDS,
   noteFenceRefusal,
   warnsOnFenceRefusal,
 } from './fence-refusals.js';
@@ -1158,7 +1159,7 @@ async function runDelivery(
         // staleness bound), or a write the World refused after allocating
         // its position moved the count past this writer's.
         runtimeLogger.info(
-          'Orchestrator write refused by the in-band fence; sending the messages its own writes owe and a wake, and acknowledging',
+          'Orchestrator write refused by the in-band fence; sending the messages its own writes owe and redelivering the message',
           {
             workflowRunId: runId,
             loopIteration,
@@ -1192,35 +1193,29 @@ async function runDelivery(
         continuation.exit = `superseded:${(err as Error)?.message?.slice(0, 200)}`;
         // What this delivery's committed writes owe the queue goes out
         // first: no other delivery is their creator, so none would send
-        // them. A crash before they do redelivers this message, whose
-        // creator rules re-send them.
-        //
-        // Not covered: when this delivery outlived its lease and a second
-        // delivery of the same message is running, the acknowledgment below
-        // lands while that delivery may still owe a step or timer send of
-        // its own. What the queue does with the acknowledgment of a lapsed
-        // lease is not specified by the `Queue` contract and not verified.
+        // them now.
         await sendUnsentMessages?.();
-        // Then one plain orchestrator wake, because a refusal does not prove
-        // that another orchestrator is running: the World also refuses a
-        // write whose own position it sealed, or one behind a refused write
-        // that allocated, and then nothing else is queued for the run. The
-        // wake is an ordinary orchestrator message (keyed where the World
-        // keys them) and carries nothing the log does not hold. A World
-        // that coalesces folds it into the delivery that holds the run: a
-        // live winner, at no cost, or this delivery itself, whose
-        // acknowledgment is then refused and which runs again from a fresh
-        // load in the same invocation (the World bounds those re-runs and
-        // hands the message off past the bound). A World that serializes
-        // delivers it after the running delivery.
-        await queueMessage(
-          world,
-          getWorkflowQueueName(workflowName, namespace),
-          await replayMessage(),
-          { specVersion: runSpecVersion }
-        );
+        // Then the delivery ends in a counted redelivery of its own message,
+        // never an acknowledgment. A refusal does not prove that another
+        // orchestrator is running: the World also refuses a write whose own
+        // position it sealed, or one behind a refused write that allocated,
+        // and then nothing else is queued for the run. And when the other
+        // writer is a second delivery of this same message (one of the two
+        // outlived its lease), it may have committed a `step_created` and
+        // died before the step's message went out. The redelivery is not
+        // its message's first, so it re-sends every background step that
+        // has no `step_started` (see `stepsToReenqueue`), whichever delivery
+        // created it. On a World that keys a run's orchestrator messages
+        // (world-vercel), the message keeps the run's key during the delay,
+        // so a wake sent meanwhile is coalesced into the redelivery, which
+        // reads the log anyway. Where the redelivery counts as an attempt
+        // (world-vercel, world-local), a run whose every pass is refused
+        // reaches the delivery cap (`MAX_QUEUE_DELIVERIES`) instead of
+        // looping; world-postgres starts `attempt` over on such a
+        // redelivery, so there the loop stays bounded only by the refusal
+        // warn logs.
         continuation.handoff = false;
-        return undefined;
+        return { timeoutSeconds: FENCE_REFUSAL_REDELIVERY_SECONDS };
       }
       if (
         !turboStartFailure &&

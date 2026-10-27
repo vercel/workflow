@@ -11,7 +11,7 @@ import { workflowEntrypoint } from '../../runtime.js';
 import { dehydrateWorkflowArguments } from '../../serialization.js';
 import { setAttributes } from '../../set-attributes.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
-import { expectAcknowledged } from '../../test-support/orchestrator-harness.js';
+import { expectRefusalRedelivery } from '../../test-support/orchestrator-harness.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -240,7 +240,7 @@ describe.each([
     expect(world.creates[0]?.params).not.toMatchObject({ skipPreload: true });
   });
 
-  it('stops the delivery when the fence refuses the backgrounded run_started, and acknowledges', async () => {
+  it('stops the delivery when the fence refuses the backgrounded run_started, and asks for a redelivery', async () => {
     let refuse = true;
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
@@ -265,18 +265,17 @@ describe.each([
 
     const first = await world.deliver(start);
 
-    // (c) Superseded: acknowledged, with one plain wake sent in its place.
-    // The body that started ahead of run_started ran, but nothing it or the
-    // orchestrator would have written reached the World.
+    // (c) Superseded: a redelivery of the same message, and nothing sent in
+    // its place. The body that started ahead of run_started ran, but nothing
+    // it or the orchestrator would have written reached the World.
     expect(bodies).toHaveLength(1);
     expect(types(world.events)).toEqual(['run_created']);
     expect(world.creates).toEqual([]);
-    expectAcknowledged(world, first, start, 0, 1);
+    expectRefusalRedelivery(world, first, start, 0);
     expect(world.held).toHaveLength(1);
-    expect(world.queueCalls).toHaveLength(1);
+    expect(world.queueCalls).toHaveLength(0);
 
-    // The wake's delivery is not turbo: it loads the log first and
-    // completes.
+    // The redelivery is not turbo: it loads the log first and completes.
     await world.runUntilIdle();
     expect(world.listCalls.length).toBeGreaterThan(0);
     expect(indexOf(world, 'run_completed')).toBeGreaterThan(0);

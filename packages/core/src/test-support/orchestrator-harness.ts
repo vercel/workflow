@@ -1,11 +1,12 @@
 import type { Event, WorkflowRun } from '@workflow/world';
+import { FENCE_REFUSAL_REDELIVERY_SECONDS } from '../runtime/spec9/fence-refusals.js';
 import { setWorld } from '../runtime/world.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
-import { AppendOnlyWorld } from './append-only-world.js';
+import { AppendOnlyWorld, type HeldMessage } from './append-only-world.js';
 
 /** The orchestrator queue of a workflow named `workflow`. */
 export const ORCHESTRATOR_QUEUE = '__wkf_workflow_workflow';
@@ -94,8 +95,7 @@ export const orchestratorMessagesOf = (world: AppendOnlyWorld) =>
  * returned nothing, the World no longer holds the message, and, after
  * `orchestratorCallsBefore` (the count of orchestrator queue calls before it
  * ran), it sent `wakes` plain orchestrator wakes (no timer, no message-only
- * state) besides the step messages and timers its own writes owed. A
- * delivery the in-band fence refused sends one.
+ * state) besides the step messages and timers its own writes owed.
  */
 export function expectAcknowledged(
   world: AppendOnlyWorld,
@@ -138,4 +138,49 @@ export function expectAcknowledged(
       );
     }
   }
+}
+
+/**
+ * Asserts that a delivery the in-band fence refused stood down the way every
+ * refused delivery does: it asked for a counted redelivery of its own
+ * message (`{ timeoutSeconds }`), the World holds that message with the next
+ * delivery count, and, after `orchestratorCallsBefore` (the count of
+ * orchestrator queue calls before it ran), it sent no plain orchestrator
+ * wake. Returns the held redelivery.
+ */
+export function expectRefusalRedelivery(
+  world: AppendOnlyWorld,
+  result: unknown,
+  message: { messageId: string; deliveryCount: number },
+  orchestratorCallsBefore?: number
+): HeldMessage {
+  if (
+    JSON.stringify(result) !==
+    JSON.stringify({ timeoutSeconds: FENCE_REFUSAL_REDELIVERY_SECONDS })
+  ) {
+    throw new Error(
+      `expected a fence-refusal redelivery, got ${JSON.stringify(result)}`
+    );
+  }
+  const held = world.held.find((h) => h.messageId === message.messageId);
+  if (!held || held.deliveryCount !== message.deliveryCount + 1) {
+    throw new Error(
+      `expected the message to be held for its next delivery, found ${JSON.stringify(held)}`
+    );
+  }
+  if (orchestratorCallsBefore !== undefined) {
+    const wakes = orchestratorMessagesOf(world)
+      .slice(orchestratorCallsBefore)
+      .filter(
+        (call) =>
+          (call.message as { waitContinuation?: unknown }).waitContinuation ===
+          undefined
+      );
+    if (wakes.length > 0) {
+      throw new Error(
+        `expected no orchestrator wake, found ${JSON.stringify(wakes.map((call) => call.message))}`
+      );
+    }
+  }
+  return held;
 }

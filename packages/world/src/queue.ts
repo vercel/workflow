@@ -878,7 +878,10 @@ export interface Queue {
    *   again (same `messageId`, next `deliveryCount`) after about `n` seconds.
    *   The runtime returns this from a step handler to retry a step in place
    *   after `retryAfter`, and from an orchestrator delivery to defer the run
-   *   (an inline step start refused for load). A World MAY clamp `n` to what
+   *   (an inline step start refused for load) or to stand down after the
+   *   in-band fence refused its write, whose redelivery must count as one
+   *   (next `deliveryCount`) so that it re-sends what a delivery that died
+   *   left unsent. A World MAY clamp `n` to what
    *   its queue supports (Vercel Queues clamps a redelivery delay to
    *   [5s, 900s]); the runtime tolerates an early redelivery by checking the
    *   log and asking again. A World whose queue cannot redeliver the same
@@ -892,9 +895,9 @@ export interface Queue {
    *   `attempt`. The orchestrator returns this when its invocation must end
    *   before its work does (the invocation deadline, a stream flush, the
    *   replay budget, a wait or a write it cannot read yet). The runtime never
-   *   returns it where the next delivery has to count as a redelivery: a
-   *   fence-refused delivery sends what its writes owe and one plain wake,
-   *   and acknowledges its message. A World should not treat a non-finite
+   *   returns it where the next delivery has to count as an attempt: a
+   *   fence-refused delivery sends what its writes owe and returns
+   *   `{ timeoutSeconds: n }` with `n > 0`. A World should not treat a non-finite
    *   `n` as a handoff (a handoff is not an attempt, so a handler that kept
    *   returning one would never stop); world-vercel redelivers after its
    *   longest delay.

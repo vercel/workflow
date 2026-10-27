@@ -5,9 +5,10 @@
  *
  * One refusal is expected (an overlap the queue let through, or the World
  * sealing a slow writer's own position). Many in a row point at a World-side
- * fault or a pathological write latency: each pass sends a wake and
- * acknowledges, and on a coalescing World the wake folds back into the same
- * delivery, so nothing else surfaces the loop. Bounded: the oldest run is
+ * fault or a pathological write latency: each pass asks for a redelivery of
+ * its message, and nothing else surfaces the loop until the delivery cap
+ * fails the run (on a World that counts such a redelivery as an attempt).
+ * Bounded: the oldest run is
  * forgotten past {@link MAX_TRACKED_RUNS}.
  */
 // per-copy-ok: a diagnostic streak of one run's deliveries, which run in the
@@ -48,3 +49,12 @@ export function warnsOnFenceRefusal(count: number): boolean {
     (count & (count - 1)) === 0
   );
 }
+
+/**
+ * The delay of the redelivery a fence-refused orchestrator delivery asks for
+ * (`{ timeoutSeconds }`) instead of acknowledging its message: long enough
+ * for a second delivery of the message that is still running to commit or
+ * fail, short enough that a refusal no other delivery explains costs about
+ * a second.
+ */
+export const FENCE_REFUSAL_REDELIVERY_SECONDS = 1;

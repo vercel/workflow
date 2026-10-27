@@ -129,6 +129,16 @@ export class AppendOnlyWorld {
   coalescedHandoffs = 0;
   /** Handoffs continued on a new message (see `rotateHandoff`). */
   rotations = 0;
+  /** Messages a test enqueued (see `enqueue`), for their unique ids. */
+  private enqueued = 0;
+  /** Idempotency keys of the messages being delivered, with their counts. */
+  private readonly deliveringKeys = new Map<string, number>();
+  /**
+   * Idempotency keys of acknowledged messages. A queue keeps a key past the
+   * message's acknowledgment (Vercel Queues for `min(retention, 24h)`), so a
+   * late send under it is dropped too.
+   */
+  private readonly acknowledgedKeys = new Set<string>();
 
   constructor(
     readonly options: {
@@ -569,6 +579,30 @@ export class AppendOnlyWorld {
 
   private async deliverOnce(held: HeldMessage): Promise<unknown> {
     if (!this.handler) throw new Error('no queue handler registered');
+    const key = held.opts?.idempotencyKey as string | undefined;
+    if (key !== undefined) {
+      this.deliveringKeys.set(key, (this.deliveringKeys.get(key) ?? 0) + 1);
+    }
+    try {
+      const result = await this.deliverOnceKeyed(held);
+      const acknowledged = !(
+        typeof result === 'object' &&
+        result !== null &&
+        'timeoutSeconds' in result
+      );
+      if (key !== undefined && acknowledged) this.acknowledgedKeys.add(key);
+      return result;
+    } finally {
+      if (key !== undefined) {
+        const left = (this.deliveringKeys.get(key) ?? 1) - 1;
+        if (left > 0) this.deliveringKeys.set(key, left);
+        else this.deliveringKeys.delete(key);
+      }
+    }
+  }
+
+  private async deliverOnceKeyed(held: HeldMessage): Promise<unknown> {
+    if (!this.handler) throw new Error('no queue handler registered');
     let result: unknown;
     try {
       result = await this.handler(held.message, {
@@ -637,7 +671,7 @@ export class AppendOnlyWorld {
   enqueue(queueName: string, message: unknown): HeldMessage {
     const held: HeldMessage = {
       message,
-      messageId: `msg_${this.queueCalls.length + this.held.length + 1}_ext`,
+      messageId: `msg_${++this.enqueued}_ext`,
       queueName,
       deliveryCount: 1,
       createdAt: new Date(),
@@ -890,10 +924,13 @@ export class AppendOnlyWorld {
           return { messageId };
         }
         const key = options?.idempotencyKey;
-        // Deduplicate like a queue does while the keyed message exists.
+        // Deduplicate like a queue does while the keyed message exists
+        // (held, or being delivered) and after it was acknowledged.
         if (
           key !== undefined &&
-          self.held.some((held) => held.opts?.idempotencyKey === key)
+          (self.held.some((held) => held.opts?.idempotencyKey === key) ||
+            self.deliveringKeys.has(key as string) ||
+            self.acknowledgedKeys.has(key as string))
         ) {
           return { messageId: null };
         }

@@ -16,7 +16,7 @@ import { dehydrateWorkflowArguments } from '../../serialization.js';
 import * as telemetry from '../../telemetry.js';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
-  expectAcknowledged,
+  expectRefusalRedelivery,
   orchestratorMessagesOf,
   runResult,
   stepMessagesOf,
@@ -1252,7 +1252,7 @@ describe.each([
     }
   });
 
-  it('stops a superseded orchestrator without running bodies, and acknowledges with one plain wake', async () => {
+  it('stops a superseded orchestrator without running bodies, and asks for a redelivery of its message', async () => {
     const { world, start } = await setup(
       `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("so_add");
        async function workflow(a, b) { return await add(a, b); }${transform('workflow')}`,
@@ -1280,12 +1280,12 @@ describe.each([
 
     const result = await world.deliver(start);
     expect(calls.so_add).toBeUndefined();
-    // Acknowledged with one plain wake and no step message: the refusal does
-    // not say another orchestrator is running, so the wake makes sure one
-    // runs.
-    expectAcknowledged(world, result, start, 0, 1);
+    // No wake and no step message: the refusal does not say another
+    // orchestrator is running, so the delivery asks for a redelivery of its
+    // own message, which makes sure one runs.
+    expectRefusalRedelivery(world, result, start, 0);
     expect(stepMessagesOf(world)).toEqual([]);
-    // The wake's delivery re-snapshots and finishes the run.
+    // The redelivery re-snapshots and finishes the run.
     await world.runUntilIdle();
     expect(eventsOf(world, 'run_completed')).toHaveLength(1);
     expect(calls.so_add).toBe(1);
@@ -1795,7 +1795,7 @@ describe.each([
         return stepId === undefined ? [] : [stepId];
       });
 
-    it('sends the messages its committed background steps still owe and one wake, then acknowledges', async () => {
+    it('sends the messages its committed background steps still owe, then asks for a redelivery of its message', async () => {
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
       try {
         let current: AppendOnlyWorld | undefined;
@@ -1806,7 +1806,7 @@ describe.each([
         );
         current = world;
 
-        expectAcknowledged(world, await world.deliver(start), start, 0, 1);
+        expectRefusalRedelivery(world, await world.deliver(start), start, 0);
         // Every step_created it committed has its message, sent once; none
         // of the refused creations does.
         const committed = eventsOf(world, 'step_created').map(
@@ -1816,8 +1816,8 @@ describe.each([
         expect(committed.length).toBeLessThan(fanOut);
         expect(stepMessageIds(world).sort()).toEqual([...committed].sort());
 
-        // The wake's delivery creates the rest and finishes the run; each
-        // step runs once.
+        // The redelivery creates the rest and finishes the run; each step
+        // runs once.
         await world.runUntilIdle(500);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
@@ -1924,16 +1924,15 @@ describe.each([
         vi.setSystemTime(Date.now() + 2 * 3_600_000);
         const orchestratorCalls = orchestratorMessagesOf(world).length;
 
-        expectAcknowledged(
+        expectRefusalRedelivery(
           world,
           await world.deliver(timer),
           timer,
-          orchestratorCalls,
-          1
+          orchestratorCalls
         );
         // Its wait is still open, and the writer that took the fence is not
-        // its timer: the timer goes out again, next to the plain wake every
-        // refused delivery sends.
+        // its timer: the timer goes out again, and the timer message itself
+        // is redelivered, as every refused delivery's message is.
         const resent = world.held.filter(
           (held) =>
             (
@@ -1943,7 +1942,10 @@ describe.each([
             ).waitContinuation?.correlationId ===
             eventsOf(world, 'wait_created')[0]?.correlationId
         );
-        expect(resent).toHaveLength(1);
+        expect(
+          resent.map((held) => held.messageId === timer.messageId)
+        ).toEqual(expect.arrayContaining([true, false]));
+        expect(resent).toHaveLength(2);
         await world.runUntilIdle();
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
       } finally {
