@@ -156,7 +156,11 @@ import {
   stepMessageRetentionSeconds,
 } from './step-retention.js';
 import { runStepSingleFlight } from './step-single-flight.js';
-import { waitTimerMessage } from './wait-timer.js';
+import {
+  nearDueTimerIdempotencyKey,
+  sendNearDueTimerOnce,
+  waitTimerMessage,
+} from './wait-timer.js';
 
 /** The queue message of one step and its options (see `queueStepMessage`). */
 function stepMessageOf(params: {
@@ -424,6 +428,13 @@ export async function runWorkflowWithQuickJS(params: {
    */
   deliveryAttempt?: number;
   /**
+   * Whether this delivery may hold an orchestrator message the queue
+   * coalesced into it (any delivery but its message's first), and so arms
+   * the near-due waits of chains it does not own on exit (see
+   * `armNearDueTimers` in `delivery.ts`). Absent: it may.
+   */
+  armsNearDueWaits?: boolean;
+  /**
    * Epoch ms past which a delivery with nothing left to run does not linger
    * for work done elsewhere (see `getOrchestratorLingerMs`): the invocation's
    * inline deadline. Absent: no lingering.
@@ -534,6 +545,7 @@ export async function runWorkflowWithQuickJS(params: {
     parentSpan,
     maxEventsLimit,
     deliveryAttempt,
+    armsNearDueWaits = true,
     ownerMessageId,
     requestId,
     namespace,
@@ -581,30 +593,50 @@ export async function runWorkflowWithQuickJS(params: {
   const completedWaits = params.completedWaits ?? new Set<string>();
   /** Waits whose timer this invocation sent. */
   const scheduledWaitContinuations = new Set<string>();
-  /** A timer wake: delayed, and carrying no idempotency key. */
+  /**
+   * A timer wake: delayed, and carrying no idempotency key, except a
+   * near-due re-arm (`nearDueTimerIdempotencyKey`).
+   */
   const queueWaitTimer = async (
     correlationId: string,
     seconds: number,
-    resumeAtMs: number
+    resumeAtMs: number,
+    options: { nearDue?: boolean } = {}
   ): Promise<void> => {
+    const nowMs = Date.now();
     const timer = waitTimerMessage({
       correlationId,
       resumeAtMs,
       seconds,
-      nowMs: Date.now(),
+      nowMs,
       attempt: nextWaitContinuationAttempt(correlationId),
     });
-    await queueMessage(
-      world,
-      getWorkflowQueueName(workflowRun.workflowName, namespace),
-      {
-        runId,
-        traceCarrier: await nextTraceCarrier(),
-        requestedAt: new Date(),
-        waitContinuation: timer.waitContinuation,
-      },
-      { specVersion: workflowRun.specVersion, delaySeconds: timer.delaySeconds }
-    );
+    const send = async (idempotencyKey?: string) =>
+      queueMessage(
+        world,
+        getWorkflowQueueName(workflowRun.workflowName, namespace),
+        {
+          runId,
+          traceCarrier: await nextTraceCarrier(),
+          requestedAt: new Date(),
+          waitContinuation: timer.waitContinuation,
+        },
+        {
+          specVersion: workflowRun.specVersion,
+          delaySeconds: timer.delaySeconds,
+          ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+        }
+      );
+    if (options.nearDue) {
+      const key = nearDueTimerIdempotencyKey({
+        correlationId,
+        resumeAtMs,
+        nowMs,
+      });
+      await sendNearDueTimerOnce(key, () => send(key));
+    } else {
+      await send();
+    }
     params.onWaitTimerSent?.(correlationId);
   };
   /**
@@ -2821,16 +2853,22 @@ export async function runWorkflowWithQuickJS(params: {
       return;
     }
 
-    // Every wait due within the near-due window gets a timer whatever
-    // chain it is in: this delivery may hold a timer the queue coalesced
-    // into it a little before its wait was due (see
-    // `getNearDueWaitWindowSeconds`).
-    const nearDueHorizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
+    // On a delivery that may hold a timer the queue coalesced into it a
+    // little before its wait was due (`armsNearDueWaits`), every wait due
+    // within the near-due window gets a timer whatever chain it is in (see
+    // `getNearDueWaitWindowSeconds`), keyed so that the re-arms of one wait
+    // within a second are one message. The first delivery of a message
+    // (a wake that brought nothing new included) holds none.
+    const nearDueHorizonMs = armsNearDueWaits
+      ? Date.now() + getNearDueWaitWindowSeconds() * 1000
+      : Number.NEGATIVE_INFINITY;
     for (const wait of exitSweep) {
       if (wait.resumeAtMs > nearDueHorizonMs) continue;
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
-      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs);
+      await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs, {
+        nearDue: true,
+      });
       wfdiag('wait_continuation_scheduled', {
         correlationId: wait.correlationId,
         delaySeconds: wait.seconds,

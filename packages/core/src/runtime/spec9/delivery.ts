@@ -222,7 +222,11 @@ import {
   type StartedInBatch,
 } from './step-wait-creation.js';
 import { handleSuspension, pendingQueueDrain } from './suspension-handler.js';
-import { waitTimerMessage } from './wait-timer.js';
+import {
+  nearDueTimerIdempotencyKey,
+  sendNearDueTimerOnce,
+  waitTimerMessage,
+} from './wait-timer.js';
 
 /**
  * Apply the optional client-side event-limit override.
@@ -375,6 +379,13 @@ async function runDelivery(
     metadata.deliveryCount === undefined
       ? undefined
       : Math.min(metadata.deliveryCount, metadata.attempt);
+  // Whether this delivery may hold an orchestrator message the queue
+  // coalesced into it: any delivery but its message's first (a coalesced
+  // re-run counts above 1, and so does a handoff or redelivery, which may
+  // follow one). Only such a delivery arms near-due waits of chains it does
+  // not own (`armNearDueTimers`): a coalesced timer never reaches the first
+  // run of the delivery that absorbs it.
+  const mayHoldCoalescedTimer = metadata.deliveryCount !== 1;
   // A delivery of a message the World sent after it lost its queue
   // (world-local after a restart): the run's step messages and timers died
   // with it.
@@ -936,7 +947,8 @@ async function runDelivery(
    */
   const wakeSelf = async (
     extra?: Partial<WorkflowInvokePayload>,
-    delaySeconds?: number
+    delaySeconds?: number,
+    idempotencyKey?: string
   ): Promise<void> => {
     const delayed = delaySeconds !== undefined && delaySeconds > 0;
     if (!delayed && extra === undefined) {
@@ -951,6 +963,7 @@ async function runDelivery(
       {
         specVersion: runSpecVersion,
         ...(delayed ? { delaySeconds } : {}),
+        ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
       }
     );
   };
@@ -1713,6 +1726,7 @@ async function runDelivery(
           nextTraceCarrier,
           waitContinuation,
           deliveryAttempt: creatorDeliveryCount,
+          armsNearDueWaits: mayHoldCoalescedTimer,
           ownerMessageId: creatorMessageId,
           stepResends,
           onStepResent: noteResent,
@@ -4215,22 +4229,30 @@ async function runDelivery(
     /**
      * Arms the timer of every open wait due within the near-due window
      * (`getNearDueWaitWindowSeconds`), whatever chain it is in, once per
-     * wait: a suspending delivery may hold a timer the queue coalesced
-     * into it a little before its wait was due.
+     * wait, on a delivery that may hold a timer the queue coalesced into it
+     * a little before its wait was due (`mayHoldCoalescedTimer`). Each
+     * re-arm carries `nearDueTimerIdempotencyKey`, so the re-arms of one
+     * wait from deliveries within the same second are one message.
      */
     async function armNearDueTimers(events: Event[]): Promise<void> {
+      if (!mayHoldCoalescedTimer) return;
       const horizonMs = Date.now() + getNearDueWaitWindowSeconds() * 1000;
       for (const wait of openWaits(events)) {
         if (wait.resumeAtMs > horizonMs) continue;
-        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
+        if (!timedWaits.has(wait.correlationId)) {
+          await sendWaitTimer(wait, { nearDue: true });
+        }
       }
     }
 
     /** Sends the timer message of one wait (see `waitTimerMessage`). */
-    async function sendWaitTimer(wait: {
-      correlationId: string;
-      resumeAtMs: number;
-    }): Promise<void> {
+    async function sendWaitTimer(
+      wait: {
+        correlationId: string;
+        resumeAtMs: number;
+      },
+      options: { nearDue?: boolean } = {}
+    ): Promise<void> {
       timedWaits.add(wait.correlationId);
       const now = Date.now();
       const timer = waitTimerMessage({
@@ -4240,10 +4262,22 @@ async function runDelivery(
         nowMs: now,
       });
       try {
-        await wakeSelf(
-          { waitContinuation: timer.waitContinuation },
-          timer.delaySeconds
-        );
+        const send = (idempotencyKey?: string) =>
+          wakeSelf(
+            { waitContinuation: timer.waitContinuation },
+            timer.delaySeconds,
+            idempotencyKey
+          );
+        if (options.nearDue) {
+          const key = nearDueTimerIdempotencyKey({
+            correlationId: wait.correlationId,
+            resumeAtMs: wait.resumeAtMs,
+            nowMs: now,
+          });
+          await sendNearDueTimerOnce(key, () => send(key));
+        } else {
+          await send();
+        }
       } catch (error) {
         timedWaits.delete(wait.correlationId);
         throw error;

@@ -18,6 +18,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { vi } from 'vitest';
 import {
   MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_IN_BAND_CREATION_BATCH_EVENTS,
@@ -48,6 +49,12 @@ export interface HeldMessage {
   coalescedRerun?: number;
   /** Passed as `meta.invocationStartedAt`. */
   invocationStartedAt?: number;
+  /**
+   * When the queue's clock makes the message due (epoch ms): its send time
+   * plus its delay, or a redelivery's time plus its `timeoutSeconds`. Read by
+   * {@link AppendOnlyWorld.runOnClock}.
+   */
+  dueAtMs?: number;
 }
 
 /** One delivery a test made, with what the handler returned. */
@@ -665,6 +672,10 @@ export class AppendOnlyWorld {
       } = held;
       this.held.push({
         ...next,
+        dueAtMs:
+          Date.now() +
+          Math.max(0, (result as { timeoutSeconds: number }).timeoutSeconds) *
+            1000,
         deliveryCount: held.deliveryCount + 1,
         ...(handedOff && { handoffCount: (held.handoffCount ?? 0) + 1 }),
       });
@@ -694,6 +705,43 @@ export class AppendOnlyWorld {
       const next = this.held[0];
       if (!next) return;
       await this.deliver(next);
+    }
+    throw new Error(
+      `still ${this.held.length} message(s) after ${limit} deliveries`
+    );
+  }
+
+  /**
+   * Deliver held messages in the order the queue's clock makes them due,
+   * moving the (faked) system clock to each one's due time
+   * (`HeldMessage.dueAtMs`), until none is left or `limit` deliveries were
+   * made. Among messages due at the same time, `prefer` picks which go first
+   * (oldest first otherwise): an orchestrator wake ahead of a step message
+   * gives each step outcome its own orchestrator delivery. `deliverAs`
+   * changes how a message is delivered (as a coalesced re-run, say). Needs a
+   * faked `Date` (`vi.useFakeTimers({ toFake: ['Date'] })`).
+   */
+  async runOnClock(
+    options: {
+      limit?: number;
+      prefer?: (held: HeldMessage) => boolean;
+      deliverAs?: (held: HeldMessage) => HeldMessage;
+    } = {}
+  ): Promise<void> {
+    const { limit = 10_000, prefer, deliverAs } = options;
+    const dueAt = (held: HeldMessage) => held.dueAtMs ?? +held.createdAt;
+    for (let i = 0; i < limit; i++) {
+      if (this.held.length === 0) return;
+      const earliest = Math.min(...this.held.map(dueAt));
+      const due = this.held.filter((held) => dueAt(held) === earliest);
+      const next = (prefer && due.find(prefer)) || due[0]!;
+      if (earliest > Date.now()) vi.setSystemTime(earliest);
+      if (deliverAs) {
+        this.held.splice(this.held.indexOf(next), 1);
+        await this.deliver(deliverAs(next));
+      } else {
+        await this.deliver(next);
+      }
     }
     throw new Error(
       `still ${this.held.length} message(s) after ${limit} deliveries`
@@ -939,12 +987,14 @@ export class AppendOnlyWorld {
         ) {
           return { messageId: null };
         }
+        const delaySeconds = (options?.delaySeconds as number | undefined) ?? 0;
         self.held.push({
           message,
           messageId,
           queueName,
           deliveryCount: 1,
           createdAt: new Date(),
+          dueAtMs: Date.now() + Math.max(0, delaySeconds) * 1000,
           opts: options,
         });
         return { messageId };

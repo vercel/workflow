@@ -840,8 +840,13 @@ export interface QueueOptions {
    * outcome, `resumeHook()`, `cancel()`, a force-claimed hook, a timer, a
    * fence refusal) carries no key: a duplicate wake costs one cheap delivery,
    * while a key can be absorbed by a delivery that is already exiting and
-   * lose the wakeup. Wakes of runs below spec 9 keep their earlier keys
-   * (`hook-<resumeId>`, `hook-force-claim-<hookId>`, the QuickJS engine's
+   * lose the wakeup. The one exception is a near-due re-arm, the timer a
+   * delivery that may hold a coalesced timer sends for an open wait due
+   * within a few seconds, whatever its chain: it carries
+   * `wait:<correlationId>:<resumeAt>:<second>`, because every such delivery
+   * sends one for every near-due wait, and only the key keeps that linear.
+   * Wakes of runs below spec 9 keep their earlier keys (`hook-<resumeId>`,
+   * `hook-force-claim-<hookId>`, the QuickJS engine's
    * `hook_conflict_<correlationId>`).
    */
   idempotencyKey?: string;
