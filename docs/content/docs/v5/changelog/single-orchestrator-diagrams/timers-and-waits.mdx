@@ -27,6 +27,13 @@ Each `wait_created` records `creatorMessageId`, the queue message of the deliver
 - on a redelivery of a timer message, that timer's chain;
 - and the wait of a timer delivered before its wait is due (`timerFor`), which re-arms what is left.
 
+Two more rules cover the gaps chain ownership left:
+
+- A delivery that is about to commit the `wait_completed` of a wait it does not own through `timerFor` first sends the timer of the chain's next open wait (`chainTimersBeforeCompletion`, `3ba56bbd43`). A failure after the commit then leaves the chain armed; a failed send commits nothing, and the redelivery decides again.
+- A suspending delivery arms every open wait due within `max(5s, WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS)`, whatever its chain (`getNearDueWaitWindowSeconds`, `66b355d28c`), so a final timer coalesced slightly before its wait is due, into a delivery that does not own it, is not lost.
+
+A recovery delivery (world-local after a restart, `recovery: true` on the message) owns every chain and arms the earliest open wait of each: the timers died with the queue.
+
 Every other delivery leaves a chain alone, so timers do not pile up across suspensions. A late or duplicate timer finds its wait completed and arms nothing (`packages/core/src/runtime/spec9/creator-rules.ts:112`).
 
 ```mermaid
@@ -199,8 +206,9 @@ If a `wait_completed` committed below `fetchUpdates`'s outcome, the live run saw
 
 ## Edge cases
 
-- A delivery that commits `wait_completed` and dies before its next send leaves that chain without a timer, unless it was the timer's own delivery, whose redelivery owns the chain; no test covers it (`packages/core/src/runtime/spec9/creator-rules.ts:140`).
-- `VERCEL_QUEUE_MAX_DELAY_SECONDS` below 82800 clamps a final hop so it arrives early; delivered on its own it re-arms its wait, coalesced it is not re-armed, and no test covers it (`packages/world-vercel/src/queue.ts:238`, `:272`).
+- A delivery that commits `wait_completed` and dies before its next send no longer leaves that chain without a timer: the next timer goes out before the commit. Tests in `spec9/wait-chains.runtime.test.ts`, both engines.
+- `VERCEL_QUEUE_MAX_DELAY_SECONDS` below 82800 clamps a final hop so it arrives early. Delivered on its own it re-arms its wait; coalesced, it is re-armed by the near-due rule only when it arrives within that window of its wait, so a clamp far below the hop length can still lose it. Not covered by a test.
+- A world-local restart loses every queued timer; the recovery delivery re-arms every chain (`world-local-restart-recovery.test.ts`).
 - A timer delivered slightly early (clock skew) is its own wait's `timerFor` and re-arms the rest (`packages/core/src/runtime/spec9/creator-rules.ts:161`).
 - A timer delivery skips the no-op fast path, because an early one must still arm the next hop (`packages/core/src/runtime/spec9/delivery.ts:978`).
 - A delivery that owns waits of two chains arms the earliest of each chain, not the earliest of all (`packages/core/src/runtime/spec9/creator-rules.ts:176`).

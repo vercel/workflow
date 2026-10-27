@@ -173,7 +173,7 @@ The optimistic start applies only while every step of the boundary is inline and
 - **Refused speculative creation.** The writer stops before any later write, so no outcome is written without its creation (`run-ahead.runtime.test.ts:413`).
 - **Fence refusal while running ahead.** Handled as any refusal, with no orphan writes, and the redelivery completes (`run-ahead.runtime.test.ts:726`).
 - **Slot gap from a queued sibling start.** A sibling's start queued ahead of a speculative outcome is not read as a hole; the delivery drains before judging the log (`delivery.ts:2488`).
-- **Failed turbo `run_started`.** Its error decides the delivery whatever later write surfaced it: a fence refusal acknowledges, a conflict or expired run acknowledges, anything else is recorded as a setup failure or redelivered (`delivery.ts:1011`, `delivery.ts:1093`).
+- **Failed turbo `run_started`.** Its error decides the delivery whatever later write surfaced it: a fence refusal asks for a redelivery of the message, a conflict or expired run acknowledges, anything else is recorded as a setup failure or redelivered (`delivery.ts:1011`, `delivery.ts:1093`).
 - **Resilient start under turbo.** A `run_started` carrying the creation data creates a run whose `run_created` never landed (`packages/core/src/runtime/spec9/turbo.runtime.test.ts:307`).
 - **A step body's own out-of-band writes under turbo.** Stream and attribute writes from an optimistic body wait for the backgrounded `run_started` (`turbo.runtime.test.ts:394`, `delivery.ts:574`).
 - **`WORKFLOW_OPTIMISTIC_INLINE_START=0`.** Each start is awaited, and the log load is still skipped (`turbo.runtime.test.ts:358`).

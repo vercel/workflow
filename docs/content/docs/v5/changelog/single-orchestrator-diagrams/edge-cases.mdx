@@ -15,7 +15,10 @@ Each scenario has a timeline, the outcome, and the page that explains the mechan
 |---|---|
 | [Lease stall overlap](#lease-stall-overlap) | Handled by the fence |
 | [Self-superseded 412](#self-superseded-412) | Fixed |
-| [Crash between commit and dispatch](#crash-between-commit-and-dispatch) | Handled by the creator rules |
+| [Two deliveries of one message, one dies owing a send](#two-deliveries-of-one-message-one-dies-owing-a-send) | Fixed (6b4c0cea3b) |
+| [Crash between commit and dispatch](#crash-between-commit-and-dispatch) | Handled by the re-send rule |
+| [Creator's redelivery coalesced away](#creators-redelivery-coalesced-away) | Fixed (1ddbe7497f) |
+| [world-local restart](#world-local-restart) | Fixed (1a808df572) |
 | [Lost completion wake](#lost-completion-wake) | Fixed (`76643fe621`) |
 | [Inline `maxRetries: 0` step after an orchestrator crash](#inline-maxretries-0-step-after-an-orchestrator-crash) | Fixed (`75ddd45207`) |
 | [Background body before a refused start](#background-body-before-a-refused-start) | Behavior change, accepted |
@@ -30,8 +33,8 @@ Each scenario has a timeline, the outcome, and the page that explains the mechan
 | [`run.wakeUp()` lost under coalescing](#runwakeup-lost-under-coalescing) | Accepted |
 | [Spec 8 retry chains over 12 hours](#spec-8-retry-chains-over-12-hours) | Fixed |
 | [Older SDK after a rollback](#older-sdk-after-a-rollback) | Known limitation |
-| [world-postgres resets `attempt`](#world-postgres-resets-attempt) | Known gap |
-| [Inline retry re-sent past the 24-hour dedupe](#inline-retry-re-sent-past-the-24-hour-dedupe) | Known gap, not verified |
+| [world-postgres resets `attempt`](#world-postgres-resets-attempt) | Handoff fixed; delayed reschedule still resets |
+| [Inline retry re-sent past the 24-hour dedupe](#inline-retry-re-sent-past-the-24-hour-dedupe) | Fixed |
 | [Long step retries on Vercel](#long-step-retries-on-vercel) | Known cost |
 | [QuickJS differences](#quickjs-differences) | Known differences |
 
@@ -51,12 +54,13 @@ sequenceDiagram
     O2->>W: load log, write in-band, count moves
     O1->>W: next in-band write at its old count
     W-->>O1: 412 InBandSupersededError
-    O1->>Q: messages its own writes owe, one keyed wake
-    Note over Q: wake coalesced into O2
+    O1->>Q: messages its own writes owe
+    O1->>Q: redeliver m1 in 1s
+    Note over Q: O2 holds the key: the redelivery is coalesced into O2
     O2->>W: drives the run on
 ```
 
-**Outcome.** Nothing is written twice, and O2 drives the run. What the queue answers to O1's acknowledgment of a lapsed lease is not verified here. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1011`).
+**Outcome.** Nothing is written twice, and O2 drives the run. O1 never acknowledges, so the question of what the queue does with an acknowledgment of a lapsed lease no longer arises. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1011`).
 
 ## Self-superseded 412
 
@@ -70,15 +74,37 @@ sequenceDiagram
     O->>W: in-band write, slow put
     W->>W: seals the position past the staleness bound
     W-->>O: 412 in-band-superseded
-    O->>Q: owed messages, one keyed wake
-    Note over Q: O holds the key, wake coalesced into O
-    O->>Q: acknowledge
-    Q-->>O: refused, 1 coalesced
-    Note over O: re-run from a fresh load with a fresh writer
+    O->>Q: owed messages
+    O->>Q: timeoutSeconds 1, redeliver the same message
+    Q->>O: same message, next deliveryCount
+    Note over O: fresh load, fresh writer, re-send pass
     O->>W: writes at the new count, run completes
 ```
 
-**Outcome.** Before the fix, a refused delivery acknowledged with no wake and the run stopped until something else woke it. Now it sends one keyed wake. On world-local and world-postgres the wake is delivered after the running delivery. A delivery refused on every pass ends after 32 re-runs with a handoff. Tests: `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts`. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) (`packages/core/src/runtime/spec9/delivery.ts:1034`).
+**Outcome.** Before the first fix, a refused delivery acknowledged with no wake and the run stopped until something else woke it. A second version sent one keyed wake and acknowledged, which still stranded the case below. Now the delivery asks for a counted redelivery of its own message. A delivery refused on every pass reaches the delivery cap and fails the run, where the World counts the redelivery as an attempt (not on world-postgres). Tests: `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts`. Mechanism: [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence).
+
+## Two deliveries of one message, one dies owing a send
+
+A delivery D1 of m1 outlives its lease and m1 is delivered again as D2. Both load the same log. D1 commits a background step's `step_created` and dies before the step's message goes out; D2's next write is refused.
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant D1 as Delivery 1 of m1
+    participant D2 as Delivery 2 of m1
+    participant W as World
+    D1->>W: step_created s1
+    Note over D1: dies before sending s1's message
+    D2->>W: in-band write at the old count
+    W-->>D2: 412
+    Note over D2,Q: before the fix: owed messages, one plain wake, acknowledge
+    Note over Q: the wake is a first delivery of another message and re-sends nothing: s1 never runs
+    D2->>Q: now: owed messages, then timeoutSeconds 1
+    Q->>D2: m1 again, deliveryCount 3
+    D2->>Q: s1's message, stable key (s1 has no step_started)
+```
+
+**Outcome.** Fixed ([4365355467](https://github.com/vercel/workflow/pull/4661#discussion_r4365355467), commit 6b4c0cea3b). The redelivery is not its message's first, so the re-send rule sends s1. Test: `two deliveries of one message after a lease lapse` in `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts`, both engines; it strands without the fix. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
 
 ## Crash between commit and dispatch
 
@@ -90,16 +116,57 @@ sequenceDiagram
     participant O1 as Delivery 1 of m1
     participant O2 as Delivery 2 of m1
     participant W as World
-    Q->>O1: deliver m1, attempt 1
-    O1->>W: step_created s1, creatorMessageId m1
+    Q->>O1: deliver m1, deliveryCount 1
+    O1->>W: step_created s1
     Note over O1: crash before sending s1's message
-    Q->>O2: lease lapsed, m1 again, attempt 2
+    Q->>O2: lease lapsed, m1 again, deliveryCount 2
     O2->>W: load log
-    Note over O2: s1 created by m1, no step_started, creator count 2
+    Note over O2: s1 has no step_started and was created under 23h ago
     O2->>Q: s1's message, same stable idempotency key
 ```
 
-**Outcome.** The redelivery re-sends the message. A delivery after a handoff of a first delivery has creator count 1 and re-sends nothing, as a new message would not (`stepsToReenqueue`, `packages/core/src/runtime/spec9/creator-rules.ts:22`; creator count `packages/core/src/runtime/spec9/delivery.ts:345`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+**Outcome.** The redelivery re-sends the message. So does a continuation after a handoff, or a coalesced re-run: any orchestrator delivery counted above 1, once per invocation (`stepsToReenqueue`, `invocationResends`, `packages/core/src/runtime/spec9/creator-rules.ts`). A step whose first message still lives dedupes the re-send. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## Creator's redelivery coalesced away
+
+The delivery that created s1 fails before s1's message goes out (a crash, or a lapsed lease). A hook wake H takes the run's key first, and the creator's redelivery is coalesced into H, so it is never delivered.
+
+```mermaid
+sequenceDiagram
+    participant Q as Vercel Queues
+    participant M as Delivery of m1
+    participant H as Delivery of hook wake h
+    participant W as World
+    M->>W: step_created s1
+    Note over M: dies before sending s1's message
+    Q->>H: deliver h, deliveryCount 1
+    Note over Q: m1's redelivery comes due, coalesced into H
+    H->>Q: acknowledge, refused, 1 coalesced
+    Q->>H: re-run, deliveryCount 2
+    Note over H,W: before the fix: s1 was created by m1, so H re-sent nothing
+    H->>Q: now: s1's message, stable key
+```
+
+**Outcome.** Fixed ([4365355501](https://github.com/vercel/workflow/pull/4661#discussion_r4365355501), commit 1ddbe7497f): the re-send rule no longer asks which message created the step. A holder in retry backoff was never affected (the queue keeps its key, so a wake folds into it). Test: `spec9/step-resend.runtime.test.ts`, both engines, which also covers a handoff continuation, one re-send per invocation across coalesced re-runs, and the age bound. Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+
+## world-local restart
+
+world-local's queue is in memory. A restart loses every step message and timer a run had queued, and its recovery wake is a new message on its first delivery.
+
+```mermaid
+sequenceDiagram
+    participant P1 as Process before the restart
+    participant P2 as Process after the restart
+    participant W as World data dir
+    P1->>W: wait_created w1, or step_created and step_started s1
+    Note over P1: exits: the timer and s1's message die with the queue
+    P2->>P2: reenqueueActiveRuns, queueLost: true
+    P2->>P2: recovery message, recovery: true
+    Note over P2: arms the earliest timer of every open chain
+    Note over P2: re-sends every open step message, started ones with their next attempt
+```
+
+**Outcome.** Fixed ([4365355546](https://github.com/vercel/workflow/pull/4661#discussion_r4365355546), commit 1a808df572). Before it, a spec 9 run sleeping, or waiting on a background step mid-body, stayed `running` while spec 8 completed. world-postgres's queue persists, so it sets no marker. Tests: spec 9 rows in `packages/core/src/runtime/world-local-restart-recovery.test.ts`, both engines; each fails without the marker. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
 
 ## Lost completion wake
 
@@ -229,7 +296,7 @@ sequenceDiagram
     T1->>Q: current, completed w1 so arms w2 per chain
 ```
 
-**Outcome.** Fixed twice: first by letting a timer own its chain, then by letting the completing delivery own it. A delivery owning waits of two chains also used to arm only the earliest of all; it now arms the earliest of each chain (`waitTimersToArm`, `packages/core/src/runtime/spec9/creator-rules.ts:176`). e2e did not catch the original bug, because its only parallel sleeps have equal durations. Residual: a delivery that commits `wait_completed` and dies before its next send leaves that chain without a timer, unless it was the timer's own delivery; no test covers it. Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
+**Outcome.** Fixed twice: first by letting a timer own its chain, then by letting the completing delivery own it. A delivery owning waits of two chains also used to arm only the earliest of all; it now arms the earliest of each chain (`waitTimersToArm`, `packages/core/src/runtime/spec9/creator-rules.ts:176`). e2e did not catch the original bug, because its only parallel sleeps have equal durations. The residual this page listed, a delivery that commits `wait_completed` and dies before its next send, is fixed: the next timer goes out before the commit (`3ba56bbd43`, tests in `wait-chains.runtime.test.ts`). Mechanism: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
 
 ## Run-ahead stop re-runs step bodies
 
@@ -389,7 +456,7 @@ sequenceDiagram
 
 ## world-postgres resets `attempt`
 
-Every `{ timeoutSeconds }` result on world-postgres, a handoff included, reschedules on a new Graphile job. `attempt` comes from that job's own counter plus an `attemptOffset` that the reschedule carries unchanged.
+Every `{ timeoutSeconds }` result on world-postgres reschedules on a new Graphile job. `attempt` comes from that job's own counter plus an `attemptOffset`. A spec 9 handoff now carries the attempts so far as `attemptOffset` (`1f7b912923`); a delayed reschedule does not.
 
 ```mermaid
 sequenceDiagram
@@ -399,28 +466,28 @@ sequenceDiagram
     O-->>G: handler rejects
     G->>O: job 1 retry, attempt 2, deliveryCount 2
     O-->>G: timeoutSeconds 0, handoff
-    G->>O: job 2, attempt 1, deliveryCount 3
-    Note over O: contract asks for attempt 2, creator count drops to 1
+    G->>O: job 2, attempt 2, deliveryCount 3
+    O-->>G: timeoutSeconds 1, a fence refusal
+    G->>O: job 3, attempt 1, deliveryCount 4
 ```
 
-**Outcome.** Known gap, not fixed. A crash redelivery that then hands off loses its creator re-send on the next delivery, so a step message lost in the crash window is not re-sent and the run can strand. Whether a redelivery can hand off before it reaches its re-send point is not known. A reschedule also resets what the delivery cap counts. The review verified the sequence with a scratch test; I read the code (`packages/world-postgres/src/queue.ts:962`, `:1052`) and did not rerun it. Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
+**Outcome.** The handoff case is fixed. The crash-then-handoff strand is also gone because the re-send rule reads `deliveryCount`, not `attempt`. Still open: a delayed reschedule starts `attempt` over, so on world-postgres a fence refusal's redelivery does not count toward the delivery cap (review page, section 12). Mechanism: [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
 
 ## Inline retry re-sent past the 24-hour dedupe
 
-An inline step's retry moves to the background with a `retryAfter` beyond 24 hours. Its retry message can be re-sent after Vercel Queues' 24-hour idempotency window has passed, and then two messages own one step's body.
+An inline step's retry moves to the background with a `retryAfter` beyond 24 hours. A re-send of its retry message after Vercel Queues' 24-hour idempotency window had passed would give one step two messages.
 
 ```mermaid
 sequenceDiagram
     participant O as Orchestrator delivery
     participant Q as Vercel Queues
-    participant S as Step messages
     O->>Q: step_retrying committed, retry message, key k, delay over 24h
     Note over Q: 24h later the dedupe record for k is gone
-    O->>Q: a re-send of the retry message with key k
-    Q->>S: two messages for one step
+    Note over O: a later delivery of the message that moved the retry
+    O->>O: step_retrying older than 23h: not re-sent
 ```
 
-**Outcome.** Known gap, reported by a reviewer, predates this PR. Not verified: I did not trace which path re-sends the retry message after 24 hours. Step messages with retries are retained up to 7 days (`stepMessageRetentionSeconds`, `packages/core/src/runtime/spec9/step-retention.ts:25`), and `QueueOptions.idempotencyKey` documents the Vercel Queues dedupe window as `min(retention, 24h)` (`packages/world/src/queue.ts:717`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
+**Outcome.** Fixed ([4365355478](https://github.com/vercel/workflow/pull/4661#discussion_r4365355478)): only a later delivery of the message that wrote the `step_retrying` re-sends it (`8e6e547804`, `b075bd0437`), and only while that `step_retrying` is younger than 23 hours (`STEP_RESEND_MAX_AGE_MS`). Mechanism: [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership).
 
 ## Long step retries on Vercel
 

@@ -68,7 +68,7 @@ sequenceDiagram
     end
 ```
 
-The feed accepts an event only at exactly the next slot, so a late, duplicate or out-of-order push is dropped and the log-tail poll fills in (every 2 seconds by default once the push has shown a gap, `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`) (`packages/core/src/runtime/spec9/live-feed.ts:121`). The re-run's no-op exit applies because a re-run's creator count is 1 (`packages/core/src/runtime/spec9/delivery.ts:974`).
+The feed accepts an event only at exactly the next slot, so a late, duplicate or out-of-order push is dropped and the log-tail poll fills in (every 2 seconds by default once the push has shown a gap, `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`) (`packages/core/src/runtime/spec9/live-feed.ts:121`). The no-op exit applies to a re-run only once its invocation ran the re-send pass: the first re-run of an invocation (counted above 1) reads the log and re-sends unstarted background steps, later ones may exit after a tail read (`invocationResends`, `packages/core/src/runtime/spec9/creator-rules.ts`).
 
 ## Run-ahead and awaited hooks
 

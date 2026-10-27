@@ -72,7 +72,6 @@ Every send of a spec 9 run's message in this runtime names the run's version. `q
 | Background step message, node engine | `runContext` | `packages/core/src/runtime/spec9/delivery.ts:3722` |
 | Background step message, QuickJS | `runContext` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:218` |
 | Orchestrator wake, timer, intermediate hop | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:809` |
-| Fence-refusal wake | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:1050` |
 | Deployment-mismatch re-enqueue | `runSpecVersion`, the run's or the routed spec | `packages/core/src/runtime/spec9/delivery.ts:859` |
 | Step handler's wake | `runSpecVersion` | `packages/core/src/runtime/spec9/step-handler.ts:258` |
 | QuickJS wakes and timers | `runSpecVersion` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:445`, `:2394`, `:2423` |
@@ -87,7 +86,7 @@ Every send of a spec 9 run's message in this runtime names the run's version. `q
 
 ## An unstamped message
 
-A message to a spec 9 run without a stamp still reaches the right orchestrator, because `resolveRunSpec` falls through to the cache or `runs.get`. The World treats it as spec 8: on world-vercel it is sent unkeyed and a `{ timeoutSeconds }` result continues on a new message; on world-local and world-postgres it skips the per-run gate. It then runs next to the keyed holder, and the in-band fence keeps that safe: the loser's write gets a 412, it sends one keyed wake and acknowledges (see [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence)). The log stays linear, but the overlap can cost more than one invocation: a spec 9 inline step's start carries no owner, so the unserialized delivery can start and run the body of an inline step the holder is still running, and the fence refuses only the later outcome write. Every producer in this runtime stamps its messages for that reason, including the restart recovery of world-local and world-postgres (`reenqueueActiveRuns`).
+A message to a spec 9 run without a stamp still reaches the right orchestrator, because `resolveRunSpec` falls through to the cache or `runs.get`. The World treats it as spec 8: on world-vercel it is sent unkeyed and a `{ timeoutSeconds }` result continues on a new message; on world-local and world-postgres it skips the per-run gate. It then runs next to the keyed holder, and the in-band fence keeps that safe: the loser's write gets a 412, and it asks for a redelivery of its own message (see [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence)). The log stays linear, but the overlap can cost more than one invocation: a spec 9 inline step's start carries no owner, so the unserialized delivery can start and run the body of an inline step the holder is still running, and the fence refuses only the later outcome write. Every producer in this runtime stamps its messages for that reason, including the restart recovery of world-local and world-postgres (`reenqueueActiveRuns`).
 
 ```mermaid
 sequenceDiagram
@@ -103,11 +102,11 @@ sequenceDiagram
     O2->>W: in-band write at its count
     alt O1 wrote first
         W-->>O2: 412 in-band superseded
-        O2->>Q: messages its own writes owe, one keyed wake
-        O2->>Q: acknowledge
+        O2->>Q: messages its own writes owe
+        O2->>Q: timeoutSeconds 1, continued as for a spec 8 message (a new message, unkeyed)
     else O2 wrote first
         W-->>O1: 412 on its next write
-        O1->>Q: owed messages, one keyed wake, acknowledge
+        O1->>Q: owed messages, then a redelivery of its own message
     end
 ```
 

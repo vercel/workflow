@@ -1,6 +1,6 @@
 ---
 title: "Step ownership and data"
-description: Inline and background steps on spec 9, what each step event records, the creator rules, retries, maxRetries 0, and how the world-vercel backend serves steps.
+description: Inline and background steps on spec 9, what each step event records, the re-send rule, retries, maxRetries 0, and how the world-vercel backend serves steps.
 ---
 
 # Step ownership and data
@@ -12,7 +12,7 @@ Temporary review material for the spec 9 pull request, removed before merge. See
 A spec 9 step has one owner at a time, and its execution mode is fixed when it is created. The first `inlineSlots` new steps of a suspension are inline, the rest are background (`packages/core/src/runtime/spec9/step-wait-creation.ts:243`). `inlineSlots` is `WORKFLOW_MAX_INLINE_STEPS` (3 by default) less the inline steps already open or running, and 0 inside the inline-start margin or while a new hook waits on its conflict (`packages/core/src/runtime/spec9/delivery.ts:2961`).
 
 - **Inline step.** Owned by the orchestrator delivery that created it, which runs the body in its own process and writes all of its events in-band. If its body fails with a retryable error, the retry moves to the step's own queue message, which owns the step from then on.
-- **Background step.** Owned by its queue message, one message for the step's whole life. The step's invocation writes only `step_started` and the outcome, out-of-band, then sends the orchestrator one plain wake without reading the log. On a plain first delivery, a step that allows retries starts its body while its `step_started` is in flight, and the outcome waits for that start.
+- **Background step.** Owned by its queue message, one message for the step's whole life. The step's invocation writes only `step_started` and the outcome, out-of-band, then sends the orchestrator one plain wake without reading the log. Its body starts once its `step_started` committed; under `WORKFLOW_OPTIMISTIC_BACKGROUND_START=1`, on a plain first delivery, a step that allows retries starts its body while the start is in flight, and the outcome waits for that start. The message carries when the step was created, and the `step_started` reports it.
 
 ## What each event carries
 
@@ -22,11 +22,11 @@ A spec 9 step has one owner at a time, and its execution mode is fixed when it i
 | `step_created` | orchestrator, in-band | `false` | yes | yes | no | A background step's creation (`step-wait-creation.ts:268`). |
 | `step_created`, unserializable input | orchestrator, in-band | `true` | placeholder | yes | no | Followed at once by `step_failed` (`step-wait-creation.ts:625`). |
 | `step_started`, later | step invocation, out-of-band; or the orchestrator for an inline re-run | no | no | no | starts + 1 | The backend requires `attempt` and refuses an input on any start but the first. |
-| `step_retrying` | the step's current owner | no | no | no | yes | Carries `retryAfter`. |
+| `step_retrying` | the step's current owner | no | no | only when the orchestrator moves an inline retry to the background | yes | Carries `retryAfter`. The orchestrator's `creatorMessageId` scopes the retry's re-send. |
 | `step_completed` / `step_failed` | the step's current owner | no | no | no | `step_failed` only | Terminal: every later event with the step's id is inert. |
 | `wait_created` | orchestrator, in-band | n/a | n/a | yes | n/a | The wait chain's creator, read by the timer rules. |
 
-`step_started.creatorMessageId` is gone: the creator rules never read an inline step's creator.
+`step_started.creatorMessageId` is gone: nothing reads an inline step's creator. A background step's `creatorMessageId` is kept for diagnostics; the re-send rule no longer reads it.
 
 ## Inline step
 
@@ -97,11 +97,18 @@ flowchart TD
     G -->|"retryable"| J["step_retrying, wake, redeliver after retryAfter"]
 ```
 
-## Creator rules
+## The re-send rule
 
-A background step's message is sent once, right after its `step_created` commits. Only a redelivery of the message whose delivery wrote that `step_created` may send it again, and only while the step has no `step_started` (`stepsToReenqueue`, `packages/core/src/runtime/spec9/creator-rules.ts:22`). The same rule re-sends an inline step whose last event is `step_retrying` (the crash window between that write and its retry message).
+A background step's message is sent once, right after its `step_created` commits. A delivery that dies, or fails, between the two leaves the step with no message. Any orchestrator delivery whose `deliveryCount` is above 1 (a redelivery, a handoff continuation, a coalesced re-run, or a World that reports no count) re-sends every background step that has a `step_created` and no `step_started`, whichever message created it (`stepsToReenqueue`, `packages/core/src/runtime/spec9/creator-rules.ts`):
 
-"Redelivery" counts attempts, not deliveries: the delivery uses `min(deliveryCount, attempt)` (`delivery.ts:345`), and `attempt` leaves out handoffs and coalesced re-runs (`packages/world-vercel/src/queue.ts:955`). A delivery after a handoff behaves like the new message it replaces and re-sends nothing; a delivery after a crash counts 2 and re-sends.
+- once per invocation (`invocationResends`: coalesced re-runs share the invocation through `invocationStartedAt`, and later passes of a delivery skip what it re-sent);
+- in batches, on both engines;
+- under the step's stable idempotency key, so a re-send whose first message lives is deduped;
+- only while the step's `step_created` is younger than 23 hours (`STEP_RESEND_MAX_AGE_MS`), inside the queue's 24-hour dedupe window, so a re-send never makes a second live message. The World does not refuse a second `step_started`, so this bound is what keeps two messages from both starting the step.
+
+The queue guarantees the pass: a delivery that dies is redelivered, or its message is coalesced into a running delivery whose re-run reports the next count. The span records `workflow.reenqueue.count` and `workflow.reenqueue.skipped_too_old`. An inline step whose last event is the `step_retrying` that moved it to the background is re-sent only by a later delivery of the message that wrote that `step_retrying` (its `creatorMessageId`), within the same bound from the `step_retrying`.
+
+A recovery delivery (world-local after a restart, `recovery: true`) also re-sends steps that started and have no outcome, with their next attempt so the handler reads the log first, and applies no age bound: the queue and its dedupe state died with the process.
 
 ```mermaid
 sequenceDiagram
@@ -109,24 +116,23 @@ sequenceDiagram
     participant Q as "Queue"
     participant O1 as "Delivery 1 of message m"
     participant W as "World"
-    participant O2 as "Delivery 2 of message m"
+    participant O2 as "A later delivery, deliveryCount 2"
     participant S as "Step invocation"
 
-    Q->>O1: m, deliveryCount 1, attempt 1
+    Q->>O1: m, deliveryCount 1
     O1->>W: step_created C, inline false, creatorMessageId m
     W-->>O1: accepted
     O1--xO1: crash before the step message is sent
-    Note over Q: lease expires
-    Q->>O2: m, deliveryCount 2, attempt 2
+    Note over Q: lease expires: m is redelivered, or coalesced into another message's delivery
+    Q->>O2: deliveryCount 2 (a redelivery, a handoff continuation, or a coalesced re-run)
     O2->>W: full load
-    O2->>O2: stepsToReenqueue: C created by m, never started
+    O2->>O2: stepsToReenqueue: C has no step_started, created under 23h ago
     O2->>Q: C's message, idempotency key from C's id and step name
     Q->>S: C's message
     S->>W: step_started, body, step_completed
-    Note over O2: a delivery of any other message, or one after a handoff, would not re-send C
 ```
 
-A broader rule, "re-send every open background step on replay", would eventually send a second message for a step whose first message is still retrying past the queue's dedupe window: a second owner of its body (`creator-rules.ts:13`).
+The earlier rule allowed only a redelivery of the creating message to re-send, which left a step without a message when that redelivery was coalesced into another message's delivery, and when a fence-refused second delivery of the message acknowledged (review page, section 6, "Liveness").
 
 ## `maxRetries: 0`
 
@@ -165,4 +171,4 @@ flowchart LR
 - **Run terminal.** A step message for a run that ended acknowledges without a body (`step-delivery.ts:80`, `packages/core/src/runtime/spec9/step-handler.ts:294`).
 - **Large inputs.** An input over 128 KiB is not carried on the message, and the step's invocation reads it from the step's creation event (`packages/core/src/runtime/spec9/log-state.ts:8`, `step-handler.ts:313`).
 - **Unserializable arguments.** The step is finalized as `step_created` with a placeholder input plus `step_failed`, so the workflow observes the error (`packages/core/src/runtime/spec9/step-wait-creation.ts:593`).
-- **world-postgres resets `attempt` on every reschedule.** A crash redelivery that then hands off loses its creator re-send on the next delivery (review page, section 7). Not fixed in this PR.
+- **world-postgres restarts `attempt` on a delayed reschedule.** A handoff keeps it (`1f7b912923`), and the re-send rule reads `deliveryCount`, so nothing strands; a fence refusal's redelivery does not count toward the delivery cap there (review page, section 7).

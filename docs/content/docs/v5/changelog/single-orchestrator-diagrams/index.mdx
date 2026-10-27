@@ -16,7 +16,7 @@ Each page shows one part of the change with diagrams, then lists the edge cases 
 | [Run lifecycle](/docs/changelog/single-orchestrator-diagrams/run-lifecycle) | One run end to end: deliveries, inline and background steps, suspension, completion |
 | [Event posting](/docs/changelog/single-orchestrator-diagrams/event-posting) | The in-band writer: ordering, batches, `occurredAt`, allocated counts, the skipped-slot report, consume after commit, the live feed |
 | [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence) | Counters, what makes the World refuse a write, and what a refused delivery does |
-| [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership) | Inline and background steps, what each event records, creator rules, retries, `maxRetries: 0`, how the backend serves steps |
+| [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership) | Inline and background steps, what each event records, the re-send rule, retries, `maxRetries: 0`, how the backend serves steps |
 | [Fan-out](/docs/changelog/single-orchestrator-diagrams/fan-out) | `Promise.all` over many steps: inline limit, chunked creation, batched dispatch, coalesced completions |
 | [Run-ahead and turbo](/docs/changelog/single-orchestrator-diagrams/run-ahead-and-turbo) | Speculative outcomes, hazards, the in-place restart, turbo's first delivery |
 | [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology) | Topics and concurrency keys for spec 8 and spec 9, coalescing, re-runs, handoffs, `attempt` |

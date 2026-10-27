@@ -43,32 +43,33 @@ The world-vercel backend answers 412 `in-band-superseded` in these cases:
 2. **The writer's own slot was sealed.** The allocation succeeded, but the event row's put took longer than the backend's staleness bound, and a reader sealed the slot as a `noop` first. The single-write path answers 412, because the allocation already moved `seqInBand` and the writer's count is stale either way. A terminal run event that loses its slot the same way gets the same answer. In a batch, the item gets 409 `position-lost` instead and the batch's `allocated` still counts it.
 3. **A 409 after allocation.** Some refusals come after the block was allocated: a hook or attribute write whose row logic conflicts, or a terminal event that lost to another terminal event that committed first. `seqInBand` moved, the writer keeps its count after a non-fence 4xx (`in-band-writer.ts:879`), and its next in-band write gets 412.
 
-Only case 1 involves a second orchestrator. In cases 2 and 3 nothing else is queued for the run, which is why a refused delivery sends a wake (below).
+Only case 1 involves a second orchestrator. In cases 2 and 3 nothing else is queued for the run, which is why a refused delivery never acknowledges (below). In case 1 the other orchestrator may be a second delivery of the same message, which may die owing a send.
 
 ## What a refused delivery does
 
 The first 412 stops the writer for good: that write and every later one throw `OrchestratorSupersededError` without reaching the World, and `assertActive` refuses to start further inline bodies (`in-band-writer.ts:275`, `in-band-writer.ts:878`). The delivery's catch then (`packages/core/src/runtime/spec9/delivery.ts:1015`):
 
 1. forgets the consumed position recorded for the run;
-2. sends what its own committed writes owe the queue, from the writer's accepted events (`sendOwedMessages`, `delivery.ts:3854`): the message of each background step whose `step_created` it committed, the message of each inline step whose retry it moved to the background, and the timers of the wait chains it owns. On a redelivery of its message it also sends what the creator rules re-send for an earlier delivery of it;
-3. sends one plain orchestrator wake: run id, trace carrier and spec stamp, no delay (`delivery.ts:1051`);
-4. acknowledges.
+2. sends what its own committed writes owe the queue, from the writer's accepted events (`sendOwedMessages`): the message of each background step whose `step_created` it committed, the message of each inline step whose retry it moved to the background, and the timers of the wait chains it owns. When its own delivery count is above 1 it also sends what the re-send rule sends (`stepsToReenqueue`);
+3. returns `{ timeoutSeconds: 1 }` (`FENCE_REFUSAL_REDELIVERY_SECONDS`): a counted redelivery of its own message. It sends no wake and does not acknowledge.
+
+The redelivery is not its message's first delivery, so it re-sends every background step that has a `step_created` and no `step_started`, created less than 23 hours ago, under the step's stable key: whatever a second delivery of the same message committed and died before sending. Where the World counts the redelivery as an attempt (world-vercel, world-local), a run refused on every pass fails at the delivery cap.
 
 ```mermaid
 flowchart TD
     A["412 on an in-band write"] --> B["Writer stopped: no writes, no new inline bodies"]
     B --> C["Bodies already running settle, their writes are refused too"]
     C --> D["Send owed step messages and timers"]
-    D --> E["Send one plain keyed wake"]
-    E --> F["Acknowledge"]
-    F --> G{"World"}
-    G -->|"world-vercel, a live winner holds the key"| H["Wake coalesced into the winner"]
-    G -->|"world-vercel, this delivery holds the key"| I["Ack refused, coalesced re-run from a fresh load"]
-    I --> J{"Refused again on every pass?"}
-    J -->|"yes, after 32 re-runs"| K["ConcurrencyCoalescedPendingError, world-vercel hands off"]
-    J -->|"no"| L["The run continues in this invocation"]
-    G -->|"world-vercel, no holder"| M["New orchestrator delivery"]
-    G -->|"world-local or world-postgres"| N["Delivered after the running delivery"]
+    D --> E["Return timeoutSeconds 1: redeliver the same message"]
+    E --> G{"World"}
+    G -->|"world-vercel, a live winner holds the key"| H["Redelivery coalesced into the winner, whose re-run re-sends"]
+    G -->|"world-vercel, no holder"| M["Redelivered after the delay, deliveryCount + 1"]
+    G -->|"world-local or world-postgres"| N["Redelivered after the delay, behind the running delivery"]
+    M --> R["Re-send pass: unstarted background steps, stable keys"]
+    N --> R
+    R --> J{"Refused again on every pass?"}
+    J -->|"yes"| K["Delivery cap fails the run (world-vercel, world-local)"]
+    J -->|"no"| L["The run continues"]
 ```
 
 ## Two overlapping orchestrators
@@ -93,9 +94,9 @@ sequenceDiagram
     W-->>B: accepted, seqInBand 6
     A->>W: step_completed, expectedSeqInBand 5
     W-->>A: 412 in-band-superseded
-    A->>Q: owed messages, one plain wake
-    A->>Q: acknowledge
-    Note over Q,B: the wake is coalesced into B, which reads the log anyway
+    A->>Q: owed messages
+    A->>Q: timeoutSeconds 1, redeliver the message
+    Note over Q,B: B holds the key, the redelivery is coalesced into B, which reads the log anyway
     B->>W: continues the run
 ```
 
@@ -117,10 +118,10 @@ sequenceDiagram
     B->>B: replay of the log at slot 5, decides
     B->>W: first write, expectedSeqInBand 5
     W-->>B: 412 in-band-superseded
-    B->>Q: owed messages, one plain wake
-    B->>Q: acknowledge
+    B->>Q: owed messages
+    B->>Q: timeoutSeconds 1, redeliver the message
     A->>W: continues the run
-    Note over Q: the wake is delivered or coalesced by the queue, and finds the run done or running
+    Note over Q: the redelivery is coalesced into A or delivered later, and finds the run done or running
 ```
 
 In the first order, if A was inside an inline body, B finds that step started with no outcome and runs it again (`packages/core/src/runtime/spec9/delivery.ts:3250`): B's `step_started` commits, so the body runs in both deliveries. The fence keeps the log to one writer; it does not stop a body from running twice. The exception is a `maxRetries: 0` step: B's attempt 2 is past `maxRetries + 1`, so `executeStep` fails the step without running the body (commit `75ddd45207`, `packages/core/src/runtime/spec9/step-executor.ts:403`). In the second order, B's first write is refused, and a body B would start behind an awaited start never starts.
@@ -139,20 +140,39 @@ sequenceDiagram
     Note over W: the put outlives the staleness bound, a reader seals slot 8 as noop
     W-->>O: 412 in-band-superseded
     O->>Q: owed timers and step messages
-    O->>Q: one plain keyed wake
-    O->>Q: acknowledge
-    alt world-vercel
-        Q-->>O: ack refused, the wake was coalesced into this delivery
-        Q->>O: coalesced re-run, fresh writer
-        O->>W: full load, snapshot seqInBand 8
-        O->>W: wait_created again, expectedSeqInBand 8
-    else world-local or world-postgres
-        Q->>O: new delivery of the wake after this one
-        O->>W: full load, continues
-    end
+    O->>Q: timeoutSeconds 1, redeliver the message
+    Q->>O: same message, next deliveryCount
+    O->>W: full load, snapshot seqInBand 8
+    O->>W: wait_created again, expectedSeqInBand 8
 ```
 
-Before the wake existed, this case stranded the run: nothing else was queued for it.
+Before any of this, the refused delivery acknowledged and this case stranded the run: nothing else was queued for it. A plain wake fixed it, and the redelivery replaces the wake because of the next case.
+
+## Two deliveries of one message, one dies owing a send
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D1 as "Delivery 1 of m, past its lease"
+    participant W as "World"
+    participant Q as "Queue"
+    participant D2 as "Delivery 2 of m"
+
+    D1->>W: load, snapshot seqInBand 3
+    D2->>W: load, snapshot seqInBand 3
+    D1->>W: step_created C, expectedSeqInBand 3
+    W-->>D1: accepted
+    D1--xD1: dies before sending C's message
+    D2->>W: its first write, expectedSeqInBand 3
+    W-->>D2: 412
+    D2->>Q: owed messages (none: its log had no C)
+    D2->>Q: timeoutSeconds 1
+    Q->>D2: m, next deliveryCount
+    D2->>W: full load: C has no step_started
+    D2->>Q: C's message, stable key
+```
+
+With a plain wake and an acknowledgment, C never got a message: the wake is a first delivery of another message, and the re-send rule skips a first delivery (`fenced-overlap.runtime.test.ts`, "two deliveries of one message after a lease lapse", both engines).
 
 ## A crash before the owed sends
 
@@ -173,7 +193,7 @@ sequenceDiagram
     Note over Q: lease expires, m is redelivered
     Q->>O2: m, deliveryCount 2, attempt 2
     O2->>W: full load
-    O2->>O2: stepsToReenqueue: C created by m, no step_started
+    O2->>O2: stepsToReenqueue: C has no step_started, created under 23h ago
     O2->>Q: C's message, same idempotency key
     O2->>W: continues the run, or stands down on its own 412
 ```
@@ -181,12 +201,12 @@ sequenceDiagram
 ## Edge cases
 
 - **Refusal while bodies run.** Bodies already running settle, their outcome writes are refused, and supersession wins over any other failure (`packages/core/src/runtime/spec9/delivery.ts:3573`).
-- **Refused turbo `run_started`.** A fence refusal of the backgrounded `run_started` stops every later write and the delivery acknowledges (`delivery.ts:1011`; tested in `packages/core/src/runtime/spec9/turbo.runtime.test.ts:243`).
-- **Refused on every pass.** Each refused pass sends one wake, which world-vercel coalesces into the same delivery; past 32 re-runs it hands the message off instead of counting an attempt (`packages/world-vercel/src/queue.ts:328`, `queue.ts:1039`; tested in `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts:322`).
-- **Retained VM after a refusal.** The retained session is discarded and the wake's delivery replays to the same result (`fenced-overlap.runtime.test.ts:211`).
+- **Refused turbo `run_started`.** A fence refusal of the backgrounded `run_started` stops every later write and the delivery asks for a redelivery; the redelivery is not turbo (tested in `packages/core/src/runtime/spec9/turbo.runtime.test.ts`).
+- **Refused on every pass.** Each refused pass asks for a redelivery of the same message, each an attempt on world-vercel and world-local, so the delivery cap fails the run with `MAX_DELIVERIES_EXCEEDED`; the streak is logged at warn (tested in `packages/core/src/runtime/spec9/fenced-overlap.runtime.test.ts`). world-postgres starts `attempt` over on a delayed reschedule, so there the loop is not capped (review page, section 12).
+- **Retained VM after a refusal.** The retained session is discarded and the redelivery replays to the same result (`fenced-overlap.runtime.test.ts`).
 - **Overlap through a hook or timer wake.** A parked delivery is fenced out when a hook or wait wake overlaps it, and the final log replays from cold to the same result (`fenced-overlap.runtime.test.ts:111`).
-- **Timer delivery refused on its `wait_completed`.** It re-sends its own timer before acknowledging, because its redelivery would otherwise be the only one that owns the chain (`packages/core/src/runtime/spec9/orchestrator.runtime.test.ts:1346`).
+- **Timer delivery refused on its `wait_completed`.** It re-sends its own timer, and its own message is redelivered too (`packages/core/src/runtime/spec9/orchestrator.runtime.test.ts`); a duplicate timer finds its wait completed and arms nothing.
 - **A non-fence 4xx.** The count stays and the caller may handle it; a required write (turbo `run_started`, run-ahead) stops the writer either way (`packages/core/src/runtime/spec9/in-band-writer.ts:886`).
 - **5xx or transport error.** Not a fence refusal: the writer stops with that error and the delivery is retried as the error is, never reported as superseded (`in-band-writer.ts:280`).
-- **Stale-holder acknowledgment.** What Vercel Queues does with the acknowledgment of a delivery whose lease already expired is not verified here.
+- **Stale-holder acknowledgment.** A refused delivery no longer acknowledges, so what Vercel Queues does with the acknowledgment of a delivery whose lease already expired no longer matters on this path. What Vercel Queues does with a `{ timeoutSeconds }` answer from a delivery whose lease already lapsed is not verified; the message then has a live delivery either way, and any later non-first delivery of the run re-sends what is missing.
 - **Sequencer item expiry.** The world-vercel backend's sequencer item expires after a period without allocations, and a revived item restarts `seqInBand` at 1; a writer that starts from the snapshot follows it. Not exercised by a test in this repository.

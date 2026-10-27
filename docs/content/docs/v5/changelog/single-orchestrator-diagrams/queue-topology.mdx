@@ -147,19 +147,20 @@ A message the orchestrator sent itself would be coalesced into its own delivery 
 
 ## Attempt accounting
 
-world-vercel computes `attempt` as `max(1, deliveryCount - handoffCount)` and reports `deliveryCount + rerun` as the delivery count (`packages/world-vercel/src/queue.ts:956`). A re-run is not a queue delivery, so it never raises `attempt`. The spec 9 creator rules use `min(deliveryCount, attempt)` (`packages/core/src/runtime/spec9/delivery.ts:345`).
+world-vercel computes `attempt` as `max(1, deliveryCount - handoffCount)` and reports `deliveryCount + rerun` as the delivery count (`packages/world-vercel/src/queue.ts:956`). A re-run is not a queue delivery, so it never raises `attempt`. The spec 9 re-send rule reads `meta.deliveryCount`: every delivery counted above 1 re-sends unstarted background steps, once per invocation. A timer's redelivery owning its chain still reads `min(deliveryCount, attempt)`.
 
 One message, in order:
 
-| Delivery | Queue `deliveryCount` | `handoffCount` | `rerun` | `meta.deliveryCount` | `meta.attempt` | Creator count |
-|---|---:|---:|---:|---:|---:|---:|
-| First delivery | 1 | 0 | 0 | 1 | 1 | 1 |
-| Coalesced re-run 1 | 1 | 0 | 1 | 2 | 1 | 1 |
-| Coalesced re-run 2 | 1 | 0 | 2 | 3 | 1 | 1 |
-| After a handoff | 2 | 1 | 0 | 2 | 1 | 1 |
-| After a lease lapse (crash) | 3 | 1 | 0 | 3 | 2 | 2 |
+| Delivery | Queue `deliveryCount` | `handoffCount` | `rerun` | `meta.deliveryCount` | `meta.attempt` | Re-send pass |
+|---|---:|---:|---:|---:|---:|---|
+| First delivery | 1 | 0 | 0 | 1 | 1 | no |
+| Coalesced re-run 1 | 1 | 0 | 1 | 2 | 1 | yes |
+| Coalesced re-run 2 | 1 | 0 | 2 | 3 | 1 | no, same invocation |
+| After a handoff | 2 | 1 | 0 | 2 | 1 | yes |
+| After a lease lapse (crash) | 3 | 1 | 0 | 3 | 2 | yes |
+| After a fence refusal (`{ timeoutSeconds: 1 }`) | 4 | 1 | 0 | 4 | 3 | yes |
 
-`meta.deliveryCount` drops from 3 to 2 across the handoff, because the queue never counted the re-runs. Turbo needs `attempt === 1` and `deliveryCount === 1`, and the delivery after a handoff reports 2, so the drop does not turn turbo on (`packages/core/src/runtime/spec9/delivery.ts:535`). A delivery whose creator count is 1 continues like a new message; one above 1 may re-send what an earlier delivery of the same message created (see [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership)).
+`meta.deliveryCount` drops from 3 to 2 across the handoff, because the queue never counted the re-runs. Turbo needs `attempt === 1` and `deliveryCount === 1`, and the delivery after a handoff reports 2, so the drop does not turn turbo on (`packages/core/src/runtime/spec9/delivery.ts:535`). Every delivery but the first, and but later re-runs of an invocation that already ran the pass, re-sends unstarted background steps created less than 23 hours ago (see [Step ownership and data](/docs/changelog/single-orchestrator-diagrams/step-ownership)). A handoff counts, so a busy fan-out that keeps handing off re-sends deduped messages on each continuation; the count is on the span as `workflow.reenqueue.count`.
 
 ```mermaid
 stateDiagram-v2
