@@ -11,7 +11,11 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resumeHook, resumeWebhook } from './resume-hook.js';
+import {
+  parseHookResumeHandle,
+  resumeHook,
+  resumeWebhook,
+} from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -574,9 +578,19 @@ describe('resumeHook durable resume', () => {
     await resumeHook(hook.token, { foo: 'fresh' });
     expect(first.createEvent.mock.calls[0][2].resumeId).toBeDefined();
 
-    // Cached capabilities are ignored; the endpoint itself enforces dedup.
+    // Ordinary Hook objects keep working before the new backend is deployed.
+    const existing = makeWorld(hook, {}, { resolvedHookResume: true });
+    await resumeHook(hook, { foo: 'existing' });
+    expect(existing.createEvent.mock.calls[0][2].resumeId).toBeUndefined();
+    expect(
+      existing.createEvent.mock.calls[0][2].requireHookResumeDedup
+    ).toBeUndefined();
+
+    // Parsed handles opt in; the endpoint itself enforces dedup.
     const second = makeWorld(hook, {}, { resolvedHookResume: true });
-    await resumeHook(hook, { foo: 'stale' });
+    await resumeHook(parseHookResumeHandle(JSON.parse(JSON.stringify(hook))), {
+      foo: 'stale',
+    });
     expect(second.getByToken).not.toHaveBeenCalled();
     expect(second.createEvent.mock.calls[0][2]).toMatchObject({
       requireHookResumeDedup: true,
@@ -587,7 +601,7 @@ describe('resumeHook durable resume', () => {
     // Custom Worlds that do not implement the guarded contract must never
     // receive a retryable write based on cached capabilities alone.
     const unsupported = makeWorld(hook, {}, { hookResumeDedup: false });
-    await resumeHook(hook, { foo: 'unsupported' });
+    await resumeHook(parseHookResumeHandle(hook), { foo: 'unsupported' });
     expect(unsupported.createEvent.mock.calls[0][2].resumeId).toBeUndefined();
     expect(
       unsupported.createEvent.mock.calls[0][2].resumePayloadDigest

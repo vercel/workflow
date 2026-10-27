@@ -69,15 +69,16 @@ showSections={["returns"]}
 
 ### Reuse a resolved hook
 
-Repeated calls can pass a previously resolved hook with `resumeContext` to skip
-the token lookup. On Vercel, this requires an SDK adapter with
+Use `parseHookResumeHandle()` from `@workflow/core/runtime` to validate a stored
+hook snapshot and opt into guarded cached delivery without another token lookup.
+Parse again after each transport; ordinary Hook objects retain the existing
+delivery path. On Vercel, guarded delivery requires `resumeContext`, an adapter with
 `resolvedHookResume` support and a backend with the guarded resolved-hook endpoint.
 Older servers reject that endpoint before writing. Cached `resumeCapabilities`
 are never treated as proof of current backend support.
 
-Use `parseHookResumeHandle()` from `@workflow/core/runtime` to validate a stored
-snapshot without reading user metadata or retaining transient capabilities.
-The parser does not authenticate it. Keep snapshots on a trusted server, or
+The parser excludes user metadata and transient capabilities.
+It does not authenticate the snapshot. Keep snapshots on a trusted server, or
 authenticate every field before accepting one from a client. Trace carriers
 can contain private baggage; omit them before exposing a snapshot to a client.
 

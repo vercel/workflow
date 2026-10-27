@@ -4,7 +4,9 @@ Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
 `resumeHook()` can reuse a resolved hook's immutable `resumeContext` without
 another token lookup. `parseHookResumeHandle()` from `@workflow/core/runtime`
-validates a transport snapshot and excludes metadata and transient capabilities.
+validates a transport snapshot, excludes metadata and transient capabilities,
+and opts it into guarded cached delivery. Parse again after each transport;
+ordinary Hook objects retain the existing delivery path.
 Authenticate snapshots carried by an untrusted client; parsing is not authorization.
 On adapters declaring `resolvedHookResume`, cached resumes require a guarded
 deduplicated write. A definite hook rejection permits resolving the token again;

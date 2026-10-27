@@ -73,9 +73,19 @@ const HookResumeHandleSchema = HookSchema.omit({
   resumeCapabilities: true,
 });
 
-/** Parse an opaque hook snapshot without reading metadata or trusting live capabilities. */
+// Shared across bundle layers without keeping a mutable module-level registry.
+const HOOK_RESUME_HANDLE = Symbol.for('workflow.hook.resumeHandle');
+
+/**
+ * Validate a stored hook snapshot and opt into guarded cached delivery.
+ * Ordinary Hook objects keep the existing delivery path. The non-enumerable
+ * marker is not serialized; parse the snapshot again after each transport.
+ * Parsing does not authenticate a client-supplied snapshot.
+ */
 export function parseHookResumeHandle(value: unknown): ResumableHook {
-  return HookResumeHandleSchema.parse(value);
+  const hook = HookResumeHandleSchema.parse(value);
+  Object.defineProperty(hook, HOOK_RESUME_HANDLE, { value: true });
+  return hook;
 }
 
 /**
@@ -348,10 +358,11 @@ export type ResumedHook = Hook & {
  * leaves the executor's outcome unknown; do not retry by directly writing an
  * event. Event and response persistence may be separate backend operations.
  *
- * A resolved Hook with resumeContext can be carried across requests and passed
- * here to omit the token lookup. Its write requires the server's resolved-hook
- * endpoint, which enforces deduplication and rejects unsupported servers before
- * writing. Mutable resumeCapabilities on a cached object are never trusted.
+ * Parse a stored Hook snapshot with parseHookResumeHandle() to opt into guarded
+ * cached delivery. With resumeContext and adapter support, its write requires
+ * the server's resolved-hook endpoint, which enforces deduplication and rejects
+ * unsupported servers before writing. Ordinary Hook objects retain the existing
+ * delivery path. Mutable resumeCapabilities on cached objects are never trusted.
  * An old hook without resumeContext retains the historical fallback behavior.
  * A lost response still must not be retried as a NEW resumeHook invocation.
  *
@@ -884,6 +895,7 @@ async function resumeHookAttempt<T = any>(
     // exactly as before dedup existed.
     const resolvedHandle =
       !hookResumeCapabilitiesAreFresh &&
+      Reflect.get(hook, HOOK_RESUME_HANDLE) === true &&
       hook.resumeContext !== undefined &&
       world.capabilities?.resolvedHookResume === true;
     const backendDedupSupported =

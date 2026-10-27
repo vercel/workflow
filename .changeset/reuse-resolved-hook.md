@@ -4,4 +4,4 @@
 "@workflow/world-vercel": minor
 ---
 
-Reuse resolved hooks across requests without repeating the token lookup. Cached-hook deliveries use an endpoint that requires atomic deduplication and rejects unsupported servers before writing.
+Reuse resolved hooks across requests without repeating the token lookup. Explicitly parsed cached handles use an endpoint that requires atomic deduplication and rejects unsupported servers before writing. Ordinary Hook objects retain the existing delivery path.
