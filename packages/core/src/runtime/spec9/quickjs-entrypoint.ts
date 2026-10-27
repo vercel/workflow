@@ -52,13 +52,18 @@ import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
-import { DEFAULT_STEP_MAX_RETRIES, getMaxInlineSteps } from '../constants.js';
+import {
+  DEFAULT_STEP_MAX_RETRIES,
+  getMaxInlineSteps,
+  STEP_DISPATCH_QUEUE_BATCH_SIZE,
+} from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
 import {
   getWorkflowQueueName,
   maxEventSlot,
   queueMessage,
+  queueMessages,
   REPLAY_RESOLVE_DATA,
   runDispatchContext,
   stepDispatchIdempotencyKey,
@@ -153,6 +158,126 @@ import {
 import { runStepSingleFlight } from './step-single-flight.js';
 import { waitTimerMessage } from './wait-timer.js';
 
+/** The queue message of one step and its options (see `queueStepMessage`). */
+function stepMessageOf(params: {
+  runId: string;
+  workflowRun: WorkflowRun;
+  step: PendingStep;
+  traceCarrier: Record<string, string>;
+  purpose: Parameters<typeof queueStepMessage>[0]['purpose'];
+  stepInput?: Uint8Array;
+  stepAttempt?: number;
+  stepCreatedEventId?: string;
+  stepCreatedAt?: Date;
+  delaySeconds?: number;
+}) {
+  const { runId, workflowRun, step, traceCarrier, purpose, delaySeconds } =
+    params;
+  return {
+    message: {
+      runId,
+      stepId: step.correlationId,
+      stepName: step.stepId,
+      traceCarrier,
+      requestedAt: new Date(),
+      ...(params.stepInput !== undefined
+        ? { stepInput: { input: params.stepInput } }
+        : {}),
+      ...(params.stepAttempt !== undefined && params.stepAttempt > 1
+        ? { stepAttempt: params.stepAttempt }
+        : {}),
+      ...(params.stepCreatedEventId
+        ? { stepCreatedEventId: params.stepCreatedEventId }
+        : {}),
+      ...stepCreatedAtField(params),
+      // Immutable run identity so the consumer can start the step without a
+      // blocking runs.get — see RunDispatchContextSchema.
+      runContext: runDispatchContext(workflowRun),
+    },
+    opts: {
+      // The 'dispatch' key is step-identity-scoped (correlationId + hashed
+      // step name), shared with the node engine's dispatch of the same step
+      // so the two stay mutually exclusive, without a stale message for a
+      // reassigned correlation id absorbing its legitimate dispatch. See
+      // stepDispatchIdempotencyKey.
+      idempotencyKey:
+        purpose === 'dispatch'
+          ? stepDispatchIdempotencyKey(step.correlationId, step.stepId)
+          : `${step.correlationId}:${purpose}`,
+      retentionSeconds: stepMessageRetentionSeconds(
+        getStepFunction(step.stepId)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES
+      ),
+      ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
+    },
+  };
+}
+
+/**
+ * Sends the `dispatch` messages of `steps` in batches of
+ * `STEP_DISPATCH_QUEUE_BATCH_SIZE`, as the node engine dispatches a pass's
+ * steps. Rejects if any message failed to go out; the ones that did are
+ * reported through `onSent`.
+ */
+async function queueStepMessages(params: {
+  world: Awaited<ReturnType<typeof getWorld>>;
+  runId: string;
+  workflowRun: WorkflowRun;
+  steps: readonly {
+    step: PendingStep;
+    stepAttempt?: number;
+    stepCreatedAt?: Date;
+  }[];
+  namespace: string | undefined;
+  nextTraceCarrier: () => Promise<Record<string, string>>;
+  onSent?: (correlationId: string) => void;
+  wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
+}): Promise<void> {
+  const { world, runId, workflowRun, steps, namespace, wfdiag } = params;
+  if (steps.length === 0) return;
+  const traceCarrier = await params.nextTraceCarrier();
+  const queueName = getWorkflowQueueName(workflowRun.workflowName, namespace);
+  const batches: (typeof steps)[] = [];
+  for (
+    let offset = 0;
+    offset < steps.length;
+    offset += STEP_DISPATCH_QUEUE_BATCH_SIZE
+  ) {
+    batches.push(steps.slice(offset, offset + STEP_DISPATCH_QUEUE_BATCH_SIZE));
+  }
+  const sent = await Promise.allSettled(
+    batches.map(async (batch) => {
+      await queueMessages(
+        world,
+        queueName,
+        batch.map(({ step, stepAttempt, stepCreatedAt }) =>
+          stepMessageOf({
+            runId,
+            workflowRun,
+            step,
+            traceCarrier,
+            purpose: 'dispatch',
+            stepAttempt,
+            stepCreatedAt,
+          })
+        )
+      );
+      for (const { step } of batch) {
+        params.onSent?.(step.correlationId);
+        wfdiag('step_queued', {
+          stepId: step.stepId,
+          correlationId: step.correlationId,
+          purpose: 'dispatch',
+          delaySeconds: 0,
+        });
+      }
+    })
+  );
+  const failed = sent.find(
+    (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected'
+  );
+  if (failed) throw failed.reason;
+}
+
 /**
  * Queue a step for background execution via the unified workflow queue
  * (V2 architecture). The combined handler in runtime.ts dispatches
@@ -216,42 +341,23 @@ async function queueStepMessage(params: {
     wfdiag,
   } = params;
   const traceCarrier = await nextTraceCarrier();
+  const { message, opts } = stepMessageOf({
+    runId,
+    workflowRun,
+    step,
+    traceCarrier,
+    purpose,
+    stepInput,
+    stepAttempt: params.stepAttempt,
+    stepCreatedEventId: params.stepCreatedEventId,
+    stepCreatedAt: params.stepCreatedAt,
+    delaySeconds,
+  });
   await queueMessage(
     world,
     getWorkflowQueueName(workflowRun.workflowName, namespace),
-    {
-      runId,
-      stepId: step.correlationId,
-      stepName: step.stepId,
-      traceCarrier,
-      requestedAt: new Date(),
-      ...(stepInput !== undefined ? { stepInput: { input: stepInput } } : {}),
-      ...(params.stepAttempt !== undefined && params.stepAttempt > 1
-        ? { stepAttempt: params.stepAttempt }
-        : {}),
-      ...(params.stepCreatedEventId
-        ? { stepCreatedEventId: params.stepCreatedEventId }
-        : {}),
-      ...stepCreatedAtField(params),
-      // Immutable run identity so the consumer can start the step without a
-      // blocking runs.get — see RunDispatchContextSchema.
-      runContext: runDispatchContext(workflowRun),
-    },
-    {
-      // The 'dispatch' key is step-identity-scoped (correlationId + hashed
-      // step name), shared with the node engine's dispatch of the same step
-      // so the two stay mutually exclusive, without a stale message for a
-      // reassigned correlation id absorbing its legitimate dispatch. See
-      // stepDispatchIdempotencyKey.
-      idempotencyKey:
-        purpose === 'dispatch'
-          ? stepDispatchIdempotencyKey(step.correlationId, step.stepId)
-          : `${step.correlationId}:${purpose}`,
-      retentionSeconds: stepMessageRetentionSeconds(
-        getStepFunction(step.stepId)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES
-      ),
-      ...(delaySeconds && delaySeconds > 0 ? { delaySeconds } : {}),
-    }
+    message,
+    opts
   );
   params.onSent?.(step.correlationId);
   wfdiag('step_queued', {
@@ -388,6 +494,14 @@ export async function runWorkflowWithQuickJS(params: {
   /** Called once a wait's timer message went out, with the wait's id. */
   onWaitTimerSent?: (correlationId: string) => void;
   /**
+   * The steps of a log whose message this delivery sends again (see
+   * `stepsToReenqueue`), once per invocation. Absent (standalone callers):
+   * the re-send rule applied to `deliveryAttempt` on every pass.
+   */
+  stepResends?: (events: readonly Event[]) => ReadonlySet<string>;
+  /** Called for each step whose message this delivery sends again. */
+  onStepResent?: (correlationId: string) => void;
+  /**
    * Waits whose `wait_completed` this delivery committed, filled by the
    * delivery from its writer's accepted events; this engine adds its own
    * completions too. Their chains are this delivery's to arm (see
@@ -420,6 +534,18 @@ export async function runWorkflowWithQuickJS(params: {
     waitContinuation,
     turbo,
   } = params;
+  /** See `stepResends` in the params. */
+  const stepResends =
+    params.stepResends ??
+    ((events: readonly Event[]) =>
+      new Set(
+        stepsToReenqueue({
+          events,
+          messageId: ownerMessageId ?? '',
+          deliveryCount: deliveryAttempt,
+          nowMs: Date.now(),
+        }).resend
+      ));
 
   /**
    * Attempt number for the continuation this invocation is about to arm for
@@ -2163,44 +2289,55 @@ export async function runWorkflowWithQuickJS(params: {
       const stepOps = pendingOperations.filter(
         (op): op is PendingStep => op.type === 'step'
       );
-      // Steps created by an earlier invocation that are still pending are
-      // enqueued again only by a redelivery of the message that created
-      // them, and only while they have no `step_started` (see
-      // `stepsToReenqueue`). Any broader rule would send a second message
-      // for a step whose first one is still retrying, which is a second
-      // owner of its body.
-      const reenqueue = new Set(
-        stepsToReenqueue({
-          events,
-          messageId: ownerMessageId ?? '',
-          deliveryCount: deliveryAttempt,
-        })
-      );
+      // Steps that may have lost their message (a delivery that died between
+      // a step's `step_created` and its send) are sent again by a delivery
+      // that is not its message's first, once per invocation and in
+      // batches, under each step's stable key (see `stepsToReenqueue`).
+      const reenqueue = stepResends(events);
+      const resend: {
+        step: PendingStep;
+        stepAttempt?: number;
+        stepCreatedAt?: Date;
+      }[] = [];
+      let starts: Map<string, number> | undefined;
       for (const step of stepOps) {
         if (!step.hasCreatedEvent) continue;
         if (executedStepIds.has(step.correlationId)) continue;
         if (queuedStepIds.has(step.correlationId)) continue;
         if (!reenqueue.has(step.correlationId)) continue;
         queuedStepIds.add(step.correlationId);
+        params.onStepResent?.(step.correlationId);
+        starts ??= new Map(
+          analyzeLogSteps(events).map((logStep) => [
+            logStep.correlationId,
+            logStep.starts,
+          ])
+        );
+        const started = starts.get(step.correlationId) ?? 0;
+        // A step that started carries its next attempt, so its handler reads
+        // the log before it runs the body.
         // A re-send carries the creation's time, not its own.
         const created = events.find(
           (event) =>
             event.correlationId === step.correlationId &&
             event.eventType === 'step_created'
         );
-        await queueStepMessage({
-          world,
-          runId,
-          workflowRun,
+        resend.push({
           step,
-          namespace,
-          nextTraceCarrier,
-          purpose: 'dispatch',
-          onSent: params.onStepMessageSent,
+          ...(started > 0 ? { stepAttempt: started + 1 } : {}),
           ...(created ? { stepCreatedAt: new Date(created.createdAt) } : {}),
-          wfdiag,
         });
       }
+      await queueStepMessages({
+        world,
+        runId,
+        workflowRun,
+        steps: resend,
+        namespace,
+        nextTraceCarrier,
+        onSent: params.onStepMessageSent,
+        wfdiag,
+      });
 
       if (
         inlineCandidates.length === 0 &&

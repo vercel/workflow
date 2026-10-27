@@ -2,46 +2,79 @@ import type { Event } from '@workflow/world';
 import { stepCreationOf } from './log-state.js';
 
 /**
+ * How old a step's last send may be for an orchestrator delivery to send its
+ * message again: an hour inside the queue's dedupe window for a step's
+ * stable idempotency key (`stepDispatchIdempotencyKey`, `min(retention,
+ * 24h)` on world-vercel). A send this young is deduped against the step's
+ * first message while that message lives, so a re-send never creates a
+ * second live message, which would be a second owner of the step's body.
+ * Nothing on the write path refuses a second `step_started`, so this bound
+ * is what keeps a re-send from duplicating one.
+ */
+export const STEP_RESEND_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+
+/** What {@link stepsToReenqueue} decided for one orchestrator delivery. */
+export interface StepResends {
+  /** Steps whose message to send again, in log order. */
+  resend: string[];
+  /** Steps it would re-send but whose last send is past the age bound. */
+  tooOld: string[];
+}
+
+/**
  * Background steps this orchestrator delivery must enqueue again.
  *
  * A background step's message is enqueued once, right after its
- * `step_created` commits. The only invocation that may enqueue it again is a
- * REDELIVERY of the message whose invocation wrote that `step_created`
- * (`creatorMessageId`), and only while the step has no `step_started`: that
- * is the crash window between the commit and the enqueue, and it closes
- * within minutes, well inside the queue's dedupe window for the step's stable
- * key. Any broader rule ("re-enqueue every open background step on replay")
- * would eventually send a second message for a step whose first message is
- * still retrying past the dedupe window, which is a second owner of its body.
+ * `step_created` commits. A delivery that dies between the commit and the
+ * enqueue leaves the step with no message, and nothing in the log says so.
+ * So every orchestrator delivery that is not the first delivery of its
+ * message (`deliveryCount` above 1: a redelivery after a crash, a lapsed
+ * lease or a rejection, a handoff continuation, a coalesced re-run, or a
+ * World that reports no count) re-sends every background step that has a
+ * `step_created` and no `step_started`, whichever delivery created it, once
+ * per invocation (see {@link invocationResends}). The queue guarantees such
+ * a delivery happens after any delivery that died: the dead delivery's
+ * message is redelivered, or coalesced into a running delivery, whose re-run
+ * reports the next count. A re-send keeps the step's stable idempotency key,
+ * so one whose first message still lives is deduped; a step created more
+ * than {@link STEP_RESEND_MAX_AGE_MS} ago is left alone (`tooOld`), because
+ * past the dedupe window a second message would be a second owner of its
+ * body.
  *
  * Inline steps are never enqueued here, with one exception: an inline step
  * whose last event is the `step_retrying` that moved it to the background.
  * The orchestrator delivery that ran the failed attempt writes it and stamps
  * it with its own message (`creatorMessageId`, see
  * {@link withRetryCreator}); the crash window between that write and the
- * enqueue of the step's retry message is closed the same way, by a
- * redelivery of that message. A `step_retrying` the step's own message
- * wrote (a later attempt) carries no creator: that message stays
- * unacknowledged until the step ends, so no orchestrator re-sends it. Nor
- * does one from a log written before the stamp existed.
+ * enqueue of the step's retry message is closed by a later delivery of that
+ * message, within the same age bound counted from the `step_retrying`. A
+ * `step_retrying` the step's own message wrote (a later attempt) carries no
+ * creator: that message stays unacknowledged until the step ends, so no
+ * orchestrator re-sends it. Nor does one from a log written before the
+ * stamp existed.
  */
 export function stepsToReenqueue(params: {
   events: readonly Event[];
   messageId: string;
   deliveryCount: number | undefined;
-}): string[] {
-  const { events, messageId, deliveryCount } = params;
-  if (deliveryCount === 1) return [];
+  nowMs: number;
+  /** Steps this invocation already re-sent, or found too old. */
+  exclude?: { has(correlationId: string): boolean };
+}): StepResends {
+  const { events, messageId, deliveryCount, nowMs, exclude } = params;
+  const out: StepResends = { resend: [], tooOld: [] };
+  if (deliveryCount === 1) return out;
   const steps = new Map<
     string,
     {
       inline: boolean;
-      creator?: string;
+      createdAtMs: number;
       started: boolean;
       terminal: boolean;
       lastIsRetrying: boolean;
       /** The `creatorMessageId` of the last event, if a `step_retrying`. */
       retryCreator?: string;
+      retriedAtMs?: number;
     }
   >();
   for (const event of events) {
@@ -53,7 +86,7 @@ export function stepsToReenqueue(params: {
       if (creation) {
         steps.set(cid, {
           inline: creation.inline,
-          creator: creation.creatorMessageId,
+          createdAtMs: eventTimeMs(event),
           started: false,
           terminal: false,
           lastIsRetrying: false,
@@ -75,6 +108,7 @@ export function stepsToReenqueue(params: {
         if (step) {
           step.lastIsRetrying = true;
           step.retryCreator = retryCreatorMessageId(event);
+          step.retriedAtMs = eventTimeMs(event);
         }
         break;
       }
@@ -88,23 +122,97 @@ export function stepsToReenqueue(params: {
         break;
     }
   }
-  const out: string[] = [];
   for (const [cid, step] of steps) {
-    if (step.terminal) continue;
+    if (step.terminal || exclude?.has(cid)) continue;
+    let sentAtMs: number | undefined;
     if (!step.inline) {
-      if (!step.started && step.creator === messageId) out.push(cid);
+      if (!step.started) sentAtMs = step.createdAtMs;
     } else if (step.lastIsRetrying && step.retryCreator === messageId) {
-      out.push(cid);
+      sentAtMs = step.retriedAtMs;
     }
+    if (sentAtMs === undefined) continue;
+    if (!(nowMs - sentAtMs < STEP_RESEND_MAX_AGE_MS)) {
+      out.tooOld.push(cid);
+      continue;
+    }
+    out.resend.push(cid);
   }
   return out;
 }
 
 /**
+ * Whether an orchestrator delivery passes the re-send gate of
+ * {@link stepsToReenqueue}: it is not the first delivery of its message, or
+ * the World cannot say.
+ */
+export function passesResendGate(params: {
+  deliveryCount: number | undefined;
+}): boolean {
+  return params.deliveryCount !== 1;
+}
+
+/**
+ * What one invocation re-sent (see {@link stepsToReenqueue}), so its later
+ * passes and coalesced re-runs do not send it again.
+ */
+export interface InvocationResends {
+  /** Steps whose message this invocation re-sent. */
+  readonly sent: Set<string>;
+  /** Steps it left alone because their last send is past the age bound. */
+  readonly tooOld: Set<string>;
+  /** Whether a delivery of this invocation already ran the re-send pass. */
+  swept: boolean;
+}
+
+// per-copy-ok: a coalesced re-run is a new handler call of the same function
+// invocation, in the same module copy that handled its first delivery. State
+// split across copies only costs a deduped re-send.
+const invocations = new Map<string, InvocationResends>();
+const MAX_TRACKED_INVOCATIONS = 1_000;
+
+/**
+ * The re-send state of the invocation a delivery runs in. Coalesced re-runs
+ * of a delivery share the function invocation that ran it, which a World
+ * reports as `invocationStartedAt` (see `Queue.createQueueHandler`): they
+ * share this state, keyed by run, message and invocation start. Without
+ * `invocationStartedAt` every delivery is an invocation of its own. Bounded:
+ * the oldest invocation is forgotten past {@link MAX_TRACKED_INVOCATIONS}.
+ */
+export function invocationResends(params: {
+  runId: string;
+  messageId: string;
+  invocationStartedAt: number | undefined;
+}): InvocationResends {
+  const fresh = (): InvocationResends => ({
+    sent: new Set(),
+    tooOld: new Set(),
+    swept: false,
+  });
+  if (params.invocationStartedAt === undefined) return fresh();
+  const key = `${params.runId}|${params.messageId}|${params.invocationStartedAt}`;
+  let state = invocations.get(key);
+  if (!state) {
+    state = fresh();
+    invocations.set(key, state);
+    if (invocations.size > MAX_TRACKED_INVOCATIONS) {
+      const oldest = invocations.keys().next().value;
+      if (oldest !== undefined) invocations.delete(oldest);
+    }
+  }
+  return state;
+}
+
+function eventTimeMs(event: Event): number {
+  const ms = +new Date(event.createdAt);
+  // An event with no usable time is treated as too old to re-send.
+  return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
+}
+
+/**
  * `data` with this orchestrator delivery's message (`messageId`) stamped as
  * the creator when it is a `step_retrying`: the write that moves an inline
- * step's retry to the background, which only a redelivery of `messageId`
- * may re-send (see {@link stepsToReenqueue}). Any other event is returned
+ * step's retry to the background, which only a later delivery of
+ * `messageId` may re-send (see {@link stepsToReenqueue}). Any other event is returned
  * as is.
  */
 export function withRetryCreator<

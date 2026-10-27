@@ -152,7 +152,9 @@ import {
 } from './consumed-position.js';
 import {
   chainTimersBeforeCompletion,
+  invocationResends,
   ownedWaitChains,
+  passesResendGate,
   schedulesWaitTimer,
   stepsToReenqueue,
   waitCreatorMessageId,
@@ -371,6 +373,62 @@ async function runDelivery(
     metadata.deliveryCount === undefined
       ? undefined
       : Math.min(metadata.deliveryCount, metadata.attempt);
+  // Background steps with no message are re-sent by any delivery that is
+  // not its message's first, counted in deliveries (handoffs and coalesced
+  // re-runs included), once per invocation (see `stepsToReenqueue`).
+  const resendGate = passesResendGate({
+    deliveryCount: metadata.deliveryCount,
+  });
+  const resends = invocationResends({
+    runId,
+    messageId: creatorMessageId,
+    invocationStartedAt: metadata.invocationStartedAt,
+  });
+  /** What this delivery re-sent and left alone, for its span. */
+  const resendCounts = { sent: 0, tooOld: 0 };
+  const reportResends = () =>
+    span?.setAttributes({
+      ...Attribute.WorkflowReenqueueCount(resendCounts.sent),
+      ...Attribute.WorkflowReenqueueSkippedTooOld(resendCounts.tooOld),
+    });
+  /**
+   * The steps of `events` whose message this delivery sends again (see
+   * `stepsToReenqueue`): none unless it passes the gate, and none its
+   * invocation already re-sent or found too old.
+   */
+  const stepResends = (events: readonly Event[]): Set<string> => {
+    if (!resendGate) return new Set();
+    const decided = stepsToReenqueue({
+      events,
+      messageId: creatorMessageId,
+      deliveryCount: metadata.deliveryCount,
+      nowMs: Date.now(),
+      exclude: {
+        has: (id) => resends.sent.has(id) || resends.tooOld.has(id),
+      },
+    });
+    for (const id of decided.tooOld) resends.tooOld.add(id);
+    resendCounts.tooOld += decided.tooOld.length;
+    if (decided.tooOld.length > 0) {
+      runtimeLogger.info(
+        'Not re-sending step messages whose last send is past the re-send age bound',
+        {
+          workflowRunId: runId,
+          correlationIds: decided.tooOld.slice(0, 10),
+          count: decided.tooOld.length,
+        }
+      );
+    }
+    resends.swept = true;
+    reportResends();
+    return new Set(decided.resend);
+  };
+  /** Records that this delivery is sending `correlationId`'s message again. */
+  const noteResent = (correlationId: string): void => {
+    resends.sent.add(correlationId);
+    resendCounts.sent++;
+    reportResends();
+  };
 
   // The inline deadline is measured from the start of the function
   // invocation, which every coalesced re-run of this delivery shares
@@ -1045,10 +1103,11 @@ async function runDelivery(
   // A timer delivery is excluded: one that arrives before its
   // wait is due (a long sleep spans several queue hops) has
   // to arm the next hop, which a no-op exit would skip. So is
-  // a redelivery: it may owe what an earlier delivery of its
-  // message created and never sent (see `creator-rules.ts`).
+  // a delivery that is not its message's first, until its
+  // invocation ran the re-send pass: it may owe what a delivery
+  // that died created and never sent (see `creator-rules.ts`).
   if (
-    (creatorDeliveryCount ?? 1) === 1 &&
+    (!resendGate || resends.swept) &&
     !runInput &&
     !hookInput &&
     !waitContinuation &&
@@ -1175,7 +1234,7 @@ async function runDelivery(
           ? err.reason
           : (writer.stopCause as RunAheadStopError).reason;
         // The restarted pass decides from the log, and on a first delivery
-        // its creator rules re-send nothing (see `creator-rules.ts`): the
+        // its re-send rule sends nothing (see `stepsToReenqueue`): the
         // messages this delivery's commits owe go out now.
         await sendUnsentMessages?.();
         if (runAheadRestarts >= MAX_RUN_AHEAD_RESTARTS) {
@@ -1652,6 +1711,8 @@ async function runDelivery(
           waitContinuation,
           deliveryAttempt: creatorDeliveryCount,
           ownerMessageId: creatorMessageId,
+          stepResends,
+          onStepResent: noteResent,
           lingerDeadlineMs:
             invocationStartTime +
             noInlineReplayAfterMs -
@@ -3409,15 +3470,9 @@ async function runDelivery(
       }
 
       // Background steps: enqueue the ones created now, and
-      // re-enqueue the ones a crashed earlier delivery of
-      // this same message created but never got out.
-      const reenqueue = new Set(
-        stepsToReenqueue({
-          events: replayedEvents,
-          messageId: creatorMessageId,
-          deliveryCount: creatorDeliveryCount,
-        })
-      );
+      // re-enqueue the ones a delivery that died may have
+      // created and never got out (`stepsToReenqueue`).
+      const reenqueue = stepResends(replayedEvents);
       const toEnqueue: StepMessageSpec[] = [];
       for (const step of created.createdSteps) {
         if (step.inline) continue;
@@ -3433,6 +3488,8 @@ async function runDelivery(
       }
       for (const step of logSteps) {
         if (!reenqueue.has(step.correlationId)) continue;
+        if (sentStepMessages.has(step.correlationId)) continue;
+        noteResent(step.correlationId);
         toEnqueue.push({
           correlationId: step.correlationId,
           stepName: step.stepName,
@@ -4183,28 +4240,23 @@ async function runDelivery(
 
     /**
      * Sends what this delivery's writes owe the queue and it has not sent:
-     * the step messages in `unsentStepMessages`, plus, on a redelivery of
-     * its message, the ones the creator rules re-send for an earlier
-     * delivery of it that never got them out (see `stepsToReenqueue`); and
-     * the timers of the wait chains it owns that have none from it yet
+     * the step messages in `unsentStepMessages`, plus, on a delivery that
+     * is not its message's first, the ones the re-send rule sends again for
+     * a delivery that died before it got them out (see `stepsToReenqueue`);
+     * and the timers of the wait chains it owns that have none from it yet
      * (`armTimers`). A step message keeps its idempotency key, so one
      * already sent is deduped.
      */
     async function sendOwedMessages(run: WorkflowRun): Promise<void> {
       const owed = new Map(unsentStepMessages);
-      if (log && creatorDeliveryCount !== 1) {
-        const reenqueue = new Set(
-          stepsToReenqueue({
-            events: log.events,
-            messageId: creatorMessageId,
-            deliveryCount: creatorDeliveryCount,
-          })
-        );
+      if (log) {
+        const reenqueue = stepResends(log.events);
         for (const step of analyzeLogSteps(log.events)) {
           const id = step.correlationId;
           if (!reenqueue.has(id) || owed.has(id) || sentStepMessages.has(id)) {
             continue;
           }
+          noteResent(id);
           owed.set(id, {
             correlationId: id,
             stepName: step.stepName,

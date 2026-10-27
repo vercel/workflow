@@ -826,7 +826,7 @@ interface BatchedCreation {
  * `WorkflowWorldError`), and the batches behind it are not sent. A spec 9
  * batch is not atomic, so the items around a refusal may have committed:
  * the redelivery re-derives the missing creations and re-sends the steps
- * this message created that never got a message (`stepsToReenqueue`). The
+ * that never got a message (`stepsToReenqueue`). The
  * reports already made settle before the pass fails. A report waits for the
  * pass's hook writes to settle.
  */

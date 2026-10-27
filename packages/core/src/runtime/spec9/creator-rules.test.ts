@@ -2,7 +2,10 @@ import { type Event, slotToEventId } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import {
   chainTimersBeforeCompletion,
+  invocationResends,
   ownedWaitChains,
+  passesResendGate,
+  STEP_RESEND_MAX_AGE_MS,
   schedulesWaitTimer,
   stepsToReenqueue,
   waitTimersToArm,
@@ -35,72 +38,93 @@ describe('stepsToReenqueue', () => {
       creatorMessageId: MSG,
       ...extra,
     });
+  // Every event `ev` makes is created at the epoch.
+  const nowMs = 0;
+  const resends = (
+    events: Event[],
+    extra: Partial<Parameters<typeof stepsToReenqueue>[0]> = {}
+  ) =>
+    stepsToReenqueue({
+      events,
+      messageId: MSG,
+      deliveryCount: 2,
+      nowMs,
+      ...extra,
+    });
 
-  it('re-enqueues an unstarted background step on a redelivery of its creator', () => {
+  it('re-sends an unstarted background step on a redelivery of its creator', () => {
+    expect(resends([created('step_a')]).resend).toEqual(['step_a']);
+  });
+
+  it('never re-sends on a first delivery', () => {
+    expect(resends([created('step_a')], { deliveryCount: 1 })).toEqual({
+      resend: [],
+      tooOld: [],
+    });
+  });
+
+  it('re-sends an unstarted background step whatever message created it, and on a World with no delivery count', () => {
+    // A coalesced re-run or a handoff continuation of another message: the
+    // creator's own redelivery may have been coalesced away.
+    for (const deliveryCount of [2, 5, undefined]) {
+      expect(
+        resends([created('step_a')], {
+          messageId: 'msg_other',
+          deliveryCount,
+        }).resend
+      ).toEqual(['step_a']);
+    }
+    // A step created before creators were recorded, too.
     expect(
-      stepsToReenqueue({
-        events: [created('step_a')],
-        messageId: MSG,
-        deliveryCount: 2,
-      })
+      resends([created('step_a', { creatorMessageId: undefined })]).resend
     ).toEqual(['step_a']);
   });
 
-  it('never re-enqueues on a first delivery', () => {
+  it('never re-sends a step that has started, or one with an outcome', () => {
     expect(
-      stepsToReenqueue({
-        events: [created('step_a')],
-        messageId: MSG,
-        deliveryCount: 1,
-      })
+      resends([created('step_a'), ev('step_started', 'step_a')]).resend
+    ).toEqual([]);
+    expect(
+      resends([created('step_a'), ev('step_failed', 'step_a')]).resend
     ).toEqual([]);
   });
 
-  it('never re-enqueues from another message', () => {
+  it('leaves a step alone once its creation is past the re-send age bound', () => {
+    const events = [created('step_a')];
     expect(
-      stepsToReenqueue({
-        events: [created('step_a')],
-        messageId: 'msg_other',
-        deliveryCount: 3,
-      })
-    ).toEqual([]);
+      resends(events, { nowMs: nowMs + STEP_RESEND_MAX_AGE_MS - 1 })
+    ).toEqual({ resend: ['step_a'], tooOld: [] });
+    expect(resends(events, { nowMs: nowMs + STEP_RESEND_MAX_AGE_MS })).toEqual({
+      resend: [],
+      tooOld: ['step_a'],
+    });
   });
 
-  it('never re-enqueues a step that has started', () => {
+  it('skips the steps the invocation already re-sent or found too old', () => {
     expect(
-      stepsToReenqueue({
-        events: [created('step_a'), ev('step_started', 'step_a')],
-        messageId: MSG,
-        deliveryCount: 2,
-      })
-    ).toEqual([]);
+      resends([created('step_a'), created('step_b')], {
+        exclude: new Set(['step_a']),
+      }).resend
+    ).toEqual(['step_b']);
   });
 
-  it('never re-enqueues an inline step that has not moved to the background', () => {
-    expect(
-      stepsToReenqueue({
-        events: [created('step_a', { inline: true })],
-        messageId: MSG,
-        deliveryCount: 2,
-      })
-    ).toEqual([]);
+  it('never re-sends an inline step that has not moved to the background', () => {
+    expect(resends([created('step_a', { inline: true })]).resend).toEqual([]);
   });
 
-  it('re-enqueues an inline step whose retry moved to the background, on a redelivery of the message that moved it', () => {
+  it('re-sends an inline step whose retry moved to the background, on a redelivery of the message that moved it, within the age bound of the move', () => {
+    const events = [
+      created('step_a', { inline: true }),
+      ev('step_started', 'step_a'),
+      ev('step_retrying', 'step_a', { creatorMessageId: MSG }),
+    ];
+    expect(resends(events).resend).toEqual(['step_a']);
     expect(
-      stepsToReenqueue({
-        events: [
-          created('step_a', { inline: true }),
-          ev('step_started', 'step_a'),
-          ev('step_retrying', 'step_a', { creatorMessageId: MSG }),
-        ],
-        messageId: MSG,
-        deliveryCount: 2,
-      })
+      resends(events, { nowMs: nowMs + STEP_RESEND_MAX_AGE_MS }).tooOld
     ).toEqual(['step_a']);
   });
 
-  it('never re-enqueues a background retry for another message, or for a World with no delivery count', () => {
+  it('never re-sends a background retry for another message, or for a World with no delivery count', () => {
     // The step's own message retries in place past the dedupe window; an
     // unrelated orchestrator redelivery must not send it a second message.
     const events = [
@@ -112,36 +136,54 @@ describe('stepsToReenqueue', () => {
     ];
     for (const deliveryCount of [2, undefined]) {
       expect(
-        stepsToReenqueue({
-          events,
-          messageId: 'msg_unrelated_hook',
-          deliveryCount,
-        })
+        resends(events, { messageId: 'msg_unrelated_hook', deliveryCount })
+          .resend
       ).toEqual([]);
       // Nor the orchestrator that moved it, once the step's own message has
       // started it: that message owns it until it ends.
       expect(
-        stepsToReenqueue({ events, messageId: 'msg_orch1', deliveryCount })
+        resends(events, { messageId: 'msg_orch1', deliveryCount }).resend
       ).toEqual([]);
     }
   });
 
-  it('never re-enqueues an inline retry another message moved, or one without a recorded creator', () => {
+  it('never re-sends an inline retry another message moved, or one without a recorded creator', () => {
     const moved = (extra: Record<string, unknown>) => [
       created('step_a', { inline: true }),
       ev('step_started', 'step_a'),
       ev('step_retrying', 'step_a', extra),
     ];
     expect(
-      stepsToReenqueue({
-        events: moved({ creatorMessageId: 'msg_orch1' }),
+      resends(moved({ creatorMessageId: 'msg_orch1' }), {
         messageId: 'msg_other',
-        deliveryCount: 2,
-      })
+      }).resend
     ).toEqual([]);
+    expect(resends(moved({})).resend).toEqual([]);
+  });
+});
+
+describe('passesResendGate', () => {
+  it('passes any delivery but the first of its message', () => {
+    expect(passesResendGate({ deliveryCount: 1 })).toBe(false);
+    expect(passesResendGate({ deliveryCount: 2 })).toBe(true);
+    expect(passesResendGate({ deliveryCount: undefined })).toBe(true);
+  });
+});
+
+describe('invocationResends', () => {
+  it('shares one state across the coalesced re-runs of an invocation, and none without an invocation start', () => {
+    const key = { runId: 'wrun_1', messageId: MSG, invocationStartedAt: 42 };
+    const state = invocationResends(key);
+    state.sent.add('step_a');
+    expect(invocationResends(key)).toBe(state);
     expect(
-      stepsToReenqueue({ events: moved({}), messageId: MSG, deliveryCount: 2 })
-    ).toEqual([]);
+      invocationResends({ ...key, invocationStartedAt: 43 }).sent.size
+    ).toBe(0);
+    expect(
+      invocationResends({ ...key, messageId: 'msg_other' }).sent.size
+    ).toBe(0);
+    const unkeyed = { ...key, invocationStartedAt: undefined };
+    expect(invocationResends(unkeyed)).not.toBe(invocationResends(unkeyed));
   });
 });
 

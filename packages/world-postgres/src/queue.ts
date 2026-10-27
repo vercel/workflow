@@ -974,17 +974,12 @@ export function createQueue(
       const attempt = graphileHelpers.success
         ? graphileHelpers.data.job.attempts + (messageData.attemptOffset ?? 0)
         : messageData.attempt;
-      // `attempt` is what core counts against its max-deliveries cap, and a
-      // `{ timeoutSeconds }` reschedule starts it over (as it always has), so
-      // a step retried in place many times on one message is not failed by
-      // the cap. `deliveryCount` keeps counting across reschedules.
-      //
-      // The `Queue` contract asks for `attempt` to carry over a handoff
-      // (`{ timeoutSeconds: 0 }` on a spec 9 run), and it does not here. A
-      // spec 9 orchestrator's creator rules read the creating delivery from
-      // `attempt`, so a crash redelivery that then hands off is read as a
-      // first delivery on the next one, and does not re-send a step message
-      // lost in the crash window: the run can strand.
+      // `attempt` is what core counts against its max-deliveries cap. A
+      // `{ timeoutSeconds: n > 0 }` reschedule starts it over (as it always
+      // has), so a step retried in place many times on one message is not
+      // failed by the cap; a spec 9 handoff (`{ timeoutSeconds: 0 }`) carries
+      // it over (`attemptOffset`). `deliveryCount` keeps counting across both,
+      // and is what a spec 9 orchestrator's re-send rule reads.
       const deliveryCount = graphileHelpers.success
         ? graphileHelpers.data.job.attempts +
           (messageData.deliveryOffset ?? messageData.attemptOffset ?? 0)

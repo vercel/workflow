@@ -290,6 +290,27 @@ export const WorkflowConsecutiveFenceRefusals = SemanticConvention<number>(
   'workflow.consecutive_fence_refusals'
 );
 
+/**
+ * Step messages a spec 9 orchestrator delivery's invocation sent again under
+ * their stable idempotency keys: background steps created and not started,
+ * re-sent once per invocation by a delivery that is not its message's first
+ * (a redelivery, a handoff continuation, a coalesced re-run). Set whenever a
+ * delivery passes that gate, 0 included. Most of these are deduped by the
+ * queue against the step's first message.
+ */
+export const WorkflowReenqueueCount = SemanticConvention<number>(
+  'workflow.reenqueue.count'
+);
+
+/**
+ * Steps the same re-send left alone because their last send is older than
+ * the re-send age bound, past which a second message could outlive the
+ * queue's dedupe window.
+ */
+export const WorkflowReenqueueSkippedTooOld = SemanticConvention<number>(
+  'workflow.reenqueue.skipped_too_old'
+);
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'

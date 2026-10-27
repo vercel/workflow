@@ -883,9 +883,9 @@ export interface Queue {
    *   [5s, 900s]); the runtime tolerates an early redelivery by checking the
    *   log and asking again. A World whose queue cannot redeliver the same
    *   message may publish a new message with the same payload instead,
-   *   provided it carries the same `messageId` in `meta` on delivery;
-   *   otherwise the runtime's creator-redelivery rule loses its anchor (see
-   *   `meta.messageId`).
+   *   provided it carries the same `messageId` and the next `deliveryCount`
+   *   in `meta` on delivery; otherwise the runtime's re-send rule loses its
+   *   anchor (see `meta.deliveryCount`).
    * - **Single-orchestrator run, `{ timeoutSeconds: 0 }`: a handoff.** The
    *   delivery is not done and continues in a fresh one. Deliver the SAME
    *   message again at once, and do not count this delivery toward
@@ -913,12 +913,19 @@ export interface Queue {
    *
    * - `messageId` MUST be stable across redeliveries of the same message
    *   (one id per enqueued message, reused on every delivery). The runtime
-   *   records it on `step_created` and `wait_created` (`creatorMessageId`),
-   *   and only a redelivery of that message re-enqueues a background step or
-   *   schedules a wait's timer.
+   *   records it on `step_created` and `wait_created` (`creatorMessageId`):
+   *   the delivery that wrote a wait's `wait_created`, or a later delivery of
+   *   that message, schedules the wait's timer.
    * - `deliveryCount` is 1 on a message's first delivery and increments on
    *   every redelivery, whatever caused it (lease lapse, a rejected handler, a
-   *   `{ timeoutSeconds }` result, a coalesced re-run). Leave it `undefined`
+   *   `{ timeoutSeconds }` result, a handoff, a coalesced re-run). An
+   *   orchestrator delivery whose count is above 1 re-sends, once per
+   *   invocation and under each step's stable key, every background step
+   *   that has a `step_created` and no `step_started`: a delivery that died
+   *   between the two left it with no message. The queue must therefore
+   *   follow any delivery that dies with a delivery counted above 1, of the
+   *   same message or of one it was coalesced into, and must dedupe a step
+   *   key for at least a day while the step's first message lives. Leave it `undefined`
    *   when the queue cannot say: the runtime then treats every delivery as a
    *   possible redelivery and reads the run's log before running a step
    *   body, which is correct but slower. A queue that reports 1 for a redelivery breaks
