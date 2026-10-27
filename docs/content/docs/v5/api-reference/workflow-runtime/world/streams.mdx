@@ -72,7 +72,7 @@ await world.streams.writeMulti?.(runId, "default", [chunk1, chunk2]); // [!code 
 
 ### get()
 
-Read data from a named stream as a live `ReadableStream` that waits for new chunks in real time.
+Read data from a named stream as a live `ReadableStream` that waits for new chunks in real time. The reader receives each chunk once, in the order it was written.
 
 ```typescript lineNumbers
 const readable = await world.streams.get(runId, "default"); // [!code highlight]

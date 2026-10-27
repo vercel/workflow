@@ -108,7 +108,9 @@ use a named queue per run, `workflow_flows:<runId>:executor`. Graphile permits
 one active job on each named queue across workers. Other runs, steps, and health
 checks can run concurrently. `queueConcurrency` limits total active jobs per
 worker process and defaults to 50. A custom job prefix replaces `workflow_` in
-these names.
+these names. Publishing a job whose key matches a pending job keeps the pending
+job's scheduled run time, so a duplicate cannot cut a delayed retry's backoff
+short.
 
 The HTTP receiver checks each execution request against its active Graphile job
 before processing pending inputs. Updated workers and receivers move legacy
