@@ -10,7 +10,7 @@ on:
         required: false
         type: string
       model:
-        description: 'AI model used for AI-assisted decisions and conflict resolution, as a `<provider>/<model>` id the Vercel AI Gateway serves (e.g. `anthropic/claude-opus-5` — see https://ai-gateway.vercel.sh/v1/models). The `vercel/` prefix is added automatically, so do not include it. Leave blank to use the workflow default.'
+        description: 'AI model used for AI-assisted decisions and conflict resolution, as a `<provider>/<model>` id the Vercel AI Gateway serves (e.g. `anthropic/claude-opus-5.5` — see https://ai-gateway.vercel.sh/v1/models). The `vercel/` prefix is added automatically, so do not include it. Leave blank to use the workflow default.'
         required: false
         type: string
 
@@ -38,14 +38,14 @@ concurrency: backport-stable-${{ inputs.ref || github.sha }}
 
 # AI model used by every opencode invocation in this workflow. The
 # `vercel/` provider prefix is added at each use site, so this should
-# be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-5`).
+# be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-5.5`).
 # The model slug must match an id the Vercel AI Gateway exposes (see
 # https://ai-gateway.vercel.sh/v1/models); the `Validate AI model` step
 # below checks that up front so a bad slug fails fast with a readable
 # error instead of an opaque gateway failure mid-run.
 # Manual `workflow_dispatch` runs may override this via the `model` input.
 env:
-  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-5' }}
+  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-5.5' }}
 
 jobs:
   backport:
@@ -144,8 +144,8 @@ jobs:
           fi
 
           # The common mistake is the right model under the wrong provider
-          # prefix (e.g. `claude/claude-opus-5` for
-          # `anthropic/claude-opus-5`), so suggest every id whose model name
+          # prefix (e.g. `claude/claude-opus-5.5` for
+          # `anthropic/claude-opus-5.5`), so suggest every id whose model name
           # matches.
           MODEL_NAME=${MODEL##*/}
           SUGGESTIONS=$(printf '%s\n' "$IDS" | while IFS= read -r id; do

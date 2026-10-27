@@ -356,15 +356,15 @@ async function inspectEntityDirs(dataDir: string): Promise<EntityDirsLayout> {
     runScoped: false,
   };
   for (const entityDir of RUN_SCOPED_ENTITY_DIRS) {
-    let dir: import('node:fs').Dir;
+    // A missing directory is reported by opendir() on Node, but only on the
+    // first read on Bun, so both are inside the try.
     try {
-      dir = await opendir(path.join(dataDir, entityDir));
+      for await (const entry of await opendir(path.join(dataDir, entityDir))) {
+        classifyEntityDirEntry(layout, entityDir, entry);
+      }
     } catch (error: unknown) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw error;
-    }
-    for await (const entry of dir) {
-      classifyEntityDirEntry(layout, entityDir, entry);
     }
   }
   return layout;

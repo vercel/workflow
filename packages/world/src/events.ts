@@ -6,6 +6,7 @@ import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type {
   EventsResolveData,
+  PaginatedResponse,
   PaginationOptions,
   ResolveData,
 } from './shared.js';
@@ -792,6 +793,56 @@ export type CreateEventRequest = Exclude<
 export interface CreateEventParams {
   v1Compat?: boolean;
   /**
+   * Whether the run's orchestrator is making this write, for the in-band
+   * writer fence. Optional World support: a World that implements the fence
+   * counts the positions it allocates to in-band writes, and accepts an
+   * in-band write only when {@link expectedSeqInBand} equals that count,
+   * refusing it otherwise with `InBandSupersededError` (HTTP 412,
+   * `in-band-superseded`) before anything is written or allocated.
+   * Out-of-band writes (`false` or absent) are never refused by the fence and
+   * never move the in-band count.
+   *
+   * Only the orchestrator's own writes may set it. Writes made from outside
+   * the run's orchestrator (cancellation, hook resumption, step execution,
+   * dispatch re-ensures) stay out-of-band, since they can come from a newer
+   * SDK than the run's own and must never be refused on its behalf. A
+   * fenced `step_created` must not be published to the step queue in parallel
+   * with its write (resilient step dispatch): the dispatch's out-of-band
+   * re-ensure would materialize a step the fence refused. A World may revoke
+   * such a dispatch on refusal, but only as a best-effort backstop.
+   *
+   * A World may refuse an in-band write on a run whose stamped spec version
+   * predates the sealed log (`SPEC_VERSION_SUPPORTS_SEALED_LOG`), rather than
+   * accept it unfenced. A caller must therefore decide from the run's stamped
+   * spec version, never from its own SDK version: the same SDK still executes
+   * runs stamped below it (the `WORKFLOW_SEALED_LOG` opt-out, and
+   * cross-deployment starts, which are stamped with the lower of the caller's
+   * and the target's version).
+   *
+   * The runtime does not set it yet.
+   */
+  inBand?: boolean;
+  /**
+   * The writer's count of in-band positions, required with `inBand: true`
+   * and only allowed with it. `run_created` counts as the run's first in-band
+   * position, so the lowest valid value is 1.
+   *
+   * The count is the World's, not the client's: a writer starts from a count
+   * the World reports (a snapshot read with the log it loaded) and advances
+   * it by the in-band positions the World reports a write allocated. It must
+   * never be derived by counting events or writes, because the two diverge:
+   *
+   * - a single create can allocate more than one position, when one of its
+   *   own positions is sealed and it allocates again;
+   * - a write the World rejects after allocating (for example a 409 on a
+   *   duplicate entity) may still have advanced the count;
+   * - a World may reset the count when it loses its counter, and only a
+   *   World-provided snapshot reflects that.
+   *
+   * A writer that holds no World-provided count must not send the fence.
+   */
+  expectedSeqInBand?: number;
+  /**
    * `'skip-step-inputs'` applies only to the event-log page this create
    * returns (the `sinceCursor` delta or a replay preload), never to the
    * created `event` or the returned `step` entity, whose `input` is what step
@@ -825,11 +876,11 @@ export interface CreateEventParams {
    * parallelized with the queue publish and may have failed. Only meaningful
    * for `step_created`.
    *
-   * Advisory. Parallelizing a create with its publish is opt-in and off by
-   * default (`WORKFLOW_RESILIENT_STEP_DISPATCH`), precisely because a create
-   * can come back refused while the message carrying its payload is already
-   * out. A deployment that opts in accepts that window, and a backend MAY use
-   * this flag to narrow it: refuse the re-ensure (world-vercel surfaces the
+   * Advisory, and not set by the current `@workflow/core` runtime, which
+   * publishes a step's queue message only after its create. A producer that
+   * parallelizes the two accepts that a create can come back refused while
+   * the message carrying its payload is already out, and a backend MAY use
+   * this flag to narrow that window: refuse the re-ensure (world-vercel surfaces the
    * backend's 410 as `RunExpiredError`, which the consumer treats as "nothing
    * left to execute" and acks the message) when it has recorded a refusal for
    * this correlation id and no step entity exists. Best-effort by nature (a
@@ -864,7 +915,11 @@ export interface CreateEventParams {
    * the replay loop and the suspension handler, which merge the report below
    * back into their loaded log. Omitted by callers with no loaded log to be
    * stale against, the step executor included: for those the report would be
-   * a read the World does for no one.
+   * a read the World does for no one. Independent concurrent hook registrations
+   * in a hooks-only suspension also omit it deliberately: the runtime verifies
+   * their committed events together after every write settles, and reloads if
+   * they do not form a complete suffix. Absence does not imply no loaded log;
+   * without a count there is no evidence for count-based stale rejection.
    *
    * A World's slots are dense and 1-based (see `Storage.events`), so a count
    * and a position are the same number. An id that is not a position does not
@@ -1024,6 +1079,18 @@ export interface CreateEventParams {
 export type EventResult<T extends EventType = EventType> = {
   /** The created event (optional for legacy compatibility) */
   event?: Event;
+  /**
+   * Optional ascending events.list cursor immediately after `event`, minted
+   * by the World that owns the cursor format. This does not attest that the
+   * caller holds any earlier events. The runtime may advance to it only after
+   * proving that its loaded prefix plus committed responses covers every slot
+   * through this event. Worlds that omit it retain the normal reload path.
+   * When supplied, `event` MUST match what ascending events.list returns for
+   * that slot with the same resolveData option, including stored timestamps,
+   * normalized retention, metadata bytes, and hook-conflict details. The
+   * runtime uses this stored event as replay input, not an echo of the request.
+   */
+  eventCursor?: string;
   /** The workflow run entity (for run_* events) */
   run?: WorkflowRun;
   /** The step entity (for step_* events) */
@@ -1046,6 +1113,14 @@ export type EventResult<T extends EventType = EventType> = {
   stepCreated?: true;
   /** Server-owned max event count for the run (run-lifecycle responses); the runtime enforces it. */
   maxEvents?: number;
+  /**
+   * How many positions this write allocated to the run's log, when the World
+   * reports it: 1 for a create that appended its event, 0 for one that
+   * converged on an event the log already held. A World implementing the
+   * in-band fence advances the run's in-band count by this number for an
+   * accepted in-band write. Absent from a World that does not report it.
+   */
+  allocated?: number;
 } & (
   | {
       /**
@@ -1128,6 +1203,18 @@ export interface CreateEventBatchParams {
    * attribution its single-path twin would.
    */
   requestId?: string;
+  /**
+   * The in-band fence for the whole batch, as {@link CreateEventParams.inBand}.
+   * Every event of a batch shares it.
+   */
+  inBand?: boolean;
+  /**
+   * The writer's in-band count for the whole block, as
+   * {@link CreateEventParams.expectedSeqInBand}. The block's positions are
+   * allocated in one fenced allocation, and the count the World reports for
+   * it covers the whole block even when some of its events are rejected.
+   */
+  expectedSeqInBand?: number;
 }
 
 /**
@@ -1196,6 +1283,42 @@ export interface EventBatchResult {
   /** One entry per submitted event, in request order. */
   results: BatchEventItemResult[];
 }
+
+/**
+ * The sequencer state a World read before it listed a run's log, for the
+ * in-band writer fence ({@link CreateEventParams.inBand}). Positions are
+ * slots.
+ */
+export interface EventLogSnapshot {
+  /** Highest position allocated to any write when the list began. */
+  seq: number;
+  /** Number of positions allocated to in-band writes when the list began. */
+  seqInBand: number;
+}
+
+/**
+ * A run's in-band count right after its creation, before any other write:
+ * `run_created` counts as the run's first in-band position, so the run's
+ * first fenced orchestrator write expects this value.
+ */
+export const IN_BAND_SEQ_AT_RUN_CREATION = 1;
+
+/**
+ * Result of {@link Storage.events.list}.
+ *
+ * `snapshot` is set by a World that implements the in-band writer fence
+ * (`WorldCapabilities.inBandFence`), on every page of a slot-numbered run's
+ * log where the World reads one. It is read before the listing, so a full
+ * load (following `cursor` until `hasMore` is false) covers every position
+ * up to the FIRST page's `snapshot.seq`. A fenced writer takes its
+ * {@link CreateEventParams.expectedSeqInBand} from the first page's
+ * `snapshot.seqInBand`, never from counting events: a count cannot tell
+ * which positions were in-band. A fencing World that lists no snapshot
+ * reports the counters on a refusal (`InBandSupersededError`) instead.
+ */
+export type EventListResponse = PaginatedResponse<Event> & {
+  snapshot?: EventLogSnapshot;
+};
 
 export interface GetEventParams {
   resolveData?: ResolveData;

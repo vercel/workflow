@@ -46,6 +46,7 @@ import {
   type Event,
   type EventBatchResult,
   type EventDataPayloadField,
+  type EventListResponse,
   type EventResult,
   entityResolveData,
   type GetEventParams,
@@ -54,7 +55,6 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
-  type PaginatedResponse,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -495,7 +495,7 @@ export async function getEvent(
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Event>> {
+): Promise<EventListResponse> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
@@ -534,6 +534,9 @@ export async function getWorkflowRunEvents(
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
     hasMore: result.hasMore,
+    // The in-band fence's counters, read before the listing, when the
+    // backend reports them (see `capabilities.inBandFence` in index.ts).
+    ...(result.snapshot ? { snapshot: result.snapshot } : {}),
   };
 }
 
@@ -599,6 +602,13 @@ export async function createWorkflowRunEventBatch(
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
       payload,
       ...meta,
+      // The batch is one fenced allocation: the backend requires every frame
+      // to carry the same fence. Spread after `meta` so nothing derived from
+      // the event data can override it.
+      ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+      ...(params?.expectedSeqInBand !== undefined
+        ? { expectedSeqInBand: params.expectedSeqInBand }
+        : {}),
     };
   });
 
@@ -629,7 +639,7 @@ export async function createWorkflowRunEventBatch(
   const wire = await withEventPostRetry(
     () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
     events[0].event.eventType,
-    { batchIdempotent: retryConvergent }
+    { batchIdempotent: retryConvergent, inBand: params?.inBand === true }
   );
 
   return {
@@ -679,6 +689,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
         afterStepBody: params?.afterStepBody === true,
+        inBand: params?.inBand === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {
@@ -792,11 +803,14 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
-    data.eventType
-  )
-    ? 'resolve'
-    : 'lazy';
+  const remoteRefBehavior: 'resolve' | 'lazy' =
+    eventsNeedingResolve.has(data.eventType) ||
+    // Concurrent hook reconciliation consumes the committed event directly.
+    // Honor its explicit request for replay-ready metadata; other mutation
+    // responses keep their existing lightweight entity-only behavior.
+    (data.eventType === 'hook_created' && params?.resolveData === 'all')
+      ? 'resolve'
+      : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
 
@@ -818,6 +832,12 @@ async function createWorkflowRunEventInner(
     // `eventCount`.
     ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
+    // In-band writer fence. The backend refuses a stale in-band write with
+    // 412 `in-band-superseded` (InBandSupersededError).
+    ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+    ...(params?.expectedSeqInBand !== undefined
+      ? { expectedSeqInBand: params.expectedSeqInBand }
+      : {}),
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log
@@ -915,12 +935,18 @@ async function createWorkflowRunEventInner(
     };
   }
 
-  return createWorkflowRunEventV4(
+  const result = await createWorkflowRunEventV4(
     data.eventType === 'run_started'
       ? { ...input, eventType: 'run_started', skipPreload: true }
       : { ...input, eventType: data.eventType },
     config
   );
+  // This cursor addresses the committed event, not a complete history page.
+  // Construct it here, where the Vercel cursor format is owned, so the runtime
+  // can reconcile concurrent responses without interpreting opaque cursors.
+  return result.event
+    ? { ...result, eventCursor: `eid:${result.event.eventId}` }
+    : result;
 }
 
 /**

@@ -200,6 +200,7 @@ const result = await world.runs.list({ // [!code highlight]
 | `params.workflowName` | `string` | Only return runs of this workflow |
 | `params.status` | `WorkflowRunStatus \| WorkflowRunStatus[]` | Only return runs in this status. Pass an array to match any of the listed statuses; an empty array matches no runs. `@workflow/world-vercel` accepts a single status only and throws `WorkflowWorldError` (`INVALID_ARGUMENT`) for an array |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
+| `params.pagination.sortOrder` | `"asc" \| "desc"` | Run creation order. Default: `"desc"` (newest first) |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
 **Returns:** `{ data: WorkflowRun[], cursor?: string }`
@@ -297,6 +298,7 @@ const result = await world.steps.list({ // [!code highlight]
 |-----------|------|-------------|
 | `params.runId` | `string` | Filter steps by run ID |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
+| `params.pagination.sortOrder` | `"asc" \| "desc"` | Step creation order. Default: `"desc"` (newest first) |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
 **Returns:** `{ data: Step[], cursor?: string }`

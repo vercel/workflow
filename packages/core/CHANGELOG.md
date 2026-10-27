@@ -1,5 +1,81 @@
 # @workflow/core
 
+## 5.2.3
+
+### Patch Changes
+
+- [#4335](https://github.com/vercel/workflow/pull/4335) [`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95) Thanks [@pranaygp](https://github.com/pranaygp)! - Security: remove the `nanoid` dependency (pinned at 5.1.6, affected by [GHSA-28wg-ghj8-5hjv](https://github.com/advisories/GHSA-28wg-ghj8-5hjv)). Default hook tokens now come from a built-in copy of the same generator, so tokens and seeded random values stay identical for runs recorded on earlier versions. Upgrading `nanoid` itself would have changed them, because `nanoid@5.1.16` draws a different number of random bytes per id.
+
+- [#4758](https://github.com/vercel/workflow/pull/4758) [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b) Thanks [@pranaygp](https://github.com/pranaygp)! - Resolve a run's encryption key from metadata only, so `Run#getReadable()` and resuming a hook stored without a resume context no longer make the server resolve the run's whole input and output first.
+
+- [#4916](https://github.com/vercel/workflow/pull/4916) [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix cross-deployment `start()` to 4.x deployments being misread as a run invocation, and keep replayed runs in the original run's region.
+
+- [#4870](https://github.com/vercel/workflow/pull/4870) [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stamp the default snapshot threshold into QuickJS runs at `start()` so they qualify for the event limit exemption, warn when a run approaches the event limit, and recommend `WORKFLOW_VM=quickjs` in `MAX_EVENTS_EXCEEDED` and `REPLAY_TIMEOUT` errors
+
+- [#4866](https://github.com/vercel/workflow/pull/4866) [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a step's creation is recorded on its `step_started` alone, with no separate `step_created`.
+
+- [#4874](https://github.com/vercel/workflow/pull/4874) [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Preserve `workflowVm` and `snapshotThreshold` from `executionContext` in `hydrateResourceIO` for observability UIs
+
+- [#4895](https://github.com/vercel/workflow/pull/4895) [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Avoid redundant history reads when independent hooks register concurrently. Keep existing single-event requests parallel and reconcile their committed events together before continuing, with the normal history reload when the responses do not cover a complete consecutive suffix.
+
+- [#4819](https://github.com/vercel/workflow/pull/4819) [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ignore events a step or hook writes after its outcome during replay instead of failing the run
+- Updated dependencies [[`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/world-local@5.1.2
+  - @workflow/world@5.0.5
+  - @workflow/world-vercel@5.2.3
+  - @workflow/errors@5.0.5
+
+## 5.2.2
+
+### Patch Changes
+
+- [#4861](https://github.com/vercel/workflow/pull/4861) [`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa) Thanks [@pranaygp](https://github.com/pranaygp)! - Order `setAttributes()` resolution with the replay delivery barriers so a branch awaiting it can no longer resume out of event-log order, which could fail the run with `REPLAY_DIVERGENCE` or hand concurrent branches each other's step results
+
+- [#4856](https://github.com/vercel/workflow/pull/4856) [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658) Thanks [@http-samc](https://github.com/http-samc)! - Upgrade devalue to 6.0.3, which escapes large strings with native `JSON.stringify` instead of a per-character loop. Strings containing unpaired surrogates now round-trip exactly instead of being replaced with U+FFFD.
+
+- [#4818](https://github.com/vercel/workflow/pull/4818) [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the experimental `WORKFLOW_RESILIENT_STEP_DISPATCH` option
+- Updated dependencies [[`02993a2`](https://github.com/vercel/workflow/commit/02993a26cbabec8f00df1f8a3a758158d095008a)]:
+  - @workflow/world-vercel@5.2.2
+
+## 5.2.1
+
+### Patch Changes
+
+- [#4669](https://github.com/vercel/workflow/pull/4669) [`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741) Thanks [@http-samc](https://github.com/http-samc)! - Compress workflow arguments on the libuv threadpool when starting a run, so large inputs no longer block the caller's event loop during zstd compression.
+
+- [#4670](https://github.com/vercel/workflow/pull/4670) [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353) Thanks [@http-samc](https://github.com/http-samc)! - Add a `compressArguments` option to `start()`; pass `false` to store the run's arguments uncompressed when the inputs are known to be incompressible.
+
+- [#4835](https://github.com/vercel/workflow/pull/4835) [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349) Thanks [@pranaygp](https://github.com/pranaygp)! - Record the queue namespace on a run's `executionContext.queueNamespace` in `start()`, so restart recovery re-enqueues the run to its own namespace.
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/world-vercel@5.2.1
+  - @workflow/world-local@5.1.1
+  - @workflow/utils@5.0.2
+
+## 5.2.0
+
+### Patch Changes
+
+- [#4727](https://github.com/vercel/workflow/pull/4727) [`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69) Thanks [@pranaygp](https://github.com/pranaygp)! - Start the queued branches of a wide `Promise.all` fan-out sooner. The batched fan-out now commits its writes in `createBatch` calls of at most 16 events instead of 32. Each queued branch's message waits on its chunk's commit and then its chunk's batched publish, and both are faster for smaller chunks. In production sweeps, the last branch of a 64-branch fan-out started about 90 ms sooner at p50, and of a 128-branch fan-out about 200 ms sooner, with no change to the first branch at those widths.
+
+- [#4324](https://github.com/vercel/workflow/pull/4324) [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Deliver a hook payload to the pending await when an earlier `Promise.race` over the same hook was lost
+  
+  Concurrent awaits of one hook, such as `Promise.all([hook, hook])`, may now receive the same payload. Runs that already took the timeout branch in this situation may fail to replay after upgrading in place.
+
+- [#4438](https://github.com/vercel/workflow/pull/4438) [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Reject lifecycle registration inside steps, preserve reporting diagnostics for unreadable errors, and document executor registration and stream-lifetime constraints.
+
+- [#4690](https://github.com/vercel/workflow/pull/4690) [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Enable VM-memory snapshotting by default for the QuickJS engine, with a threshold of 1000 events. Set `WORKFLOW_SNAPSHOT_THRESHOLD=0` to opt out. Runs without an encryption key (for example on world-local and world-postgres) are still not snapshotted unless `WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED=1` is set.
+
+- [#4683](https://github.com/vercel/workflow/pull/4683) [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Record on the invocation trace whether out-of-band events could affect each inline step boundary
+
+- [#4685](https://github.com/vercel/workflow/pull/4685) [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold a turbo step's awaited `step_started` until the backgrounded `run_started` lands, so an explicit `WORKFLOW_OPTIMISTIC_INLINE_START=0` no longer gets its first step rejected for a run that has not started yet.
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431), [`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf), [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2), [`d0f6b91`](https://github.com/vercel/workflow/commit/d0f6b9140841f548663c29f8adaaa21ae5dec09b)]:
+  - @workflow/world-vercel@5.2.0
+  - @workflow/world@5.0.3
+  - @workflow/world-local@5.1.0
+  - @workflow/errors@5.0.3
+
 ## 5.1.0
 
 ### Minor Changes

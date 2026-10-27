@@ -51,6 +51,64 @@ describe('reenqueueActiveRuns', () => {
     });
   });
 
+  it("re-enqueues a run to the queue namespace it recorded, not this process's", async () => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
+    const runs = {
+      list: vi.fn(async () => ({
+        data: [
+          // Started by a queue consumer of its own (namespace `agent`).
+          {
+            runId: 'wrun_OWN',
+            workflowName: 'workflow//agent//session',
+            status: 'running',
+            executionContext: { queueNamespace: 'agent' },
+          },
+          // Started by the Workflow SDK under another namespace.
+          {
+            runId: 'wrun_EVE',
+            workflowName: 'myWorkflow',
+            status: 'running',
+            executionContext: { queueNamespace: 'eve' },
+          },
+          // Recorded nothing (or nothing usable): the default namespace.
+          {
+            runId: 'wrun_DEF',
+            workflowName: 'myWorkflow',
+            status: 'pending',
+            executionContext: { workflowCoreVersion: '5.0.0' },
+          },
+          {
+            runId: 'wrun_BAD',
+            workflowName: 'myWorkflow',
+            status: 'pending',
+            executionContext: { queueNamespace: 'Not-Valid' },
+          },
+        ],
+        hasMore: false,
+        cursor: null,
+      })),
+    } as unknown as Storage['runs'];
+    const enqueue = vi.fn<Queue['queue']>();
+
+    await reenqueueActiveRuns(runs, enqueue, 'test');
+
+    expect(enqueue.mock.calls).toEqual([
+      ['__agent_wkf_workflow_workflow//agent//session', { runId: 'wrun_OWN' }],
+      ['__eve_wkf_workflow_myWorkflow', { runId: 'wrun_EVE' }],
+      ['__wkf_workflow_myWorkflow', { runId: 'wrun_DEF' }],
+      ['__wkf_workflow_myWorkflow', { runId: 'wrun_BAD' }],
+    ]);
+  });
+
+  it('rejects an invalid default namespace before enqueueing anything', async () => {
+    const enqueue = vi.fn<Queue['queue']>();
+
+    await expect(
+      reenqueueActiveRuns(createRuns(), enqueue, 'test', 'Not-Valid')
+    ).rejects.toThrow();
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
   it('recovers runs without logging', async () => {
     // Resuming active runs is what a restart is for, so a successful recovery
     // is not news: this printed on every dev-server restart with work in

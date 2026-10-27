@@ -69,13 +69,13 @@ export const getMaxChunksPerRequest = (): number =>
 // have.
 //
 // Writes (the PUT write/close path) go through the H2 stream dispatcher (see
-// getStreamDispatcher): they send a fully-buffered body (or none), so they
-// benefit from H2 multiplexing without hitting the duplex issues that keep the
-// long-lived live-read (GET) on the global dispatcher. Because stream appends
-// aren't idempotent, that stream dispatcher uses a deliberately narrowed retry
-// policy (see STREAM_RETRY_OPTIONS): it retries only on transient connection
-// errors and HTTP 429 (both of which guarantee the chunk was never persisted)
-// and never on 5xx, so a retry can't duplicate an already-applied write.
+// getStreamDispatcher): they send a fully-buffered body (or none), avoiding the
+// duplex issues that keep the long-lived live-read (GET) on the global
+// dispatcher. H2 multiplexing is disabled to isolate connection failures.
+// Because appends aren't idempotent, the SDK retries only confirmed 429s and
+// known pre-connect failures, above fetch with preserved bytes. Uncertain
+// network outcomes and 5xx are never resent here. Close is idempotent and uses
+// its separate dispatcher retry policy.
 // Snapshot reads (chunks/info) go through makeRequest (default H1 dispatcher);
 // the live-read (GET) and list keep the global dispatcher (no custom retry) and
 // no request timeout. The live read is long-lived and a whole-request deadline
@@ -229,6 +229,7 @@ export async function writeStreamSessionOverHttp(
       body: encodeMultiChunks(chunks.slice(offset, offset + pageSize)),
       headers: httpConfig.headers,
       dispatcher: getStreamDispatcher(config),
+      retryStreamAppend: !config?.dispatcher,
       timeoutMs: null,
       logLabel: url.pathname,
       spanName: 'workflow.stream.write',
@@ -322,6 +323,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           body: chunk,
           headers: httpConfig.headers,
           dispatcher: getStreamDispatcher(config),
+          retryStreamAppend: !config?.dispatcher,
           timeoutMs: null,
           transportErrorCode: 'STREAM_ERROR',
           logLabel: url.pathname,
@@ -373,6 +375,7 @@ export function createStreamer(config?: APIConfig): Streamer {
             body,
             headers: httpConfig.headers,
             dispatcher: getStreamDispatcher(config),
+            retryStreamAppend: !config?.dispatcher,
             timeoutMs: null,
             transportErrorCode: 'STREAM_ERROR',
             logLabel: url.pathname,

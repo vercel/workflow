@@ -19,14 +19,14 @@
  * so a gap keeps failing the job until it is closed.
  *
  * Manifests are read from the commit (`git show HEAD:...`), never from the
- * working tree. When changesets are pending, the Release job's changesets step
- * takes its *version* branch: `pnpm ci:version` rewrites every package.json in
- * the runner's working tree to the next version and opens the "Version
- * Packages" PR without publishing anything. A working-tree read then asks npm
- * for a version that is not supposed to exist yet, burns the whole retry budget
- * and reports a healthy release as broken -- on every push between a version
- * bump being proposed and its release PR merging. Reading the commit keeps the
- * check honest in that window: it still verifies the versions this commit
+ * working tree. When changesets are pending, the Release job's version step
+ * runs `pnpm ci:version`, which rewrites every package.json in the runner's
+ * working tree to the next version and opens the "Version Packages" PR. A
+ * working-tree read after it asks npm for a version that is not supposed to
+ * exist yet, burns the whole retry budget and reports a healthy release as
+ * broken -- on every push between a version bump being proposed and its release
+ * PR merging. The job runs that step last, but reading the commit keeps the
+ * check honest whatever the order: it still verifies the versions this commit
  * actually claims, so a genuine half-shipped release stays red.
  *
  * npm does not commit a publish synchronously: `pnpm publish` exits 0 once the

@@ -8,6 +8,7 @@ import {
   isTerminalInvocationError,
 } from '@workflow/errors/invocation';
 import {
+  createAppRouteUrl,
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
@@ -18,9 +19,10 @@ import {
   HealthCheckPayloadSchema,
   MessageId,
   parseQueueName,
+  parseQueueRoute,
   type Queue,
   QueuePayloadSchema,
-  type QueuePrefix,
+  QueuePrefix,
   resolveQueueNamespace,
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
@@ -209,6 +211,13 @@ function executorInput(message: unknown) {
 export type PostgresQueue = Queue & {
   start(): Promise<void>;
   close(): Promise<void>;
+  /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
+  registerHandler(
+    prefix: QueuePrefix,
+    handler: (req: Request) => Promise<Response>
+  ): void;
+  /** Deliver a queue prefix's messages over HTTP to `path` on the app (see `Queue.registerRoute`). */
+  registerRoute(prefix: QueuePrefix, path: string): void;
 };
 
 export function createQueue(
@@ -272,12 +281,25 @@ export function createQueue(
   const jobLeases = createJobLeases(pool, {
     staleSeconds: resolveJobLockStaleSeconds(config.jobLockStaleSeconds),
   });
+  /**
+   * The Workflow SDK prefix this World serves: messages on it (and jobs that
+   * predate the stored prefix) are workflow runs, which the run-scoped
+   * executor lanes and the flow route are for. Any other prefix belongs to a
+   * queue consumer of its own and is delivered as is.
+   */
+  const ownPrefix = () =>
+    getQueueTopicPrefix('workflow', resolveQueueNamespace(config.namespace));
+  /** In-process handlers by queue prefix (`registerHandler`). */
+  const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
+  /** HTTP delivery routes by queue prefix (`registerRoute`). */
+  const routes = new Map<string, string>();
   const executorQueueName = (runId: string) =>
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
-    if (!invocations) return localWorld.createQueueHandler(prefix, handler);
+    if (!invocations || prefix !== ownPrefix())
+      return localWorld.createQueueHandler(prefix, handler);
     return async (req) => {
       // Keep transport provenance request-scoped; it is not a World API field.
       const delivery = ExecutorDelivery.safeParse({
@@ -308,7 +330,8 @@ export function createQueue(
                 attempt: metadata.attempt,
               },
               input.runId,
-              metadata.attempt
+              metadata.attempt,
+              metadata.deliveryCount ?? metadata.attempt
             );
             return;
           }
@@ -411,6 +434,8 @@ export function createQueue(
 
   async function addGraphileJob({
     queueId,
+    prefix,
+    route,
     body,
     messageId,
     attempt,
@@ -420,11 +445,16 @@ export function createQueue(
     jobKey,
     executorRunId,
     attemptOffset,
+    deliveryOffset,
+    createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
   }: {
     queueId: string;
+    prefix?: QueuePrefix;
+    route?: string;
     body: Buffer | Uint8Array;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
     idempotencyKey?: string;
     headers?: Record<string, string>;
@@ -432,6 +462,7 @@ export function createQueue(
     jobKey?: string;
     executorRunId?: string;
     attemptOffset?: number;
+    deliveryOffset?: number;
     maxAttempts?: number;
   }) {
     const utils = workerUtils;
@@ -448,15 +479,27 @@ export function createQueue(
       executorRunId ? executorTask() : getJobQueueName(),
       MessageData.encode({
         id: queueId,
+        ...(prefix ? { prefix } : {}),
+        ...(route ? { route } : {}),
         data: Buffer.from(body),
         attempt,
         ...(attemptOffset !== undefined ? { attemptOffset } : {}),
+        ...(deliveryOffset !== undefined ? { deliveryOffset } : {}),
         messageId,
+        ...(createdAt ? { createdAt } : {}),
         idempotencyKey,
         headers,
       }),
       {
-        ...(jobKey ? { jobKey } : {}),
+        ...(jobKey
+          ? {
+              jobKey,
+              // A duplicate keyed publish may be an immediate replay of a
+              // delayed retry. Keep the first job's run_at so deduplication
+              // cannot erase the retry backoff.
+              jobKeyMode: 'preserve_run_at' as const,
+            }
+          : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts,
         ...(executorRunId
@@ -470,15 +513,20 @@ export function createQueue(
     message: MessageData,
     runId: string,
     attempt: number,
+    deliveryCount: number,
     remainingAttempts = Math.max(1, MAX_GRAPHILE_JOB_ATTEMPTS - attempt + 1)
   ) {
     await start();
     await addGraphileJob({
       queueId: message.id,
+      prefix: message.prefix,
+      route: message.route,
       body: message.data,
       messageId: message.messageId,
+      createdAt: message.createdAt,
       attempt,
       attemptOffset: attempt - 1,
+      deliveryOffset: deliveryCount - 1,
       maxAttempts: remainingAttempts,
       idempotencyKey: message.idempotencyKey,
       headers: message.headers,
@@ -608,18 +656,32 @@ export function createQueue(
     runnerStart = { controller, promise };
   }
 
-  async function executeMessageOverHttp({
+  /**
+   * One delivery of a job: to the in-process handler registered for its
+   * prefix, else over HTTP to the prefix's route (this worker's registration,
+   * then the producer's), else to the Workflow SDK's flow route.
+   */
+  async function deliverMessage({
     queueName,
+    prefix,
+    route,
     messageId,
+    createdAt,
     attempt,
+    deliveryCount,
     body,
     headers: extraHeaders,
     abortSignal,
     executorDelivery,
   }: {
     queueName: ValidQueueName;
+    prefix: QueuePrefix;
+    /** The route the producer recorded on the job, if any. */
+    route?: string;
     messageId: MessageId;
+    createdAt?: string;
     attempt: number;
+    deliveryCount: number;
     body: Uint8Array;
     headers?: Record<string, string>;
     abortSignal?: AbortSignal;
@@ -630,6 +692,9 @@ export function createQueue(
     headers.set('x-vqs-queue-name', queueName);
     headers.set('x-vqs-message-id', messageId);
     headers.set('x-vqs-message-attempt', String(attempt));
+    headers.set('x-vqs-message-delivery-count', String(deliveryCount));
+    if (createdAt) headers.set('x-vqs-message-created-at', createdAt);
+    else headers.delete('x-vqs-message-created-at');
     // Strip caller-supplied provenance case-insensitively. Only the verified
     // executor task may set these headers, including on retries.
     headers.delete(EXECUTOR_JOB_HEADER);
@@ -640,23 +705,44 @@ export function createQueue(
       headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
       headers.set(EXECUTOR_ATTEMPT_HEADER, String(executorDelivery.attempt));
     }
-    const baseUrl = await getExecutionBaseUrl();
-    if (!baseUrl) {
-      throw new Error('Unable to resolve base URL for workflow queue.');
-    }
-    // Queue shutdown aborts the delivery through Graphile's signal; the
-    // deadlines are the operator's (see `getDeliveryTimeouts`).
-    const response = await nodeHttpFetch(
-      createWorkflowUrl(baseUrl, { type: 'flow' }),
-      {
-        method: 'POST',
-        headers: new Headers(headers),
-        body,
-        signal: abortSignal,
-        agents: httpAgents,
-        ...deliveryTimeouts,
+    const directHandler = directHandlers.get(prefix);
+    const deliveryRoute = routes.get(prefix) ?? route;
+    let response: Response;
+    if (directHandler) {
+      // In process, like world-local's `registerHandler`: the request a
+      // route serving `createQueueHandler(prefix, ...)` would get.
+      const url = (baseUrl: string) =>
+        deliveryRoute
+          ? createAppRouteUrl(baseUrl, deliveryRoute)
+          : createWorkflowUrl(baseUrl, { type: 'flow' });
+      response = await directHandler(
+        new Request(url(createWorkflowBaseUrl('http://localhost')), {
+          method: 'POST',
+          headers,
+          body,
+        })
+      );
+    } else {
+      const baseUrl = await getExecutionBaseUrl();
+      if (!baseUrl) {
+        throw new Error('Unable to resolve base URL for workflow queue.');
       }
-    );
+      // Queue shutdown aborts the delivery through Graphile's signal; the
+      // deadlines are the operator's (see `getDeliveryTimeouts`).
+      response = await nodeHttpFetch(
+        deliveryRoute
+          ? createAppRouteUrl(baseUrl, deliveryRoute)
+          : createWorkflowUrl(baseUrl, { type: 'flow' }),
+        {
+          method: 'POST',
+          headers: new Headers(headers),
+          body,
+          signal: abortSignal,
+          agents: httpAgents,
+          ...deliveryTimeouts,
+        }
+      );
+    }
     const text = await response.text();
 
     if (!response.ok) {
@@ -793,14 +879,22 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const { id: queueId } = parseQueueName(queue);
+    const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
-    const input = invocations ? executorInput(message) : undefined;
+    const input =
+      invocations && prefix === ownPrefix()
+        ? executorInput(message)
+        : undefined;
     await addGraphileJob({
       queueId,
+      // Kept, so the job is delivered under the queue name it was sent to
+      // whichever worker takes it, rather than the worker's own prefix.
+      prefix,
+      route: routes.get(prefix),
       body,
       messageId,
+      createdAt: new Date().toISOString(),
       attempt: 1,
       idempotencyKey: opts?.idempotencyKey,
       headers: opts?.headers,
@@ -857,10 +951,21 @@ export function createQueue(
       const attempt = graphileHelpers.success
         ? graphileHelpers.data.job.attempts + (messageData.attemptOffset ?? 0)
         : messageData.attempt;
-      const queueName = `${queue}${messageData.id}` as ValidQueueName;
+      // `attempt` is what core counts against its max-deliveries cap, and a
+      // `{ timeoutSeconds }` reschedule starts it over (as it always has), so
+      // a step retried in place many times on one message is not failed by
+      // the cap. `deliveryCount` keeps counting across reschedules.
+      const deliveryCount = graphileHelpers.success
+        ? graphileHelpers.data.job.attempts +
+          (messageData.deliveryOffset ?? messageData.attemptOffset ?? 0)
+        : messageData.attempt;
+      // A job without a stored prefix predates it and is the worker's own.
+      const prefix = messageData.prefix ?? queue;
+      const queueName = `${prefix}${messageData.id}` as ValidQueueName;
       const body = await deserializeMessageBody(messageData.data);
       QueuePayloadSchema.parse(body);
-      const orchestration = invocations ? executorInput(body) : undefined;
+      const orchestration =
+        invocations && prefix === queue ? executorInput(body) : undefined;
       let executorDelivery: ExecutorDelivery | undefined;
       if (orchestration) {
         const actualQueue =
@@ -880,6 +985,7 @@ export function createQueue(
             messageData,
             orchestration.runId,
             attempt,
+            deliveryCount,
             job
               ? Math.max(
                   1,
@@ -898,10 +1004,14 @@ export function createQueue(
         });
       }
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
-        const result = await executeMessageOverHttp({
+        const result = await deliverMessage({
           queueName,
+          prefix,
+          route: messageData.route,
           messageId: messageData.messageId,
+          createdAt: messageData.createdAt,
           attempt,
+          deliveryCount,
           body: messageData.data,
           headers: messageData.headers,
           executorDelivery,
@@ -919,10 +1029,18 @@ export function createQueue(
           // lose the wake-up request.
           await addGraphileJob({
             queueId: messageData.id,
+            prefix: messageData.prefix,
+            route: messageData.route,
             body: messageData.data,
+            // The same message: its id and creation time carry over. The
+            // replacement is a new Graphile job whose own attempt count
+            // starts again at 1; the deliveries made so far ride along as
+            // `deliveryOffset`, so the handler sees the next deliveryCount.
             messageId: messageData.messageId,
+            createdAt: messageData.createdAt,
             attempt: attempt + 1,
             attemptOffset: messageData.attemptOffset,
+            deliveryOffset: deliveryCount,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
@@ -1014,6 +1132,12 @@ export function createQueue(
     getDeploymentId,
     queue,
     ...(invocations ? { invoke } : {}),
+    registerHandler(prefix, handler) {
+      directHandlers.set(QueuePrefix.parse(prefix), handler);
+    },
+    registerRoute(prefix, path) {
+      routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
+    },
     start,
     async close() {
       closing = true;

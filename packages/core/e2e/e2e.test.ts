@@ -26,7 +26,7 @@ import {
   type test as vitestTest,
 } from 'vitest';
 import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
-import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
   getHookByToken,
@@ -404,12 +404,7 @@ async function startWorkflowViaHttp(
     url.searchParams.set('args', args.map(String).join(','));
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      ...(await getTrustedSourcesHeaders()),
-    },
-  });
+  const res = await fetchWithTrustedSources(url, { method: 'POST' });
   if (!res.ok) {
     throw new Error(
       `Failed to trigger workflow: ${res.url} ${
@@ -736,9 +731,8 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run.runId);
 
       // Attempt to resume via the public webhook endpoint — should get 404
-      const res = await fetch(workflowWebhookUrl(token), {
+      const res = await fetchWithTrustedSources(workflowWebhookUrl(token), {
         method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'should-be-rejected' }),
       });
       expect(res.status).toBe(404);
@@ -785,9 +779,8 @@ describe.concurrent('e2e', () => {
     const [token, token2, token3] = hooks.map((h) => h.token);
 
     // Webhook with default response
-    const res = await fetch(workflowWebhookUrl(token), {
+    const res = await fetchWithTrustedSources(workflowWebhookUrl(token), {
       method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({ message: 'one' }),
     });
     expect(res.status).toBe(202);
@@ -795,9 +788,8 @@ describe.concurrent('e2e', () => {
     expect(body).toBe('');
 
     // Webhook with static response
-    const res2 = await fetch(workflowWebhookUrl(token2), {
+    const res2 = await fetchWithTrustedSources(workflowWebhookUrl(token2), {
       method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({ message: 'two' }),
     });
     expect(res2.status).toBe(402);
@@ -805,9 +797,8 @@ describe.concurrent('e2e', () => {
     expect(body2).toBe('Hello from static response!');
 
     // Webhook with manual response
-    const res3 = await fetch(workflowWebhookUrl(token3), {
+    const res3 = await fetchWithTrustedSources(workflowWebhookUrl(token3), {
       method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({ message: 'three' }),
     });
     expect(res3.status).toBe(200);
@@ -895,11 +886,10 @@ describe.concurrent('e2e', () => {
           continue;
         }
 
-        const res = await fetch(workflowWebhookUrl(unservedHook.token), {
-          method: 'POST',
-          headers: await getTrustedSourcesHeaders(),
-          body: `body-${unservedHook.token}`,
-        });
+        const res = await fetchWithTrustedSources(
+          workflowWebhookUrl(unservedHook.token),
+          { method: 'POST', body: `body-${unservedHook.token}` }
+        );
         expect(res.status).toBe(202);
         servedTokens.add(unservedHook.token);
       }
@@ -951,9 +941,8 @@ describe.concurrent('e2e', () => {
     'webhook route with invalid token',
     { timeout: 60_000 },
     async () => {
-      const res = await fetch(workflowWebhookUrl('invalid'), {
+      const res = await fetchWithTrustedSources(workflowWebhookUrl('invalid'), {
         method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({}),
       });
       expect(res.status).toBe(404);
@@ -2017,12 +2006,9 @@ describe.concurrent('e2e', () => {
     async () => {
       // Call the API route that directly calls a step function (no workflow context)
       const url = new URL('/api/test-direct-step-call', deploymentUrl);
-      const res = await fetch(url, {
+      const res = await fetchWithTrustedSources(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(await getTrustedSourcesHeaders()),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x: 3, y: 5 }),
       });
 
@@ -2708,7 +2694,6 @@ describe.concurrent('e2e', () => {
         expect(claimerEvents.map((e) => e.eventType)).toEqual([
           'hook_created',
           'hook_received',
-          'hook_disposed',
         ]);
         expect((claimerEvents[0] as any).eventData).toMatchObject({
           force: true,
@@ -3463,12 +3448,9 @@ describe.concurrent('e2e', () => {
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
-      const flowRes = await fetch(
+      const flowRes = await fetchWithTrustedSources(
         createWorkflowUrl(deploymentUrl, { type: 'health' }),
-        {
-          method: 'POST',
-          headers: await getTrustedSourcesHeaders(),
-        }
+        { method: 'POST' }
       );
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
@@ -4195,14 +4177,11 @@ describe.concurrent('e2e', () => {
 
       await waitForHook(token, { runId: run.runId });
 
-      const res = await fetch(
+      const res = await fetchWithTrustedSources(
         new URL('/api/resume-plain-hook', deploymentUrl),
         {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(await getTrustedSourcesHeaders()),
-          },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             token,
             ok: true,

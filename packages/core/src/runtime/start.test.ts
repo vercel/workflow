@@ -12,6 +12,7 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  WorkflowInvokePayloadSchema,
   type World,
 } from '@workflow/world';
 import {
@@ -39,6 +40,7 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import { serializeTraceCarrier } from '../telemetry.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
@@ -55,6 +57,8 @@ vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
   trace: vi.fn((_name, fn) => fn(undefined)),
   getActiveSpan: vi.fn().mockResolvedValue(undefined),
+  recordElapsedSpan: vi.fn().mockResolvedValue(undefined),
+  getSpanKind: vi.fn().mockResolvedValue(2),
 }));
 
 describe('start', () => {
@@ -2195,6 +2199,31 @@ async function workflow() {
       );
     });
 
+    it('records the namespace on the run so recovery re-enqueues it there', async () => {
+      await start(validWorkflow, [], { namespace: 'eve' });
+      const created = mockEventsCreate.mock.calls.find(
+        ([, event]) => event.eventType === 'run_created'
+      );
+      expect(created?.[1].eventData.executionContext).toMatchObject({
+        queueNamespace: 'eve',
+      });
+    });
+
+    it('records no namespace for the default topic', async () => {
+      vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
+      try {
+        await start(validWorkflow, []);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      const created = mockEventsCreate.mock.calls.find(
+        ([, event]) => event.eventType === 'run_created'
+      );
+      expect(created?.[1].eventData.executionContext).not.toHaveProperty(
+        'queueNamespace'
+      );
+    });
+
     it('probes the namespaced health-check topic on cross-deployment starts', async () => {
       // Cross-deployment starts (explicit deploymentId different from the
       // current one) run a capability probe before enqueueing. The probe
@@ -2257,6 +2286,7 @@ async function workflow() {
           workflowCoreVersion: '0.0.0-test',
           ...extra,
         });
+        const write = vi.fn().mockResolvedValue(undefined);
         setWorld({
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
@@ -2264,6 +2294,8 @@ async function workflow() {
           queue: mockQueue,
           getEncryptionKeyForRun,
           streams: {
+            write,
+            close: vi.fn().mockResolvedValue(undefined),
             get: vi.fn(
               async () =>
                 new ReadableStream<Uint8Array>({
@@ -2275,7 +2307,28 @@ async function workflow() {
             ),
           },
         });
+        return write;
       }
+
+      it.each([
+        undefined,
+        '5.2.3',
+        '5.3.0',
+      ])('uses the probed target for abort framing without changing the recorded client version: %s', async (targetVersion) => {
+        const write = worldWithProbe({ workflowCoreVersion: targetVersion });
+        const source = new AbortController();
+        await start(validWorkflow, [source.signal], {
+          deploymentId: 'dpl_other',
+        });
+        const executionContext =
+          mockEventsCreate.mock.calls[0][1].eventData.executionContext;
+        expect(executionContext.workflowCoreVersion).toBe(workflowCoreVersion);
+        source.abort('cancel');
+        await vi.waitFor(() => expect(write).toHaveBeenCalled());
+        expect(peekFormatPrefix(write.mock.calls[0][2])).toBe(
+          targetVersion === '5.3.0' ? null : SerializationFormat.DEVALUE_V1
+        );
+      });
 
       it('asks the probe for the run it is about to create', async () => {
         // The runId has to be minted before the probe for this to work, so
@@ -2289,10 +2342,31 @@ async function workflow() {
         );
         expect(probeCall?.[1]).toMatchObject({
           __healthCheck: true,
-          runId: expect.stringMatching(/^wrun_/),
+          probeRunId: expect.stringMatching(/^wrun_/),
         });
         // ...and it is the same run that actually gets created.
-        expect(probeCall?.[1].runId).toBe(mockEventsCreate.mock.calls[0][0]);
+        expect(probeCall?.[1].probeRunId).toBe(
+          mockEventsCreate.mock.calls[0][0]
+        );
+      });
+
+      it('sends a probe that a 4.x deployment cannot mistake for a run invocation', async () => {
+        // 4.x deployments parse queue payloads with a union that tries the
+        // invoke schema first. A probe that satisfies it is replayed as a run
+        // that doesn't exist yet (run_started 404, redelivered), so the probe
+        // never answers and every cross-deployment start() to a 4.x target
+        // waits out the full probe budget.
+        worldWithProbe({});
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        const probeCall = mockQueue.mock.calls.find((c) =>
+          String(c[0]).endsWith('health_check')
+        );
+        expect(probeCall).toBeDefined();
+        expect(
+          WorkflowInvokePayloadSchema.safeParse(probeCall?.[1]).success
+        ).toBe(false);
       });
 
       it('seals the arguments with the probed key and skips the key lookup', async () => {

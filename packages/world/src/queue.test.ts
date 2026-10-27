@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod/v4';
 import {
   getQueueTopicPrefix,
+  getRunQueueNamespace,
+  HealthCheckPayloadSchema,
   parseQueueName,
+  parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
   ValidQueueName,
+  WorkflowInvokePayloadSchema,
 } from './queue.js';
 
 describe('getQueueTopicPrefix', () => {
@@ -145,6 +150,36 @@ describe('QueuePayloadSchema', () => {
       correlationId: 'corr_123',
       runId: 'wrun_01ABC',
     });
+  });
+
+  it('preserves the health-check discriminator and probeRunId on a probe', () => {
+    expect(
+      QueuePayloadSchema.parse({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        probeRunId: 'wrun_01ABC',
+      })
+    ).toEqual({
+      __healthCheck: true,
+      correlationId: 'corr_123',
+      probeRunId: 'wrun_01ABC',
+    });
+  });
+
+  it('parses a probeRunId probe as a health check even when the invoke schema is tried first', () => {
+    // 4.x deployments order their queue payload union invoke-first. The probe
+    // must not satisfy the invoke schema, or it is replayed as a run.
+    const invokeFirst = z.union([
+      WorkflowInvokePayloadSchema,
+      HealthCheckPayloadSchema,
+    ]);
+    expect(
+      invokeFirst.parse({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        probeRunId: 'wrun_01ABC',
+      })
+    ).toMatchObject({ __healthCheck: true, correlationId: 'corr_123' });
   });
 
   it('preserves health-check payloads that carry no runId', () => {
@@ -327,5 +362,60 @@ describe('RunInputSchema environment', () => {
       runId: 'wrun_01ABC',
       runInput: { environment: 'production' },
     });
+  });
+});
+
+describe('parseQueueRoute', () => {
+  it('accepts an absolute path on the app', () => {
+    expect(parseQueueRoute('/api/agent/queue')).toBe('/api/agent/queue');
+    expect(parseQueueRoute('/.well-known/workflow/v1/flow')).toBe(
+      '/.well-known/workflow/v1/flow'
+    );
+  });
+
+  it.each([
+    'api/agent/queue',
+    '//evil.example/queue',
+    'https://example.com/queue',
+    '/api/queue?x=1',
+    '/api/queue#frag',
+    '/api/ queue',
+    '',
+  ])('rejects %j', (path) => {
+    expect(() => parseQueueRoute(path)).toThrow(TypeError);
+  });
+});
+
+describe('getRunQueueNamespace', () => {
+  it('reads the namespace a run recorded', () => {
+    expect(getRunQueueNamespace({ queueNamespace: 'agent' })).toBe('agent');
+  });
+
+  it.each([
+    undefined,
+    null,
+    'agent',
+    new Uint8Array([1, 2]),
+    {},
+    { queueNamespace: 7 },
+    { queueNamespace: 'Not-Valid' },
+    { queueNamespace: '' },
+  ])('is undefined for %j', (executionContext) => {
+    expect(getRunQueueNamespace(executionContext)).toBeUndefined();
+  });
+});
+
+describe('RunInputSchema encryptionPublicKey', () => {
+  const baseRunInput = {
+    input: { foo: 'bar' },
+    deploymentId: 'dpl_123',
+    workflowName: 'myWorkflow',
+    specVersion: 5,
+  };
+
+  it('keeps the run public key, so a resilient start can forward it', () => {
+    expect(
+      RunInputSchema.parse({ ...baseRunInput, encryptionPublicKey: 'pk' })
+    ).toEqual({ ...baseRunInput, encryptionPublicKey: 'pk' });
   });
 });

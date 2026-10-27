@@ -70,6 +70,58 @@ export function getQueueTopicPrefix(
   return '__wkf_workflow_' as QueuePrefix;
 }
 
+/**
+ * The route a World that delivers over HTTP sends a prefix's messages to when
+ * no other route or handler is registered for that prefix (see
+ * {@link Queue.registerRoute}): the Workflow SDK's generated flow route,
+ * relative to the app's base URL.
+ */
+export const WORKFLOW_FLOW_ROUTE = '/.well-known/workflow/v1/flow';
+
+/**
+ * Validates a delivery route for {@link Queue.registerRoute}: an absolute path
+ * on the app's base URL (`/api/agent/queue`), with no query or fragment.
+ * Returns it unchanged.
+ */
+export function parseQueueRoute(path: string): string {
+  if (
+    typeof path !== 'string' ||
+    !path.startsWith('/') ||
+    path.startsWith('//') ||
+    /[?#\s]/.test(path)
+  ) {
+    throw new TypeError(
+      `Invalid queue route "${String(path)}": must be an absolute path such as "/api/agent/queue", without a query or fragment`
+    );
+  }
+  return path;
+}
+
+/**
+ * The queue namespace a run's messages travel on, as recorded when the run was
+ * created (`executionContext.queueNamespace`), or `undefined` when it recorded
+ * none (or an invalid one), in which case the World's default namespace
+ * applies. A World uses this to re-enqueue a run to its own consumer (see
+ * `reenqueueActiveRuns`) rather than to the recovering process's prefix.
+ */
+export function getRunQueueNamespace(
+  executionContext: unknown
+): string | undefined {
+  if (
+    typeof executionContext !== 'object' ||
+    executionContext === null ||
+    executionContext instanceof Uint8Array
+  ) {
+    return undefined;
+  }
+  const namespace = (executionContext as { queueNamespace?: unknown })
+    .queueNamespace;
+  return typeof namespace === 'string' &&
+    QueueNamespace.safeParse(namespace).success
+    ? namespace
+    : undefined;
+}
+
 export function parseQueueName(name: ValidQueueName): {
   prefix: QueuePrefix;
   id: string;
@@ -123,6 +175,11 @@ export const RunInputSchema = z.compile(
        * the original `run_created` attempt.
        */
       allowReservedAttributes: z.literal(true).optional(),
+      /**
+       * The run's X25519 public key, mirrored from `run_created` so a run the
+       * resilient-start path creates can still receive sealed writes.
+       */
+      encryptionPublicKey: z.string().optional(),
       /**
        * The environment the creating client's writes are attributed to, as
        * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
@@ -187,6 +244,10 @@ export type RunInput = z.infer<typeof RunInputSchema>;
  *
  * The `input` is the already-serialized (and possibly encrypted) step input:
  * the identical bytes the producer also sent on the direct `events.create`.
+ *
+ * The current `@workflow/core` runtime neither attaches nor reads this field:
+ * it publishes a step message only after its `step_created` write. The schema
+ * keeps accepting it so a message that carries it still parses.
  */
 export const StepDispatchInputSchema = z.compile(
   z.object({
@@ -460,6 +521,19 @@ export const HealthCheckPayloadSchema = z.compile(
      * probe response. That lets the caller seal the workflow arguments without
      * a separate key lookup. Absent for probes issued for other reasons (CLI
      * health command, dashboard), in which case no key is returned.
+     *
+     * Deliberately not named `runId`: `runId` is the only required field of
+     * `WorkflowInvokePayloadSchema`, and 4.x deployments parse queue payloads
+     * with a union that tries the invoke schema before the health check. A
+     * probe carrying `runId` is read there as "replay this run", which POSTs
+     * `run_started` for a run that does not exist yet (404) and retries the
+     * delivery, so the probe never answers.
+     */
+    probeRunId: z.string().optional(),
+    /**
+     * Legacy spelling of {@link probeRunId}, sent by 5.x callers released
+     * before the rename. Accepted so those callers still get a public key
+     * back from this deployment; never sent.
      */
     runId: z.string().optional(),
   })
@@ -469,15 +543,12 @@ export const HealthCheckPayloadSchema = z.compile(
  * Health check MUST come first.
  *
  * Zod unions return the first matching member's output, and `z.object` strips
- * keys the matching member doesn't declare. `HealthCheckPayloadSchema` carries
- * an optional `runId`, so a probe payload also satisfies
- * `WorkflowInvokePayloadSchema` (whose only required field is `runId`). With
- * the invoke member first, parsing a runId-bearing probe silently dropped
- * `__healthCheck` and `correlationId`, and the runtime (which dispatches on
- * `__healthCheck` before falling through to the invoke schema) reinterpreted
- * the probe as "replay this run". That made the queue handler POST
- * `run_started` for a run that doesn't exist yet (404), fail, and retry
- * forever, so the probe never answered and `start()` timed out.
+ * keys the matching member doesn't declare. A probe from an older caller can
+ * carry the legacy `runId`, which also satisfies `WorkflowInvokePayloadSchema`
+ * (whose only required field is `runId`). With the invoke member first,
+ * parsing such a probe silently drops `__healthCheck` and `correlationId`, and
+ * the runtime (which dispatches on `__healthCheck` before falling through to
+ * the invoke schema) reinterprets the probe as "replay this run".
  *
  * Ordering health check first is safe in the other direction: it requires
  * `__healthCheck: true`, which an invoke payload never carries.
@@ -620,6 +691,12 @@ export interface Queue {
    * whose queue mints a fresh ID per delivery degrades gracefully: owner
    * redeliveries fall back to the delayed-backstop path instead of executing
    * immediately, adding recovery latency but never wedging or duplicating.
+   *
+   * `meta.deliveryCount`, when the World reports it, is 1 on a message's first
+   * delivery and increments on every redelivery, whatever caused it (lease
+   * lapse, a rejected handler, a `{ timeoutSeconds }` result). A World whose
+   * queue cannot say leaves it `undefined`. `meta.createdAt`, when known, is
+   * when the message was first enqueued, unchanged across its redeliveries.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -627,10 +704,47 @@ export interface Queue {
       message: unknown,
       meta: {
         attempt: number;
+        deliveryCount?: number;
+        createdAt?: Date;
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;
       }
     ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
+
+  /**
+   * Optional. Delivers every message whose queue name starts with `prefix` to
+   * `handler` inside this process, without HTTP. For Worlds whose queue runs
+   * in the app's own process (world-local, world-postgres). `handler` takes
+   * the same request a route serving `createQueueHandler(prefix, ...)` would,
+   * so passing that route handler works. Takes precedence over
+   * {@link Queue.registerRoute} for the prefix; a later registration for the
+   * same prefix replaces an earlier one.
+   *
+   * Keyed by the exact prefix: registering `__wkf_workflow_` also takes the
+   * Workflow SDK's own messages. A queue consumer other than the Workflow SDK
+   * uses a prefix of its own, `__{namespace}_wkf_workflow_`.
+   */
+  registerHandler?(
+    prefix: QueuePrefix,
+    handler: (req: Request) => Promise<Response>
+  ): void;
+
+  /**
+   * Optional. The route (a path on the app's base URL, such as
+   * `/api/agent/queue`) that this World's HTTP delivery POSTs the messages of
+   * `prefix` to. The app serves it with `createQueueHandler(prefix, ...)`.
+   * A prefix without a registered route goes to the Workflow SDK's flow route
+   * ({@link WORKFLOW_FLOW_ROUTE}), so only the Workflow SDK relies on that
+   * path, and a queue consumer of its own registers its route here, before
+   * the World's `start()` when it has one (`start()` re-enqueues active runs).
+   * An in-process handler for the prefix ({@link Queue.registerHandler})
+   * takes precedence; a later registration for the same prefix replaces an
+   * earlier one.
+   *
+   * Worlds that deliver by subscription rather than by path (world-vercel)
+   * do not implement this: subscribe the route to the prefix's topics there.
+   */
+  registerRoute?(prefix: QueuePrefix, path: string): void;
 }
