@@ -126,6 +126,7 @@ import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   ackRefusedStartHookCandidate,
   admitsTurboStart,
+  recordAcceptedStartHookCandidate,
 } from './runtime/start-hook-delivery.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -2660,6 +2661,7 @@ export function workflowEntrypoint(
                           throw setupError;
                         }
                         const result = await replayLoad;
+                        recordAcceptedStartHookCandidate(runInput, span);
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS, see the declaration above.
@@ -2709,7 +2711,12 @@ export function workflowEntrypoint(
                         // The queued copy of a `start({ hook })` candidate the
                         // World refused: nothing ran, ack the message.
                         if (
-                          ackRefusedStartHookCandidate(err, runInput, runId)
+                          ackRefusedStartHookCandidate(
+                            err,
+                            runInput,
+                            runId,
+                            span
+                          )
                         ) {
                           return;
                         }

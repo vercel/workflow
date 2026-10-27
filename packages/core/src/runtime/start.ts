@@ -1,3 +1,4 @@
+import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
   HookConflictError,
@@ -433,6 +434,27 @@ export function normalizeStartHook(options: StartHookOptions): StartHook {
  * A deterministic refusal to use `start({ hook })` against a World (or target
  * deployment) that cannot admit it. Nothing was published.
  */
+type StartHookOutcome = 'accepted' | 'rejected' | 'uncertain' | 'failed';
+
+/** What `workflow.start_hook.error_code` records for `error`. */
+function startHookErrorCode(error: unknown): string {
+  if (WorkflowStartError.is(error)) return `WorkflowStartError:${error.stage}`;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string') return code;
+  return error instanceof Error ? error.name : typeof error;
+}
+
+/**
+ * The World's rejection reason on `error`, or on the cause of a
+ * `WorkflowStartError` (the kill switch's `disabled` ends there).
+ */
+function startHookRejectionReason(error: unknown): string | undefined {
+  const answer = WorkflowStartError.is(error) ? error.cause : error;
+  return WorkflowWorldError.is(answer) && typeof answer.reason === 'string'
+    ? answer.reason
+    : undefined;
+}
+
 function startHookContractError(message: string): WorkflowWorldError {
   return new WorkflowWorldError(`${message} No run was created.`, {
     code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
@@ -841,7 +863,23 @@ export async function start<TArgs extends unknown[], TResult>(
     const queueName = getWorkflowQueueName(workflowName, opts.namespace);
 
     const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
-    const traced = trace(spanName, async (span) => {
+    // How this `start({ hook })` ended, recorded on its span exactly once:
+    // the first outcome set wins, and the catch-all below records `failed`
+    // for any exit that set none.
+    let startHookOutcome: StartHookOutcome | undefined;
+    const recordStartHookOutcome = (
+      span: Span | undefined,
+      outcome: StartHookOutcome,
+      extra: Record<string, unknown> = {}
+    ) => {
+      if (startHookOutcome !== undefined) return;
+      startHookOutcome = outcome;
+      span?.setAttributes({
+        ...Attribute.WorkflowStartHookOutcome(outcome),
+        ...extra,
+      } as Record<string, string | number | boolean>);
+    };
+    const startBody = async (span: Span | undefined): Promise<Run<TResult>> => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -964,6 +1002,7 @@ export async function start<TArgs extends unknown[], TResult>(
           ? world.createRunId(opts as Readonly<Record<string, unknown>>)
           : ulid()
       }`;
+      span?.setAttributes(Attribute.WorkflowRunId(runId));
 
       if (dynamicWorkflow && !world.capabilities?.dynamicWorkflowCode) {
         throw dynamicStartRefusal(
@@ -1528,46 +1567,48 @@ export async function start<TArgs extends unknown[], TResult>(
         // (`START_HOOK_CONFIRM_DELAYS_MS`) before giving up: stream arguments
         // registered their gated pipes in `ops` and pipe only once admitted.
         flushArgumentStreams();
-        span?.setAttributes({
-          ...Attribute.WorkflowRunId(runId),
-          ...Attribute.DeploymentId(deploymentId),
-        });
+        span?.setAttributes(Attribute.DeploymentId(deploymentId));
         let createdRunStatus: WorkflowRunStatus;
         try {
           let enqueueFailure: { error: unknown } | undefined;
           try {
             await enqueueRun();
           } catch (error) {
-            span?.setAttributes(
-              Attribute.WorkflowStartHookOutcome(
-                isPermanentWorldError(error) ? 'failed' : 'uncertain'
-              )
-            );
             // A permanent refusal published nothing; anything else may have.
             if (isPermanentWorldError(error)) throw error;
+            span?.setAttributes(Attribute.WorkflowStartHookEnqueueFailed(true));
             // Decide the candidate anyway: its queued copy may exist, and
             // an accepted candidate is published again below.
             enqueueFailure = { error };
           }
           let result: Awaited<ReturnType<typeof createRun>> | undefined;
-          for (let attempt = 0; result === undefined; attempt++) {
+          let attempt = 0;
+          // Recorded once, however the loop ends.
+          const recordConfirmAttempts = () =>
+            span?.setAttributes(
+              Attribute.WorkflowStartHookConfirmAttempts(attempt)
+            );
+          for (; result === undefined; attempt++) {
             try {
               result = await createRun();
+              recordConfirmAttempts();
             } catch (error) {
               if (HookConflictError.is(error)) {
-                span?.setAttributes({
-                  ...Attribute.WorkflowStartHookOutcome('rejected'),
-                  ...(error.conflictingRunId
-                    ? Attribute.WorkflowStartHookConflictingRunId(
-                        error.conflictingRunId
-                      )
-                    : {}),
-                });
+                recordConfirmAttempts();
                 if (!error.conflictingRunId) {
+                  // A contract failure, not a refusal: the catch-all records
+                  // it as `failed` with WORLD_CONTRACT_ERROR.
                   throw startHookContractError(
                     `The World refused start Hook candidate "${runId}" without naming the run that owns the token.`
                   );
                 }
+                recordStartHookOutcome(
+                  span,
+                  'rejected',
+                  Attribute.WorkflowStartHookConflictingRunId(
+                    error.conflictingRunId
+                  )
+                );
                 // Say what happened to this start, without the token (the
                 // message becomes the span's status).
                 error.message = `No run was created: workflow run "${error.conflictingRunId}" already owns this hook token`;
@@ -1587,9 +1628,7 @@ export async function start<TArgs extends unknown[], TResult>(
               if (EntityConflictError.is(error)) {
                 // Admission must replay the candidate's decision. A plain
                 // conflict says nothing about who owns the token.
-                span?.setAttributes(
-                  Attribute.WorkflowStartHookOutcome('failed')
-                );
+                recordConfirmAttempts();
                 throw startHookContractError(
                   `The World answered start Hook candidate "${runId}" with EntityConflictError instead of its admission decision.`
                 );
@@ -1602,9 +1641,7 @@ export async function start<TArgs extends unknown[], TResult>(
                 isPermanentWorldError(error) &&
                 error.code !== START_HOOK_ADMISSION_DISABLED
               ) {
-                span?.setAttributes(
-                  Attribute.WorkflowStartHookOutcome('failed')
-                );
+                recordConfirmAttempts();
                 throw error;
               }
               if (attempt < START_HOOK_CONFIRM_DELAYS_MS.length) {
@@ -1613,9 +1650,8 @@ export async function start<TArgs extends unknown[], TResult>(
                 await sleep(START_HOOK_CONFIRM_DELAYS_MS[attempt]);
                 continue;
               }
-              span?.setAttributes(
-                Attribute.WorkflowStartHookOutcome('uncertain')
-              );
+              recordConfirmAttempts();
+              recordStartHookOutcome(span, 'uncertain');
               throw new WorkflowStartError(
                 runId,
                 enqueueFailure ? 'queue' : 'admission',
@@ -1624,7 +1660,6 @@ export async function start<TArgs extends unknown[], TResult>(
             }
           }
           if (result.run?.runId !== runId) {
-            span?.setAttributes(Attribute.WorkflowStartHookOutcome('failed'));
             throw startHookContractError(
               `The World admitted run "${result.run?.runId}" for start Hook candidate "${runId}".`
             );
@@ -1633,7 +1668,6 @@ export async function start<TArgs extends unknown[], TResult>(
             // The backend created the run without reserving the token, most
             // likely because it predates start Hooks and dropped the field.
             // The run exists and is queued, so say so.
-            span?.setAttributes(Attribute.WorkflowStartHookOutcome('failed'));
             throw new WorkflowWorldError(
               `Workflow run "${runId}" was created, but the World did not confirm reserving its start Hook token, so the start was not idempotent. The run is queued and may execute.`,
               { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
@@ -1654,9 +1688,7 @@ export async function start<TArgs extends unknown[], TResult>(
                   await sleep(START_HOOK_CONFIRM_DELAYS_MS[attempt]);
                   continue;
                 }
-                span?.setAttributes(
-                  Attribute.WorkflowStartHookOutcome('uncertain')
-                );
+                recordStartHookOutcome(span, 'uncertain');
                 throw new WorkflowStartError(runId, 'queue', error);
               }
             }
@@ -1666,10 +1698,11 @@ export async function start<TArgs extends unknown[], TResult>(
         } finally {
           gate.resolve(false);
         }
-        span?.setAttributes({
-          ...Attribute.WorkflowStartHookOutcome('accepted'),
-          ...Attribute.WorkflowRunStatus(createdRunStatus),
-        });
+        recordStartHookOutcome(
+          span,
+          'accepted',
+          Attribute.WorkflowRunStatus(createdRunStatus)
+        );
         return new Run<TResult>(runId, { resilientStart: false });
       }
 
@@ -1761,6 +1794,40 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       return new Run<TResult>(runId, { resilientStart });
+    };
+    const traced = trace(spanName, async (span) => {
+      if (!startHook) return startBody(span);
+      try {
+        return await startBody(span);
+      } catch (error) {
+        recordStartHookOutcome(span, 'failed');
+        if (startHookOutcome !== 'rejected') {
+          span?.setAttributes(
+            Attribute.WorkflowStartHookErrorCode(startHookErrorCode(error))
+          );
+        }
+        const reason = startHookRejectionReason(error);
+        if (reason) {
+          span?.setAttributes(
+            Attribute.WorkflowStartHookRejectionReason(reason)
+          );
+        }
+        if (WorkflowStartError.is(error)) {
+          runtimeLogger.warn(
+            'start({ hook }) could not confirm its candidate; retrying with the same hook token is safe',
+            {
+              workflowRunId: error.runId,
+              stage: error.stage,
+              ...(reason ? { reason } : {}),
+              error:
+                error.cause instanceof Error
+                  ? error.cause.message
+                  : String(error.cause),
+            }
+          );
+        }
+        throw error;
+      }
     });
     if (!startHook) return traced;
     try {

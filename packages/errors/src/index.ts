@@ -199,6 +199,13 @@ export class WorkflowWorldError extends WorkflowError {
    * parameter without parsing the message.
    */
   field?: string;
+  /**
+   * Why the World gave `code`, when it says. For
+   * `START_HOOK_ADMISSION_REJECTED`: `invalid`, `expired`, `token_mismatch`,
+   * `ordinary_run` or `disabled`; for `START_HOOK_ADMISSION_DISABLED`:
+   * `disabled`.
+   */
+  reason?: string;
 
   constructor(
     message: string,
@@ -208,6 +215,7 @@ export class WorkflowWorldError extends WorkflowError {
       code?: string;
       retryAfter?: number;
       field?: string;
+      reason?: string;
       cause?: unknown;
     }
   ) {
@@ -220,6 +228,7 @@ export class WorkflowWorldError extends WorkflowError {
     this.url = options?.url;
     this.retryAfter = options?.retryAfter;
     this.field = options?.field;
+    this.reason = options?.reason;
   }
 
   static is(value: unknown): value is WorkflowWorldError {

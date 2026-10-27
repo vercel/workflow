@@ -328,19 +328,61 @@ export const HOOK_RESERVED_STEP_WAIT_MS = 30_000;
  */
 async function getByTokenAwaitingOwner(
   world: Awaited<ReturnType<typeof getWorldLazy>>,
-  token: string
+  token: string,
+  /** The `hook.resume` span, which records the lookup's result and waits. */
+  span?: Span,
+  /** Whether this lookup follows a takeover of the token mid-resume. */
+  redirected = false
 ): Promise<ResumableHook> {
   const inStep = contextStorage.getStore()?.stepMetadata !== undefined;
   const deadline = Date.now() + HOOK_RESERVED_STEP_WAIT_MS;
+  let waits = 0;
+  let waitedMs = 0;
+  const recordWaits = () => {
+    if (waits === 0) return;
+    span?.setAttributes({
+      ...Attribute.HookReservedWaits(waits),
+      ...Attribute.HookReservedWaitMs(waitedMs),
+    });
+  };
   for (;;) {
     try {
-      return await world.hooks.getByToken(token);
+      const hook = await world.hooks.getByToken(token);
+      recordWaits();
+      span?.setAttributes(
+        Attribute.HookLookupResult(redirected ? 'redirected' : 'found')
+      );
+      return hook;
     } catch (error) {
-      if (!inStep || !HookReservedError.is(error)) throw error;
-      const waitMs = Math.max(1, error.retryAfter ?? 1) * 1000;
-      if (Date.now() + waitMs > deadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      if (HookReservedError.is(error)) {
+        const waitMs = Math.max(1, error.retryAfter ?? 1) * 1000;
+        if (inStep && Date.now() + waitMs <= deadline) {
+          const before = Date.now();
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          waits++;
+          waitedMs += Date.now() - before;
+          continue;
+        }
+      }
+      recordWaits();
+      recordLookupFailure(span, error);
+      throw error;
     }
+  }
+}
+
+/** Records a by-token lookup's `reserved` or `not_found` answer on `span`. */
+function recordLookupFailure(span: Span | undefined, error: unknown): void {
+  if (HookReservedError.is(error)) {
+    span?.setAttributes({
+      ...Attribute.HookLookupResult('reserved'),
+      ...Attribute.HookReservedByRunId(error.runId),
+      ...(error.retryAfter !== undefined
+        ? Attribute.HookReservedRetryAfter(error.retryAfter)
+        : {}),
+    });
+  } else if (HookNotFoundError.is(error)) {
+    span?.setAttributes(Attribute.HookLookupResult('not_found'));
   }
 }
 
@@ -559,7 +601,8 @@ async function resumeHookImpl<T = any>(
             fresh,
             resumeRequestedAtMs,
             resumeId,
-            webhookOnly
+            webhookOnly,
+            redirects > 0
           );
         } catch (err) {
           if (
@@ -636,6 +679,7 @@ async function resumeHookImpl<T = any>(
             try {
               relocated = await world.hooks.getByToken(token);
             } catch (lookupError) {
+              recordLookupFailure(span, lookupError);
               // The token is reserved by a run that has not registered its
               // Hook yet: that, not the stale not-found, is the answer.
               if (HookReservedError.is(lookupError)) throw lookupError;
@@ -662,6 +706,7 @@ async function resumeHookImpl<T = any>(
               assertResendable(err);
               redirects++;
               span?.setAttributes({
+                ...Attribute.HookLookupResult('redirected'),
                 'workflow.hook.resume_redirects': redirects,
                 'workflow.hook.resume_redirect_to_run': relocated.runId,
               });
@@ -687,14 +732,21 @@ async function resumeHookAttempt<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   logicalResumeId: string,
-  webhookOnly: boolean
+  webhookOnly: boolean,
+  /** Whether a takeover redirected this resume to the token's new owner. */
+  redirected = false
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
     let hook: ResumableHook;
     if (suppliedToken) {
       try {
-        hook = await getByTokenAwaitingOwner(world, tokenOrHook);
+        hook = await getByTokenAwaitingOwner(
+          world,
+          tokenOrHook,
+          span,
+          redirected
+        );
       } catch (lookupError) {
         if (HookNotFoundError.is(lookupError)) {
           notFoundReasons.set(lookupError, 'lookup');

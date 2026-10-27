@@ -3,6 +3,7 @@ import {
   START_HOOK_ADMISSION_REJECTED,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { debugLog } from '@workflow/utils';
 import {
   type SerializedData,
   START_HOOK_CANDIDATE_MAX_AGE_MS,
@@ -142,7 +143,7 @@ export async function decideStartHookAdmission(
   ) {
     throw new WorkflowWorldError(
       `Workflow run "${runId}" is too old to be admitted with a start Hook`,
-      { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+      { status: 400, code: START_HOOK_ADMISSION_REJECTED, reason: 'expired' }
     );
   }
 
@@ -156,7 +157,7 @@ export async function decideStartHookAdmission(
   await deleteExpiredDecisions(tx);
   // A claim whose run ended and whose retention passed no longer holds the
   // token, and would block the placeholder's unique claim.
-  await tx
+  const released = await tx
     .delete(hooks)
     .where(
       and(
@@ -167,7 +168,11 @@ export async function decideStartHookAdmission(
           lte(hooks.tokenRetentionUntil, sql`now()`)
         )
       )
-    );
+    )
+    .returning({ runId: hooks.runId });
+  for (const { runId: previousRunId } of released) {
+    startHookLog("released an ended owner's token", { runId, previousRunId });
+  }
 
   const owner = await findActiveTokenOwner(tx, startHook.token, runId);
   const [placeholder] = owner
@@ -246,7 +251,20 @@ async function recordDecision(
     .values({ runId, token: startHook.token, ...row })
     .onConflictDoNothing({ target: Schema.startHookAdmissions.runId })
     .returning({ runId: Schema.startHookAdmissions.runId });
-  if (inserted) return decided;
+  if (inserted) {
+    startHookLog(
+      row.decision === 'accepted'
+        ? 'accepted a candidate'
+        : 'refused a candidate',
+      {
+        runId,
+        ...(row.conflictingRunId
+          ? { conflictingRunId: row.conflictingRunId }
+          : {}),
+      }
+    );
+    return decided;
+  }
   const recorded = await recordedDecision(tx, runId, startHook);
   if (
     !recorded ||
@@ -276,7 +294,11 @@ async function recordedDecision(
   if (existing.token !== startHook.token) {
     throw new WorkflowWorldError(
       `Workflow run "${runId}" was already admitted with a different start Hook token`,
-      { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+      {
+        status: 400,
+        code: START_HOOK_ADMISSION_REJECTED,
+        reason: 'token_mismatch',
+      }
     );
   }
   return existing.decision === 'accepted'
@@ -346,6 +368,12 @@ export async function transferStartReservation(
       )
     )
     .returning({ hookId: hooks.hookId });
+  if (moved.length > 0) {
+    startHookLog('moved a reservation to a force claimer', {
+      runId: fromRunId,
+      toRunId,
+    });
+  }
   return moved.length > 0;
 }
 
@@ -377,7 +405,28 @@ export async function adoptStartReservation(
       )
     )
     .returning({ metadata: hooks.metadata });
+  if (row) startHookLog("a Hook adopted its run's reservation", { runId });
   return row
     ? { metadata: (row.metadata ?? undefined) as SerializedData | undefined }
     : undefined;
+}
+
+/** Logs the release of `runId`'s start reservation, if `deleted` holds it. */
+export function logStartReservationReleased(
+  runId: string,
+  deleted: { isStartReservation: boolean }[]
+): void {
+  if (deleted.some((row) => row.isStartReservation)) {
+    startHookLog('released a reservation as its run ended', { runId });
+  }
+}
+
+/**
+ * A start Hook admission breadcrumb, under `DEBUG=workflow:*`. Written inside
+ * the deciding transaction, so a rolled-back attempt can log too. Names runs,
+ * never the token: a token is the caller's idempotency key and may carry user
+ * data.
+ */
+function startHookLog(message: string, detail: Record<string, string>): void {
+  debugLog(`[world-postgres] start Hook: ${message}`, detail);
 }

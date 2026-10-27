@@ -208,6 +208,53 @@ describe('atomic start Hook wire contract (world-vercel)', () => {
     expect(thrown).toMatchObject({ status: 400, code: mapped });
   });
 
+  it.each([
+    'expired',
+    'disabled',
+  ])('forwards the rejection reason %s on the v4 path', (reason) => {
+    const thrown = thrownBy(() =>
+      throwForErrorResponse(
+        400,
+        { 'content-type': 'application/json' },
+        json({
+          error: START_HOOK_WIRE_CODES.admissionRejected,
+          message: 'no',
+          details: { reason },
+        }),
+        'createEvent',
+        'http://x'
+      )
+    );
+    expect(thrown).toMatchObject({
+      code: START_HOOK_ADMISSION_REJECTED,
+      reason,
+    });
+  });
+
+  it('forwards the rejection reason on the v3 path, and reports the kill switch as disabled', () => {
+    expect(
+      errorForResponse(400, 'no', {
+        code: START_HOOK_WIRE_CODES.admissionRejected,
+        details: { reason: 'token_mismatch' },
+      })
+    ).toMatchObject({
+      code: START_HOOK_ADMISSION_REJECTED,
+      reason: 'token_mismatch',
+    });
+    expect(
+      errorForResponse(400, 'no', {
+        code: START_HOOK_WIRE_CODES.admissionRejected,
+        details: { reason: 7 },
+      })
+    ).not.toHaveProperty('reason', 7);
+    expect(
+      errorForResponse(400, 'off', { code: START_HOOK_WIRE_CODES.disabled })
+    ).toMatchObject({
+      code: START_HOOK_ADMISSION_DISABLED,
+      reason: 'disabled',
+    });
+  });
+
   it('maps a 409 start-hook-candidate-cancelled to START_HOOK_CANDIDATE_CANCELLED, not EntityConflictError', () => {
     const thrown = thrownBy(() =>
       throwForErrorResponse(

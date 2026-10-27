@@ -323,6 +323,61 @@ describe('atomic start Hook (world-postgres)', () => {
     }
   });
 
+  test('logs decisions, adoptions and releases under DEBUG, naming runs but never the token', async () => {
+    vi.stubEnv('DEBUG', 'workflow:*');
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      const token = `secret-${ulid()}`;
+      const owner = `wrun_${ulid()}`;
+      const refused = `wrun_${ulid()}`;
+      const next = `wrun_${ulid()}`;
+      await events.create(owner, runCreated({ token }));
+      await events.create(owner, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      } as AnyEventRequest);
+      await events.create(owner, hookCreated(token));
+      await events
+        .create(refused, runCreated({ token }))
+        .catch(() => undefined);
+      await events.create(owner, {
+        eventType: 'run_cancelled',
+        specVersion: SPEC_VERSION_CURRENT,
+      } as AnyEventRequest);
+      await events.create(next, runCreated({ token }));
+
+      const said = (message: string, detail: Record<string, string>) =>
+        expect(debug).toHaveBeenCalledWith(
+          `[world-postgres] start Hook: ${message}`,
+          detail
+        );
+      said('accepted a candidate', { runId: owner });
+      said("a Hook adopted its run's reservation", { runId: owner });
+      said('refused a candidate', { runId: refused, conflictingRunId: owner });
+      said('released a reservation as its run ended', { runId: owner });
+      said('accepted a candidate', { runId: next });
+      const lines = debug.mock.calls.map((call) => JSON.stringify(call));
+      expect(lines.some((line) => line.includes(token))).toBe(false);
+    } finally {
+      debug.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  test('a candidate too old to be created is refused with reason expired', async () => {
+    const dayAgo = ulid(Date.now() - 25 * 60 * 60 * 1000);
+    const error = await events
+      .create(`wrun_${dayAgo}`, {
+        ...runCreated({ token: `old-${ulid()}` }),
+        eventType: 'run_started',
+      } as AnyEventRequest)
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: 'START_HOOK_ADMISSION_REJECTED',
+      reason: 'expired',
+    });
+  });
+
   test('a cancelled owner keeps its reservation for its retention', async () => {
     const token = `cancel-${ulid()}`;
     const owner = `wrun_${ulid()}`;

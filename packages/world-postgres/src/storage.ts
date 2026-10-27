@@ -106,6 +106,7 @@ import {
   adoptStartReservation,
   decideStartHookAdmission,
   HOOK_TOKEN_CLAIM_UNIQUE,
+  logStartReservationReleased,
   type StartHookDecision,
   startHookConflict,
   startHookWithoutMetadata,
@@ -1053,7 +1054,9 @@ async function handleLegacyEventPostgres(
                 lte(Schema.hooks.tokenRetentionUntil, sql`now()`)
               )
             )
-          ),
+          )
+          .returning({ isStartReservation: Schema.hooks.isStartReservation })
+          .then((deleted) => logStartReservationReleased(runId, deleted)),
         drizzle.delete(Schema.waits).where(eq(Schema.waits.runId, runId)),
       ]);
 
@@ -1395,7 +1398,11 @@ function createUnfencedEventsStorage(
       ) {
         throw new WorkflowWorldError(
           `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Postgres World.`,
-          { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+          {
+            status: 400,
+            code: START_HOOK_ADMISSION_REJECTED,
+            reason: 'invalid',
+          }
         );
       }
 
@@ -1431,7 +1438,11 @@ function createUnfencedEventsStorage(
           // bound), so its refusal is permanent for both of its copies.
           throw new WorkflowWorldError(validationError, {
             ...(data.eventData.startHook
-              ? { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+              ? {
+                  status: 400,
+                  code: START_HOOK_ADMISSION_REJECTED,
+                  reason: 'expired',
+                }
               : {}),
           });
         }
@@ -2183,11 +2194,17 @@ function createUnfencedEventsStorage(
           // every row lock this transaction needs is held before it takes a
           // position: a hook_disposed holding a hook's lock while it inserts
           // must never wait on a position this transaction holds.
-          await tx
-            .delete(Schema.hooks)
-            .where(
-              and(eq(Schema.hooks.runId, effectiveRunId), hookRetentionEnded)
-            );
+          logStartReservationReleased(
+            effectiveRunId,
+            await tx
+              .delete(Schema.hooks)
+              .where(
+                and(eq(Schema.hooks.runId, effectiveRunId), hookRetentionEnded)
+              )
+              .returning({
+                isStartReservation: Schema.hooks.isStartReservation,
+              })
+          );
           await tx
             .delete(Schema.waits)
             .where(eq(Schema.waits.runId, effectiveRunId));

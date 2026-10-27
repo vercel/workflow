@@ -14,7 +14,7 @@ import {
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { globalSingleton } from '@workflow/utils';
+import { debugLog, globalSingleton } from '@workflow/utils';
 import type {
   AnyEventRequest,
   CreateEventParams,
@@ -30,6 +30,7 @@ import type {
   PaginationOptions,
   SerializedData,
   StartHook,
+  StartHookRejectionReason,
   Step,
   Storage,
   Wait,
@@ -331,6 +332,10 @@ async function isHookTokenClaimReleasable(
           conflictingRunId: contender.runId,
         })
       ) {
+        startHookLog('fenced an orphaned candidate past its grace', {
+          runId: claim.runId,
+          conflictingRunId: contender.runId,
+        });
         return true;
       }
       // The path holds a record after all: an earlier contender's fence,
@@ -422,7 +427,8 @@ async function admitStartHook({
     if (rejection) {
       if (rejection.token !== startHook.token) {
         throw startHookRejected(
-          `Workflow run "${runId}" was already decided for a different start Hook token`
+          `Workflow run "${runId}" was already decided for a different start Hook token`,
+          'token_mismatch'
         );
       }
       throw new HookConflictError(rejection.token, rejection.conflictingRunId);
@@ -433,7 +439,8 @@ async function admitStartHook({
     if (fence) {
       if (fence.conflictingRunId === undefined) {
         throw startHookRejected(
-          `Workflow run "${runId}" was fenced as an orphan and can never be created`
+          `Workflow run "${runId}" was fenced as an orphan and can never be created`,
+          'expired'
         );
       }
       throw new HookConflictError(startHook.token, fence.conflictingRunId);
@@ -448,7 +455,8 @@ async function admitStartHook({
     if (!run) return null;
     if (run.startHook?.token !== startHook.token) {
       throw startHookRejected(
-        `Workflow run "${runId}" already exists without this start Hook`
+        `Workflow run "${runId}" already exists without this start Hook`,
+        'ordinary_run'
       );
     }
     return { status: 'existing', run };
@@ -469,7 +477,8 @@ async function admitStartHook({
       Date.now() - candidateTime.getTime() > START_HOOK_CANDIDATE_MAX_AGE_MS
     ) {
       throw startHookRejected(
-        `Workflow run "${runId}" is too old to be admitted with a start Hook`
+        `Workflow run "${runId}" is too old to be admitted with a start Hook`,
+        'expired'
       );
     }
 
@@ -507,9 +516,17 @@ async function admitStartHook({
             stored?.conflictingRunId ?? claim.runId
           );
         }
+        startHookLog('refused a candidate', {
+          runId,
+          conflictingRunId: claim.runId,
+        });
         throw new HookConflictError(startHook.token, claim.runId);
       }
       // The previous owner is done; clear its leftovers before taking over.
+      startHookLog("released an ended owner's token to a candidate", {
+        runId,
+        previousRunId: claim.runId,
+      });
       signal.throwIfAborted();
       await deleteJSON(claimPath);
       if (claim.hookId) {
@@ -544,7 +561,10 @@ async function admitStartHook({
       assert(await writeExclusive(claimPath, JSON.stringify(reservationClaim)));
     }
     signal.throwIfAborted();
-    if (await writeRun()) return { status: 'created' };
+    if (await writeRun()) {
+      startHookLog('accepted a candidate', { runId });
+      return { status: 'created' };
+    }
     // Created concurrently by an attempt that did not take this lock, which
     // only a run without this start Hook can be.
     const replayed = await decided();
@@ -558,10 +578,23 @@ function maxDate(...dates: (Date | undefined)[]): Date | undefined {
   return times.length ? new Date(Math.max(...times)) : undefined;
 }
 
-function startHookRejected(message: string): WorkflowWorldError {
+/**
+ * A start Hook admission breadcrumb, under `DEBUG=workflow:*`. Names runs,
+ * never the token: a token is the caller's idempotency key and may carry
+ * user data.
+ */
+function startHookLog(message: string, detail: Record<string, string>): void {
+  debugLog(`[world-local] start Hook: ${message}`, detail);
+}
+
+function startHookRejected(
+  message: string,
+  reason: StartHookRejectionReason
+): WorkflowWorldError {
   return new WorkflowWorldError(message, {
     status: 400,
     code: START_HOOK_ADMISSION_REJECTED,
+    reason,
   });
 }
 
@@ -1374,7 +1407,8 @@ export function createEventsStorage(
         startHookRetention.getTime() > Date.now() + hookRetentionLimitMs
       ) {
         throw startHookRejected(
-          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Local World.`
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Local World.`,
+          'invalid'
         );
       }
 
@@ -1481,7 +1515,11 @@ export function createEventsStorage(
             // bound), so its refusal is permanent for both of its copies.
             throw new WorkflowWorldError(validationError, {
               ...(data.eventData.startHook
-                ? { status: 400, code: START_HOOK_ADMISSION_REJECTED }
+                ? {
+                    status: 400,
+                    code: START_HOOK_ADMISSION_REJECTED,
+                    reason: 'expired',
+                  }
                 : {}),
             });
           }
@@ -1701,7 +1739,19 @@ export function createEventsStorage(
             cancelledCandidateTime &&
             Date.now() - cancelledCandidateTime.getTime() <=
               START_HOOK_CANDIDATE_MAX_AGE_MS &&
-            !(await fenceStartHookCandidate(basedir, effectiveRunId, tag, {}))
+            !(await fenceStartHookCandidate(
+              basedir,
+              effectiveRunId,
+              tag,
+              {}
+            ).then((fenced) => {
+              if (fenced) {
+                startHookLog('fenced a cancelled candidate with no run', {
+                  runId: effectiveRunId,
+                });
+              }
+              return fenced;
+            }))
           ) {
             const raced = await readJSONWithFallback(
               basedir,

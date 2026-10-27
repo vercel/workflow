@@ -832,6 +832,13 @@ function errorFromV4Response(
     if (statusCode === 425 && code === START_HOOK_WIRE_CODES.reserved) {
       details = { runId: record.runId };
     }
+    if (
+      statusCode === 400 &&
+      code === START_HOOK_WIRE_CODES.admissionRejected
+    ) {
+      // `{ reason }`, as on the v3 path.
+      details = record.details;
+    }
     if (statusCode === 409 && code === START_HOOK_WIRE_CODES.conflict) {
       details = {
         token: record.token,
@@ -870,6 +877,8 @@ interface V4ErrorBody {
   conflictingRunId?: unknown;
   /** 425 hook-reserved: the run that reserved the token. */
   runId?: unknown;
+  /** 400 start-hook-admission-rejected: `{ reason }`. */
+  details?: unknown;
   events?: unknown;
   cursor?: unknown;
   /** 412 in-band-superseded: the backend's counters at the refusal. */

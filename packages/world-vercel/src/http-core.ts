@@ -469,11 +469,17 @@ export function errorForResponse(
   if (status === 400 && code === START_HOOK_WIRE_CODES.admissionRejected) {
     // Permanent: the backend will never admit this start Hook request. The
     // distinct code lets the queued copy of the candidate stop retrying
-    // without swallowing unrelated 400s.
+    // without swallowing unrelated 400s; the reason tells a kill switch from
+    // an expired candidate.
+    const reason =
+      details && typeof details === 'object'
+        ? (details as { reason?: unknown }).reason
+        : undefined;
     return new WorkflowWorldError(message, {
       url,
       status,
       code: START_HOOK_ADMISSION_REJECTED,
+      ...(typeof reason === 'string' ? { reason } : {}),
     });
   }
   if (status === 400 && code === START_HOOK_WIRE_CODES.disabled) {
@@ -483,6 +489,7 @@ export function errorForResponse(
       url,
       status,
       code: START_HOOK_ADMISSION_DISABLED,
+      reason: 'disabled',
     });
   }
   if (status === 409 && code === START_HOOK_WIRE_CODES.candidateCancelled) {

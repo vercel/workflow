@@ -466,7 +466,10 @@ describe('atomic start Hook (world-local)', () => {
       `wrun_${dayAgo}`,
       creating('run_started', 'order:stale')
     ).catch((e: unknown) => e);
-    expect(error).toMatchObject({ code: START_HOOK_ADMISSION_REJECTED });
+    expect(error).toMatchObject({
+      code: START_HOOK_ADMISSION_REJECTED,
+      reason: 'expired',
+    });
   });
 
   it('refuses a candidate that already exists without the start Hook', async () => {
@@ -490,6 +493,45 @@ describe('atomic start Hook (world-local)', () => {
     const again = await create(runId, creating('run_created', 'order:x')).catch(
       (e: unknown) => e
     );
-    expect(again).toMatchObject({ code: START_HOOK_ADMISSION_REJECTED });
+    expect(again).toMatchObject({
+      code: START_HOOK_ADMISSION_REJECTED,
+      reason: 'ordinary_run',
+    });
+  });
+
+  it('logs decisions and releases under DEBUG, naming runs but never the token', async () => {
+    vi.stubEnv('DEBUG', 'workflow:*');
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      const token = 'order:secret-key';
+      const owner = `wrun_${ulid()}`;
+      const refused = `wrun_${ulid()}`;
+      const next = `wrun_${ulid()}`;
+      await create(owner, creating('run_created', token));
+      await create(refused, creating('run_created', token)).catch(() => {});
+      await create(owner, {
+        eventType: 'run_cancelled',
+        specVersion: SPEC,
+      } as AnyEventRequest);
+      await create(next, creating('run_created', token));
+
+      const lines = debug.mock.calls.map((call) => JSON.stringify(call));
+      const said = (message: string, detail: Record<string, string>) =>
+        expect(debug).toHaveBeenCalledWith(
+          `[world-local] start Hook: ${message}`,
+          detail
+        );
+      said('accepted a candidate', { runId: owner });
+      said('refused a candidate', { runId: refused, conflictingRunId: owner });
+      said("released an ended owner's token to a candidate", {
+        runId: next,
+        previousRunId: owner,
+      });
+      said('accepted a candidate', { runId: next });
+      expect(lines.some((line) => line.includes(token))).toBe(false);
+    } finally {
+      debug.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 });

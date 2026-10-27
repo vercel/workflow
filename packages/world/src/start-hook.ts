@@ -107,6 +107,27 @@ export const START_HOOK_ADMISSION_REJECTED_CODE =
   'START_HOOK_ADMISSION_REJECTED';
 
 /**
+ * Why a World refused a start Hook request with
+ * {@link START_HOOK_ADMISSION_REJECTED_CODE}, carried as
+ * `WorkflowWorldError.reason`:
+ *
+ * - `invalid`: the request itself, such as a retention beyond the World's
+ *   limit;
+ * - `expired`: the candidate is too old to be created;
+ * - `token_mismatch`: the candidate was already decided under another token;
+ * - `ordinary_run`: its run id names a run created without a start Hook;
+ * - `disabled`: refused, and recorded as refused, while admission was off.
+ *
+ * {@link START_HOOK_ADMISSION_DISABLED_CODE} carries `disabled` too.
+ */
+export type StartHookRejectionReason =
+  | 'invalid'
+  | 'expired'
+  | 'token_mismatch'
+  | 'ordinary_run'
+  | 'disabled';
+
+/**
  * `WorkflowWorldError.code` for a start Hook request answered while admission
  * is switched off, with nothing recorded for the candidate, so another copy
  * may still be admitted later. Mirrors `START_HOOK_ADMISSION_DISABLED` in
@@ -131,8 +152,9 @@ export const START_HOOK_CANDIDATE_CANCELLED_CODE =
  *   `token` and `conflictingRunId` at the top level. Maps to
  *   `HookConflictError(token, conflictingRunId)`.
  * - `400 start-hook-admission-rejected`: a permanent refusal, the same for
- *   every copy of the candidate. Maps to `WorkflowWorldError` with code
- *   {@link START_HOOK_ADMISSION_REJECTED_CODE}.
+ *   every copy of the candidate, with `details.reason` a
+ *   {@link StartHookRejectionReason}. Maps to `WorkflowWorldError` with code
+ *   {@link START_HOOK_ADMISSION_REJECTED_CODE} and that `reason`.
  * - `400 start-hook-disabled`: admission is switched off on the backend (kill
  *   switch) and nothing was recorded for the candidate, so it is not final.
  *   Maps to {@link START_HOOK_ADMISSION_DISABLED_CODE}. A backend that records
