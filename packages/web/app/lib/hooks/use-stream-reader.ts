@@ -2,6 +2,7 @@ import { decrypt as aesGcmDecrypt, importKey } from '@workflow/core/encryption';
 import {
   hydrateData,
   isEncryptedData,
+  SerializationFormat,
 } from '@workflow/core/serialization-format';
 import type { WorkflowRunStatus } from '@workflow/world';
 import { getWebRevivers } from '@workflow/web-shared';
@@ -107,13 +108,24 @@ const YIELD_EVERY_N_FRAMES = 64;
  *
  * - **framed**: Current format — 4-byte big-endian length + format-prefixed
  *   payload (`devl`/`encr`). The first uint32 is a plausible frame size.
+ * - **unframed**: One format-prefixed payload, such as an internal abort
+ *   packet. Network chunks must be joined before decoding the payload.
  * - **legacy**: Older SDK versions used newline-delimited devalue strings
  *   with no binary framing.
  */
-type StreamEncoding = 'framed' | 'legacy';
+type StreamEncoding = 'framed' | 'unframed' | 'legacy';
 
-function detectEncoding(data: Uint8Array): StreamEncoding {
+function detectEncoding(data: Uint8Array, streamId: string): StreamEncoding {
   if (data.length < FRAME_HEADER_SIZE) return 'framed';
+  const prefix = new TextDecoder().decode(data.subarray(0, FRAME_HEADER_SIZE));
+  // Only internal abort streams store unframed serialized packets. A user
+  // text stream may begin with e.g. "encrypted", which shares the encr prefix.
+  if (
+    streamId.endsWith('_system_abort') &&
+    Object.values(SerializationFormat).some((format) => format === prefix)
+  ) {
+    return 'unframed';
+  }
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const len = view.getUint32(0, false);
   if (len > 0 && len <= 10 * 1024 * 1024) return 'framed';
@@ -290,7 +302,14 @@ export function useStreamReader(
 
         const { value, done } = await reader.read();
         if (done) {
-          if (encoding === 'legacy' && textRemainder.trim()) {
+          if (encoding === 'unframed' && buffer.length > 0) {
+            frameIndex++;
+            if (frameIndex > skipFrames) {
+              const result = await processFrame(buffer, cryptoKey, revivers);
+              if (result.encrypted) return { encrypted: true };
+              targetBuffer.push(result.chunk);
+            }
+          } else if (encoding === 'legacy' && textRemainder.trim()) {
             frameIndex++;
             if (frameIndex > skipFrames) {
               targetBuffer.push(parseLegacyLine(textRemainder.trim()));
@@ -303,7 +322,7 @@ export function useStreamReader(
         if (encoding === null) {
           appendToBuffer(value);
           if (buffer.length >= FRAME_HEADER_SIZE) {
-            encoding = detectEncoding(buffer);
+            encoding = detectEncoding(buffer, streamId);
           }
           if (encoding === 'legacy') {
             textRemainder = decoder.decode(buffer, { stream: true });
@@ -329,6 +348,8 @@ export function useStreamReader(
           }
           continue;
         }
+
+        if (encoding === 'unframed') continue;
 
         let offset = 0;
         let framesInBatch = 0;
