@@ -575,7 +575,7 @@ describe('resumeHook durable resume', () => {
     expect(first.createEvent.mock.calls[0][2].resumeId).toBeDefined();
 
     // Cached capabilities are ignored; the endpoint itself enforces dedup.
-    const second = makeWorld(hook, {}, {});
+    const second = makeWorld(hook, {}, { resolvedHookResume: true });
     await resumeHook(hook, { foo: 'stale' });
     expect(second.getByToken).not.toHaveBeenCalled();
     expect(second.createEvent.mock.calls[0][2]).toMatchObject({
@@ -583,6 +583,18 @@ describe('resumeHook durable resume', () => {
       resumeId: expect.any(String),
       resumePayloadDigest: expect.any(String),
     });
+
+    // Custom Worlds that do not implement the guarded contract must never
+    // receive a retryable write based on cached capabilities alone.
+    const unsupported = makeWorld(hook, {}, { hookResumeDedup: false });
+    await resumeHook(hook, { foo: 'unsupported' });
+    expect(unsupported.createEvent.mock.calls[0][2].resumeId).toBeUndefined();
+    expect(
+      unsupported.createEvent.mock.calls[0][2].resumePayloadDigest
+    ).toBeUndefined();
+    expect(
+      unsupported.createEvent.mock.calls[0][2].requireHookResumeDedup
+    ).toBeUndefined();
   });
 
   it('uses the same durable path for webhooks', async () => {

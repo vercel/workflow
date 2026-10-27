@@ -883,7 +883,9 @@ async function resumeHookAttempt<T = any>(
     // constraint. Without it the write is a plain single-shot create,
     // exactly as before dedup existed.
     const resolvedHandle =
-      !hookResumeCapabilitiesAreFresh && hook.resumeContext !== undefined;
+      !hookResumeCapabilitiesAreFresh &&
+      hook.resumeContext !== undefined &&
+      world.capabilities?.resolvedHookResume === true;
     const backendDedupSupported =
       resolvedHandle ||
       (hookResumeCapabilitiesAreFresh

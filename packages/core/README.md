@@ -2,6 +2,14 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+`resumeHook()` can reuse a resolved hook's immutable `resumeContext` without
+another token lookup. `parseHookResumeHandle()` from `@workflow/core/runtime`
+validates a transport snapshot and excludes metadata and transient capabilities.
+Authenticate snapshots carried by an untrusted client; parsing is not authorization.
+On adapters declaring `resolvedHookResume`, cached resumes require a guarded
+deduplicated write. A definite hook rejection permits resolving the token again;
+an uncertain write failure must not be retried as a new delivery.
+
 The CI benchmark suite in `e2e/benchmark.test.ts` measures time to first step,
 fan-out, and sequential-step overhead. Streaming delivery performance is
 measured in durabench; stream correctness remains covered by unit and E2E tests.
