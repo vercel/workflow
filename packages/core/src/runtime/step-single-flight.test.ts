@@ -26,8 +26,8 @@ describe('runStepSingleFlight', () => {
     const debugLog = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const { promise, resolve } = withResolvers<StepExecutionResult>();
     const execute = vi.fn(() => promise);
-    const winner = runStepSingleFlight(RUN, STEP, execute, logLevel);
-    const contender = runStepSingleFlight(RUN, STEP, execute, logLevel);
+    const winner = runStepSingleFlight(RUN, STEP, execute, { logLevel });
+    const contender = runStepSingleFlight(RUN, STEP, execute, { logLevel });
 
     resolve({ type: 'completed' });
     await expect(winner).resolves.toEqual({ type: 'completed' });
@@ -63,7 +63,9 @@ describe('runStepSingleFlight', () => {
     const { promise, resolve } = withResolvers<StepExecutionResult>();
     let loserCalls = 0;
 
-    const winner = runStepSingleFlight(RUN, STEP, () => promise, logLevel);
+    const winner = runStepSingleFlight(RUN, STEP, () => promise, {
+      logLevel,
+    });
     const loser = runStepSingleFlight(
       RUN,
       STEP,
@@ -71,7 +73,7 @@ describe('runStepSingleFlight', () => {
         loserCalls++;
         return { type: 'completed' };
       },
-      logLevel
+      { logLevel }
     );
 
     // The loser must not resolve (ack) before the winner settles — an early
@@ -95,14 +97,16 @@ describe('runStepSingleFlight', () => {
     'debug',
   ] as const)('a loser skips when the winner rejects (log level %s)', async (logLevel) => {
     const { promise, reject } = withResolvers<StepExecutionResult>();
-    const winner = runStepSingleFlight(RUN, STEP, () => promise, logLevel);
+    const winner = runStepSingleFlight(RUN, STEP, () => promise, {
+      logLevel,
+    });
     const loser = runStepSingleFlight(
       RUN,
       STEP,
       async () => ({
         type: 'completed',
       }),
-      logLevel
+      { logLevel }
     );
 
     reject(new Error('transient world error'));
@@ -118,7 +122,9 @@ describe('runStepSingleFlight', () => {
     // created the step). Skipping with it would leave the step never run.
     const { promise, resolve } = withResolvers<StepExecutionResult>();
     let loserCalls = 0;
-    const winner = runStepSingleFlight(RUN, STEP, () => promise, 'debug');
+    const winner = runStepSingleFlight(RUN, STEP, () => promise, {
+      logLevel: 'debug',
+    });
     const loser = runStepSingleFlight(
       RUN,
       STEP,
@@ -126,7 +132,7 @@ describe('runStepSingleFlight', () => {
         loserCalls++;
         return { type: 'completed' };
       },
-      'debug'
+      { logLevel: 'debug' }
     );
 
     resolve({ type: 'skipped' });
@@ -143,10 +149,12 @@ describe('runStepSingleFlight', () => {
       retryCalls++;
       return retry.promise;
     };
-    const winner = runStepSingleFlight(RUN, STEP, () => promise, 'debug');
+    const winner = runStepSingleFlight(RUN, STEP, () => promise, {
+      logLevel: 'debug',
+    });
     const losers = [
-      runStepSingleFlight(RUN, STEP, execute, 'debug'),
-      runStepSingleFlight(RUN, STEP, execute, 'debug'),
+      runStepSingleFlight(RUN, STEP, execute, { logLevel: 'debug' }),
+      runStepSingleFlight(RUN, STEP, execute, { logLevel: 'debug' }),
     ];
 
     resolve({ type: 'skipped' });
@@ -190,5 +198,85 @@ describe('runStepSingleFlight', () => {
 
     resolve({ type: 'completed' });
     await first;
+  });
+
+  describe('a winner retry folded into the loser message (workflow#4728)', () => {
+    const RETRY: StepExecutionResult = { type: 'retry', timeoutSeconds: 3 };
+
+    async function race(
+      winnerResult: StepExecutionResult,
+      winnerFlagged: boolean,
+      loserCarries: boolean[]
+    ) {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { promise, resolve } = withResolvers<StepExecutionResult>();
+      const winner = runStepSingleFlight(RUN, STEP, () => promise, {
+        retryPublishedUnderDispatchKeyAfter: winnerFlagged
+          ? Promise.resolve()
+          : undefined,
+      });
+      const losers = loserCarries.map((carryFoldedRetry) =>
+        runStepSingleFlight(RUN, STEP, async () => ({ type: 'completed' }), {
+          carryFoldedRetry,
+        })
+      );
+      resolve(winnerResult);
+      return { winner: await winner, losers: await Promise.all(losers) };
+    }
+
+    it('the queued loser carries the retry of a winner that published it under the dispatch key', async () => {
+      const { winner, losers } = await race(RETRY, true, [true]);
+      expect(winner).toEqual(RETRY);
+      expect(losers).toEqual([RETRY]);
+    });
+
+    it('a loser that does not carry retries still skips (inline losers)', async () => {
+      const { losers } = await race(RETRY, true, [false]);
+      expect(losers).toEqual([{ type: 'skipped' }]);
+    });
+
+    it('a winner whose retry has its own key is not carried (QuickJS inline)', async () => {
+      const { losers } = await race(RETRY, false, [true]);
+      expect(losers).toEqual([{ type: 'skipped' }]);
+    });
+
+    it('only one loser carries a given retry', async () => {
+      const { losers } = await race(RETRY, true, [true, true]);
+      expect(losers).toEqual([RETRY, { type: 'skipped' }]);
+    });
+
+    it.each([
+      { type: 'completed' },
+      { type: 'failed' },
+      { type: 'throttled', timeoutSeconds: 3 },
+    ] as const)('a $type winner is not carried', async (winnerResult) => {
+      const { losers } = await race(winnerResult, true, [true]);
+      expect(losers).toEqual([{ type: 'skipped' }]);
+    });
+
+    it('the carrier waits for the winner to publish its retry', async () => {
+      const published = withResolvers<void>();
+      const { promise, resolve } = withResolvers<StepExecutionResult>();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const winner = runStepSingleFlight(RUN, STEP, () => promise, {
+        retryPublishedUnderDispatchKeyAfter: published.promise,
+      });
+      const carrier = runStepSingleFlight(
+        RUN,
+        STEP,
+        async () => ({ type: 'completed' }),
+        { carryFoldedRetry: true }
+      );
+      let carrierSettled = false;
+      carrier.then(() => {
+        carrierSettled = true;
+      });
+      resolve(RETRY);
+      await winner;
+      await new Promise((r) => setTimeout(r, 10));
+      expect(carrierSettled).toBe(false);
+      published.resolve();
+      expect(await carrier).toEqual(RETRY);
+    });
   });
 });
