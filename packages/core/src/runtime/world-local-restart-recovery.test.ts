@@ -339,17 +339,20 @@ describe('world-local restart recovery of a run suspended on queued work', () =>
 
     const restarted = bootWorld(code);
     await restarted.start();
+    // On Windows the run's status was seen as completed before its
+    // `run_completed` was listed, so both are waited for.
     await vi.waitFor(
-      async () =>
-        expect((await restarted.runs.get(runId)).status).toBe('completed'),
+      async () => {
+        expect((await restarted.runs.get(runId)).status).toBe('completed');
+        expect(await eventTypes(restarted, runId)).toEqual(
+          expect.arrayContaining([
+            'wait_created',
+            'wait_completed',
+            'run_completed',
+          ])
+        );
+      },
       { timeout: (NEAR_DUE_WAIT_WINDOW_SECONDS + 12) * 1000, interval: 50 }
-    );
-    expect(await eventTypes(restarted, runId)).toEqual(
-      expect.arrayContaining([
-        'wait_created',
-        'wait_completed',
-        'run_completed',
-      ])
     );
   });
 
