@@ -2,7 +2,7 @@
 title: InBandSupersededError
 description: A World throws this error when it refuses an in-band write from an orchestrator invocation that another invocation of the same run has superseded.
 type: reference
-summary: InBandSupersededError is the in-band fence's refusal. The runtime handles it by stopping the superseded orchestrator invocation, which acknowledges its message once it sent the queue messages its own writes owe.
+summary: InBandSupersededError is the in-band fence's refusal. The runtime handles it by stopping the superseded orchestrator invocation, which sends the queue messages its own writes owe and then asks for a redelivery of its message.
 related:
   - /docs/api-reference/workflow-errors/workflow-world-error
   - /docs/configuration/runtime-tuning
@@ -11,7 +11,7 @@ related:
 A World throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) when it refuses a write made by a run's orchestrator because another invocation of the same run's orchestrator has written in-band since this one loaded the event log.
 
 <Callout>
-The Workflow runtime handles this error. The refused invocation stops writing and starts no further inline step bodies. It sends the queue messages its own committed writes still owe (the message of a background step it created, the timer of a wait it created), then acknowledges its queue message. The invocation that superseded it already holds every write it committed and drives the run on. It never adopts the counts the error carries. You will only encounter it when interacting with World storage APIs directly.
+The Workflow runtime handles this error. The refused invocation stops writing and starts no further inline step bodies. It sends the queue messages its own committed writes still owe (the message of a background step it created, the timer of a wait it created), then asks for a redelivery of its queue message about a second later instead of acknowledging it. The redelivery re-sends any step message a second delivery of the same message committed and never sent, and continues the run if no other invocation does. A redelivery counts toward [`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries). It never adopts the counts the error carries. You will only encounter it when interacting with World storage APIs directly.
 </Callout>
 
 See [One orchestrator per run, and the in-band fence](/docs/configuration/runtime-tuning#one-orchestrator-per-run-and-the-in-band-fence).
