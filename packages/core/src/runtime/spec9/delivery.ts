@@ -189,6 +189,7 @@ import {
   nextTimerAt,
   openWaits,
   type StepMessageSpec,
+  stepCreatedAtField,
   stepCreationOf,
 } from './log-state.js';
 import {
@@ -350,6 +351,7 @@ async function runDelivery(
     stepInput,
     stepAttempt,
     stepCreatedEventId,
+    stepCreatedAt,
     runContext,
     hookResumeTiming,
     waitContinuation,
@@ -488,6 +490,7 @@ async function runDelivery(
         correlationId: id,
         stepName: creation.stepName,
         stepCreatedEventId: event.eventId,
+        stepCreatedAt: new Date(event.createdAt),
         input: event.eventData.input,
       });
     } else if (event.eventType === 'step_retrying') {
@@ -994,6 +997,7 @@ async function runDelivery(
           stepAttempt,
           stepInput,
           stepCreatedEventId,
+          stepCreatedAt,
           runContext,
         },
         prefetchedRun,
@@ -1009,6 +1013,7 @@ async function runDelivery(
             ...(stepAttempt ? { stepAttempt } : {}),
             ...(stepInput ? { stepInput } : {}),
             ...(stepCreatedEventId ? { stepCreatedEventId } : {}),
+            ...(stepCreatedAt !== undefined ? { stepCreatedAt } : {}),
             ...(runContext ? { runContext } : {}),
             ...(hookResumeTiming ? { hookResumeTiming } : {}),
           }))) === 'continue',
@@ -3353,6 +3358,9 @@ async function runDelivery(
                         correlationId: step.correlationId,
                         stepName: step.stepName,
                         stepCreatedEventId: step.event?.eventId,
+                        ...(step.event
+                          ? { stepCreatedAt: new Date(step.event.createdAt) }
+                          : {}),
                         input: step.input,
                       },
                     ]
@@ -3417,6 +3425,9 @@ async function runDelivery(
           correlationId: step.correlationId,
           stepName: step.stepName,
           stepCreatedEventId: step.event?.eventId,
+          ...(step.event
+            ? { stepCreatedAt: new Date(step.event.createdAt) }
+            : {}),
           input: step.input,
         });
       }
@@ -3426,6 +3437,7 @@ async function runDelivery(
           correlationId: step.correlationId,
           stepName: step.stepName,
           stepCreatedEventId: step.createdEventId,
+          ...(step.createdAt ? { stepCreatedAt: step.createdAt } : {}),
           ...(step.inline ? { stepAttempt: step.starts + 1 } : {}),
         });
       }
@@ -4000,6 +4012,7 @@ async function runDelivery(
                   stepCreatedEventId: step.stepCreatedEventId,
                 }
               : {}),
+            ...stepCreatedAtField(step),
             ...(carryInput
               ? {
                   stepInput: {
@@ -4196,6 +4209,7 @@ async function runDelivery(
             correlationId: id,
             stepName: step.stepName,
             stepCreatedEventId: step.createdEventId,
+            ...(step.createdAt ? { stepCreatedAt: step.createdAt } : {}),
             ...(step.inline ? { stepAttempt: step.starts + 1 } : {}),
           });
         }

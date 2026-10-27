@@ -182,6 +182,8 @@ export async function dispatchPendingOps(params: {
   failedSerializationStepCids: Set<string>;
   /** Event ids of the `step_created` events this dispatch wrote. */
   createdStepEventIds: Map<string, string>;
+  /** `createdAt` of the `step_created` events this dispatch wrote. */
+  createdStepCreatedAts: Map<string, Date>;
   /** Serialized inputs of the steps this dispatch created. */
   createdStepInputs: Map<string, Uint8Array>;
   /**
@@ -200,6 +202,7 @@ export async function dispatchPendingOps(params: {
   } = params;
   const skipStepCreation = params.skipStepCreation;
   const createdStepEventIds = new Map<string, string>();
+  const createdStepCreatedAts = new Map<string, Date>();
   const createdStepInputs = new Map<string, Uint8Array>();
   const creatorMessageId = params.creatorMessageId;
   const wfdiag = params.wfdiag;
@@ -659,6 +662,10 @@ export async function dispatchPendingOps(params: {
                 step.correlationId,
                 created.event.eventId
               );
+              createdStepCreatedAts.set(
+                step.correlationId,
+                new Date(created.event.createdAt)
+              );
             }
             if (encryptedInput instanceof Uint8Array) {
               createdStepInputs.set(step.correlationId, encryptedInput);
@@ -739,8 +746,9 @@ export async function dispatchPendingOps(params: {
           // A step message goes out only once every hook write of the pass
           // settled, as it does when each creation is a single write.
           hooksSettled: Promise.allSettled(hookGroups).then(() => {}),
-          onStepCreated: (step, eventId, input) => {
+          onStepCreated: (step, eventId, createdAt, input) => {
             createdStepEventIds.set(step.correlationId, eventId);
+            createdStepCreatedAts.set(step.correlationId, createdAt);
             if (input instanceof Uint8Array) {
               createdStepInputs.set(step.correlationId, input);
             }
@@ -760,6 +768,7 @@ export async function dispatchPendingOps(params: {
     createdHookConflict,
     failedSerializationStepCids,
     createdStepEventIds,
+    createdStepCreatedAts,
     createdStepInputs,
     reportedStepCids,
   };
@@ -789,6 +798,8 @@ export interface CreatedBatchStep {
   step: PendingStep;
   /** The committed `step_created`'s event id. */
   eventId: string;
+  /** The committed `step_created`'s `createdAt`. */
+  createdAt: Date;
   /** The step's serialized (possibly encrypted) input. */
   input: Uint8Array | undefined;
 }
@@ -824,7 +835,12 @@ async function commitCreationBatches(params: {
   batches: CreationBatches;
   creations: BatchedCreation[];
   hooksSettled: Promise<void>;
-  onStepCreated: (step: PendingStep, eventId: string, input: unknown) => void;
+  onStepCreated: (
+    step: PendingStep,
+    eventId: string,
+    createdAt: Date,
+    input: unknown
+  ) => void;
 }): Promise<void> {
   const { batches, creations } = params;
   const reports: Promise<void>[] = [];
@@ -846,10 +862,17 @@ async function commitCreationBatches(params: {
       if (!member) return;
       if (item.error === undefined) {
         if (member.step) {
-          params.onStepCreated(member.step, item.event.eventId, member.input);
+          const createdAt = new Date(item.event.createdAt);
+          params.onStepCreated(
+            member.step,
+            item.event.eventId,
+            createdAt,
+            member.input
+          );
           created.push({
             step: member.step,
             eventId: item.event.eventId,
+            createdAt,
             input:
               member.input instanceof Uint8Array ? member.input : undefined,
           });

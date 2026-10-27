@@ -12,6 +12,12 @@ export interface StepMessageSpec {
   correlationId: string;
   stepName: string;
   stepCreatedEventId?: string;
+  /**
+   * When the step's `step_created` was committed (its `createdAt`), for a
+   * background step's first message. Re-sends carry the creation's time, not
+   * the re-send's. Sent only when the message starts at attempt 1.
+   */
+  stepCreatedAt?: Date;
   input?: SerializedData;
   stepAttempt?: number;
 }
@@ -47,6 +53,9 @@ export interface LogStepState {
   correlationId: string;
   stepName: string;
   createdEventId: string;
+  /** The `createdAt` of the step's `step_created`; absent for an inline
+   *  step, which a `step_started` creates. */
+  createdAt?: Date;
   inline: boolean;
   starts: number;
   /** When the step's first attempt started. */
@@ -112,6 +121,9 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
           correlationId: cid,
           stepName: creation.stepName,
           createdEventId: event.eventId,
+          ...(event.eventType === 'step_created'
+            ? { createdAt: new Date(event.createdAt) }
+            : {}),
           inline: creation.inline,
           starts: 0,
           terminal: false,
@@ -239,4 +251,19 @@ export function nextTimerAt(events: readonly Event[]): {
     }
   }
   return earliest === undefined ? {} : { nextTimerAtMs: earliest };
+}
+
+/**
+ * A step message's `stepCreatedAt`, as epoch ms: the creation time of a
+ * step whose message starts at attempt 1, which its handler passes on that
+ * attempt's `step_started`. Left off a retry's message (a step start latency
+ * metric covers only the first attempt) and when the time is not known.
+ */
+export function stepCreatedAtField(step: {
+  stepCreatedAt?: Date;
+  stepAttempt?: number;
+}): { stepCreatedAt?: number } {
+  if (step.stepAttempt !== undefined && step.stepAttempt > 1) return {};
+  const ms = step.stepCreatedAt?.getTime();
+  return ms !== undefined && Number.isFinite(ms) ? { stepCreatedAt: ms } : {};
 }

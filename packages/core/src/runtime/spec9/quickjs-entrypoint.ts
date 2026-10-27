@@ -134,6 +134,7 @@ import {
   type LogStepState,
   MAX_STEP_MESSAGE_INPUT_BYTES,
   openWaits,
+  stepCreatedAtField,
   stepCreationOf,
 } from './log-state.js';
 import {
@@ -195,6 +196,9 @@ async function queueStepMessage(params: {
   stepAttempt?: number;
   /** Event id of the step's `step_created`, for reading its input back. */
   stepCreatedEventId?: string;
+  /** `createdAt` of the step's `step_created`, carried on a first-attempt
+   *  message as `stepCreatedAt` (see `stepCreatedAtField`). */
+  stepCreatedAt?: Date;
   /** Called once the message went out. */
   onSent?: (correlationId: string) => void;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
@@ -228,6 +232,7 @@ async function queueStepMessage(params: {
       ...(params.stepCreatedEventId
         ? { stepCreatedEventId: params.stepCreatedEventId }
         : {}),
+      ...stepCreatedAtField(params),
       // Immutable run identity so the consumer can start the step without a
       // blocking runs.get — see RunDispatchContextSchema.
       runContext: runDispatchContext(workflowRun),
@@ -1964,6 +1969,7 @@ export async function runWorkflowWithQuickJS(params: {
       const sendOverflowStep = (
         step: PendingStep,
         createdEventId: string | undefined,
+        createdAt: Date | undefined,
         input: Uint8Array | undefined
       ): Promise<void> => {
         queuedStepIds.add(step.correlationId);
@@ -1977,6 +1983,7 @@ export async function runWorkflowWithQuickJS(params: {
           purpose: 'dispatch',
           onSent: params.onStepMessageSent,
           ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
+          ...(createdAt ? { stepCreatedAt: createdAt } : {}),
           ...(input &&
           input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES &&
           (workflowRun.specVersion ?? 0) >=
@@ -1994,10 +2001,10 @@ export async function runWorkflowWithQuickJS(params: {
             write: writeCreationBatch,
             onStepsCreated: async (created) => {
               await Promise.all(
-                created.flatMap(({ step, eventId, input }) =>
+                created.flatMap(({ step, eventId, createdAt, input }) =>
                   overflowCids.has(step.correlationId) &&
                   !queuedStepIds.has(step.correlationId)
-                    ? [sendOverflowStep(step, eventId, input)]
+                    ? [sendOverflowStep(step, eventId, createdAt, input)]
                     : []
                 )
               );
@@ -2064,6 +2071,7 @@ export async function runWorkflowWithQuickJS(params: {
                 sendOverflowStep(
                   step,
                   dispatched.createdStepEventIds.get(step.correlationId),
+                  dispatched.createdStepCreatedAts.get(step.correlationId),
                   dispatched.createdStepInputs.get(step.correlationId)
                 ),
               ]
@@ -2174,6 +2182,12 @@ export async function runWorkflowWithQuickJS(params: {
         if (queuedStepIds.has(step.correlationId)) continue;
         if (!reenqueue.has(step.correlationId)) continue;
         queuedStepIds.add(step.correlationId);
+        // A re-send carries the creation's time, not its own.
+        const created = events.find(
+          (event) =>
+            event.correlationId === step.correlationId &&
+            event.eventType === 'step_created'
+        );
         await queueStepMessage({
           world,
           runId,
@@ -2183,6 +2197,7 @@ export async function runWorkflowWithQuickJS(params: {
           nextTraceCarrier,
           purpose: 'dispatch',
           onSent: params.onStepMessageSent,
+          ...(created ? { stepCreatedAt: new Date(created.createdAt) } : {}),
           wfdiag,
         });
       }

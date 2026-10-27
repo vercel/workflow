@@ -57,6 +57,7 @@ export interface StepMessageContext {
     | 'stepAttempt'
     | 'stepInput'
     | 'stepCreatedEventId'
+    | 'stepCreatedAt'
     | 'runContext'
   > & { stepId: string; stepName: string };
   /** The run, when routing the delivery already read it. */
@@ -212,6 +213,7 @@ export async function handleStepMessage(
   }
 
   const input = await resolveStepInput(ctx, log);
+  const stepCreatedAt = resolveStepCreatedAt(ctx, log);
   const retentionSeconds = stepMessageRetentionSeconds(maxRetries);
   const result = await runStepSingleFlight(runId, stepId, () =>
     executeStep({
@@ -231,6 +233,7 @@ export async function handleStepMessage(
         ? { firstStartedAt: decision.firstStartedAt }
         : {}),
       input,
+      ...(stepCreatedAt !== undefined ? { stepCreatedAt } : {}),
       // The body runs once its `step_started` committed, so a cancelled
       // run's or a throttled start runs no body. With the opt-in
       // `WORKFLOW_OPTIMISTIC_BACKGROUND_START`, a plain first delivery (no
@@ -467,6 +470,28 @@ async function resolveRunIdentity(
     ...(run.startedAt ? { startedAt: +run.startedAt } : {}),
     rootRunId: rootRunIdFrom(run.attributes, ctx.runId),
   };
+}
+
+/**
+ * When the step's `step_created` was committed, for its first attempt's
+ * `step_started`: carried on the message, or read from the log when this
+ * delivery loaded it anyway (a message from an older runtime). Never read
+ * for this alone.
+ */
+function resolveStepCreatedAt(
+  ctx: StepMessageContext,
+  log: Event[] | undefined
+): number | undefined {
+  if (ctx.payload.stepCreatedAt !== undefined) {
+    return ctx.payload.stepCreatedAt;
+  }
+  const created = log?.find(
+    (event) =>
+      event.correlationId === ctx.payload.stepId &&
+      event.eventType === 'step_created'
+  );
+  const ms = created ? new Date(created.createdAt).getTime() : undefined;
+  return ms !== undefined && Number.isFinite(ms) ? ms : undefined;
 }
 
 /**

@@ -138,6 +138,12 @@ export interface StepExecutorParams {
   /** The step's serialized input, as written on its creation. */
   input: SerializedData;
   /**
+   * Epoch ms of the step's `step_created`, for a background step started by
+   * its own message. Passed on attempt 1's `step_started` as
+   * `CreateEventParams.stepCreatedAt`, and on no other write.
+   */
+  stepCreatedAt?: number;
+  /**
    * Set when the caller already wrote this attempt's `step_started` (an
    * inline step, created by that start). The executor then writes no start
    * of its own.
@@ -408,6 +414,13 @@ export async function executeStep(
   const stepStartedEventParams: CreateEventParams = {
     computeInstanceId: COMPUTE_INSTANCE_ID,
     ...(params.requestId ? { requestId: params.requestId } : {}),
+    // A step start latency metric covers a background step's first attempt
+    // only; a caller-written start (an inline step) never carries it.
+    ...(params.stepCreatedAt !== undefined &&
+    params.attempt === 1 &&
+    params.started === undefined
+      ? { stepCreatedAt: params.stepCreatedAt }
+      : {}),
   };
 
   const spanName = `step.execute ${stepDisplayName(stepName)}`;
