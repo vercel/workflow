@@ -60,6 +60,7 @@ import {
   getPreconditionReinvokeDelaySeconds,
   getReplayDivergenceMaxRetries,
   isDynamicWorkflowsEnabled,
+  isInlineEarlyAdvanceEnabled,
   isInlineOwnershipEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
@@ -100,6 +101,7 @@ import {
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
+import { InlineStepsInFlight } from './runtime/inline-steps-in-flight.js';
 import { withRunInputs } from './runtime/invocations.js';
 import {
   dispatchRunCompletedHooks,
@@ -232,6 +234,43 @@ export {
   setWorld,
   type WorldFactoryModule,
 } from './runtime/world.js';
+
+/** An inline step as the replay loop tracks it while its body runs. */
+interface InlineStepRef {
+  correlationId: string;
+  stepName: string;
+}
+type InlineStepResult = Awaited<ReturnType<typeof executeStep>>;
+
+/**
+ * An inline step outcome after which the workflow may replay while its
+ * batch siblings keep running. Outcomes that need the batch's own handling
+ * (a retry, a throttled claim, unflushed ops, a run that is gone, or a
+ * rejection) wait for the whole batch, as without early advance.
+ */
+function isEarlyAdvanceOutcome(
+  outcome: PromiseSettledResult<InlineStepResult>
+): boolean {
+  if (outcome.status !== 'fulfilled') return false;
+  const result = outcome.value;
+  return (
+    (result.type === 'completed' && !result.hasPendingOps) ||
+    result.type === 'failed' ||
+    result.type === 'skipped'
+  );
+}
+
+/**
+ * Thrown by a replay pass that reached the end of the workflow while inline
+ * steps of this delivery are still running. The catch settles them and
+ * replays again, so the run is never completed or failed over a step body
+ * this delivery is still executing.
+ */
+class InlineStepsStillRunning extends Error {
+  static is(value: unknown): value is InlineStepsStillRunning {
+    return value instanceof InlineStepsStillRunning;
+  }
+}
 
 /**
  * Apply the optional client-side event-limit override.
@@ -1053,6 +1092,13 @@ export function workflowEntrypoint(
                 runId,
                 runLogger,
               });
+              // Inline steps this delivery is executing across passes of
+              // its replay loop (see InlineStepsInFlight). Settled before
+              // the handler returns or throws, on every path.
+              const inlineStepsInFlight = new InlineStepsInFlight<
+                InlineStepRef,
+                InlineStepResult
+              >();
               return trace(
                 `workflow.execute ${workflowDisplayName(workflowName)}`,
                 { kind: spanKind, links: spanLinks },
@@ -1525,6 +1571,11 @@ export function workflowEntrypoint(
                      */
                     extraPayload?: Partial<WorkflowInvokePayload>
                   ): Promise<{ timeoutSeconds: number } | undefined> => {
+                    // Inline steps still running from an earlier pass settle
+                    // before this ack path. Their outcomes are not acted on:
+                    // the continuation's replay re-derives the work they
+                    // leave pending.
+                    await inlineStepsInFlight.settleAll();
                     assertNoInFlightOwnedSteps('reinvoke');
                     if (!turbo) return { timeoutSeconds: delaySeconds };
                     await queueMessage(
@@ -3023,10 +3074,268 @@ export function workflowEntrypoint(
                   // sends is used to skip. Dies with this delivery.
                   const publishedStepCorrelationIds = new Set<string>();
 
+                  /**
+                   * Act on the outcomes of a settled set of inline steps:
+                   * queue retries, defer a throttled claim, or let pending
+                   * ops flush. `done` means the delivery ends with `value`;
+                   * otherwise every step reached a terminal state and the
+                   * loop replays.
+                   */
+                  const actOnInlineOutcomes = async (
+                    steps: readonly InlineStepRef[],
+                    results: readonly InlineStepResult[]
+                  ): Promise<
+                    | {
+                        done: true;
+                        value: { timeoutSeconds: number } | undefined;
+                      }
+                    | { done: false }
+                  > => {
+                    const run = workflowRun;
+                    assert(run, 'Inline steps ran before the run was loaded');
+                    // Aggregate the batch results. `retry` steps (which
+                    // already exist, since their `step_started` succeeded) are
+                    // re-queued per-step as background steps with their own
+                    // delay; `throttled` steps (rejected on the create-claim,
+                    // so never created) instead defer redelivery of this
+                    // orchestrator message so they re-run inline with input
+                    // on replay; completed/failed steps already wrote their
+                    // terminal events. We only loop back to replay when every
+                    // inline step reached a terminal state, otherwise the
+                    // still-pending steps will be re-run by their queued retry
+                    // messages and the background-step path replays once
+                    // all steps are done.
+                    const toRetry: {
+                      step: InlineStepRef;
+                      delaySeconds: number;
+                    }[] = [];
+                    let anyPendingOps = false;
+                    // A throttled inline step delays redelivery of THIS
+                    // orchestrator message rather than being re-queued as a
+                    // background step. Crucially, a `throttled` result means
+                    // the lazy `step_started` was rejected on the atomic
+                    // create-claim, so the step was NEVER created (no
+                    // `step_created`, no step entity). Re-queuing it as a
+                    // background step would send a bare `step_started` (no
+                    // input), which the world rejects with `Step "<id>" not
+                    // found` because it cannot lazily create the step without
+                    // its input; that error isn't translatable, so the
+                    // message redelivers until MAX_QUEUE_DELIVERIES and the
+                    // step (and run) fail. Deferring redelivery of the
+                    // orchestrator instead re-attempts the throttled step
+                    // inline WITH its input on replay. We track the longest
+                    // backoff so a batch with multiple throttles waits the
+                    // max. Note: `retry` results are safe to re-queue as
+                    // background steps because a retry implies `step_started`
+                    // already succeeded and the step exists.
+                    let throttleTimeout: number | undefined;
+                    for (let i = 0; i < steps.length; i++) {
+                      const r = results[i];
+                      const s = steps[i];
+                      if (r.type === 'retry') {
+                        toRetry.push({
+                          step: s,
+                          delaySeconds: r.timeoutSeconds,
+                        });
+                      } else if (r.type === 'throttled') {
+                        throttleTimeout = Math.max(
+                          throttleTimeout ?? 0,
+                          r.timeoutSeconds
+                        );
+                      } else if (r.type === 'completed' && r.hasPendingOps) {
+                        anyPendingOps = true;
+                      }
+                    }
+
+                    if (throttleTimeout !== undefined) {
+                      // Defer redelivery of the orchestrator after the
+                      // throttle backoff. On replay every non-terminal step
+                      // is re-dispatched by the suspension handler: the
+                      // still-throttled steps run inline again WITH their
+                      // input (their `step_created` is deferred anew), and
+                      // any `retry` steps in this batch are queued as
+                      // background steps with their own retryAfter honored.
+                      // Terminal steps (completed/failed/skipped/gone) are
+                      // observed from their events and not re-run. Because
+                      // the replay drives all remaining work, we must NOT
+                      // also re-queue `toRetry` here, since that would
+                      // double-dispatch those steps.
+                      //
+                      // This returns BEFORE the `anyPendingOps` branch
+                      // below, so a batch that mixes a throttle with a
+                      // completed step that left unflushed ops does not
+                      // queue the explicit flush continuation. That is safe
+                      // because the throttle backoff (>= 1s) always exceeds
+                      // the in-invocation flush window (<= 500ms + waitUntil),
+                      // so ops settle before the post-backoff redelivery
+                      // replays and reads them.
+                      return {
+                        done: true,
+                        value: await reinvoke(throttleTimeout),
+                      };
+                    }
+
+                    if (toRetry.length > 0) {
+                      const retryTraceCarrier = await nextTraceCarrier();
+                      await Promise.all(
+                        toRetry.map(({ step, delaySeconds }) =>
+                          queueMessage(
+                            world,
+                            getWorkflowQueueName(workflowName, namespace),
+                            {
+                              runId,
+                              stepId: step.correlationId,
+                              stepName: step.stepName,
+                              traceCarrier: retryTraceCarrier,
+                              requestedAt: new Date(),
+                              runContext: runDispatchContext(run),
+                            },
+                            {
+                              delaySeconds,
+                              // Key the delayed retry on the step's
+                              // dispatch key so it dedupes against the
+                              // keyed re-dispatch the suspension handler
+                              // performs on replay (it uses the same
+                              // stepDispatchIdempotencyKey).
+                              //
+                              // Without this, a mixed batch where one step
+                              // `completed` with unflushed background ops
+                              // (`anyPendingOps`) and another step is
+                              // retrying would double-dispatch the retry:
+                              // the `anyPendingOps` branch below queues an
+                              // immediate plain continuation, whose replay
+                              // sees the still-`retrying` step as pending
+                              // and re-dispatches it *immediately* and
+                              // *with* a key. Since this delayed retry had
+                              // no key, the two messages wouldn't dedupe:
+                              // the step would run twice, the configured
+                              // retry backoff would be ignored (plain
+                              // `Error` retries persist no `retryAfter`, so
+                              // the world has no `TooEarly` guard), and the
+                              // retry body could run early/concurrently.
+                              // Sharing the key lets the earlier delayed
+                              // message win, honoring the backoff.
+                              idempotencyKey: stepDispatchIdempotencyKey(
+                                step.correlationId,
+                                step.stepName
+                              ),
+                            }
+                          )
+                        )
+                      );
+                    }
+
+                    // Let pending background operations flush before the next
+                    // replay reads their results.
+                    if (anyPendingOps) {
+                      runtimeLogger.debug(
+                        'Breaking loop: inline step has pending ops',
+                        { workflowRunId: runId, loopIteration }
+                      );
+                      await queueMessage(
+                        world,
+                        getWorkflowQueueName(workflowName, namespace),
+                        {
+                          runId,
+                          traceCarrier: await nextTraceCarrier(),
+                          requestedAt: new Date(),
+                        }
+                      );
+                      return { done: true, value: undefined };
+                    }
+
+                    if (toRetry.length > 0) {
+                      // Some inline steps will be re-run via their queued
+                      // retry messages; the background-step path replays
+                      // once all steps are terminal. Don't loop here: the
+                      // retrying steps have no terminal event to observe yet.
+                      return { done: true, value: undefined };
+                    }
+
+                    return { done: false };
+                  };
+
+                  /**
+                   * Settle every inline step still running from an earlier
+                   * pass and act on the outcomes as a batch would. When not
+                   * `done`, the loop replays next, over a reloaded log.
+                   */
+                  const settleInlineStepsInFlight = async (): Promise<
+                    | {
+                        done: true;
+                        value: { timeoutSeconds: number } | undefined;
+                      }
+                    | { done: false }
+                  > => {
+                    const settled = await inlineStepsInFlight.settleAll();
+                    const results: InlineStepResult[] = [];
+                    for (const { outcome } of settled) {
+                      if (outcome.status === 'fulfilled') {
+                        results.push(outcome.value);
+                        continue;
+                      }
+                      if (!PreconditionFailedError.is(outcome.reason)) {
+                        throw outcome.reason;
+                      }
+                      // A stale (412) claim, handled as the batch handles
+                      // one. Siblings may have written, so reload in full.
+                      if (
+                        restartReplayInProcess('inline-claim', outcome.reason, {
+                          allowDelta: false,
+                        })
+                      ) {
+                        return { done: false };
+                      }
+                      const escalation = await reinvokeAfterStaleRejection(
+                        'inline-claim',
+                        outcome.reason
+                      );
+                      if (escalation.reinvoked) {
+                        return { done: true, value: escalation.result };
+                      }
+                      throw escalation.error;
+                    }
+                    const inlineAction = await actOnInlineOutcomes(
+                      settled.map(({ step }) => step),
+                      results
+                    );
+                    // A pass that already scheduled its next load (the loop
+                    // top, after an early advance) keeps it.
+                    if (!inlineAction.done && eventLog.type === 'ready') {
+                      eventLog = nextEventLogLoad(eventLog);
+                    }
+                    return inlineAction;
+                  };
+
+                  const inlineEarlyAdvance = isInlineEarlyAdvanceEnabled();
+                  let inlineEarlyAdvances = 0;
+
                   // Main replay loop
                   while (true) {
                     const invocationRevision = activity?.revision ?? 0;
                     loopIteration++;
+
+                    // The budget and timeout exits below hand the run to
+                    // another delivery. Settle any inline step still running
+                    // from the previous pass first, so its retry backoff or
+                    // throttle is honored rather than re-derived.
+                    if (
+                      inlineStepsInFlight.size > 0 &&
+                      (replayBudget.isExhausted() ||
+                        Date.now() - invocationStartTime >=
+                          noInlineReplayAfterMs)
+                    ) {
+                      replayBudget.pause();
+                      let inlineAction: Awaited<
+                        ReturnType<typeof settleInlineStepsInFlight>
+                      >;
+                      try {
+                        inlineAction = await settleInlineStepsInFlight();
+                      } finally {
+                        replayBudget.resume();
+                      }
+                      if (inlineAction.done) return inlineAction.value;
+                    }
 
                     // Replay-budget check: bail out (retry or fail) if
                     // non-step time within this invocation has exceeded
@@ -3498,6 +3807,7 @@ export function workflowEntrypoint(
                           // events before the terminal `awaitRunReady()` below.
                           runReadyBarrier,
                           worldCapabilities: world.capabilities,
+                          inFlightStepCorrelationIds: inlineStepsInFlight.ids,
                         });
                       }
                       await payloadPrewarm;
@@ -3518,6 +3828,21 @@ export function workflowEntrypoint(
                         executionMode: retainedSession ? 'retained' : 'replay',
                       });
                       replayRecoveryReporter.activate();
+
+                      // Never complete the run over a step body this delivery
+                      // is still executing (a `Promise.race` loser, or a step
+                      // the workflow stopped awaiting): the catch settles them
+                      // and replays again. Steps that already settled cleanly
+                      // have written their terminal events and hold nothing
+                      // back.
+                      if (
+                        inlineStepsInFlight.size > 0 &&
+                        !inlineStepsInFlight.takeIfAllSettled(
+                          isEarlyAdvanceOutcome
+                        )
+                      ) {
+                        throw new InlineStepsStillRunning();
+                      }
 
                       // Workflow completed. Do NOT reload-and-retry the create
                       // in place: `result` was computed by this replay, so a
@@ -3558,6 +3883,26 @@ export function workflowEntrypoint(
                       });
                       return;
                     } catch (err) {
+                      // The pass completed or failed the workflow (or its
+                      // replay threw) while inline steps from an earlier pass
+                      // still run. Settle them and act on their outcomes as a
+                      // batch would, then replay from a fresh session over
+                      // the log they extended: the run's terminal event is
+                      // written only once no step body of this delivery is
+                      // running, as when every batch was awaited whole.
+                      if (
+                        !WorkflowSuspension.is(err) &&
+                        inlineStepsInFlight.size > 0 &&
+                        (InlineStepsStillRunning.is(err) ||
+                          !inlineStepsInFlight.takeIfAllSettled(
+                            isEarlyAdvanceOutcome
+                          ))
+                      ) {
+                        retainedSession = null;
+                        const inlineAction = await settleInlineStepsInFlight();
+                        if (inlineAction.done) return inlineAction.value;
+                        continue;
+                      }
                       if (WorkflowSuspension.is(err)) {
                         replayRecoveryReporter.activate();
                         // Synchronous workflow-execution duration for THIS
@@ -3671,6 +4016,9 @@ export function workflowEntrypoint(
                             // dispatch join), so the durability contract
                             // is unchanged while the bodies start earlier.
                             allowDeferredBatchWork: true,
+                            // Steps still running inline from an earlier
+                            // pass: their own executions write their events.
+                            inFlightStepCorrelationIds: inlineStepsInFlight.ids,
                           });
                         } catch (suspensionError) {
                           // A suspension create was rejected as stale: re-derive
@@ -4662,7 +5010,10 @@ export function workflowEntrypoint(
                           ) {
                             continue;
                           }
-                          if (inlineExecutions.length === 0) {
+                          if (
+                            inlineExecutions.length === 0 &&
+                            inlineStepsInFlight.size === 0
+                          ) {
                             // Nothing to run here and no continuation to be
                             // had: hand the run back for a fresh replay over
                             // the committed hook_created.
@@ -4676,7 +5027,13 @@ export function workflowEntrypoint(
                         // Nothing to execute inline: everything has been
                         // queued (or no work needs scheduling). Exit and let
                         // the queue drive subsequent replays.
-                        if (inlineExecutions.length === 0) {
+                        // With inline steps still running from an earlier
+                        // pass, fall through to the batch below and wait for
+                        // the next of them to settle instead.
+                        if (
+                          inlineExecutions.length === 0 &&
+                          inlineStepsInFlight.size === 0
+                        ) {
                           // Nothing runs concurrently with the dispatches on
                           // this path, so join them (and the fold's deferred
                           // chunk commits/publishes) here so a failure fails
@@ -4798,6 +5155,7 @@ export function workflowEntrypoint(
                         // the delta is not requested (the gate below is false for
                         // multi-step) and the next iteration does a normal fetch.
                         const requestInlineDelta =
+                          inlineStepsInFlight.size === 0 &&
                           typeof eventLog.cursor === 'string' &&
                           err.stepCount === 1 &&
                           pendingSteps.length === 1 &&
@@ -4837,6 +5195,7 @@ export function workflowEntrypoint(
                                 observedHookIds: err.observedHookIds,
                                 selfExecutedStepIds: new Set([
                                   ...inlineCorrelationIds,
+                                  ...inlineStepsInFlight.ids,
                                   ...ownedRecoverySteps.map(
                                     (s) => s.correlationId
                                   ),
@@ -5020,11 +5379,21 @@ export function workflowEntrypoint(
                         resumeTracking = undefined;
 
                         replayBudget.pause();
-                        let stepResults: Awaited<
-                          ReturnType<typeof executeStep>
-                        >[];
+                        // The steps this pass settles and acts on: the whole
+                        // batch, plus any step still running from an earlier
+                        // pass (see InlineStepsInFlight).
+                        let batchSteps: InlineStepRef[] = [];
+                        const stepResults: InlineStepResult[] = [];
+                        let roundOutcomes: PromiseSettledResult<InlineStepResult>[] =
+                          [];
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
+                            let markStartSettled!: () => void;
+                            const startSettled = new Promise<void>(
+                              (resolve) => {
+                                markStartSettled = resolve;
+                              }
+                            );
                             const run = () => {
                               assert(eventLog.type === 'ready');
                               return executeStep({
@@ -5121,6 +5490,7 @@ export function workflowEntrypoint(
                                     }
                                   : {}),
                                 replayRecoveryReporter,
+                                onStartSettled: markStartSettled,
                               });
                             };
                             // Invariant bookkeeping: this invocation owns
@@ -5148,9 +5518,18 @@ export function workflowEntrypoint(
                               run,
                               isFreshClaim ? 'debug' : 'warn'
                             );
-                            return executed.finally(() =>
+                            const tracked = executed.finally(() =>
                               inFlightOwnedSteps.delete(s.correlationId)
                             );
+                            inlineStepsInFlight.track(
+                              {
+                                correlationId: s.correlationId,
+                                stepName: s.stepName,
+                              },
+                              tracked,
+                              startSettled
+                            );
+                            return tracked;
                           }
                         );
                         // The joins below sit BETWEEN these promises' creation
@@ -5183,12 +5562,53 @@ export function workflowEntrypoint(
                               suspensionResult.deferredBatchWork,
                             ]);
                           } catch (dispatchErr) {
-                            await Promise.allSettled(stepExecutionPromises);
+                            roundOutcomes = (
+                              await inlineStepsInFlight.settleAll()
+                            ).map((settled) => settled.outcome);
                             throw dispatchErr;
                           }
-                          stepResults = await Promise.all(
-                            stepExecutionPromises
+                          // Early advance: once a step settles cleanly while
+                          // others of this delivery still run, replay now so
+                          // its branch can start its next step. The others
+                          // stay tracked; the next pass neither creates,
+                          // queues nor recovers them (they are left out of
+                          // the suspension), and a later pass settles them.
+                          const round = await inlineStepsInFlight.settle(
+                            inlineEarlyAdvance,
+                            isEarlyAdvanceOutcome
                           );
+                          if (round.early) {
+                            runtimeLogger.debug(
+                              'Inline step settled; replaying while sibling inline steps run',
+                              {
+                                workflowRunId: runId,
+                                loopIteration,
+                                settled: round.settled.length,
+                                running: inlineStepsInFlight.size,
+                              }
+                            );
+                            span?.setAttributes(
+                              Attribute.WorkflowInlineEarlyAdvances(
+                                ++inlineEarlyAdvances
+                              )
+                            );
+                            eventLog = nextEventLogLoad(eventLog);
+                            // The finally below resumes the replay budget
+                            // before the next iteration starts.
+                            continue;
+                          }
+                          roundOutcomes = round.settled.map(
+                            (settled) => settled.outcome
+                          );
+                          batchSteps = round.settled.map(
+                            (settled) => settled.step
+                          );
+                          for (const outcome of roundOutcomes) {
+                            if (outcome.status === 'rejected') {
+                              throw outcome.reason;
+                            }
+                            stepResults.push(outcome.value);
+                          }
                         } catch (stepErr) {
                           // A stale (412) rejection of an inline step_started
                           // claim: the loaded view this batch was scheduled
@@ -5201,9 +5621,7 @@ export function workflowEntrypoint(
                           // executions to settle first so no owned body is in
                           // flight when the restart (or the ack path) runs.
                           if (PreconditionFailedError.is(stepErr)) {
-                            const settled = await Promise.allSettled(
-                              stepExecutionPromises
-                            );
+                            const settled = roundOutcomes;
                             // A sibling whose claim was accepted wrote step
                             // events of its own, possibly after the World built
                             // this 412's delta, so that delta can no longer be
@@ -5242,164 +5660,11 @@ export function workflowEntrypoint(
                           replayBudget.resume();
                         }
 
-                        // Aggregate the batch results. `retry` steps (which
-                        // already exist, since their `step_started` succeeded) are
-                        // re-queued per-step as background steps with their own
-                        // delay; `throttled` steps (rejected on the create-claim,
-                        // so never created) instead defer redelivery of this
-                        // orchestrator message so they re-run inline with input
-                        // on replay; completed/failed steps already wrote their
-                        // terminal events. We only loop back to replay when every
-                        // inline step reached a terminal state, otherwise the
-                        // still-pending steps will be re-run by their queued retry
-                        // messages and the background-step path replays once
-                        // all steps are done.
-                        const toRetry: {
-                          step: (typeof inlineExecutions)[number];
-                          delaySeconds: number;
-                        }[] = [];
-                        let anyPendingOps = false;
-                        // A throttled inline step delays redelivery of THIS
-                        // orchestrator message rather than being re-queued as a
-                        // background step. Crucially, a `throttled` result means
-                        // the lazy `step_started` was rejected on the atomic
-                        // create-claim, so the step was NEVER created (no
-                        // `step_created`, no step entity). Re-queuing it as a
-                        // background step would send a bare `step_started` (no
-                        // input), which the world rejects with `Step "<id>" not
-                        // found` because it cannot lazily create the step without
-                        // its input; that error isn't translatable, so the
-                        // message redelivers until MAX_QUEUE_DELIVERIES and the
-                        // step (and run) fail. Deferring redelivery of the
-                        // orchestrator instead re-attempts the throttled step
-                        // inline WITH its input on replay. We track the longest
-                        // backoff so a batch with multiple throttles waits the
-                        // max. Note: `retry` results are safe to re-queue as
-                        // background steps because a retry implies `step_started`
-                        // already succeeded and the step exists.
-                        let throttleTimeout: number | undefined;
-                        for (let i = 0; i < inlineExecutions.length; i++) {
-                          const r = stepResults[i];
-                          const s = inlineExecutions[i];
-                          if (r.type === 'retry') {
-                            toRetry.push({
-                              step: s,
-                              delaySeconds: r.timeoutSeconds,
-                            });
-                          } else if (r.type === 'throttled') {
-                            throttleTimeout = Math.max(
-                              throttleTimeout ?? 0,
-                              r.timeoutSeconds
-                            );
-                          } else if (
-                            r.type === 'completed' &&
-                            r.hasPendingOps
-                          ) {
-                            anyPendingOps = true;
-                          }
-                        }
-
-                        if (throttleTimeout !== undefined) {
-                          // Defer redelivery of the orchestrator after the
-                          // throttle backoff. On replay every non-terminal step
-                          // is re-dispatched by the suspension handler: the
-                          // still-throttled steps run inline again WITH their
-                          // input (their `step_created` is deferred anew), and
-                          // any `retry` steps in this batch are queued as
-                          // background steps with their own retryAfter honored.
-                          // Terminal steps (completed/failed/skipped/gone) are
-                          // observed from their events and not re-run. Because
-                          // the replay drives all remaining work, we must NOT
-                          // also re-queue `toRetry` here, since that would
-                          // double-dispatch those steps.
-                          //
-                          // This returns BEFORE the `anyPendingOps` branch
-                          // below, so a batch that mixes a throttle with a
-                          // completed step that left unflushed ops does not
-                          // queue the explicit flush continuation. That is safe
-                          // because the throttle backoff (>= 1s) always exceeds
-                          // the in-invocation flush window (<= 500ms + waitUntil),
-                          // so ops settle before the post-backoff redelivery
-                          // replays and reads them.
-                          return await reinvoke(throttleTimeout);
-                        }
-
-                        if (toRetry.length > 0) {
-                          const retryTraceCarrier = await nextTraceCarrier();
-                          await Promise.all(
-                            toRetry.map(({ step, delaySeconds }) =>
-                              queueMessage(
-                                world,
-                                getWorkflowQueueName(workflowName, namespace),
-                                {
-                                  runId,
-                                  stepId: step.correlationId,
-                                  stepName: step.stepName,
-                                  traceCarrier: retryTraceCarrier,
-                                  requestedAt: new Date(),
-                                  runContext: runDispatchContext(workflowRun),
-                                },
-                                {
-                                  delaySeconds,
-                                  // Key the delayed retry on the step's
-                                  // dispatch key so it dedupes against the
-                                  // keyed re-dispatch the suspension handler
-                                  // performs on replay (it uses the same
-                                  // stepDispatchIdempotencyKey).
-                                  //
-                                  // Without this, a mixed batch where one step
-                                  // `completed` with unflushed background ops
-                                  // (`anyPendingOps`) and another step is
-                                  // retrying would double-dispatch the retry:
-                                  // the `anyPendingOps` branch below queues an
-                                  // immediate plain continuation, whose replay
-                                  // sees the still-`retrying` step as pending
-                                  // and re-dispatches it *immediately* and
-                                  // *with* a key. Since this delayed retry had
-                                  // no key, the two messages wouldn't dedupe:
-                                  // the step would run twice, the configured
-                                  // retry backoff would be ignored (plain
-                                  // `Error` retries persist no `retryAfter`, so
-                                  // the world has no `TooEarly` guard), and the
-                                  // retry body could run early/concurrently.
-                                  // Sharing the key lets the earlier delayed
-                                  // message win, honoring the backoff.
-                                  idempotencyKey: stepDispatchIdempotencyKey(
-                                    step.correlationId,
-                                    step.stepName
-                                  ),
-                                }
-                              )
-                            )
-                          );
-                        }
-
-                        // Let pending background operations flush before the next
-                        // replay reads their results.
-                        if (anyPendingOps) {
-                          runtimeLogger.debug(
-                            'Breaking loop: inline step has pending ops',
-                            { workflowRunId: runId, loopIteration }
-                          );
-                          await queueMessage(
-                            world,
-                            getWorkflowQueueName(workflowName, namespace),
-                            {
-                              runId,
-                              traceCarrier: await nextTraceCarrier(),
-                              requestedAt: new Date(),
-                            }
-                          );
-                          return;
-                        }
-
-                        if (toRetry.length > 0) {
-                          // Some inline steps will be re-run via their queued
-                          // retry messages; the background-step path replays
-                          // once all steps are terminal. Don't loop here: the
-                          // retrying steps have no terminal event to observe yet.
-                          return;
-                        }
+                        const inlineAction = await actOnInlineOutcomes(
+                          batchSteps,
+                          stepResults
+                        );
+                        if (inlineAction.done) return inlineAction.value;
 
                         // All inline steps reached a terminal state
                         // (completed/failed/skipped/gone), so loop back to replay
@@ -5407,7 +5672,7 @@ export function workflowEntrypoint(
                         //
                         // Reuse any inline delta. If it is partial, continue
                         // from its cursor instead of reading the page again.
-                        if (inlineExecutions.length === 1) {
+                        if (batchSteps.length === 1) {
                           const only = stepResults[0];
                           if (only.type === 'completed' && only.inlineDelta) {
                             appendEventLog(eventLog, only.inlineDelta);
@@ -5738,7 +6003,7 @@ export function workflowEntrypoint(
                     }
                   }
                 }
-              );
+              ).finally(() => inlineStepsInFlight.settleAll());
             }
           );
         });

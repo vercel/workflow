@@ -88,7 +88,12 @@ async function drainPendingQueueItems(
    * In turbo mode, gates final `*_created` writes on backgrounded
    * `run_started`. Undefined when `run_started` is awaited.
    */
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * Steps the runtime is still executing inline. Their own executions write
+   * their events, so the drain records nothing for them.
+   */
+  inFlightStepCorrelationIds?: ReadonlySet<string>
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
   try {
@@ -100,6 +105,7 @@ async function drainPendingQueueItems(
       run: workflowRun,
       runReadyBarrier,
       terminalDrain: true,
+      inFlightStepCorrelationIds,
     });
   } catch (err) {
     runtimeLogger.warn(
@@ -122,6 +128,11 @@ interface WorkflowSessionOptions {
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
+  /**
+   * Steps the runtime is executing inline while this session runs. Read live
+   * (the runtime mutates the set), and left out of the end-of-run drain.
+   */
+  readonly inFlightStepCorrelationIds?: ReadonlySet<string>;
 }
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
@@ -384,6 +395,7 @@ async function createWorkflowSessionInner(
     compiledWorkflowScripts,
     runReadyBarrier,
     worldCapabilities,
+    inFlightStepCorrelationIds,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
 ): Promise<{
@@ -1227,7 +1239,8 @@ async function createWorkflowSessionInner(
       vmGlobalThis,
       workflowRun,
       'failed',
-      runReadyBarrier
+      runReadyBarrier,
+      inFlightStepCorrelationIds
     );
 
     throw error;
@@ -1288,7 +1301,8 @@ async function createWorkflowSessionInner(
         vmGlobalThis,
         workflowRun,
         'completed',
-        runReadyBarrier
+        runReadyBarrier,
+        inFlightStepCorrelationIds
       );
 
       return { type: 'completed', output, resultType: typeof result };

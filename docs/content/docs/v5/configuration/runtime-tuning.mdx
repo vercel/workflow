@@ -170,6 +170,16 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Number of newly-created steps one invocation runs inline in parallel before queueing the rest.
 - Steps started beside an awaited hook registration (`hook.getConflict()`) count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
 
+### `WORKFLOW_INLINE_EARLY_ADVANCE`
+
+- Default: enabled
+- Node.js VM engine only. When one inline step of a parallel batch completes or fails while its siblings are still running, the invocation replays the workflow right away instead of waiting for the slowest sibling. A branch of a `Promise.all` can then start its next step without waiting for the other branches.
+- Steps still running stay owned by the invocation that started them. They count against `WORKFLOW_MAX_INLINE_STEPS`, so fewer new steps run inline while they run.
+- The run is not completed or failed while one of its inline steps is still running, so a `Promise.race` loser still runs to completion before the run ends.
+- A step that retries, is throttled, or leaves stream writes unflushed waits for its whole batch, as with this setting off.
+- Branches whose steps were queued because the batch exceeded `WORKFLOW_MAX_INLINE_STEPS` still advance only when the last pending step of the batch completes.
+- Set `0` or `false` to wait for every inline step of a batch before replaying.
+
 ### `WORKFLOW_TURBO`
 
 - Default: enabled

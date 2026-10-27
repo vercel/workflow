@@ -375,6 +375,28 @@ export function isTurboEnabled(): boolean {
 }
 
 /**
+ * Whether the Node.js inline loop advances the workflow as each inline step
+ * settles, instead of waiting for every step of the batch (default ON).
+ *
+ * When one inline step of a parallel batch completes or fails while its
+ * siblings are still running, the loop replays right away in the same
+ * invocation, with the siblings still in flight. A branch whose step settled
+ * can then start its next step without waiting for the slowest sibling. The
+ * siblings stay owned by this invocation: the replay neither creates, queues
+ * nor recovers them, and the workflow is never completed or failed while one
+ * is still running.
+ *
+ * Reads `process.env.WORKFLOW_INLINE_EARLY_ADVANCE` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive), which
+ * restores waiting for the whole batch.
+ */
+export function isInlineEarlyAdvanceEnabled(): boolean {
+  const raw = process.env.WORKFLOW_INLINE_EARLY_ADVANCE;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * Whether the QuickJS engine's baseline-snapshot startup optimization is
  * enabled (default ON). When on, the engine hydrates a VM with the
  * workflow bundle once per function instance, snapshots it, and starts
