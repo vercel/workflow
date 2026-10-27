@@ -60,7 +60,7 @@ world-local and world-postgres serialize only spec 9 runs (`singleOrchestratorRu
 
 ## Minting new runs
 
-`mintedSpecVersion()` returns 9, or the version `WORKFLOW_SPEC_VERSION` names (6 to 9), or 6 when `WORKFLOW_SEALED_LOG=0` is set and `WORKFLOW_SPEC_VERSION` is not (`packages/world/src/spec-version.ts`). First-party Worlds call it when they are created, so `WORKFLOW_SPEC_VERSION=8` works as a kill switch: new runs are spec 8, runs in flight keep their version. An unrecognised value is ignored with a one-time warning.
+`mintedSpecVersion()` returns 9, or the version `WORKFLOW_SPEC_VERSION` names (6 to 9), or 6 when `WORKFLOW_SEALED_LOG=0` is set and `WORKFLOW_SPEC_VERSION` is not (`packages/world/src/spec-version.ts`). First-party Worlds call it when they are created, so `WORKFLOW_SPEC_VERSION=8` works as a kill switch: new runs are spec 8, runs in flight keep their version. An unrecognised value is ignored with a one-time warning. This is the behaviour at this head; the planned opt-in flips the default to 8 and mints 9 only for `WORKFLOW_SPEC_VERSION=9` on a World with the in-band fence (review page, section 10).
 
 ## Stamps at every send site
 
@@ -165,5 +165,5 @@ sequenceDiagram
 - `withRunSpecVersion` never overwrites a `runSpecVersion` the payload already carries (`packages/core/src/runtime/run-spec-routing.ts:92`).
 - A health check has no run spec and is never keyed or gated (`packages/world/src/queue.ts:660`).
 - The in-band fence is checked where a spec 9 run is created (`start()`) and where its orchestrator delivery begins writing (the `InBandWriter`); a World that declares spec 8 creates spec 8 runs and is not checked (`assertWorldSupportsInBandFence`, `packages/core/src/runtime/world-compatibility.ts:78`).
-- `WORKFLOW_SPEC_VERSION` with any value but `8` mints spec 9 (`packages/world/src/spec-version.ts:173`).
+- `WORKFLOW_SPEC_VERSION` accepts an integer from 6 to 9; any other value is ignored with a one-time warning and the default is minted (`mintedSpecVersion`, `packages/world/src/spec-version.ts:202`).
 - An older SDK's 400 is answered on the write, so no stale wake is left queued for a spec 9 run.

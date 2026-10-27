@@ -465,7 +465,7 @@ The SDK also sends an internal `HealthCheckPayload` through the same workflow qu
 ## Single-writer guarantee and the in-band fence
 
 <Callout type="warn">
-  This section applies to the v6 beta only. It describes spec version 9 runs (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model), which earlier releases do not create.
+  This section applies only to spec version 9 runs (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model), which earlier releases do not create.
 </Callout>
 
 On a spec 9 run one orchestrator invocation at a time makes every decision for the run. Its writes are **in-band**: `run_started`, `run_completed`, `run_failed`, `step_created`, `wait_created`, `wait_completed`, `hook_created`, `hook_disposed`, an `attr_set` from the workflow body, a `hook_received` it writes for a resume carried on its own queue message, and every event of a step it runs inline. Everything else is **out-of-band**: a background step's own events, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`, and `attr_set` from `setAttributes()` outside the workflow. Classification is by writer, not by event type, and the runtime states it on every write as `params.inBand`.

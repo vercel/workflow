@@ -343,7 +343,7 @@ Spec 9 used to rely on one rule for liveness: only a redelivery of the message t
 - **Full-log reads on step retry hops (4.1)** are a post-release monitoring item (section 12).
 - **QuickJS creation batching (4.2)** landed (`a09d3138df`).
 - **world-postgres LISTEN/NOTIFY and the no-push poll backoff (4.3)** are follow-ups before default-on (section 12).
-- **Step start latency.** A background step's message carries its step's creation time, and its `step_started` reports it, so the latency from a step's creation to its start can be read off the start alone.
+- **Step start latency.** A background step's message carries its step's creation time, and on world-vercel its first `step_started` reports it, so the latency from a step's creation to its start can be read off the start alone. world-local and world-postgres ignore it.
 
 ## 7. Known gaps and risks
 
@@ -380,7 +380,7 @@ The first fix let a timer delivery own the waits created with its own wait. That
 
 Now the delivery that completes a wait owns its chain, whatever message it is, and intermediate hops are unkeyed ("Timers", section 5). The harness's `coalesce` mode can now coalesce a delayed message that comes due while a delivery holds the key (`AppendOnlyWorld.comeDue`), and `spec9/wait-chains.runtime.test.ts` covers both cases on both engines; each fails with the earlier rule or with keyed hops. While fixing it, a second gap showed up and is fixed too: a delivery that owned waits of two chains armed only the earliest of all of them, so the other chain was left without a timer once that one completed. Timers are now armed per chain.
 
-The two residual risks listed here earlier are fixed: a delivery that commits a `wait_completed` and dies before its next send no longer leaves the chain without a timer, because the next timer goes out before the commit ([4365355506](https://github.com/vercel/workflow/pull/4661#discussion_r4365355506), `3ba56bbd43`); and a final hop that arrives early and is coalesced into a delivery that does not own its chain is re-armed, because a suspending delivery arms every wait due within a few seconds ([4365355504](https://github.com/vercel/workflow/pull/4661#discussion_r4365355504), `66b355d28c`). Both have tests in `spec9/wait-chains.runtime.test.ts` on both engines.
+The two residual risks listed here earlier are fixed: a delivery that commits a `wait_completed` and dies before its next send no longer leaves the chain without a timer, because the next timer goes out before the commit ([4365355506](https://github.com/vercel/workflow/pull/4661#discussion_r4365355506), `3ba56bbd43`); and a final hop that arrives early and is coalesced into a delivery that does not own its chain is re-armed, because a suspending delivery arms every wait due within a few seconds ([4365355504](https://github.com/vercel/workflow/pull/4661#discussion_r4365355504), `66b355d28c`). Both have tests in `spec9/wait-chains.runtime.test.ts` on both engines. The near-due rule is not free: its dedupe is per delivery and spec 9 timers carry no idempotency key, so a fan-out whose items each sleep a few seconds after a step, with each completion taken by its own delivery, sends N(N+1)/2 timers instead of N, and on QuickJS even a wake with nothing new re-arms them (review thread on `delivery.ts` `armNearDueTimers`). Open.
 
 ### A refused write with no other orchestrator stranded the run (fixed)
 
@@ -412,7 +412,7 @@ What they implement today of the handoff semantics, from the code:
 
 | | world-local | world-postgres | world-vercel (keyed) |
 |---|---|---|---|
-| `{ timeoutSeconds: 0 }` on a spec 9 message | Same message again, `attempt` unchanged (up to 10,000 handoffs), but the delivery releases the run gate and takes it again in FIFO order, so wakes already waiting run first | A new Graphile job on the run's named queue with no delay, behind jobs already queued; `attempt` restarts (section 7, "world-postgres resets `attempt`") | Lease handoff, same message at once |
+| `{ timeoutSeconds: 0 }` on a spec 9 message | Same message again, `attempt` unchanged (up to 10,000 handoffs), but the delivery releases the run gate and takes it again in FIFO order, so wakes already waiting run first | A new Graphile job on the run's named queue with no delay, behind jobs already queued; `attempt` and the delivery count carry over (`attemptOffset`, `deliveryOffset`), and only a delayed reschedule starts `attempt` over (section 7, "world-postgres restarts `attempt` on a delayed reschedule") | Lease handoff, same message at once |
 | A message for a run whose delivery is running | Waits behind the gate, delivered later | Waits behind the named queue, delivered later | Coalesced into the running delivery |
 | Re-run with the lease held | None | None | Up to 32 (`MAX_COALESCED_RERUNS`) |
 | Coalesced count reported to the handler | None | None | `deliveryCount + rerun`, same `attempt` |
@@ -487,7 +487,7 @@ world-postgres computes `attempt` from the Graphile job's own attempt counter. A
 - The crash-then-handoff strand described here earlier is gone for another reason too: the re-send rule reads `deliveryCount`, which keeps counting across every reschedule, not `attempt`.
 - A fence-refused delivery's redelivery is such a reschedule, so on world-postgres repeated refusals do not reach the delivery cap. The streak is still logged at warn. Not fixed here.
 
-Not verified: a re-send of an unstarted step replaces its pending Graphile job under the same key (`jobKeyMode: 'preserve_run_at'`), which may reset the job's own attempt counter, so a step message that keeps failing before its start while orchestrator deliveries keep re-sending it may not reach the step delivery cap on world-postgres.
+Verified against graphile-worker 0.16.6 (`add_jobs`): a re-send of an unstarted step under the same key (`jobKeyMode: 'preserve_run_at'`) updates a pending job in place and resets its attempt counter to 0, and its `run_at` to now when the job had already failed once (`preserve_run_at` keeps `run_at` only while `attempts = 0`). So a step message that keeps failing before its start while orchestrator deliveries keep re-sending it does not reach the step delivery cap on world-postgres, and loses its backoff. If the first job is locked (a worker is running its delivery), Graphile clears that job's key and inserts a second job under it, which another worker can run as a first delivery. Not fixed here.
 
 ### An inline step's retry could run twice after 24 hours (fixed)
 
@@ -518,7 +518,7 @@ Verified on Vercel with a throwaway probe deployment of head `16f7001`. The hand
 
 - **Deadline handoff.** A run of 100-second inline steps reached the 5-minute inline deadline (`elapsedMs: 300421`) and handed off. The same queue message was redelivered 1.2 seconds later with `deliveryCount: 2` and `attempt: 1`: the handoff count reaches the next delivery, and `attempt` leaves the handoff out.
 - **Stream-flush handoffs.** All 28 stream-flush handoffs (`readableStreamWorkflow`, `fetchWorkflow`) on the e2e deployments were redelivered once, on the same message, about 2 seconds after the first invocation started.
-- **Not observed directly:** the queue's answer to a handoff (`accepted`, `not_immediate` or `limit_reached`), which the client does not log. A redelivery within about a second implies `accepted`.
+- **Not observed directly:** the queue's answer to a handoff (`accepted`, `not_immediate` or `limit_reached`), which the client did not log when this was measured. A redelivery within about a second implies `accepted`. The client logs it since `aa928b7edc` (`observeHandoffOutcomes`).
 
 The deadline handoff fires only when an inline step runs into the deadline. A run of short sequential inline steps reaches the inline-start margin first (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`, 60 seconds before the inline deadline), and its next step goes to the background on its own message. The step's completion then wakes the orchestrator on a fresh message.
 
@@ -672,7 +672,7 @@ What the flip does not change: it reduces exposure, not correctness. The livenes
 
 ## 11. Before merge
 
-- Flip spec 9 to opt-in once the PR is approved (section 10).
+- Flip spec 9 to opt-in once the PR is approved (section 10). These pages describe spec 9 as the default today, which is true at this head, and change with the flip: `worlds/v5/vercel.mdx`, `runtime-tuning.mdx` (`WORKFLOW_SPEC_VERSION`), `worlds/v5/building-a-world.mdx`, `worlds/v5/upgrading-to-v5.mdx` (`mintedSpecVersion()`), `skills/migrating-world-v4-to-v5/SKILL.md`, the changeset, and section 3 and the `spec-routing` diagram page here.
 - Keep the Vercel e2e lanes green on the final head. CI on `c9446d4c09` passed every check, including E2E Required Check and the nest lanes, which `d617404712` fixed by pinning the nest workbench to Node 24.
 - Re-verify handoffs on Vercel now that they are signalled with `{ timeoutSeconds: 0 }`, and re-run the benchmarks, including durabench's fan-out after the fan-out latency fixes (section 7).
 - Move the Vercel dashboard's wake-up action to a `@workflow/core` release with this change (section 7).
@@ -680,9 +680,10 @@ What the flip does not change: it reduces exposure, not correctness. The livenes
 - Run the e2e suite on Vercel with spec 8 runs (`WORKFLOW_SPEC_VERSION=8`) to confirm the restored new-message continuation, and with `WORKFLOW_SEQUENTIAL_REPLAYS=1` to confirm spec 9 runs work unkeyed on the per-run topics.
 - Decide the release channel: a 5.x minor or a v6 beta.
 - Decide whether to close the earlier stacked PRs that this one supersedes.
-- Decide whether coalescing in world-local and world-postgres has to land before they mint spec 9 runs by default, or ships as a follow-up (section 7, "world-local and world-postgres do not coalesce").
+- Decide whether coalescing in world-local and world-postgres has to land before spec 9 is opted into there, or before it becomes their default, or ships as a follow-up (section 7, "world-local and world-postgres do not coalesce").
 - Deferred, not required for merge: the follow-ups in section 12.
-- File the section 12 follow-ups as GitHub issues, then remove this page.
+- Post the replies to the open review threads and correct the PR description (fence refusal, "every runtime producer stamps it", the world-postgres race in Known gaps, "custom Worlds no longer have to change", "`maxRetries: 0` is at most once per live owner").
+- File the section 12 follow-ups as GitHub issues, then remove this page and the `single-orchestrator-diagrams` pages.
 
 ## 12. Follow-ups after merge (to file as GitHub issues)
 
@@ -748,4 +749,4 @@ Fixed: only a later delivery of the message that moved the retry re-sends it, wi
 
 ### 15. world-postgres: count a fence-refusal redelivery toward the delivery cap
 
-On world-postgres a `{ timeoutSeconds: n > 0 }` reschedule starts `attempt` over, so a run whose every pass the fence refuses never reaches `WORKFLOW_MAX_QUEUE_DELIVERIES` there; it is only logged at warn. Count a spec 9 orchestrator reschedule as an attempt, or have the runtime count refusals itself. While there, check whether a re-send of an unstarted step that replaces its pending Graphile job resets that job's attempt counter, which would keep a step that keeps failing before its start from reaching the step delivery cap (section 7, "world-postgres restarts `attempt` on a delayed reschedule").
+On world-postgres a `{ timeoutSeconds: n > 0 }` reschedule starts `attempt` over, so a run whose every pass the fence refuses never reaches `WORKFLOW_MAX_QUEUE_DELIVERIES` there; it is only logged at warn. Count a spec 9 orchestrator reschedule as an attempt, or have the runtime count refusals itself. While there, stop a re-send of an unstarted step from mutating its live Graphile job: today it resets a pending job's attempt counter (so a step that keeps failing before its start never reaches the step delivery cap) and, for a locked job, inserts a second job under the key (section 7, "world-postgres restarts `attempt` on a delayed reschedule"). `jobKeyMode: 'unsafe_dedupe'` keeps the first job as is.
