@@ -1984,7 +1984,10 @@ export function workflowEntrypoint(
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
-                          executeQueuedStep
+                          executeQueuedStep,
+                          // This message may be the one an inline winner's
+                          // retry was folded into; if so, carry it.
+                          { carryFoldedRetry: true }
                         );
                       } finally {
                         replayBudget.resume();
@@ -5146,7 +5149,12 @@ export function workflowEntrypoint(
                               runId,
                               s.correlationId,
                               run,
-                              isFreshClaim ? 'debug' : 'warn'
+                              {
+                                logLevel: isFreshClaim ? 'debug' : 'warn',
+                                // A `retry` is published below (toRetry)
+                                // under the step's dispatch key.
+                                retryPublishedUnderDispatchKey: true,
+                              }
                             );
                             return executed.finally(() =>
                               inFlightOwnedSteps.delete(s.correlationId)

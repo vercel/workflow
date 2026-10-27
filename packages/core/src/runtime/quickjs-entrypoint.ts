@@ -2191,7 +2191,9 @@ export async function runWorkflowWithQuickJS(params: {
                       ? { inlineDeltaSinceCursor }
                       : {}),
                   }))(),
-              'debug'
+              // Its retry goes out under its own `retry:1` key (below), not
+              // the dispatch key, so no waiting delivery may carry it.
+              { logLevel: 'debug' }
             )
           )
         );

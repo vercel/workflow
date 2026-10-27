@@ -55,7 +55,7 @@ vi.mock('./quickjs-runtime.js', async (importOriginal) => {
  */
 async function simulateProcessRestart() {
   // A new process has none of the dead one's in-flight step executions.
-  globalSingleton('@workflow/core//stepSingleFlight', 1, () => ({
+  globalSingleton('@workflow/core//stepSingleFlight', 2, () => ({
     inFlight: new Map(),
   })).inFlight.clear();
   // ...and loaded world-local after the dead process wrote its stamps.
