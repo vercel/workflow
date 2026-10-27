@@ -52,18 +52,27 @@ export interface StepResends {
  * creator: that message stays unacknowledged until the step ends, so no
  * orchestrator re-sends it. Nor does one from a log written before the
  * stamp existed.
+ *
+ * `recovery` is a delivery of a message a World sent after it lost its
+ * queue (`reenqueueActiveRuns` with `queueLost`, world-local after a
+ * restart): every step message died with the queue, along with its dedupe
+ * state, so the delivery also re-sends steps that started and have no
+ * outcome, inline steps whose retry moved to the background included, and
+ * applies no age bound.
  */
 export function stepsToReenqueue(params: {
   events: readonly Event[];
   messageId: string;
   deliveryCount: number | undefined;
   nowMs: number;
+  recovery?: boolean;
   /** Steps this invocation already re-sent, or found too old. */
   exclude?: { has(correlationId: string): boolean };
 }): StepResends {
   const { events, messageId, deliveryCount, nowMs, exclude } = params;
+  const recovery = params.recovery === true;
   const out: StepResends = { resend: [], tooOld: [] };
-  if (deliveryCount === 1) return out;
+  if (!recovery && deliveryCount === 1) return out;
   const steps = new Map<
     string,
     {
@@ -71,6 +80,7 @@ export function stepsToReenqueue(params: {
       createdAtMs: number;
       started: boolean;
       terminal: boolean;
+      retried: boolean;
       lastIsRetrying: boolean;
       /** The `creatorMessageId` of the last event, if a `step_retrying`. */
       retryCreator?: string;
@@ -89,6 +99,7 @@ export function stepsToReenqueue(params: {
           createdAtMs: eventTimeMs(event),
           started: false,
           terminal: false,
+          retried: false,
           lastIsRetrying: false,
         });
       }
@@ -106,6 +117,7 @@ export function stepsToReenqueue(params: {
       case 'step_retrying': {
         const step = steps.get(cid);
         if (step) {
+          step.retried = true;
           step.lastIsRetrying = true;
           step.retryCreator = retryCreatorMessageId(event);
           step.retriedAtMs = eventTimeMs(event);
@@ -124,6 +136,12 @@ export function stepsToReenqueue(params: {
   }
   for (const [cid, step] of steps) {
     if (step.terminal || exclude?.has(cid)) continue;
+    if (recovery) {
+      // Every step that runs from its own message: a background step, or an
+      // inline step whose retry moved there.
+      if (!step.inline || step.retried) out.resend.push(cid);
+      continue;
+    }
     let sentAtMs: number | undefined;
     if (!step.inline) {
       if (!step.started) sentAtMs = step.createdAtMs;
@@ -143,12 +161,13 @@ export function stepsToReenqueue(params: {
 /**
  * Whether an orchestrator delivery passes the re-send gate of
  * {@link stepsToReenqueue}: it is not the first delivery of its message, or
- * the World cannot say.
+ * the World cannot say, or it is a recovery delivery.
  */
 export function passesResendGate(params: {
   deliveryCount: number | undefined;
+  recovery?: boolean;
 }): boolean {
-  return params.deliveryCount !== 1;
+  return params.recovery === true || params.deliveryCount !== 1;
 }
 
 /**

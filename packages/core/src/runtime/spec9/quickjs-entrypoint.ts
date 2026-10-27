@@ -502,6 +502,12 @@ export async function runWorkflowWithQuickJS(params: {
   /** Called for each step whose message this delivery sends again. */
   onStepResent?: (correlationId: string) => void;
   /**
+   * A delivery of a message the World sent after it lost its queue: every
+   * open wait's chain is this delivery's to arm (see `stepsToReenqueue` for
+   * the steps).
+   */
+  recovery?: boolean;
+  /**
    * Waits whose `wait_completed` this delivery committed, filled by the
    * delivery from its writer's accepted events; this engine adds its own
    * completions too. Their chains are this delivery's to arm (see
@@ -994,6 +1000,7 @@ export async function runWorkflowWithQuickJS(params: {
     );
   armsWaitTimer = (correlationId) =>
     ownerMessageId === undefined ||
+    params.recovery === true ||
     schedulesWaitTimer({
       wait: waitChainEvent(correlationId),
       correlationId,

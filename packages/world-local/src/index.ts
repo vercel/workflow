@@ -226,10 +226,15 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         await releases.settle((message as { runId: string }).runId);
         return queue.queue(queueName, message, opts);
       };
+      // The queue is in memory: the run's step messages and wait timers
+      // died with the previous process, so the recovery delivery sends them
+      // again.
       await reenqueueActiveRuns(
         recoveryRuns,
         releaseThenEnqueue,
-        'world-local'
+        'world-local',
+        undefined,
+        { queueLost: true }
       );
     },
     releaseOrphanedSteps(runId) {

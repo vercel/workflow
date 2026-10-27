@@ -395,6 +395,16 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * `runContext` or a first delivery's `runInput` carries the same value.
      */
     runSpecVersion: z.number().int().optional().catch(undefined),
+    /**
+     * Set on a message a World sent to resume a run after it lost its queue
+     * (`reenqueueActiveRuns` with `queueLost`, world-local after a restart):
+     * every message the run had queued, its step messages and wait timers,
+     * died with the queue. A single-orchestrator delivery of it re-sends
+     * every open step message and arms every open wait's timer. A consumer
+     * that predates the field ignores it, and `.catch(undefined)` keeps a
+     * malformed value from failing the parse.
+     */
+    recovery: z.literal(true).optional().catch(undefined),
     /** Process this input and return the handler's result as response data. */
     invoke: z.literal(true).optional(),
     /** Identifies one input across retries, separately from the queue delivery ID. */

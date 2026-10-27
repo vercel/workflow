@@ -18,6 +18,7 @@ import { globalSingleton } from '@workflow/utils';
 import type { Event, World } from '@workflow/world';
 import {
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
 } from '@workflow/world';
 import { createWorld, type LocalWorld } from '@workflow/world-local';
@@ -28,6 +29,7 @@ import {
   dehydrateWorkflowArguments,
   hydrateStepError,
 } from '../serialization.js';
+import { NEAR_DUE_WAIT_WINDOW_SECONDS } from './wait-continuation.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -228,5 +230,191 @@ describe('world-local restart recovery of an inline step', () => {
     expect((error as Error).message).toBe(
       'The process running this step exited before it finished.'
     );
+  });
+});
+
+/**
+ * world-local's queue is in memory, so a restart loses every message a run
+ * had queued: a background step's message and a wait's timer. Its recovery
+ * message carries a recovery marker, and a single-orchestrator delivery of
+ * it sends them again (see `stepsToReenqueue`); a spec 8 run replays them
+ * on its own.
+ */
+describe('world-local restart recovery of a run suspended on queued work', () => {
+  let dataDir: string;
+  const worlds: LocalWorld[] = [];
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'wf-restart-suspended-'));
+  });
+
+  afterEach(async () => {
+    setWorld(undefined);
+    vi.unstubAllEnvs();
+    await Promise.all(worlds.splice(0).map((world) => world.close()));
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+  });
+
+  function bootWorld(code: string): LocalWorld {
+    const world = createWorld({ dataDir });
+    worlds.push(world);
+    world.registerHandler('__wkf_workflow_', workflowEntrypoint(code));
+    setWorld(world as unknown as World);
+    return world;
+  }
+
+  async function eventTypes(world: LocalWorld, runId: string) {
+    const { data } = await world.events.list({
+      runId,
+      pagination: { sortOrder: 'asc' },
+    });
+    return data.map((e: Event) => e.eventType);
+  }
+
+  async function startRun(
+    world: LocalWorld,
+    specVersion: number,
+    workflowVm: string | undefined
+  ): Promise<string> {
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion,
+      eventData: {
+        deploymentId: 'dpl_restart_recovery',
+        workflowName: 'workflow',
+        input: await dehydrateWorkflowArguments([], 'wrun_', undefined, []),
+        ...(workflowVm && { executionContext: { workflowVm } }),
+      },
+    });
+    const runId = created.run?.runId as string;
+    await world.queue('__wkf_workflow_workflow', { runId });
+    return runId;
+  }
+
+  const rows = [
+    { engine: 'node', workflowVm: undefined },
+    { engine: 'quickjs', workflowVm: 'quickjs' },
+  ].flatMap((row) =>
+    [
+      SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    ].map((specVersion) => ({ ...row, specVersion }))
+  );
+
+  // Spec 9 only: a spec 8 run replays its timers on its own. The sleep
+  // outlasts the window within which any suspending spec 9 delivery arms a
+  // wait's timer whatever its chain, so only the recovery marker arms it.
+  it.each(
+    rows.filter(
+      ({ specVersion }) => specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR
+    )
+  )('completes a run that was sleeping when the process exited ($engine, spec $specVersion)', async ({
+    workflowVm,
+    specVersion,
+  }) => {
+    const code = `
+      const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+      async function workflow() {
+        await sleep("${NEAR_DUE_WAIT_WINDOW_SECONDS + 2}s");
+        return "slept";
+      }
+      ;globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`;
+    const previous = bootWorld(code);
+    await previous.start();
+    const runId = await startRun(previous, specVersion, workflowVm);
+    await vi.waitFor(
+      async () =>
+        expect(await eventTypes(previous, runId)).toContain('wait_created'),
+      { timeout: 10_000, interval: 25 }
+    );
+    // The process exits with the wait's timer in its queue.
+    await previous.close();
+    await simulateProcessRestart();
+
+    const restarted = bootWorld(code);
+    await restarted.start();
+    await vi.waitFor(
+      async () =>
+        expect((await restarted.runs.get(runId)).status).toBe('completed'),
+      { timeout: (NEAR_DUE_WAIT_WINDOW_SECONDS + 12) * 1000, interval: 50 }
+    );
+    expect(await eventTypes(restarted, runId)).toEqual(
+      expect.arrayContaining([
+        'wait_created',
+        'wait_completed',
+        'run_completed',
+      ])
+    );
+  });
+
+  it.each(
+    rows
+  )('completes a run whose background step was running when the process exited ($engine, spec $specVersion)', async ({
+    workflowVm,
+    specVersion,
+  }) => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    const stepName = 'restartRecoveryBackgroundStep';
+    const code = `
+      const step = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(stepName)});
+      async function workflow() {
+        return await step();
+      }
+      ;globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`;
+    let bodyRuns = 0;
+    let entered!: () => void;
+    const firstBodyEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    registerStepFunction(stepName, async () => {
+      bodyRuns += 1;
+      if (bodyRuns === 1) {
+        entered();
+        // The process exits mid-step: this attempt never finishes.
+        return new Promise(() => {});
+      }
+      return 'done';
+    });
+    const previous = bootWorld(code);
+    await previous.start();
+    const runId = await startRun(previous, specVersion, workflowVm);
+    await firstBodyEntered;
+    const { data } = await previous.events.list({
+      runId,
+      pagination: { sortOrder: 'asc' },
+    });
+    // A background step: its own message runs it (spec 8 records no
+    // `inline` flag; every step it creates this way is one).
+    expect(
+      data.find((e: Event) => e.eventType === 'step_created')?.eventData
+    ).toMatchObject(
+      specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR ? { inline: false } : {}
+    );
+    await previous.close();
+    await simulateProcessRestart();
+
+    const restarted = bootWorld(code);
+    await restarted.start();
+    await vi.waitFor(
+      async () =>
+        expect((await restarted.runs.get(runId)).status).toBe('completed'),
+      { timeout: 15_000, interval: 50 }
+    );
+    expect(bodyRuns).toBe(2);
+    const steps = (
+      await restarted.events.list({ runId, pagination: {} })
+    ).data.filter((e: Event) => e.eventType === 'step_started');
+    // The dead attempt counts toward the retry budget.
+    expect(
+      (await restarted.steps.get(runId, steps[0]?.correlationId as string))
+        .attempt
+    ).toBe(2);
   });
 });

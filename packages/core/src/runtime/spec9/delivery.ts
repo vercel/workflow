@@ -359,6 +359,7 @@ async function runDelivery(
     hookResumeTiming,
     waitContinuation,
     completeWaits,
+    recovery,
   } = delivery.message;
   // Waits a `run.wakeUp()` asked this delivery to complete now, whatever
   // their `resumeAt`. Spent on the first pass that sees them.
@@ -374,11 +375,16 @@ async function runDelivery(
     metadata.deliveryCount === undefined
       ? undefined
       : Math.min(metadata.deliveryCount, metadata.attempt);
+  // A delivery of a message the World sent after it lost its queue
+  // (world-local after a restart): the run's step messages and timers died
+  // with it.
+  const recoveryDelivery = recovery === true && !incomingStepId;
   // Background steps with no message are re-sent by any delivery that is
   // not its message's first, counted in deliveries (handoffs and coalesced
   // re-runs included), once per invocation (see `stepsToReenqueue`).
   const resendGate = passesResendGate({
     deliveryCount: metadata.deliveryCount,
+    recovery: recoveryDelivery,
   });
   const resends = invocationResends({
     runId,
@@ -391,6 +397,7 @@ async function runDelivery(
     span?.setAttributes({
       ...Attribute.WorkflowReenqueueCount(resendCounts.sent),
       ...Attribute.WorkflowReenqueueSkippedTooOld(resendCounts.tooOld),
+      ...(recoveryDelivery ? Attribute.WorkflowReenqueueRecovery(true) : {}),
     });
   /**
    * The steps of `events` whose message this delivery sends again (see
@@ -404,6 +411,7 @@ async function runDelivery(
       messageId: creatorMessageId,
       deliveryCount: metadata.deliveryCount,
       nowMs: Date.now(),
+      recovery: recoveryDelivery,
       exclude: {
         has: (id) => resends.sent.has(id) || resends.tooOld.has(id),
       },
@@ -1708,6 +1716,7 @@ async function runDelivery(
           ownerMessageId: creatorMessageId,
           stepResends,
           onStepResent: noteResent,
+          recovery: recoveryDelivery,
           lingerDeadlineMs:
             invocationStartTime +
             noInlineReplayAfterMs -
@@ -3490,7 +3499,12 @@ async function runDelivery(
           stepName: step.stepName,
           stepCreatedEventId: step.createdEventId,
           ...(step.createdAt ? { stepCreatedAt: step.createdAt } : {}),
-          ...(step.inline ? { stepAttempt: step.starts + 1 } : {}),
+          // A step that started (an inline step's retry, or on recovery a
+          // background step whose attempt died) carries its next attempt,
+          // so its handler reads the log before it runs the body.
+          ...(step.inline || step.starts > 0
+            ? { stepAttempt: step.starts + 1 }
+            : {}),
         });
       }
       // Hook-resume TTR: when no inline step will report it,
@@ -4113,6 +4127,9 @@ async function runDelivery(
 
     /** The open waits of `events` whose timer this delivery may arm. */
     function ownedOpenWaits(events: readonly Event[]) {
+      // A recovery delivery owns every chain: the queue that held their
+      // timers is gone.
+      if (recoveryDelivery) return openWaits(events);
       const timerFor = waitContinuation?.correlationId;
       const ownedChains = ownedWaitChains({
         events,
@@ -4257,7 +4274,9 @@ async function runDelivery(
             stepName: step.stepName,
             stepCreatedEventId: step.createdEventId,
             ...(step.createdAt ? { stepCreatedAt: step.createdAt } : {}),
-            ...(step.inline ? { stepAttempt: step.starts + 1 } : {}),
+            ...(step.inline || step.starts > 0
+              ? { stepAttempt: step.starts + 1 }
+              : {}),
           });
         }
       }

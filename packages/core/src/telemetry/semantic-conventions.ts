@@ -311,6 +311,15 @@ export const WorkflowReenqueueSkippedTooOld = SemanticConvention<number>(
   'workflow.reenqueue.skipped_too_old'
 );
 
+/**
+ * The delivery is of a recovery message a World sent after it lost its
+ * queue (world-local after a restart): its re-send also covers steps that
+ * started and have no outcome, and it arms every open wait's timer.
+ */
+export const WorkflowReenqueueRecovery = SemanticConvention<boolean>(
+  'workflow.reenqueue.recovery'
+);
+
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
   'workflow.error.name'

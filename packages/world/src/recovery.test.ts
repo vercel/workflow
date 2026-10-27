@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Storage } from './interfaces.js';
 import type { Queue } from './queue.js';
-import { singleOrchestratorRunIdOf } from './queue.js';
+import {
+  singleOrchestratorRunIdOf,
+  WorkflowInvokePayloadSchema,
+} from './queue.js';
 import { reenqueueActiveRuns } from './recovery.js';
 import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -148,6 +151,28 @@ describe('reenqueueActiveRuns', () => {
       undefined,
       undefined,
     ]);
+  });
+
+  it('marks each message as a recovery after the queue lost its messages, and only then', async () => {
+    const enqueue = vi.fn<Queue['queue']>();
+    await reenqueueActiveRuns(createRuns(), enqueue, 'test', undefined, {
+      queueLost: true,
+    });
+    await reenqueueActiveRuns(createRuns(), enqueue, 'test');
+    const messages = enqueue.mock.calls.map(([, message]) => message);
+    expect(messages).toEqual([
+      { runId: 'wrun_AAA', recovery: true },
+      { runId: 'wrun_AAA' },
+    ]);
+    // The marker survives the orchestrator payload schema, and a malformed
+    // one never fails the parse.
+    expect(WorkflowInvokePayloadSchema.parse(messages[0])).toMatchObject({
+      recovery: true,
+    });
+    expect(
+      WorkflowInvokePayloadSchema.parse({ runId: 'wrun_AAA', recovery: 'yes' })
+        .recovery
+    ).toBeUndefined();
   });
 
   it('rejects an invalid default namespace before enqueueing anything', async () => {

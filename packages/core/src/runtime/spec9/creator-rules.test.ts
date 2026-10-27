@@ -160,13 +160,42 @@ describe('stepsToReenqueue', () => {
     ).toEqual([]);
     expect(resends(moved({})).resend).toEqual([]);
   });
+
+  it('on recovery re-sends every step that runs from its own message, started or not, on a first delivery and past the age bound', () => {
+    const events = [
+      created('step_unstarted'),
+      created('step_started'),
+      ev('step_started', 'step_started'),
+      created('step_done'),
+      ev('step_started', 'step_done'),
+      ev('step_completed', 'step_done'),
+      created('step_inline', { inline: true }),
+      ev('step_started', 'step_inline'),
+      created('step_inline_retried', { inline: true }),
+      ev('step_started', 'step_inline_retried'),
+      ev('step_retrying', 'step_inline_retried'),
+      ev('step_started', 'step_inline_retried'),
+    ];
+    expect(
+      resends(events, {
+        recovery: true,
+        deliveryCount: 1,
+        messageId: 'msg_recovery',
+        nowMs: nowMs + 2 * STEP_RESEND_MAX_AGE_MS,
+      })
+    ).toEqual({
+      resend: ['step_unstarted', 'step_started', 'step_inline_retried'],
+      tooOld: [],
+    });
+  });
 });
 
 describe('passesResendGate', () => {
-  it('passes any delivery but the first of its message', () => {
+  it('passes any delivery but the first of its message, and every recovery delivery', () => {
     expect(passesResendGate({ deliveryCount: 1 })).toBe(false);
     expect(passesResendGate({ deliveryCount: 2 })).toBe(true);
     expect(passesResendGate({ deliveryCount: undefined })).toBe(true);
+    expect(passesResendGate({ deliveryCount: 1, recovery: true })).toBe(true);
   });
 });
 
