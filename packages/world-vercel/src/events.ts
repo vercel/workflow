@@ -571,6 +571,29 @@ export async function getWorkflowRunEvents(
  * own entity condition server-side, so a retry of a batch that (partially)
  * committed converges to per-event 409 results with nothing written twice.
  */
+/**
+ * The frame meta's `stepCreatedAt`: the creation time of the step a
+ * background step's first-attempt `step_started` starts, for a step start
+ * latency metric the backend reports. Sent only where the backend reads it
+ * (a bodyless `step_started` with `attempt: 1`), and only as a finite epoch
+ * ms value; anything else is left off rather than sent for the backend to
+ * discard.
+ */
+function stepCreatedAtMeta(
+  event: AnyEventRequest,
+  stepCreatedAt: number | undefined
+): { stepCreatedAt?: number } {
+  if (stepCreatedAt === undefined || !Number.isFinite(stepCreatedAt)) {
+    return {};
+  }
+  if (event.eventType !== 'step_started') return {};
+  const data = event.eventData as
+    | { attempt?: unknown; input?: unknown }
+    | undefined;
+  if (data?.attempt !== 1 || data.input !== undefined) return {};
+  return { stepCreatedAt };
+}
+
 export async function createWorkflowRunEventBatch(
   runId: string,
   events: BatchEventRequest[],
@@ -601,46 +624,51 @@ export async function createWorkflowRunEventBatch(
       { status: 400 }
     );
   }
-  const inputs = events.map(({ event, occurredAt, computeInstanceId }) => {
-    const { payload, meta } = splitEventDataForV4(event);
-    return {
-      runId,
-      eventType: event.eventType,
-      specVersion: event.specVersion ?? 2,
-      ...(event.correlationId ? { correlationId: event.correlationId } : {}),
-      // Under slot identity this is the source of the durable createdAt, so
-      // the caller's logical time is what every replay observes.
-      occurredAt: occurredAt ?? new Date(),
-      // Per-event compute attribution (pre-claimed inline starts); rides the
-      // frame meta exactly like the single POST's CreateEventParams field.
-      ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
-      // Batch responses carry entities for bookkeeping, not payload reads, so
-      // default to lazy refs unless the caller explicitly asks for resolved
-      // data (the same `resolveData` mapping the read paths use).
-      remoteRefBehavior:
-        params?.resolveData === 'all'
-          ? ('resolve' as const)
-          : ('lazy' as const),
-      // Per-write request attribution, exactly like the single POST's
-      // `params.requestId` → `vercelId` threading, stamped per frame so
-      // batched usage facts carry the same attribution.
-      ...(params?.requestId ? { vercelId: params.requestId } : {}),
-      ...(fence?.inBand !== undefined ? { inBand: fence.inBand } : {}),
-      ...(fence?.expectedSeqInBand !== undefined
-        ? { expectedSeqInBand: fence.expectedSeqInBand }
-        : {}),
-      ...(fence?.eventCount !== undefined ? { maxSlot: fence.eventCount } : {}),
-      payload,
-      ...meta,
-      // The batch is one fenced allocation: the backend requires every frame
-      // to carry the same fence. Spread after `meta` so nothing derived from
-      // the event data can override it.
-      ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
-      ...(params?.expectedSeqInBand !== undefined
-        ? { expectedSeqInBand: params.expectedSeqInBand }
-        : {}),
-    };
-  });
+  const inputs = events.map(
+    ({ event, occurredAt, computeInstanceId, stepCreatedAt }) => {
+      const { payload, meta } = splitEventDataForV4(event);
+      return {
+        runId,
+        eventType: event.eventType,
+        specVersion: event.specVersion ?? 2,
+        ...(event.correlationId ? { correlationId: event.correlationId } : {}),
+        // Under slot identity this is the source of the durable createdAt, so
+        // the caller's logical time is what every replay observes.
+        occurredAt: occurredAt ?? new Date(),
+        // Per-event compute attribution (pre-claimed inline starts); rides the
+        // frame meta exactly like the single POST's CreateEventParams field.
+        ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
+        ...stepCreatedAtMeta(event, stepCreatedAt),
+        // Batch responses carry entities for bookkeeping, not payload reads, so
+        // default to lazy refs unless the caller explicitly asks for resolved
+        // data (the same `resolveData` mapping the read paths use).
+        remoteRefBehavior:
+          params?.resolveData === 'all'
+            ? ('resolve' as const)
+            : ('lazy' as const),
+        // Per-write request attribution, exactly like the single POST's
+        // `params.requestId` → `vercelId` threading, stamped per frame so
+        // batched usage facts carry the same attribution.
+        ...(params?.requestId ? { vercelId: params.requestId } : {}),
+        ...(fence?.inBand !== undefined ? { inBand: fence.inBand } : {}),
+        ...(fence?.expectedSeqInBand !== undefined
+          ? { expectedSeqInBand: fence.expectedSeqInBand }
+          : {}),
+        ...(fence?.eventCount !== undefined
+          ? { maxSlot: fence.eventCount }
+          : {}),
+        payload,
+        ...meta,
+        // The batch is one fenced allocation: the backend requires every frame
+        // to carry the same fence. Spread after `meta` so nothing derived from
+        // the event data can override it.
+        ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+        ...(params?.expectedSeqInBand !== undefined
+          ? { expectedSeqInBand: params.expectedSeqInBand }
+          : {}),
+      };
+    }
+  );
 
   // In-process transient retry is safe only when EVERY event in the batch
   // converges on a retry of a committed attempt AND the caller can act on the
@@ -884,6 +912,7 @@ async function createWorkflowRunEventInner(
     ...(params?.computeInstanceId
       ? { computeInstanceId: params.computeInstanceId }
       : {}),
+    ...stepCreatedAtMeta(data, params?.stepCreatedAt),
     // Slot-identity snapshot: how much of the log the writer held. Rides as
     // `maxSlot` because the v4 meta already has an unrelated telemetry
     // `eventCount`.

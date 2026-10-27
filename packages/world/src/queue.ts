@@ -508,6 +508,15 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * it in {@link WorkflowInvokePayloadSchema.shape.stepInput}.
      */
     stepCreatedEventId: z.string().optional(),
+    /**
+     * When the step's `step_created` was committed, as epoch milliseconds
+     * (spec >= 9): the `createdAt` the World answered it with. The step
+     * handler passes it on the step's first-attempt `step_started` as
+     * `CreateEventParams.stepCreatedAt`, for creation-to-start latency
+     * telemetry. Absent on retry messages and from older runtimes.
+     * `.catch(undefined)` so a malformed value only drops the telemetry.
+     */
+    stepCreatedAt: z.number().optional().catch(undefined),
     /** Run creation data, only present on the first queue delivery from start() */
     runInput: RunInputSchema.optional(),
     /**

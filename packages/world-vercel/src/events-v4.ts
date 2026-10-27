@@ -277,6 +277,10 @@ interface CreateEventV4InputBase {
   vercelId?: string;
   /** Compute instance that wrote this event; rides the frame meta by `vercelId`. */
   computeInstanceId?: string;
+  /** `step_started` of a background step's first attempt: epoch ms of the
+   *  step's `step_created`, as the server answered it. Telemetry for a step
+   *  start latency metric; the server never persists it. */
+  stepCreatedAt?: number;
   /** Client-side time at which the event occurred. */
   occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
@@ -740,6 +744,9 @@ function buildPostFrameMeta(
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
   if (input.computeInstanceId !== undefined)
     meta.computeInstanceId = input.computeInstanceId;
+  if (input.stepCreatedAt !== undefined) {
+    meta.stepCreatedAt = input.stepCreatedAt;
+  }
   if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;

@@ -935,6 +935,16 @@ export interface CreateEventParams {
    */
   computeInstanceId?: string;
   /**
+   * Creation time of the step a `step_started` starts, as epoch milliseconds:
+   * the `createdAt` the World answered that step's `step_created` with. Set
+   * only on the first-attempt `step_started` of a background step (one
+   * created by `step_created`, and started by its own queue message), so a
+   * World can report the step's creation-to-start latency without reading
+   * the log. Request telemetry, not workflow state: Worlds may ignore it and
+   * must not persist it into the event log.
+   */
+  stepCreatedAt?: number;
+  /**
    * How many events the writer held in its loaded log when it decided to write
    * this one: equivalently, the slot it expects to land on minus one. Sent by
    * the replay loop and the suspension handler, which merge the report below
@@ -1239,6 +1249,11 @@ export interface BatchEventRequest {
    * executing instance exactly like the lazy claim it replaces.
    */
   computeInstanceId?: string;
+  /**
+   * Step creation time for a `step_started`, same as the single create's
+   * {@link CreateEventParams.stepCreatedAt}.
+   */
+  stepCreatedAt?: number;
 }
 
 /** Per-batch parameters for {@link Storage.events.createBatch}. */
