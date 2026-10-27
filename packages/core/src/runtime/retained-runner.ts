@@ -169,6 +169,11 @@ const MAX_MAILBOX_BATCH = 100;
  * batches results before they reach the owner. */
 const MAX_RUNNING_STEPS = 64;
 
+/** Heartbeats name the running steps once this few remain. */
+const RUNNING_DETAIL_LIMIT = 3;
+/** Remote dispatches remembered for diagnostics, per owner. */
+const MAX_DISPATCH_RECORDS = 4096;
+
 /** Waits before re-sending an uncertain step enqueue (same idempotency key). */
 const DISPATCH_RETRY_MS = [250, 1000, 2000];
 
@@ -433,6 +438,12 @@ export class RetainedRunner {
   /** Executions whose remote delivery failed without evidence the body ran:
    * supersede them at this time instead of waiting for the attempt timeout. */
   private undelivered = new Map<string, number>();
+  /** Each remote step attempt's accepted enqueue, by execution ID: what a
+   * stalled attempt's queue message was (diagnostics only, bounded). */
+  private dispatched = new Map<
+    string,
+    { messageId: string | null; dispatchedAt: number; tries: number }
+  >();
 
   /** Step placement for every single-owner run: up to three bodies
    * (`localStepSlots`) run in this owner, the rest are launched through the
@@ -891,7 +902,46 @@ export class RetainedRunner {
       ...(this.slowPhases.size
         ? { slowPhases: Object.fromEntries(this.slowPhases) }
         : {}),
+      // The last few running steps, named, so a stalled tail attempt can be
+      // traced to its queue message.
+      ...(running > 0 && running <= RUNNING_DETAIL_LIMIT
+        ? { runningDetail: this.runningDetail() }
+        : {}),
     };
+  }
+
+  private runningDetail() {
+    const detail: Record<string, unknown>[] = [];
+    for (const step of this.steps.values()) {
+      if (step.status !== 'running') continue;
+      const start = this.stepStarts.get(step.stepId);
+      const executionId = start?.event.eventId;
+      const dispatch = executionId
+        ? this.dispatched.get(executionId)
+        : undefined;
+      detail.push({
+        stepId: step.stepId,
+        stepName: step.stepName,
+        attempt: start?.attempt,
+        executionId,
+        startedAt: start
+          ? new Date(start.event.createdAt).toISOString()
+          : undefined,
+        placement: this.localWorkers.has(step.stepId)
+          ? 'local'
+          : this.workers.has(step.stepId)
+            ? 'dispatching'
+            : 'remote',
+        ...(dispatch
+          ? {
+              messageId: dispatch.messageId,
+              dispatchedAt: new Date(dispatch.dispatchedAt).toISOString(),
+              dispatchTries: dispatch.tries,
+            }
+          : {}),
+      });
+    }
+    return detail;
   }
   private slowPhases = new Map<string, { count: number; maxMs: number }>();
 
@@ -2362,6 +2412,18 @@ export class RetainedRunner {
                             : 400,
                       }
                     );
+                  if (this.dispatched.size >= MAX_DISPATCH_RECORDS) {
+                    const oldest = this.dispatched.keys().next().value;
+                    if (oldest !== undefined) this.dispatched.delete(oldest);
+                  }
+                  this.dispatched.set(message.input.executionId, {
+                    messageId:
+                      'messageId' in result && result.messageId
+                        ? String(result.messageId)
+                        : null,
+                    dispatchedAt: Date.now(),
+                    tries: attempt,
+                  });
                   return;
                 } catch (error) {
                   const retryInMs = DISPATCH_RETRY_MS[attempt - 1];

@@ -412,6 +412,46 @@ it('dispatches admitted steps, executes concurrent workers without worker writes
   ).toHaveLength(2);
 });
 
+it('names the last running steps and their queue messages in its diagnostics', async () => {
+  const gate = Promise.withResolvers<void>();
+  registerStepFunction('queuedWork', async (value) => {
+    await gate.promise;
+    return value as number;
+  });
+  const fixture = await setup(parallelCode, false, true);
+  fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
+  let next = 0;
+  vi.spyOn(fixture.world, 'queue').mockImplementation(async (_name, message) =>
+    'stepId' in message
+      ? { messageId: `msg_${++next}` as never }
+      : { messageId: null }
+  );
+  fixture.world.invoke = vi.fn(async (runId, input, options) =>
+    fixture.owner.submit(
+      { runId, invoke: true, input, requestId: options?.idempotencyKey },
+      fixture.metadata
+    )
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('fanout', 'start');
+  await vi.waitFor(() => {
+    const detail = fixture.owner.diagnostics().runningDetail as
+      | Array<Record<string, unknown>>
+      | undefined;
+    expect(detail).toHaveLength(2);
+    for (const step of detail!) {
+      expect(step).toMatchObject({
+        placement: 'remote',
+        attempt: 1,
+        dispatchTries: 1,
+      });
+      expect(step.messageId).toMatch(/^msg_/);
+      expect(step.executionId).toMatch(/^evnt_/);
+    }
+  });
+  gate.resolve();
+});
+
 it('re-sends an uncertain step enqueue with the same idempotency key', async () => {
   registerStepFunction('queuedWork', async (value) => value as number);
   const fixture = await setup(parallelCode, false, true);
