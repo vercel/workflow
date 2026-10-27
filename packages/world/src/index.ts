@@ -113,6 +113,7 @@ export {
   orchestratorRunIdOf,
   parseQueueName,
   parseQueueRoute,
+  QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,

@@ -1,16 +1,22 @@
-import { type Event, slotToEventId } from '@workflow/world';
+import {
+  type Event,
+  QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS,
+  slotToEventId,
+} from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import {
   chainTimersBeforeCompletion,
   invocationResends,
   ownedWaitChains,
   passesResendGate,
+  STEP_RESEND_DEDUPE_MARGIN_MS,
   STEP_RESEND_MAX_AGE_MS,
   schedulesWaitTimer,
   stepsToReenqueue,
   waitTimersToArm,
   withRetryCreator,
 } from './creator-rules.js';
+import { stepMessageRetentionSeconds } from './step-retention.js';
 
 let slot = 0;
 function ev(
@@ -87,6 +93,18 @@ describe('stepsToReenqueue', () => {
     expect(
       resends([created('step_a'), ev('step_failed', 'step_a')]).resend
     ).toEqual([]);
+  });
+
+  it('stops re-sending a margin inside the dedupe window every World gives a step key', () => {
+    expect(STEP_RESEND_DEDUPE_MARGIN_MS).toBeGreaterThan(0);
+    expect(STEP_RESEND_MAX_AGE_MS + STEP_RESEND_DEDUPE_MARGIN_MS).toBe(
+      QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS
+    );
+    // A step message lives at least that long, so the window is reached
+    // before the first message is gone.
+    expect(stepMessageRetentionSeconds(0) * 1000).toBeGreaterThanOrEqual(
+      QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS
+    );
   });
 
   it('leaves a step alone once its creation is past the re-send age bound', () => {

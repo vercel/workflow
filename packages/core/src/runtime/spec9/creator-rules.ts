@@ -1,17 +1,30 @@
-import type { Event } from '@workflow/world';
+import {
+  type Event,
+  QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS,
+} from '@workflow/world';
 import { stepCreationOf } from './log-state.js';
 
 /**
+ * How far inside the queue's dedupe window for a step key
+ * ({@link STEP_RESEND_MAX_AGE_MS}) the re-send rule stops: room for the
+ * clocks of the sender and the queue to differ, and for a re-send that
+ * starts just inside the bound to reach the queue.
+ */
+export const STEP_RESEND_DEDUPE_MARGIN_MS = 60 * 60 * 1000;
+
+/**
  * How old a step's last send may be for an orchestrator delivery to send its
- * message again: an hour inside the queue's dedupe window for a step's
- * stable idempotency key (`stepDispatchIdempotencyKey`, `min(retention,
- * 24h)` on world-vercel). A send this young is deduped against the step's
- * first message while that message lives, so a re-send never creates a
- * second live message, which would be a second owner of the step's body.
+ * message again: {@link STEP_RESEND_DEDUPE_MARGIN_MS} inside the shortest
+ * time every World deduplicates a step's stable idempotency key
+ * (`QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS` in `@workflow/world`;
+ * `stepDispatchIdempotencyKey`). A send this young is deduped against the
+ * step's first message while that message lives, so a re-send never creates
+ * a second live message, which would be a second owner of the step's body.
  * Nothing on the write path refuses a second `step_started`, so this bound
  * is what keeps a re-send from duplicating one.
  */
-export const STEP_RESEND_MAX_AGE_MS = 23 * 60 * 60 * 1000;
+export const STEP_RESEND_MAX_AGE_MS =
+  QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS - STEP_RESEND_DEDUPE_MARGIN_MS;
 
 /** What {@link stepsToReenqueue} decided for one orchestrator delivery. */
 export interface StepResends {

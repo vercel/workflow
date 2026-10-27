@@ -826,6 +826,25 @@ export function singleOrchestratorContinuationPayload(
   return continuation as WorkflowInvokePayload;
 }
 
+/**
+ * The shortest time, in milliseconds, a World's queue must deduplicate sends
+ * that carry a single-orchestrator run's step key
+ * (`QueueOptions.idempotencyKey` on a step's execution message): for at
+ * least this long after the key's first send, while the message that send
+ * made lives, every later send under the key is a no-op. The runtime sends
+ * an unstarted background step's message again from later deliveries of its
+ * run (see `Queue.createQueueHandler`) only while the step's creation is
+ * this young, less a margin, so each such re-send is deduplicated against
+ * the step's first message instead of giving the step a second owner.
+ *
+ * world-vercel keeps a key for `min(retention, 24h)`, and retains a step
+ * message for at least this long. world-local and world-postgres keep it
+ * while the first message lives (world-postgres: while its job exists, with
+ * Graphile's `unsafe_dedupe`), which a step message outlives only by
+ * completing.
+ */
+export const QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export interface QueueOptions {
   deploymentId?: string;
   /**
@@ -1035,7 +1054,8 @@ export interface Queue {
    *   between the two left it with no message. The queue must therefore
    *   follow any delivery that dies with a delivery counted above 1, of the
    *   same message or of one it was coalesced into, and must dedupe a step
-   *   key for at least a day while the step's first message lives. Leave it `undefined`
+   *   key for at least {@link QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS} while the
+   *   step's first message lives. Leave it `undefined`
    *   when the queue cannot say: the runtime then treats every delivery as a
    *   possible redelivery and reads the run's log before running a step
    *   body, which is correct but slower. A queue that reports 1 for a redelivery breaks
