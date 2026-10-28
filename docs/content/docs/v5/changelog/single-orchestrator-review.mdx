@@ -448,6 +448,17 @@ Tests, against Docker Postgres (`world-postgres/test/queue-dedupe.test.ts`): a l
 
 ([4394000439](https://github.com/vercel/workflow/pull/4661#discussion_r4394000439); `030f77499c`.) The re-send rule's 23-hour bound was a literal tied to world-vercel's 24-hour key window. `@workflow/world` now exports `QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS` (24 hours): the shortest time a World's queue must deduplicate a step key after its first send, while the message that send made lives. The World contract (`Queue.createQueueHandler`, and the World guide) states it. `STEP_RESEND_MAX_AGE_MS` is that window less `STEP_RESEND_DEDUPE_MARGIN_MS` (an hour, for clock differences and a re-send started just inside the bound), and the tests read the constants. world-vercel keeps a key for `min(retention, 24h)` and retains a step message at least a day; world-local and world-postgres keep it while the first message lives, which a step message outlives only by completing.
 
+### Changes from the 2026-10-28 review
+
+Six non-blocking findings ([review](https://github.com/vercel/workflow/pull/4661#pullrequestreview-5686995090)). Four are done on this branch; the rest are follow-ups in section 12.
+
+- **Unused QuickJS bookkeeping** ([4403942406](https://github.com/vercel/workflow/pull/4661#discussion_r4403942406); `c88100fa70`). The spec 9 QuickJS orchestrator's step-ownership map was filled from every event it observed and read only to update itself. It is gone, with the `backstop:*` and `retry:*` message purposes: every spec 9 step message goes out under the `dispatch` key.
+- **The spec 9 suspension handler's result** ([4403942425](https://github.com/vercel/workflow/pull/4661#discussion_r4403942425); `157d8ced98`). It returns what its callers read: the hook-conflict and awaited-hook ids, the hook creation time, and the serialization diagnostics. The step ownership sets, the unread wait timeout, the carried-forward and reported-event flags, and the never-filled failed-step set are gone. The terminal drain's writes, delta merging and skipped-slot absorption are unchanged.
+- **One step message builder** ([4403942443](https://github.com/vercel/workflow/pull/4661#discussion_r4403942443); `6a5d1f08e9`). `spec9/step-message.ts` builds and sends a background step's message for both engines: wire fields, key, retention, delay and queue batching. Which steps get a message, and when, stays with each engine; the node engine passes its hook-resume timing explicitly. Sharing timer sends is a follow-up (section 12).
+- **The fake World's own limits** ([4403942460](https://github.com/vercel/workflow/pull/4661#discussion_r4403942460); `f4f8149ece`). `AppendOnlyWorld` refuses a batch at world-vercel's limits (`WORLD_EVENT_BATCH_LIMITS`, 100 events and 768 KiB) and counts a batch's bytes itself, instead of using the runtime's budget and estimator. Its queue can forget a key after a window (`keyDedupeWindowMs`), and a re-send test runs under the World minimum: just past the window no re-send is made, and raising the re-send bound past the window fails it. The cold-replay, body-count, no-read, cost and world-postgres dedupe tests are unchanged.
+- **An adapter-to-runtime contract test** ([4403942469](https://github.com/vercel/workflow/pull/4661#discussion_r4403942469); `c9c1c27d87`). `spec9/world-vercel-queue.contract.test.ts` drives world-vercel's real `createQueue` adapter against the real runtime handler, with only the Vercel Queues client in memory and storage in `AppendOnlyWorld`: background step messages, a deadline handoff on the same message, and a near-expiry start message continuing without `runInput`, each to the run's result. It is in core because core depends on world-vercel.
+- **A required QuickJS host contract** ([4403942436](https://github.com/vercel/workflow/pull/4661#discussion_r4403942436)) is a follow-up (section 12).
+
 ## 7. Known gaps and risks
 
 ### `run.wakeUp()` is best-effort while an orchestrator runs (decided)
@@ -829,7 +840,7 @@ world-postgres has no live event feed, so a spec 9 delivery there never lingers 
 
 ### 7. world-postgres stale named-queue lock after a hard kill
 
-Every spec 9 orchestrator delivery on world-postgres goes through a Graphile named queue. A worker killed mid-job leaves the queue row locked until Graphile's `resetLockedAt` clears locks older than 4 hours, so the run stalls for up to 4 hours (documented in the README, `4ed4f074ca`). Fix before default-on: each worker writes a heartbeat row, and on start and periodically the World calls `forceUnlockWorkers` for worker ids whose heartbeat expired. A blind short-TTL sweep is not safe, since a live delivery can hold the lock longer. Test: SIGKILL a worker mid-delivery and assert a later wake is delivered within the bound. [4365355604](https://github.com/vercel/workflow/pull/4661#discussion_r4365355604).
+Every spec 9 orchestrator delivery on world-postgres goes through a Graphile named queue. A worker killed mid-job leaves the queue row locked until Graphile's `resetLockedAt` clears locks older than 4 hours, so the run stalls for up to 4 hours (documented in the README, `4ed4f074ca`). `main`'s [#4759](https://github.com/vercel/workflow/pull/4759) adds the mechanism, opt-in: with `jobLockStaleSeconds` (`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) set, a running delivery renews its job lock and its named queue's, and another process releases both once they go unrenewed for that window. It is off by default because of rolling upgrades. Before default-on: turn it on by default once no supported version lacks renewal, and add a test that SIGKILLs a worker mid-delivery of a spec 9 run and asserts a later wake of that run is delivered within the window. [4365355604](https://github.com/vercel/workflow/pull/4661#discussion_r4365355604).
 
 ### 8. Incremental log state in the node engine
 
@@ -864,3 +875,15 @@ Fixed: only a later delivery of the message that moved the retry re-sends it, wi
 ### 15. world-postgres: count a fence-refusal redelivery toward the delivery cap
 
 On world-postgres a `{ timeoutSeconds: n > 0 }` reschedule starts `attempt` over, so a run whose every pass the fence refuses never reaches `WORKFLOW_MAX_QUEUE_DELIVERIES` there; it is only logged at warn. Count a spec 9 orchestrator reschedule as an attempt, or have the runtime count refusals itself. A re-send of an unstarted step no longer mutates its live Graphile job (`ab3713146b`, `unsafe_dedupe`).
+
+### 16. A required host contract for the spec 9 QuickJS orchestrator
+
+`runWorkflowWithQuickJS` takes its writer, loaded log and cursor, message identity, re-send policy and continuation callback as optional parameters. The one production caller passes them all; the optional forms (direct unfenced writes, a new message in place of a handoff, a per-pass re-send rule) remain only for about ten standalone tests that call it with ad-hoc Worlds (`quickjs-entrypoint.preload.test.ts` among them, with `capabilities: {}` and non-slot event ids). Make them one required host argument, give those tests a factory with a real `InBandWriter` over `AppendOnlyWorld`, and move spec 8 preload behavior to spec 8's tests, so a missing fence or handoff is a type error. Not done here because every one of those tests has to move to a fence-capable World. [4403942436](https://github.com/vercel/workflow/pull/4661#discussion_r4403942436).
+
+### 17. Share timer sends between the spec 9 engines
+
+Both engines implement owned-chain filtering, pre-completion sends, near-due keys and the sent-set with its rollback for wait timers, on top of the shared creator rules. A shared timer-intent builder and sender, like `spec9/step-message.ts` for step messages, with the before-commit ordering kept visible at each call site. [4403942443](https://github.com/vercel/workflow/pull/4661#discussion_r4403942443).
+
+### 18. QuickJS: hand off at the invocation deadline
+
+The QuickJS orchestrator does not hand off when an inline step runs past the invocation deadline, and it starts the next inline step after it: the adapter contract test sees both of a run's slow inline steps run in one delivery that the node engine hands off after the first. On world-vercel such a delivery can run into the function's maximum duration. Apply the node engine's deadline check and inline-start margin to the QuickJS loop.
