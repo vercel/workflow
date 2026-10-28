@@ -135,6 +135,37 @@ outcome the run should have reached and stays red until the runtime gets there.
 `preconditionGuard` and `countGuard` on the spec control the guards for that
 scenario. The command-line fence flags below override them for a whole run.
 
+`startHooks: true` gives the scenario a World with atomic start Hooks, and
+`startedBy: 'script'` leaves every `start()` to the script. The
+`start-hook-*` scenarios set both (`startHookWorld` in
+[`start-hook-helpers.ts`](./scenarios/start-hook-helpers.ts)), and `fenced()`
+there plays one of them again with the fence armed, under an id ending in
+`-fenced`.
+
+### Start Hook scenarios
+
+`pnpm sim start-hook` plays them. Each one is a set of clients and a crash
+point:
+
+- **Clients** are `sim.start({ caller, hook: { token } })`, writer
+  `caller:<name>`. Hold one between its enqueue and its `run_created` with
+  `sim.writer.caller(name).runToEventProduced('run_created')`, which is how
+  its queued copy gets to the World first.
+- **Crash points** are `sim.fault.die(match)` (a client is abandoned, a
+  delivery is redelivered), `sim.fault.loseResponse(match)`, and
+  `phase: 'inside', checkpoint: 'start-hook:accepted'` for a candidate
+  decided whose run has not landed.
+- **Resumes** go through `resumeOnceAdopted` in the helpers, which retries
+  `HookReservedError` each time the owner commits something, the tightest
+  retry loop a real caller could run.
+- **The workflows** record each step body's effect (`recordEffect`), so
+  `starthook.no-loser-execution` can tell that a refused candidate ran no
+  user code, which no event log could show.
+
+A script that moves the clock by hand (`sim.advanceTime`) pauses deliveries
+first (`sim.pauseDeliveries()`): otherwise the scheduler jumps to the next
+pending timer while the script is still arranging its clients.
+
 ## Flags
 
 | Flag | Effect |

@@ -19,6 +19,7 @@ Two workspaces:
 |---|---|
 | `world.ts` | the `World` implementation; wraps every method as a call point and attributes it to a writer |
 | `store.ts` | in-memory event store: the event → entity state machine, plus the write-time guards |
+| `start-hook.ts` | the start Hook token table the store delegates to: claims, one decision per candidate, the orphan bound and fence |
 | `queue.ts` | deterministic queue: records messages, never delivers on its own |
 | `clock.ts` | virtual clock; patches `Date.now()` readings, not timers |
 | `ids.ts` | deterministic ULID minting from (virtual time, counter) |
@@ -28,6 +29,8 @@ Two workspaces:
 | `scenario.ts` | runs one `ScenarioSpec` end to end and produces a `ScenarioResult` |
 | `replay.ts` | cold-start replay verification of a finished log |
 | `invariants.ts` | consistency checks re-derived from the event log alone |
+| `start-hook-invariants.ts` | the start Hook properties, over every run, the store's decisions, the script's requests and the effects step bodies recorded |
+| `effects.ts` | the registry step bodies record user-code effects in, for `NoLoserExecution` |
 | `report.ts` | renders a scenario; log positions for every event reference, color only when the destination is a terminal |
 | `streams.ts` | in-memory streamer |
 | `build.ts` | bundles a project's workflows so the runtime can be handed real compiled code. Its own entry (`@workflow/world-sim/build`), because it reaches a compiler and playing a scenario should not |
@@ -412,6 +415,101 @@ receiver is a separate process from the run's invocation. Holding an *inline*
 write instead would stall the delivery that made it, and thus the reader too,
 which is why the out-of-band writer is the one that can express this shape.
 
+**Faults kill or stall a writer at a call point.** `sim.fault` arms one
+edge-triggered fault on the next matching call, as a watch whose action
+returns a verdict instead of a hold:
+
+| Fault | What the caller sees | What is durable |
+| --- | --- | --- |
+| `die(match)` at `after` (default) | nothing: the call never returns | the call's effect |
+| `die(match)` at `before` | nothing | nothing |
+| `die(match)` at `inside` | nothing | the first half of a two-part write (see checkpoints below) |
+| `loseResponse(match)` | a retryable `WorkflowWorldError` (503) | the call's effect |
+| `fail(match)` | the same error | nothing |
+
+A writer that dies is a process that dies, so death is per *process*, not
+per call. Two kinds of process can die, and each runs its calls in its own
+async context, which is how a fault finds the process a call belongs to:
+
+- **A queue delivery.** Every later call from it, by any of its writers (a
+  sibling inline step, a background flush), is dropped unrecorded, and
+  `deliver` stops waiting for its answer and requeues the message after the
+  visibility timeout (`REDELIVERY_DELAY_MS`, 5s). The redelivery is attempt
+  N+1 with the same `messageId`, which is what the runtime's inline-step
+  recovery keys on. One more thing a real restart does has to be done by
+  hand, because every delivery here shares one Node process: the runtime's
+  in-process step single-flight would hand the redelivery the dead
+  delivery's never-settling step, so `forgetProcessMemory` drops that run's
+  entries from it (keyed by the runtime's `globalSingleton` name; if that
+  name changes, a scenario that kills a delivery mid-step hangs until its
+  deadline).
+- **A script caller** (`sim.start`, writer `caller:<name>`). It is
+  abandoned: its `outcome` never settles. That is "the direct `start()`
+  caller dies after call X commits", with X any call `start()` makes.
+
+A lost response is the effect committed and the caller told otherwise, which
+for `start()` is `WorkflowStartError` and for a step body is a retryable
+error. "A delivery dies mid-way and the queue redelivers" is `die` on any call
+a delivery makes.
+
+**Checkpoints are call points inside a write.** A write that commits in two
+halves awaits `SimStoreOptions.checkpoint` between them, and the facade turns
+that into a call point with `phase: 'inside'` and a `checkpoint` name, sharing
+the enclosing call's `seq` and request. A script holds or kills a writer
+there like at any other point. There is one today, `start-hook:accepted`:
+after a start Hook candidate's claim and decision commit, before its run row
+does. See "Start Hook admission" below.
+
+**Three queue faults stand in for the queue's own behavior:**
+`sim.dropQueued` (the queue gives up on a message), `sim.delayQueued` (a
+redelivery backoff), and `sim.pauseDeliveries`, which is not a fault but the
+switch that keeps the scheduler from taking another message while a script
+arranges several clients. The scheduler otherwise moves as soon as a script
+awaits anything, jumping virtual time to the next pending message. A script
+caller that is running and not held pauses it the same way, so `start()`'s
+own enqueue and `run_created` happen back to back unless the script holds the
+caller between them.
+
+### Start Hook admission
+
+`startHooks: true` declares `atomicStartHook`, `hookRetention` and
+`hookForceClaim`, and the store keeps the contract in `@workflow/world`'s
+`start-hook.ts`. It is checked by that package's conformance suite
+(`start-hook.test.ts`), including the orphan cases on an injected clock.
+
+The store follows workflow-server's design (`docs/atomic-start-hook.md`
+there) in its **cross-region** shape, because that is the shape with a window
+in it. The claim and the accepted decision commit together; the run row
+commits separately, after the `start-hook:accepted` checkpoint, and only if
+no fence names the candidate. The same-region shape is that window with
+nothing stopped in it.
+
+- **One decision per candidate.** The first attempt through either copy
+  (`run_created`, or the queued copy's resilient `run_started`) decides, and
+  every later attempt replays it: the run for an accepted candidate (finishing
+  its creation if the run row never landed), `HookConflictError` with the
+  stored owner for a refused one.
+- **The token constraint** (`TokenClaim`) is a reservation (a start Hook: held
+  until its run ends and its retention passes, adopted by the run's own
+  `createHook()`, moved by a force claim with its retention) or a retained
+  claim (an ordinary Hook created with a retention). A live Hook entity holds
+  its token on its own, as it always has.
+- **Before adoption**, a by-token lookup answers `HookReservedError` naming
+  the run while the run has not ended (or, with no run yet, while its
+  candidate window is open), and not-found after.
+- **Orphans.** An accepted candidate with no run holds its token for 24h from
+  its run id's ULID time. A contender after that fences it, then takes the
+  token. Any attempt for a candidate older than 24h is refused first, and a
+  write already past that check is refused by the fence.
+- **Force claims** (`createHook({ experimental_force })`) take a live Hook
+  from another run: the claimer's `hook_created` carries `forceClaimedFrom`
+  and is journaled first, then the victim's log gets
+  `hook_disposed{forceClaimedBy}`. An unadopted reservation has no Hook to
+  take, and answers `hook_conflict`.
+
+All of it lives in the virtual clock, so a 24h window or a 24h retention
+costs a clock assignment.
+
 ### Changing the world instead of the runtime
 
 **`appendOnlyLog`** is the one option that alters the store's contract rather
@@ -456,8 +554,15 @@ interface ScenarioSpec {
   preconditionGuard?: boolean;  // enforce the optimistic-concurrency fence
   countGuard?: boolean;         // also enforce its count half
   appendOnlyLog?: boolean;      // position at commit, not at mint; see §5
+  startHooks?: boolean;         // atomic start Hooks; see §5 Start Hook admission
+  startedBy?: 'runner' | 'script'; // who starts the run under test
 }
 ```
+
+`startedBy: 'script'` leaves every `start()` to the script (`sim.start`),
+which is how one scenario has several clients racing one token. The run under
+test is then the first run the World created; replay verification and the
+invariants cover every run either way.
 
 `RunScenarioOptions.appendOnlyLog` overrides the last of those for every
 scenario in a run, which is how the whole book gets played both ways;
@@ -613,6 +718,30 @@ hook.dispose-once            hook.no-receive-after-dispose
 wait.created-once            wait.completed-after-created
 wait.completed-once          wait.resume-at-stable
 ```
+
+A scenario with `startHooks` adds the start Hook properties
+(`start-hook-invariants.ts`), checked across every run:
+
+```text
+starthook.at-most-one-owner     starthook.no-loser-execution
+starthook.every-request-resolves
+starthook.stranded-delivery     starthook.refusal-not-acked
+starthook.reservation-released
+```
+
+`at-most-one-owner` is re-derived from the logs alone, in commit order across
+every run, so a store that agreed with itself about a wrong answer still shows
+up; an orphan never reaches a log, so its claim comes from its decision.
+`no-loser-execution` reads what no log can show for a candidate that never
+became a run: the calls each writer was served, and the effects step bodies
+recorded (`effects.ts`). `every-request-resolves` reads the script's start
+requests: the last answer must be a run that owns the token, a refusal
+naming one (or naming an accepted candidate, which owns its token before
+its run exists), or a permanent rejection; a request whose caller died is
+excused, because its continuation is its retry. `refusal-not-acked` reads how
+each delivery was answered (`SimWorld.deliveryLog`).
+`reservation-released` probes the store at the instant a finished claim
+should let go, and a moment before.
 
 A violation indicates a bug in the runtime that produced the sequence, in
 the store that accepted it, or in the scenario that injected something
@@ -798,6 +927,19 @@ write that should have fenced it, in the quiescent gap between deliveries where
 the run makes no writes and so meets no checks. `assertSlotAboveTail` in
 `vercel/workflow-server#692` is the append-tail fence for it.
 
+### The start Hook book
+
+The `start-hook-*` scenarios (`pnpm sim start-hook`) kill or stall a client, a
+delivery or the store at each point between `start()`'s enqueue, its
+`run_created`, the queued copy's admission, the owner's adoption, and the
+token's release, and are all green. They have been checked against the
+runtime they pass on by breaking it: letting a start Hook candidate's first
+delivery take turbo turns 16 of them red on `starthook.no-loser-execution`,
+and removing the runtime's ack of a refused queued copy turns the same 16 red
+on `starthook.refusal-not-acked`. Breaking the store's orphan bound, or a force
+claim's transfer of the reservation, turns the orphan and handoff scenarios
+red.
+
 ---
 
 ## 10. Limits
@@ -827,6 +969,18 @@ sequential path, meaning the hook-timing shapes in this book are the *legacy*
 shape, not the one production runs. Closing this needs `(runId, resumeId)`
 dedupe in the store plus the capability; it is the largest single gap for a
 package about hook races.
+
+**A crash is in-process.** A delivery that dies shares a Node process with
+the one that redelivers it, so the runtime's in-process memory survives the
+"crash" unless the sim forgets it. `deliver` forgets one registry (the step
+single-flight; see §5 Fault injection); any other in-process state a future
+runtime keeps per delivery would leak into its redelivery the same way. The
+symptom is a crash scenario that hangs until its deadline.
+
+**A `start()` from inside a step body is attributed to the orchestrator.**
+The world sees the call, not the step context it came from, so the child's
+`run_created` reads `wf` in the trace, and a script targets it by its request
+(`where`) rather than by writer.
 
 **Also untested:** turbo / optimistic-inline-start, which skip replays and give
 a stale branch somewhere to hide; and the fence's same-millisecond behavior,

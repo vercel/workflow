@@ -22,6 +22,7 @@
  *    call and rejects every pending wait, as a last resort.
  */
 
+import { WorkflowWorldError } from '@workflow/errors';
 import type {
   CallContext,
   CallMatch,
@@ -29,7 +30,7 @@ import type {
   ScenarioApi,
   Tempo,
 } from './types.js';
-import type { SimWorld } from './world.js';
+import type { SimWorld, WatchVerdict } from './world.js';
 import { type ArmedHold, createWriters } from './writers.js';
 
 /**
@@ -74,6 +75,9 @@ export function describeMatch(match: CallMatch): string {
   if (match.stepName) bits.push(`step=${match.stepName}`);
   if (match.correlationId) bits.push(`correlation=${match.correlationId}`);
   if (match.token) bits.push(`token=${match.token}`);
+  if (match.checkpoint) bits.push(`checkpoint=${match.checkpoint}`);
+  if (match.runId) bits.push(`run=${match.runId}`);
+  if (typeof match.writer === 'string') bits.push(`writer=${match.writer}`);
   if (match.where) bits.push('where(...)');
   if (match.phase) bits.push(match.phase);
   return bits.join(' ') || 'any call';
@@ -129,7 +133,7 @@ export function createTempo(
           // A script's waits are not "required": a wait that never fires is
           // already reported, in more useful detail, as the script still
           // waiting or as its own timeout.
-          options: { nth: 1, label },
+          options: { nth: 1, label, holds: true },
           action: (ctx) => {
             // Belt and braces with the disposing `settle` above: never block a
             // call on behalf of a script that is no longer running to release
@@ -208,6 +212,81 @@ export function createTempo(
     });
   };
 
+  /**
+   * Arm a fault: the next matching call gets `verdict` instead of going
+   * through. Edge-triggered like `until`, and resolves with the call it hit.
+   */
+  const armFault = (
+    match: CallMatch,
+    verdict: (ctx: CallContext) => WatchVerdict,
+    label: string
+  ): Promise<CallContext> => {
+    if (abortedWith) return Promise.reject(new ScenarioAborted(abortedWith));
+    const id = seq++;
+    return new Promise<CallContext>((resolve, reject) => {
+      waiting.set(id, {
+        label,
+        reject: (err: Error) => {
+          dispose();
+          waiting.delete(id);
+          reject(err);
+        },
+      });
+      const dispose = world.addWatch({
+        match,
+        options: { nth: 1, label },
+        action: (ctx) => {
+          if (abortedWith) return;
+          waiting.delete(id);
+          dispose();
+          resolve(ctx);
+          return verdict(ctx);
+        },
+      });
+    });
+  };
+
+  const fault: Tempo['fault'] = {
+    die: (match, label) =>
+      armFault(
+        match,
+        (ctx) => ({
+          kind: 'die',
+          reason:
+            label ?? `${describeMatch(match)} at ${ctx.call}:${ctx.phase}`,
+        }),
+        label ?? `die at ${describeMatch(match)}`
+      ),
+    loseResponse: (match, options) =>
+      armFault(
+        { ...match, phase: 'after', failed: false },
+        () => ({
+          kind: 'throw',
+          error:
+            options?.error ??
+            new WorkflowWorldError(
+              'sim: the response was lost after the write committed (connection reset)',
+              { status: 503 }
+            ),
+        }),
+        options?.label ?? `lose response of ${describeMatch(match)}`
+      ),
+    fail: (match, options) =>
+      armFault(
+        { ...match, phase: 'before' },
+        () => ({
+          kind: 'throw',
+          error:
+            options?.error ??
+            new WorkflowWorldError(
+              'sim: the request failed before reaching storage (connection refused)',
+              { status: 503 }
+            ),
+        }),
+        options?.label ?? `fail ${describeMatch(match)}`
+      ),
+  };
+
   const writers = createWriters({
     world,
     arm: armHold,
@@ -225,6 +304,7 @@ export function createTempo(
       return api.world;
     },
     writer: writers.handles,
+    fault,
     park,
     until,
     async during(match, body, label) {

@@ -15,7 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createWorkflowUrl } from '@workflow/utils';
 import { encodeMessage, type QueuedMessage } from './queue.js';
 import type { PendingMessageView } from './types.js';
-import type { SimWorld } from './world.js';
+import type { DeliveryRecord, SimWorld } from './world.js';
 
 export interface ScenarioLimits {
   /** Maximum queue deliveries before the scenario is abandoned. */
@@ -63,6 +63,13 @@ async function settle(rounds = 4): Promise<void> {
   }
 }
 
+/**
+ * How long the queue waits before redelivering a message whose delivery died
+ * (its visibility timeout). The same flat spacing as a failed delivery's
+ * retry, so a crash and an error cost a run the same virtual time.
+ */
+export const REDELIVERY_DELAY_MS = 5_000;
+
 /** Scenario-supplied override for which pending message goes next. */
 export type SelectNext = (pending: PendingMessageView[]) => string | undefined;
 
@@ -85,12 +92,27 @@ export async function driveQueue(options: {
   limits: Required<ScenarioLimits>;
   wallStart: number;
   selectNext?: SelectNext;
+  /**
+   * Keep looking for work while the queue is empty. A scenario whose script
+   * starts the runs (`startedBy: 'script'`) passes "the script has not
+   * finished", because the next message may be one its next `start()` is
+   * about to enqueue.
+   */
+  keepAlive?: () => boolean;
 }): Promise<DriveResult> {
   const { world, limits, wallStart } = options;
   let deliveries = 0;
 
   while (true) {
     await settle();
+
+    // A script caller in the middle of its own sequence of calls (`start()`'s
+    // enqueue, then its `run_created`) is never interleaved with a delivery
+    // unless the script holds it to ask for exactly that.
+    while (world.callersBusy() || world.deliveriesPaused()) {
+      if (performanceNow() - wallStart > limits.maxWallMs) break;
+      await sleep(0);
+    }
 
     if (performanceNow() - wallStart > limits.maxWallMs) {
       return {
@@ -99,7 +121,20 @@ export async function driveQueue(options: {
       };
     }
 
-    const message = selectMessage(world, options.selectNext);
+    let message = selectMessage(world, options.selectNext);
+    if (!message && options.keepAlive?.()) {
+      // Give a script that is about to act a few more turns. One that is
+      // blocked on the world gets nothing from waiting longer: nothing else
+      // is running, so nothing can unblock it.
+      for (let round = 0; round < 3 && !message; round++) {
+        await settle();
+        while (world.callersBusy() || world.deliveriesPaused()) {
+          if (performanceNow() - wallStart > limits.maxWallMs) break;
+          await sleep(0);
+        }
+        message = selectMessage(world, options.selectNext);
+      }
+    }
     if (!message) break;
 
     if (deliveries >= limits.maxDeliveries) {
@@ -193,8 +228,51 @@ export async function deliver(
     }
   );
 
-  const response = await handler(request);
-  const text = await response.text();
+  // The delivery is one process: a fault that kills any of its writers kills
+  // all of them, and the queue sees a delivery that never answered.
+  const life = world.newDeliveryLife(
+    `delivery ${message.messageId} attempt ${message.deliveries}`
+  );
+  const answered = world.runDelivery(life, async () => {
+    const response = await handler(request);
+    return { response, text: await response.text() };
+  });
+  const outcome = await Promise.race([
+    answered,
+    life.died.then(() => undefined),
+    world.abandoned.then(() => null),
+  ]);
+  const log = (outcome: DeliveryRecord['outcome']) =>
+    world.deliveryLog.push({
+      messageId: message.messageId,
+      ...((message.payload as { runId?: string }).runId
+        ? { runId: (message.payload as { runId: string }).runId }
+        : {}),
+      attempt: message.deliveries,
+      atMs: world.clock.now(),
+      outcome,
+    });
+  if (outcome === null) {
+    log('abandoned');
+    world.pushTrace({
+      kind: 'warn',
+      message: `delivery of ${message.messageId} attempt ${message.deliveries} abandoned: it never answered`,
+    });
+    return;
+  }
+  if (!outcome) {
+    log('died');
+    forgetProcessMemory(
+      (message.payload as { runId?: string }).runId ?? undefined
+    );
+    world.pushTrace({
+      kind: 'warn',
+      message: `the queue redelivers ${message.messageId} after ${REDELIVERY_DELAY_MS}ms (attempt ${message.deliveries} died)`,
+    });
+    world.simQueue.requeue(message, world.clock.now() + REDELIVERY_DELAY_MS);
+    return;
+  }
+  const { response, text } = outcome;
 
   if (response.ok) {
     let timeoutSeconds: number | undefined;
@@ -205,16 +283,19 @@ export async function deliver(
       // Not a timeout response.
     }
     if (timeoutSeconds !== undefined) {
+      log('rescheduled');
       world.simQueue.requeue(
         message,
         world.clock.now() + timeoutSeconds * 1000
       );
       return;
     }
+    log('acked');
     world.simQueue.settle(message);
     return;
   }
 
+  log('error');
   world.pushTrace({
     kind: 'warn',
     message: `handler returned HTTP ${response.status} for ${message.messageId}: ${text}`,
@@ -223,6 +304,35 @@ export async function deliver(
   // runtime (MAX_QUEUE_DELIVERIES); the scenario's delivery budget is the
   // backstop.
   world.simQueue.requeue(message, world.clock.now() + 5_000);
+}
+
+/**
+ * A delivery that dies takes its process's memory with it. Here the process
+ * is the one Node process every delivery shares, so the runtime's own
+ * in-process registries outlive the death unless they are forgotten
+ * explicitly. One matters: `@workflow/core`'s step single-flight
+ * (`runtime/step-single-flight.ts`), which would hand the redelivery the dead
+ * delivery's never-settling step and make it wait on it forever, where a real
+ * restart starts empty. Its entries for the dead delivery's run are dropped.
+ *
+ * Keyed by the runtime's `globalSingleton` name and shape version. If that
+ * changes, nothing is found, nothing is dropped, and a crash scenario that
+ * kills a delivery mid-step hangs until its deadline: the symptom to look for.
+ */
+const STEP_SINGLE_FLIGHT = Symbol.for('@workflow/core//stepSingleFlight/v1');
+
+function forgetProcessMemory(runId: string | undefined): void {
+  if (!runId) return;
+  const state = (globalThis as Record<symbol, unknown>)[STEP_SINGLE_FLIGHT] as
+    | { inFlight?: Map<string, unknown> }
+    | undefined;
+  const inFlight = state?.inFlight;
+  if (!(inFlight instanceof Map)) return;
+  for (const key of [...inFlight.keys()]) {
+    if (typeof key === 'string' && key.startsWith(`${runId}:`)) {
+      inFlight.delete(key);
+    }
+  }
 }
 
 /** Real elapsed time, immune to the virtual `Date` patch. */
