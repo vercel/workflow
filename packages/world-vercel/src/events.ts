@@ -124,6 +124,25 @@ const eventsNeedingResolve = new Set<string>([
   'run_started', // runtime reads result.run (checks startedAt, status)
 ]);
 
+/**
+ * Whether the POST response of `data` must come back with its entity's
+ * payloads resolved: the runtime reads them from it at once.
+ *
+ * A spec 8 `step_started` is answered with the step entity, whose `input`
+ * the spec 8 step executor hydrates and runs the body with; a lazy response
+ * carries a ref there instead, and the attempt fails. A single-orchestrator
+ * (spec >= 9) run keeps no step entity: its step executor takes the input
+ * from the step's message or its creation event, so its `step_started` stays
+ * lazy.
+ */
+function eventNeedsResolve(data: AnyEventRequest): boolean {
+  if (eventsNeedingResolve.has(data.eventType)) return true;
+  return (
+    data.eventType === 'step_started' &&
+    (data.specVersion ?? 0) < SPEC_VERSION_SINGLE_ORCHESTRATOR
+  );
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -886,7 +905,7 @@ async function createWorkflowRunEventInner(
   }
 
   const remoteRefBehavior: 'resolve' | 'lazy' =
-    eventsNeedingResolve.has(data.eventType) ||
+    eventNeedsResolve(data) ||
     // Concurrent hook reconciliation consumes the committed event directly.
     // Honor its explicit request for replay-ready metadata; other mutation
     // responses keep their existing lightweight entity-only behavior.

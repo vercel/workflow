@@ -803,6 +803,7 @@ What the flip does not change: it reduces exposure, not correctness. The livenes
 - Move the Vercel dashboard's wake-up action to a `@workflow/core` release with this change (section 7).
 - Re-run the storm workflows on Vercel (`stepStormReproWorkflow`, `hookStormReproWorkflow`) to confirm the cascade is gone (section 7).
 - Run the e2e suite on Vercel with spec 8 runs (`WORKFLOW_SPEC_VERSION=8`) to confirm the restored new-message continuation, and with `WORKFLOW_SEQUENTIAL_REPLAYS=1` to confirm spec 9 runs work unkeyed on the per-run topics.
+- No Vercel e2e lane runs spec 8 at this head: every lane mints spec 9. A spec 8 run's queued step attempts failed on world-vercel with "Invalid input" because its `step_started` response came back lazy (fixed in `[world-vercel]` "Resolve a spec 8 step_started response", covered by `spec8/world-vercel-step-input.contract.test.ts`), and only a manual spec 8 run on the preview found it. The opt-in flip makes the default Vercel lanes run spec 8 again; until it lands, add a spec 8 cell (`WORKFLOW_SPEC_VERSION=8`) to the Vercel e2e matrix, or run that suite by hand on the final head.
 - Decide the release channel: a 5.x minor or a v6 beta.
 - Decide whether to close the earlier stacked PRs that this one supersedes.
 - Decide whether coalescing in world-local and world-postgres has to land before spec 9 is opted into there, or before it becomes their default, or ships as a follow-up (section 7, "world-local and world-postgres do not coalesce").

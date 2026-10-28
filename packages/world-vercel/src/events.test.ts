@@ -809,6 +809,76 @@ describe('createWorkflowRunEvent result contract', () => {
   });
 });
 
+describe('createWorkflowRunEvent step_started payload resolution', () => {
+  const input = new Uint8Array([1, 2, 3]);
+  /**
+   * POSTs a `step_started` of `specVersion` to a backend that resolves the
+   * step's input into its response only when the frame asks it to, as
+   * world-vercel's does, and returns the request's meta and the result.
+   */
+  async function startStep(specVersion: number) {
+    const agent = mockAgent();
+    let meta: Record<string, unknown> = {};
+    const data = {
+      eventType: 'step_started',
+      specVersion,
+      correlationId: 'step_1',
+      eventData: { stepName: 'step' },
+    } as AnyEventRequest;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v5/runs/wrun_1/events/step_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          meta = decodePostedMeta(opts.body);
+          return createEventBody(data, {
+            step: {
+              runId: 'wrun_1',
+              stepId: 'step_1',
+              stepName: 'step',
+              status: 'running',
+              attempt: 2,
+              startedAt: STARTED_AT,
+              createdAt: STARTED_AT,
+              updatedAt: STARTED_AT,
+              ...(meta.remoteRefBehavior === 'resolve' ? { input } : {}),
+            },
+          });
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+    const result = await createWorkflowRunEvent('wrun_1', data, undefined, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+    agent.assertNoPendingInterceptors();
+    return { meta, result };
+  }
+
+  it("asks for a spec 8 start's step input resolved, which the spec 8 step executor runs the body with", async () => {
+    const { meta, result } = await startStep(
+      SPEC_VERSION_SINGLE_ORCHESTRATOR - 1
+    );
+    expect(meta.remoteRefBehavior).toBe('resolve');
+    expect(result.step?.input).toEqual(input);
+  });
+
+  it("leaves a spec 9 start lazy: its step executor takes the input from the step's message or creation", async () => {
+    const { meta } = await startStep(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    expect(meta.remoteRefBehavior).toBe('lazy');
+  });
+});
+
 /** POSTs a v4 step_started with `params` and returns the decoded frame meta. */
 async function postStepStartedMeta(
   params: CreateEventParams | undefined
