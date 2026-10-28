@@ -49,6 +49,7 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { type Logger, runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { notifyParentOfRunCompletion } from './runtime/child-run-completion-notify.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
@@ -418,6 +419,7 @@ async function recordFatalRunError({
 
   let encryptionKey: PayloadKey | undefined;
   let dehydratedError: Uint8Array;
+  let failedRun: WorkflowRun | undefined;
   try {
     const getEncryptionKey = memoizeEncryptionKey(world, workflowRun ?? runId);
     encryptionKey = await getEncryptionKey();
@@ -428,18 +430,20 @@ async function recordFatalRunError({
       globalThis,
       (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
     );
-    await world.events.create(
-      runId,
-      {
-        eventType: 'run_failed',
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          error: dehydratedError,
-          errorCode,
+    failedRun = (
+      await world.events.create(
+        runId,
+        {
+          eventType: 'run_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            error: dehydratedError,
+            errorCode,
+          },
         },
-      },
-      { requestId }
-    );
+        { requestId }
+      )
+    )?.run;
   } catch (failErr) {
     if (EntityConflictError.is(failErr) || RunExpiredError.is(failErr)) {
       return;
@@ -463,6 +467,11 @@ async function recordFatalRunError({
     dehydratedError,
     encryptionKey,
     errorCode
+  );
+  await notifyParentOfRunCompletion(
+    world,
+    workflowRun ?? failedRun ?? runId,
+    'failed'
   );
 }
 
@@ -905,8 +914,10 @@ export function workflowEntrypoint(
           );
           let encryptionKey: PayloadKey | undefined;
           let dehydratedError: Uint8Array;
+          // No run is loaded past the ceiling; the terminal write returns it.
+          let failedRun: WorkflowRun | undefined;
+          const world = await getWorld();
           try {
-            const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
               `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
@@ -917,18 +928,20 @@ export function workflowEntrypoint(
               runId,
               encryptionKey
             );
-            await world.events.create(
-              runId,
-              {
-                eventType: 'run_failed',
-                specVersion: SPEC_VERSION_CURRENT,
-                eventData: {
-                  error: dehydratedError,
-                  errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+            failedRun = (
+              await world.events.create(
+                runId,
+                {
+                  eventType: 'run_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  eventData: {
+                    error: dehydratedError,
+                    errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+                  },
                 },
-              },
-              { requestId }
-            );
+                { requestId }
+              )
+            )?.run;
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
               // Run already finished, consume the message silently
@@ -975,6 +988,11 @@ export function workflowEntrypoint(
             dehydratedError,
             encryptionKey,
             RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
+          );
+          await notifyParentOfRunCompletion(
+            world,
+            failedRun ?? runId,
+            'failed'
           );
           return;
         }
@@ -1102,7 +1120,7 @@ export function workflowEntrypoint(
                     inert: 0,
                     observedHook: 0,
                     unknownHook: 0,
-                    abortSignal: 0,
+                    systemHook: 0,
                     externalStep: 0,
                     waitDue: 0,
                   };
@@ -3552,6 +3570,11 @@ export function workflowEntrypoint(
                         throw err;
                       }
                       dispatchRunCompletedHooks(runId, workflowName);
+                      await notifyParentOfRunCompletion(
+                        world,
+                        workflowRun ?? runId,
+                        'completed'
+                      );
 
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('completed'),
@@ -3770,6 +3793,11 @@ export function workflowEntrypoint(
                             dehydratedError,
                             failureKey,
                             errorCode
+                          );
+                          await notifyParentOfRunCompletion(
+                            world,
+                            workflowRun ?? runId,
+                            'failed'
                           );
                           span?.setAttributes({
                             ...Attribute.WorkflowRunStatus('failed'),
@@ -4858,8 +4886,8 @@ export function workflowEntrypoint(
                             if (outOfBandObservation.unknownHookCount > 0) {
                               outOfBandBoundaries.unknownHook++;
                             }
-                            if (outOfBandObservation.abortSignalHookCount > 0) {
-                              outOfBandBoundaries.abortSignal++;
+                            if (outOfBandObservation.systemHookCount > 0) {
+                              outOfBandBoundaries.systemHook++;
                             }
                             if (outOfBandObservation.externalStepCount > 0) {
                               outOfBandBoundaries.externalStep++;
@@ -4875,8 +4903,8 @@ export function workflowEntrypoint(
                               outOfBandBoundaries.observedHook,
                             'workflow.out_of_band.unknown_hook_boundaries':
                               outOfBandBoundaries.unknownHook,
-                            'workflow.out_of_band.abort_signal_boundaries':
-                              outOfBandBoundaries.abortSignal,
+                            'workflow.out_of_band.system_hook_boundaries':
+                              outOfBandBoundaries.systemHook,
                             'workflow.out_of_band.external_step_boundaries':
                               outOfBandBoundaries.externalStep,
                             'workflow.out_of_band.wait_due_boundaries':
@@ -5724,6 +5752,11 @@ export function workflowEntrypoint(
                           dehydratedError,
                           failureKey,
                           errorCode
+                        );
+                        await notifyParentOfRunCompletion(
+                          world,
+                          workflowRun ?? runId,
+                          'failed'
                         );
 
                         span?.setAttributes({

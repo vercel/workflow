@@ -130,8 +130,11 @@ export interface OutOfBandObservation {
    * no `observedHookIds`. Counted as path-changing.
    */
   unknownHookCount: number;
-  /** Open `AbortController` system hooks: always path-changing. */
-  abortSignalHookCount: number;
+  /**
+   * Open SDK-internal hooks (`AbortController` signals, the child-run
+   * completion hook): always path-changing.
+   */
+  systemHookCount: number;
   /**
    * Pending steps this invocation does not execute itself. Their terminal
    * events come from another executor, and their awaiters cannot be seen, so
@@ -161,7 +164,7 @@ export function observeOutOfBandWriters(input: {
   let observedHookCount = 0;
   let unobservedHookCount = 0;
   let unknownHookCount = 0;
-  let abortSignalHookCount = 0;
+  let systemHookCount = 0;
   let externalStepCount = 0;
   for (const item of input.items) {
     if (item.type === 'step') {
@@ -173,7 +176,10 @@ export function observeOutOfBandWriters(input: {
     // A hook this suspension disposes is closed by its own write.
     if (item.type !== 'hook' || item.disposed) continue;
     if (item.isSystem) {
-      abortSignalHookCount++;
+      // SDK-internal hooks (abort signals, the child-run completion hook)
+      // are resumed by other runs and steps, whether or not workflow code is
+      // awaiting them right now.
+      systemHookCount++;
     } else if (input.observedHookIds === undefined) {
       unknownHookCount++;
     } else if (input.observedHookIds.has(item.correlationId)) {
@@ -186,13 +192,13 @@ export function observeOutOfBandWriters(input: {
     observedHookCount,
     unobservedHookCount,
     unknownHookCount,
-    abortSignalHookCount,
+    systemHookCount,
     externalStepCount,
     waitDue: input.waitDue,
     inert:
       observedHookCount === 0 &&
       unknownHookCount === 0 &&
-      abortSignalHookCount === 0 &&
+      systemHookCount === 0 &&
       externalStepCount === 0 &&
       !input.waitDue,
   };

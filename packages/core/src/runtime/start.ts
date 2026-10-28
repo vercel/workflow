@@ -48,6 +48,11 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import {
+  CHILD_RUN_COMPLETION_CONTEXT_KEY,
+  CHILD_RUN_COMPLETION_VERSION,
+} from './child-run-completion.js';
+import { isChildRunCompletionHookEnabled } from './child-run-completion-notify.js';
+import {
   DYNAMIC_WORKFLOWS_ENV,
   isDynamicWorkflowsEnabled,
 } from './constants.js';
@@ -225,6 +230,17 @@ function resolveLineageAttributes(): Record<string, string> | undefined {
     [ROOT_RUN_ID_ATTRIBUTE]: store.rootRunId ?? parentRunId,
     [PARENT_RUN_ID_ATTRIBUTE]: parentRunId,
   };
+}
+
+/**
+ * The run that would await this start's child through the child-run
+ * completion hook: the workflow run whose code (or step) is calling
+ * `start()`. `undefined` for a top-level `start()`, or when the hook is
+ * switched off with `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0`.
+ */
+function resolveCompletionParentRunId(): string | undefined {
+  if (!isChildRunCompletionHookEnabled()) return undefined;
+  return contextStorage.getStore()?.workflowMetadata?.workflowRunId;
 }
 
 // `deploymentId: 'latest'` is a no-op in Worlds without atomic deployments.
@@ -763,6 +779,12 @@ export async function start<TArgs extends unknown[], TResult>(
       // Public key of the target run, when the capability probe was able to
       // supply one (cross-deployment only).
       let probedRunPublicKey: string | undefined;
+      // Whether the deployment executing the run resumes its parent's
+      // child-run completion hook when it finishes. A parent only suspends on
+      // that hook for a child stamped to resume it, so this must not be
+      // guessed: a child that never resumes it would leave the parent waiting
+      // forever. Unknown (no probe answer) means no, and the parent polls.
+      let targetNotifiesParent: boolean;
       // The spec version of the runtime that will execute this run: this
       // process for a same-deployment start, the target (as reported by the
       // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
@@ -776,6 +798,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
+        targetNotifiesParent = true;
         targetSpecVersion = world.specVersion;
         specVersionSource = 'same-deployment';
       } else if (typeof world.streams?.get !== 'function') {
@@ -787,6 +810,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // honors `hookInput`; leave the marker off (older producers fail
         // closed to their sequential path).
         targetHookResumeInputVersion = undefined;
+        targetNotifiesParent = false;
         // Nor its spec version: no probe result to resolve from.
         ({ specVersion: targetSpecVersion, source: specVersionSource } =
           resolveCrossDeploymentSpecVersion(undefined, world.specVersion));
@@ -816,6 +840,9 @@ export async function start<TArgs extends unknown[], TResult>(
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
         targetHookResumeInputVersion = probe?.hookResumeInputVersion;
+        targetNotifiesParent =
+          (probe?.childRunCompletionVersion ?? 0) >=
+          CHILD_RUN_COMPLETION_VERSION;
         ({ specVersion: targetSpecVersion, source: specVersionSource } =
           resolveCrossDeploymentSpecVersion(probe, world.specVersion));
         span?.setAttributes({
@@ -1029,6 +1056,9 @@ export async function start<TArgs extends unknown[], TResult>(
       // that re-enqueues active runs on restart (world-local, world-postgres)
       // sends this run back to its own namespace's consumer.
       const queueNamespace = resolveQueueNamespace(opts.namespace);
+      const completionParentRunId = targetNotifiesParent
+        ? resolveCompletionParentRunId()
+        : undefined;
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
@@ -1045,6 +1075,9 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
         ...(dynamicWorkflow
           ? { dynamicWorkflow: dynamicWorkflow.metadata }
+          : {}),
+        ...(completionParentRunId
+          ? { [CHILD_RUN_COMPLETION_CONTEXT_KEY]: completionParentRunId }
           : {}),
       };
       // A dynamic run's marker is what can push the context past a World's
@@ -1302,7 +1335,10 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       });
 
-      return new Run<TResult>(runId, { resilientStart });
+      return new Run<TResult>(runId, {
+        resilientStart,
+        parentRunId: completionParentRunId,
+      });
     });
   });
 }
