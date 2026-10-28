@@ -1,11 +1,12 @@
-import type {
-  CreateEventParams,
-  CreateEventRequest,
-  Event,
-  SerializedData,
-  WorkflowInvokePayload,
-  WorkflowRun,
-  World,
+import {
+  type CreateEventParams,
+  type CreateEventRequest,
+  type Event,
+  type SerializedData,
+  SPEC_VERSION_LEGACY,
+  type WorkflowInvokePayload,
+  type WorkflowRun,
+  type World,
 } from '@workflow/world';
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -418,8 +419,7 @@ function warnPastDeliveryCap(params: {
  *
  * `specVersion` is the run's: the wake carries it, so a World that reads the
  * run's spec off the payload (world-vercel keys and continues spec 9 runs'
- * messages differently) never has to guess. Without it the wake carries only
- * what this process remembers about the run (`withRunSpecVersion`).
+ * messages differently) never has to guess.
  */
 export async function wakeOrchestrator(ctx: {
   world: World;
@@ -427,7 +427,7 @@ export async function wakeOrchestrator(ctx: {
   workflowName: string;
   namespace: string | undefined;
   nextTraceCarrier: () => Promise<Record<string, string>>;
-  specVersion?: number;
+  specVersion: number;
 }): Promise<void> {
   await queueMessage(
     ctx.world,
@@ -437,7 +437,7 @@ export async function wakeOrchestrator(ctx: {
       traceCarrier: await ctx.nextTraceCarrier(),
       requestedAt: new Date(),
     },
-    ctx.specVersion !== undefined ? { specVersion: ctx.specVersion } : undefined
+    { specVersion: ctx.specVersion }
   );
 }
 
@@ -466,7 +466,7 @@ async function resolveRunIdentity(
   }
   return {
     deploymentId: run.deploymentId,
-    specVersion: run.specVersion ?? 0,
+    specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
     ...(run.startedAt ? { startedAt: +run.startedAt } : {}),
     rootRunId: rootRunIdFrom(run.attributes, ctx.runId),
   };

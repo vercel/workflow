@@ -1308,7 +1308,7 @@ export function runDispatchContext(
 ): RunDispatchContext {
   return {
     deploymentId: run.deploymentId,
-    specVersion: run.specVersion ?? 0,
+    specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
     ...(run.startedAt ? { startedAt: +run.startedAt } : {}),
     rootRunId: rootRunIdFrom(run.attributes, run.runId),
   };

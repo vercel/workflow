@@ -28,6 +28,7 @@ import {
   type RunInput,
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
+  SPEC_VERSION_LEGACY,
   type WorkflowRun,
 } from '@workflow/world';
 import { classifyRunError } from '../../classify-error.js';
@@ -1366,6 +1367,7 @@ export async function runWorkflowWithQuickJS(params: {
             runId,
             traceCarrier: await nextTraceCarrier(),
             requestedAt: new Date(),
+            runSpecVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
             waitContinuation: {
               correlationId: soonestWait.correlationId,
               attempt,
@@ -1884,6 +1886,7 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
+          runSpecVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
         },
         { delaySeconds: throttledReplaySeconds }
       );
@@ -1909,6 +1912,7 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
+          runSpecVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
         }
       );
     };
@@ -1985,6 +1989,7 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           traceCarrier: await nextTraceCarrier(),
           requestedAt: new Date(),
+          runSpecVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
           waitContinuation: {
             correlationId: soonestWait.correlationId,
             attempt,

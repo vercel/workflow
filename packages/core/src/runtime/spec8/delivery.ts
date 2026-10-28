@@ -193,6 +193,7 @@ export async function runSpec8Delivery(
     nextTraceCarrier,
     replayBudget,
     prefetchedRun,
+    runSpecVersion,
   } = delivery;
   let { resumeTracking } = delivery;
   const {
@@ -625,6 +626,7 @@ export async function runSpec8Delivery(
     runId,
     traceCarrier: await nextTraceCarrier(),
     requestedAt: new Date(),
+    runSpecVersion,
   });
 
   const reinvoke = async (
@@ -900,7 +902,11 @@ export async function runSpec8Delivery(
             ...(await reenqueuePayload()),
             deploymentMismatchRetryCount: retryCount,
           },
-          { deploymentId, specVersion, delaySeconds }
+          {
+            deploymentId,
+            specVersion: specVersion ?? runSpecVersion,
+            delaySeconds,
+          }
         );
       },
     });
@@ -1097,6 +1103,7 @@ export async function runSpec8Delivery(
             runId,
             traceCarrier: await nextTraceCarrier(),
             requestedAt: new Date(),
+            runSpecVersion,
           }
         );
         return;
@@ -1112,6 +1119,7 @@ export async function runSpec8Delivery(
             runId,
             traceCarrier: await nextTraceCarrier(),
             requestedAt: new Date(),
+            runSpecVersion,
           }
         );
         return;
@@ -2128,6 +2136,7 @@ export async function runSpec8Delivery(
         runId,
         traceCarrier: await nextTraceCarrier(),
         requestedAt: new Date(),
+        runSpecVersion,
       });
       return;
     }
@@ -3362,6 +3371,7 @@ export async function runSpec8Delivery(
                   runId,
                   traceCarrier,
                   requestedAt: new Date(),
+                  runSpecVersion,
                 },
                 {
                   delaySeconds: backstopDelaySeconds,
@@ -3453,6 +3463,7 @@ export async function runSpec8Delivery(
                 runId,
                 traceCarrier,
                 requestedAt: new Date(),
+                runSpecVersion,
                 waitContinuation: {
                   correlationId: suspensionResult.waitTimeout.correlationId,
                   attempt: waitAttempt,
@@ -4333,6 +4344,7 @@ export async function runSpec8Delivery(
               runId,
               traceCarrier: await nextTraceCarrier(),
               requestedAt: new Date(),
+              runSpecVersion,
             }
           );
           return;
@@ -4489,6 +4501,7 @@ export async function runSpec8Delivery(
                 runId,
                 traceCarrier: await nextTraceCarrier(),
                 requestedAt: new Date(),
+                runSpecVersion,
                 replayDivergence: {
                   eventId: err.eventId,
                   count: divergenceCount,
