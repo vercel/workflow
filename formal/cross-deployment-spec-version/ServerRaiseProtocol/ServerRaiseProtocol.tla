@@ -292,9 +292,13 @@ CONSTANTS
                      \*   orphaned run_created) instead of cancelling
   StepCheckConsistent, \* BOOLEAN: hypothetical server fix: the step write's
                      \*   running check uses a consistent read
-  StaleSettles       \* BOOLEAN: timing premise: eventually consistent reads
+  StaleSettles,      \* BOOLEAN: timing premise: eventually consistent reads
                      \*   have converged by the time a redelivery or window
                      \*   retry (>= 1 s later) fetches the run
+  FlagFlips          \* BOOLEAN: the run-spec-version-upgrade flag, off in
+                     \*   Init (FlagOn = FALSE), may be turned on once while
+                     \*   the run is in flight (the kill switch released after
+                     \*   a server rollback, or a per-tenant rollout)
 
 NoRow == [st |-> "none", sp |-> 0]
 DeletedRow == [ex |-> FALSE, st |-> "none", sp |-> 0]
@@ -308,7 +312,8 @@ Crosses(a, b) == RequiresFresh(a, b)
 RC == "run_created"
 
 VARIABLES
-  stamp, exec,       \* chosen once in Init
+  stamp, exec,       \* chosen once in Init; exec = [v |-> minted version,
+                     \*   on |-> flag state] (on changes only in FlagFlip)
   row,               \* persisted run row [ex, st, sp]
   hist,              \* every committed row version [st, sp] (stale reads)
   peak,              \* ghost: highest row spec ever committed (any lifecycle)
@@ -332,7 +337,7 @@ vars == <<stamp, exec, row, hist, peak, log, clk, cpc, epc, eheld, eatt, eid,
           erc, ersp, kpc, kheld, sawUlid, crashes, wleft, ewr, erf, eturbo,
           rraised>>
 NUnch == <<wleft, ewr, erf, eturbo>>
-EffExec == IF FlagOn THEN exec ELSE 0   \* attestation as the server uses it
+EffExec == IF exec.on THEN exec.v ELSE 0   \* attestation as the server uses it
 
 -----------------------------------------------------------------------------
 SEv == {e \in log : e.k = "S"}
@@ -402,7 +407,7 @@ WinOK(d) == WindowHolds => Quiet(d)
 -----------------------------------------------------------------------------
 Init ==
   /\ stamp \in CallerStamps
-  /\ exec \in ExecVersions
+  /\ exec \in {[v |-> x, on |-> FlagOn] : x \in ExecVersions}
   /\ row = DeletedRow
   /\ hist = {}
   /\ peak = 0
@@ -937,8 +942,18 @@ AllDone ==
   /\ cpc \in {"done", "crashed"} /\ kpc = "done"
   /\ \A d \in D : epc[d] \in {"done", "gone", "gaveup"}
 
+\* The operator turns the raise on while the run is in flight (FlagFlips).
+\* Nothing else changes: requests already past their upgrade check keep what
+\* they decided, later ones see the attestation.
+FlagFlip ==
+  /\ FlagFlips /\ ~exec.on
+  /\ exec' = [exec EXCEPT !.on = TRUE]
+  /\ UNCHANGED <<stamp, row, hist, peak, log, clk, cpc, epc, eheld, eatt, eid,
+                 erc, ersp, kpc, kheld, sawUlid, crashes, wleft, ewr, erf,
+                 eturbo, rraised>>
+
 ProcNext ==
-  \/ CallerRow \/ CallerEvt
+  \/ CallerRow \/ CallerEvt \/ FlagFlip
   \/ \E d \in D : \/ ExFetch(d) \/ ExRsCreate(d) \/ ExRsEvent(d)
                   \/ ExRsRefetch(d) \/ ExUpgCheck(d) \/ ExUpgHead(d)
                   \/ ExUpgTx(d) \/ ExUpgReread(d) \/ ExTrans(d)

@@ -27,18 +27,27 @@ the heads the PRs were approved at: #4327 `29197a10f`, #4366 `03e6e6771`,
 and workflow-server #1044 `f83173c` (which includes #1061). Line references
 in each model point into those trees.
 
-## Status at the current PR heads
+All three PRs have merged: #4327 as `c0aad6d01`, #4366 as `54b48ef4d`, and
+#1044 as `41dbd91` (byte-identical to `f83173c` in
+`run-spec-version-upgrade.ts`). The models were rechecked on 2026-10-28
+against workflow `main` `c07a6a395` and workflow-server `main` `192fd8a`.
+[What changed on main](#what-changed-on-main-since-the-pr-heads) lists what
+moved, which models it touches, and the line references at `main`.
+
+## Status at current main
 
 Most findings below were found against the earlier heads and have since been
-fixed in the PRs. This table is the current state; the `HEAD` configs are the
-evidence. Every verdict is pinned in `expected-verdicts.txt`.
+fixed in the PRs. This table is the current state at `main`. Rows C1 to T1
+carry over from the PR heads (the `HEAD` configs are their evidence, and
+their code is unchanged at `main`); rows N1 to N7 are new in this round.
+Every verdict is pinned in `expected-verdicts.txt`.
 
 | ID | Finding | Status at HEAD | Evidence at HEAD |
 |---|---|---|---|
 | C1 | Cross-deployment start stamped the caller's own version | fixed (#4327) | `StartStamping/j_4327_head29197__CallerCap` |
-| C2 | A probe miss stamps 6, which bricks targets whose max is below 6 (`stable`, pre-3) | **open**, tracked in vercel/workflow#4401 | `j_4327_head29197__NoAvoidableBrick`; `Combined.race_miss_current_iff` |
+| C2 | A probe miss stamps 6, which bricks targets whose max is below 6 (`stable`, pre-3) | **open**, tracked in vercel/workflow#4401. Until #4916 every start into a 4.x deployment was a miss (N1) | `j_4327_head29197__NoAvoidableBrick`; `Combined.race_miss_current_iff` |
 | C3 | Dropping the miss floor to 3 is only safe once the server raise is live on the whole fleet | design constraint for #4401 | `Combined.race_miss_proposed_*` |
-| C4 | Explicit, replay and CLI stamps are not capped; a stamp of 8 on a spec-7 target lets force-claim strand `await hook` | **open**, tracked in vercel/workflow#4407. The CLI part is fixed | `FC_Head4327_Explicit`; `Combined.cli_zero_version_fixed` |
+| C4 | Explicit, replay and CLI stamps are not capped; a stamp of 8 on a spec-7 target lets force-claim strand `await hook` | **open**, tracked in vercel/workflow#4407. The CLI part is fixed. Spec 9 widens it (N3) | `FC_Head4327_Explicit`; `Combined.cli_zero_version_fixed` |
 | P1 | A repeated probe miss refreshed the miss window and pinned a slow target to the 2 s budget | fixed (#4327 `29197a10f`) | `ProbeCache`: `PC_refresh_mid_live` violated, `PC_firstMiss_mid` passes |
 | P2 | A JSON reply with a malformed version stamped 2 | fixed (#4327: stamps 3) | `Resolve.resolve_malformed` |
 | P3 | A cached probe answer can be stale after a rollback, on Worlds that reuse deployment ids | open, minor; not reachable on Vercel (deployment ids are immutable) | `Completeness/SP_Rollback_Cross_Head_Cache` |
@@ -50,11 +59,18 @@ evidence. Every verdict is pinned in `expected-verdicts.txt`.
 | S4 | A cancel racing the raise wrote a ULID event into a slot log | fixed (#1044) | `HEAD__NoMixedIdentityLog` |
 | S5 | `run_started` could revive a finished run, including through the resilient-start conflict path | fixed (#1044, `09887ac`) | `HEAD__TerminalIsFinal`; `H9159765__TerminalIsFinal` is the regression witness |
 | S6 | Recovery rebuilt a raised run at the caller's stamp (8 -> 3) | fixed (#1044 `4b7b241`) | `HEAD_crash` (SpecNeverLowered, RunCreatedSpecMatchesRow) |
-| S7 | A `stable` caller cannot decode the compressed result of a raised run | **open** (documented #1044 residual) | `MidRunRaiseGates/Full_Head_StableCaller` |
+| S7 | A `stable` caller cannot decode the compressed result of a raised run | **open** (documented #1044 residual). The codec has the same gap without a raise (N4) | `MidRunRaiseGates/Full_Head_StableCaller` |
 | S8 | `run_started` could land between the run row and its `run_created` | fixed (workflow-server#1061) | `HEAD__ReplayNeverFails`; `H9159765` is the witness |
-| S9 | An old server build writes ULID ids into a re-keyed log during deploy or rollback | accepted: #1044 deploys before any #4366 release, and the kill switch goes off before a rollback | `Completeness/RS_Skew_Fixed_Flag_Rollback` |
-| S10 | A future structural version would be raised mid-run | fixed (capability allow-list in #4366 / #1044) | `Head_AllowList_S679`; `Raise.crossesStructural_true_iff` |
+| S9 | An old server build writes ULID ids into a re-keyed log during deploy or rollback | accepted: #1044 deploys before any #4366 release, and the kill switch goes off before a rollback. Turning it back on is N5 | `Completeness/RS_Skew_Fixed_Flag_Rollback` |
+| S10 | A future structural version would be raised mid-run | fixed (capability allow-list in #4366 / #1044). The "future" 9 now exists on the server (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, structural), and the allow-list keeps it from being crossed mid-run; crossing it on a fresh log is N2 | `Head_AllowList_S679`; `Raise.crossesStructural_true_iff` |
 | T1 | Turbo mode writes step events after a failed `run_started` | no doomed run at HEAD: the server rejects step writes on runs that are not running | `HEAD_turbo`, `HEAD_turbo_crash` pass; `HEAD_turbo_noStepCheck` shows that check is what makes it safe |
+| N1 | Before #4916 the probe carried `runId`, which a 4.x responder parses as an invoke payload, so it never answered. Every #4327 cross-deployment start into a 4.x deployment stamped 6 and bricked | fixed by vercel/workflow#4916 (`probeRunId`). Affected #4327 callers released before it: C2 was certain there, not a timeout | `Completeness/ProbeMisread`: `pre4916_v4x_always_bricks`, `post4916_v4x_answers`, `v5x_answers_both` |
+| N2 | workflow-server raises a fresh run **into spec 9**: 9 is structural, and a structural crossing only needs `pending` plus a log of `[run_created]`. If any executor attests 9 for a run stamped below 9, the run is stranded. Resilient start leaves it `pending` at 9 behind a 400 `v5-missing-in-band`; a raise leaves it `running` at 9, and every v4 write after that gets 400 `spec-version-requires-api-v5` | **new, not reachable yet**: no SDK on `main` mints 9. The only guard is the client cap in vercel/workflow#4661 (`executorSpecVersionFor`, unmerged). Recommended: the server never raises a run into 9 (`ServerCaps9`) | `Completeness/OR_SO_NoCap`, `OR_SO_NoCap_RaiseOnly` violated; `OR_SO_Cap`, `OR_SO_NoCap_ServerCaps9` pass |
+| N3 | An explicit `specVersion: 9` from a #4661 caller into a deployment without the single orchestrator is accepted at creation (over v5), and every write from the target's spec-8 runtime is then refused | by design (C4 widened). #4661's `start()` checks the caller's World for the in-band fence, not the target | `Completeness/OR_Explicit9_IntoMain` |
+| N4 | The result codec comes from the executor's runtime: zstd on Node >= 22.15. A v5 caller (or CLI, or dashboard server) on Node 20 cannot read the return value or run error. #4640 gated zstd only for writes *into* a run | **new**, adjacent to S7. Fix: record what the caller decodes on `run_created` and honour it for the result | `Completeness/OutputCodec`: `node20_v5_caller_into_node24`, `asIs_unreadable_iff`, `fixed_always_readable` |
+| N5 | Releasing the kill switch while runs are in flight: a run wedged in `running` during the off window (not raised, so recovery deletes its row) is rebuilt by resilient start at `max(stamp, exec)`. That puts a slot-1 `run_created` next to its ULID orphan, a mixed log | **new, minor**. Only runs the off window had already doomed (stamp below 6 under a v5 executor, S1) are affected; stamps >= 6 pass. Fix if wanted: resilient start keeps an orphan `run_created`'s version | `ServerRaiseProtocol/WSMAIN_flagFlip_crash` violated; `WSMAIN_flagFlip_crash_slotStamps` passes |
+| N6 | #4415 stamps events written from outside the executor with `min(SPEC_VERSION_CURRENT, run.specVersion)` from an unfenced read | sound: the raise only goes up, so a stale read only lowers the tag, and the event id scheme comes from the server's held run (P3). Nit: `Run.cancel()` and `cancelRun()` still disagree on a run with no recorded version (8 vs 1; world-postgres's `spec_version` is nullable) | `Completeness/ProbeMisread`: `stale_read_event_readable`, `cancel_paths_disagree_unknown` |
+| N7 | Recovery of a wedged run now refuses dynamic-code runs before the reset branch (workflow-server `handlers/v4/events.ts:2666`), so a raised dynamic run wedged without `run_started` 503s until MAX_DELIVERIES | not modelled, minor; it fails closed, as a `run_failed` | (code reading only) |
 
 What the `HEAD` runs still report, and why none of it is a new bug:
 
@@ -75,6 +91,74 @@ What the `HEAD` runs still report, and why none of it is a new bug:
   NoMixedIdentityLog violations. Its server half is `d0575db`, so those are
   the S3/S4 races, which `ServerRaiseProtocol/HEAD` shows are closed at
   `f83173c`.
+
+
+## What changed on main since the PR heads
+
+The stamp, raise and gate code the models check is unchanged in substance on
+both `main`s. What did change:
+
+| Change | Effect on the models |
+|---|---|
+| vercel/workflow#4916 `42077f2b9`: the probe sends `probeRunId`, and 5.x responders accept it or the legacy `runId` | The StartStamping/Combined probe outcome for a 4.x target was a free choice. For #4327 callers before #4916 the only reachable outcome was a miss (N1, `ProbeMisread`). At `main` the free choice is accurate again |
+| vercel/workflow#4415 `20aa6562f`: `specVersionForRunWrite` caps the tag of `hook_received`, `run_cancelled`, DEPLOYMENT_MISMATCH `run_failed`, `wait_completed` and re-enqueues | Tags only, never the event id scheme. Shown sound under a concurrent raise (N6). The models' event ids still come from the held run, which is what the server does |
+| vercel/workflow#4640 `e71d1c767`: zstd only into runs whose Node.js decodes it | Writes into a run only. The result read back by the caller is still ungated (N4, `OutputCodec`) |
+| vercel/workflow#4670 / #4669: the `compressArguments` option and off-loop compression | Can only remove argument compression. `TargetCanReadInput` still holds |
+| vercel/workflow#4408: `start()` with an explicit `deploymentId` outside a deployment takes the probe path | At worst a same-deployment start is stamped like a cross one (6 on a miss), which the raise heals |
+| vercel/workflow#5070: resilient `run_started` forwards the run public key | No spec-version effect |
+| vercel/workflow#4924: world-local holds the victim's hook lock in a force-claim | Local Worlds never raise mid-run, so ForceClaimGate is unaffected |
+| workflow-server #1174 `dcb1b00`: spec 9, single orchestrator, API v5 only | 9 is structural, so the allow-list keeps it from being crossed mid-run (S10), but the raise may cross into it on a fresh log (N2, N3, `OrchestratorRaise`). vercel/workflow#4661 (open) caps the attestation at 8 below spec 9 |
+| workflow-server #1082: a `pending` run read by a step write is re-read consistently | `main` sits between `HEAD_turbo` (as modelled, passes) and `HEAD_turboFix`; T1 holds a fortiori |
+| workflow-server #1322 (per-run read cooldown at `run_started`), #1202, #1250, #1231/#1232 | Reviewed: the cooldown sheds in middleware before any read or write and ships off. Since #1061 a found row always has its `run_created`, so the 60 s window cannot be outrun by shedding. #1250's 429 after the running patch is the existing "fails after ExTrans" wedge |
+| workflow-server: recovery refuses dynamic-code runs before the reset branch | N7 (not modelled) |
+
+Unchanged and still open at `main`: C2 (#4401), C4 (#4407: `requiresNewerWorld`
+is still called only by world-local and world-postgres, against the World
+package's max), S7, E1b (`events.ts:822` keeps `config?.mintedSpecVersion ??
+mintedSpecVersion()`, and `createStorage` is still exported), P3, S9.
+
+Recommendations from this round:
+
+1. **workflow-server (N2).** Never raise a run into spec 9. Either cap the
+   attestation at 8 for a run below 9, in the upgrade and in resilient
+   start (`OR_SO_NoCap_ServerCaps9` passes with no client cap at all), or
+   make `version-utils.ts`'s "a run never crosses into it" true in
+   `crossesStructuralSpecVersion`. Today the server is safe only because
+   no SDK attests 9, and #4661's cap is the only thing that will keep it
+   so. `handlers/v5/ws.ts:54-57` also expects a spec-9 executor to raise a
+   run created below 9, which #4661's design never does; one of the two
+   should change.
+2. **#4661 / #4407 (N3).** Refuse an explicit `specVersion >= 9` unless the
+   target is known to run the single orchestrator (for example, its probe
+   reports 9). The in-band fence check is on the caller's World.
+3. **Result codec (N4), with S7.** Record what the caller can decode (its
+   stamp for the format, and whether it has zstd) on `run_created`, and gate
+   the return value and run error on it, the way #4640 gates writes into a
+   run.
+4. **N5, optional.** When resilient start finds an orphan `run_created`, keep
+   its version instead of raising. Only already-doomed runs benefit.
+
+Line references at `main` for the code the model headers cite at the PR heads:
+
+| Code | At the PR heads | At `main` |
+|---|---|---|
+| `resolveCrossDeploymentSpecVersion` | `start.ts:117-138` (29197a10f: 156-182) | `start.ts:177-203` |
+| probe cache (10 min / 60 s from the first miss) | `start.ts:250-320` | `start.ts:295-341` (window `:330-332`) |
+| explicit `opts.specVersion` wins | `start.ts:587-588` | `start.ts:860` |
+| attributes gate | `start.ts:595-661` | `start.ts:866-925` |
+| argument compression | `start.ts:598-613` | `start.ts:1061-1067` |
+| `recreateRunFromExisting` | `runs.ts:83-130` | `runs.ts:97-160` |
+| CLI replay stamp | `cli inspect/run.ts:87-109` | `:84-118` (byte-identical) |
+| health responder value | `helpers.ts:194` | `helpers.ts:219` |
+| attestation | world-vercel `events.ts:779-781`, `index.ts:31-34` | `events.ts:819-823`, `index.ts:49-50` |
+| result compression | `workflow.ts:1254`, `runtime.ts:430` | `workflow.ts:1282`, `runtime.ts:429` |
+| raise | ws `run-spec-version-upgrade.ts:96-208` | `:94-292` (same code) |
+| `run_started` fetch, upgrade, resilient start | ws `events.ts:8047-8238` | `events.ts:9236-9540` |
+| `run_started` patch (P4) | ws `events.ts:2601-2640` | `events.ts:3236-3249` |
+| ULID terminal patches (P3) | ws `events.ts:2618-2635` | `events.ts:3320-3330, 3425, 3500` |
+| recovery (reset only raised runs) | ws `handlers/v4/events.ts:1864-1905` | `:2519-2719` |
+| force-claim victim gate | ws `events.ts:6050-6100` | `events.ts:6944-6984` |
+| spec 9 routing | n/a | `events.ts:2125-2194`, `v5/errors.ts`, `version-utils.ts:123-153` |
 
 ## The protocol in brief
 
@@ -199,7 +283,9 @@ actors:
 - MAX_DELIVERIES `run_failed`
 
 Stamps are `{3,6,7,8}` and executor versions `{6,7,8}`, chosen
-nondeterministically.
+nondeterministically. With `FlagFlips` the raise flag starts off and an
+operator may turn it on once while the run is in flight (N5, the
+`WSMAIN_flagFlip_*` configs, checked for their own invariant list only).
 
 There are 13 safety invariants and action properties, plus progress checks:
 `NoStuck`, `GoodOutcome`, and `Termination` under weak fairness. Progress
@@ -276,6 +362,22 @@ Code mapping is in the `.tla` header and `gen_cfgs.py`.
   upgrade and rollback, and package skew with the kill switch.
 - `AttestSound.lean` (6 theorems): when #4366's attestation matches what the
   executor can actually read.
+- `ProbeMisread.lean` (11 theorems, new): the #4916 probe payload against a
+  4.x responder's invoke-first union and a 5.x responder's health-first
+  union, and the stamp each yields (N1); #4415's `specVersionForRunWrite`
+  against a stale read under a never-lowering raise (N6).
+- `OutputCodec.lean` (4 theorems, new): which caller can decode the result
+  the executor writes, by stamp, executor codec (zstd on Node >= 22.15) and
+  caller capability, as written and with the caller's capability recorded
+  on the run (N4).
+- `OrchestratorRaise.tla` (new): one run against workflow-server's spec-9
+  routing. The caller creates the run over v4 (below 9) or v5 (9); each
+  delivery's orchestrator, API version and attestation follow from the
+  stamp, the target's code and `CapAttest` (#4661's `executorSpecVersionFor`).
+  The server's resilient start, routing by persisted version, #1044 raise
+  (structural set `{2, 6, 7, 9}`) and v5-only writes are modelled, with the
+  hardening toggle `ServerCaps9`. Properties: `NoApiRefusal`,
+  `OrchestratorMatchesRun`, `RunCompletes` (N2, N3).
 
 ## How to run
 

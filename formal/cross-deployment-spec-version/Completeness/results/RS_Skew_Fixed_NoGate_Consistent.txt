@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 106 and seed -8279261841484803828 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 52342] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 124 and seed -7561292535887964260 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 20315] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/RolloutSkew.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/Sequences.tla
@@ -10,9 +10,9 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module RolloutSkew
-Starting... (2026-09-25 19:12:55)
+Starting... (2026-10-28 18:00:17)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-09-25 19:12:56.
+Finished computing initial states: 1 distinct state generated at 2026-10-28 18:00:18.
 Error: Invariant NoMixedIdentityLog is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -173,7 +173,7 @@ State 7: <Ins line 153, col 3 to line 156, col 41 of module RolloutSkew>
   [sp |-> 8, st |-> "cancelled"],
   [sp |-> 8, st |-> "pending"] }
 
-1217 states generated, 737 distinct states found, 466 states left on queue.
+915 states generated, 580 distinct states found, 383 states left on queue.
 The depth of the complete state graph search is 7.
 The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 6 and the 95th percentile is 5).
-Finished in 00s at (2026-09-25 19:12:56)
+Finished in 01s at (2026-10-28 18:00:18)

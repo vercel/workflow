@@ -28,10 +28,12 @@ lean() { # file
   else printf '%-45s FAILED\n' "$1"; fail=1; fi
 }
 lean AttestSound
+lean ProbeMisread
+lean OutputCodec
 while read -r cfg exp; do
   [ -z "$cfg" ] && continue
   case "$cfg" in \#*) continue;; esac
-  mod=${cfg%%_*}; case $mod in RS) mod=RolloutSkew;; SP) mod=SharedPool;; esac
+  mod=${cfg%%_*}; case $mod in RS) mod=RolloutSkew;; SP) mod=SharedPool;; OR) mod=OrchestratorRaise;; esac
   tlc "$mod" "$cfg" "$exp"
 done <<'LIST'
 RS_Witness_Raised violation
@@ -58,5 +60,11 @@ SP_PkgSkew_KillSwitch_Cross4327 violation
 SP_KillSwitchNew_Rolling pass
 SP_Rollback_Cross_Head_NoCache pass
 SP_Rollback_Cross_Head_Cache violation
+OR_Main pass
+OR_SO_Cap pass
+OR_SO_NoCap violation
+OR_SO_NoCap_RaiseOnly violation
+OR_SO_NoCap_ServerCaps9 pass
+OR_Explicit9_IntoMain violation
 LIST
 exit $fail

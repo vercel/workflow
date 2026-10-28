@@ -81,6 +81,10 @@ for cfg in "${CONFIGS[@]}"; do
   tmp="$(mktemp -d)"
   cp "$HERE/ServerRaiseProtocol.tla" "$HERE/$cfg.cfg" "$tmp/"
   tlc "$tmp" "$cfg.cfg" "$RESULTS/$cfg.txt"
+  # gen_cfgs.py marks configs checked with their own invariant list only
+  if grep -q '^\\\* run.sh: headline-only' "$HERE/$cfg.cfg"; then
+    rm -rf "$tmp"; continue
+  fi
   if [ "$ONLY_HEADLINE" = 0 ] && [ "$cfg" != RECOMMENDED_D3 ]; then
     for kind in INVARIANT PROPERTY; do
       if [ $kind = INVARIANT ]; then names=("${INVARIANTS[@]}"); else names=("${PROPERTIES[@]}"); fi

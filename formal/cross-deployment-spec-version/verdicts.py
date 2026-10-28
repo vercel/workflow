@@ -16,6 +16,8 @@ MODELS = ["StartStamping", "ServerRaiseProtocol", "MidRunRaiseGates",
 LEAN_FILES = {("ResolveLean", n) for n in
               ("Spec", "Resolve", "Raise", "StaleSkip", "Combined")}
 LEAN_FILES.add(("Completeness", "AttestSound"))
+LEAN_FILES.add(("Completeness", "ProbeMisread"))
+LEAN_FILES.add(("Completeness", "OutputCodec"))
 SKIP = {"summary.txt", "run-all.txt", "lean-version.txt"}
 
 
