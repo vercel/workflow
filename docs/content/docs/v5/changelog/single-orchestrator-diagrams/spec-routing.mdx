@@ -9,37 +9,39 @@ description: How each delivery picks the spec 8 or spec 9 orchestrator, how ever
 This page is temporary review material for the pull request that introduces spec version 9, and is removed before merge. The written review is [Review: single orchestrator](/docs/changelog/single-orchestrator-review).
 </Callout>
 
-The runtime keeps two orchestrators side by side: `runtime/spec8/` (the previous one) and `runtime/spec9/`. A run keeps the spec version it was created with, and every delivery is routed by that stored version. Runs at 9 or later go to the spec 9 orchestrator, anything earlier to spec 8 (`packages/core/src/runtime.ts:60`).
+The runtime keeps two orchestrators side by side: `runtime/spec8/` (the previous one) and `runtime/spec9/`. A run keeps the spec version family it was created with, and every delivery is routed by that stored version. Runs at 9 or later go to the spec 9 orchestrator, anything earlier to spec 8 (`packages/core/src/runtime.ts:59`). The backend may raise a run's version across capability-only versions (for example 5 to 8, see `CAPABILITY_ONLY_SPEC_VERSIONS`), never across 9, so a run never changes orchestrator.
 
 ## Resolving a delivery's spec
 
-`resolveRunSpec` (`packages/core/src/runtime/run-spec-routing.ts:52`) tries, in order:
+`resolveRunSpec` (`packages/core/src/runtime/run-spec-routing.ts:53`) tries, in order:
 
 1. `runInput.specVersion`, on a run's first delivery from `start()`.
 2. `runContext.specVersion`, on a step message.
 3. `runSpecVersion`, the hint on every other message of a run, a world-vercel rotation's continuation included: it drops the start message's `runInput` and stamps the version `runInput` carried (`singleOrchestratorContinuationPayload` in `@workflow/world`).
-4. A per-process cache of 10,000 run spec versions (`RUN_SPEC_VERSION_CACHE_SIZE`), on `globalThis` so every bundled copy shares it. A carried version is remembered here.
-5. `runs.get(runId, { resolveData: 'none' })`. A run without a stored version is `SPEC_VERSION_LEGACY`. A run that is not found takes the World's own spec version, and the orchestrator handles the missing run. The run read here is handed on, so the orchestrator does not read it again.
+4. `runs.get(runId, { resolveData: 'none' })`. A run without a stored version is `SPEC_VERSION_LEGACY`. A run that is not found takes the World's own spec version, and the orchestrator handles the missing run. The run read here is handed on, so the orchestrator does not read it again.
+
+Nothing is remembered between messages: a stamped message never reads the run, and an unstamped one reads it once. A wrong hint routes the message to the other orchestrator, which finds the run's own version on the row it loads and sends the message again with that version before it replays anything (`handOffToRunOrchestrator`, `packages/core/src/runtime/delivery.ts:125`).
 
 ```mermaid
 flowchart TD
     M["Delivery"] --> A{"runInput.specVersion?"}
-    A -->|"set"| R["Use it, remember it"]
+    A -->|"set"| R["Use it"]
     A -->|"unset"| B{"runContext.specVersion?"}
     B -->|"set"| R
     B -->|"unset"| C{"runSpecVersion hint?"}
     C -->|"set"| R
-    C -->|"unset"| D{"In the per-process cache?"}
-    D -->|"yes"| U["Use the cached version"]
-    D -->|"no"| G["runs.get"]
-    G -->|"found"| V["run.specVersion or legacy, remember it"]
+    C -->|"unset"| G["runs.get"]
+    G -->|"found"| V["run.specVersion or legacy"]
     G -->|"not found"| WV["World's own spec version"]
     R --> S{"9 or later?"}
-    U --> S
     V --> S
     WV --> S
     S -->|"yes"| S9["runtime/spec9"]
     S -->|"no"| S8["runtime/spec8"]
+    S9 --> H{"Loaded run of the other family?"}
+    S8 --> H
+    H -->|"yes"| HO["Send again with the run's version"]
+    H -->|"no"| X["Run the delivery"]
 ```
 
 The World decides the queue side from the payload alone, with `messageRunSpecVersion` (steps 1 to 3 only). It never reads the run. An unstamped message is spec 8 there, whatever the run is. See [Queue topology](/docs/changelog/single-orchestrator-diagrams/queue-topology).
@@ -64,29 +66,33 @@ world-local and world-postgres serialize only spec 9 runs (`singleOrchestratorRu
 
 ## Stamps at every send site
 
-Every send of a spec 9 run's message in this runtime names the run's version. `queueMessage` and `queueMessages` add `runSpecVersion` from `opts.specVersion`, falling back to the process cache only when the caller passed none (`withRunSpecVersion`, `packages/core/src/runtime/run-spec-routing.ts:89`; `packages/core/src/runtime/helpers.ts:1388`). `spec9/spec-stamp.runtime.test.ts` clears the cache before every write and step body, on both engines, and checks every message is stamped.
+Every send of a run's message in this runtime names the run's version, for spec 8 runs as well as spec 9 ones. A producer either puts `runSpecVersion` (or `runContext`, `runInput`) on the payload itself, or passes the run's version as `opts.specVersion`, which `queueMessage` and `queueMessages` copy onto the payload (`withRunSpecVersion`, `packages/core/src/runtime/run-spec-routing.ts:82`; `packages/core/src/runtime/helpers.ts:1388`). `spec9/spec-stamp.runtime.test.ts` checks every message of a spec 9 run on both engines, and `spec-stamp-world-local.test.ts` checks spec 8 and spec 9 runs end to end on world-local, including that routing reads the run only for an unstamped message.
 
 | Producer | Field | Where |
 |---|---|---|
-| `start()`, first delivery | `runInput.specVersion` | `packages/core/src/runtime/start.ts:1219` |
-| Background step message, node engine | `runContext` | `packages/core/src/runtime/spec9/delivery.ts:3722` |
-| Background step message, QuickJS | `runContext` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:218` |
-| Orchestrator wake, timer, intermediate hop | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:809` |
-| Deployment-mismatch re-enqueue | `runSpecVersion`, the run's or the routed spec | `packages/core/src/runtime/spec9/delivery.ts:859` |
-| Step handler's wake | `runSpecVersion` | `packages/core/src/runtime/spec9/step-handler.ts:258` |
-| QuickJS wakes and timers | `runSpecVersion` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:445`, `:2394`, `:2423` |
-| `resumeHook()` wake | `runSpecVersion`, explicit | `packages/core/src/runtime/resume-hook.ts:971` |
-| Force-claim victim wake | `runSpecVersion` from `claimedFrom` | `packages/core/src/runtime/hook-wake.ts:141` |
-| `cancel()` wake | `runSpecVersion`, explicit | `packages/core/src/runtime/runs.ts:186` |
-| `run.wakeUp()` | `runSpecVersion`, explicit | `packages/core/src/runtime/runs.ts:486` |
-| `reenqueueRun()` | `runSpecVersion`, explicit | `packages/core/src/runtime/runs.ts:361` |
+| `start()`, first delivery | `runInput.specVersion` | `packages/core/src/runtime/start.ts:1236` |
+| Background step message, node engine | `runContext` | `packages/core/src/runtime/spec9/delivery.ts:4089` |
+| Background step message, QuickJS | `runContext` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:199` |
+| Orchestrator wake, timer, intermediate hop | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec9/delivery.ts:948` |
+| Deployment-mismatch re-enqueue | `runSpecVersion`, the run's or the routed spec | `packages/core/src/runtime/spec9/delivery.ts:988` |
+| Step handler's wake | `runSpecVersion` | `packages/core/src/runtime/spec9/step-handler.ts:424` |
+| QuickJS wakes and timers | `runSpecVersion` | `packages/core/src/runtime/spec9/quickjs-entrypoint.ts:625`, `:2769`, `:2797`; `packages/core/src/runtime/quickjs-pending-ops.ts:320` |
+| Spec 8 replay message, wakes, timers, requeues, backstops, divergence recovery | `runSpecVersion` from the routed spec | `packages/core/src/runtime/spec8/delivery.ts:625`, `:1106`, `:1122`, `:2139`, `:3374`, `:3466`, `:4347`, `:4504` |
+| Spec 8 deployment-mismatch re-enqueue | `runSpecVersion`, the run's or the routed spec | `packages/core/src/runtime/spec8/delivery.ts:907` |
+| Spec 8 step messages, both engines | `runContext` | `packages/core/src/runtime/spec8/delivery.ts:3424`, `:4296`; `packages/core/src/runtime/spec8/suspension-handler.ts:1457`; `packages/core/src/runtime/spec8/quickjs-entrypoint.ts:165` |
+| Spec 8 QuickJS wakes and timers | `runSpecVersion` from the run | `packages/core/src/runtime/spec8/quickjs-entrypoint.ts:1370`, `:1889`, `:1915`, `:1992` |
+| `resumeHook()` wake | `runSpecVersion`, explicit, left off when unknown | `packages/core/src/runtime/resume-hook.ts:980` |
+| Force-claim victim wake | `runSpecVersion` from `claimedFrom`, left off when unknown | `packages/core/src/runtime/hook-wake.ts:145` |
+| `cancel()` wake | `runSpecVersion`, explicit | `packages/core/src/runtime/runs.ts:206` |
+| `run.wakeUp()` | `runSpecVersion`, explicit | `packages/core/src/runtime/runs.ts:537`, `:597` |
+| `reenqueueRun()` | `runSpecVersion`, explicit | `packages/core/src/runtime/runs.ts:381` |
+| `reenqueueActiveRuns()` (world-local, world-postgres restart recovery) | `runSpecVersion` when the run records one | `packages/world/src/recovery.ts:79` |
 | `resumeHook()` and `cancel()` from an older SDK | none | outside this runtime |
-| Vercel dashboard's pinned `@workflow/core` | none | outside this runtime, not verified here |
-| Admin re-enqueue path | none, per the review | outside this repository, not verified here |
+| Other clients of the World | not known | outside this runtime |
 
 ## An unstamped message
 
-A message to a spec 9 run without a stamp still reaches the right orchestrator, because `resolveRunSpec` falls through to the cache or `runs.get`. The World treats it as spec 8: on world-vercel it is sent unkeyed and a `{ timeoutSeconds }` result continues on a new message; on world-local and world-postgres it skips the per-run gate. It then runs next to the keyed holder, and the in-band fence keeps that safe: the loser's write gets a 412, and it asks for a redelivery of its own message (see [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence)). The log stays linear, but the overlap can cost more than one invocation: a spec 9 inline step's start carries no owner, so the unserialized delivery can start and run the body of an inline step the holder is still running, and the fence refuses only the later outcome write. Every producer in this runtime stamps its messages for that reason, including the restart recovery of world-local and world-postgres (`reenqueueActiveRuns`).
+A message to a spec 9 run without a stamp still reaches the right orchestrator, because `resolveRunSpec` falls through to `runs.get`. The World treats it as spec 8: on world-vercel it is sent unkeyed and a `{ timeoutSeconds }` result continues on a new message; on world-local and world-postgres it skips the per-run gate. It then runs next to the keyed holder, and the in-band fence keeps that safe: the loser's write gets a 412, and it asks for a redelivery of its own message (see [The in-band fence and its 412s](/docs/changelog/single-orchestrator-diagrams/in-band-fence)). The log stays linear, but the overlap can cost more than one invocation: a spec 9 inline step's start carries no owner, so the unserialized delivery can start and run the body of an inline step the holder is still running, and the fence refuses only the later outcome write. Every producer in this runtime stamps its messages for that reason, including the restart recovery of world-local and world-postgres (`reenqueueActiveRuns`). A producer outside it can still send an unstamped message, or one stamped below 9, for a spec 9 run, and nothing in the runtime can prevent that; a hint below 9 reaches the spec 8 orchestrator first, which hands the message on once it loads the run. The comments on `resolveRunSpec` and on `messageRunSpecVersion` in `@workflow/world` record this.
 
 ```mermaid
 sequenceDiagram
@@ -160,10 +166,10 @@ sequenceDiagram
 
 ## Edge cases
 
-- A run that is not found during routing takes the World's own spec version, and that orchestrator then handles the missing run (`packages/core/src/runtime/run-spec-routing.ts:70`).
-- The cache holds 10,000 runs and evicts the oldest; a send site that relied on it used to go out unstamped after 10,000 other runs in one process, which the explicit stamps fixed (`packages/core/src/runtime/run-spec-routing.ts:24`).
-- `withRunSpecVersion` never overwrites a `runSpecVersion` the payload already carries (`packages/core/src/runtime/run-spec-routing.ts:92`).
-- A health check has no run spec and is never keyed or gated (`packages/world/src/queue.ts:660`).
+- A run that is not found during routing takes the World's own spec version, and that orchestrator then handles the missing run (`packages/core/src/runtime/run-spec-routing.ts:66`).
+- Routing keeps no per-process memory of run versions. An earlier version cached them; the spec 8 orchestrator's own sends relied on that cache for their hint and now stamp it explicitly.
+- `withRunSpecVersion` never overwrites a `runSpecVersion` the payload already carries (`packages/core/src/runtime/run-spec-routing.ts:86`).
+- A health check has no run spec and is never keyed or gated (`packages/world/src/queue.ts:696`).
 - The in-band fence is checked where a spec 9 run is created (`start()`) and where its orchestrator delivery begins writing (the `InBandWriter`); a World that declares spec 8 creates spec 8 runs and is not checked (`assertWorldSupportsInBandFence`, `packages/core/src/runtime/world-compatibility.ts:78`).
 - `WORKFLOW_SPEC_VERSION` accepts an integer from 6 to 9; any other value is ignored with a one-time warning and the default is minted (`mintedSpecVersion`, `packages/world/src/spec-version.ts:202`).
 - An older SDK's 400 is answered on the write, so no stale wake is left queued for a spec 9 run.

@@ -97,11 +97,10 @@ Each delivery is routed by the spec version of its run, resolved in this order:
 
 1. `runInput.specVersion` on a first delivery.
 2. `runContext.specVersion` on a step message.
-3. The `runSpecVersion` hint on the message. `queueMessage`/`queueMessages` stamp it on every message for a run, and the direct `world.queue` call sites (`runs.ts`, `hook-wake.ts`, `resume-hook.ts`) set it explicitly.
-4. A per-process cache of run spec versions (10,000 entries).
-5. `runs.get`, and if the run is not found, the World's own spec version.
+3. The `runSpecVersion` hint on the message. Every producer in this runtime stamps it on the orchestrator messages of a run, spec 8 and spec 9 alike: from `opts.specVersion` through `queueMessage`/`queueMessages`, or on the payload, as the direct `world.queue` call sites (`runs.ts`, `hook-wake.ts`, `resume-hook.ts`) do.
+4. `runs.get`, and if the run is not found, the World's own spec version.
 
-Runs at spec 9 or later go to `runtime/spec9`, and anything earlier goes to `runtime/spec8`, which is the previous orchestrator.
+Runs at spec 9 or later go to `runtime/spec9`, and anything earlier goes to `runtime/spec8`, which is the previous orchestrator. Nothing is remembered between messages, so a stamped message never reads the run and an unstamped one reads it once. A wrong hint is corrected by the orchestrator it reached: once it loads the run row and finds the other family, it sends the message again with the run's version (`handOffToRunOrchestrator`).
 
 **Example: a spec 8 run continuing after a World upgrade.** A long approval workflow is started on a World that declares spec 8, then sleeps for a week.
 
@@ -576,9 +575,9 @@ An earlier version of this PR redelivered the same message for every `{ timeoutS
 
 Topic, key and continuation are chosen from the spec version the message carries. A spec 9 message without one would be sent unkeyed and continue on new messages; a spec 9 step message continuing on a new message would lose its same-message retry and arrive as a plain first delivery, which skips the log read the at-most-once rule of `maxRetries: 0` steps depends on.
 
-Every spec 9 send site in this runtime now names the run's spec version (`specVersion` on the queue options, which `withRunSpecVersion` stamps as `runSpecVersion`; a step message carries `runContext`): the orchestrator's wakes and timers (from the routed spec, `WorkflowDelivery.runSpecVersion`), the QuickJS engine's wakes and timers, and the step handler's wakes. They used to fall back to a 10,000-entry per-process memory of run spec versions, so after 10,000 other runs in one process their messages went out unstamped. `spec9/spec-stamp.runtime.test.ts` forgets the run before every write and step body, on both engines, and checks every message is stamped.
+Every spec 9 send site in this runtime now names the run's spec version (`specVersion` on the queue options, which `withRunSpecVersion` stamps as `runSpecVersion`; a step message carries `runContext`): the orchestrator's wakes and timers (from the routed spec, `WorkflowDelivery.runSpecVersion`), the QuickJS engine's wakes and timers, and the step handler's wakes. The spec 8 orchestrator's wakes, timers and requeues stamp it too. Routing keeps no per-process memory of run spec versions; an earlier version did, and sends that relied on it went out unstamped after 10,000 other runs in one process. `spec9/spec-stamp.runtime.test.ts` checks every message of a spec 9 run on both engines, and `spec-stamp-world-local.test.ts` checks spec 8 and spec 9 runs end to end on world-local.
 
-Unstamped producers outside this runtime remain: `resumeHook()` and `cancel()` callers in deployments on an older SDK, the Vercel dashboard's pinned `@workflow/core`, and the admin re-enqueue path. Their messages to a spec 9 run are treated as spec 8: sent unkeyed, so they run next to the keyed orchestrator, where the in-band fence keeps them safe (the loser stands down with a redelivery of its message) at the cost of an overlapping invocation.
+Producers outside this runtime can still send a spec 9 run a message that is unstamped or stamped below 9: `resumeHook()` and `cancel()` callers in deployments on an older SDK, or any other client of the World. Nothing in the runtime can prevent that. Such a message is treated as spec 8 by the World: world-vercel sends it unkeyed, so it can run next to the keyed orchestrator. Routing still gets it to the spec 9 orchestrator (an unstamped message through `runs.get`, a low hint through the hand-off), and the in-band fence keeps the log correct (the loser stands down with a redelivery of its message). The cost is wasted orchestrator work, which can include a second run of an inline step's body, not a corrupted log.
 
 ### Long step retries cost an invocation every 900 seconds on Vercel
 
