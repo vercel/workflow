@@ -693,6 +693,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           params?.resumePayloadDigest !== undefined,
         afterStepBody: params?.afterStepBody === true,
         inBand: params?.inBand === true,
+        resolvedHookResume: params?.requireHookResumeDedup === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {
@@ -730,6 +731,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     }
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
+      params?.requireHookResumeDedup !== true &&
       isHookEventRequiringExistence(data.eventType) &&
       WorkflowWorldError.is(err) &&
       err.status === 404 &&

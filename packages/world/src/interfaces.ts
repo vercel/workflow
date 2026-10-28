@@ -685,6 +685,9 @@ export interface WorldCapabilities {
    * must enforce atomic resume deduplication or reject before writing, even
    * against an older backend or when dedup support is disabled. This is an
    * adapter contract, not a cached attestation of live backend support.
+   * A definite refusal (HTTP 400/404) MUST guarantee nothing was written:
+   * core may then resolve the token and deliver through the ordinary route.
+   * Uncertain failures MUST NOT be retried or reported as definite refusals.
    */
   resolvedHookResume?: boolean;
 

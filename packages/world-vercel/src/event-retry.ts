@@ -440,6 +440,8 @@ export interface EventPostRetryOptions {
    * responses stay non-retryable regardless.
    */
   idempotentHookResume?: boolean;
+  /** Resolved delivery retries only definite admission refusals, never uncertainty. */
+  resolvedHookResume?: boolean;
   /**
    * Batch POST retry verdict, set by `createWorkflowRunEventBatch` from the
    * batch's CONTENTS. `true` means every event in the batch converges on a
@@ -628,7 +630,13 @@ export async function withEventPostRetry<T>(
       return await fn();
     } catch (err) {
       if (err instanceof AfterCommitError) throw err;
-      if (ThrottleError.is(err)) {
+      if (
+        ThrottleError.is(err) ||
+        (options?.resolvedHookResume === true &&
+          WorkflowWorldError.is(err) &&
+          err.status === 503 &&
+          err.retryAfter !== undefined)
+      ) {
         await waitOutThrottle(err);
         continue;
       }

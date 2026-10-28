@@ -228,4 +228,84 @@ describe('createWorkflowRunEvent retry wiring', () => {
     ).rejects.toBeInstanceOf(WorkflowWorldError);
     expect(createV4Mock).toHaveBeenCalledTimes(1);
   });
+  it.each([
+    400, 404,
+  ])('preserves definite %s refusals on resolved delivery', async (status) => {
+    const error = new WorkflowWorldError('resolved refused', { status });
+    createV4Mock.mockRejectedValue(error);
+    await expect(
+      createWorkflowRunEvent(
+        RUN_ID,
+        {
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          specVersion: 2,
+          eventData: { payload: new Uint8Array([1]) },
+        },
+        {
+          requireHookResumeDedup: true,
+          resumeId: 'resolved',
+          resumePayloadDigest: 'a'.repeat(64),
+        },
+        CONFIG
+      )
+    ).rejects.toBe(error);
+    expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    429, 503,
+  ])('retries definite %s admission refusals on the resolved route', async (status) => {
+    const error =
+      status === 429
+        ? new ThrottleError('busy', { retryAfter: 1 })
+        : new WorkflowWorldError('busy', { status: 503, retryAfter: 1 });
+    createV4Mock
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(v4Success());
+    const params = {
+      requireHookResumeDedup: true,
+      resumeId: 'resolved',
+      resumePayloadDigest: 'a'.repeat(64),
+    };
+    const promise = createWorkflowRunEvent(
+      RUN_ID,
+      {
+        eventType: 'hook_received',
+        correlationId: 'hook_1',
+        specVersion: 2,
+        eventData: { payload: new Uint8Array([1]) },
+      },
+      params,
+      CONFIG
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+    expect(createV4Mock).toHaveBeenCalledTimes(2);
+    expect(createV4Mock.mock.calls[0][0].resumeId).toBe('resolved');
+    expect(createV4Mock.mock.calls[1][0].resumeId).toBe('resolved');
+  });
+
+  it('does not retry a resolved write after an uncertain response', async () => {
+    const error = new WorkflowWorldError('lost', { code: 'STREAM_ERROR' });
+    createV4Mock.mockRejectedValue(error);
+    await expect(
+      createWorkflowRunEvent(
+        RUN_ID,
+        {
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          specVersion: 2,
+          eventData: { payload: new Uint8Array([1]) },
+        },
+        {
+          requireHookResumeDedup: true,
+          resumeId: 'resolved',
+          resumePayloadDigest: 'a'.repeat(64),
+        },
+        CONFIG
+      )
+    ).rejects.toBe(error);
+    expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
 });
