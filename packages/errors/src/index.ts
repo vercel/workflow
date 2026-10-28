@@ -511,18 +511,16 @@ export class RuntimeDecryptionError extends WorkflowRuntimeError {
  *
  * Fatal, so the step skips the retry loop.
  */
-export class NonTransientEncryptionKeyLookupError extends WorkflowRuntimeError {
+export class EncryptionKeyLookupError extends WorkflowRuntimeError {
   readonly fatal = true;
 
   constructor(message: string, options?: ErrorOptions) {
     super(message, { cause: options?.cause });
-    this.name = 'NonTransientEncryptionKeyLookupError';
+    this.name = 'EncryptionKeyLookupError';
   }
 
-  static is(value: unknown): value is NonTransientEncryptionKeyLookupError {
-    return (
-      isError(value) && value.name === 'NonTransientEncryptionKeyLookupError'
-    );
+  static is(value: unknown): value is EncryptionKeyLookupError {
+    return isError(value) && value.name === 'EncryptionKeyLookupError';
   }
 }
 

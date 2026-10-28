@@ -1,5 +1,5 @@
 import {
-  NonTransientEncryptionKeyLookupError,
+  EncryptionKeyLookupError,
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -163,7 +163,7 @@ describe('Run#getWritable', () => {
     await writer.write('chunk');
     writer.releaseLock();
     const error = await Promise.all(ops).catch((e) => e);
-    expect(error).toBeInstanceOf(NonTransientEncryptionKeyLookupError);
+    expect(error).toBeInstanceOf(EncryptionKeyLookupError);
     expect(error.cause).toBeInstanceOf(WorkflowRunNotFoundError);
     expect(world.streams.write).not.toHaveBeenCalled();
     expect(world.runs.get).toHaveBeenCalledTimes(1);

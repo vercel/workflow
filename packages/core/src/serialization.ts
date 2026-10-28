@@ -1,5 +1,5 @@
 import {
-  NonTransientEncryptionKeyLookupError,
+  EncryptionKeyLookupError,
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
@@ -370,12 +370,12 @@ export function getSerializeStream(
         // A key lookup failure is not a SerializationError either: nothing
         // was serialized yet. A transient failure passes through unwrapped so
         // the step retries; anything else (e.g. a 404) becomes a fatal
-        // NonTransientEncryptionKeyLookupError.
+        // EncryptionKeyLookupError.
         if (!keyState.resolved) {
           controller.error(
             isTransientKeyLookupError(error)
               ? error
-              : new NonTransientEncryptionKeyLookupError(
+              : new EncryptionKeyLookupError(
                   `Failed to resolve the encryption key for stream writes (owner run key lookup failed: ${error instanceof Error ? error.message : String(error)})`,
                   { cause: error }
                 )

@@ -1566,6 +1566,6 @@ describe('executeStep — forwarded writable key lookup failures', () => {
       0
     );
     const failed = await errorOf(world, runId, stepId, 'step_failed');
-    expect(failed.name).toBe('NonTransientEncryptionKeyLookupError');
+    expect(failed.name).toBe('EncryptionKeyLookupError');
   });
 });
