@@ -15,6 +15,7 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { importKey } from '../encryption.js';
 import { type QueueItem, WorkflowSuspension } from '../global.js';
 import {
   dehydrateWorkflowArguments,
@@ -930,7 +931,11 @@ describe('handleSuspension', () => {
       ]);
     });
 
-    it('creates a hook before delivering its abort within one suspension', async () => {
+    it.each([
+      false,
+      true,
+    ])('frames workflow-initiated aborts after persisting the unframed hook payload (encrypted=%s)', async (encrypted) => {
+      const rawKey = encrypted ? new Uint8Array(32).fill(9) : undefined;
       const order: string[] = [];
       const eventsCreate = vi.fn(async (_runId, event) => {
         order.push(`${event.eventType}:${event.correlationId}`);
@@ -938,7 +943,7 @@ describe('handleSuspension', () => {
       });
       const world = {
         events: { create: eventsCreate },
-        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(rawKey),
         streams: {
           write: vi.fn().mockResolvedValue(undefined),
           close: vi.fn().mockResolvedValue(undefined),
@@ -948,7 +953,12 @@ describe('handleSuspension', () => {
       await handleSuspension({
         suspension: new WorkflowSuspension(
           new Map<string, QueueItem>([
-            hook('hook_abort', { isSystem: true, abortRequested: true }),
+            hook('hook_abort', {
+              isSystem: true,
+              token: 'abrt_abort',
+              abortRequested: true,
+              abortReason: 'cancel',
+            }),
           ]),
           globalThis
         ),
@@ -960,6 +970,19 @@ describe('handleSuspension', () => {
         'hook_created:hook_abort',
         'hook_received:hook_abort',
       ]);
+      const payload = eventsCreate.mock.calls.find(
+        ([, event]) => event.eventType === 'hook_received'
+      )?.[1].eventData.payload;
+      const wire = vi.mocked(world.streams.write).mock
+        .calls[0][2] as Uint8Array;
+      expect(
+        new DataView(wire.buffer, wire.byteOffset).getUint32(0, false)
+      ).toBe(payload.length);
+      expect(wire.subarray(4)).toEqual(payload);
+      const key = rawKey ? await importKey(rawKey) : undefined;
+      expect(
+        await hydrateStepArguments(wire.subarray(4), run.runId, key)
+      ).toEqual({ aborted: true, reason: 'cancel' });
     });
 
     it('merges the hook delta in slot order around a concurrent skipped-slot report', async () => {

@@ -805,13 +805,13 @@ export function RunDetailView({
                     <div className="min-h-0 flex-1 divide-y divide-gray-400 overflow-y-auto">
                       {streamsLoading ? (
                         <div className="flex flex-col divide-y divide-gray-400">
-                          <div className="flex h-10 items-center pl-4 pr-2">
+                          <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
                             <Skeleton className="h-3.5 w-24" />
                           </div>
-                          <div className="flex h-10 items-center pl-4 pr-2">
+                          <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
                             <Skeleton className="h-3.5 w-32" />
                           </div>
-                          <div className="flex h-10 items-center pl-4 pr-2">
+                          <div className="flex h-10 min-h-10 items-center pl-4 pr-2">
                             <Skeleton className="h-3.5 w-20" />
                           </div>
                         </div>
@@ -820,7 +820,7 @@ export function RunDetailView({
                           {streamsError.message}
                         </div>
                       ) : streams.length === 0 ? (
-                        <div className="flex h-10 items-center px-4 text-label-12 text-gray-900">
+                        <div className="flex h-10 min-h-10 items-center px-4 text-label-12 text-gray-900">
                           No streams found for this run
                         </div>
                       ) : (
@@ -829,7 +829,7 @@ export function RunDetailView({
                             key={streamId}
                             type="button"
                             onClick={() => setSelectedStreamId(streamId)}
-                            className={`flex h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
+                            className={`flex h-10 min-h-10 w-full min-w-0 items-center truncate pl-4 pr-2 text-left text-label-14 transition-colors ${
                               selectedStreamId === streamId
                                 ? 'bg-gray-100 text-gray-1000 hover:bg-gray-200 active:bg-gray-200'
                                 : 'bg-transparent text-gray-900 hover:bg-gray-100 hover:text-gray-1000 focus-visible:bg-gray-100 focus-visible:text-gray-1000'
