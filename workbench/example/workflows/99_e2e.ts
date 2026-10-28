@@ -933,6 +933,105 @@ export async function startHookOwnerWorkflow(token: string, expected: number) {
 }
 
 /**
+ * A `start({ hook })` run that never claims its reserved token: the token was
+ * only its idempotency key. It waits on a separate gate token so a test can
+ * observe it while it runs.
+ */
+export async function startHookUnclaimedWorkflow(
+  gateToken: string,
+  value: string
+) {
+  'use workflow';
+
+  using gate = createHook<{ release: true }>({ token: gateToken });
+  await gate;
+  return { value };
+}
+
+/**
+ * A `start({ hook })` run that claims its reserved token late: it first waits
+ * on a gate token, and only then calls `createHook()` with the reserved token
+ * and awaits one payload, with no `getConflict()`.
+ */
+export async function startHookLateClaimWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+
+  using hook = createHook<{ message: string }>({ token });
+  const payload = await hook;
+  return { message: payload.message };
+}
+
+/**
+ * A `start({ hook })` run that claims its token, disposes the Hook, waits on a
+ * gate token, then claims the same token again with a second `createHook()`.
+ */
+export async function startHookReclaimWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  const messages: string[] = [];
+  {
+    using hook = createHook<{ message: string }>({ token });
+    messages.push((await hook).message);
+  }
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+  using again = createHook<{ message: string }>({ token });
+  messages.push((await again).message);
+  return { messages };
+}
+
+/**
+ * A `start({ hook })` run that claims its token but never reads from the
+ * Hook: payloads resumed to it stay unconsumed, and the run still completes.
+ */
+export async function startHookClaimUnreadWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+  using gate = createHook<{ release: true }>({ token: gateToken });
+  await gate;
+  return { hookToken: hook.token };
+}
+
+async function resumeStartHookOwner(token: string, message: string) {
+  'use step';
+  const hook = await resumeHook(token, { message });
+  return hook.runId;
+}
+// No step retries: only resumeHook's own wait on HookReservedError can carry
+// the step until the owner claims its token.
+resumeStartHookOwner.maxRetries = 0;
+
+/**
+ * Resumes a reserved token from inside a step. Until its owner claims the
+ * token, the lookup answers `HookReservedError`, which the step waits out.
+ */
+export async function startHookRouteFromStepWorkflow(
+  token: string,
+  message: string
+) {
+  'use workflow';
+
+  return { routedTo: await resumeStartHookOwner(token, message) };
+}
+
+/**
  * "Supersede the owner" strategy (newest-wins): cancel the active owner
  * and claim the released token. Cancellation disposes the owner's hooks;
  * the retry loop covers the window where disposal has not propagated.

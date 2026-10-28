@@ -2718,6 +2718,314 @@ describe.concurrent('e2e', () => {
         });
       }
     );
+
+    /**
+     * How many of each hook event a run's log holds, for the whole run or for
+     * one Hook (its `correlationId` is the Hook's id).
+     */
+    async function hookEventCounts(runId: string, hookId?: string) {
+      const world = await getWorld();
+      const { data: events } = await world.events.list({
+        runId,
+        resolveData: 'none',
+        pagination: { limit: EVENT_POLL_PAGE_SIZE },
+      });
+      const count = (type: string) =>
+        events.filter(
+          (e) =>
+            e.eventType === type &&
+            (hookId === undefined || e.correlationId === hookId)
+        ).length;
+      return {
+        created: count('hook_created'),
+        received: count('hook_received'),
+        disposed: count('hook_disposed'),
+        conflict: count('hook_conflict'),
+      };
+    }
+
+    /** What the by-token lookup (which writes nothing) says about a token. */
+    async function hookLookupState(
+      token: string
+    ): Promise<'found' | 'reserved' | 'not_found'> {
+      try {
+        await getHookByToken(token);
+        return 'found';
+      } catch (error) {
+        if (HookNotFoundError.is(error)) return 'not_found';
+        if (HookReservedError.is(error)) return 'reserved';
+        throw error;
+      }
+    }
+
+    /**
+     * Polls the by-token lookup until it is a 404. With `neverFound`, a
+     * lookup that finds a Hook fails at once: no Hook should ever exist for
+     * the token.
+     */
+    async function waitForHookNotFound(
+      token: string,
+      { neverFound = false }: { neverFound?: boolean } = {}
+    ) {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() <= deadline) {
+        const state = await hookLookupState(token);
+        if (state === 'not_found') return;
+        if (state === 'found' && neverFound) {
+          throw new Error(
+            `A Hook exists for ${token}, which was never claimed`
+          );
+        }
+        await sleep(500);
+      }
+      throw new Error(`Timed out waiting for ${token} to be not found`);
+    }
+
+    testJsOnly(
+      'a run that never claims its token completes; the token was only its idempotency key',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessStartHookSupported(ctx);
+        const token = `start-hook-unclaimed-${Math.random().toString(36).slice(2)}`;
+        const gate = `${token}-gate`;
+        const workflow = await e2e('startHookUnclaimedWorkflow');
+
+        // Default retention: the token stays held for 24 hours after the end.
+        const owner = await startHooked(workflow, [gate, 'only-once'], {
+          hook: { token, metadata: { from: 'start' } },
+        });
+        const gateHook = await waitForHook(gate, { runId: owner.runId });
+        // The run's other Hook is an ordinary one: no start metadata.
+        expect(await gateHook.metadata).toBeUndefined();
+
+        // While it runs, a duplicate is refused naming it...
+        const duplicate = await startHooked(workflow, [`${gate}-dup`, 'dup'], {
+          hook: { token },
+        }).catch((error: unknown) => error);
+        expect(HookConflictError.is(duplicate)).toBe(true);
+        expect(duplicate).toMatchObject({ conflictingRunId: owner.runId });
+
+        // ...and a resume is answered "reserved", naming it, and is not
+        // written to its log.
+        const early = await resumeHook(token, { message: 'unheard' }).catch(
+          (error: unknown) => error
+        );
+        expect(HookReservedError.is(early)).toBe(true);
+        expect(early).toMatchObject({ runId: owner.runId });
+
+        await resumeHook(gate, { release: true });
+        expect(await owner.returnValue).toEqual({ value: 'only-once' });
+
+        // Only the gate's Hook is in the log: no hook event for the token.
+        expect(await hookEventCounts(owner.runId)).toEqual({
+          created: 1,
+          received: 1,
+          disposed: expect.any(Number),
+          conflict: 0,
+        });
+
+        // Ended without ever claiming it: there is no Hook to resume, while
+        // the token stays the run's for its retention.
+        await waitForHookNotFound(token, { neverFound: true });
+        const after = await startHooked(workflow, [`${gate}-after`, 'after'], {
+          hook: { token },
+        }).catch((error: unknown) => error);
+        expect(HookConflictError.is(after)).toBe(true);
+        expect(after).toMatchObject({ conflictingRunId: owner.runId });
+      }
+    );
+
+    testJsOnly(
+      'cancelling a run that never claimed its token frees it, with no retention',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessStartHookSupported(ctx);
+        const token = `start-hook-unclaimed-cancel-${Math.random().toString(36).slice(2)}`;
+        const gate = `${token}-gate`;
+
+        const owner = await startHooked(
+          await e2e('startHookUnclaimedWorkflow'),
+          [gate, 'never'],
+          { hook: { token, experimental_minRetention: 0 } }
+        );
+        await waitForHook(gate, { runId: owner.runId });
+
+        await owner.cancel();
+        const cancelled = await owner.returnValue.catch((e: unknown) => e);
+        expect(WorkflowRunCancelledError.is(cancelled)).toBe(true);
+
+        // No retention: the token is free for a new start, which owns it.
+        await waitForHookNotFound(token, { neverFound: true });
+        const next = await startHooked(
+          await e2e('startHookOwnerWorkflow'),
+          [token, 1],
+          { hook: { token } }
+        );
+        const hook = await routeToOwner(token, 'next');
+        expect(hook.runId).toBe(next.runId);
+        expect(await next.returnValue).toEqual({
+          conflictRunId: null,
+          messages: ['next'],
+        });
+      }
+    );
+
+    testJsOnly(
+      'a resume before the owner claims its token is refused and not written; createHook() claims it with one hook_created',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessStartHookSupported(ctx);
+        const token = `start-hook-late-claim-${Math.random().toString(36).slice(2)}`;
+        const gate = `${token}-gate`;
+        const workflow = await e2e('startHookLateClaimWorkflow');
+
+        const owner = await startHooked(workflow, [token, gate], {
+          hook: { token, experimental_minRetention: 0 },
+        });
+        await waitForHook(gate, { runId: owner.runId });
+
+        const early = await resumeHook(token, { message: 'too-early' }).catch(
+          (error: unknown) => error
+        );
+        expect(HookReservedError.is(early)).toBe(true);
+        expect(early).toMatchObject({ runId: owner.runId });
+
+        await resumeHook(gate, { release: true });
+        const hook = await routeToOwner(token, 'claimed');
+        expect(hook.runId).toBe(owner.runId);
+        expect(await owner.returnValue).toEqual({ message: 'claimed' });
+
+        // The claim is one ordinary hook_created, answered as an adoption (no
+        // conflict), and only the delivered payload is in the log:
+        // 'too-early' was never written.
+        expect(await hookEventCounts(owner.runId, hook.hookId)).toMatchObject({
+          created: 1,
+          received: 1,
+          conflict: 0,
+        });
+        expect(await hookEventCounts(owner.runId)).toMatchObject({
+          created: 2,
+          received: 2,
+          conflict: 0,
+        });
+      }
+    );
+
+    testJsOnly(
+      'payloads a run claims but never reads are left in its log, and the run completes',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessStartHookSupported(ctx);
+        const token = `start-hook-unread-${Math.random().toString(36).slice(2)}`;
+        const gate = `${token}-gate`;
+
+        const owner = await startHooked(
+          await e2e('startHookClaimUnreadWorkflow'),
+          [token, gate],
+          { hook: { token, experimental_minRetention: 0 } }
+        );
+        const first = await routeToOwner(token, 'unread-1');
+        expect(first.runId).toBe(owner.runId);
+        await resumeHook(token, { message: 'unread-2' });
+
+        await resumeHook(gate, { release: true });
+        expect(await owner.returnValue).toEqual({ hookToken: token });
+        expect(await hookEventCounts(owner.runId, first.hookId)).toMatchObject({
+          created: 1,
+          received: 2,
+          conflict: 0,
+        });
+      }
+    );
+
+    testJsOnly(
+      'after the owner disposes its Hook the token stays its own, and a second createHook() claims it again',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessStartHookSupported(ctx);
+        const token = `start-hook-reclaim-${Math.random().toString(36).slice(2)}`;
+        const gate = `${token}-gate`;
+        const workflow = await e2e('startHookReclaimWorkflow');
+
+        const owner = await startHooked(workflow, [token, gate], {
+          hook: { token, experimental_minRetention: 0 },
+        });
+        const first = await routeToOwner(token, 'first');
+        await waitForHook(gate, { runId: owner.runId });
+
+        // Disposed: nothing to resume, but the token is still the run's.
+        await waitForHookNotFound(token);
+        const between = await resumeHook(token, { message: 'between' }).catch(
+          (error: unknown) => error
+        );
+        expect(HookNotFoundError.is(between)).toBe(true);
+        const duplicate = await startHooked(workflow, [token, `${gate}-dup`], {
+          hook: { token },
+        }).catch((error: unknown) => error);
+        expect(HookConflictError.is(duplicate)).toBe(true);
+        expect(duplicate).toMatchObject({ conflictingRunId: owner.runId });
+
+        await resumeHook(gate, { release: true });
+        // The second createHook() claims the token again with a new Hook.
+        const second = await waitForHook(token, {
+          runId: owner.runId,
+          excludeHookId: first.hookId,
+        });
+        expect(second.hookId).not.toBe(first.hookId);
+        await resumeHook(second, { message: 'second' });
+        expect(await owner.returnValue).toEqual({
+          messages: ['first', 'second'],
+        });
+
+        // First claim, gate and second claim; 'between' was never written.
+        expect(await hookEventCounts(owner.runId)).toMatchObject({
+          created: 3,
+          received: 3,
+          conflict: 0,
+        });
+        expect(
+          (await hookEventCounts(owner.runId, first.hookId)).disposed
+        ).toBeGreaterThanOrEqual(1);
+      }
+    );
+
+    testJsOnly(
+      'a step resuming a reserved token waits for its owner to claim it',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessStartHookSupported(ctx);
+        const token = `start-hook-step-${Math.random().toString(36).slice(2)}`;
+        const gate = `${token}-gate`;
+
+        const owner = await startHooked(
+          await e2e('startHookLateClaimWorkflow'),
+          [token, gate],
+          { hook: { token, experimental_minRetention: 0 } }
+        );
+        await waitForHook(gate, { runId: owner.runId });
+
+        const router = await start(
+          await e2e('startHookRouteFromStepWorkflow'),
+          [token, 'from-step']
+        );
+        // The step (which has no retries) is running and waiting on the
+        // reservation; keep the token unclaimed a while longer.
+        await waitForRunEvents(
+          router.runId,
+          (e) => e.eventType === 'step_started',
+          { timeoutMs: 60_000, description: 'the routing step to start' }
+        );
+        await sleep(8_000);
+        const stillReserved = await getHookByToken(token).catch(
+          (e: unknown) => e
+        );
+        expect(HookReservedError.is(stillReserved)).toBe(true);
+        await resumeHook(gate, { release: true });
+
+        expect(await router.returnValue).toEqual({ routedTo: owner.runId });
+        expect(await owner.returnValue).toEqual({ message: 'from-step' });
+      }
+    );
   });
 
   test(
