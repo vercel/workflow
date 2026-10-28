@@ -88,6 +88,22 @@ export function isWorldContractError(err: unknown): err is WorkflowWorldError {
 }
 
 /**
+ * True when the backend refused to create a run because the timestamp in its
+ * run ID is outside the window it accepts: world-vercel answers a
+ * `run_created`, or a `run_started` that creates the run because its
+ * `run_created` never landed, with a 400 `invalid-run-id-timestamp`.
+ */
+export function isRunIdTimestampRejection(
+  err: unknown
+): err is WorkflowWorldError {
+  return (
+    WorkflowWorldError.is(err) &&
+    err.status === 400 &&
+    err.code === 'invalid-run-id-timestamp'
+  );
+}
+
+/**
  * True when an error from a world (workflow-server) call is a transient
  * infrastructure failure that should be retried by redelivering the queue
  * message, rather than failing the run. A fresh invocation will likely

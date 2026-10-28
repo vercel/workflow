@@ -42,6 +42,7 @@ import { decodeTime } from 'ulid';
 import {
   classifyRunError,
   isRetryableWorldError,
+  isRunIdTimestampRejection,
   isWorldContractError,
 } from './classify-error.js';
 import { describeError } from './describe-error.js';
@@ -2707,6 +2708,30 @@ export function workflowEntrypoint(
                           runtimeLogger.info(
                             'Run already finished during setup, skipping',
                             { workflowRunId: runId, message: err.message }
+                          );
+                          return;
+                        } else if (
+                          isRunIdTimestampRejection(err) &&
+                          (runIdCreatedAt(runId) ?? Infinity) < Date.now()
+                        ) {
+                          // The run was never created: its `run_created`
+                          // did not land, and this `run_started` arrived too
+                          // long after `start()` minted the run ID for the
+                          // backend to create the run from it. The ID only
+                          // gets older, so every redelivery would be refused
+                          // the same way until MAX_QUEUE_DELIVERIES, and there
+                          // is no run to mark failed. Ack the message instead.
+                          // (An ID minted ahead of the backend's clock can
+                          // still become valid, so that case keeps retrying.)
+                          runtimeLogger.error(
+                            'Discarding a workflow message whose run was never created: ' +
+                              'the backend refused to create the run because its run ID ' +
+                              'is too old. The run will not execute.',
+                            {
+                              workflowRunId: runId,
+                              attempt: metadata.attempt,
+                              message: err.message,
+                            }
                           );
                           return;
                         } else {
