@@ -20,6 +20,11 @@ export interface StepMessageSpec {
   stepCreatedAt?: Date;
   input?: SerializedData;
   stepAttempt?: number;
+  /**
+   * A re-send (see `stepsToReenqueue`): its message is marked, so that its
+   * handler reads the log before it runs the body.
+   */
+  resent?: boolean;
 }
 
 /** An inline step to run in this process. */

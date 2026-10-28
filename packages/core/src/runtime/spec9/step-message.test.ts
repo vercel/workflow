@@ -79,6 +79,18 @@ describe('stepDispatchMessage', () => {
     expect('stepCreatedAt' in retry.message).toBe(false);
     expect(retry.opts.delaySeconds).toBe(5);
   });
+
+  it('marks a re-send, under the same key as the first send', () => {
+    const firstSend = stepDispatchMessage({ run, step, traceCarrier: {} });
+    const resend = stepDispatchMessage({
+      run,
+      step: { ...step, resent: true },
+      traceCarrier: {},
+    });
+    expect('stepResent' in firstSend.message).toBe(false);
+    expect(resend.message).toMatchObject({ stepResent: true });
+    expect(resend.opts.idempotencyKey).toBe(firstSend.opts.idempotencyKey);
+  });
 });
 
 describe('sendStepDispatchMessages', () => {

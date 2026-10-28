@@ -26,17 +26,25 @@ export type StepDeliveryDecision =
 /**
  * Whether a delivery must read the run's full log before deciding.
  *
- * Only the first delivery of a message that does not mark a retry may skip
- * the read. Any other delivery may follow a committed outcome whose response
- * was lost, an invocation that died mid-body, or an early redelivery, and only
- * the log can tell those apart. A queue that cannot report a delivery count
- * gives `undefined`, which is treated as "possibly a redelivery".
+ * Only the first delivery of a message that marks neither a retry nor a
+ * re-send may skip the read. Any other delivery may follow a committed
+ * outcome whose response was lost, an invocation that died mid-body, or an
+ * early redelivery, and only the log can tell those apart. A re-sent message
+ * (`stepResent`) was sent from a log that may be older than the step's
+ * progress: its first delivery may come after the step's outcome. A queue
+ * that cannot report a delivery count gives `undefined`, which is treated as
+ * "possibly a redelivery".
  */
 export function stepDeliveryNeedsLogRead(params: {
   deliveryCount: number | undefined;
   stepAttempt: number | undefined;
+  stepResent?: boolean;
 }): boolean {
-  return params.deliveryCount !== 1 || (params.stepAttempt ?? 1) > 1;
+  return (
+    params.deliveryCount !== 1 ||
+    (params.stepAttempt ?? 1) > 1 ||
+    params.stepResent === true
+  );
 }
 
 /**

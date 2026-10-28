@@ -43,6 +43,16 @@ describe('stepDeliveryNeedsLogRead', () => {
     );
   });
 
+  it('reads the log on the first delivery of a re-sent message', () => {
+    expect(
+      stepDeliveryNeedsLogRead({
+        deliveryCount: 1,
+        stepAttempt: undefined,
+        stepResent: true,
+      })
+    ).toBe(true);
+  });
+
   it('takes the message attempt on the happy path', () => {
     expect(firstDeliveryDecision(undefined)).toEqual({
       action: 'run',

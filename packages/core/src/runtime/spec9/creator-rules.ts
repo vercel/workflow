@@ -20,8 +20,11 @@ export const STEP_RESEND_DEDUPE_MARGIN_MS = 60 * 60 * 1000;
  * `stepDispatchIdempotencyKey`). A send this young is deduped against the
  * step's first message while that message lives, so a re-send never creates
  * a second live message, which would be a second owner of the step's body.
- * Nothing on the write path refuses a second `step_started`, so this bound
- * is what keeps a re-send from duplicating one.
+ * Nothing on the write path refuses a second `step_started` of a step that
+ * is still running, so this bound is what keeps a re-send from duplicating
+ * one. A re-send that reaches the queue after the step's message ended is
+ * marked (`stepResent`), and its first delivery reads the log and finds the
+ * step's outcome.
  */
 export const STEP_RESEND_MAX_AGE_MS =
   QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS - STEP_RESEND_DEDUPE_MARGIN_MS;

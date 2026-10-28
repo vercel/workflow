@@ -355,6 +355,7 @@ async function runDelivery(
     hookInput,
     stepInput,
     stepAttempt,
+    stepResent,
     stepCreatedEventId,
     stepCreatedAt,
     runContext,
@@ -1077,6 +1078,7 @@ async function runDelivery(
           stepId: incomingStepId,
           stepName: incomingStepName,
           stepAttempt,
+          stepResent,
           stepInput,
           stepCreatedEventId,
           stepCreatedAt,
@@ -1093,6 +1095,7 @@ async function runDelivery(
             stepId: incomingStepId,
             stepName: incomingStepName,
             ...(stepAttempt ? { stepAttempt } : {}),
+            ...(stepResent ? { stepResent } : {}),
             ...(stepInput ? { stepInput } : {}),
             ...(stepCreatedEventId ? { stepCreatedEventId } : {}),
             ...(stepCreatedAt !== undefined ? { stepCreatedAt } : {}),
@@ -3515,6 +3518,7 @@ async function runDelivery(
         toEnqueue.push({
           correlationId: step.correlationId,
           stepName: step.stepName,
+          resent: true,
           stepCreatedEventId: step.createdEventId,
           ...(step.createdAt ? { stepCreatedAt: step.createdAt } : {}),
           // A step that started (an inline step's retry, or on recovery a
@@ -4322,6 +4326,7 @@ async function runDelivery(
           owed.set(id, {
             correlationId: id,
             stepName: step.stepName,
+            resent: true,
             stepCreatedEventId: step.createdEventId,
             ...(step.createdAt ? { stepCreatedAt: step.createdAt } : {}),
             ...(step.inline || step.starts > 0

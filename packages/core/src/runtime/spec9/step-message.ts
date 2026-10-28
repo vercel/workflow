@@ -74,6 +74,7 @@ export function stepDispatchMessage(params: {
       ...(step.stepAttempt !== undefined && step.stepAttempt > 1
         ? { stepAttempt: step.stepAttempt }
         : {}),
+      ...(step.resent ? { stepResent: true } : {}),
       ...(hookResumeTiming ? { hookResumeTiming } : {}),
     },
     opts: {

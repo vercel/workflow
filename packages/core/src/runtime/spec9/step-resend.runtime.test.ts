@@ -436,4 +436,31 @@ describe.each([
     expect(calls.resend_flaky).toBe(2);
     expect(await runResult(world)).toBe(7);
   });
+
+  it('marks a re-sent step message, whose first delivery reads the log and so does not run a step that already has an outcome', async () => {
+    const { world, redelivery } = await startWithLostStepSend(
+      stepWorkflow,
+      engine
+    );
+    await world.deliver(redelivery);
+    const [resent] = stepMessagesOf(world);
+    expect(resent?.message).toMatchObject({ stepResent: true });
+    const stepMessage = world.held.find(
+      (held) => (held.message as { stepId?: string }).stepId !== undefined
+    )!;
+    await world.deliver(stepMessage);
+    expect(calls.resend_step).toBe(1);
+    expect(eventsOf(world, 'step_completed')).toHaveLength(1);
+
+    // A copy of the re-sent message, delivered for the first time after the
+    // step completed: what a queue that forgets a step key once its message
+    // is acknowledged would deliver for a re-send decided from an older log.
+    await world.deliver(
+      world.enqueue(stepMessage.queueName, stepMessage.message)
+    );
+    expect(calls.resend_step).toBe(1);
+    await world.runUntilIdle();
+    expect(calls.resend_step).toBe(1);
+    expect(await runResult(world)).toBe(5);
+  });
 });

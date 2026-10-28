@@ -56,6 +56,7 @@ export interface StepMessageContext {
     | 'stepId'
     | 'stepName'
     | 'stepAttempt'
+    | 'stepResent'
     | 'stepInput'
     | 'stepCreatedEventId'
     | 'stepCreatedAt'
@@ -309,6 +310,7 @@ async function readDeliveryDecision(
     !stepDeliveryNeedsLogRead({
       deliveryCount: meta.deliveryCount,
       stepAttempt: payload.stepAttempt,
+      stepResent: payload.stepResent,
     })
   ) {
     return {

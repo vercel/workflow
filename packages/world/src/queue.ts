@@ -521,6 +521,17 @@ export const WorkflowInvokePayloadSchema = z.compile(
      */
     stepAttempt: z.number().int().positive().optional(),
     /**
+     * Set on a step message the orchestrator sent again (spec >= 9): a
+     * re-send of a step whose message a delivery that died may never have
+     * sent (`Queue.createQueueHandler`). Normally the step's stable key
+     * deduplicates it against the first message. When it does go out as a
+     * new message, its handler reads the log before running the body even on
+     * the message's first delivery: the re-send was decided from a log that
+     * can be older than the step's progress, so the step may already have
+     * an outcome.
+     */
+    stepResent: z.boolean().optional(),
+    /**
      * Event id of the step's `step_created` (spec >= 9). The step handler
      * reads the step's input from that event when the message does not carry
      * it in {@link WorkflowInvokePayloadSchema.shape.stepInput}.
@@ -807,6 +818,7 @@ export const SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS = {
   stepId: 'drop',
   stepName: 'drop',
   stepAttempt: 'drop',
+  stepResent: 'drop',
   stepCreatedEventId: 'drop',
   stepCreatedAt: 'drop',
   stepInput: 'drop',
@@ -851,17 +863,30 @@ export function singleOrchestratorContinuationPayload(
  * that carry a single-orchestrator run's step key
  * (`QueueOptions.idempotencyKey` on a step's execution message): for at
  * least this long after the key's first send, while the message that send
- * made lives, every later send under the key is a no-op. The runtime sends
- * an unstarted background step's message again from later deliveries of its
- * run (see `Queue.createQueueHandler`) only while the step's creation is
- * this young, less a margin, so each such re-send is deduplicated against
- * the step's first message instead of giving the step a second owner.
+ * made lives (held, delayed, being delivered or in retry backoff), every
+ * later send under the key is a no-op. The runtime sends a step's message
+ * again from later deliveries of its run (see `Queue.createQueueHandler`)
+ * only while the step's last send is this young, less a margin, so each such
+ * re-send is deduplicated against the step's live message instead of giving
+ * the step a second owner.
  *
- * world-vercel keeps a key for `min(retention, 24h)`, and retains a step
- * message for at least this long. world-local and world-postgres keep it
- * while the first message lives (world-postgres: while its job exists, with
- * Graphile's `unsafe_dedupe`), which a step message outlives only by
- * completing.
+ * A re-send is decided from the log its delivery loaded, which can be older
+ * than the step's progress: the step's message may have been delivered, run
+ * the step to its outcome and been acknowledged since. A World is not
+ * required to keep the key past the acknowledgment, nor to refuse a
+ * `step_started` for a step that already has an outcome. The runtime marks a
+ * re-sent message (`stepResent`), and its handler reads the run's log before
+ * it runs the body, even on the message's first delivery, so a re-send the
+ * queue takes as a new message after the step's outcome acknowledges without
+ * running it. A World that does either of the two still gets the same result
+ * without that read.
+ *
+ * world-vercel keeps a key for `min(retention, 24h)` whether or not its
+ * message was acknowledged, and retains a step message for at least this
+ * long. world-local and world-postgres keep it while the first message lives
+ * (world-postgres: while its job exists, with Graphile's `unsafe_dedupe`),
+ * which a step message outlives only by completing, and both refuse a
+ * `step_started` for a step that already has an outcome.
  */
 export const QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
 

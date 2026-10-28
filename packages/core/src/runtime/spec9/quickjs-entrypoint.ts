@@ -168,11 +168,13 @@ function stepMessageSpecOf(
     stepAttempt?: number;
     stepCreatedEventId?: string;
     stepCreatedAt?: Date;
+    resent?: boolean;
   }
 ): StepMessageSpec {
   return {
     correlationId: step.correlationId,
     stepName: step.stepId,
+    ...(fields.resent ? { resent: true } : {}),
     ...(fields.stepInput !== undefined ? { input: fields.stepInput } : {}),
     ...(fields.stepAttempt !== undefined
       ? { stepAttempt: fields.stepAttempt }
@@ -196,6 +198,7 @@ async function queueStepMessages(params: {
     step: PendingStep;
     stepAttempt?: number;
     stepCreatedAt?: Date;
+    resent?: boolean;
   }[];
   namespace: string | undefined;
   nextTraceCarrier: () => Promise<Record<string, string>>;
@@ -209,10 +212,10 @@ async function queueStepMessages(params: {
     world,
     getWorkflowQueueName(workflowRun.workflowName, namespace),
     steps,
-    ({ step, stepAttempt, stepCreatedAt }) =>
+    ({ step, stepAttempt, stepCreatedAt, resent }) =>
       stepDispatchMessage({
         run: workflowRun,
-        step: stepMessageSpecOf(step, { stepAttempt, stepCreatedAt }),
+        step: stepMessageSpecOf(step, { stepAttempt, stepCreatedAt, resent }),
         traceCarrier,
       }),
     (batch) => {
@@ -2259,6 +2262,7 @@ export async function runWorkflowWithQuickJS(params: {
         step: PendingStep;
         stepAttempt?: number;
         stepCreatedAt?: Date;
+        resent: true;
       }[] = [];
       let starts: Map<string, number> | undefined;
       for (const step of stepOps) {
@@ -2285,6 +2289,7 @@ export async function runWorkflowWithQuickJS(params: {
         );
         resend.push({
           step,
+          resent: true,
           ...(started > 0 ? { stepAttempt: started + 1 } : {}),
           ...(created ? { stepCreatedAt: new Date(created.createdAt) } : {}),
         });
