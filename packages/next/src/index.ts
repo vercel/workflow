@@ -9,6 +9,11 @@ import {
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
+import {
+  findUnregisteredWorkflows,
+  formatUnregisteredWorkflows,
+  WorkflowRegistrationError,
+} from './registration-check.js';
 
 const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
 const QUEUE_PACKAGE = '@vercel/queue';
@@ -365,15 +370,93 @@ function getWorkflowManifestCopyPaths({
     return;
   }
 
-  const resolvedDistDir = isAbsolute(distDir)
-    ? distDir
-    : join(projectDir, distDir);
   const diagnosticsManifestPath = join(
-    resolvedDistDir,
+    resolveDistDir({ projectDir, distDir }),
     'diagnostics',
     'workflows-manifest.json'
   );
   return { manifestPath, diagnosticsManifestPath };
+}
+
+function resolveDistDir({
+  projectDir,
+  distDir,
+}: {
+  projectDir: string;
+  distDir: string;
+}): string {
+  return isAbsolute(distDir) ? distDir : join(projectDir, distDir);
+}
+
+type RegistrationCheckMode = 'error' | 'warn' | 'off';
+
+function resolveRegistrationCheckMode(): RegistrationCheckMode {
+  switch (process.env.WORKFLOW_REGISTRATION_CHECK?.toLowerCase()) {
+    case 'off':
+    case '0':
+    case 'false':
+      return 'off';
+    case 'warn':
+      return 'warn';
+    default:
+      return 'error';
+  }
+}
+
+/**
+ * Fail the production build when the app can start a workflow this build did
+ * not register.
+ *
+ * Both sides come from the same compiler pass: the ids in the server output
+ * are what the `"use workflow"` transform gave application code for `start()`
+ * to use, and the manifest is what the flow bundle registered. A workflow in
+ * the first and not the second is a run that would fail with
+ * `WorkflowNotRegisteredError` — one the build already knew about, and used
+ * to ship anyway.
+ */
+async function assertWorkflowsAreRegistered({
+  projectDir,
+  distDir,
+  buildStartedAt,
+}: {
+  projectDir: string;
+  distDir: string;
+  buildStartedAt: number;
+}): Promise<void> {
+  const mode = resolveRegistrationCheckMode();
+  if (mode === 'off') {
+    return;
+  }
+
+  // No manifest means no workflow build ran for this app, which is not this
+  // check's business to report.
+  const paths = getWorkflowManifestCopyPaths({ projectDir, distDir });
+  if (!paths) {
+    return;
+  }
+
+  const unregistered = await findUnregisteredWorkflows({
+    manifestPath: paths.manifestPath,
+    serverDir: join(resolveDistDir({ projectDir, distDir }), 'server'),
+    writtenAfter: buildStartedAt,
+  });
+  if (unregistered.length === 0) {
+    return;
+  }
+
+  const message = formatUnregisteredWorkflows(unregistered);
+  if (mode === 'warn') {
+    console.warn(`\n⚠ Warning: ${message}\n`);
+    return;
+  }
+
+  throw new WorkflowRegistrationError(
+    `${message}\n\n` +
+      'Workflow discovery walks the import graph from your Next.js entrypoints, so this usually means it could\n' +
+      'not reach the file: check that every import on the way to the workflow is a plain string specifier, and\n' +
+      'look for earlier warnings about imports that could not be resolved.\n' +
+      'Set WORKFLOW_REGISTRATION_CHECK=warn to report this without failing the build.'
+  );
 }
 
 async function copyWorkflowDiagnosticsManifest(metadata: {
@@ -489,6 +572,11 @@ export function withWorkflow(
     phase: string,
     ctx: { defaultConfig: NextConfig }
   ) {
+    // Taken before anything is compiled, so the registration check can tell
+    // this build's output from a chunk an earlier one left in `distDir`.
+    // Subtracting a second absorbs filesystem mtime granularity.
+    const buildStartedAt = Date.now() - 1000;
+
     if (
       phase === 'phase-development-server' ||
       phase === 'phase-production-build'
@@ -598,6 +686,9 @@ export function withWorkflow(
         }
         await copyWorkflowDiagnosticsManifest(metadata);
         registerWorkflowDiagnosticsManifestCopy(metadata);
+        // Last, so the diagnostics manifest describing the build is in place
+        // even when the build is about to fail over what it says.
+        await assertWorkflowsAreRegistered({ ...metadata, buildStartedAt });
       },
     };
 

@@ -51,6 +51,20 @@ Actions. Don't call workflow functions directly, which bypasses the workflow
 runtime.
 </Callout>
 
+### Registration check
+
+Discovery only follows plain string specifiers, so a workflow reached through a
+computed `import()` is compiled into your application without being registered
+in the generated flow route. `start()` still accepts it, and every run fails
+with [`workflow-not-registered`](/docs/errors/workflow-not-registered).
+
+After `next build` compiles, `withWorkflow()` compares the workflow IDs in the
+server output against the workflows the flow route registered, and fails the
+build when the first set contains something the second does not, naming the
+workflow and the output files that reference it. Set
+[`WORKFLOW_REGISTRATION_CHECK`](/docs/configuration/build-and-diagnostics#workflow_registration_check)
+to `warn` to report it without failing, or to `off` to skip the check.
+
 ### Next.js server actions and `"use server"`
 
 Don't put a top-level `"use server"` directive in modules imported by workflow

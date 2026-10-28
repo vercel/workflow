@@ -42,6 +42,22 @@ Accepted values:
 - Set `1` to expose the workflow manifest at `/.well-known/workflow/v1/manifest.json`.
 - Useful for end-to-end tests and tools that need to discover workflows over HTTP.
 
+### `WORKFLOW_REGISTRATION_CHECK`
+
+- Next.js only
+- Default: `error`
+- Controls what a production build does when your application can start a workflow the build did not register.
+
+After `next build` compiles, Workflow compares the workflow IDs stamped into the server output - the ones [`start()`](/docs/api-reference/workflow-api/start) uses - against the workflows the generated flow route registered. An ID in the first set and not the second is a run that would fail at runtime with [`workflow-not-registered`](/docs/errors/workflow-not-registered), so the build fails instead and names the workflow and the files referencing it.
+
+The usual cause is a workflow that [discovery](#workflow_discover_node_modules) could not reach: discovery walks the import graph from your Next.js entrypoints and only follows plain string specifiers, so a workflow imported through a computed `import()` is compiled into your app without being registered. Look for warnings earlier in the build about imports that could not be resolved.
+
+Accepted values:
+
+- `error` (default) - fail the build.
+- `warn` - print the same report and let the build succeed.
+- `off`, `0`, or `false` - skip the check.
+
 ## Discovery
 
 ### `WORKFLOW_DISCOVER_NODE_MODULES`
