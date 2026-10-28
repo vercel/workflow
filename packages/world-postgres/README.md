@@ -131,6 +131,11 @@ export WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN="1"
 
 # Optional: Maximum Hook minimum retention in days (default: 30)
 export WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS="30"
+
+# Optional: Seconds a running delivery's job lock may go unrenewed before
+# another process redelivers the job (default: 0, off; 30 is a good value
+# when more than one process shares the database, see "Crash recovery")
+export WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS="30"
 ```
 
 ### Programmatic usage
@@ -151,8 +156,16 @@ const world = createWorld({
 // Or pass an existing pg.Pool (shared with your app Drizzle, etc.); `world.close()` will not end it.
 import { Pool } from "pg";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// The World leaves a pool you pass to you: listen for errors, or a connection
+// the server ends (a restart, a failover, an idle timeout) ends the process.
+pool.on("connect", (client) =>
+  client.on("error", (error) => console.error(error.message))
+);
+pool.on("error", () => {}); // An idle client's error, logged just above
 const worldFromPool = createWorld({ pool });
 ```
+
+A connection the server ends emits an `'error'` event, and an `'error'` event with no listener ends the process. When `createWorld()` creates the pool, it listens on the pool and on every client it connects, and logs one `[world-postgres] Pooled PostgreSQL connection lost` line per lost connection. It doesn't add listeners to a pool you pass, so add both yourself, as above: pg-pool listens only on idle clients, and the World holds a checked-out client across a transaction's statements.
 
 ### Application-managed shutdown
 
@@ -181,10 +194,12 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL`, `process.env.DATABASE_URL`, or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
-| `pool`             | `pg.Pool` | Not applicable                                                                         | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
+| `pool`             | `pg.Pool` | Not applicable                                                                         | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it, and the World adds no `'error'` listeners to it (see above). |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
+| `pollInterval`     | `number`  | `500`                                                                                  | Milliseconds between idle job fetches per worker. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
+| `jobLockStaleSeconds` | `number` | `process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` or `0` (off) | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job. `0` turns renewal and the release of stale locks off. `30` is a good value when more than one process shares the database. See [Crash recovery](#crash-recovery). |
 
 ## Environment variables
 
@@ -194,9 +209,11 @@ An aborted HTTP request does not guarantee that its server-side handler stopped,
 | `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `DATABASE_URL` or `'postgres://world:world@localhost:5432/world'` |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `50`                                            |
+| `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`   | Milliseconds between idle job fetches per worker             | `500`                                           |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
 | `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` | Set to `1` when the application coordinates shutdown and awaits `world.close()` | unset (`false`) |
 | `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS` | Maximum Hook minimum retention in days | `30` |
+| `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job; `0` disables | `0` (off) |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 
@@ -253,6 +270,45 @@ import * as schema from '@workflow/world-postgres/schema';
 
 Make sure your PostgreSQL database is accessible and the user has sufficient permissions to create tables and manage jobs.
 
+### Timestamps and time zones
+
+Every timestamp column is `timestamp with time zone`, so values are correct
+whatever time zone the server or session runs in. Earlier versions used
+`timestamp without time zone`: on a server outside UTC, `createdAt` came back
+off by the server's UTC offset (for example 7 hours early on
+`America/Los_Angeles`).
+
+Migration 0027 converts the columns. On a server in UTC it only changes the
+catalog and rebuilds one small partial index, `workflow_invocations_pending`;
+no table is rewritten. On a server in another time zone it also moves the
+values that came from `now()` (every `created_at`, `updated_at` on rows never
+updated, and `workflow_invocations.responded_at`) from the server's local time
+to the instant they recorded. That costs about one rewrite of each table (new
+row versions, WAL, and bloat until vacuum), with the tables' locks held until
+it finishes, so plan a maintenance window for a large database.
+
+The migration waits at most 10 seconds for its locks (unless the session sets
+its own `lock_timeout`), so a long-running transaction makes `bootstrap` fail
+instead of queueing every query behind it. Run `bootstrap` again once that
+transaction ends.
+
+It assumes the `now()` values were written in the time zone of the session
+that runs the migration. If your application's pool set a different session
+time zone, set `workflow.legacy_timezone` to that zone for the migration. Use
+`?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the connection
+string, or, where a pooler drops startup `options` (PgBouncer and several
+hosted poolers), `ALTER DATABASE mydb SET workflow.legacy_timezone =
+'Europe/Berlin'` or `ALTER ROLE myuser SET ...` before running `bootstrap`.
+
+On a server in UTC the upgrade order does not matter: the upgraded World reads
+unconverted columns correctly in any Node.js time zone, and older versions read
+converted ones correctly. On a server outside UTC, stop the previous version's
+workers, run the migration, then start the upgraded app. Older versions read
+the converted columns shifted by the server's UTC offset, which can skip or
+stretch step retry backoffs. For the same reason there is no rolling back past
+0027 on such a server: the migration has no down step, and an older version
+would read every converted value shifted.
+
 ### Data retention
 
 Postgres World does not yet perform general workflow-run cleanup. After a
@@ -275,6 +331,17 @@ and its token can be reused. If the token is never reused, the expired
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
+- With `jobLockStaleSeconds` set, a running delivery renews its job lock, and a job whose process died is redelivered by another process after `jobLockStaleSeconds` (see below)
+
+### Crash recovery
+
+Graphile Worker on its own keeps a dead worker's job locked for 4 hours. By default (`jobLockStaleSeconds: 0`), a delivery whose process died mid-delivery is therefore recovered only by the next `start()`, which re-enqueues active runs, or after those 4 hours.
+
+Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to turn on lock renewal. A running delivery then renews its Graphile job lock every quarter of `jobLockStaleSeconds`, and at least every 10 seconds, and every process that runs workers releases this World's jobs whose locks have gone unrenewed for `jobLockStaleSeconds`. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. In invoke mode, the release covers the run's executor queue too.
+
+Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
+
+It's off by default because of rolling upgrades. Processes on an earlier version don't renew their locks, so an upgraded process would redeliver any of their deliveries that run longer than the window, and when the earlier-version process finishes such a delivery, its acknowledgement isn't fenced on the lock holder and can delete the redelivered job's row. So turn it on only once every process that shares the database runs a version that includes `jobLockStaleSeconds`, and set the same value on all of them.
 
 ### Experimental synchronous invocation
 
@@ -415,6 +482,32 @@ The experimental implementation has these remaining limitations:
 
 The database integration tests use the built core runtime. Build core before
 running `pnpm exec vitest run test/invoke.test.ts` from `packages/world-postgres`.
+
+## Troubleshooting
+
+### A run stays `running` after a crash
+
+Earlier versions wrote a step's `step_completed` or `step_failed` event
+separately from the step row. A process that died between the two left the step
+finished with no matching event, and the run never advanced. This query lists
+those steps for runs still `running`:
+
+```sql
+select s.run_id, s.step_id, s.step_name, s.status
+from workflow.workflow_steps s
+join workflow.workflow_runs r on r.id = s.run_id
+where r.status = 'running'
+  and s.status in ('completed', 'failed')
+  and not exists (
+    select 1 from workflow.workflow_events e
+    where e.run_id = s.run_id
+      and e.correlation_id = s.step_id
+      and e.type = 'step_' || s.status
+  );
+```
+
+Upgrading does not recover these runs. Cancel each one with
+`workflow cancel <run-id>`.
 
 ## Development
 

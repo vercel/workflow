@@ -1,7 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { RETENTION_ATTRIBUTE } from '@workflow/world';
-import { Pool } from 'pg';
 import { ulid } from 'ulid';
 import {
   afterAll,
@@ -15,12 +14,21 @@ import {
 import { createClient } from '../src/drizzle/index.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
 import { createStreamer } from '../src/streamer.js';
+import { TestPool } from './pool.js';
 
 type EventsStorage = ReturnType<typeof createEventsStorage>;
 
 /** Every payload-bearing column, CBOR half and legacy JSON twin alike. */
 const PAYLOAD_COLUMNS = {
-  runs: ['input_cbor', 'input', 'output_cbor', 'output', 'error_cbor', 'error'],
+  runs: [
+    'input_cbor',
+    'input',
+    'output_cbor',
+    'output',
+    'error_cbor',
+    'error',
+    'dynamic_workflow_code_cbor',
+  ],
   steps: [
     'input_cbor',
     'input',
@@ -41,7 +49,7 @@ describe('Retention ($retention: 0)', () => {
   }
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let drizzle: ReturnType<typeof createClient>;
   let runs: ReturnType<typeof createRunsStorage>;
   let events: EventsStorage;
@@ -59,7 +67,7 @@ describe('Retention ($retention: 0)', () => {
       env: process.env,
     });
 
-    pool = new Pool({ connectionString: dbUrl, max: 4 });
+    pool = new TestPool({ connectionString: dbUrl, max: 4 });
     drizzle = createClient(pool);
     runs = createRunsStorage(drizzle);
     events = createEventsStorage(drizzle);
@@ -97,6 +105,9 @@ describe('Retention ($retention: 0)', () => {
         workflowName: 'retention-workflow',
         input: new Uint8Array([1, 2, 3]),
         executionContext: { userId: 'user-1' },
+        // A dynamic run's stored code is a run payload too, and the only one
+        // that lives in a column of its own.
+        dynamicWorkflowCode: new Uint8Array([14, 15, 16]),
         ...(attributes ? { attributes, allowReservedAttributes: true } : {}),
       },
     });

@@ -104,7 +104,8 @@ export interface APIConfig {
   headers?: RequestInit['headers'];
   /**
    * Custom HTTP dispatcher passed to every `fetch()` call (e.g. an undici
-   * `Agent`/`RetryAgent`). Defaults to a shared undici `RetryAgent`.
+   * `Agent`/`RetryAgent`). Defaults to shared undici dispatchers with
+   * operation-specific retry policies.
    *
    * Typed as `unknown` on purpose: undici's `Dispatcher` type is nominally
    * version-specific (it differs across v6/v7/v8 and the `undici-types`
@@ -113,11 +114,12 @@ export interface APIConfig {
    * version's dispatcher, or any object implementing the dispatcher contract.
    *
    * Note: when provided, this dispatcher replaces *every* default, including
-   * the one used for stream writes (the `PUT` write/close path). Stream appends
-   * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
-   * default, which can duplicate a chunk the server already persisted. A custom
-   * dispatcher used with stream writes should therefore not retry `PUT` on 5xx
-   * (the built-in stream dispatcher retries only on transient errors and 429).
+   * those for stream writes and closes. Do not retry stream append PUTs in a
+   * dispatcher: fetch supplies a one-shot body, and retries after 5xx or
+   * uncertain network failures can duplicate an already-persisted append.
+   * The built-in append dispatcher disables retries; the SDK retries fresh
+   * requests above fetch for confirmed 429s and selected connection failures.
+   * A custom dispatcher disables that SDK append retry loop.
    */
   dispatcher?: unknown;
   projectConfig?: {
@@ -128,6 +130,16 @@ export interface APIConfig {
     teamId?: string;
     environment?: string;
   };
+  /**
+   * The spec version this World declared when it was created. Set by
+   * `createWorld`, which reads `mintedSpecVersion()` once; `run_started`
+   * attests this value as `executorSpecVersion` so the attestation always
+   * matches what the runtime validated, even if `WORKFLOW_SEALED_LOG` changes
+   * in-process afterwards.
+   *
+   * @internal
+   */
+  mintedSpecVersion?: number;
 }
 
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
@@ -422,7 +434,19 @@ export async function makeRequest<T>({
         const nodeAgents = getNodeHttpAgents(config);
         const undiciRequest = nodeAgents
           ? undefined
-          : new Request(url, { ...options, body, headers, signal });
+          : new Request(url, {
+              ...options,
+              body,
+              headers,
+              signal,
+              // The workflow API answers directly, so a 3xx is a misdirected
+              // request rather than a hop to take. Following it would re-send
+              // `x-vercel-trusted-oidc-idp-token` to whatever host the
+              // `Location` names — fetch only strips `Authorization` across
+              // origins, not other credential headers. Matches the node:http
+              // transport, which never follows redirects.
+              redirect: 'manual',
+            });
         const undiciDispatcher = nodeAgents ? undefined : getDispatcher(config);
         // Both transports issue the same span against the same URL, so this
         // is the only thing that tells them apart in a trace.

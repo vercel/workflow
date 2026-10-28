@@ -129,6 +129,7 @@ The Local World is the default outside Vercel and is intended for development.
 
 - Default: `25000`
 - Per-run event ceiling reported to the runtime. A run whose event log reaches it fails with `MAX_EVENTS_EXCEEDED`, bounding a runaway loop. See [`WORKFLOW_MAX_EVENTS_OVERRIDE`](/docs/configuration/runtime-tuning#workflow_max_events_override) for the runtime-side clamp.
+- Runs started on the QuickJS engine with snapshotting enabled are exempt, matching the Vercel World. See [max-events-exceeded](/docs/errors/max-events-exceeded).
 
 ## Postgres World
 
@@ -146,6 +147,7 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: none
 - Default: new `pg.Pool`
 - Existing `pg.Pool` to use instead of constructing one from `connectionString`.
+- The World attaches no `'error'` listeners to a pool you pass. Listen on the pool and on each client it connects, or a connection the server ends will end the process. See [passing a `pg.Pool`](/worlds/postgres#programmatic-configuration).
 
 ### `jobPrefix`
 
@@ -160,6 +162,12 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Number of concurrent workers polling for jobs.
 - Also bounds concurrent parent-to-child workflow return-value polls.
 
+### `pollInterval`
+
+- Environment variable: `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
+- Default: `500`
+- Milliseconds between idle job fetches per worker.
+
 ### `applicationManagedShutdown`
 
 - Environment variable: `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` (`1` enables)
@@ -167,6 +175,16 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Whether the application coordinates shutdown instead of Graphile Worker responding automatically.
 - Set to `true` only when the application awaits `world.close()` before closing its workflow HTTP server and caller-owned pool.
 - Prevents Graphile Worker's default handler from terminating the process before the application's remaining cleanup finishes.
+
+### `jobLockStaleSeconds`
+
+- Environment variable: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
+- Default: `0` (off)
+- Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery. When set, a running delivery renews its lock, so this bounds how long the job of a process that died stays locked.
+- `30` is a good value when more than one process shares the database. Use the same value on every process, and keep it well above the longest a process can block its event loop.
+- `0` leaves recovery to Graphile Worker's fixed 4 hour reset and to restarts.
+- Off by default because of rolling upgrades. A process on an earlier version neither renews its locks nor fences its acknowledgement on the lock holder, so while it shares the database with a process that has this on, its deliveries that run longer than the window are redelivered, and finishing one can delete the redelivered job.
+- To turn it on, set the same value on every process that shares the database once all of them run a version that includes this option. See [Postgres World: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](/worlds/postgres#workflow_postgres_job_lock_stale_seconds).
 
 ### `maxPoolSize`
 
@@ -199,6 +217,8 @@ The Vercel World is configured automatically inside Vercel deployments. The plat
 
 Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the Workflow CLI, the web user interface (UI), continuous integration (CI), or tests. The runtime warns if these variables are set in a deployed Vercel Function because they do not control runtime configuration there.
 
+The entries below are the individual knobs. For a walkthrough of authenticating a local script or a CI job with a Vercel auth token — which variables are needed together, and how to pass them to the World factory — see [Connecting from outside a deployment](/worlds/vercel#connecting-from-outside-a-deployment).
+
 Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself; keep [system environment variables](/worlds/vercel#system-environment-variables) enabled for the project so that Vercel provides them.
 
 ### `token`
@@ -207,13 +227,14 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: `--authToken`
 - Default: inferred when possible
 - Vercel API token for external tooling. Keep it secret.
+- Only meaningful alongside `projectConfig.projectId` and `projectConfig.teamId` — set all three together. Supplying both IDs but no token throws rather than failing later with a `401`.
 
 ### `projectConfig.environment`
 
 - Environment variable: `WORKFLOW_VERCEL_ENV`
 - CLI flag: `--env` or `-e`
 - Default: `production`
-- Vercel environment targeted by tooling. Accepts `production` or `preview`.
+- Vercel environment targeted by tooling. Accepts `production`, `preview`, or a custom environment's **slug** — configure the slug, not the environment's ID.
 
 ### `projectConfig.projectId`
 
@@ -242,6 +263,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: `https://api.vercel.com/v1/workflow`
 - Workflow API proxy URL for external tooling.
+- The Vercel World doesn't follow HTTP redirects, so the URL must answer directly. A `3xx` response fails the request.
 
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 
@@ -287,9 +309,13 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 
 - Factory option: none
 - CLI flag: none
-- Default: `http`
-- Experimental stream-write transport capability. Set to exactly `ws` to attempt `workflow-stream-ws/v1`. The server authoritatively accepts or declines each upgrade; a decline uses HTTP directly for that writer lifetime. Stream reads remain HTTP and demand-driven.
-- This is not tenant rollout policy or a package-version check. HTTP remains the compatibility path. `/websockets/v1` is independent of REST v2/v4 and persisted workflow `specVersion` values.
+- Default: `ws`
+- Stream writes upgrade to a WebSocket (`workflow-stream-ws/v1`). Set to `http` (case-insensitive, surrounding whitespace ignored) to opt out; any other value, including unset, empty, or `ws`, uses the WebSocket. Stream reads always use HTTP.
+- A writer's first two write groups go over HTTP, and the socket opens in the background after that, so no write waits for the upgrade. The server accepts or declines each upgrade; a declined or failed upgrade leaves that writer on HTTP for its lifetime.
+- Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy, which does not forward a WebSocket upgrade, so stream writes stay on HTTP.
+- The server pings idle sockets to keep them open, and the client must answer. The `ws` library the Vercel World uses does so automatically.
+- Each WebSocket message is at most `WORKFLOW_WS_MAX_MESSAGE_BYTES`. Larger write groups are sent as several ordered requests, and a single chunk too large for one message is written over HTTP.
+- A throttled (429) socket write or close is retried after the server's `Retry-After`, as over HTTP. It moves to HTTP if the connection ends during the wait or the cumulative wait passes 30 seconds.
 
 ### `WORKFLOW_DISABLE_ANALYTICS_READS`
 
@@ -304,7 +330,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Default: on
 - Set to `0` (or `false`) to **disable** batched event writes, the escape hatch that restores the exact prior one-write-per-event path.
 
-When enabled (the default), a suspension's eager `step_created` and `wait_created` writes fold into batched `events.createBatch` calls (one durable write with per-event outcomes) on Worlds that implement the optional batch API. The fold only engages when the World implements `events.createBatch` (the Vercel World does; Local and Postgres do not), the run's spec version supports slot identity (≥ 6), and the suspension carries no attribute writes or resilient step dispatch. Hook writes in the same suspension go through the single-event path concurrently with the batch. Everything else keeps the single-event path unchanged, so disabling is only needed as an operational escape hatch. Batches are capped at 32 events; larger fan-outs commit in successive batches. See the [batched event writes changelog](/docs/changelog/batched-event-writes) for the World API contract.
+When enabled (the default), a suspension's eager `step_created` and `wait_created` writes fold into batched `events.createBatch` calls (one durable write with per-event outcomes) on Worlds that implement the optional batch API. The fold only engages when the World implements `events.createBatch` (the Vercel World does; Local and Postgres do not), the run's spec version supports slot identity (≥ 6), and the suspension carries no attribute writes. Hook writes in the same suspension go through the single-event path concurrently with the batch. Everything else keeps the single-event path unchanged, so disabling is only needed as an operational escape hatch. Batches are capped at 16 events; larger fan-outs commit in several batches at once. See the [batched event writes changelog](/docs/changelog/batched-event-writes) for the World API contract.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
@@ -313,3 +339,22 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - Default: `ws`
 - Ships workflow run events to the Vercel World over a WebSocket instead of one HTTP request each. Set to exactly `http` to opt out; any other value, including unset or empty, uses the WebSocket.
 - Ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP.
+
+### `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`
+
+- Factory option: none
+- CLI flag: none
+- Default: none
+- Comma-separated workflows whose runs use the WebSocket events transport even when `WORKFLOW_EVENTS_TRANSPORT` is `http`. Each entry is a function name (`processOrder`) or a full workflow name (`workflow//./src/workflows/order//processOrder`), matched exactly and case-sensitively.
+- Has no effect unless `WORKFLOW_EVENTS_TRANSPORT=http`, since every workflow already uses the WebSocket by default.
+- See [`WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`](/worlds/vercel#workflow_events_transport_ws_override_workflows) for details.
+
+### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
+
+- Factory option: none
+- CLI flag: none
+- Default: `12582912` (12 MiB)
+- Clamp: `2097152` to `16777216` (values outside are clamped, with a warning)
+- Largest WebSocket message the Vercel World sends, header included, for both the events and stream-write transports. The ceiling is the 16 MiB WebSocket message limit.
+- Events: a larger frame is sent as several messages and rebuilt on the other side.
+- Stream writes: a larger write group is split into several ordered write requests; a single chunk too large for one message is written over HTTP, as are the rest of that writer's writes.

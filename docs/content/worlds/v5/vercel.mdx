@@ -28,7 +28,7 @@ Vercel automatically:
 - Selects the Vercel World backend
 - Configures authentication using OIDC tokens
 - Provisions storage and queuing infrastructure
-- Isolates data per environment (production, preview, development)
+- Isolates data per environment (production, preview, and any custom environments)
 
 <FluidComputeCallout />
 
@@ -69,6 +69,7 @@ Setting `WORKFLOW_TARGET_WORLD=vercel` is not a workaround. The Vercel World nee
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
 - **[Vercel Workflow](https://vercel.com/docs/workflows)**: Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel Workflow data retention](https://vercel.com/docs/workflows/retention)**: How long run data is kept, where it is stored, and how to delete it sooner
 - **[Vercel limits](https://vercel.com/docs/limits)**: Platform-wide limits, including Workflow-specific constraints
 - **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)**: Free-tier included usage for Workflow and other resources
 
@@ -76,11 +77,13 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 ## Per-run limits
 
-The Vercel World caps how large a single run can get. It caps the run's [event log](/docs/how-it-works/event-sourcing), and separately caps how many steps one run may create; see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the current values. A run that exhausts its event budget fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
+The Vercel World supplies a per-run [event limit](/docs/how-it-works/event-sourcing). Each step adds events to that log, so the event budget also constrains how many steps a run can execute. See [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the published default limits and sizing guidance. A run that exhausts its event budget fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
 
-Treat both caps as backstops, not budgets. Replay cost grows with the log, so a run slows down well before it fails. We recommend splitting a run into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events. Size for that recommendation rather than for the cap.
+On the default runtime, replay cost can grow with the event log. For workflows with many steps or frequent resumes, consider the experimental [QuickJS runtime](/docs/configuration/runtime-tuning#workflow_vm). Set `WORKFLOW_VM=quickjs` in your project's environment variables and redeploy. Only runs started after the change use the new runtime.
 
-Vercel raises the per-run event and step limits on request, so an unusually large run that genuinely cannot be split is worth raising with support rather than working around.
+QuickJS runs are exempt from the default event cap, allowing larger event logs and more steps. They restore workflow state and replay only events recorded since the last snapshot, reducing replay overhead as the log grows. This does not speed up the work inside individual steps or remove payload, storage, and request rate limits. See [max-events-exceeded](/docs/errors/max-events-exceeded) for eligibility and compatibility details.
+
+Use [child workflows](/cookbook/advanced/child-workflows) when independent units of work benefit from separate run histories and failure boundaries. To write fewer events, [process multiple items within each step](/cookbook/common-patterns/batching#tips), accounting for retries of the whole group.
 
 ## Multi-region
 
@@ -128,6 +131,30 @@ const run = await start(myWorkflow, [input], { region: "sfo1" });
 - Runs created by 4.x SDKs, including runs that existed before you upgraded, live in `iad1` and are unaffected by an upgrade. There is no migration.
 - **Hook tokens are currently stored in `iad1`** for every run, regardless of the run's region. The token-to-run mapping that powers [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) lives there so tokens without region information can always be resolved. Hook *payloads* are not affected. A received payload is recorded on the run's event log, which lives in the run's region like all other run data. This token placement may become a project-level setting in the future.
 
+## Data retention
+
+Retention for the Vercel World is documented in the [Vercel Workflows docs](https://vercel.com/docs/workflows/retention): how long run payloads stay readable and when they're deleted, how long run metadata is kept, where run data is stored, and how to delete run data sooner.
+
+To delete a run's payloads as soon as it finishes, start it with [`experimental_retention: 0`](/docs/observability/retention).
+
+## Queue consumers other than the Workflow SDK
+
+The Vercel World delivers each queue message to the functions subscribed to its topic, not to a fixed path. The Workflow SDK's build integration subscribes the generated flow route to `__wkf_workflow_*` (or `__{namespace}_wkf_workflow_*`). A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix and subscribes its own route to that prefix's topics:
+
+```json title="vercel.json"
+{
+  "functions": {
+    "app/api/agent/queue/route.ts": {
+      "experimentalTriggers": [
+        { "type": "queue/v2beta", "topic": "__agent_wkf_workflow_*" }
+      ]
+    }
+  }
+}
+```
+
+The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. Topic names replace characters other than letters, digits, `-` and `_` with `-`. The Vercel World has no `registerRoute()` or `registerHandler()`: a message reaches a function only through a subscription declared at deploy time. Every subscribed function receives its own copy of a message and runs it, whatever prefix its handler was created with, so subscribe each route only to its own prefix's topics.
+
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.
@@ -170,6 +197,143 @@ npx workflow inspect runs \
 
 Learn more in the [Observability](/docs/observability) documentation.
 
+## Connecting from outside a deployment
+
+Inside a Vercel deployment there is nothing to authenticate: the platform injects a per-request OIDC token and the Vercel World uses it automatically. A process that is *not* a deployment has no such token — a script on your laptop, a CI job driving end-to-end tests against a preview, a one-off backfill. Those clients authenticate with a **Vercel auth token** instead. Vercel checks that token against your team and project permissions, and attributes the request to the environment you name.
+
+<Callout type="warn">
+  Do not reuse the `VERCEL_OIDC_TOKEN` that `vercel env pull` writes into
+  `.env.local` as your Workflow credential. It is a local artifact of your
+  linked project, not a credential for the Workflow API: requests made with it
+  are attributed to the environment carried in the token itself, not to the
+  `production` or `preview` data you mean to reach. Authenticate with a Vercel
+  auth token instead. A pulled OIDC token is still the right thing for
+  [bypassing deployment
+  protection](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources)
+  when your script has to fetch a protected preview URL; that is a separate
+  credential from the one that talks to the Workflow API.
+</Callout>
+
+### Environment variables
+
+These four values are what an external client needs. The names are the convention shared by the `workflow` CLI and the web UI:
+
+| Variable | Value | Notes |
+| --- | --- | --- |
+| `WORKFLOW_VERCEL_AUTH_TOKEN` | Vercel auth token | Keep it secret. Create one under [account settings → tokens](https://vercel.com/account/tokens), scoped to the team that owns the project. |
+| `WORKFLOW_VERCEL_TEAM` | Vercel team ID (`team_...`) | Required. Set it together with the token and the project ID. |
+| `WORKFLOW_VERCEL_PROJECT` | Vercel project ID (`prj_...`) | Required. Set it together with the token and the team ID. |
+| `WORKFLOW_VERCEL_ENV` | `production`, `preview`, or a custom environment's slug | Defaults to `production`. See [`WORKFLOW_VERCEL_ENV`](#workflow_vercel_env). |
+
+Both IDs are in `.vercel/project.json` after `vercel link` — `projectId` is the project, `orgId` the team or user that owns it — or on the project's settings page.
+
+Three more are situational:
+
+- `VERCEL_DEPLOYMENT_ID` — required to **start** runs, not to read them. See [Starting runs](#starting-runs-from-outside-a-deployment).
+- `WORKFLOW_VERCEL_PROJECT_NAME` — the project slug, used only to build dashboard links.
+- `VERCEL_TOKEN` — a fallback the World reads for the Vercel API calls it makes alongside your Workflow requests (fetching a run's encryption key, resolving `deploymentId: "latest"`). A client that passes `token` explicitly, as below, already covers those calls and does not need it.
+
+For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against. The `workflow` CLI's `--env` flag reads the same variable but only accepts `production` or `preview`, so a custom environment is reachable from your own script, not from the CLI.
+
+<Callout type="info">
+  The Workflow SDK does not read `WORKFLOW_VERCEL_*` from the environment on
+  your behalf — the runtime's own `createWorld()` deliberately ignores them, so
+  that a stray variable on a deployed project cannot redirect a live
+  application. Read them in your own code and pass them to the World factory,
+  as below. Setting them on a deployed Vercel project has no effect on runtime
+  configuration, and the runtime warns when it sees them there.
+</Callout>
+
+### Wiring it up in a script
+
+Build the Vercel World with an explicit config and install it with [`setWorld()`](/docs/api-reference/workflow-runtime/set-world) before the first `workflow/api` call:
+
+{/*@skip-typecheck: incomplete code sample*/}
+
+```typescript title="scripts/start-run.ts" lineNumbers
+import { start } from "workflow/api";
+import { setWorld } from "workflow/runtime";
+import { createWorld } from "@workflow/world-vercel";
+import { myWorkflow } from "../workflows/my-workflow";
+
+setWorld(
+  createWorld({
+    token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN, // [!code highlight]
+    projectConfig: {
+      projectId: process.env.WORKFLOW_VERCEL_PROJECT, // [!code highlight]
+      teamId: process.env.WORKFLOW_VERCEL_TEAM, // [!code highlight]
+      environment: process.env.WORKFLOW_VERCEL_ENV, // [!code highlight]
+    },
+  })
+);
+
+const run = await start(myWorkflow, ["input"]);
+console.log(run.runId);
+```
+
+Supply `token`, `projectId`, and `teamId` together. Setting the two IDs without a token fails immediately, with a message naming the missing token, rather than surfacing later as an opaque `401`.
+
+The same token authorizes the per-run key fetch that decrypts run and step data, so reads come back as values rather than opaque bytes — see [Encryption](/docs/how-it-works/encryption).
+
+This is exactly what the `workflow` CLI does under the hood. It resolves the same four values — from `--authToken` / `--project` / `--team` / `--env`, then the `WORKFLOW_VERCEL_*` variables, then `.vercel/project.json` and your `vercel login` credentials — and constructs the World with them. Passing them explicitly is the non-interactive equivalent of being logged in and linked.
+
+### Starting runs from outside a deployment
+
+[`start()`](/docs/api-reference/workflow-api/start) has to name a deployment, because a run executes the code of the deployment that created it. Inside a deployment that is the current one; outside, there is nothing to infer, so set `VERCEL_DEPLOYMENT_ID` to the deployment whose code should run the workflow:
+
+```bash
+# `vercel inspect` prints the dpl_... ID for a deployment URL
+vercel inspect https://my-app-abc123.vercel.app
+```
+
+Reads such as [`getRun()`](/docs/api-reference/workflow-api/get-run) do not need it. `start(..., { deploymentId: "latest" })` does: it resolves the newest deployment sharing that deployment's environment, so it needs one to start from.
+
+<Callout type="warn">
+  The environment you authenticate as and the deployment you target must
+  agree. A client that creates a run in `preview` but points it at a
+  production deployment creates a run that never executes: environments are
+  isolated from each other, so a deployment refuses work created in a
+  different one. If a run stays `pending` and the deployment logs a refusal
+  naming two environments, check `WORKFLOW_VERCEL_ENV` against the environment
+  of the deployment in `VERCEL_DEPLOYMENT_ID`.
+</Callout>
+
+### In CI
+
+Wait for the deployment under test, then hand its ID to the test step alongside the four auth variables:
+
+```yaml title=".github/workflows/e2e.yml" lineNumbers
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # check out the repository
+      deployments: read # find the deployment to wait for
+      statuses: read # read its deployment status and ID
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for the Vercel deployment
+        id: deployment
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: my-app
+          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+
+      - name: Run end-to-end tests
+        run: pnpm test:e2e
+        env:
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: team_xxxxxxxxxxxxxxxx
+          WORKFLOW_VERCEL_PROJECT: prj_xxxxxxxxxxxxxxxx
+          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
+```
+
+Store the token as an encrypted secret and derive `WORKFLOW_VERCEL_ENV` from the branch, so a pull request run never authenticates as `production`.
+
+If the deployment is behind deployment protection, the job also needs a way to reach its URL. Add `id-token: write` to the job's `permissions` and mint a short-lived OIDC token from the runner for the `x-vercel-trusted-oidc-idp-token` header; that credential is for [Trusted Sources](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources) only and is separate from the Vercel auth token above.
+
 ## Testing & compatibility
 
 <WorldTestingPerformance worldId="vercel" />
@@ -184,9 +348,11 @@ Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They are o
 
 For example, you might set them when running `workflow inspect runs --backend vercel` from CI without an interactive `vercel login`, or when running tests against a specific preview deployment. In normal local development, the CLI infers these values from your `.vercel` directory and Vercel CLI login. In a deployed Vercel function, these variables have no effect on runtime configuration, and the runtime warns if they are set there.
 
+For the task-oriented version of this — which variables a local script or CI job needs, and how to hand them to the SDK — see [Connecting from outside a deployment](#connecting-from-outside-a-deployment).
+
 ### `WORKFLOW_VERCEL_ENV`
 
-The Vercel environment to target. Options: `production`, `preview`. Default: `production`.
+The Vercel environment to target. Options: `production`, `preview`, or a custom environment's slug. Default: `production`. See [Environment variables](#environment-variables) for how a custom environment is resolved.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
@@ -207,6 +373,8 @@ Vercel team ID.
 ### `WORKFLOW_VERCEL_BACKEND_URL`
 
 Custom base URL for the Vercel workflow API proxy. Default: `https://api.vercel.com/v1/workflow`.
+
+The Vercel World doesn't follow HTTP redirects on workflow API requests, so point custom URLs at an endpoint that answers directly. A `3xx` response fails the request.
 
 ### `VERCEL_WORKFLOW_SERVER_URL`
 
@@ -242,13 +410,25 @@ Maximum stream chunks written in one Vercel World request. Larger batches are sp
 
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
-Experimental stream-write transport capability. Default: `http`. Set `WORKFLOW_STREAMS_TRANSPORT=ws` to attempt `workflow-stream-ws/v1`. The server authoritatively accepts or declines every upgrade; a decline goes directly to HTTP for that writer lifetime. Reads remain HTTP and demand-driven.
+Stream writes upgrade to a WebSocket (`workflow-stream-ws/v1`) instead of one HTTP request per write group. Default: `ws`.
 
-This setting does not own tenant rollout policy and does not infer server support from package versions. HTTP remains the compatibility path. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
+Set `WORKFLOW_STREAMS_TRANSPORT=http` to opt out. That value is matched case-insensitively and ignoring surrounding whitespace; any other value, including unset, empty, or `ws`, uses the WebSocket. Stream reads always use HTTP.
 
-Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append.
+The setting is ignored when the World is configured with `projectConfig` and routes through the `api-workflow` proxy, which does not forward a WebSocket upgrade, so stream writes stay on HTTP.
 
-Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
+The client only offers the upgrade. The server accepts or declines each one, and a writer whose upgrade is declined or fails writes over HTTP for the rest of its lifetime. This setting does not decide which tenants may upgrade and does not infer server support from package versions. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
+
+A writer's first write group always goes over HTTP, and so does its second. The socket starts opening in the background once the second group's request is sent, and later groups keep going over HTTP until it opens, so no write waits for the upgrade. A writer that closes after one or two groups never uses the socket. If the socket has not opened within 10 seconds, or the upgrade fails or is declined, the writer stays on HTTP.
+
+Writes and close requests execute serially, so a write never overtakes an earlier one on the other transport. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append. A throttled (429) write or close did not apply, so the writer retries it after the server's `Retry-After`, as the HTTP writer does, on the socket if it stays open (or its replacement, after a drain) and otherwise over HTTP. Past 30 seconds of cumulative wait, the write moves to HTTP, whose own 429 retry applies. A close that fails with a 5xx is retried over HTTP, since close is idempotent.
+
+Once a released writer's writes drain, its socket closes without closing the shared stream, and later writes through that same handle go over HTTP. Writers acquired with `getWritable()` inside a step release their socket when the step completes. External `getRun(runId).getWritable()` handles release it on the first `releaseLock()` after pending writes drain, so hold the writer lock for the whole burst to keep writing over the socket.
+
+Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. If the new socket is not open within 250 ms, the writer continues over HTTP. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
+
+The server sends WebSocket pings to keep an idle socket open, and the client must answer them. The `ws` library the Vercel World uses answers pings automatically, so there is nothing to configure.
+
+Each stream WebSocket message is at most [`WORKFLOW_WS_MAX_MESSAGE_BYTES`](#workflow_ws_max_message_bytes) bytes. A write group larger than the limit is sent as several ordered write requests. A single chunk too large for one message is written over HTTP instead, as are the rest of its writer's writes.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
@@ -257,6 +437,24 @@ Workflow run events ship to the Vercel World over a WebSocket instead of one HTT
 Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out. Only that exact value disables the WebSocket — any other value, including unset or empty, takes it — so a typo fails toward the default rather than silently pinning a deployment to HTTP.
 
 The setting is ignored when the World is configured with `projectConfig` and therefore routes through the `api-workflow` proxy: that endpoint is an HTTP-only REST gateway and does not forward a WebSocket upgrade, so events stay on HTTP. The fallback is silent — now that the WebSocket is the default, nothing asked for it — and is reported once per process under `DEBUG=workflow:*`. `workflow.events.transport` on the per-write span records which transport actually carried a run.
+
+Event writes use the WebSocket only while that run's events channel is open. The queue handler opens it for every delivery, so workflows need nothing extra. Code that writes a run's events outside a delivery, such as a custom driver or a long-lived process, opens the channel with `openEventsChannel(runId)`, or those writes go over HTTP. Call the returned release when you're done, because an open socket keeps the process alive:
+
+{/*@skip-typecheck: incomplete code sample*/}
+
+```typescript title="write-events.ts" lineNumbers
+import { createWorld, openEventsChannel } from "@workflow/world-vercel";
+
+const world = createWorld();
+const release = openEventsChannel(runId);
+try {
+  await world.events.create(runId, event);
+} finally {
+  release?.();
+}
+```
+
+`openEventsChannel()` returns `undefined`, and writes stay on HTTP, when the transport is disabled or the World cannot hold a socket, such as a `projectConfig` World.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
 
@@ -267,12 +465,36 @@ Tracing is unaffected by the choice. Each event write emits an `http POST` clien
 | `network.protocol.name` | — | `websocket` |
 | `workflow.events.ws.url` | — | the socket the frame went over |
 | `workflow.events.ws.req_id` | — | per-connection request id, matching the server's log line |
+| `workflow.events.ws.request_parts` | — | messages the request was sent as, when it was split |
+| `workflow.events.ws.reply_parts` | — | messages the reply arrived as, when it was split |
 
 The WebSocket handshake is itself a span, `workflow.events.ws.connect`, so the cost of opening (or eagerly reopening) a connection is attributable rather than showing up as unexplained time inside the first write.
 
+### `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`
+
+Comma-separated workflows whose runs use the WebSocket events transport even when [`WORKFLOW_EVENTS_TRANSPORT`](#workflow_events_transport) is `http`. Use it to move selected workflows onto the WebSocket while the rest of the deployment stays on HTTP. Default: none.
+
+Each entry is a workflow's function name, such as `processOrder`, or its full workflow name, such as `workflow//./src/workflows/order//processOrder`. Matching is exact and case-sensitive. A function name matches every workflow with that name, in any file.
+
+```bash
+WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS=processOrder,syncInventory
+```
+
+The override applies to the events channel the queue handler opens for each delivery of a listed workflow's run. The workflow name comes from the delivery's queue, so it covers the run's workflow and step invocations alike. `openEventsChannel(runId, config, { workflowName })` applies it to channels you open yourself; without `workflowName`, a deployment with `WORKFLOW_EVENTS_TRANSPORT=http` opens none. Unless `WORKFLOW_EVENTS_TRANSPORT=http` is set, every workflow already uses the WebSocket and the override has no effect.
+
+Like other environment variables, the setting is fixed for each deployment, and a run stays on the deployment it started on. Changing it takes effect for runs started on the next deployment; runs already in progress keep the transport of the deployment they're pinned to.
+
+### `WORKFLOW_WS_MAX_MESSAGE_BYTES`
+
+Largest WebSocket message the Vercel World sends, header included, on both the events and stream-write transports. Default: `12582912` (12 MiB).
+
+Some WebSocket paths limit the size of a single message, commonly to 16 MiB. Event payloads can be larger: a step's input or output is carried inside its event. A frame over this limit is sent as several messages, and the other side rebuilds it before handling it. Stream writes split a large write group into several ordered write requests instead (see [`WORKFLOW_STREAMS_TRANSPORT`](#workflow_streams_transport)). Frames at or under the limit are unaffected. Integer values are clamped to `2097152`-`16777216` (2–16 MiB) with a warning; other values use the default.
+
+The client splits its own large requests, which needs a Vercel World backend that accepts split frames. It lists `frame-parts` in the `x-workflow-ws-flags` header of the WebSocket upgrade, and the backend splits large replies only for a client that does, so older clients keep receiving whole replies.
+
 ### Programmatic configuration
 
-`createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module:
+`createWorld()` accepts explicit API configuration. It does not read `WORKFLOW_VERCEL_*` automatically, so pass the environment values yourself when you want a configured World module. To configure a client at the point of use instead of through `WORKFLOW_TARGET_WORLD`, see [Wiring it up in a script](#wiring-it-up-in-a-script).
 
 {/*@skip-typecheck: incomplete code sample*/}
 
@@ -292,6 +514,8 @@ export default createWorld({
 ```bash title=".env"
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
+
+Pass `dispatcher` (for example an undici `Agent`) to replace the World's HTTP dispatchers, including the queue's and the one for stream writes. The default stream writer retries a write that was rejected with a 429 (after its `Retry-After`) or that failed to connect, sending a fresh request each time. A custom dispatcher turns that retry off. Don't configure a custom dispatcher to retry stream write `PUT` requests itself, because a retry after a 5xx or a dropped connection can append a chunk the server already stored.
 
 ## Versioning
 
@@ -340,6 +564,6 @@ The Vercel World uses Vercel's infrastructure for workflow execution:
 
 - **Storage**: Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
 - **Queuing**: Steps are distributed across Vercel Functions through [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
-- **Authentication**: OIDC tokens provide secure, automatic authentication
+- **Authentication**: OIDC tokens provide secure, automatic authentication inside deployments; clients outside one authenticate with a [Vercel auth token](#connecting-from-outside-a-deployment)
 
 For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

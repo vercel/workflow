@@ -12,6 +12,7 @@ const workbenchScriptsRoot = path.join(workbenchRoot, 'scripts');
 const repoLibRoot = path.join(repoRoot, 'lib');
 const packagesRoot = path.join(repoRoot, 'packages');
 const workspaceYamlPath = path.join(repoRoot, 'pnpm-workspace.yaml');
+const patchesRoot = path.join(repoRoot, 'patches');
 
 const dependencyFields = [
   'dependencies',
@@ -317,6 +318,17 @@ function writeStagedWorkspaceConfig(
     overridesHeader,
     (header) => `${header}\n${overrideLines.join('\n')}`
   );
+
+  // `patchedDependencies` entries are paths relative to the workspace root, so
+  // the patch files have to travel with the config. Only one workbench app is
+  // staged, and a patch aimed at a package outside its dependency graph is
+  // unused rather than wrong — which pnpm treats as an error by default.
+  if (fs.existsSync(patchesRoot)) {
+    fs.cpSync(patchesRoot, path.join(destinationDir, 'patches'), {
+      recursive: true,
+    });
+    workspaceYaml += '\nallowUnusedPatches: true\n';
+  }
 
   fs.writeFileSync(
     path.join(destinationDir, 'pnpm-workspace.yaml'),

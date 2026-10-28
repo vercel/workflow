@@ -1,0 +1,49 @@
+name: QuickJS Snapshot Fuzz
+
+# Long-running differential fuzz of QuickJS VM snapshot/restore against live
+# execution and full replay (packages/core/src/runtime/quickjs-snapshot-fuzz.test.ts).
+# The unit suite runs a short version of the same test on every PR.
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      trials:
+        description: "Seeds to run"
+        required: false
+        default: "200"
+      steps:
+        description: "Loop iterations per workflow"
+        required: false
+        default: "300"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Snapshot differential fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build core and its dependencies
+        run: pnpm turbo run build --filter=@workflow/core...
+
+      - name: Run snapshot fuzz
+        working-directory: packages/core
+        run: pnpm exec vitest run src/runtime/quickjs-snapshot-fuzz.test.ts
+        env:
+          FUZZ_TRIALS: ${{ inputs.trials || '200' }}
+          FUZZ_STEPS: ${{ inputs.steps || '300' }}

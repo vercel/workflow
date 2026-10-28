@@ -52,12 +52,12 @@ const nextConfig: NextConfig = {
 export default withWorkflow(nextConfig); // [!code highlight]
 ```
 
-<Accordion type="single" collapsible>
-  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
-    <AccordionTrigger className="text-sm">
-      ### Setup IntelliSense for TypeScript (Optional)
-    </AccordionTrigger>
-    <AccordionContent className="[&_p]:my-2">
+<Details>
+<Summary className="[&_h3]:my-0">
+
+### Setup IntelliSense for TypeScript (Optional)
+
+</Summary>
 
 To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json`:
 
@@ -74,16 +74,14 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 }
 ```
 
-    </AccordionContent>
-  </AccordionItem>
-</Accordion>
+</Details>
 
-<Accordion type="single" collapsible>
-  <AccordionItem value="configure-proxy-handler" className="[&_h3]:my-0">
-    <AccordionTrigger className="text-sm">
-      <h3 id="configure-proxy-handler">Configure Proxy Handler (if applicable)</h3>
-    </AccordionTrigger>
-    <AccordionContent className="[&_p]:my-2">
+<Details>
+<Summary className="[&_h3]:my-0">
+
+<h3 id="configure-proxy-handler" className="scroll-m-28">Configure Proxy Handler (if applicable)</h3>
+
+</Summary>
 
 If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
 (formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
@@ -113,9 +111,8 @@ export const config = {
 ```
 
 This ensures that internal Workflow paths are not intercepted by your middleware, which could interfere with workflow execution and resumption.
-    </AccordionContent>
-  </AccordionItem>
-</Accordion>
+
+</Details>
 
 </Step>
 

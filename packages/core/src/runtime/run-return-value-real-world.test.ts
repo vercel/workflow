@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkflowRunCancelledError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,20 +13,25 @@ import { dehydrateWorkflowReturnValue } from '../serialization.js';
 import { getRun } from './run.js';
 import { setWorld } from './world.js';
 
+// Only bounds how long a test waits for the first read to start; nothing is
+// asserted about how quickly it does.
+const WAIT_FOR_READ = { timeout: 10_000 };
+
 /**
  * `await run.returnValue` end to end over a real World.
  *
  * The sibling `run-return-value-long-poll.test.ts` pins the *pacing* against a
  * mocked `runs` on fake timers, and each World's own suite exercises
  * `waitForTerminalStatus` directly. Neither covers them composed: the real
- * `isReturnValueLongPollEnabled()` gate, the real bound method, a real World,
- * and the interval floor, on a real clock.
+ * `isReturnValueLongPollEnabled()` gate, the real bound method, and a real
+ * World.
  *
- * So these assert the property a user actually observes — how long after the
- * run finishes the await resolves — with world-local standing in for "a World
- * that can wait". A run finishing 300ms in can only be reported at the ~1s
- * tick by interval polling, so the two paths are far apart and the kill switch
- * is observable rather than merely configured.
+ * So these assert which path reported the terminal status, with world-local
+ * standing in for "a World that can wait": the long poll is one
+ * `waitForTerminalStatus` call that is already in flight when the run
+ * finishes, and interval polling is repeated metadata-only `runs.get` reads.
+ * The run is finished only once the first read is under way, so neither
+ * outcome depends on how fast the runner is.
  */
 describe('run.returnValue over a real World', () => {
   const envName = 'WORKFLOW_RETURN_VALUE_LONG_POLL';
@@ -40,6 +46,7 @@ describe('run.returnValue over a real World', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (original === undefined) delete process.env[envName];
     else process.env[envName] = original;
     setWorld(undefined as unknown as World);
@@ -72,80 +79,86 @@ describe('run.returnValue over a real World', () => {
     return runId;
   }
 
-  /** Finish the run after `ms`, the way a workflow completing elsewhere would. */
-  function completeAfter(runId: string, ms: number): Promise<unknown> {
-    return new Promise((resolve, reject) => {
-      setTimeout(() => {
-        dehydrateWorkflowReturnValue('done', runId)
-          .then((output) =>
-            world.events.create(
-              runId as never,
-              {
-                eventType: 'run_completed',
-                specVersion: SPEC_VERSION_CURRENT,
-                eventData: { output },
-              } as never
-            )
-          )
-          .then(resolve, reject);
-      }, ms);
-    });
+  /** Finish the run, the way a workflow completing elsewhere would. */
+  async function complete(runId: string): Promise<void> {
+    const output = await dehydrateWorkflowReturnValue('done', runId);
+    await world.events.create(
+      runId as never,
+      {
+        eventType: 'run_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { output },
+      } as never
+    );
   }
 
-  it('resolves as soon as the run finishes, not at the next poll tick', async () => {
-    const runId = await startRun();
+  async function cancel(runId: string): Promise<void> {
+    await world.events.create(
+      runId as never,
+      { eventType: 'run_cancelled', specVersion: SPEC_VERSION_CURRENT } as never
+    );
+  }
 
-    const startedAt = Date.now();
+  /**
+   * Spies on both read paths. The long poll is `runs.waitForTerminalStatus`;
+   * interval polling is `runs.get` with `resolveData: 'none'` (the payload read
+   * after a terminal status uses `'all'`).
+   */
+  function spyOnReads() {
+    const wait = vi.spyOn(world.runs, 'waitForTerminalStatus' as never);
+    const get = vi.spyOn(world.runs, 'get');
+    const metadataReads = () =>
+      get.mock.calls.flatMap(([, params], index) =>
+        params?.resolveData === 'none' ? [get.mock.results[index]] : []
+      );
+    return { wait, metadataReads };
+  }
+
+  it('reports completion from the in-flight long poll', async () => {
+    const runId = await startRun();
+    const { wait, metadataReads } = spyOnReads();
+
     const pending = getRun<string>(runId).returnValue;
-    const finishing = completeAfter(runId, 300);
+    await vi.waitFor(() => expect(wait).toHaveBeenCalled(), WAIT_FOR_READ);
+    await complete(runId);
 
     await expect(pending).resolves.toBe('done');
-    const elapsed = Date.now() - startedAt;
-    await finishing;
+    expect(wait).toHaveBeenCalledOnce();
+    expect(metadataReads()).toHaveLength(0);
+  });
 
-    // At or above the 1s interval would mean the poll reported it, not the wait.
-    expect(elapsed).toBeLessThan(800);
-  }, 30_000);
-
-  it('reports a cancellation without waiting out the interval', async () => {
+  it('reports a cancellation from the in-flight long poll', async () => {
     const runId = await startRun();
+    const { wait, metadataReads } = spyOnReads();
 
-    const startedAt = Date.now();
-    const pending = getRun<string>(runId).returnValue;
-    const cancelling = new Promise((resolve, reject) => {
-      setTimeout(() => {
-        world.events
-          .create(
-            runId as never,
-            {
-              eventType: 'run_cancelled',
-              specVersion: SPEC_VERSION_CURRENT,
-            } as never
-          )
-          .then(resolve, reject);
-      }, 300);
-    });
+    const outcome = expect(
+      getRun<string>(runId).returnValue
+    ).rejects.toBeInstanceOf(WorkflowRunCancelledError);
+    await vi.waitFor(() => expect(wait).toHaveBeenCalled(), WAIT_FOR_READ);
+    await cancel(runId);
 
-    await expect(pending).rejects.toThrow();
-    const elapsed = Date.now() - startedAt;
-    await cancelling;
-
-    expect(elapsed).toBeLessThan(800);
-  }, 30_000);
+    await outcome;
+    expect(wait).toHaveBeenCalledOnce();
+    expect(metadataReads()).toHaveLength(0);
+  });
 
   it('restores fixed-interval polling under the kill switch', async () => {
     process.env[envName] = '0';
     const runId = await startRun();
+    const { wait, metadataReads } = spyOnReads();
 
-    const startedAt = Date.now();
     const pending = getRun<string>(runId).returnValue;
-    const finishing = completeAfter(runId, 300);
+    // Let the first poll observe the run still running before finishing it,
+    // so only a later tick can report it.
+    await vi.waitFor(
+      () => expect(metadataReads()).toHaveLength(1),
+      WAIT_FOR_READ
+    );
+    await metadataReads()[0]?.value;
+    await complete(runId);
 
     await expect(pending).resolves.toBe('done');
-    const elapsed = Date.now() - startedAt;
-    await finishing;
-
-    // The run was done at ~300ms, but only the ~1s tick can observe it.
-    expect(elapsed).toBeGreaterThanOrEqual(900);
-  }, 30_000);
+    expect(wait).not.toHaveBeenCalled();
+    expect(metadataReads().length).toBeGreaterThanOrEqual(2);
+  });
 });

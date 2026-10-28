@@ -447,12 +447,21 @@ const removedFilesRequireFullRebuild = ({
 
 const addedFilesRequireFullRebuild = async ({
   addedFiles,
+  forcesRediscovery,
   readSnapshot,
 }: {
   addedFiles: string[];
+  forcesRediscovery: (file: string) => boolean;
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
 }) => {
   for (const file of addedFiles) {
+    // Some files extend the graph just by existing (a new framework
+    // entrypoint, or the target of an import that did not resolve), so they
+    // have to be rediscovered even when they declare nothing themselves: a
+    // workflow they import may be reachable for the first time.
+    if (forcesRediscovery(file)) {
+      return true;
+    }
     try {
       const snapshot = await readSnapshot(file);
       if (snapshot.hasDirective || snapshot.hasSerde) {
@@ -636,6 +645,7 @@ export const classifyRebuild = async ({
   discoveredEntries,
   fileChanges,
   inputFiles,
+  forcesRediscovery = () => false,
   normalizePath = defaultNormalizePath,
   parentHasChild,
   readSnapshot,
@@ -644,6 +654,12 @@ export const classifyRebuild = async ({
   discoveredEntries: DiscoveredEntriesLike;
   fileChanges: FileChanges;
   inputFiles: string[];
+  /**
+   * Whether creating this path changes what discovery would reach: an
+   * entrypoint the framework picks up by convention, or the target of an
+   * import that did not resolve. Only rediscovery can act on either.
+   */
+  forcesRediscovery?: (file: string) => boolean;
   normalizePath?: (path: string) => string;
   parentHasChild: (
     parent: string,
@@ -672,6 +688,7 @@ export const classifyRebuild = async ({
     }) ||
     (await addedFilesRequireFullRebuild({
       addedFiles: normalizedFileChanges.addedFiles,
+      forcesRediscovery,
       readSnapshot,
     })) ||
     (await modifiedFilesRequireFullRebuild({

@@ -1,8 +1,12 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
+import {
+  Button,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
 import { Activity, Loader2 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { Button } from '~/components/ui/button';
 import { runHealthCheck } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 
@@ -42,8 +46,8 @@ export function HealthCheckButton() {
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
-          variant="ghost"
-          size="sm"
+          variant="tertiary"
+          size="small"
           onClick={runChecks}
           disabled={isChecking}
           className="gap-1.5"

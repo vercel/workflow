@@ -41,7 +41,9 @@ export {
   type EnvNumberOptions,
   envFlag,
   envNumber,
+  getMaxEventsForRun,
   getMaxEventsPerRun,
+  isEventLimitExemptRun,
 } from './env-config.js';
 export type * from './events.js';
 export {
@@ -57,6 +59,7 @@ export {
   HOOK_EVENTS_REQUIRING_EXISTENCE,
   HOOK_LIFECYCLE_EVENT_TYPES,
   HookCreatedEventSchema,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
@@ -101,14 +104,17 @@ export {
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
+  getRunQueueNamespace,
   HealthCheckPayloadSchema,
   MessageId,
   parseQueueName,
+  parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
   resolveQueueNamespace,
   ValidQueueName,
+  WORKFLOW_FLOW_ROUTE,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
 export { reenqueueActiveRuns } from './recovery.js';
@@ -153,8 +159,17 @@ export {
   requireEventSlot,
   slotToEventId,
 } from './slot-identity.js';
+export type * from './snapshots.js';
+export {
+  decodeSnapshotEnvelope,
+  encodeSnapshotEnvelope,
+  SNAPSHOT_FORMAT_VERSION,
+  SnapshotMetadataSchema,
+} from './snapshots.js';
 export type { SpecVersion } from './spec-version.js';
 export {
+  CAPABILITY_ONLY_SPEC_VERSIONS,
+  crossesStructuralSpecVersion,
   isLegacySpecVersion,
   mintedSpecVersion,
   requiresNewerWorld,
@@ -169,6 +184,7 @@ export {
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  STRUCTURAL_SPEC_VERSIONS,
 } from './spec-version.js';
 export type * from './steps.js';
 export {

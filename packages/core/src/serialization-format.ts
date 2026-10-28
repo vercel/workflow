@@ -729,11 +729,17 @@ function hydrateStepIO<
  * Hydrate the data fields of a workflow run resource.
  */
 function hydrateWorkflowIO<
-  T extends { input?: any; output?: any; error?: any },
+  T extends {
+    input?: any;
+    output?: any;
+    error?: any;
+    dynamicWorkflowCode?: any;
+  },
 >(resource: T, revivers: Revivers): T {
   let hydratedInput = resource.input;
   let hydratedOutput = resource.output;
   let hydratedError = resource.error;
+  let hydratedDynamicWorkflowCode = resource.dynamicWorkflowCode;
 
   if (resource.input != null) {
     try {
@@ -762,11 +768,27 @@ function hydrateWorkflowIO<
     }
   }
 
+  // A dynamic run's own workflow code, stored through the same pipeline as
+  // `input`. Absent on every static run, so this is a no-op for them.
+  if (resource.dynamicWorkflowCode != null) {
+    try {
+      hydratedDynamicWorkflowCode = hydrateData(
+        resource.dynamicWorkflowCode,
+        revivers
+      );
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
   return {
     ...resource,
     input: hydratedInput,
     output: hydratedOutput,
     error: hydratedError,
+    ...(resource.dynamicWorkflowCode != null
+      ? { dynamicWorkflowCode: hydratedDynamicWorkflowCode }
+      : {}),
   };
 }
 
@@ -846,19 +868,27 @@ export function hydrateResourceIO<
     hydrated = hydrateWorkflowIO(resource, revivers);
   }
 
-  // Strip executionContext, preserving only workflowCoreVersion for display
+  // Strip executionContext, preserving only display-safe fields:
+  // workflowCoreVersion, and the VM engine + snapshot policy (which UIs use
+  // to tell whether a run was eligible for the QuickJS event limit
+  // exemption).
   if ('executionContext' in hydrated) {
     const { executionContext, ...rest } = hydrated;
-    const workflowCoreVersion =
-      executionContext &&
-      typeof executionContext === 'object' &&
-      'workflowCoreVersion' in executionContext
-        ? executionContext.workflowCoreVersion
+    const ctx =
+      executionContext && typeof executionContext === 'object'
+        ? (executionContext as Record<string, unknown>)
         : undefined;
-    if (workflowCoreVersion) {
-      return { ...rest, workflowCoreVersion } as unknown as T;
+    const preserved: Record<string, unknown> = {};
+    if (ctx?.workflowCoreVersion) {
+      preserved.workflowCoreVersion = ctx.workflowCoreVersion;
     }
-    return rest as T;
+    if (typeof ctx?.workflowVm === 'string') {
+      preserved.workflowVm = ctx.workflowVm;
+    }
+    if (typeof ctx?.snapshotThreshold === 'number') {
+      preserved.snapshotThreshold = ctx.snapshotThreshold;
+    }
+    return { ...rest, ...preserved } as unknown as T;
   }
 
   return hydrated;

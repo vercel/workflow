@@ -48,3 +48,4 @@ Returns a `Promise<HealthCheckResult>`:
 | `latencyMs` | `number \| undefined` | Round-trip latency when the check succeeded |
 | `specVersion` | `number \| undefined` | Workflow spec version of the responding deployment |
 | `workflowCoreVersion` | `string \| undefined` | `@workflow/core` version of the responding deployment |
+| `dynamicWorkflowVersion` | `number \| undefined` | Dynamic-workflow runtime version of the responding deployment. Present only when it has opted in with `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`; see [Dynamic Workflows](/docs/advanced/dynamic-workflows) |

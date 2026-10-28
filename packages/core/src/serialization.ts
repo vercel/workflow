@@ -37,8 +37,13 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
+import {
+  frameAbortStreamPayload,
+  readAbortStreamPacket,
+} from './serialization/abort-stream.js';
 import * as clientModule from './serialization/client.js';
 import {
+  type CompressionMode,
   type CompressionStats,
   compress,
   decompress,
@@ -104,6 +109,7 @@ import {
   STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
   STREAM_NAME_SYMBOL,
+  STREAM_RELEASE_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
@@ -759,6 +765,7 @@ function recordStreamReadComplete(
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
+  #cancelled = false;
 
   constructor(runId: string, name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
@@ -788,9 +795,20 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         if (!reader) {
           if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
+          // Cancelled while the World loaded: don't open a read just to close it.
+          if (this.#cancelled) return;
           const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
           connectMs = Date.now() - connectStart;
+          if (this.#cancelled) {
+            // Cancelled while connecting: `cancel` below found no reader to
+            // tear down, so the World stream (on world-vercel, a live GET) is
+            // ours to close. Left open it would be held until the server's
+            // max duration. The stream is already closed to the consumer, so
+            // there is nothing to enqueue.
+            await stream.cancel().catch(() => {});
+            return;
+          }
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -837,6 +855,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         }
       },
       cancel: async (reason) => {
+        this.#cancelled = true;
         if (this.#reader) {
           await this.#reader.cancel(reason).catch(() => {});
           this.#reader = undefined;
@@ -1719,6 +1738,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       enumerable: false,
       writable: false,
     });
+    Object.defineProperty(this, STREAM_RELEASE_SYMBOL, {
+      value: async () => {
+        // The owner has already drained. An unused writer whose session failed
+        // to initialize has no transport to release.
+        const session = await writeSessionPromise.catch(() => undefined);
+        await session?.release?.();
+      },
+      enumerable: false,
+      writable: false,
+    });
   }
 }
 
@@ -1856,7 +1885,8 @@ function reduceAbortWithListener(
   global: Record<string, any>,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  framedAbortStreams: boolean
 ): AbortSerializedData {
   let streamName = holder[ABORT_STREAM_NAME];
   let hookToken = holder[ABORT_HOOK_TOKEN];
@@ -1878,7 +1908,8 @@ function reduceAbortWithListener(
     streamName,
     runId,
     cryptoKey,
-    ops
+    ops,
+    framedAbortStreams
   );
 
   return {
@@ -1925,7 +1956,8 @@ function attachAbortListenerOnce(
   streamName: string,
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  ops: Promise<void>[]
+  ops: Promise<void>[],
+  framedAbortStreams: boolean
 ): void {
   if (signal.aborted) return;
   if ((signal as any)[ABORT_LISTENER_ATTACHED]) return;
@@ -1953,7 +1985,11 @@ function attachAbortListenerOnce(
               streamName
             );
             const writer = writable.getWriter();
-            await writer.write(payload as Uint8Array);
+            await writer.write(
+              framedAbortStreams
+                ? frameAbortStreamPayload(payload as Uint8Array)
+                : (payload as Uint8Array)
+            );
             await writer.close();
           } catch {
             // Best-effort stream write
@@ -1997,7 +2033,8 @@ export function getExternalReducers(
   // only finish after the workflow runs, so awaiting it before dispatch would
   // deadlock. Defaults to `ops` for existing callers that flush everything in
   // the background.
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2042,7 +2079,8 @@ export function getExternalReducers(
                   cryptoKey,
                   framedByteStreams,
                   runReadyBarrier,
-                  readbackOps
+                  readbackOps,
+                  framedAbortStreams
                 ),
                 cryptoKey
               )
@@ -2115,7 +2153,8 @@ export function getExternalReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
 
@@ -2132,7 +2171,8 @@ export function getExternalReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
   };
@@ -2329,7 +2369,8 @@ function getStepReducers(
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2390,7 +2431,8 @@ function getStepReducers(
                     cryptoKey,
                     framedByteStreams,
                     runReadyBarrier,
-                    readbackOps
+                    readbackOps,
+                    framedAbortStreams
                   ),
                   cryptoKey
                 )
@@ -2454,7 +2496,8 @@ function getStepReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
 
@@ -2471,7 +2514,8 @@ function getStepReducers(
         global,
         ops,
         runId,
-        cryptoKey
+        cryptoKey,
+        framedAbortStreams
       );
     },
   };
@@ -2542,64 +2586,56 @@ function setupAbortStreamReader(
 
   ops.push(
     (async () => {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
         const readable = new WorkflowServerReadableStream(runId, streamName);
-        const reader = readable.getReader();
+        reader = readable.getReader();
+        const ctxForKey = contextStorage.getStore();
+        let decoded: { reason?: unknown } | undefined;
+        const decodePacket = async (packet: Uint8Array) => {
+          decoded = (await hydrateStepArguments(
+            packet,
+            runId,
+            ctxForKey?.encryptionKey
+          )) as { reason?: unknown } | undefined;
+        };
         const result = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true }>((resolve) => {
+          readAbortStreamPacket(reader, decodePacket),
+          new Promise<undefined>((resolve) => {
             if (readerCancel.signal.aborted) {
-              resolve({ value: undefined, done: true });
+              resolve(undefined);
               return;
             }
             readerCancel.signal.addEventListener(
               'abort',
-              () => resolve({ value: undefined, done: true }),
+              () => resolve(undefined),
               { once: true }
             );
           }),
         ]);
-        if (result.value && !result.done) {
-          // An abort packet arrived: propagate it as fast as possible. Release
-          // the lock (synchronous) rather than cancelling here: on a
-          // service-backed World `reader.cancel()` can do a network round-trip,
-          // and awaiting it before `controller.abort()` would delay (or, if it
-          // hangs, drop) real-time abort delivery to the in-flight step.
-          try {
-            reader.releaseLock();
-          } catch {
-            // Reader may already be released; ignore.
-          }
+        if (result) {
           try {
             // Hydrate via the same machinery the writer used so the reason
             // round-trips with full type fidelity. Encryption key (if any)
             // comes from the step context, set up by the step executor before
             // this reader runs. Fallback to undefined for external-context
             // revives (the hydrate path is encryption-key-tolerant).
-            const ctxForKey = contextStorage.getStore();
-            const data = (await hydrateStepArguments(
-              result.value,
-              runId,
-              ctxForKey?.encryptionKey
-            )) as { reason?: unknown } | undefined;
-            controller.abort(data?.reason);
+            // Legacy packets were already hydrated to establish completeness.
+            // Framed packets have a known length and can hydrate once here.
+            if (decoded === undefined) await decodePacket(result);
+            controller.abort(decoded?.reason);
           } catch {
             controller.abort();
           }
-        } else {
-          // The step finished (or the reader was cancelled) without an abort.
-          // Cancel (not just release) so the underlying World stream is torn
-          // down: a polling World (e.g. world-local) otherwise leaks a tail
-          // reader (a 100ms filesystem poll plus emitter listeners) per step
-          // invocation for the life of the process, since a signal-bearing step
-          // opens one of these on every revival and usually never aborts. Fire
-          // and forget: a service-backed World's cancel may hit the network,
-          // and this path must not block the step's ops-settle window.
-          void reader.cancel().catch(() => {});
         }
       } catch {
         // Stream read failed: signal won't propagate in real-time,
         // but hook-based propagation on next replay provides fallback
+      } finally {
+        // Transport teardown may require a network round trip. Do not await
+        // it before abort delivery or hold the finishing step open. Cancelling
+        // also stops a pending partial-packet read when the step finishes.
+        void reader?.cancel().catch(() => {});
       }
     })()
   );
@@ -2705,7 +2741,7 @@ function reviveAbortController(
               value.streamName
             );
             const writer = writable.getWriter();
-            await writer.write(payload as Uint8Array);
+            await writer.write(frameAbortStreamPayload(payload as Uint8Array));
             await writer.close();
           } catch {
             // Best-effort stream write
@@ -2790,7 +2826,7 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 
 /**
  * Resolves the owner's encryption key, preferring its public key, then its
- * deployment, and finally its run record.
+ * deployment, and finally the deployment on its run record.
  * @internal
  */
 export async function getForwardedWritableEncryptionKey(
@@ -2804,9 +2840,16 @@ export async function getForwardedWritableEncryptionKey(
   const world = await getWorldLazy();
   if (!world.getEncryptionKeyForRun) return undefined;
 
-  const rawKey = deploymentId
-    ? await world.getEncryptionKeyForRun(runId, { deploymentId })
-    : await world.getEncryptionKeyForRun(await world.runs.get(runId));
+  // A descriptor minted before deployment ids were carried on the wire has to
+  // read the owning run for that one field, so it reads metadata only:
+  // `getEncryptionKeyForRun` needs nothing but the run's id and deployment,
+  // and the default `resolveData` would resolve its input and output too.
+  const ownerDeploymentId =
+    deploymentId ??
+    (await world.runs.get(runId, { resolveData: 'none' })).deploymentId;
+  const rawKey = await world.getEncryptionKeyForRun(runId, {
+    deploymentId: ownerDeploymentId,
+  });
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 
@@ -2996,7 +3039,11 @@ function getLazyReadableStream<T>(
 
 /** Options for external hydration. Defaults preserve live, eager hydration. @internal */
 type ExternalReviverOptions = {
-  /** Defer readable stream I/O until consumption, including nested streams. */
+  /**
+   * Defer readable stream I/O until consumption, including nested streams.
+   * Writable streams still construct their forwarding pipe and lock poller
+   * during hydration; callers must drain `ops` even for unused writables.
+   */
   lazyStreams?: boolean;
   /** Set false for terminal reporting: revive only the persisted abort snapshot. */
   liveAbortSignals?: boolean;
@@ -3353,7 +3400,8 @@ function getStepRevivers(
   runId: string,
   cryptoKey: EncryptionKeyParam,
   deploymentId?: string,
-  streamStates?: FlushableStreamState[]
+  streamStates?: FlushableStreamState[],
+  runReadyBarrier?: Promise<unknown>
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
@@ -3518,7 +3566,15 @@ function getStepRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getStepRevivers(global, ops, runId, cryptoKey, deploymentId),
+          getStepRevivers(
+            global,
+            ops,
+            runId,
+            cryptoKey,
+            deploymentId,
+            streamStates,
+            runReadyBarrier
+          ),
           cryptoKey
         );
         const state = createFlushableState();
@@ -3565,13 +3621,26 @@ function getStepRevivers(
               value.encryptionPublicKey
             );
 
+      // Argument hydration precedes the step's contextStorage frame, so it
+      // must receive turbo's creation barrier explicitly. A forwarded writable
+      // belongs to another run: this barrier says nothing about its readiness.
+      const targetRunReady =
+        targetRunId === runId ? runReadyBarrier : undefined;
       const serialize = getSerializeStream(
-        getStepReducers(global, ops, targetRunId, targetKey),
+        getStepReducers(
+          global,
+          ops,
+          targetRunId,
+          targetKey,
+          false,
+          targetRunReady
+        ),
         targetKey
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
-        value.name
+        value.name,
+        targetRunReady
       );
 
       // Create flushable state for this stream
@@ -3799,6 +3868,8 @@ export function deserializePreparedStepError(
  *   byte streams. Should match the target deployment's capability: see
  *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
  *   backwards compatibility with older runs.
+ * @param framedAbortStreams - Whether the target deployment supports length-framed
+ *   abort packets. Unknown/older targets must retain the unframed format.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateWorkflowArguments(
@@ -3809,8 +3880,9 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
-  readbackOps: Promise<void>[] = ops
+  compression: CompressionMode = false,
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3822,7 +3894,8 @@ export async function dehydrateWorkflowArguments(
         key,
         framedByteStreams,
         undefined,
-        readbackOps
+        readbackOps,
+        framedAbortStreams
       )
     );
     return revive(str);
@@ -3839,7 +3912,8 @@ export async function dehydrateWorkflowArguments(
           key,
           framedByteStreams,
           undefined,
-          readbackOps
+          readbackOps,
+          framedAbortStreams
         )
       ),
       compression,
@@ -3886,7 +3960,7 @@ export async function dehydrateWorkflowReturnValue(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /**
    * Optional sink receiving the first five samples and exact total count of
    * workflow-code executions serialization could not avoid. The diagnostics
@@ -3962,7 +4036,7 @@ export async function dehydrateStepArguments(
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false,
-  compression = false,
+  compression: CompressionMode = false,
   /** See `dehydrateWorkflowReturnValue`. */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
@@ -4004,14 +4078,23 @@ export async function hydrateStepArguments(
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string,
-  streamStates?: FlushableStreamState[]
+  streamStates?: FlushableStreamState[],
+  runReadyBarrier?: Promise<unknown>
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
   const result = await stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
-        getStepRevivers(global, ops, runId, key, deploymentId, streamStates)
+        getStepRevivers(
+          global,
+          ops,
+          runId,
+          key,
+          deploymentId,
+          streamStates,
+          runReadyBarrier
+        )
       ),
       ...extraRevivers,
     },
@@ -4036,6 +4119,8 @@ export async function hydrateStepArguments(
  *   byte streams. Should match the target deployment's capability: see
  *   `getRunCapabilities` in `capabilities.ts`. Defaults to `false` for
  *   backwards compatibility with older runs.
+ * @param framedAbortStreams - Whether the target deployment supports length-framed
+ *   abort packets. Unknown/older targets must retain the unframed format.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateStepReturnValue(
@@ -4046,12 +4131,13 @@ export async function dehydrateStepReturnValue(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false,
+  compression: CompressionMode = false,
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  framedAbortStreams = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4063,7 +4149,8 @@ export async function dehydrateStepReturnValue(
         key,
         framedByteStreams,
         runReadyBarrier,
-        readbackOps
+        readbackOps,
+        framedAbortStreams
       )
     );
     return revive(str);
@@ -4080,7 +4167,8 @@ export async function dehydrateStepReturnValue(
           key,
           framedByteStreams,
           runReadyBarrier,
-          readbackOps
+          readbackOps,
+          framedAbortStreams
         )
       ),
       compression,
@@ -4120,7 +4208,7 @@ export async function dehydrateStepError(
   key: PayloadKey | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId, key));
@@ -4178,6 +4266,134 @@ export async function hydrateStepError(
 }
 
 /**
+ * Serialize a dynamic run's generated workflow VM code for storage.
+ *
+ * Dynamic workflow code is application source, so it gets the same treatment
+ * as any other run payload: compressed (it is plain text, which compresses
+ * very well), then encrypted with the run's key. At rest it is opaque
+ * ciphertext, which is the point — generated orchestration can name internal
+ * step ids, prompts, and business rules, and observability surfaces must not
+ * read it without going through the decrypt flow.
+ *
+ * The code is a plain string, so it needs none of the reducers the other
+ * payloads go through, but it is still written as real devalue under the
+ * `DEVALUE_V1` prefix: the generic hydrators (`hydrateData` behind the CLI
+ * and the observability UI) trust that prefix and hand the bytes to
+ * devalue's `parse`, which rejects a bare JSON string as invalid input.
+ *
+ * @param code - Generated workflow VM code.
+ * @param key - Encryption key (undefined to skip encryption).
+ * @param compression - Whether the target run may carry compressed payloads.
+ */
+export async function dehydrateDynamicWorkflowCode(
+  code: string,
+  key: PayloadKey | undefined,
+  compression: CompressionMode = false
+): Promise<Uint8Array> {
+  try {
+    const payload = new TextEncoder().encode(stringify(code));
+    const serialized = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      payload
+    ) as Uint8Array;
+    // Compress before encrypting — encrypted bytes don't compress.
+    const compressionStats: CompressionStats = {};
+    const compressed = await compress(
+      serialized,
+      compression,
+      compressionStats
+    );
+    const encrypted = (await maybeEncrypt(
+      compressed as Uint8Array,
+      key
+    )) as Uint8Array;
+    await recordCompression(compressionStats, 'serialize');
+    return encrypted;
+  } catch (error) {
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError(
+      'dynamic workflow code',
+      cause
+    );
+    throw new SerializationError(message, { hint, cause });
+  }
+}
+
+/**
+ * Hydrate a dynamic run's workflow VM code back into source, on the replay
+ * path.
+ *
+ * When the run has key material, or its execution context records that it was
+ * started with encryption, only the symmetric `encr` envelope is accepted.
+ * Plaintext would let anyone who can write the run record supply code, and a
+ * sealed `encp` envelope can be produced by anyone holding the run's public
+ * key, so neither is evidence that the run's own key encrypted it. This gives
+ * confidentiality and narrows who can supply code; it is not an integrity
+ * guarantee against a holder of the run key.
+ *
+ * Without key material (Worlds with no encryption), plaintext is accepted.
+ *
+ * @param value - Stored bytes from the run's `dynamicWorkflowCode`.
+ * @param key - Encryption key (undefined when encryption is disabled).
+ * @param options.encryptionRequired - The run was started with encryption
+ *   (`executionContext.features.encryption`), so plaintext is refused even
+ *   when no key was resolved.
+ * @throws SerializationError when the payload is not `encr` although
+ *   encryption is required, or does not decode to a string: a corrupted or
+ *   foreign payload must not reach the workflow VM as code.
+ */
+export async function hydrateDynamicWorkflowCode(
+  value: Uint8Array | unknown,
+  key: PayloadKey | undefined,
+  options: { encryptionRequired?: boolean } = {}
+): Promise<string> {
+  if (key !== undefined || options.encryptionRequired === true) {
+    const envelope = peekFormatPrefix(value);
+    if (envelope !== SerializationFormat.ENCRYPTED) {
+      throw new SerializationError(
+        `Dynamic workflow code must be encrypted with the run's key ("${SerializationFormat.ENCRYPTED}"), but the stored payload is ${envelope ? `"${envelope}"` : 'not a recognized format'}.`
+      );
+    }
+  }
+
+  const compressionStats: CompressionStats = {};
+  const decrypted = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
+
+  if (!(decrypted instanceof Uint8Array)) {
+    throw new SerializationError(
+      'Dynamic workflow code did not decode to binary data.'
+    );
+  }
+
+  const { format, payload } = decodeFormatPrefix(decrypted);
+  if (format !== SerializationFormat.DEVALUE_V1) {
+    throw new SerializationError(
+      `Unsupported serialization format for dynamic workflow code: ${format}`
+    );
+  }
+
+  let code: unknown;
+  try {
+    code = parse(new TextDecoder().decode(payload));
+  } catch (cause) {
+    throw new SerializationError(
+      'Dynamic workflow code payload is not valid devalue.',
+      { cause }
+    );
+  }
+  if (typeof code !== 'string') {
+    throw new SerializationError(
+      `Dynamic workflow code decoded to ${typeof code}, expected a string.`
+    );
+  }
+  return code;
+}
+
+/**
  * Called from the workflow handler when the workflow itself throws.
  * Dehydrates the thrown value from within the workflow execution environment
  * into a format that can be saved to the database in a `run_failed` event.
@@ -4193,7 +4409,7 @@ export async function dehydrateRunError(
   _runId: string,
   key: PayloadKey | undefined,
   global: Record<string, any> = globalThis,
-  compression = false
+  compression: CompressionMode = false
 ): Promise<Uint8Array> {
   try {
     const str = stringify(value, getWorkflowReducers(global));
@@ -4232,6 +4448,7 @@ export async function dehydrateRunError(
  * @param ops - Promise array for stream operations
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param options - External hydration policy, including lazy readable streams
  * @returns The hydrated thrown value, ready to be consumed by the client
  */
 export async function hydrateRunError(
@@ -4240,7 +4457,8 @@ export async function hydrateRunError(
   key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  options?: ExternalReviverOptions
 ): Promise<unknown> {
   const compressionStats: CompressionStats = {};
   const decrypted = await decompress(
@@ -4256,7 +4474,7 @@ export async function hydrateRunError(
     // throws via `unflatten` so the surrounding try/catch in o11y helpers
     // surfaces the issue rather than masking it.
     return unflatten(decrypted as any[], {
-      ...getExternalRevivers(global, ops, runId, key),
+      ...getExternalRevivers(global, ops, runId, key, options),
       ...extraRevivers,
     });
   }
@@ -4266,7 +4484,7 @@ export async function hydrateRunError(
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
     return parse(str, {
-      ...getExternalRevivers(global, ops, runId, key),
+      ...getExternalRevivers(global, ops, runId, key, options),
       ...extraRevivers,
     });
   }

@@ -218,15 +218,10 @@ export function createRunsStorage(
         getId: (run) => run.runId,
       });
 
-      // If resolveData is "none", replace input/output with undefined
       if (resolveData === 'none') {
         return {
           ...result,
-          data: result.data.map((run) => ({
-            ...run,
-            input: undefined,
-            output: undefined,
-          })) as WorkflowRunWithoutData[],
+          data: result.data.map((run) => filterRunData(run, 'none')),
         };
       }
 

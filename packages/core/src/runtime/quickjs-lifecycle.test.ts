@@ -6,14 +6,19 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import {
   dehydrateRunError,
+  dehydrateStepArguments,
   encodeWithFormatPrefix,
   hydrateRunError,
   maybeDecrypt,
   SerializationFormat,
 } from '../serialization.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './lifecycle-hooks.js';
 import { runWorkflowWithQuickJS } from './quickjs-entrypoint.js';
 import { startQuickJSWorkflow } from './quickjs-runtime.js';
 import { setWorld } from './world.js';
@@ -75,7 +80,74 @@ beforeEach(() => {
   } as unknown as World);
 });
 
-afterEach(() => setWorld(undefined));
+afterEach(() => {
+  setWorld(undefined);
+  vi.restoreAllMocks();
+});
+
+async function complete() {
+  vi.mocked(startQuickJSWorkflow).mockResolvedValueOnce({
+    result: {
+      completed: { result: await dehydrateRunError('done', runId, undefined) },
+    },
+    continueWithEvents: vi.fn(),
+    dispose: vi.fn(),
+  });
+  return run();
+}
+
+it('dispatches completion only after the terminal write lands', async () => {
+  let finishWrite!: () => void;
+  const pendingWrite = new Promise<void>((resolve) => {
+    finishWrite = resolve;
+  });
+  createEvent.mockImplementationOnce(async (_id, request) => {
+    await pendingWrite;
+    return { event: { ...request, runId, eventId: 'evnt_completed' } };
+  });
+  const execution = complete();
+  await vi.waitFor(() => expect(createEvent).toHaveBeenCalledOnce());
+  expect(createEvent.mock.calls[0][1].eventType).toBe('run_completed');
+  expect(dispatchRunCompletedHooks).not.toHaveBeenCalled();
+  finishWrite();
+  await execution;
+  expect(dispatchRunCompletedHooks).toHaveBeenCalledExactlyOnceWith(
+    runId,
+    workflowName
+  );
+});
+
+it('still dispatches completion when its diagnostic log sink throws', async () => {
+  const debug = vi
+    .spyOn(runtimeLogger, 'debug')
+    .mockImplementation((_message, fields) => {
+      if (fields?.checkpoint === 'exit_completed')
+        throw new Error('log sink failed');
+    });
+  await expect(complete()).resolves.toBeUndefined();
+  expect(debug).toHaveBeenCalledWith(
+    'QUICKJS_VM_DIAG',
+    expect.objectContaining({ checkpoint: 'exit_completed' })
+  );
+  expect(dispatchRunCompletedHooks).toHaveBeenCalledExactlyOnceWith(
+    runId,
+    workflowName
+  );
+});
+
+it.each([
+  new EntityConflictError('already finished'),
+  new RunExpiredError('expired'),
+  new Error('write failed'),
+])('does not dispatch when run_completed is rejected: %s', async (error) => {
+  createEvent.mockRejectedValueOnce(error);
+  if (EntityConflictError.is(error) || RunExpiredError.is(error)) {
+    await expect(complete()).resolves.toBeUndefined();
+  } else {
+    await expect(complete()).rejects.toBe(error);
+  }
+  expect(dispatchRunCompletedHooks).not.toHaveBeenCalled();
+});
 
 it.each([
   'unknown class',
@@ -159,4 +231,56 @@ it.each([
   }
   expect(createEvent).toHaveBeenCalledTimes(1);
   expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
+});
+
+it('frames QuickJS abort streams while keeping the encrypted hook event unchanged', async () => {
+  const write = vi.fn().mockResolvedValue(undefined);
+  const close = vi.fn().mockResolvedValue(undefined);
+  setWorld({
+    specVersion: SPEC_VERSION_CURRENT,
+    capabilities: {},
+    events: {
+      list: async () => ({ data: [], cursor: null, hasMore: false }),
+      create: createEvent,
+    },
+    streams: { write, close },
+    getEncryptionKeyForRun: async () => new Uint8Array(32).fill(7),
+  } as unknown as World);
+  vi.mocked(startQuickJSWorkflow).mockResolvedValueOnce({
+    result: {
+      suspended: {
+        pendingOperations: [
+          {
+            type: 'hook',
+            correlationId: 'hook_abort',
+            token: 'abrt_test',
+            hasCreatedEvent: true,
+            abortRequested: true,
+            abortPayload: (await dehydrateStepArguments(
+              { aborted: true, reason: 'stop' },
+              runId,
+              undefined
+            )) as Uint8Array,
+            isSystem: true,
+          },
+        ],
+      },
+    },
+    continueWithEvents: vi.fn(),
+    dispose: vi.fn(),
+  });
+  await run();
+  expect(write).toHaveBeenCalledOnce();
+  const [id, name, wire] = write.mock.calls[0];
+  expect(id).toBe(runId);
+  expect(name).toBe('strm_test_system_abort');
+  expect(new DataView(wire.buffer, wire.byteOffset).getUint32(0, false)).toBe(
+    wire.length - 4
+  );
+  const abortEvent = createEvent.mock.calls.find(
+    ([, e]) => e.eventType === 'hook_received'
+  )?.[1];
+  expect(wire.slice(4)).toEqual(abortEvent?.eventData?.payload);
+  expect(new TextDecoder().decode(wire.slice(4, 8))).toBe('encr');
+  expect(close).toHaveBeenCalledWith(runId, name);
 });

@@ -41,10 +41,10 @@ export const IntroTabs = ({
       className="w-full gap-6"
       onValueChange={(value) => track('Intro tab changed', { tab: value })}
     >
-      <TabsList className="w-fit bg-background mx-auto border p-1 rounded-full h-auto">
+      <TabsList className="w-fit bg-background-100 mx-auto border p-1 rounded-full h-auto">
         {tabs.map((tab) => (
           <TabsTrigger
-            className="flex-auto data-[state=active]:bg-secondary data-[state=active]:shadow-none rounded-full py-2.5 px-4 h-auto"
+            className="flex-auto data-[state=active]:bg-gray-100 data-[state=active]:shadow-none rounded-full py-2.5 px-4 h-auto"
             value={tab.id}
             key={tab.id}
           >

@@ -30,3 +30,27 @@ export async function inlineStepDuringHookResumeWorkflow(
   const [stepResult] = await Promise.all([slowMarkerStep(markerPath), hook]);
   return stepResult;
 }
+
+/**
+ * Step whose side effect (an appended marker line) happens at the TOP of the
+ * body, so the marker counts body entries rather than completed attempts.
+ */
+async function slowEntryMarkerStep(markerPath: string) {
+  'use step';
+  await appendFile(markerPath, 'entered\n');
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  return 'done';
+}
+
+/**
+ * Regression workflow for issue #3909: a step-only workflow runs its first
+ * delivery in turbo mode with a lazy inline step. A redelivery of the same
+ * start message while the body is still running (world-local's transport
+ * timeout, or any at-least-once duplicate) re-enters turbo at attempt 1 and
+ * must not execute the body a second time.
+ */
+export async function inlineStepDuringRedeliveryWorkflow(markerPath: string) {
+  'use workflow';
+
+  return await slowEntryMarkerStep(markerPath);
+}

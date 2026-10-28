@@ -8,7 +8,6 @@ import {
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
-import { SPEC_VERSION_CURRENT } from '@workflow/world/spec-version';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -23,6 +22,7 @@ import {
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
   type StopSleepOptions,
@@ -249,8 +249,27 @@ export class Run<TResult> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
-        const runData = run ?? (await world.runs.get(this.runId));
-        const rawKey = await world.getEncryptionKeyForRun?.(runData);
+        // Checked before the read, not with `?.` around the call: a World
+        // without encryption has nothing to resolve, so it should not pay for
+        // a run it would discard.
+        if (!world.getEncryptionKeyForRun) return undefined;
+
+        let rawKey: Uint8Array | undefined;
+        if (run) {
+          rawKey = await world.getEncryptionKeyForRun(run);
+        } else {
+          // `getEncryptionKeyForRun` reads only the run's id and deployment,
+          // both of which survive `resolveData: 'none'`. The default ('all')
+          // maps to `remoteRefBehavior=resolve` on world-vercel, which makes
+          // the server resolve and return the run's whole input and output
+          // before a `getReadable()` caller can read its first chunk.
+          const { deploymentId } = await world.runs.get(this.runId, {
+            resolveData: 'none',
+          });
+          rawKey = await world.getEncryptionKeyForRun(this.runId, {
+            deploymentId,
+          });
+        }
         return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
@@ -289,9 +308,11 @@ export class Run<TResult> {
   async cancel(options?: CancelRunOptions): Promise<void> {
     'use step';
     const world = await this.#lazyWorldPromise;
+    // The caller is often not the run's executor, so stamp the run's version.
+    const run = await world.runs.get(this.runId, { resolveData: 'none' });
     await world.events.create(this.runId, {
       eventType: 'run_cancelled',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: specVersionForRunWrite(run.specVersion),
       ...(options?.cancelReason !== undefined
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),

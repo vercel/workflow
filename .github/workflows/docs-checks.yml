@@ -30,7 +30,7 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Build packages
@@ -67,7 +67,7 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Waiting for the Docs Vercel deployment

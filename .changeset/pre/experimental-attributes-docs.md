@@ -1,4 +1,0 @@
----
----
-
-Document experimental run attributes.

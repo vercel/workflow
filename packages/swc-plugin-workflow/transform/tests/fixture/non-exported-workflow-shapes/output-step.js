@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"constArrow":{"workflowId":"workflow//./input//constArrow"},"constFnExpr":{"workflowId":"workflow//./input//constFnExpr"},"fnDecl":{"workflowId":"workflow//./input//fnDecl"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//fnDecl/_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//constArrow/_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//constFnExpr/_anonymousStep2"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"constArrow":{"workflowId":"workflow//./input//constArrow"},"constFnExpr":{"workflowId":"workflow//./input//constFnExpr"},"fnDecl":{"workflowId":"workflow//./input//fnDecl"}}},"steps":{"input.js":{"constArrow/_anonymousStep1":{"stepId":"step//./input//constArrow/_anonymousStep1"},"constFnExpr/_anonymousStep2":{"stepId":"step//./input//constFnExpr/_anonymousStep2"},"fnDecl/_anonymousStep0":{"stepId":"step//./input//fnDecl/_anonymousStep0"}}}}*/;
 var fnDecl$_anonymousStep0 = async ()=>1;
 (function(__wf_fn, __wf_id) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());

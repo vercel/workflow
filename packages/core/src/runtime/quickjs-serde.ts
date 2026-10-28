@@ -133,6 +133,9 @@ const BRANDED_SAMPLES = `({
   Float64Array: new Float64Array(0),
   BigInt64Array: new BigInt64Array(0),
   BigUint64Array: new BigUint64Array(0),
+  ...(typeof Float16Array === 'function'
+    ? { Float16Array: new Float16Array(0) }
+    : {}),
 })`;
 
 /**
@@ -203,6 +206,7 @@ const CAPTURE_INTRINSICS = `(() => {
     Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
     Int32Array, Uint32Array, Float32Array, Float64Array,
     BigInt64Array, BigUint64Array,
+    Float16Array: g.Float16Array,
     Error,
     AggregateError: g.AggregateError,
     EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError,
@@ -485,6 +489,14 @@ export function createQuickJSSerde(
     'DataView',
   ]) {
     typedArrayConstructors.set(name, at(name));
+  }
+  // `Float16Array` has no workflow reducer: it takes devalue's built-in
+  // typed-array branch, matching the node:vm engine's wire format. Optional
+  // because a capture root adopted from a snapshot taken before this capture
+  // existed does not carry it.
+  {
+    const float16Array = optional('Float16Array');
+    if (float16Array) typedArrayConstructors.set('Float16Array', float16Array);
   }
 
   const symbols = new Map<SymbolName, JSValueHandle>();
@@ -828,7 +840,23 @@ export function createQuickJSSerde(
       if (!isDataView) {
         info.length = call(i.viewLength, value).consume((h) => h.toNumber());
       }
-      return info;
+      if (info.byteLength === info.bufferByteLength) return info;
+      // Reached only for views no reducer claims (`Float16Array`). devalue's
+      // built-in encoding emits the whole backing buffer plus offset/length,
+      // which would put bytes outside the view on the wire. Hand it a fresh
+      // guest buffer holding only the viewed bytes instead, so it encodes the
+      // compact `[tag, buffer]` form, byte-identical to the node:vm engine
+      // (serialization/hardened.ts). The guest buffer is claimed by the
+      // `ArrayBuffer` reducer like any other and swept with the pass's
+      // handle scope.
+      const viewed = viewBytes(value).slice();
+      return {
+        buffer: vm.newArrayBuffer(viewed.buffer as ArrayBuffer),
+        byteOffset: 0,
+        byteLength: info.byteLength,
+        bufferByteLength: info.byteLength,
+        length: info.length,
+      };
     },
     toArrayBuffer: (value) =>
       isHandle(value) ? value.toArrayBuffer() : d.toArrayBuffer(value),
@@ -1063,6 +1091,17 @@ export function createQuickJSSerde(
         : false,
     BigUint64Array: (value) =>
       isHandle(value) && tagOfHandle(value) === 'BigUint64Array'
+        ? bytesToBase64(viewBytes(value))
+        : false,
+    // Mirrors the typed-array reducers, and for the same reason: devalue's
+    // built-in DataView encoding emits the whole backing ArrayBuffer, so a
+    // view onto a slice of a larger buffer would put the rest of that
+    // buffer on the wire. `viewBytes` copies only the viewed range. The tag
+    // is not `DataView`, so payloads already written under that name still
+    // take the built-in parse branch (`fromViewInfo` below) with their
+    // bounds intact; see serialization/reducers/common.ts.
+    DataViewBytes: (value) =>
+      isHandle(value) && tagOfHandle(value) === 'DataView'
         ? bytesToBase64(viewBytes(value))
         : false,
     Date: (value) => {
@@ -1716,6 +1755,10 @@ export function createQuickJSSerde(
       buildTypedArray('BigInt64Array', value),
     BigUint64Array: (value: string | JSValueHandle) =>
       buildTypedArray('BigUint64Array', value),
+    // No `DataView` reviver: older payloads under that tag must keep taking
+    // the built-in branch, which restores their bounds via `fromViewInfo`.
+    DataViewBytes: (value: string | JSValueHandle) =>
+      buildTypedArray('DataView', value),
     Date: (value: JSValueHandle | string) => {
       // The reducer emits '.' for invalid dates and an ISO string otherwise.
       const iso = isHandle(value) ? value.toString() : value;

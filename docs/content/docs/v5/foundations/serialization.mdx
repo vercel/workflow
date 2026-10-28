@@ -34,8 +34,9 @@ The following types can be serialized and passed through workflow functions:
 - `bigint`
 - `ArrayBuffer`
 - `BigInt64Array`, `BigUint64Array`
+- `DataView`
 - `Date`
-- `Float32Array`, `Float64Array`
+- `Float16Array`, `Float32Array`, `Float64Array`
 - `Int8Array`, `Int16Array`, `Int32Array`
 - `Map<Serializable, Serializable>`
 - `RegExp`
@@ -57,6 +58,21 @@ These types have special handling and are explained in detail in the sections be
 - `WritableStream<Serializable>`
 - `AbortController`
 - `AbortSignal`
+
+### Typing serializable values
+
+Import the `Serializable` type from `workflow` to type values that cross a workflow or step boundary:
+
+```typescript title="workflows/record-event.ts" lineNumbers
+import type { Serializable } from "workflow";
+
+async function recordEvent(payload: Serializable) {
+  "use step";
+  // ...
+}
+```
+
+`Serializable` is a union of the JSON and built-in types listed above. It doesn't include `Request`, `Float16Array`, or classes with [custom serialization](#custom-class-serialization), so type those values directly.
 
 ## Pass-by-value semantics
 

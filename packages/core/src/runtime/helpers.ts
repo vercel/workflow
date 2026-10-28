@@ -26,6 +26,7 @@ import {
   SPEC_VERSION_LEGACY,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { getCurrentNodeVersion } from '../capabilities.js';
 import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
@@ -35,6 +36,7 @@ import {
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { isDynamicWorkflowsEnabled } from './constants.js';
 import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -79,6 +81,9 @@ function getHealthCheckStreamName(correlationId: string): string {
   return `__health_check__${correlationId}`;
 }
 
+/** Version of the dynamic-workflow runtime contract advertised by deployments. */
+export const DYNAMIC_WORKFLOW_VERSION = 1;
+
 /**
  * Result of a health check operation.
  */
@@ -98,6 +103,12 @@ export interface HealthCheckResult {
    * or a non-JSON plain-text health response.
    */
   workflowCoreVersion?: string;
+  /**
+   * Node.js version of the responding deployment, used for capability
+   * detection (zstd decoding depends on it; see `getRunCapabilities`).
+   * Omitted when the responder predates this field or is not Node.js.
+   */
+  nodeVersion?: string;
   /**
    * The target run's X25519 public key (base64), returned only when the probe
    * carried a `runId` and the responding deployment has encryption enabled.
@@ -127,6 +138,11 @@ export interface HealthCheckResult {
    * field is missing or malformed.
    */
   format?: 'json' | 'text';
+  /**
+   * Version of dynamic-workflow execution supported by the target runtime.
+   * Present only when the target has opted in to dynamic workflows.
+   */
+  dynamicWorkflowVersion?: number;
 }
 
 /**
@@ -177,9 +193,10 @@ export async function handleHealthCheckMessage(
   // Best-effort: a failure here must not fail the health check itself, which
   // callers also rely on for plain capability detection.
   let encryptionPublicKey: string | undefined;
-  if (healthCheck.runId) {
+  const probeRunId = healthCheck.probeRunId ?? healthCheck.runId;
+  if (probeRunId) {
     try {
-      const rawKey = await world.getEncryptionKeyForRun?.(healthCheck.runId);
+      const rawKey = await world.getEncryptionKeyForRun?.(probeRunId);
       if (rawKey) {
         encryptionPublicKey = bytesToBase64(
           (await deriveRunKeyPair(rawKey)).publicKey
@@ -201,10 +218,16 @@ export async function handleHealthCheckMessage(
     correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
+    nodeVersion: getCurrentNodeVersion(),
     // We are executing inside the target deployment, so this constant reflects
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    // Advertised only when this deployment has opted in to executing
+    // dynamic workflow code; an absent field reads as "unsupported".
+    ...(isDynamicWorkflowsEnabled()
+      ? { dynamicWorkflowVersion: DYNAMIC_WORKFLOW_VERSION }
+      : {}),
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -359,11 +382,17 @@ function parseHealthCheckResponse(
   if (typeof r.workflowCoreVersion === 'string') {
     parsed.workflowCoreVersion = r.workflowCoreVersion;
   }
+  if (typeof r.nodeVersion === 'string') {
+    parsed.nodeVersion = r.nodeVersion;
+  }
   if (typeof r.encryptionPublicKey === 'string') {
     parsed.encryptionPublicKey = r.encryptionPublicKey;
   }
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
+  }
+  if (typeof r.dynamicWorkflowVersion === 'number') {
+    parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;
   }
   return parsed;
 }
@@ -395,7 +424,10 @@ export async function healthCheck(
       {
         __healthCheck: true,
         correlationId,
-        ...(options?.runId ? { runId: options.runId } : {}),
+        // Sent as `probeRunId`, never `runId`: a 4.x responder would parse a
+        // `runId`-bearing probe as a run invocation (see
+        // `HealthCheckPayloadSchema`).
+        ...(options?.runId ? { probeRunId: options.runId } : {}),
       },
       {
         // Use JSON transport so the health check works against both
@@ -1091,7 +1123,7 @@ export interface SlotSnapshotParams {
  * | `run_started` | replay loop, first write of a delivery | `eventCount` when a log is loaded; no cursor, the `run_started` preload owns the response fields | the preload already returns the full log |
  * | `step_created`, `wait_created`, `hook_disposed`, `attr_set` | suspension handler (`createGuarded`) | `eventCount` | the handler keeps writing from, and resumes replay from, this log |
  * | `step_created` | queue-consumer re-ensure (raw) | nothing | runs from a queue message, no log |
- * | `hook_created` | suspension handler (node), `dispatchPendingOps` (QuickJS) | `eventCount` + `sinceCursor` (only when the suspension creates exactly one hook) | the delta is how an already-received hook resolves without a re-invocation; two creates against one cursor would give two deltas of which only the first could be taken |
+ * | `hook_created` | suspension handler (node), `dispatchPendingOps` (QuickJS) | `eventCount` + `sinceCursor` (only when the suspension creates exactly one hook); independent concurrent node registrations in a hooks-only suspension defer both | a lone create returns a delta; concurrent registrations reconcile committed responses together, reloading when they do not prove a consecutive suffix |
  * | `hook_received` | replay loop lazy resume; handler in-suspension resume | `eventCount` (preload owns the cursor fields) | both replay from the log right after |
  * | `hook_received` | webhook / `resumeHook` (raw) | nothing | out-of-band, enqueues a delivery that loads the log |
  * | `wait_completed` | replay loop timer path | `eventCount` | the loop keeps replaying from the log |
@@ -1205,6 +1237,7 @@ export function withHealthCheck(
           endpoint: url.pathname,
           specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
           workflowCoreVersion,
+          nodeVersion: getCurrentNodeVersion(),
         }),
         {
           status: 200,
@@ -1266,11 +1299,10 @@ function fnv1a32Hex(value: string): string {
  * the step's IDENTITY, correlation id plus (hashed) step name, rather than
  * the bare correlation id.
  *
- * The scoping matters for resilient step dispatch under the precondition
- * guard: a guard-rejected `step_created` leaves its (revoked) step message in
- * flight, and the corrected replay may re-derive the same correlation id for
- * a DIFFERENT step. Under a bare-correlationId key the corrected replay's
- * dispatch would silently dedupe against the revoked in-flight message,
+ * The scoping matters when a step message is still in flight for a
+ * correlation id that a corrected replay re-derives for a DIFFERENT step.
+ * Under a bare-correlationId key the corrected replay's dispatch would
+ * silently dedupe against the stale in-flight message,
  * which then resolves `skipped` against the re-created entity (the server's
  * stepName fence rejects its bare start), and the legitimate step would
  * never be executed. Scoping by step name keeps every dedup property that

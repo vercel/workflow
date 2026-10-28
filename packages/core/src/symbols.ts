@@ -63,6 +63,9 @@ export const STREAM_SERVER_PUBLIC_KEY_SYMBOL = Symbol.for(
  */
 export const STREAM_DRAIN_SYMBOL = Symbol.for('WORKFLOW_STREAM_DRAIN');
 
+/** Release idle sink transport resources without closing or invalidating it. */
+export const STREAM_RELEASE_SYMBOL = Symbol.for('WORKFLOW_STREAM_RELEASE');
+
 export const BODY_INIT_SYMBOL = Symbol.for('BODY_INIT');
 export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
   'WEBHOOK_RESPONSE_WRITABLE'

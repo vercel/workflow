@@ -15,6 +15,10 @@ Creates a low-level hook primitive that can be used to resume a workflow run wit
 
 Hooks allow external systems to send data to a paused workflow without the HTTP-specific constraints of webhooks. They're identified by a token and can receive any serializable payload.
 
+<Callout type="warn">
+A hook token routes a payload to the right hook; it does not authorize the sender. Generated tokens are hard to guess but are not secrets, and custom tokens are usually easy to reconstruct. Authorize callers in the route that calls [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook). See [Hook and webhook security](/docs/foundations/hooks#security).
+</Callout>
+
 ```ts lineNumbers
 import { createHook } from "workflow"
 

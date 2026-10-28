@@ -46,6 +46,7 @@ import {
   type Event,
   type EventBatchResult,
   type EventDataPayloadField,
+  type EventListResponse,
   type EventResult,
   entityResolveData,
   type GetEventParams,
@@ -53,7 +54,7 @@ import {
   isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
-  type PaginatedResponse,
+  mintedSpecVersion,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -61,7 +62,11 @@ import {
   AttributeValidationError,
   validateAttributeEventDataSize,
 } from '@workflow/world/attributes-validation';
-import { ReplayEventObserverError, withEventPostRetry } from './event-retry.js';
+import {
+  AfterCommitError,
+  ReplayEventObserverError,
+  withEventPostRetry,
+} from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventsBatchV4,
@@ -158,6 +163,16 @@ interface SplitEventData {
      * it without holding the run's symmetric key.
      */
     encryptionPublicKey?: string;
+    /**
+     * A dynamic run's serialized workflow VM code, inline on run_created (and
+     * on run_started for resilient start). Rides the meta rather than the
+     * frame body because the body slot already carries the run's `input`; the
+     * backend stores it behind a ref on the run and never decodes it.
+     */
+    dynamicWorkflowCode?: Uint8Array;
+    /** Ref key of dynamic workflow code uploaded ahead of the write, for
+     *  definitions too large to send inline. */
+    dynamicWorkflowCodeRef?: string;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -212,6 +227,8 @@ type MetaSourceField =
   | 'writer'
   | 'allowReservedAttributes'
   | 'encryptionPublicKey'
+  | 'dynamicWorkflowCode'
+  | 'dynamicWorkflowCodeRef'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -382,6 +399,16 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   if (typeof eventData.encryptionPublicKey === 'string') {
     meta.encryptionPublicKey = eventData.encryptionPublicKey;
   }
+  // Dynamic workflow code arrives one of two ways and never both: the bytes
+  // inline for a small definition, or a ref to an earlier upload for a large
+  // one. Both are metadata as far as the frame is concerned — the single body
+  // slot on run_created/run_started is the run's input.
+  if (eventData.dynamicWorkflowCode instanceof Uint8Array) {
+    meta.dynamicWorkflowCode = eventData.dynamicWorkflowCode;
+  }
+  if (typeof eventData.dynamicWorkflowCodeRef === 'string') {
+    meta.dynamicWorkflowCodeRef = eventData.dynamicWorkflowCodeRef;
+  }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
   if (typeof eventData.ttfs === 'number') {
@@ -468,7 +495,7 @@ export async function getEvent(
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Event>> {
+): Promise<EventListResponse> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
@@ -507,6 +534,9 @@ export async function getWorkflowRunEvents(
     // incremental-load resume point. `hasMore` is the pagination signal.
     cursor: result.cursor,
     hasMore: result.hasMore,
+    // The in-band fence's counters, read before the listing, when the
+    // backend reports them (see `capabilities.inBandFence` in index.ts).
+    ...(result.snapshot ? { snapshot: result.snapshot } : {}),
   };
 }
 
@@ -572,6 +602,13 @@ export async function createWorkflowRunEventBatch(
       ...(params?.requestId ? { vercelId: params.requestId } : {}),
       payload,
       ...meta,
+      // The batch is one fenced allocation: the backend requires every frame
+      // to carry the same fence. Spread after `meta` so nothing derived from
+      // the event data can override it.
+      ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+      ...(params?.expectedSeqInBand !== undefined
+        ? { expectedSeqInBand: params.expectedSeqInBand }
+        : {}),
     };
   });
 
@@ -602,7 +639,7 @@ export async function createWorkflowRunEventBatch(
   const wire = await withEventPostRetry(
     () => createWorkflowRunEventsBatchV4({ runId, events: inputs }, config),
     events[0].event.eventType,
-    { batchIdempotent: retryConvergent }
+    { batchIdempotent: retryConvergent, inBand: params?.inBand === true }
   );
 
   return {
@@ -651,6 +688,8 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
           data.eventType === 'hook_received' &&
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
+        afterStepBody: params?.afterStepBody === true,
+        inBand: params?.inBand === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {
@@ -674,6 +713,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     return result as EventResult<T['eventType']>;
   } catch (err) {
     if (err instanceof ReplayEventObserverError) throw err.error;
+    if (err instanceof AfterCommitError) throw err.error;
     // 409 hook-force-claimed on hook_received: the hook's token was taken
     // over by another run and the server has already re-pointed it. Re-key
     // with the token this write carried so `resumeHook()` can follow it.
@@ -763,17 +803,25 @@ async function createWorkflowRunEventInner(
     }
   }
 
-  const remoteRefBehavior: 'resolve' | 'lazy' = eventsNeedingResolve.has(
-    data.eventType
-  )
-    ? 'resolve'
-    : 'lazy';
+  const remoteRefBehavior: 'resolve' | 'lazy' =
+    eventsNeedingResolve.has(data.eventType) ||
+    // Concurrent hook reconciliation consumes the committed event directly.
+    // Honor its explicit request for replay-ready metadata; other mutation
+    // responses keep their existing lightweight entity-only behavior.
+    (data.eventType === 'hook_created' && params?.resolveData === 'all')
+      ? 'resolve'
+      : 'lazy';
 
   const { payload, meta } = splitEventDataForV4(data);
 
   const input = {
     runId: id,
     specVersion: data.specVersion ?? 2,
+    ...(data.eventType === 'run_started'
+      ? {
+          executorSpecVersion: config?.mintedSpecVersion ?? mintedSpecVersion(),
+        }
+      : {}),
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
     ...(params?.requestId ? { vercelId: params.requestId } : {}),
     ...(params?.computeInstanceId
@@ -784,6 +832,12 @@ async function createWorkflowRunEventInner(
     // `eventCount`.
     ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
+    // In-band writer fence. The backend refuses a stale in-band write with
+    // 412 `in-band-superseded` (InBandSupersededError).
+    ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+    ...(params?.expectedSeqInBand !== undefined
+      ? { expectedSeqInBand: params.expectedSeqInBand }
+      : {}),
     occurredAt: params?.occurredAt ?? new Date(),
     // Opt-in inline-delta: forward the cursor the runtime held before
     // this write so the server can return the authoritative event-log
@@ -881,12 +935,18 @@ async function createWorkflowRunEventInner(
     };
   }
 
-  return createWorkflowRunEventV4(
+  const result = await createWorkflowRunEventV4(
     data.eventType === 'run_started'
       ? { ...input, eventType: 'run_started', skipPreload: true }
       : { ...input, eventType: data.eventType },
     config
   );
+  // This cursor addresses the committed event, not a complete history page.
+  // Construct it here, where the Vercel cursor format is owned, so the runtime
+  // can reconcile concurrent responses without interpreting opaque cursors.
+  return result.event
+    ? { ...result, eventCursor: `eid:${result.event.eventId}` }
+    : result;
 }
 
 /**

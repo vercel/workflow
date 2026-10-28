@@ -44,9 +44,11 @@ type LoggerOptions = {
  */
 function matchesDebugNamespace(
   namespace: string,
-  patternList: string | undefined
+  patternList: unknown
 ): boolean {
-  if (!patternList) {
+  // Bundlers can replace `process.env.DEBUG` with a non-string constant.
+  // Nitro's dev build, for one, defines it as its own boolean `debug` option.
+  if (typeof patternList !== 'string' || !patternList) {
     return false;
   }
 

@@ -2,6 +2,7 @@ import type { Storage } from './interfaces.js';
 import type { ValidQueueName } from './queue.js';
 import {
   getQueueTopicPrefix,
+  getRunQueueNamespace,
   type Queue,
   resolveQueueNamespace,
 } from './queue.js';
@@ -10,6 +11,12 @@ import {
  * Re-enqueue all active (pending/running) workflow runs so they resume
  * processing after a world restart. The workflow handler is idempotent
  * (event-log replay), so duplicate enqueues are safe.
+ *
+ * A run goes back to the queue namespace it recorded when it was created
+ * (`executionContext.queueNamespace`, see `getRunQueueNamespace`), so a run
+ * started under another namespace, or by a queue consumer other than the
+ * Workflow SDK, reaches its own consumer rather than this process's. Runs that
+ * recorded none use `namespace`.
  *
  * @param runs - Storage runs interface for listing active runs
  * @param enqueue - Queue's enqueue method
@@ -22,10 +29,10 @@ export async function reenqueueActiveRuns(
   label: string,
   namespace?: string
 ): Promise<void> {
-  const workflowQueuePrefix = getQueueTopicPrefix(
-    'workflow',
-    resolveQueueNamespace(namespace)
-  );
+  const defaultNamespace = resolveQueueNamespace(namespace);
+  // Validates the default up front, as before: a bad WORKFLOW_QUEUE_NAMESPACE
+  // fails recovery once instead of once per run.
+  getQueueTopicPrefix('workflow', defaultNamespace);
   let reenqueued = 0;
   let cursor: string | undefined;
   let hasMore = true;
@@ -40,7 +47,11 @@ export async function reenqueueActiveRuns(
     });
     for (const run of page.data) {
       try {
-        const queueName: ValidQueueName = `${workflowQueuePrefix}${run.workflowName}`;
+        const prefix = getQueueTopicPrefix(
+          'workflow',
+          getRunQueueNamespace(run.executionContext) ?? defaultNamespace
+        );
+        const queueName: ValidQueueName = `${prefix}${run.workflowName}`;
         await enqueue(queueName, { runId: run.runId });
         reenqueued++;
       } catch (err) {

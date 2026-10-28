@@ -12,6 +12,7 @@ import {
   PARENT_RUN_ID_ATTRIBUTE,
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
+  resolveQueueNamespace,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -21,7 +22,11 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { normalizeAttributeChanges } from '../attribute-changes.js';
-import { getRunCapabilities } from '../capabilities.js';
+import {
+  getCompressionMode,
+  getCurrentNodeVersion,
+  getRunCapabilities,
+} from '../capabilities.js';
 import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
@@ -31,16 +36,29 @@ import {
   decodeRunPublicKey,
   deriveRunKeyPair,
 } from '../sealed-box.js';
+import type { CompressionMode } from '../serialization/compression.js';
 import {
+  dehydrateDynamicWorkflowCode,
   dehydrateWorkflowArguments,
   type PayloadKey,
-  SerializationFormat,
   sealTo,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
+import {
+  DYNAMIC_WORKFLOWS_ENV,
+  isDynamicWorkflowsEnabled,
+} from './constants.js';
+import {
+  compileDynamicWorkflow,
+  DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES,
+  type DynamicStartOptions,
+  type DynamicWorkflowMetadata,
+  dynamicStartRefusal,
+  dynamicStartRefusalFrom,
+} from './dynamic-workflow.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import {
   getWorkflowQueueName,
@@ -48,7 +66,10 @@ import {
   healthCheck,
 } from './helpers.js';
 import { Run } from './run.js';
-import { getWorkflowVmFromEnv } from './vm-mode.js';
+import {
+  getSnapshotThresholdForStart,
+  getWorkflowVmFromEnv,
+} from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
@@ -401,6 +422,23 @@ export interface StartOptionsBase {
   experimental_retention?: RunRetention;
 
   /**
+   * Set to `false` to store the run's arguments uncompressed.
+   *
+   * Arguments are compressed by default when the target run can decode
+   * them. The attempt costs CPU proportional to the input size and is
+   * wasted on incompressible data (media, encrypted or random bytes),
+   * so callers that know their inputs will not shrink can skip it.
+   *
+   * `true` is the default and does not force compression: a target that
+   * cannot decode compressed payloads, or a process with
+   * `WORKFLOW_DISABLE_COMPRESSION=1` set, still stores them uncompressed.
+   * This option is the per-call counterpart of that environment variable
+   * and only affects the arguments; a dynamic workflow's code is
+   * compressed regardless.
+   */
+  compressArguments?: boolean;
+
+  /**
    * The ID of an existing run this run is being replayed from, if any.
    *
    * Recorded on the new run's `executionContext` as `replayedFromRunId` so
@@ -461,6 +499,24 @@ export type StartOptions =
   | StartOptionsWithDeploymentId
   | StartOptionsWithoutDeploymentId;
 
+export type {
+  DynamicStartOptions,
+  DynamicWorkflowOptions,
+  DynamicWorkflowStepReference,
+} from './dynamic-workflow.js';
+
+/**
+ * Dynamic starts are same-deployment only, so the process calling `start()` is
+ * also the deployment that executes the run, and it must have opted in.
+ */
+function assertDynamicWorkflowsEnabled(): void {
+  if (!isDynamicWorkflowsEnabled()) {
+    throw dynamicStartRefusal(
+      `Dynamic workflows are disabled on this deployment, so no run was created. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    );
+  }
+}
+
 /**
  * Represents an imported workflow function.
  */
@@ -507,15 +563,63 @@ export function start<TResult>(
   options?: StartOptionsWithoutDeploymentId
 ): Promise<Run<TResult>>;
 
+// Dynamic source overloads. The return type is `unknown`: the workflow's
+// shape is only known to whatever produced the source, so there is nothing
+// for TypeScript to infer from.
+export function start(
+  source: string,
+  args: unknown[],
+  options: DynamicStartOptions
+): Promise<Run<unknown>>;
+
+export function start(
+  source: string,
+  options: DynamicStartOptions
+): Promise<Run<unknown>>;
+
 export async function start<TArgs extends unknown[], TResult>(
-  workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
-  argsOrOptions?: TArgs | StartOptions,
-  options?: StartOptions
+  workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata | string,
+  argsOrOptions?: TArgs | StartOptions | DynamicStartOptions,
+  options?: StartOptions | DynamicStartOptions
 ) {
   'use step';
-  return await waitedUntil(() => {
-    // @ts-expect-error this field is added by our client transform
-    const workflowName = workflow?.workflowId;
+  return await waitedUntil(async () => {
+    let args: Serializable[] = [];
+    let opts: StartOptions | DynamicStartOptions = options ?? {};
+    if (Array.isArray(argsOrOptions)) {
+      args = argsOrOptions as Serializable[];
+    } else if (typeof argsOrOptions === 'object' && argsOrOptions !== null) {
+      opts = argsOrOptions;
+    }
+
+    // Dynamic source: compile it up front so the derived workflow id is
+    // available for the span name, the queue topic, and the ref key — all of
+    // which are decided before anything is written.
+    let dynamicWorkflow:
+      | { code: string; metadata: DynamicWorkflowMetadata }
+      | undefined;
+    let workflowName: string | undefined;
+    if (typeof workflow === 'string') {
+      const dynamicOptions = (opts as Partial<DynamicStartOptions>)
+        .experimental_dynamic;
+      if (!dynamicOptions) {
+        throw dynamicStartRefusal(
+          "'start' was given workflow source but no `experimental_dynamic` options. Pass `{ experimental_dynamic: { steps } }` to declare which registered steps the source may call."
+        );
+      }
+      const compiled = await compileDynamicWorkflow(workflow, dynamicOptions);
+      // Checked after validation (which only parses the source) and before
+      // any world call, trace span, upload, or write.
+      assertDynamicWorkflowsEnabled();
+      workflowName = compiled.workflowName;
+      dynamicWorkflow = {
+        code: compiled.workflowCode,
+        metadata: compiled.metadata,
+      };
+    } else {
+      // @ts-expect-error this field is added by our client transform
+      workflowName = workflow?.workflowId;
+    }
 
     if (!workflowName) {
       throw new WorkflowRuntimeError(
@@ -523,6 +627,10 @@ export async function start<TArgs extends unknown[], TResult>(
         { slug: 'start-invalid-workflow-function' }
       );
     }
+    // Validate the queue destination before any serialization, upload, or
+    // run creation. The queue write runs beside run creation, so validating it
+    // there could leave a created but unscheduled run behind.
+    const queueName = getWorkflowQueueName(workflowName, opts.namespace);
 
     const spanName = `workflow.start ${workflowDisplayName(workflowName)}`;
     return trace(spanName, async (span) => {
@@ -531,49 +639,80 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowOperation('start'),
       });
 
-      let args: Serializable[] = [];
-      let opts: StartOptions = options ?? {};
-      if (Array.isArray(argsOrOptions)) {
-        args = argsOrOptions as Serializable[];
-      } else if (typeof argsOrOptions === 'object') {
-        opts = argsOrOptions;
-      }
-
       span?.setAttributes({
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
-      const currentDeploymentId = await world.getDeploymentId();
-      let deploymentId = opts.deploymentId ?? currentDeploymentId;
+      // `undefined` when this process is not itself a deployment and the
+      // caller named a concrete target; see below.
+      let currentDeploymentId: string | undefined;
+      let deploymentId: string;
+      if (opts.deploymentId === undefined || opts.deploymentId === 'latest') {
+        // Defaulting the target and resolving 'latest' both need the current
+        // deployment, so a world that cannot report one fails the start here.
+        const current = await world.getDeploymentId();
+        currentDeploymentId = current;
+        deploymentId = opts.deploymentId ?? current;
 
-      // When 'latest' is requested, resolve the actual latest deployment ID
-      // for the current deployment's environment (same production target or
-      // same git branch for preview deployments).
-      //
-      // Resolving 'latest' only means something in worlds with atomic,
-      // immutable deployments (e.g. Vercel), which implement
-      // resolveLatestDeploymentId(). Worlds without that concept (local dev,
-      // self-hosted Postgres) have nothing to resolve between, so rather than
-      // fail a run that works fine on Vercel, we warn and fall back to the
-      // current deployment, making 'latest' an effective no-op there.
-      if (deploymentId === 'latest') {
-        if (world.resolveLatestDeploymentId) {
-          deploymentId = await world.resolveLatestDeploymentId();
-        } else {
-          // Warn once per process; see latestNoOpWarning.warned above.
-          if (!latestNoOpWarning.warned) {
-            latestNoOpWarning.warned = true;
-            runtimeLogger.warn(
-              "deploymentId: 'latest' has no effect in this world and was ignored. " +
-                'It is only supported by worlds with atomic deployments, such as Vercel. ' +
-                'The run will target the current deployment.',
-              { currentDeploymentId }
-            );
+        // When 'latest' is requested, resolve the actual latest deployment ID
+        // for the current deployment's environment (same production target or
+        // same git branch for preview deployments).
+        //
+        // Resolving 'latest' only means something in worlds with atomic,
+        // immutable deployments (e.g. Vercel), which implement
+        // resolveLatestDeploymentId(). Worlds without that concept (local dev,
+        // self-hosted Postgres) have nothing to resolve between, so rather than
+        // fail a run that works fine on Vercel, we warn and fall back to the
+        // current deployment, making 'latest' an effective no-op there.
+        if (deploymentId === 'latest') {
+          if (world.resolveLatestDeploymentId) {
+            deploymentId = await world.resolveLatestDeploymentId();
+          } else {
+            // Warn once per process; see latestNoOpWarning.warned above.
+            if (!latestNoOpWarning.warned) {
+              latestNoOpWarning.warned = true;
+              runtimeLogger.warn(
+                "deploymentId: 'latest' has no effect in this world and was ignored. " +
+                  'It is only supported by worlds with atomic deployments, such as Vercel. ' +
+                  'The run will target the current deployment.',
+                { currentDeploymentId }
+              );
+            }
+            deploymentId = current;
           }
-          deploymentId = currentDeploymentId;
         }
+      } else {
+        // With a concrete target the current deployment only decides whether
+        // the start is same-deployment. A process that is not itself a
+        // deployment (e.g. `workflow web` replaying a production run, or a
+        // recovery script) must still be able to start one, so an unavailable
+        // current deployment means "not the target": take the
+        // cross-deployment probe path below instead of failing.
+        deploymentId = opts.deploymentId;
+        try {
+          currentDeploymentId = await world.getDeploymentId();
+        } catch (err) {
+          runtimeLogger.debug(
+            'Current deployment is unavailable; starting as a cross-deployment run',
+            { deploymentId, error: String(err) }
+          );
+        }
+      }
+
+      const crossDeployment = deploymentId !== currentDeploymentId;
+      // A dynamic run executes stored code, so it may only target the
+      // deployment that validated and opted in to it: this one. Rejected
+      // before the capability check, key lookup, upload, or run creation.
+      if (dynamicWorkflow && crossDeployment) {
+        const message = `Dynamic workflows can only start on the current deployment. This start targets ${JSON.stringify(deploymentId)} from ${currentDeploymentId === undefined ? 'an unknown current deployment' : JSON.stringify(currentDeploymentId)}, so no run was created.`;
+        // Only a confirmed mismatch is a refusal. An unknown current
+        // deployment may be a lookup that fails transiently and would match
+        // on a retry, so that case stays retryable.
+        throw currentDeploymentId === undefined
+          ? new WorkflowRuntimeError(message)
+          : dynamicStartRefusal(message);
       }
 
       // Decide whether to write byte streams in the framed wire format.
@@ -600,8 +739,20 @@ export async function start<TArgs extends unknown[], TResult>(
           : ulid()
       }`;
 
+      if (dynamicWorkflow && !world.capabilities?.dynamicWorkflowCode) {
+        throw dynamicStartRefusal(
+          'Dynamic workflows require a World that declares `capabilities.dynamicWorkflowCode`. This World does not, so no run was created.'
+        );
+      }
+
       let framedByteStreams: boolean;
-      let targetSupportsCompression: boolean;
+      let framedAbortStreams: boolean;
+      let targetCompression: CompressionMode;
+      // Node.js version of the runtime that will execute this run, stamped
+      // onto it so later cross-deployment writers (hook resumes) know whether
+      // it decodes zstd. `undefined` when it could not be attested, which
+      // restricts those writers to gzip.
+      let targetNodeVersion: string | undefined;
       // The consumer's hook-resume protocol version, stamped onto the new
       // run. Current producers write the hook_received event durably before
       // publishing the wake and never read it; OLDER producers gate their
@@ -617,10 +768,11 @@ export async function start<TArgs extends unknown[], TResult>(
       // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
       let targetSpecVersion: number;
       let specVersionSource: SpecVersionSource;
-      const crossDeployment = deploymentId !== currentDeploymentId;
       if (!crossDeployment) {
         framedByteStreams = true;
-        targetSupportsCompression = true;
+        framedAbortStreams = true;
+        targetCompression = true;
+        targetNodeVersion = getCurrentNodeVersion();
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
@@ -628,7 +780,9 @@ export async function start<TArgs extends unknown[], TResult>(
         specVersionSource = 'same-deployment';
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
-        targetSupportsCompression = false;
+        framedAbortStreams = false;
+        targetCompression = false;
+        targetNodeVersion = undefined;
         // No probe channel to the target, so we cannot attest the consumer
         // honors `hookInput`; leave the marker off (older producers fail
         // closed to their sequential path).
@@ -650,11 +804,14 @@ export async function start<TArgs extends unknown[], TResult>(
           namespace: opts.namespace,
         });
         probedRunPublicKey = probe?.encryptionPublicKey;
-        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
-        framedByteStreams = capabilities.framedByteStreams;
-        targetSupportsCompression = capabilities.supportedFormats.has(
-          SerializationFormat.GZIP
+        const capabilities = getRunCapabilities(
+          probe?.workflowCoreVersion,
+          probe?.nodeVersion
         );
+        framedByteStreams = capabilities.framedByteStreams;
+        framedAbortStreams = capabilities.framedAbortStreams;
+        targetCompression = getCompressionMode(capabilities);
+        targetNodeVersion = probe?.nodeVersion;
         // The responder runs inside the target deployment, so its
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
@@ -856,15 +1013,64 @@ export async function start<TArgs extends unknown[], TResult>(
           : undefined;
       }
 
+      // Build the complete execution context before serializing or uploading
+      // dynamic source and before either run-creation side effect.
+      //
+      // If WORKFLOW_VM / WORKFLOW_SNAPSHOT_THRESHOLD are set on the client
+      // starting the run, stamp them into the run's executionContext so the
+      // run keeps the engine and snapshot policy it started with (the same
+      // deployment can serve both VM engines). QuickJS runs always get an
+      // explicit threshold (the default when unset) because the World keys
+      // the per-run event limit exemption on it. Unknown values throw; see
+      // vm-mode.ts.
+      const workflowVm = getWorkflowVmFromEnv();
+      const snapshotThreshold = getSnapshotThresholdForStart(workflowVm);
+      // The queue namespace the run's messages travel on, recorded so a World
+      // that re-enqueues active runs on restart (world-local, world-postgres)
+      // sends this run back to its own namespace's consumer.
+      const queueNamespace = resolveQueueNamespace(opts.namespace);
+      const executionContext = {
+        traceCarrier,
+        workflowCoreVersion,
+        ...(queueNamespace ? { queueNamespace } : {}),
+        ...(targetNodeVersion ? { nodeVersion: targetNodeVersion } : {}),
+        features: { encryption: !!encryptionKey },
+        ...(targetHookResumeInputVersion !== undefined
+          ? { hookResumeInputVersion: targetHookResumeInputVersion }
+          : {}),
+        ...(workflowVm ? { workflowVm } : {}),
+        ...(snapshotThreshold !== undefined ? { snapshotThreshold } : {}),
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
+        ...(dynamicWorkflow
+          ? { dynamicWorkflow: dynamicWorkflow.metadata }
+          : {}),
+      };
+      // A dynamic run's marker is what can push the context past a World's
+      // limit, so only dynamic starts are validated here; static starts keep
+      // relying on the World's own write-time checks.
+      if (dynamicWorkflow) {
+        try {
+          world.validateRunExecutionContext?.(executionContext);
+        } catch (err) {
+          throw dynamicStartRefusalFrom(err);
+        }
+      }
+
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
-      // Compress workflow arguments only when the run itself is marked as
-      // possibly containing compressed payloads (specVersion >= 5) AND the
-      // target deployment can decode them (same-deployment, or probed
-      // capability for cross-deployment starts).
-      const compression =
-        targetSupportsCompression &&
-        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+      // Compress only when the run itself is marked as possibly containing
+      // compressed payloads (specVersion >= 5) AND the target deployment can
+      // decode them (same-deployment, or probed capability for
+      // cross-deployment starts). The caller's `compressArguments: false` opt-out
+      // applies to the arguments alone, not to dynamic workflow code.
+      const compression: CompressionMode =
+        specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION
+          ? targetCompression
+          : false;
+      const argumentCompression: CompressionMode =
+        opts.compressArguments === false ? false : compression;
       const workflowArguments = await dehydrateWorkflowArguments(
         args,
         runId,
@@ -873,8 +1079,63 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        compression
+        argumentCompression,
+        ops,
+        framedAbortStreams
       );
+
+      // Dynamic workflow code goes through the same serialization pipeline as
+      // the arguments — compressed, then encrypted with the run's key — and is
+      // stored with the run, because every replay of a dynamic run has to
+      // evaluate the exact code it started on and that code is nowhere else.
+      //
+      // Two shapes on the wire: the bytes inline on `run_created` (the common
+      // case, no extra round-trip), or a ref to a separate upload when the
+      // payload is too large for the creating write's metadata budget. Worlds
+      // without an upload path always take the inline branch — they store run
+      // records whole, so there is no budget to exceed.
+      let dynamicWorkflowCode: Uint8Array | undefined;
+      let dynamicWorkflowCodeRef: string | undefined;
+      if (dynamicWorkflow) {
+        const serializedCode = await dehydrateDynamicWorkflowCode(
+          dynamicWorkflow.code,
+          encryptionKey,
+          compression
+        );
+        if (
+          serializedCode.byteLength > DYNAMIC_WORKFLOW_CODE_INLINE_MAX_BYTES &&
+          world.uploadDynamicWorkflowCode
+        ) {
+          dynamicWorkflowCodeRef = await world.uploadDynamicWorkflowCode(
+            runId,
+            { workflowName, code: serializedCode }
+          );
+        } else {
+          dynamicWorkflowCode = serializedCode;
+        }
+        span?.setAttributes({
+          ...Attribute.WorkflowDynamic(true),
+          ...Attribute.WorkflowDynamicSourceHash(
+            dynamicWorkflow.metadata.sourceHash
+          ),
+          ...Attribute.WorkflowDynamicCodeBytes(serializedCode.byteLength),
+          ...Attribute.WorkflowDynamicCodeStorage(
+            dynamicWorkflowCodeRef ? 'ref' : 'inline'
+          ),
+        });
+      }
+
+      /**
+       * Shared by `run_created` and the queue message's `runInput`: the
+       * resilient-start path re-creates the run from the queue message, and a
+       * dynamic run created without its code could never replay.
+       */
+      const dynamicWorkflowSeed = dynamicWorkflow
+        ? {
+            ...(dynamicWorkflowCode ? { dynamicWorkflowCode } : {}),
+            ...(dynamicWorkflowCodeRef ? { dynamicWorkflowCodeRef } : {}),
+          }
+        : {};
 
       // The environment this caller's own `run_created` write is attributed
       // to. Stamped into the queue message's `runInput` (NOT into
@@ -894,57 +1155,60 @@ export async function start<TArgs extends unknown[], TResult>(
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
-      // If WORKFLOW_VM is set on the client starting the run, stamp the
-      // engine choice into the run's executionContext so the run keeps
-      // executing on the engine it started on (the same deployment can
-      // serve both VM engines). Unknown values throw; see
-      // getWorkflowVmFromEnv().
-      const workflowVm = getWorkflowVmFromEnv();
+      const runCreated = world.events.create(
+        runId,
+        {
+          eventType: 'run_created',
+          specVersion,
+          eventData: {
+            deploymentId: deploymentId,
+            workflowName: workflowName,
+            input: workflowArguments,
+            executionContext,
+            ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+            ...attributeSeed,
+            ...dynamicWorkflowSeed,
+          },
+        },
+        { v1Compat }
+      );
 
-      const executionContext = {
-        traceCarrier,
-        workflowCoreVersion,
-        features: { encryption: !!encryptionKey },
-        // Attest that the *consumer* deployment's runtime re-ensures a
-        // `hook_received` event from a queue message's `hookInput` on replay.
-        // An OLDER producer resuming this run reads the marker (mirrored onto
-        // the hook's resumeContext by the server) to decide whether its lazy
-        // fast path is safe. For a cross-deployment start the consumer is the
-        // target deployment, so we stamp the *target's* value carried back on
-        // the health-check probe, never the caller's. Omitted when we could
-        // not attest the target (older target, timeout, or no probe channel),
-        // which fails the resume gate closed to the sequential path.
-        ...(targetHookResumeInputVersion !== undefined
-          ? { hookResumeInputVersion: targetHookResumeInputVersion }
-          : {}),
-        ...(workflowVm ? { workflowVm } : {}),
-        ...(opts.replayedFromRunId
-          ? { replayedFromRunId: opts.replayedFromRunId }
-          : {}),
-      };
+      // A dynamic run publishes only once the backend has confirmed it stored
+      // the code. The queue message carries that code too, and its first
+      // delivery can execute from the message alone (turbo starts the first
+      // step's body before `run_started` lands), so publishing beside an
+      // unconfirmed write would let a run execute after this call reported
+      // that it cannot exist. Any failure to create a dynamic run, retryable
+      // or not, is therefore thrown with nothing published: there is no
+      // resilient start for dynamic runs. The extra round-trip is small next
+      // to the compilation (and sometimes upload) a dynamic start already
+      // pays for.
+      if (dynamicWorkflow) {
+        const { run } = await runCreated;
+        // A backend that predates dynamic-source support ignores the field
+        // rather than rejecting it (dropping unrecognized metadata is by
+        // design), so the write succeeds and the run looks fine, but nothing
+        // could ever replay it. The created run echoes what it persisted.
+        if (
+          (run as { dynamicWorkflowCode?: unknown }).dynamicWorkflowCode ===
+          undefined
+        ) {
+          throw new WorkflowRuntimeError(
+            `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
+              'It was not queued, so it will not execute. ' +
+              'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
+          );
+        }
+      }
 
-      // Call events.create (run_created) and queue in parallel.
+      // Call events.create (run_created) and queue in parallel (for a dynamic
+      // run, the create has already succeeded above).
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
       const [runCreatedResult, queueResult] = await Promise.allSettled([
-        world.events.create(
-          runId,
-          {
-            eventType: 'run_created',
-            specVersion,
-            eventData: {
-              deploymentId: deploymentId,
-              workflowName: workflowName,
-              input: workflowArguments,
-              executionContext,
-              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-              ...attributeSeed,
-            },
-          },
-          { v1Compat }
-        ),
+        runCreated,
         world.queue(
-          getWorkflowQueueName(workflowName, opts.namespace),
+          queueName,
           {
             runId,
             traceCarrier,
@@ -961,6 +1225,7 @@ export async function start<TArgs extends unknown[], TResult>(
                       ? { environment: creatorEnvironment }
                       : {}),
                     ...attributeSeed,
+                    ...dynamicWorkflowSeed,
                   },
                 }
               : {}),

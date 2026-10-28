@@ -28,9 +28,14 @@ export function resolveData(world: string) {
       );
       // A World that misreads the mode fails here already: the runtime
       // replays with it, so the steps' results come back stripped.
+      // Wait for the terminal event, not just the status: a World may mark
+      // the run completed a moment before its `run_completed` is listed, and
+      // the two reads below must see the same log.
       await vi.waitFor(
         async () => {
           expect((await server.getRun(result.runId)).status).toBe('completed');
+          const events = await server.getEvents(result.runId, 'all');
+          expect(events.map((e) => e.eventType)).toContain('run_completed');
         },
         { interval: 200, timeout: 25_000 }
       );

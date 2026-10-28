@@ -1,6 +1,59 @@
 import { describe, expect, it } from 'vitest';
 import { CreateEventSchema, EventSchema } from './events';
 
+describe('dynamic workflow code storage shape', () => {
+  const inline = new Uint8Array([1, 2, 3]);
+  const creationData = {
+    deploymentId: 'dpl_1',
+    workflowName: 'workflow//dynamic/test//workflow',
+    input: new Uint8Array([4]),
+  };
+
+  for (const eventType of ['run_created', 'run_started'] as const) {
+    const base = {
+      eventType,
+      specVersion: 5,
+      eventData: eventType === 'run_created' ? creationData : {},
+    };
+
+    it(`${eventType} accepts neither, inline only, or ref only`, () => {
+      expect(CreateEventSchema.safeParse(base).success).toBe(true);
+      expect(
+        CreateEventSchema.safeParse({
+          ...base,
+          eventData: { ...base.eventData, dynamicWorkflowCode: inline },
+        }).success
+      ).toBe(true);
+      expect(
+        CreateEventSchema.safeParse({
+          ...base,
+          eventData: { ...base.eventData, dynamicWorkflowCodeRef: 'ref_1' },
+        }).success
+      ).toBe(true);
+    });
+
+    it(`${eventType} rejects inline code and a ref together in request and stored schemas`, () => {
+      const eventData = {
+        ...base.eventData,
+        dynamicWorkflowCode: inline,
+        dynamicWorkflowCodeRef: 'ref_1',
+      };
+      expect(CreateEventSchema.safeParse({ ...base, eventData }).success).toBe(
+        false
+      );
+      expect(
+        EventSchema.safeParse({
+          ...base,
+          eventData,
+          runId: 'wrun_00000000000000000000000000',
+          eventId: 'evnt_00000000000000000000000000',
+          createdAt: new Date().toISOString(),
+        }).success
+      ).toBe(false);
+    });
+  }
+});
+
 describe('hook_created token retention', () => {
   it('coerces tokenRetentionUntil to a Date', () => {
     const parsed = CreateEventSchema.parse({

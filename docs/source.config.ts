@@ -42,7 +42,7 @@ export const v5docs = defineDocs({
   },
 });
 
-// Canonical World docs rendered at /worlds/* (v4/current) and /v5/worlds/*
+// Canonical World docs rendered at /worlds/* (v5/current) and /v4/worlds/*
 // (the docs trees only keep the Deploying overview; world pages live outside
 // the docs, versioned with the same v4/v5 strategy).
 export const worldsV4Docs = defineDocs({

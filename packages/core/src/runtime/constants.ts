@@ -20,6 +20,11 @@ import { runtimeLogger } from '../logger.js';
 // backend outage; conversely, spanning the full 24h window would require a
 // substantially higher cap here, not a higher per-hop ceiling, since VQS
 // clamps every hop at 900s.)
+//
+// world-postgres sizes its Graphile job attempt cap from this value
+// (`CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT` = this + 1, plus headroom for
+// post-ceiling redeliveries of the terminal write). Update it there too if
+// this changes.
 export const MAX_QUEUE_DELIVERIES = 48;
 
 /**
@@ -222,52 +227,12 @@ export function getMaxInlineSteps(): number {
 }
 
 /**
- * Upper bound on the serialized step input that resilient step dispatch will
- * inline into the queue message's `stepInput`.
- *
- * Vercel Queues has no hard message-size cap (bodies above its ~256 KB
- * inline threshold transparently spill to S3-backed storage), so this bound
- * is a cost/latency choice, not a rejection guard: the message also carries
- * the runId, stepId, stepName, and trace carrier alongside CBOR framing
- * overhead, and staying under the queue's inline threshold keeps step
- * messages on its fast inline path instead of paying an S3 store+fetch
- * double-hop for bytes that already live in the event log. Above this size
- * the dispatch falls back to the sequential path (`step_created` write, then
- * a payload-less queue message).
- */
-export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
-
-/**
- * Whether resilient step dispatch is enabled: the suspension handler
- * parallelizes each newly created step's `step_created` event write with its
- * step-execution queue publish, carrying the serialized step input in the
- * queue message (`stepInput`) so the consumer can idempotently re-ensure the
- * event if the direct write failed transiently. Mirrors the resilient start
- * (`runInput`) pattern (and the legacy lazy hook resume's `hookInput`, which
- * current producers no longer send).
- *
- * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
- *
- * The queue publish races the create's verdict, and a create can come back
- * refused: as a duplicate this replay should stop pursuing, or as a stale
- * write on a World that refuses rather than reports. Either way the message
- * carrying the payload is already out, so the consumer can materialize a step
- * whose create was refused, and nothing orders the verdict before the
- * consumer's redelivery re-ensure. Enabling this trades that window for the
- * latency the parallel publish saves.
- */
-export function isResilientStepDispatchEnabled(): boolean {
-  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
-}
-
-/**
  * Whether batched event transitions are enabled: the suspension handler folds
  * a clean fan-out's `step_created` + `wait_created` writes into one
  * `world.events.createBatch` call (one durable write, per-event outcomes)
  * instead of one write per event. Only engages when the World implements the
  * optional `events.createBatch` AND the run is on slot identity
- * (specVersion >= 6) AND the suspension carries no attribute writes and no
- * resilient step dispatch. Hook writes in the same suspension go through the
+ * (specVersion >= 6) AND the suspension carries no attribute writes. Hook writes in the same suspension go through the
  * single-event path concurrently with the batch. Everything else keeps the
  * single-event path byte-for-byte.
  *
@@ -284,15 +249,43 @@ export function isBatchTransitionsEnabled(): boolean {
 
 /**
  * Ceiling on events per `createBatch` call from the batched fan-out fold.
- * Mirrors the server's transaction budgets with a comfortable margin: each
- * fan-out event costs 2 transaction items server-side (entity + event row)
- * against the 100-item DynamoDB cap, and inline payloads count against a
- * 768 KB byte budget, so 32 events stays well under both, and a fan-out larger
- * than this commits in successive batches (split batches lose
- * cross-batch atomicity, which is exactly today's per-event-write crash
- * surface, and every batch still converges on retry via per-event 409s).
+ * The server's transaction budgets are the hard limit: each fan-out event
+ * costs 2 transaction items server-side (entity + event row) against the
+ * 100-item DynamoDB cap, and inline payloads count against a 768 KB byte
+ * budget. A fan-out larger than this commits in successive batches, all in
+ * flight at once (split batches lose cross-batch atomicity, which is exactly
+ * the per-event-write crash surface, and every batch still converges on retry
+ * via per-event 409s).
+ *
+ * Within the budget the value is a latency trade, measured on durabench
+ * production sweeps (Vercel World, iad1, `Promise.all` of N one-step branches,
+ * 100 ms of work and 1 KB JSON each, 2026-10-07, every candidate built off the
+ * same commit and interleaved in one sweep):
+ *
+ * - A queued (non-inline) branch's message is published only once the chunk
+ *   carrying its `step_created` commits, then goes out in that chunk's
+ *   batched publish, and both hops slow down as the chunk grows. Smaller
+ *   chunks start the queued branches sooner: at 64 branches the queued
+ *   branches' median `step_started` moved from ~570 ms after `run_started` at
+ *   32 to ~460 ms at 16, and the last branch's first line from 967 to 875 ms
+ *   (p50, 45 runs each); at 128 branches, from 4,059 to 3,855 ms (20 runs).
+ * - More chunks are more concurrent `createBatch` requests per run, and the
+ *   inline branches' pair chunk is one of them. From about 16 concurrent
+ *   chunks the first (inline) branch slows down: at 128 branches 8 per chunk
+ *   cost it ~120 ms, and at 256 branches 4, 8 and 12 per chunk cost it ~470,
+ *   ~120 and ~140 ms. At 16 a 256-branch fan-out is 16 plain chunks, at the
+ *   edge of that (+~100 ms, not significant over 20 runs); at 24 and 32 it
+ *   is flat.
+ *
+ * 16 is the largest value with a clear last-branch gain at 64 and 128
+ * branches and no first-branch or join regression there; an 8-branch fan-out
+ * fits one chunk either way. It also keeps the default inline pairs (two rows
+ * per inline step, `MAX_INLINE_STEPS` = 3) in one chunk. A
+ * `WORKFLOW_MAX_INLINE_STEPS` above 8 spills the pairs into more than one pair
+ * chunk; they commit concurrently and all of them gate the inline bodies, so
+ * that degrades latency, not correctness.
  */
-export const MAX_BATCH_FANOUT_EVENTS = 32;
+export const MAX_BATCH_FANOUT_EVENTS = 16;
 
 /**
  * Optional client-side override for the server-supplied per-run event ceiling.
@@ -417,6 +410,27 @@ export function isVmRetentionEnabled(): boolean {
   const raw = process.env.WORKFLOW_RETAINED_VM;
   if (raw === undefined || raw === '') return true;
   return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/** Environment variable that opts a deployment into dynamic workflows. */
+export const DYNAMIC_WORKFLOWS_ENV = 'WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS';
+
+/**
+ * Whether this deployment executes dynamic workflows (default OFF).
+ *
+ * Dynamic source runs with the full privileges of the deployment's functions,
+ * so a deployment must opt in before it starts a dynamic run, advertises
+ * dynamic support in its health check, or executes stored dynamic code on a
+ * delivery. Only `1` or `true` (case-insensitive) enables it; any other value
+ * leaves it off.
+ *
+ * Reads `process.env.WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS` on every call so
+ * the deployment's runtime environment decides, not the build.
+ */
+export function isDynamicWorkflowsEnabled(): boolean {
+  const raw = process.env[DYNAMIC_WORKFLOWS_ENV];
+  if (raw === undefined) return false;
+  return raw === '1' || raw.toLowerCase() === 'true';
 }
 
 /**

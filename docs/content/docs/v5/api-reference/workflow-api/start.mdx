@@ -7,6 +7,7 @@ prerequisites:
   - /docs/foundations/starting-workflows
 related:
   - /docs/foundations/idempotency
+  - /docs/advanced/dynamic-workflows
 ---
 
 Start/enqueue a new workflow run.
@@ -63,6 +64,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * `attributes` seeds plaintext run metadata as part of creation and requires a World implementing spec version 4 or later. Keys that start with `$` are reserved for framework and library code; framework-level callers can pass `allowReservedAttributes: true` to seed reserved keys, with the same semantics as the [`setAttributes`](/docs/api-reference/workflow/set-attributes) option of the same name.
 * `region` pins the new run to a specific region on Worlds with a regional dimension. The [Vercel World](/worlds/vercel#explicit-region-selection) then serves the run's storage, queue dispatch, and streams from that region. When you omit `region`, the run is pinned to the region where it was created. Worlds without regions ignore the option.
 * `experimental_retention` asks the World to delete the run's user data as soon as the run completes or fails, instead of keeping it for the World's default window. `0` requests immediate deletion; `'default'` is identical to omitting the option. These are the only two values accepted — the value is a duration and zero is the only one implemented, and its unit is not yet decided. Recorded as the reserved `$retention` attribute, so it needs a World implementing spec version 4 or later. Retention is enforced by the World, not the SDK: the first-party Worlds implement it and a World that does not keeps the data. Note that `await run.returnValue` on a run started with `experimental_retention: 0` usually throws [`RunExpiredError`](/docs/errors/run-expired) rather than resolving, because the deletion races the read. See [Data retention](/docs/observability/retention).
+* `compressArguments: false` stores the run's arguments uncompressed. By default they are compressed when the target run can decode them. Arguments of 256 KiB or more are compressed off the caller's event loop, so starting a run with a large input doesn't stall other requests the process is serving. The attempt still costs CPU proportional to the input size and is wasted on data that will not shrink (media, encrypted or random bytes), so skip it when you know the inputs are incompressible. `true` is the default and does not force compression. The option only affects the arguments; a [dynamic workflow's](/docs/advanced/dynamic-workflows) code is compressed regardless. To disable compression for every write in a process, see [`WORKFLOW_DISABLE_COMPRESSION`](/docs/configuration/runtime-tuning#workflow_disable_compression).
 
 <Callout type="info">
 If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`, the compiler did not transform the passed function as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
@@ -118,8 +120,10 @@ carries the owning team, and this takes precedence over a `VERCEL_TOKEN` set in
 the function's environment. A `VERCEL_TOKEN` belongs to a *user* and carries no
 team, so authenticating with it scopes the lookup to that user's default team
 and fails with a 404 whenever that is not the team that owns the deployment.
-Outside a deployment (CLI, CI, the dashboard) `VERCEL_TOKEN` is still used;
-configure the World's `teamId` so the request is scoped explicitly.
+Outside a deployment (CLI, CI, the dashboard) the SDK uses the World's
+`token`, falling back to `VERCEL_TOKEN`; configure the World's `teamId` so the
+request is scoped explicitly. See
+[Starting runs from outside a deployment](/worlds/vercel#starting-runs-from-outside-a-deployment).
 </Callout>
 
 <Callout type="warn">
@@ -153,3 +157,50 @@ The returned `Run` object is fully functional inside a workflow. Each property a
 <Callout type="warn">
 `returnValue` polls the child run every second and holds the polling step's worker slot open for as long as the child takes to finish. For long-running children, spawn without awaiting `returnValue` and have the child resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
 </Callout>
+
+### Dynamic Workflow Source
+
+<Callout type="warning">
+Experimental and off by default. The API may change without a major version bump. The deployment must set `WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1`, and dynamic runs can only start on the current deployment.
+</Callout>
+
+`start()` also accepts a string of workflow **source** instead of an imported function, for orchestration whose shape is only known after you deploy. The source is compiled and stored with the run through the same serialization path as other run payloads, including encryption when the World supplies run key material.
+
+Dynamic source runs with the full privileges of your deployment's functions: it can read environment variables, use the network and filesystem, and call any step in the deployment. Only pass source you trust as much as your own code.
+
+`experimental_dynamic.steps` maps the aliases the source may call to steps that are already registered in your deployment. It keeps ordinary source from calling a step by a name it was not given, but it is not a security boundary. There is no way to define a new step from source.
+
+```typescript
+import { start } from "workflow/api";
+import { fetchUser, sendEmail } from "./steps";
+
+const run = await start(
+  `
+async function workflow(input) {
+  "use workflow";
+
+  const user = await steps.fetchUser(input.userId);
+  await steps.sendEmail(user.email);
+
+  return { ok: true };
+}
+`,
+  [{ userId: "user_123" }],
+  {
+    experimental_dynamic: { // [!code highlight]
+      steps: { fetchUser, sendEmail }, // [!code highlight]
+    }, // [!code highlight]
+  }
+);
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `experimental_dynamic.steps` | `Record<string, StepFunction \| { stepId: string }>` | Required. Registered steps the source may call, keyed by the alias it calls them under. |
+| `experimental_dynamic.exportName` | `string` | Name of the async workflow function in the source. Use letters, digits, and `_`, not starting with a digit. Defaults to `"workflow"`. |
+
+The return type is `Run<unknown>`: the source's shape is only known to whatever generated it, so there is nothing to infer. The workflow ID is derived from the source and its step bindings — it cannot be supplied.
+
+A dynamic start throws a `WorkflowRuntimeError`, before anything is written, when the deployment has not opted in, when `deploymentId` targets another deployment (including `'latest'` resolving to one), or when the World's backend does not support dynamic-source storage.
+
+See [Dynamic Workflows](/docs/advanced/dynamic-workflows) for the opt-in, the source rules and limits, the predefined runtime bindings (`steps`, `sleep`, `createHook`), how the code is stored, and the security model.

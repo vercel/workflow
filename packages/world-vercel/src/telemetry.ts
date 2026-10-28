@@ -323,6 +323,32 @@ export const WorkflowEventType = SemanticConvention<string>(
   'workflow.event.type'
 );
 
+/**
+ * Whether an event write carried the in-band writer fence
+ * (workflow.event.in_band), i.e. the run's orchestrator made it. Set only when
+ * the caller set `CreateEventParams.inBand`.
+ */
+export const WorkflowEventInBand = SemanticConvention<boolean>(
+  'workflow.event.in_band'
+);
+
+/**
+ * The in-band count an in-band write expected
+ * (workflow.event.expected_seq_in_band).
+ */
+export const WorkflowEventExpectedSeqInBand = SemanticConvention<number>(
+  'workflow.event.expected_seq_in_band'
+);
+
+/**
+ * The World's in-band count when it refused an in-band write as
+ * `InBandSupersededError` (workflow.event.seq_in_band). Diagnostic only; set
+ * only on a refusal that reported it.
+ */
+export const WorkflowEventSeqInBand = SemanticConvention<number>(
+  'workflow.event.seq_in_band'
+);
+
 /** Server-side classification of a step_started write. */
 export type WorkflowStepStartMode =
   | 'single_lazy_create_claim'
@@ -368,6 +394,23 @@ export const WorkflowWsUrl = SemanticConvention<string>(
  */
 export const WorkflowWsRequestId = SemanticConvention<number>(
   'workflow.events.ws.req_id'
+);
+
+/**
+ * Number of WebSocket messages a WS event write went out as
+ * (workflow.events.ws.request_parts). Set only when the frame was over the
+ * message limit and was split.
+ */
+export const WorkflowWsRequestParts = SemanticConvention<number>(
+  'workflow.events.ws.request_parts'
+);
+
+/**
+ * Number of WebSocket messages the reply to a WS event write arrived as
+ * (workflow.events.ws.reply_parts). Set only when the reply was split.
+ */
+export const WorkflowWsReplyParts = SemanticConvention<number>(
+  'workflow.events.ws.reply_parts'
 );
 
 /**

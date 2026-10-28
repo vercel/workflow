@@ -64,6 +64,13 @@ export const WorkflowRunBaseSchema = z.compile(
     input: SerializedDataSchema.optional(),
     output: SerializedDataSchema.optional(),
     /**
+     * A dynamic run's workflow VM code, serialized through the run-payload
+     * pipeline. Compression is conditional on protocol support and benefit;
+     * encryption is conditional on the World supplying run key material.
+     * Replay reads this opaque payload from the run rather than creation events.
+     */
+    dynamicWorkflowCode: SerializedDataSchema.optional(),
+    /**
      * The thrown value from a run_failed event, serialized via the workflow
      * serialization pipeline. To display the error to a user, hydrate it via
      * `hydrateRunError` (with the encryption key if encryption is enabled).
@@ -163,12 +170,17 @@ export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 export type StartedWorkflowRun = WorkflowRun & { startedAt: Date };
 
 /**
- * WorkflowRun with input/output fields excluded (when resolveData='none').
+ * WorkflowRun with its payload fields excluded (when resolveData='none'):
+ * input, output, and a dynamic run's stored workflow code.
  * Used for listing runs without fetching the full serialized data.
  */
-export type WorkflowRunWithoutData = Omit<WorkflowRun, 'input' | 'output'> & {
+export type WorkflowRunWithoutData = Omit<
+  WorkflowRun,
+  'input' | 'output' | 'dynamicWorkflowCode'
+> & {
   input: undefined;
   output: undefined;
+  dynamicWorkflowCode?: undefined;
 };
 
 // Request types

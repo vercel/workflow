@@ -25,6 +25,7 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
+export type { Serializable } from './schemas.js';
 export {
   type SetAttributesOptions,
   setAttributes,

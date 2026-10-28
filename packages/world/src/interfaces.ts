@@ -10,6 +10,7 @@ import type {
   CreateEventRequest,
   Event,
   EventBatchResult,
+  EventListResponse,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -33,6 +34,7 @@ import type {
   StreamChunksResponse,
   StreamInfoResponse,
 } from './shared.js';
+import type { SnapshotMetadata } from './snapshots.js';
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
@@ -49,6 +51,13 @@ export interface StreamWriteSession {
 
   /** Close this writer lifetime after all prior writes are durable. */
   close(): Promise<void>;
+
+  /**
+   * Release an idle transport after accepted writes are durable, without
+   * closing the stream or invalidating this writer. Later writes and close
+   * must remain usable (for example, over stateless HTTP).
+   */
+  release?(): Promise<void> | void;
 
   /** Release transport resources without semantically closing the stream. */
   dispose?(): Promise<void> | void;
@@ -463,7 +472,7 @@ export interface Storage {
       params?: GetEventParams
     ): Promise<Event>;
 
-    list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
+    list(params: ListEventsParams): Promise<EventListResponse>;
     listByCorrelationId(
       params: ListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<Event>>;
@@ -485,6 +494,71 @@ export interface Storage {
      * end.
      */
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
+  };
+
+  /**
+   * VM snapshot storage for the QuickJS engine's VM-memory snapshotting.
+   *
+   * @experimental The shape of this interface and of `SnapshotMetadata`
+   * may change without a major version bump. It is OPTIONAL and World
+   * implementations do not need to provide it: a World that omits it
+   * simply runs every invocation with full event replay, which is always
+   * correct (snapshots are an optimization, never a correctness
+   * requirement). Consumers must feature-detect
+   * (`world.experimental_snapshots?.…`).
+   *
+   * Snapshots capture the state of the QuickJS WASM VM at a suspension
+   * point, allowing workflow execution to resume from the exact point of
+   * suspension instead of replaying the full event log.
+   *
+   * The metadata (including eventsCursor) is stored alongside the snapshot
+   * data so that on restore, only events created after the snapshot need
+   * to be fetched. Implementations MUST round-trip the metadata object
+   * losslessly and atomically with the bytes it describes — a snapshot
+   * paired with another suspension's metadata replays from the wrong log
+   * position and silently diverges. The `encodeSnapshotEnvelope` /
+   * `decodeSnapshotEnvelope` helpers pack both into one self-describing
+   * blob so a plain blob store satisfies this with a single atomic
+   * write; worlds with transactional metadata storage may store the
+   * fields natively instead.
+   */
+  experimental_snapshots?: {
+    /**
+     * Save a VM snapshot for a workflow run.
+     * Each save overwrites the previous snapshot for this run.
+     *
+     * @param runId - The workflow run ID
+     * @param data - The serialized snapshot bytes (from QuickJS.serializeSnapshot())
+     * @param metadata - Snapshot metadata including the events cursor
+     */
+    save(
+      runId: string,
+      data: Uint8Array,
+      metadata: SnapshotMetadata
+    ): Promise<void>;
+
+    /**
+     * Load the most recent VM snapshot for a workflow run.
+     * Returns null if no snapshot exists (first invocation).
+     *
+     * @param runId - The workflow run ID
+     * @returns The snapshot data and metadata, or null if not found
+     */
+    load(
+      runId: string
+    ): Promise<{ data: Uint8Array; metadata: SnapshotMetadata } | null>;
+
+    /**
+     * Delete the snapshot for a workflow run.
+     * Called when the workflow reaches a terminal state (completed,
+     * failed, cancelled). MUST be idempotent: terminal-state cleanup is
+     * exactly the path most likely to retry or run for a run that never
+     * snapshotted, so deleting a nonexistent snapshot resolves
+     * successfully.
+     *
+     * @param runId - The workflow run ID
+     */
+    delete(runId: string): Promise<void>;
   };
 }
 
@@ -531,6 +605,43 @@ export interface WorldCapabilities {
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
+
+  /**
+   * The World implements the in-band writer fence
+   * ({@link CreateEventParams.inBand}). Optional: the runtime does not send
+   * the fence yet, and a World without it stays fully supported.
+   *
+   * Declaring it commits the World to all of:
+   *
+   * - **A per-run in-band count.** Next to the position counter its sequencer
+   *   allocates from (`seq`), the World counts the positions allocated to
+   *   in-band writes (`seqInBand`). A new run's `run_created` counts as
+   *   in-band and is never fenced itself, so a fresh run holds
+   *   `seq = 1, seqInBand = IN_BAND_SEQ_AT_RUN_CREATION`.
+   * - **The counters, from a list or a refusal.** `events.list` on a
+   *   slot-numbered run returns `snapshot: { seq, seqInBand }`
+   *   ({@link EventListResponse.snapshot}), read before the listing, on
+   *   every page where the World reads one. A World may list none
+   *   (world-vercel lists one only where its backend reports it); its
+   *   refusals then carry both counters, read together
+   *   (`InBandSupersededError.seq` and `.seqInBand`), and a writer takes its
+   *   count from a refusal instead. Building a World's in-band fence section
+   *   says how.
+   * - **Fenced in-band creates.** A create with `inBand: true` carries
+   *   {@link CreateEventParams.expectedSeqInBand}. The World checks it
+   *   against `seqInBand` and advances both counters by the positions it
+   *   allocates in one atomic step. On a mismatch it throws
+   *   `InBandSupersededError` (HTTP 412, `in-band-superseded`) and writes and
+   *   allocates nothing. An in-band write without an expected count is a 400.
+   *   A batch is one fenced allocation for the whole block.
+   * - **Unfenced out-of-band creates.** Writes with `inBand: false` (or
+   *   absent) move `seq` and never `seqInBand`, and are never refused by the
+   *   fence.
+   *
+   * `@workflow/world`'s `test-support/in-band-fence-conformance.ts` checks
+   * each of these against a World's `events` storage.
+   */
+  inBandFence?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
@@ -607,6 +718,20 @@ export interface WorldCapabilities {
    * fail ordinary runs after a version bump.
    */
   deploymentAffinity?: boolean;
+
+  /**
+   * Stores a dynamic run's workflow code with the run. The World must persist
+   * `dynamicWorkflowCode` from `run_created` (and from a resilient
+   * `run_started` that creates the run), echo it on the created run, and
+   * return it from `runs.get` with `resolveData: 'all'` for the run's
+   * lifetime, because every replay evaluates that code and it exists nowhere
+   * else. `start()` refuses a dynamic start on a World that leaves this unset.
+   *
+   * Code too large for the creating write goes through
+   * {@link World.uploadDynamicWorkflowCode} when the World implements it;
+   * otherwise it is always sent inline.
+   */
+  dynamicWorkflowCode?: boolean;
 }
 
 /**
@@ -642,6 +767,14 @@ export interface World extends Queue, Streamer, Storage {
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
   capabilities?: WorldCapabilities;
+
+  /**
+   * Validates a dynamic run's complete execution context against
+   * World-specific limits. `start()` calls it only for dynamic starts, before
+   * any durable start side effect, so implementations throw to refuse the
+   * start.
+   */
+  validateRunExecutionContext?(value: Record<string, unknown>): void;
 
   /**
    * Absolute wall-clock time when the current function invocation will be
@@ -687,16 +820,19 @@ export interface World extends Queue, Streamer, Storage {
    *
    * Two overloads:
    *
-   * - `getEncryptionKeyForRun(run)`: Preferred. Pass a `WorkflowRun` when
-   *   the run entity already exists. The World reads any context it needs
-   *   (e.g., `deploymentId`) directly from the run.
+   * - `getEncryptionKeyForRun(run)`: Used when the runtime already holds
+   *   the `WorkflowRun` entity. The World reads any context it needs (e.g.,
+   *   `deploymentId`) directly from the run.
    *
-   * - `getEncryptionKeyForRun(runId, context?)`: Used when the run entity
-   *   is not locally available, such as `start()` before run creation or a
-   *   forwarded writable stream carrying its owning deployment context. The
+   * - `getEncryptionKeyForRun(runId, context?)`: Used everywhere else: when
+   *   the run does not exist yet (`start()` before run creation), and when
+   *   the runtime has a run id but no reason to load the run's payloads
+   *   (stream reads, forwarded writable streams, hook resumption). The
    *   `context` parameter carries opaque world-specific data (e.g.,
    *   `{ deploymentId }` for world-vercel) needed to resolve the correct key.
    *   When `context` is omitted, the World assumes the current deployment.
+   *
+   * Implementations must resolve the same key from either form.
    *
    * When not implemented, encryption is disabled: data is stored unencrypted.
    */
@@ -728,6 +864,54 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * The region an existing run's data lives in, derived from its run ID
+   * alone (no I/O, never throws).
+   *
+   * The counterpart of {@link createRunId} for worlds that embed a region in
+   * the IDs they mint. Callers that create a run on behalf of an existing one
+   * (e.g. `recreateRunFromExisting()`) pass the result to `start({ region })`
+   * so the new run is placed where the original was, rather than wherever the
+   * calling process happens to execute. Return `null` when the ID is not one
+   * this world recognizes. Worlds without a regional dimension omit this.
+   */
+  regionForRunId?(runId: string): string | null;
+
+  /**
+   * Upload a dynamic run's serialized workflow VM code to the World's blob
+   * storage ahead of `run_created`, returning the ref key to attach to the
+   * run.
+   *
+   * The inline path — sending the bytes on `run_created` itself — is the
+   * common case and needs nothing from this method: a generated orchestration
+   * function is usually a couple of KB, and keeping it on the creating write
+   * costs no extra round-trip. This exists for the tail: a definition too
+   * large to ride the event wire, which has to be streamed separately and
+   * referenced.
+   *
+   * Worlds that store run records whole (local, Postgres) have no size
+   * pressure and leave this unset; `start()` then always sends inline, and a
+   * definition over its own source limit is rejected client-side rather than
+   * silently truncated.
+   *
+   * The upload necessarily precedes the run it belongs to, so implementations
+   * must accept a `runId` that does not exist yet, and must scope the stored
+   * object to the caller's tenant and that run so it is reclaimed with the
+   * run's other storage.
+   *
+   * @param runId - The client-minted ID of the run being started.
+   * @param params.workflowName - The run's generated dynamic workflow name.
+   *   Worlds that embed it in the storage key need it passed in, because the
+   *   run record does not exist yet to read it from.
+   * @param params.code - Serialized (compressed + encrypted) workflow code.
+   * @returns The ref key to send as `run_created`'s
+   *   `eventData.dynamicWorkflowCodeRef`.
+   */
+  uploadDynamicWorkflowCode?(
+    runId: string,
+    params: { workflowName: string; code: Uint8Array }
+  ): Promise<string>;
 
   /**
    * The environment this World's writes are attributed to by the backend
@@ -781,4 +965,19 @@ export interface World extends Queue, Streamer, Storage {
     | Record<string, string | null>
     | null
     | Promise<Record<string, string | null> | null>;
+
+  /**
+   * Optional telemetry write namespace for non-critical observability signals.
+   */
+  telemetry?: Telemetry;
+}
+
+export interface Telemetry {
+  /**
+   * Called immediately before a step's user code begins executing.
+   *
+   * Worlds may use this synchronous hook to correlate step execution with the
+   * current platform invocation. Implementations must not throw.
+   */
+  recordStepExecution?(stepId: string): void;
 }

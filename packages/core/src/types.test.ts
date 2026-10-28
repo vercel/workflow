@@ -3,9 +3,27 @@ import { FatalError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import {
   formatErrorCauseChain,
+  getErrorMessage,
   isAbortError,
   promoteAbortErrorToFatal,
 } from './types.js';
+
+describe('getErrorMessage', () => {
+  it('reads a native error message across realms without adding its name', () => {
+    expect(
+      getErrorMessage(runInNewContext('new TypeError("remote error")'))
+    ).toBe('remote error');
+  });
+
+  it.each([
+    null,
+    undefined,
+    'plain failure',
+    42,
+  ])('stringifies non-error values (%s)', (value) => {
+    expect(getErrorMessage(value)).toBe(String(value));
+  });
+});
 
 describe('isAbortError', () => {
   it('recognizes an AbortError from another realm', () => {

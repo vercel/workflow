@@ -10,7 +10,7 @@ import {
   CommandPromptTrigger,
   CommandPromptTriggerDivider,
   CommandPromptViewport,
-} from '@/components/ui/command-prompt';
+} from '@vercel/geistdocs/components/command-prompt';
 
 const COMMAND_FOR_HUMANS = 'npm install workflow';
 const COMMAND_FOR_AGENTS = 'npx skills add vercel/workflow';
@@ -27,8 +27,8 @@ export const Hero = ({ title, description }: HeroProps) => {
         <h1 className="text-center text-balance text-heading-40 sm:text-heading-48 xl:text-heading-64">
           {title}
         </h1>
-        <p className="text-balance max-w-3xl mx-auto text-muted-foreground text-copy-18 leading-relaxed">
-          <span className="font-mono text-base bg-accent inline-block px-2 py-0 rounded-sm border border-border">
+        <p className="text-balance max-w-3xl mx-auto text-gray-900 text-copy-18 leading-relaxed">
+          <span className="font-mono text-base bg-gray-100 inline-block px-2 py-0 rounded-sm border border-gray-alpha-400">
             use workflow
           </span>{' '}
           brings durability, reliability, and observability to async JavaScript.

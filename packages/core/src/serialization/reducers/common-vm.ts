@@ -97,6 +97,11 @@ export function getCommonReducers(): Partial<Reducers> {
       value instanceof BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof BigUint64Array && viewToBase64(value),
+    // Claimed rather than left to devalue, which encodes a DataView as its
+    // whole backing ArrayBuffer plus offset/length. The tag is not `DataView`
+    // so that older payloads under that name keep reaching devalue's built-in
+    // branch with their bounds; see the host-side common.ts.
+    DataViewBytes: (value) => value instanceof DataView && viewToBase64(value),
     Date: (value) => {
       if (!(value instanceof Date)) return false;
       const valid = !Number.isNaN(value.getDate());
@@ -387,6 +392,7 @@ export function getCommonRevivers(): Partial<Revivers> {
       new BigInt64Array(reviveArrayBuffer(value)),
     BigUint64Array: (value: string) =>
       new BigUint64Array(reviveArrayBuffer(value)),
+    DataViewBytes: (value: string) => new DataView(reviveArrayBuffer(value)),
     Date: (value) => new Date(value),
     DOMException: (value) => {
       const error = new DOMException(value.message, value.name);

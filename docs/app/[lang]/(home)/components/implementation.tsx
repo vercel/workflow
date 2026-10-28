@@ -57,7 +57,7 @@ export const Implementation = () => (
       <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
         Effortless setup
       </h2>
-      <p className="text-balance text-lg text-muted-foreground">
+      <p className="text-balance text-lg text-gray-900">
         With a simple declarative API to define and use your workflows.
       </p>
     </div>
@@ -75,7 +75,7 @@ export const Implementation = () => (
             lang="ts"
             codeblock={{
               className:
-                'shadow-none !bg-background dark:bg-sidebar h-full rounded-md with-line-numbers',
+                'shadow-none !bg-background-100 dark:bg-gray-100 h-full rounded-md with-line-numbers',
             }}
           />
         </div>

@@ -12,7 +12,6 @@ import {
   type RunErrorCode,
   RunExpiredError,
   WorkflowRuntimeError,
-  WorkflowWorldError,
 } from '@workflow/errors';
 import { once, setWorkflowBasePath } from '@workflow/utils';
 import {
@@ -52,6 +51,7 @@ import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
+  DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
   getMaxQueueDeliveries,
   getOpenWaitClockSkewMs,
@@ -59,6 +59,7 @@ import {
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
   getReplayDivergenceMaxRetries,
+  isDynamicWorkflowsEnabled,
   isInlineOwnershipEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
@@ -69,6 +70,12 @@ import {
   guardDeploymentAffinity,
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
+import {
+  type DynamicWorkflowMetadata,
+  dynamicWorkflowName,
+  readDynamicWorkflowMetadata,
+} from './runtime/dynamic-workflow.js';
+import { maybeWarnApproachingEventLimit } from './runtime/event-limit-warning.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -103,6 +110,10 @@ import {
   openHookAndWaitState,
 } from './runtime/open-hook-wait-state.js';
 import {
+  type OutOfBandObservation,
+  observeOutOfBandWriters,
+} from './runtime/out-of-band-observation.js';
+import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
@@ -132,7 +143,12 @@ import {
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld } from './runtime/world.js';
-import { dehydrateRunError, type PayloadKey } from './serialization.js';
+import {
+  dehydrateRunError,
+  hydrateDynamicWorkflowCode,
+  type PayloadKey,
+} from './serialization.js';
+import { setErrorStack } from './set-error-stack.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -154,6 +170,7 @@ import {
 } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import {
+  compileDynamicWorkflowBundle,
   compileWorkflowBundle,
   replayWorkflow,
   resumeWorkflow,
@@ -198,6 +215,9 @@ export {
   wakeUpRun,
 } from './runtime/runs.js';
 export {
+  type DynamicStartOptions,
+  type DynamicWorkflowOptions,
+  type DynamicWorkflowStepReference,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,
@@ -371,27 +391,6 @@ function getWorkflowSetupErrorCode(err: unknown): RunErrorCode | null {
   return null;
 }
 
-/**
- * Whether a step execution rejected because the step entity does not exist,
- * the signature of a resilient step dispatch message whose delivery beat (or
- * outlived a transient failure of) the producer's parallel `step_created`
- * write. Every World surfaces it as a `WorkflowWorldError` naming the missing
- * step: world-vercel maps the backend's 404 to
- * `workflow step step_… not found`, world-local and world-postgres throw
- * `Step "step_…" not found` directly. The message match is deliberately loose
- * across those shapes; the status check narrows the remote case without
- * excluding the local ones (which carry no status).
- *
- * Used only when the message carries `stepInput`, since a bare dispatch
- * without a payload has nothing to recover from, and the error keeps
- * propagating for queue-driven recovery exactly as before.
- */
-function isStepMissingError(err: unknown): boolean {
-  if (!WorkflowWorldError.is(err)) return false;
-  if (err.status !== undefined && err.status !== 404) return false;
-  return /step/i.test(err.message) && /not found/i.test(err.message);
-}
-
 async function recordFatalRunError({
   world,
   workflowRun,
@@ -546,10 +545,14 @@ type RetentionDecision =
  * in this process rather than re-invoking (see `continueOverHookWrite` in the
  * replay loop), so the runtime itself drives the next iteration. One arm for
  * both outcomes because it is one boundary: same write, same event slot, same
- * continuation. Steps in the same suspension ride along queued: an awaiter
- * empties `lazyInlineSteps` and the conflict branch returns before any inline
- * execution, so nothing this invocation does can order the continuation behind
- * a step body. The hook this suspension just created is an open hook by
+ * continuation. Steps in the same suspension ride along deferred rather than
+ * queued: an awaiter holds `lazyInlineSteps` back for the pass the
+ * continuation drives, and the conflict branch returns before any inline
+ * execution, so a step body is never ordered ahead of a continuation this
+ * invocation is still going to take. (A continuation it has already taken and
+ * been refused for — the repeat guard — does let the batch run first; there is
+ * nothing left for the ordering to protect by then.) The hook this suspension
+ * just created is an open hook by
  * definition, and is no more a hazard than any other open hook here: a
  * `hook_received` landing out of band is absent from the log the resume reads
  * exactly as it is absent from a fetch that returned a moment before it — a
@@ -678,6 +681,108 @@ async function getMaxInlineDurationMs(
   return ms('2m');
 }
 
+/** The workflow code a delivery replays, and the marker when it is dynamic. */
+interface ResolvedWorkflowCode {
+  code: string;
+  dynamicWorkflow?: DynamicWorkflowMetadata;
+}
+
+/**
+ * Pick the workflow code this run replays.
+ *
+ * For a static run this is the deployment's bundle, returned unchanged after
+ * one plaintext property read. The dynamic branch exists for runs started from
+ * source: their workflow function was never in the bundle, so the code came
+ * with the run, and replaying it means evaluating that exact code rather than
+ * whatever the deployment now contains.
+ *
+ * Stored code is only executed when all of these hold, and each failure is a
+ * `WorkflowRuntimeError` so the caller fails the run instead of redelivering a
+ * message whose verdict cannot change:
+ *
+ * - this deployment has opted in to dynamic workflows;
+ * - the run's `workflowName` is the id its `dynamicWorkflow` marker derives
+ *   (a marker on a static workflow's run does not redirect it to stored code);
+ * - the code exists and hydrates, which requires the `encr` envelope whenever
+ *   the run has key material or was started with encryption.
+ *
+ * Two sources for the code, in order of what the invocation already holds:
+ *
+ * 1. On the run snapshot. The normal case: `run_created` and the queue
+ *    message both carry the bytes, so a read is already unnecessary by the
+ *    time replay begins.
+ * 2. Read back from the run. Needed when the definition was too large to
+ *    send inline and lives behind a ref, or the snapshot was read with
+ *    `resolveData: 'none'`, which omits the code. The run has to exist first,
+ *    hence the barrier.
+ *
+ * World and key-lookup errors propagate unchanged, so transient failures are
+ * still redelivered.
+ *
+ * @param getEncryptionKey - Resolved only on the dynamic branch. The key is
+ *   lazy for a reason: some deliveries never need it, and forcing it here
+ *   would put a key fetch on every static run's critical path.
+ * @param awaitRunReady - Orders the fallback read after the write that
+ *   creates the run; a no-op once the run is durable.
+ */
+async function resolveWorkflowCodeForRun(
+  staticWorkflowCode: string,
+  workflowRun: WorkflowRun,
+  getEncryptionKey: () => Promise<PayloadKey | undefined>,
+  world: World,
+  awaitRunReady: () => Promise<void>
+): Promise<ResolvedWorkflowCode> {
+  const dynamicWorkflow = readDynamicWorkflowMetadata(
+    workflowRun.executionContext
+  );
+  if (!dynamicWorkflow) return { code: staticWorkflowCode };
+
+  const runLabel = `Workflow run "${workflowRun.runId}" is a dynamic workflow run (source ${dynamicWorkflow.sourceHash.slice(0, 12)})`;
+  if (!isDynamicWorkflowsEnabled()) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but this deployment has not enabled dynamic workflows, so its stored code was not executed. Set ${DYNAMIC_WORKFLOWS_ENV}=1 on the deployment to enable them.`
+    );
+  }
+  const expectedWorkflowName = dynamicWorkflowName(dynamicWorkflow);
+  if (workflowRun.workflowName !== expectedWorkflowName) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its workflow name ${JSON.stringify(workflowRun.workflowName)} does not match the dynamic id ${JSON.stringify(expectedWorkflowName)} its marker derives, so its stored code was not executed.`
+    );
+  }
+
+  let stored = workflowRun.dynamicWorkflowCode;
+  if (stored === undefined) {
+    await awaitRunReady();
+    stored = (await world.runs.get(workflowRun.runId, { resolveData: 'all' }))
+      .dynamicWorkflowCode;
+  }
+
+  if (stored === undefined) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its stored workflow code is missing, so it cannot be replayed. ` +
+        'This means the code was never persisted or its storage has expired.'
+    );
+  }
+
+  const encryptionKey = await getEncryptionKey();
+  const features = workflowRun.executionContext?.features as
+    | { encryption?: unknown }
+    | undefined;
+  try {
+    return {
+      code: await hydrateDynamicWorkflowCode(stored, encryptionKey, {
+        encryptionRequired: features?.encryption === true,
+      }),
+      dynamicWorkflow,
+    };
+  } catch (cause) {
+    throw new WorkflowRuntimeError(
+      `${runLabel}, but its stored workflow code could not be decoded, so it was not executed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause }
+    );
+  }
+}
+
 /**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
@@ -735,7 +840,6 @@ export function workflowEntrypoint(
           deploymentMismatchRetryCount,
           runInput,
           hookInput,
-          stepInput,
           runContext,
           hookResumeTiming,
           waitContinuation,
@@ -799,14 +903,16 @@ export function workflowEntrypoint(
               errorAttribution: maxDeliveriesDescription.attribution,
             }
           );
+          let encryptionKey: PayloadKey | undefined;
+          let dehydratedError: Uint8Array;
           try {
             const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
               `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
             );
-            const encryptionKey = await getEncryptionKey();
-            const dehydratedError = await dehydrateRunError(
+            encryptionKey = await getEncryptionKey();
+            dehydratedError = await dehydrateRunError(
               err,
               runId,
               encryptionKey
@@ -823,17 +929,30 @@ export function workflowEntrypoint(
               },
               { requestId }
             );
-            dispatchRunFailedHooks(
-              runId,
-              workflowName,
-              dehydratedError,
-              encryptionKey,
-              RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
-            );
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
               // Run already finished, consume the message silently
               return;
+            }
+            // A transient backend failure (429 / 5xx / transport) must not
+            // abandon the run: acking here leaves it `running` with no message
+            // left to drive it. Throw so the queue redelivers with its backoff
+            // (honoring a 429's Retry-After); the redelivery is still past the
+            // ceiling, so it only retries this terminal write, never the replay.
+            // This relies on the World redelivering past the ceiling: VQS and
+            // world-local do, while world-postgres currently caps its jobs at
+            // exactly this delivery (#4427, fixed by #4428).
+            if (isRetryableWorldError(err)) {
+              runLogger.warn(
+                'Transient error marking run as failed after max deliveries, retrying via queue redelivery',
+                {
+                  attempt: metadata.attempt,
+                  errorName: err instanceof Error ? err.name : 'UnknownError',
+                  errorMessage:
+                    err instanceof Error ? err.message : String(err),
+                }
+              );
+              throw err;
             }
             runLogger.error(
               `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
@@ -848,7 +967,15 @@ export function workflowEntrypoint(
                 errorStack: err instanceof Error ? err.stack : undefined,
               }
             );
+            return;
           }
+          dispatchRunFailedHooks(
+            runId,
+            workflowName,
+            dehydratedError,
+            encryptionKey,
+            RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
+          );
           return;
         }
 
@@ -966,6 +1093,19 @@ export function workflowEntrypoint(
                   // completion that already exists is acted on now rather
                   // than when the wait's own timer would have fired.
                   let eventLogFromInlineDelta = false;
+                  // Inline-step boundaries this invocation scheduled, split by
+                  // whether an out-of-band event could have changed what they
+                  // led to. Recorded on the span so the share of boundaries a
+                  // future run-ahead could pipeline is measurable. See
+                  // runtime/out-of-band-observation.ts.
+                  const outOfBandBoundaries = {
+                    inert: 0,
+                    observedHook: 0,
+                    unknownHook: 0,
+                    abortSignal: 0,
+                    externalStep: 0,
+                    waitDue: 0,
+                  };
                   let loopIteration = 0;
                   // Hooks whose force-claim victim wake this invocation has
                   // already sent (its own forced creations, and the replay's
@@ -992,6 +1132,17 @@ export function workflowEntrypoint(
                       >
                     ) => {
                       if (!workflow || useQuickJSVm(workflow)) return;
+                      // A dynamic run does not replay the deployment's
+                      // bundle, and its own code is not available yet (it is
+                      // encrypted, and resolving it needs the run's key). Skip
+                      // the warm-up rather than cache scripts the replay must
+                      // not use: `replayWorkflow` compiles the resolved code
+                      // itself when no compiled scripts are handed to it.
+                      if (
+                        readDynamicWorkflowMetadata(workflow.executionContext)
+                      ) {
+                        return;
+                      }
                       if (compiledWorkflowName !== workflow.workflowName) {
                         compiledWorkflowName = workflow.workflowName;
                         compiledWorkflowScripts = compileWorkflowBundle(
@@ -1667,104 +1818,6 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      // Resilient step dispatch: the producer parallelized the
-                      // `step_created` write with this queue publish, so the
-                      // step entity may not exist yet when this delivery
-                      // executes: the delivery beat the write, or the write
-                      // failed transiently and this message carries the only
-                      // copy of the input. Idempotently re-ensure the event
-                      // from the message's `stepInput`, keyed by the step's
-                      // correlation id, so the producer's write and this
-                      // re-ensure converge on exactly one event.
-                      //
-                      // Invoked from two places:
-                      //
-                      //  - IN-BAND (the load-bearing path): when the bare
-                      //    `step_started` below rejects with "step not found",
-                      //    the executor catch materializes the step and
-                      //    retries once, all within this delivery. This must
-                      //    not rely on delivery attempts: world-vercel's
-                      //    failure-retry path re-enqueues a FRESH message
-                      //    (attempt resets to 1), so an attempt-gated recovery
-                      //    is unreachable on the retry chain and the step
-                      //    would stall until the ORIGINAL message's
-                      //    ~300s visibility-timeout redelivery, measured
-                      //    exactly so in the durabench parallel sweeps before
-                      //    this path existed.
-                      //  - EAGERLY on a genuine redelivery (attempt > 1): a
-                      //    redelivered dispatch already had its create race
-                      //    resolved either way, so ensuring up front saves the
-                      //    failed-start round trip the in-band recovery would
-                      //    otherwise pay. On the legacy prologue it overlaps
-                      //    the run fetch (no wall-time cost); on the
-                      //    fetch-free (runContext) prologue it is the sole
-                      //    pre-step write and still the cheaper trade. First
-                      //    deliveries skip it: the producer's write almost
-                      //    always lands, and an eager ensure would burn a
-                      //    conditional write per step.
-                      const ensureStepFromMessage = async (): Promise<
-                        'ok' | 'gone'
-                      > => {
-                        if (!stepInput) return 'ok';
-                        try {
-                          await world.events.create(
-                            runId,
-                            {
-                              eventType: 'step_created',
-                              specVersion: SPEC_VERSION_CURRENT,
-                              correlationId: incomingStepId,
-                              eventData: {
-                                stepName: incomingStepName,
-                                workflowName,
-                                // Typed Uint8Array by StepDispatchInputSchema:
-                                // a non-binary (mangled) payload fails the
-                                // message parse above and never reaches this
-                                // write.
-                                input: stepInput.input,
-                              },
-                            },
-                            {
-                              requestId,
-                              // Marks this create as a dispatch re-ensure so
-                              // a guard-enforcing backend can refuse it when
-                              // the producer's write was 412-rejected (the
-                              // dispatch was revoked). Surfaces as
-                              // RunExpiredError → 'gone' below, acking the
-                              // message. Worlds without the guard ignore it.
-                              viaStepDispatch: true,
-                            }
-                          );
-                          // This delivery materialized the step, the
-                          // completion of the producer's recovery path.
-                          span?.setAttributes(
-                            Attribute.StepResilientDispatchMaterialized(true)
-                          );
-                          runtimeLogger.warn(
-                            'Materialized step_created from the queue message — the producer\u2019s direct write did not land',
-                            {
-                              workflowRunId: runId,
-                              stepId: incomingStepId,
-                              stepName: incomingStepName,
-                            }
-                          );
-                        } catch (err) {
-                          // The common case: the producer's write (or a
-                          // concurrent re-ensure) already landed.
-                          if (EntityConflictError.is(err)) return 'ok';
-                          // Nothing left to execute: the run went terminal
-                          // (matches the run-status check below), or a
-                          // guard-enforcing backend revoked this dispatch
-                          // (410 `step-dispatch-revoked`, the producer's
-                          // write was 412-rejected and the replay restarted
-                          // with a corrected schedule).
-                          if (RunExpiredError.is(err)) return 'gone';
-                          // Transient: rethrow so the queue redelivers and a
-                          // later attempt converges instead of executing (and
-                          // acking) a step that may not exist.
-                          throw err;
-                        }
-                        return 'ok';
-                      };
                       // Run identity for this execution. A message stamped
                       // with `runContext` (immutable run fields the producer
                       // held at dispatch time) skips the blocking `runs.get`
@@ -1796,40 +1849,11 @@ export function workflowEntrypoint(
                         )
                       );
                       if (runContext) {
-                        // The eager redelivery re-ensure has no run fetch to
-                        // overlap with on this path — it is kept because a
-                        // redelivered dispatch has already had its create race
-                        // resolved, so one conditional write here is cheaper
-                        // than letting the bare start fail and paying the
-                        // in-band recovery's extra start round trip.
-                        const ensureOutcome =
-                          stepInput && metadata.attempt > 1
-                            ? await ensureStepFromMessage()
-                            : ('ok' as const);
-                        if (ensureOutcome === 'gone') {
-                          runtimeLogger.debug(
-                            'Run already finished, skipping background step',
-                            { workflowRunId: runId }
-                          );
-                          return;
-                        }
                         runIdentity = runContext;
                       } else {
-                        const [fetched, ensureOutcome] = await Promise.all([
-                          world.runs.get(runId, {
-                            resolveData: 'none',
-                          }),
-                          stepInput && metadata.attempt > 1
-                            ? ensureStepFromMessage()
-                            : ('ok' as const),
-                        ]);
-                        if (ensureOutcome === 'gone') {
-                          runtimeLogger.debug(
-                            'Run already finished, skipping background step',
-                            { workflowRunId: runId }
-                          );
-                          return;
-                        }
+                        const fetched = await world.runs.get(runId, {
+                          resolveData: 'none',
+                        });
                         if (fetched.status !== 'running') {
                           runtimeLogger.debug(
                             'Run already finished, skipping background step',
@@ -1853,9 +1877,8 @@ export function workflowEntrypoint(
                       }
                       // Covers every queued step execution — first dispatch and
                       // redeliveries/retries alike. The re-route payload keeps
-                      // the message's stepInput/runContext so the target
-                      // deployment's consumer retains the resilient re-ensure
-                      // and the fetch-free prologue.
+                      // the message's runContext so the target deployment's
+                      // consumer retains the fetch-free prologue.
                       if (
                         (await guardDeployment(
                           {
@@ -1867,7 +1890,6 @@ export function workflowEntrypoint(
                             ...(await replayMessage()),
                             stepId: incomingStepId,
                             stepName: incomingStepName,
-                            ...(stepInput ? { stepInput } : {}),
                             ...(runContext ? { runContext } : {}),
                             // Keep the re-routed hop in the TTR decomposition.
                             ...(hookResumeTiming ? { hookResumeTiming } : {}),
@@ -1962,28 +1984,7 @@ export function workflowEntrypoint(
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
-                          async () => {
-                            try {
-                              return await executeQueuedStep();
-                            } catch (err) {
-                              // In-band resilient recovery: a missing step on
-                              // a stepInput-carrying message means this
-                              // delivery outran (or outlived a transient
-                              // failure of) the producer's parallel
-                              // step_created write. Materialize the event
-                              // from the payload and retry ONCE, within this
-                              // delivery. See ensureStepFromMessage for why
-                              // this cannot wait for a redelivery. A second
-                              // failure propagates as before.
-                              if (!stepInput || !isStepMissingError(err)) {
-                                throw err;
-                              }
-                              if ((await ensureStepFromMessage()) === 'gone') {
-                                return { type: 'gone' as const };
-                              }
-                              return await executeQueuedStep();
-                            }
-                          }
+                          executeQueuedStep
                         );
                       } finally {
                         replayBudget.resume();
@@ -2042,12 +2043,18 @@ export function workflowEntrypoint(
                         const loaded = await loadWorkflowRunEvents(runId);
                         eventLog = nextEventLogLoad(loaded);
 
-                        // Check for pending steps: any step_created without
-                        // a matching step_completed or step_failed.
+                        // Check for pending steps: any created step without
+                        // a matching step_completed or step_failed. A
+                        // `step_started` counts as the creation too: a World
+                        // may record an inline step's creation on its
+                        // `step_started` alone, with no `step_created`.
                         const stepCreatedIds = new Set<string | undefined>();
                         const stepTerminalIds = new Set<string | undefined>();
                         for (const e of loaded.events) {
-                          if (e.eventType === 'step_created') {
+                          if (
+                            e.eventType === 'step_created' ||
+                            e.eventType === 'step_started'
+                          ) {
                             stepCreatedIds.add(e.correlationId);
                           } else if (
                             e.eventType === 'step_completed' ||
@@ -2494,6 +2501,16 @@ export function workflowEntrypoint(
                               attributes: runInput.attributes,
                               allowReservedAttributes:
                                 runInput.allowReservedAttributes,
+                              // Resilient start: this event is what creates
+                              // the run when `run_created` never landed, so a
+                              // dynamic run's code has to come with it or the
+                              // run is created unable to replay.
+                              dynamicWorkflowCode: runInput.dynamicWorkflowCode,
+                              dynamicWorkflowCodeRef:
+                                runInput.dynamicWorkflowCodeRef,
+                              // Without the key, a run this event creates
+                              // could never receive sealed writes.
+                              encryptionPublicKey: runInput.encryptionPublicKey,
                             },
                           }
                         : {}),
@@ -2566,6 +2583,19 @@ export function workflowEntrypoint(
                         specVersion: runInput.specVersion,
                         executionContext: runInput.executionContext,
                         input: runInput.input,
+                        // A dynamic run's code rides the queue message for
+                        // exactly this: turbo synthesizes the run snapshot
+                        // instead of waiting for the `run_started` response,
+                        // and without the code there would be nothing to
+                        // execute on the first delivery. Absent when the
+                        // definition was too large to send inline, in which
+                        // case `resolveWorkflowCodeForRun` reads it back from
+                        // the run instead.
+                        ...(runInput.dynamicWorkflowCode
+                          ? {
+                              dynamicWorkflowCode: runInput.dynamicWorkflowCode,
+                            }
+                          : {}),
                         // Seed attributes from start() ride along in `runInput`
                         // (they live in `run_created`'s eventData, not separate
                         // `attr_set` events), so the synthesized snapshot carries
@@ -2896,6 +2926,55 @@ export function workflowEntrypoint(
                     } // end else (re-ensure needed)
                   }
 
+                  // The code this run replays. For every static run that is
+                  // the deployment's bundle, unchanged after one plaintext
+                  // property read. A dynamic run brings its own — resolved
+                  // once here, since the code is fixed for the run's lifetime
+                  // and each replay iteration below would otherwise redo the
+                  // decrypt.
+                  //
+                  // A refusal to execute stored code (opt-in off, a marker
+                  // that does not match the run, missing or undecodable code)
+                  // is a WorkflowRuntimeError and fails the run: every
+                  // redelivery would reach the same verdict.
+                  let resolvedWorkflowCode: ResolvedWorkflowCode;
+                  try {
+                    resolvedWorkflowCode = await resolveWorkflowCodeForRun(
+                      workflowCode,
+                      workflowRun,
+                      () => encryptionKey.value,
+                      world,
+                      awaitRunReady
+                    );
+                  } catch (err) {
+                    await awaitRunReady();
+                    if (!(await recordWorkflowSetupFailure(err))) {
+                      throw err;
+                    }
+                    return;
+                  }
+                  const effectiveWorkflowCode = resolvedWorkflowCode.code;
+                  const dynamicWorkflowMetadata =
+                    resolvedWorkflowCode.dynamicWorkflow;
+                  if (dynamicWorkflowMetadata) {
+                    span?.setAttributes({
+                      ...Attribute.WorkflowDynamic(true),
+                      ...Attribute.WorkflowDynamicSourceHash(
+                        dynamicWorkflowMetadata.sourceHash
+                      ),
+                    });
+                    runLogger.info('Executing stored dynamic workflow code', {
+                      sourceHash: dynamicWorkflowMetadata.sourceHash,
+                    });
+                  }
+                  const dynamicWorkflowScripts =
+                    dynamicWorkflowMetadata && !useQuickJSVm(workflowRun)
+                      ? compileDynamicWorkflowBundle(
+                          effectiveWorkflowCode,
+                          workflowRun.workflowName
+                        )
+                      : undefined;
+
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-
                   // replays. Invocation-scoped: dies with this delivery.
@@ -2921,7 +3000,7 @@ export function workflowEntrypoint(
 
                   // Steps THIS delivery has already published a
                   // step-execution message for, across its replay passes:
-                  // the suspension handler's resilient publishes
+                  // the suspension handler's batched fan-out publishes
                   // (`queuedStepCorrelationIds`) plus the dispatch pass's
                   // own immediate enqueues. A fan-out that runs some steps
                   // inline falls back into this loop once they finish,
@@ -3049,7 +3128,7 @@ export function workflowEntrypoint(
                           './runtime/quickjs-entrypoint.js'
                         );
                         const quickjsResult = await runWorkflowWithQuickJS({
-                          workflowCode,
+                          workflowCode: effectiveWorkflowCode,
                           workflowName,
                           workflowRun,
                           preloadedEvents:
@@ -3318,6 +3397,13 @@ export function workflowEntrypoint(
                             maxEventsLimit
                           );
                         }
+                        maybeWarnApproachingEventLimit({
+                          runId,
+                          workflowName,
+                          eventCount: workflowEventCount,
+                          limit: maxEventsLimit,
+                          isQuickJS: false,
+                        });
                       }
 
                       // Latency telemetry: judge TTFS eligibility against the
@@ -3388,17 +3474,25 @@ export function workflowEntrypoint(
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
                         const compiled = startWorkflowCompile(workflowRun);
+                        // Static bundles use the process-wide cache; dynamic
+                        // source is compiled once per invocation without
+                        // entering that shared cache.
                         assert(
-                          compiled,
+                          compiled || dynamicWorkflowScripts,
                           'Node workflow replay requires compiled scripts'
                         );
                         workflowResult = await replayWorkflow({
-                          workflowCode,
+                          workflowCode: effectiveWorkflowCode,
                           workflowRun,
                           events: eventLog.events,
                           encryptionKey: await encryptionKey.value,
                           replayPayloadCache,
-                          compiledWorkflowScripts: await compiled,
+                          ...((compiled ?? dynamicWorkflowScripts)
+                            ? {
+                                compiledWorkflowScripts: await (compiled ??
+                                  dynamicWorkflowScripts),
+                              }
+                            : {}),
                           // Turbo: the end-of-run drain inside workflow
                           // execution commits fire-and-forget `*_created`
                           // events before the terminal `awaitRunReady()` below.
@@ -3550,12 +3644,11 @@ export function workflowEntrypoint(
                             runReadyBarrier,
                             replayRecoveryReporter,
                             forceClaimVictimWakes,
-                            // Resilient step dispatch: lets eligible newly
-                            // created steps publish their step-execution
-                            // message (carrying `stepInput`) in parallel with
-                            // the step_created write. Steps queued there are
-                            // reported back in `queuedStepCorrelationIds` and
-                            // skipped by the dispatch pass below.
+                            // Lets the batched fan-out publish each eagerly
+                            // created step's execution message after its
+                            // chunk commits. Steps queued there are reported
+                            // back in `queuedStepCorrelationIds` and skipped
+                            // by the dispatch pass below.
                             stepDispatch: {
                               queueName: getWorkflowQueueName(
                                 workflowName,
@@ -3778,13 +3871,15 @@ export function workflowEntrypoint(
                          *
                          * The parked VM is one `await` away from consuming it,
                          * so resuming it over the carried-forward log costs
-                         * neither the queue hop nor the cold replay. Steps
-                         * stay queued either way: this invocation runs none of
-                         * them, so the continuation is not serialized behind a
-                         * step body — the property an awaiter emptying
-                         * `lazyInlineSteps` exists to protect, and which the
-                         * conflict path gets by returning before any inline
-                         * execution at all.
+                         * neither the queue hop nor the cold replay. No step
+                         * body runs before it either way, so the continuation
+                         * is never serialized behind one: the conflict path
+                         * returns before any inline execution at all, and the
+                         * awaited-creation path holds this suspension's
+                         * deferred `lazyInlineSteps` for the pass this
+                         * continuation drives. Steps the handler created
+                         * eagerly, beyond the inline cap, were dispatched
+                         * before this and race the continuation.
                          *
                          * The suspension's writes carried the log forward only
                          * if the hook create's delta accounted for all of
@@ -3798,16 +3893,40 @@ export function workflowEntrypoint(
                          *
                          * False when this invocation cannot get anywhere that
                          * way — no session to resume (retention off, or a
-                         * boundary the predicate refused), or every hook here
+                         * boundary the predicate refused) and no
+                         * `allowColdReplay` from the caller, or every hook here
                          * already had its continuation and still wants one, so
                          * the pass ran over a log that did not hold the event
                          * and repeating it would spin. The caller re-invokes.
                          */
                         const continueOverHookWrite = (
                           hookIds: readonly string[],
-                          settles: 'hook_conflict' | 'hook_created'
+                          settles: 'hook_conflict' | 'hook_created',
+                          options?: {
+                            /**
+                             * Accept a cold replay when there is no session to
+                             * resume, instead of refusing the continuation.
+                             *
+                             * Passed only when something this invocation would
+                             * otherwise do next must not come first — an
+                             * awaited creation holding deferred step bodies
+                             * back, one of which may be waiting on work the
+                             * settled awaiter starts. A cold replay over the
+                             * reloaded log advances the workflow just as well,
+                             * for the cost of the replay this boundary used to
+                             * pay in the next delivery anyway. Callers with
+                             * nothing to protect (a conflict, an awaiter whose
+                             * suspension scheduled no inline work) keep
+                             * refusing, so the kill switch hands those back to
+                             * the queue exactly as before.
+                             */
+                            allowColdReplay?: boolean;
+                          }
                         ): boolean => {
-                          if (!retainedSession) return false;
+                          const coldReplay =
+                            !retainedSession &&
+                            options?.allowColdReplay === true;
+                          if (!retainedSession && !coldReplay) return false;
                           const fresh = hookIds.filter(
                             (id) => !continuedHookIds.has(id)
                           );
@@ -3816,6 +3935,7 @@ export function workflowEntrypoint(
                             continuedHookIds.add(id);
                           }
                           const resumeWithoutRead =
+                            !coldReplay &&
                             suspensionResult.eventLogCarriedForward &&
                             !openHookWait.value.openWait;
                           if (!resumeWithoutRead) {
@@ -3835,6 +3955,7 @@ export function workflowEntrypoint(
                               carriedForward:
                                 suspensionResult.eventLogCarriedForward,
                               readBeforeResume: !resumeWithoutRead,
+                              coldReplay,
                             }
                           );
                           span?.setAttributes({
@@ -4037,20 +4158,27 @@ export function workflowEntrypoint(
                         // step_created (in `createdStepCorrelationIds`) and is
                         // queued below.
                         //
-                        // The suspension handler only designates
-                        // `lazyInlineSteps` when no `hook.getConflict()` awaiter
-                        // is present. That awaiter case must execute nothing
-                        // inline: an inline `await executeStep(...)` blocks this
-                        // handler for the full step duration, so the awaiter's
-                        // continuation (which only advances on the next pass)
-                        // would be serialized behind the step — defeating work
-                        // the workflow expressed as parallel (e.g.
-                        // `hook.getConflict().then(() => stepB())` racing `await
-                        // stepA()`). In that case `lazyInlineSteps` is empty and
-                        // every step is queued, so the continuation below —
-                        // which resumes the parked VM over the just-committed
-                        // hook_created — races those queued steps rather than
-                        // waiting on any of them.
+                        // A `hook.getConflict()` awaiter does not change which
+                        // steps are deferred, only when they run: an inline
+                        // `await executeStep(...)` blocks this handler for the
+                        // full step duration, so an awaiter settled after the
+                        // batch would be settled behind a step body — and a
+                        // branch waiting on that awaiter cannot start the work
+                        // the body may itself be waiting for. The hook-write
+                        // continuation below therefore runs FIRST and holds
+                        // this batch back, which is free precisely because a
+                        // deferred step has written nothing to answer for.
+                        // `hook.getConflict().then(() => stepB())` racing
+                        // `await stepA()` then reaches the batch with both
+                        // steps pending and runs them together.
+                        //
+                        // One batch, not an unbounded fork: the batch awaits
+                        // every body, so a THIRD step the branch starts after
+                        // stepB waits for stepA as well — the same shape plain
+                        // `const p = a(); await b(); await c();` has, and what
+                        // the QuickJS engine does here too. Holding bounds the
+                        // branch's reach to one batch; it does not make the
+                        // branch independent of the invocation.
                         const lazyInlineSteps =
                           suspensionResult.lazyInlineSteps;
                         const inlineCorrelationIds = new Set(
@@ -4185,9 +4313,7 @@ export function workflowEntrypoint(
                             continue;
                           }
                           // Already published by the suspension handler's
-                          // resilient dispatch THIS pass (create + queue in
-                          // parallel, message carrying `stepInput`). A
-                          // re-publish here would dedupe on the idempotency
+                          // batched fan-out THIS pass. A re-publish here would dedupe on the idempotency
                           // key anyway, but skip the wasted round-trip.
                           // Ownership never applies to these: they were
                           // created this pass, so no step_started stamp can
@@ -4300,7 +4426,7 @@ export function workflowEntrypoint(
                                 // Step-identity-scoped: dedupes against every
                                 // other dispatch of THIS step (concurrent
                                 // handlers, crash-recovery re-dispatch, the
-                                // suspension handler's resilient publish)
+                                // suspension handler's batched publish)
                                 // without absorbing a dispatch of a different
                                 // step under a reassigned correlation id.
                                 // See stepDispatchIdempotencyKey.
@@ -4457,6 +4583,96 @@ export function workflowEntrypoint(
                           );
                         }
 
+                        /**
+                         * A `hook.getConflict()` awaiter needs the workflow
+                         * to continue: the `hook_created` this suspension
+                         * just committed is what resolves it, and nothing
+                         * else will, so without a continuation the run would
+                         * sit idle until some unrelated message woke it.
+                         *
+                         * The continuation runs BEFORE this invocation's
+                         * inline batch, so the awaiter settles off the write
+                         * rather than behind a step body. The handler deferred
+                         * those steps' creates (`lazyInlineSteps`) precisely so
+                         * they can be held for it: nothing is written for a
+                         * deferred step, so the pass that continues leaves
+                         * nothing dangling, and the pass after it re-raises
+                         * them from the workflow's own queue and runs them
+                         * inline, joined by whatever the settled awaiter
+                         * started in the meantime. Eagerly creating and
+                         * queueing them instead, which is what an awaiter used
+                         * to force, bought the same ordering for a publish, a
+                         * second invocation and a replay.
+                         *
+                         * What the hold buys is that the branch off the awaiter
+                         * reaches the SAME batch as the step it was started
+                         * beside, not that it becomes independent of this
+                         * invocation: the batch awaits every body, so work the
+                         * branch starts after its first step waits for the held
+                         * step too. That is the inline model everywhere else
+                         * (and what QuickJS does here), where queueing the held
+                         * step put the branch in a different invocation
+                         * entirely. See the comment above `lazyInlineSteps`.
+                         *
+                         * The hold ends when the registrations do, and is
+                         * bounded by nothing else: `continuedHookIds` grants
+                         * one continuation per awaited hook, so another pass
+                         * may only hold again by presenting a hook the
+                         * workflow has newly created and awaited. Each of
+                         * those costs the workflow its own hook write anyway,
+                         * which is time it asked to spend; what matters more
+                         * is that a held body never runs while a registration
+                         * the workflow is awaiting is still unsettled, because
+                         * that body may be waiting on work the settled
+                         * awaiter's branch starts. Once the continuation is
+                         * refused — a repeat for the same hook, which cannot
+                         * get anywhere — the bodies run here and the awaiter
+                         * settles on the pass after them, still in this
+                         * invocation.
+                         *
+                         * Owned-recovery steps ride along with the deferred
+                         * batch. A pass carrying only recovery steps has
+                         * nothing deferred and runs them, as it always has;
+                         * one carrying both delays them by the continuation,
+                         * which a step whose previous delivery already died
+                         * mid-body can afford.
+                         */
+                        if (suspensionResult.hasAwaitedHookCreation) {
+                          // Join before continuing (or falling through to a
+                          // batch whose own joins come later), so every create
+                          // and publish this pass launched is durable before
+                          // the run moves on — the contract the inline and
+                          // no-inline paths below both keep.
+                          await Promise.all([
+                            dispatchesSettled,
+                            suspensionResult.deferredBatchWork,
+                          ]);
+                          if (
+                            continueOverHookWrite(
+                              suspensionResult.awaitedHookCorrelationIds,
+                              'hook_created',
+                              // With bodies to hold back, a cold replay beats
+                              // running them first even with no session to
+                              // resume: one of them may be waiting on work the
+                              // settled awaiter starts, which running it first
+                              // would stall until this invocation's inline
+                              // budget ran out. See `allowColdReplay`.
+                              { allowColdReplay: lazyInlineSteps.length > 0 }
+                            )
+                          ) {
+                            continue;
+                          }
+                          if (inlineExecutions.length === 0) {
+                            // Nothing to run here and no continuation to be
+                            // had: hand the run back for a fresh replay over
+                            // the committed hook_created.
+                            return await reinvoke(0);
+                          }
+                          // Fall through to the inline batch below, which
+                          // reloads the log when its bodies finish; that pass
+                          // is what settles the awaiter.
+                        }
+
                         // Nothing to execute inline: everything has been
                         // queued (or no work needs scheduling). Exit and let
                         // the queue drive subsequent replays.
@@ -4469,26 +4685,6 @@ export function workflowEntrypoint(
                             dispatchesSettled,
                             suspensionResult.deferredBatchWork,
                           ]);
-                          // A `hook.getConflict()` awaiter needs the workflow
-                          // to continue: the `hook_created` this suspension
-                          // just committed is what resolves it, and nothing
-                          // else will — no step ran here, and every step this
-                          // suspension scheduled went to the queue — so
-                          // without a continuation the run would sit idle
-                          // until some unrelated message woke it.
-                          if (suspensionResult.hasAwaitedHookCreation) {
-                            if (
-                              continueOverHookWrite(
-                                suspensionResult.awaitedHookCorrelationIds,
-                                'hook_created'
-                              )
-                            ) {
-                              continue;
-                            }
-                            // Hand the run back for a fresh replay over the
-                            // committed hook_created.
-                            return await reinvoke(0);
-                          }
                           if (
                             activity &&
                             Date.now() - invocationStartTime <
@@ -4623,6 +4819,71 @@ export function workflowEntrypoint(
                           });
                         }
 
+                        // Whether any event an out-of-band writer could append
+                        // now is able to change the decisions this batch leads
+                        // to. Nothing branches on it yet: it is the gate a
+                        // run-ahead of the inline batch must consult before
+                        // continuing past this boundary without the batch's
+                        // terminal writes, and the module documents the de-opt
+                        // and pipeline-depth rules that gate implies.
+                        // `undefined` when the batch runs no step inline:
+                        // only those boundaries can be pipelined.
+                        const outOfBandObservation:
+                          | OutOfBandObservation
+                          | undefined =
+                          lazyInlineSteps.length > 0
+                            ? observeOutOfBandWriters({
+                                items: err.items,
+                                observedHookIds: err.observedHookIds,
+                                selfExecutedStepIds: new Set([
+                                  ...inlineCorrelationIds,
+                                  ...ownedRecoverySteps.map(
+                                    (s) => s.correlationId
+                                  ),
+                                ]),
+                                waitDue: waitDueThisInvocation,
+                              })
+                            : undefined;
+                        if (outOfBandObservation) {
+                          if (outOfBandObservation.inert) {
+                            outOfBandBoundaries.inert++;
+                          } else {
+                            if (outOfBandObservation.observedHookCount > 0) {
+                              outOfBandBoundaries.observedHook++;
+                            }
+                            // Kept apart from observed hooks: a suspension
+                            // without awaiter tracking (QuickJS) blocks every
+                            // boundary with an open hook, which would
+                            // otherwise read as workflow code awaiting it.
+                            if (outOfBandObservation.unknownHookCount > 0) {
+                              outOfBandBoundaries.unknownHook++;
+                            }
+                            if (outOfBandObservation.abortSignalHookCount > 0) {
+                              outOfBandBoundaries.abortSignal++;
+                            }
+                            if (outOfBandObservation.externalStepCount > 0) {
+                              outOfBandBoundaries.externalStep++;
+                            }
+                            if (outOfBandObservation.waitDue) {
+                              outOfBandBoundaries.waitDue++;
+                            }
+                          }
+                          span?.setAttributes({
+                            'workflow.out_of_band.inert_boundaries':
+                              outOfBandBoundaries.inert,
+                            'workflow.out_of_band.observed_hook_boundaries':
+                              outOfBandBoundaries.observedHook,
+                            'workflow.out_of_band.unknown_hook_boundaries':
+                              outOfBandBoundaries.unknownHook,
+                            'workflow.out_of_band.abort_signal_boundaries':
+                              outOfBandBoundaries.abortSignal,
+                            'workflow.out_of_band.external_step_boundaries':
+                              outOfBandBoundaries.externalStep,
+                            'workflow.out_of_band.wait_due_boundaries':
+                              outOfBandBoundaries.waitDue,
+                          });
+                        }
+
                         // Stale-sensitive batch: a hook is open in the run (or
                         // was created by this suspension, so its hook_received
                         // can land any moment), so an out-of-band event can make
@@ -4653,11 +4914,12 @@ export function workflowEntrypoint(
                         // forced optimistic start safe no longer holds: turbo
                         // exits and the steps take the normal (env-gated)
                         // await-then-run path. The hook-conflict case already
-                        // returned early above, the attr case continued into a
-                        // fresh replay (so a batch-scheduling suspension never
-                        // carries attr events), and the awaited-hook case
-                        // emptied lazyInlineSteps; the checks below are
-                        // defensive.
+                        // returned early above and the attr case continued into
+                        // a fresh replay (so a batch-scheduling suspension never
+                        // carries attr events), making those two checks
+                        // defensive; `hasAwaitedHookCreation` is not, since an
+                        // awaiter whose continuation was refused falls through
+                        // to this batch with the flag still set.
                         //
                         // The `suspensionResult.*` flags only reflect what THIS
                         // batch created, so they do not catch a hook/wait opened
@@ -4865,21 +5127,27 @@ export function workflowEntrypoint(
                             // these bodies until they settle. See
                             // assertNoInFlightOwnedSteps.
                             inFlightOwnedSteps.add(s.correlationId);
-                            // Lazy and pre-claimed steps are brand-new
-                            // (their create-claim is the exactly-once gate),
-                            // but an owned-recovery step already exists and
-                            // its delayed backstop message may fire mid-body
-                            // in this same process, so route those through
-                            // the in-process single-flight.
-                            const executed =
-                              s.lazyStepInput === undefined &&
-                              s.preclaimedStart === undefined
-                                ? runStepSingleFlight(
-                                    runId,
-                                    s.correlationId,
-                                    run
-                                  )
-                                : run();
+                            // Every inline body runs through the in-process
+                            // single-flight. An owned-recovery step's delayed
+                            // backstop may fire mid-body in this process, and
+                            // a lazy or pre-claimed step's create-claim is not
+                            // an exactly-once gate for side effects either:
+                            // the optimistic start runs the body before the
+                            // claim settles, so a redelivery of this same
+                            // message (a transport timeout re-entering turbo
+                            // at attempt 1, workflow#3909) would run it again
+                            // concurrently. Fresh claims overlap during
+                            // ordinary wake replays, so they log at debug,
+                            // matching quickjs-entrypoint.
+                            const isFreshClaim =
+                              s.lazyStepInput !== undefined ||
+                              s.preclaimedStart !== undefined;
+                            const executed = runStepSingleFlight(
+                              runId,
+                              s.correlationId,
+                              run,
+                              isFreshClaim ? 'debug' : 'warn'
+                            );
                             return executed.finally(() =>
                               inFlightOwnedSteps.delete(s.correlationId)
                             );
@@ -5327,7 +5595,7 @@ export function workflowEntrypoint(
                           errorStack = remapErrorStack(
                             errorStack,
                             filename,
-                            workflowCode
+                            effectiveWorkflowCode
                           );
                         }
 
@@ -5370,7 +5638,7 @@ export function workflowEntrypoint(
                         // Error` is `false` for VM-thrown errors. The V8
                         // type tag works across realms.
                         if (types.isNativeError(terminalError) && errorStack) {
-                          (terminalError as Error).stack = errorStack;
+                          setErrorStack(terminalError, errorStack);
                         }
 
                         // Fail the workflow run via event (event-sourced).

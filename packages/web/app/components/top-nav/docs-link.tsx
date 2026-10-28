@@ -1,9 +1,9 @@
+import { Button } from '@workflow/web-shared';
 import { ArrowUpRight } from 'lucide-react';
-import { Button } from '~/components/ui/button';
 
 export function DocsLink() {
   return (
-    <Button asChild variant="outline" size="sm">
+    <Button asChild variant="secondary" size="small">
       <a
         href="https://workflow-sdk.dev/docs/observability"
         target="_blank"

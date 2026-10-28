@@ -331,6 +331,22 @@ function deadlineInterceptor(
 }
 
 /**
+ * Per-phase deadlines for the events agents: time to response headers, and the
+ * longest silence allowed between body chunks. On the HTTP/2 path undici arms
+ * `bodyTimeout` as the stream's idle timeout (`client-h2.js`
+ * `stream.setTimeout`), so this is also how long a black-holed stream is waited
+ * on before it fails with UND_ERR_INFO "stream timeout".
+ *
+ * Left alone these inherit undici's 300s defaults, which outlast the runtime's
+ * 240s replay budget: one silent stream then costs the whole delivery, and the
+ * failure only surfaces after the replay has already been abandoned. 60s
+ * matches `REQUEST_TIMEOUT_MS`, the whole-request deadline every v3 request
+ * already runs under. It bounds silence, not total duration, so a large
+ * event-log page that keeps streaming is unaffected.
+ */
+export const EVENTS_REQUEST_TIMEOUT_MS = 60_000;
+
+/**
  * Options for the events API undici Agent. Exported so tests can assert that
  * HTTP/2 stays enabled *and* that it is actually configured to multiplex.
  *
@@ -363,6 +379,8 @@ function deadlineInterceptor(
  */
 export const EVENTS_AGENT_OPTIONS = {
   ...BASE_AGENT_OPTIONS,
+  headersTimeout: EVENTS_REQUEST_TIMEOUT_MS,
+  bodyTimeout: EVENTS_REQUEST_TIMEOUT_MS,
   allowH2: true,
   pipelining: H2_MAX_IN_FLIGHT_STREAMS,
   initialWindowSize: H2_STREAM_WINDOW_BYTES,
@@ -387,6 +405,8 @@ export const EVENTS_AGENT_OPTIONS = {
  */
 export const EVENTS_AGENT_OPTIONS_NO_H2 = {
   ...BASE_AGENT_OPTIONS,
+  headersTimeout: EVENTS_REQUEST_TIMEOUT_MS,
+  bodyTimeout: EVENTS_REQUEST_TIMEOUT_MS,
   allowH2: false,
   pipelining: 1,
 } as const;
@@ -399,11 +419,10 @@ export const EVENTS_AGENT_OPTIONS_NO_H2 = {
  * connection.
  *
  * Stream appends are not idempotent. Multiplexing N appends onto one connection
- * makes a single RST_STREAM / GOAWAY / socket reset fail all N at once, and
- * STREAM_RETRY_OPTIONS retries PUT on exactly those transient `errorCodes`, so
- * a connection-level blip would resend chunks the server may already have
- * applied and duplicate them. Serializing keeps the existing
- * one-request-per-connection failure isolation that policy was written against.
+ * makes a single connection failure leave all N outcomes uncertain. Keep the
+ * existing one-request-per-connection failure isolation. Appends retry only
+ * confirmed 429s and known pre-connect failures; uncertain outcomes are not
+ * resent.
  *
  * Note this is currently belt-and-braces: undici's H2 `busy()` check already
  * serializes non-idempotent requests (`client-h2.js`: `if
@@ -433,27 +452,49 @@ const RETRY_AGENT_OPTIONS: RetryHandler.RetryOptions = {
 };
 
 /**
- * Retry options for stream writes (PUT). Stream appends are NOT idempotent, so
- * we must never retry a write the server may already have applied. We therefore
- * narrow undici's defaults to only the conditions that guarantee the request was
- * rejected *before* the chunk was persisted:
- *  - transient connection errors (undici's default `errorCodes`: ECONNRESET,
- *    ECONNREFUSED, ENOTFOUND, …): the request never reached, or was not
- *    accepted by, the server, and
- *  - HTTP 429: the server rejected the request outright (rate limited), so no
- *    chunk was written; honoring Retry-After backs off cleanly.
+ * Retry options for the events agents: RETRY_AGENT_OPTIONS, plus a retry when
+ * the peer resets a single HTTP/2 stream.
  *
- * Crucially, 5xx is excluded from the default `[500, 502, 503, 504, 429]`: a
- * 5xx can mean the chunk *was* written but the response failed, and a retry
- * would duplicate it. Other 4xx are client errors a retry can't fix. `methods`
- * is pinned to PUT (the only stream-write verb) for clarity; `errorCodes` is
- * left at undici's transient-network-error defaults. Exported so a test can
- * assert that 5xx never sneaks back into the retryable set.
+ * The Vercel edge resets individual streams on a busy multiplexed connection
+ * with RST_STREAM ENHANCE_YOUR_CALM or INTERNAL_ERROR, which Node surfaces as
+ * ERR_HTTP2_STREAM_ERROR. undici's default `errorCodes` do not include it, so
+ * without this a reset event-log read fails the whole delivery instead of being
+ * re-sent. The rest of undici's defaults are kept as-is.
+ *
+ * Only idempotent methods are affected: `methods` keeps undici's default, which
+ * excludes POST, so an event write that may already have committed is never
+ * replayed (the multiplexing interceptor's `idempotent` flag feeds only the
+ * `busy()` gates, not retries; see h2MultiplexInterceptor).
+ */
+export const EVENTS_RETRY_AGENT_OPTIONS: RetryHandler.RetryOptions = {
+  ...RETRY_AGENT_OPTIONS,
+  errorCodes: [
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'ENETDOWN',
+    'ENETUNREACH',
+    'EHOSTDOWN',
+    'EHOSTUNREACH',
+    'EPIPE',
+    'UND_ERR_SOCKET',
+    'ERR_HTTP2_STREAM_ERROR',
+  ],
+};
+
+/**
+ * Disable dispatcher-level append retries. Fetch supplies a one-shot reader,
+ * so retrying here would reuse a consumed body. instrumentedFetch owns the
+ * append retry loop and constructs each request from preserved bytes. Only
+ * confirmed 429s and known pre-connect failures can safely resend an append.
+ * maxRetries also excludes code-less errors, which errorCodes alone cannot.
+ * Empty statusCodes lets actual HTTP responses reach the fetch-level policy.
  */
 export const STREAM_RETRY_OPTIONS: RetryHandler.RetryOptions = {
-  retryAfter: true,
+  maxRetries: 0,
   methods: ['PUT'],
-  statusCodes: [429],
+  statusCodes: [],
+  errorCodes: [],
 };
 
 /**
@@ -535,52 +576,80 @@ function contentLength(headers: unknown): number {
  *    async iterable on the way down. Draining it back into a Buffer restores the
  *    buffered-body shape undici needs, at the cost of one copy of an
  *    already-in-memory payload. Bodies without a usable `content-length`, or
- *    above H2_REBUFFER_MAX_BYTES, are passed through untouched (and stay
- *    serialized) rather than buffered blind.
+ *    above H2_REBUFFER_MAX_BYTES, are not buffered blind; see below.
  *
  * Without both of these, `pipelining` alone leaves the events agent at one
  * in-flight request per connection.
+ *
+ * A streamed body that is NOT re-buffered must not reach the H2 connection at
+ * all. `busy()` holds it until the connection has zero in-flight streams, and
+ * undici's `_resume` (`client.js`) stops dispatching at the first busy request,
+ * so everything queued behind it waits too. On an instance running many
+ * workflows at once the shared connection never drains, and the request (plus
+ * the queue behind it) hangs with no timer armed, since `headersTimeout` only
+ * starts once a request reaches a socket. In production this was the first POST
+ * of a delivery carrying a multi-MiB run input (`run_started`) or event batch,
+ * which never left the process and pinned the invocation until the replay
+ * budget or `maxDuration` ran out. Before undici 7.30.0 a failed stream also
+ * left a phantom running slot behind (nodejs/undici#5410, #5569), so one peer
+ * reset shut the gate on that connection for good; the upgrade fixes the count,
+ * but a busy connection still starves the request. When `fallback` is given, such requests are
+ * sent over it instead; createEventsDispatcher passes a plain HTTP/1.1 agent,
+ * where a streamed body occupies one connection of its own.
  */
-export function h2MultiplexInterceptor(
-  dispatch: Dispatcher['dispatch']
-): Dispatcher['dispatch'] {
-  return (opts, handler) => {
-    const body = opts.body;
-    const isAsyncIterable =
-      !!body &&
-      typeof body !== 'string' &&
-      !Buffer.isBuffer(body) &&
-      typeof (body as unknown as Record<symbol, unknown>)[
-        Symbol.asyncIterator
-      ] === 'function';
-    const length = contentLength(opts.headers);
+export function createH2MultiplexInterceptor(
+  fallback?: Pick<Dispatcher, 'dispatch'>
+) {
+  return (dispatch: Dispatcher['dispatch']): Dispatcher['dispatch'] =>
+    (opts, handler) => {
+      const body = opts.body;
+      const isAsyncIterable =
+        !!body &&
+        typeof body !== 'string' &&
+        !Buffer.isBuffer(body) &&
+        typeof (body as unknown as Record<symbol, unknown>)[
+          Symbol.asyncIterator
+        ] === 'function';
+      const length = contentLength(opts.headers);
 
-    if (!isAsyncIterable || !(length >= 0) || length > H2_REBUFFER_MAX_BYTES) {
-      return dispatch({ ...opts, idempotent: true }, handler);
-    }
-
-    // Drain asynchronously, then dispatch. Returning `true` reports "no
-    // backpressure", which is accurate: the request is accepted, and the pool
-    // gate we are lifting is exactly the one that would have reported drain.
-    void (async () => {
-      try {
-        const chunks: Buffer[] = [];
-        for await (const chunk of body as AsyncIterable<Uint8Array>) {
-          chunks.push(Buffer.from(chunk));
-        }
-        dispatch(
-          { ...opts, body: Buffer.concat(chunks), idempotent: true },
-          handler
-        );
-      } catch (error) {
-        // Surface a drain failure the way undici would have surfaced a body
-        // error, so the awaiting fetch() rejects instead of hanging.
-        handler.onError?.(error as Error);
+      if (!isAsyncIterable) {
+        return dispatch({ ...opts, idempotent: true }, handler);
       }
-    })();
-    return true;
-  };
+      if (!(length >= 0) || length > H2_REBUFFER_MAX_BYTES) {
+        return fallback
+          ? fallback.dispatch(opts, handler)
+          : dispatch({ ...opts, idempotent: true }, handler);
+      }
+
+      // Drain asynchronously, then dispatch. Returning `true` reports "no
+      // backpressure", which is accurate: the request is accepted, and the pool
+      // gate we are lifting is exactly the one that would have reported drain.
+      void (async () => {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of body as AsyncIterable<Uint8Array>) {
+            chunks.push(Buffer.from(chunk));
+          }
+          dispatch(
+            { ...opts, body: Buffer.concat(chunks), idempotent: true },
+            handler
+          );
+        } catch (error) {
+          // Surface a drain failure the way undici would have surfaced a body
+          // error, so the awaiting fetch() rejects instead of hanging.
+          handler.onError?.(error as Error);
+        }
+      })();
+      return true;
+    };
 }
+
+/**
+ * The multiplexing interceptor with no fallback: a streamed body it does not
+ * re-buffer is passed through to the H2 connection. Kept for callers composing
+ * their own dispatcher; createEventsDispatcher supplies an H1 fallback.
+ */
+export const h2MultiplexInterceptor = createH2MultiplexInterceptor();
 
 /**
  * Consecutive transport failures on the *same* shared dispatcher before it is
@@ -897,11 +966,9 @@ export function getEventsDispatcher(config?: APIConfig): unknown {
 }
 
 /**
- * Resolves the dispatcher for stream writes (the PUT write/close path): the
- * caller's override, or the shared HTTP/2 stream agent. See
- * getDefaultStreamDispatcher (and STREAM_RETRY_OPTIONS) for its deliberately
- * narrowed retry policy (transient connection errors + HTTP 429 only, never
- * 5xx), chosen because stream appends are not idempotent.
+ * Resolves the dispatcher for stream appends: the caller's override, or the
+ * shared HTTP/2 stream agent. The default has no dispatcher-level retries;
+ * instrumentedFetch owns fresh-request append retries instead.
  */
 export function getStreamDispatcher(config?: APIConfig): unknown {
   return resolveDispatcher(config, getDefaultStreamDispatcher);
@@ -940,11 +1007,17 @@ export function createEventsDispatcher(
       ...(h2 ? EVENTS_AGENT_OPTIONS : EVENTS_AGENT_OPTIONS_NO_H2),
       ...agentOverrides,
     }),
-    RETRY_AGENT_OPTIONS
+    EVENTS_RETRY_AGENT_OPTIONS
   );
-  if (!h2) {
+  if (!h2 || !supportsCompose(agent)) {
     return agent;
   }
+  // HTTP/1.1 agent for the bodies the interceptor will not re-buffer; see
+  // createH2MultiplexInterceptor for why they cannot share the H2 connection.
+  const streamedBodyAgent = new RetryAgent(
+    new Agent({ ...EVENTS_AGENT_OPTIONS_NO_H2, ...agentOverrides }),
+    EVENTS_RETRY_AGENT_OPTIONS
+  );
   // The interceptor wraps the RetryAgent (rather than the Agent inside it) so
   // that retries re-send the *drained* body. RetryHandler captures its own copy
   // of the request body up front: `wrapRequestBody` (undici core/util.js) hands
@@ -954,8 +1027,33 @@ export function createEventsDispatcher(
   // outside, RetryHandler captures the Buffer and replays it verbatim.
   return withBoundLifecycle(
     agent,
-    agent.compose(h2MultiplexInterceptor) as unknown as RetryAgent
+    agent.compose(
+      createH2MultiplexInterceptor(streamedBodyAgent)
+    ) as unknown as RetryAgent,
+    streamedBodyAgent
   );
+}
+
+/**
+ * Whether `dispatcher` can take interceptors through `Dispatcher.compose()`.
+ *
+ * False under Bun: `import { Agent } from 'undici'` resolves to Bun's built-in
+ * `undici` module even when the package is installed, and its dispatcher
+ * classes are stubs with no `compose` or `dispatch`. Bun's `fetch` also ignores
+ * the `dispatcher` option, so there is nothing for an interceptor to wrap;
+ * callers skip composing and return the plain dispatcher.
+ *
+ * Under Bun every dispatcher setting in this file is therefore inert, not just
+ * the interceptors: `connections`, `pipelining`, `allowH2`, `keepAliveTimeout`,
+ * `headersTimeout`, `bodyTimeout`, the retry options, and the queue path's
+ * deadline (deadlineInterceptor). A hung queue request is bounded only by Bun's
+ * own `fetch` default (300s, the length of the message lease), so the
+ * visibility-renewal loop gets no retry window. The runtime-neutral fix is an
+ * `AbortSignal` on the `fetch` call inside `@vercel/queue`, which Bun honors;
+ * that needs a change there and is out of scope here.
+ */
+export function supportsCompose(dispatcher: Agent | RetryAgent): boolean {
+  return typeof (dispatcher as Partial<Agent>).compose === 'function';
 }
 
 /**
@@ -967,16 +1065,31 @@ export function createEventsDispatcher(
  * `TypeError: Cannot read private member #agent from an object whose class did
  * not declare it`. Binding the lifecycle methods to the real instance keeps the
  * composed dispatcher disposable.
+ *
+ * `companion` is a second dispatcher the composed one routes some requests to
+ * (the events path's HTTP/1.1 agent for streamed bodies). It is closed and
+ * destroyed together with `agent`, so retiring the dispatcher (see
+ * createDispatcherRecycler) releases both pools.
  */
 function withBoundLifecycle(
   agent: RetryAgent,
-  composed: RetryAgent
+  composed: RetryAgent,
+  companion?: RetryAgent
 ): RetryAgent {
   return new Proxy(composed, {
-    get: (target, key) =>
-      key === 'close' || key === 'destroy'
-        ? (agent[key] as (...args: unknown[]) => unknown).bind(agent)
-        : target[key as keyof RetryAgent],
+    get: (target, key) => {
+      if (key !== 'close' && key !== 'destroy') {
+        return target[key as keyof RetryAgent];
+      }
+      const own = (agent[key] as (...args: unknown[]) => unknown).bind(agent);
+      if (!companion) return own;
+      const other = (companion[key] as (...args: unknown[]) => unknown).bind(
+        companion
+      );
+      return async (...args: unknown[]) => {
+        await Promise.all([own(...args), other(...args)]);
+      };
+    },
   });
 }
 
@@ -1014,10 +1127,11 @@ export function createStreamDispatcher(
  * Exported so a test can exercise this exact wiring rather than the singleton.
  */
 export function createQueueDispatcher(): RetryAgent {
+  const agent = new Agent(getQueueAgentOptions());
   return new RetryAgent(
-    new Agent(getQueueAgentOptions()).compose(
-      deadlineInterceptor(getQueueRequestTimeoutMs())
-    ),
+    supportsCompose(agent)
+      ? agent.compose(deadlineInterceptor(getQueueRequestTimeoutMs()))
+      : agent,
     RETRY_AGENT_OPTIONS
   );
 }
@@ -1052,18 +1166,16 @@ function getDefaultDispatcher(): RetryAgent {
 }
 
 /**
- * Returns the shared HTTP/2 RetryAgent used for stream writes (PUT write/close).
+ * Returns the shared HTTP/2 dispatcher used for stream appends.
  *
- * Stream writes append chunks and are NOT idempotent, so this dispatcher uses a
- * deliberately narrowed retry policy (see STREAM_RETRY_OPTIONS): it retries only
- * on transient connection errors and HTTP 429 (both of which guarantee the
- * chunk was not persisted) and never on 5xx or other 4xx, where a retry could
- * duplicate an already-applied write. It opts into H2 (the write/close requests
- * send a fully-buffered body, or none, so they don't hit the duplex-streaming H2
- * issues that keep the long-lived live-read on plain `fetch`) via
- * STREAM_AGENT_OPTIONS, which, unlike the events agent, keeps multiplexing off
- * so one connection-level failure cannot fail (and thus retry) several appends
- * at once.
+ * Its RetryAgent wrapper is retained for the shared write/close factory, but
+ * append retries are disabled here (see STREAM_RETRY_OPTIONS). The streamer
+ * opts into fresh-request retries above fetch only for this default dispatcher.
+ * It opts into H2 (the write requests send a fully-buffered body, so they
+ * don't hit the duplex-streaming H2 issues that keep the long-lived live-read
+ * on plain `fetch`) via STREAM_AGENT_OPTIONS, which, unlike the events agent,
+ * keeps multiplexing off so a connection-level failure cannot leave several
+ * append outcomes uncertain at once.
  */
 function getDefaultStreamDispatcher(): RetryAgent {
   pools.streamDispatcher ??= createStreamDispatcher(STREAM_RETRY_OPTIONS);

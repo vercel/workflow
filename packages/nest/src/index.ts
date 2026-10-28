@@ -3,6 +3,10 @@
 // can be bundled into a serverless function without dragging in the compiler.
 // The builders are available via the `workflow/nest/builder` subpath.
 
+export {
+  type BodyParserBypass,
+  bypassWorkflowBodyParsers,
+} from './body-parser.js';
 export type { NestBuilderOptions } from './builder.js';
 export {
   WORKFLOW_MODULE_OPTIONS,
@@ -16,3 +20,8 @@ export {
   WorkflowController,
 } from './workflow.controller.js';
 export { WorkflowModule } from './workflow.module.js';
+export {
+  isWorkflowRequest,
+  isWorkflowRoutePath,
+  WORKFLOW_ROUTE_PREFIX,
+} from './workflow-routes.js';

@@ -8,6 +8,10 @@ export function getErrorName(v: unknown): string {
   return 'Error';
 }
 
+export function getErrorMessage(v: unknown): string {
+  return types.isNativeError(v) ? v.message : String(v);
+}
+
 export function getErrorStack(v: unknown): string {
   if (types.isNativeError(v)) {
     return v.stack ?? '';

@@ -150,6 +150,17 @@ export interface WorkflowOrchestratorContext {
    * Using Map instead of Array for O(1) lookup/delete operations.
    */
   invocationsQueue: Map<string, QueueItem>;
+  /**
+   * Per open hook, a probe for whether workflow code is currently waiting on
+   * its next payload (an `await hook`, a pending `for await` iteration, or a
+   * `.then` on it). Registered by `createHook` and dropped once the hook can
+   * receive nothing more. Snapshotted into
+   * {@link WorkflowSuspension.observedHookIds} when a suspension is raised.
+   *
+   * Optional so older/out-of-tree contexts (and lightweight test harnesses)
+   * degrade to "every open hook is observed".
+   */
+  hookPayloadAwaiters?: Map<string, () => boolean>;
   onWorkflowError: (error: Error) => void;
   /**
    * Mints the ULID body of a correlation id. Every entity a replay creates
@@ -251,7 +262,7 @@ export interface WorkflowOrchestratorContext {
 }
 
 /** The kind of branch-deciding delivery a barrier represents. */
-export type DeliveryKind = 'hook' | 'wait' | 'step';
+export type DeliveryKind = 'hook' | 'wait' | 'step' | 'attribute';
 
 interface DeliveryBarrierEntry {
   kind: DeliveryKind;
@@ -289,7 +300,13 @@ interface DeliveryBarrierEntry {
  *  - a hook defers behind earlier HOOKS, WAITS and STEPS;
  *  - a wait defers behind earlier HOOKS and STEPS (not earlier waits, since a
  *    wait never needs to queue behind another wait);
- *  - a step defers behind earlier WAITS, HOOKS and STEPS.
+ *  - a step defers behind earlier WAITS, HOOKS and STEPS;
+ *  - an attribute (the `attr_set` acknowledgement that resolves
+ *    `setAttributes()`) defers behind every earlier kind, and every kind
+ *    defers behind an earlier attribute. Resolving `setAttributes()` resumes a
+ *    branch that may draw the next correlation ID, so it is as branch-deciding
+ *    as a step result; gating only one direction would still let a later
+ *    delivery overtake a branch resuming from an attribute write (#4770).
  *
  * The step-behind-step edge is not redundant with the serial `promiseQueue`.
  * The queue fixes the order in which step results are HYDRATED, but a step no
@@ -309,9 +326,10 @@ interface DeliveryBarrierEntry {
  * wait-for graph can never contain a cycle.
  */
 const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
-  hook: ['hook', 'wait', 'step'],
-  wait: ['hook', 'step'],
-  step: ['wait', 'hook', 'step'],
+  hook: ['hook', 'wait', 'step', 'attribute'],
+  wait: ['hook', 'step', 'attribute'],
+  step: ['wait', 'hook', 'step', 'attribute'],
+  attribute: ['hook', 'wait', 'step', 'attribute'],
 };
 
 /**
@@ -339,11 +357,11 @@ function gatesOn(
   if (otherIndex >= index || !DEFER_BEHIND[kind].includes(other.kind)) {
     return false;
   }
-  // A step skips an UNARMED earlier entry (an unclaimed buffered hook
-  // payload). See the asymmetry described on `awaitEarlierDeliveries`. The
-  // skip is direct, never transitive: armed entries are still gated on, even
-  // when they are themselves parked behind such a payload.
-  return !(kind === 'step' && !other.armed);
+  // A step or attribute skips an UNARMED earlier entry (an unclaimed buffered
+  // hook payload). See the asymmetry described on `awaitEarlierDeliveries`.
+  // The skip is direct, never transitive: armed entries are still gated on,
+  // even when they are themselves parked behind such a payload.
+  return !((kind === 'step' || kind === 'attribute') && !other.armed);
 }
 
 /**
@@ -434,7 +452,8 @@ function computeResolvesOnItsOwn(
  * What counts as "defers behind" is {@link gatesOn}, shared with
  * {@link computeResolvesOnItsOwn} so the two cannot drift.
  *
- * One asymmetry: a STEP result skips any earlier delivery that is UNARMED,
+ * One asymmetry: a STEP result (and, for the same reason, an ATTRIBUTE
+ * acknowledgement) skips any earlier delivery that is UNARMED,
  * i.e. a buffered hook payload no consumer has claimed. Such a payload is
  * delivered only when the workflow next reads the hook, and reaching that read
  * often requires the step result itself (`await stepX()` before the
@@ -685,9 +704,11 @@ export function registerDeliveryBarrier(
      * so `Date.now()` in the cascade this delivery wakes reads the delivery's
      * own time, whatever the consumer walk has read ahead of it. Required so
      * that a new delivery site cannot forget the clock: a delivery that does
-     * not move it leaves the cascade it wakes reading a stale time.
+     * not move it leaves the cascade it wakes reading a stale time. `null`
+     * opts out explicitly; attribute acknowledgements use it because they
+     * have never moved the clock, and recorded histories may branch on it.
      */
-    deliveredAt: number;
+    deliveredAt: number | null;
   }
 ): DeliveryBarrier {
   // Idempotent like the handle it backs; `advanceClock` never moves backwards,
@@ -698,7 +719,9 @@ export function registerDeliveryBarrier(
       return false;
     }
     deliveredToWorkflow = true;
-    ctx.advanceClock?.(options.deliveredAt);
+    if (options.deliveredAt !== null) {
+      ctx.advanceClock?.(options.deliveredAt);
+    }
     return true;
   };
 
@@ -1022,8 +1045,19 @@ export function scheduleWorkflowSuspension(
   const generation = ctx.suspensionGeneration;
   scheduleWhenIdle(ctx, () => {
     if (generation !== ctx.suspensionGeneration) return;
-    ctx.onWorkflowError(
-      new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+    const suspension = new WorkflowSuspension(
+      ctx.invocationsQueue,
+      ctx.globalThis
     );
+    // Taken at idle, the same instant the queue is: the awaiters that are
+    // pending now are exactly the ones this suspension's outcome depends on.
+    if (ctx.hookPayloadAwaiters) {
+      const observed = new Set<string>();
+      for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
+        if (isAwaited()) observed.add(correlationId);
+      }
+      suspension.observedHookIds = observed;
+    }
+    ctx.onWorkflowError(suspension);
   });
 }
