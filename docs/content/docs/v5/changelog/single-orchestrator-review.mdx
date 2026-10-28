@@ -710,6 +710,14 @@ A background step's wake is the only thing that moves the run on after its outco
 
 The 1024-branch join regression above. One idle poll per suspension signal, never stopped for a past generation, cost about 10^8 timers on a lingering spec 9 orchestrator. Signals of a generation now share its earliest poll, which ends when the generation moves on, so a suspension is raised no earlier than before (commit `9f96925239`; tests `spec9/fan-out-idle-poll.runtime.test.ts` and `suspension-poll.test.ts`). The polling code is shared with spec 8, which keeps its behavior with fewer timers.
 
+### A replay could read another step's result after a run-ahead write moved up
+
+The event log race repro's wake-loop scenario failed one run on world-vercel with `CORRUPTED_EVENT_LOG`. All four replays stopped at the same slot because the replay armed a sleep where the log has a step. The committed log was valid: a cold replay of it from a fresh process ran to the end.
+
+- **Cause.** A run-ahead outcome is written at the slot the orchestrator predicts, and its payload was prepared for replay under that slot's event id. Four out-of-band `hook_received` events landed while the step body ran, so the outcome committed four slots higher, and the predicted id now belonged to another step's `step_completed`. The replay payload cache lives for the whole delivery and was keyed on the event id alone, so every later replay in that delivery, the recovery replays included, hydrated that event with the other step's result. A result that changed no branch would have reached workflow code silently.
+- **Fix.** The cache is keyed on the event id and the correlation id, so a payload prepared for one step is never served to another. The node engine was affected. The QuickJS engine does not read this cache.
+- **Tests.** `spec9/run-ahead-payload-cache.runtime.test.ts` reproduces it with an inline step loop, an unread hook and out-of-band payloads during one step, on a World with a slow write. Without the fix the run fails with a step handed another step's result. `replay-payload-cache.test.ts` checks that an entry for one step at an id is not served to another step at the same id.
+
 ## 9. Fixes made at the end of the review
 
 The first two fixes are in commit `12894c55f8`, and the World contract change is documented in Building a World.

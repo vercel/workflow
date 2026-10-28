@@ -9,6 +9,7 @@ import {
   scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from './private.js';
+import { replayPayloadEventKey } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 import { markUseStepClosureFn } from './serialization/hardened.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
@@ -194,7 +195,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const prepared = await ctx.replayPayloadCache.prepareEventPayload(
-                event.eventId,
+                replayPayloadEventKey(event),
                 'error',
                 event.eventData.error
               );
@@ -289,7 +290,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // is likewise released inside the slot, before the detached defer, so
           // `scheduleWhenIdle` can still reach idle and retire the barriers
           // this deferral may be waiting on.
-          const completedEventId = event.eventId;
+          const completedEventKey = replayPayloadEventKey(event);
           const serializedResult = event.eventData.result;
           const eventIndex = ctx.eventsConsumer.eventIndex;
           const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step', {
@@ -307,11 +308,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const hydratedResult = await ctx.replayPayloadCache.getStepResult(
-                completedEventId,
+                completedEventKey,
                 async () => {
                   const prepared =
                     await ctx.replayPayloadCache.prepareEventPayload(
-                      completedEventId,
+                      completedEventKey,
                       'result',
                       serializedResult
                     );
