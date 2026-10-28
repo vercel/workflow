@@ -5,7 +5,7 @@ description: Defer step_created for the inline step and fold it into a single st
 
 # Lazy inline step start
 
-> Superseded by the [single orchestrator](/docs/changelog/single-orchestrator) model: runs at spec version 9 no longer use this mechanism.
+> Applies to spec 8 runs. Runs created at spec version 9 ([single orchestrator](/docs/changelog/single-orchestrator)) use a different mechanism.
 
 
 ## Motivation
