@@ -52,7 +52,6 @@ describe('stepsToReenqueue', () => {
   ) =>
     stepsToReenqueue({
       events,
-      messageId: MSG,
       deliveryCount: 2,
       nowMs,
       ...extra,
@@ -74,8 +73,7 @@ describe('stepsToReenqueue', () => {
     // creator's own redelivery may have been coalesced away.
     for (const deliveryCount of [2, 5, undefined]) {
       expect(
-        resends([created('step_a')], {
-          messageId: 'msg_other',
+        resends([created('step_a', { creatorMessageId: 'msg_other' })], {
           deliveryCount,
         }).resend
       ).toEqual(['step_a']);
@@ -130,7 +128,7 @@ describe('stepsToReenqueue', () => {
     expect(resends([created('step_a', { inline: true })]).resend).toEqual([]);
   });
 
-  it('re-sends an inline step whose retry moved to the background, on a redelivery of the message that moved it, within the age bound of the move', () => {
+  it('re-sends an inline step whose retry moved to the background, from any non-first delivery, within the age bound of the move', () => {
     const events = [
       created('step_a', { inline: true }),
       ev('step_started', 'step_a'),
@@ -152,29 +150,27 @@ describe('stepsToReenqueue', () => {
       ev('step_started', 'step_a'),
       ev('step_retrying', 'step_a'),
     ];
+    // Not even the orchestrator that moved it, once the step's own message
+    // has started it: that message owns it until it ends.
     for (const deliveryCount of [2, undefined]) {
-      expect(
-        resends(events, { messageId: 'msg_unrelated_hook', deliveryCount })
-          .resend
-      ).toEqual([]);
-      // Nor the orchestrator that moved it, once the step's own message has
-      // started it: that message owns it until it ends.
-      expect(
-        resends(events, { messageId: 'msg_orch1', deliveryCount }).resend
-      ).toEqual([]);
+      expect(resends(events, { deliveryCount }).resend).toEqual([]);
     }
   });
 
-  it('never re-sends an inline retry another message moved, or one without a recorded creator', () => {
+  it('re-sends an inline retry whichever message moved it, and never one without a recorded creator', () => {
     const moved = (extra: Record<string, unknown>) => [
       created('step_a', { inline: true }),
       ev('step_started', 'step_a'),
       ev('step_retrying', 'step_a', extra),
     ];
+    // The mover's redelivery may have been coalesced into another message's
+    // delivery, which never delivers it.
+    expect(resends(moved({ creatorMessageId: 'msg_orch1' })).resend).toEqual([
+      'step_a',
+    ]);
     expect(
-      resends(moved({ creatorMessageId: 'msg_orch1' }), {
-        messageId: 'msg_other',
-      }).resend
+      resends(moved({ creatorMessageId: 'msg_orch1' }), { deliveryCount: 1 })
+        .resend
     ).toEqual([]);
     expect(resends(moved({})).resend).toEqual([]);
   });

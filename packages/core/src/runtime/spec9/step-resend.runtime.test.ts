@@ -5,6 +5,7 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { RetryableError } from '@workflow/errors';
 import {
   type Event,
   QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS,
@@ -58,15 +59,28 @@ afterAll(async () => {
   otelTrace.disable();
 });
 
-const calls = { resend_step: 0 };
+const calls = { resend_step: 0, resend_flaky: 0 };
 registerStepFunction('resend_step', async () => {
   calls.resend_step++;
   return 5;
+});
+/** How far past its failure the first attempt of `resend_flaky` retries. */
+let flakyRetryAfterMs = 0;
+registerStepFunction('resend_flaky', async () => {
+  calls.resend_flaky++;
+  if (calls.resend_flaky === 1) {
+    throw new RetryableError('transient', {
+      retryAfter: new Date(Date.now() + flakyRetryAfterMs),
+    });
+  }
+  return 7;
 });
 
 beforeEach(() => {
   spanExporter.reset();
   calls.resend_step = 0;
+  calls.resend_flaky = 0;
+  flakyRetryAfterMs = 0;
   vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
 });
@@ -85,6 +99,16 @@ const hookAndStepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_
     const [, v] = await Promise.all([hook, s()]);
     return v;
   }${registerWorkflow()}`;
+const flaky = `globalThis[Symbol.for("WORKFLOW_USE_STEP")]("resend_flaky")`;
+const hookAndFlakyWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const s = ${flaky};
+  async function workflow() {
+    const hook = createHook({ token: "resend-flaky-hook" });
+    const [, v] = await Promise.all([hook, s()]);
+    return v;
+  }${registerWorkflow()}`;
+const flakyWorkflow = `const s = ${flaky};
+  async function workflow() { return await s(); }${registerWorkflow()}`;
 const stepWorkflow = `const s = ${step};
   async function workflow() { return await s(); }${registerWorkflow()}`;
 
@@ -305,5 +329,111 @@ describe.each([
     // The creator's redelivery does.
     await world.deliver(redelivery);
     expect(stepMessageIds(world)).toHaveLength(1);
+  });
+
+  it("re-sends an inline step's background retry from another message's coalesced re-run when the delivery that moved it fails before the send, and the run completes", async () => {
+    // The first attempt runs inline, fails, and moves to the step's own
+    // message; that message's send fails.
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+    const setup = await setupOrchestratorRun(
+      hookAndFlakyWorkflow,
+      [],
+      { coalesce: true },
+      engine
+    );
+    const { world, runId, start } = setup;
+    const asWorld = world.asWorld();
+    const queue = asWorld.queue.bind(asWorld);
+    let failNext = true;
+    asWorld.queue = (async (...args: Parameters<typeof queue>) => {
+      if (failNext && (args[1] as { stepId?: string }).stepId !== undefined) {
+        failNext = false;
+        throw new Error('step send failed');
+      }
+      return queue(...args);
+    }) as typeof queue;
+    setWorld(asWorld);
+    await expect(world.deliver(start)).rejects.toThrow();
+    expect(calls.resend_flaky).toBe(1);
+    const retrying = eventsOf(world, 'step_retrying');
+    expect(retrying).toHaveLength(1);
+    expect(dataOf(retrying[0])?.creatorMessageId).toBe(start.messageId);
+    expect(stepMessageIds(world)).toEqual([]);
+    let redelivery: HeldMessage | undefined = world.held.find(
+      (held) => held.messageId === start.messageId
+    );
+    world.held.splice(world.held.indexOf(redelivery!), 1);
+
+    // The redelivery comes due while the hook's wake runs and is coalesced
+    // into it: it is never delivered.
+    let coalesced = false;
+    const list = asWorld.events.list.bind(asWorld.events);
+    asWorld.events.list = (async (...args: Parameters<typeof list>) => {
+      if (redelivery && !coalesced) {
+        world.held.push(redelivery);
+        coalesced = world.comeDue(redelivery);
+        redelivery = undefined;
+      }
+      return list(...args);
+    }) as typeof list;
+    const hookCreated = eventsOf(world, 'hook_created')[0]!;
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      correlationId: hookCreated.correlationId,
+      eventData: {
+        token: dataOf(hookCreated)?.token,
+        payload: await dehydrateStepReturnValue({}, runId, undefined),
+      },
+    } as Partial<Event>);
+    await world.deliver(world.enqueue(ORCHESTRATOR_QUEUE, { runId }));
+    expect(coalesced).toBe(true);
+    // The wake's re-run sent the retry the failed delivery never got out.
+    expect(stepMessageIds(world)).toEqual([retrying[0]!.correlationId]);
+
+    await world.runUntilIdle();
+    expect(calls.resend_flaky).toBe(2);
+    expect(await runResult(world)).toBe(7);
+  });
+
+  it("runs an inline step's background retry once when its retryAfter outlives the queue's key dedupe window", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+    // The retry is due two dedupe windows after the failed attempt, and its
+    // message is held that long.
+    flakyRetryAfterMs = 2 * QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS;
+    const { world, start } = await setupOrchestratorRun(
+      flakyWorkflow,
+      [],
+      { keyDedupeWindowMs: QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS },
+      engine
+    );
+    await world.deliver(start);
+    const movedAtMs = Date.now();
+    expect(calls.resend_flaky).toBe(1);
+    const liveStepMessages = () =>
+      world.held.filter(
+        (held) => (held.message as { stepId?: string }).stepId !== undefined
+      );
+    expect(liveStepMessages()).toHaveLength(1);
+    const redeliver = (deliveryCount: number) =>
+      world.deliver({
+        ...start,
+        deliveryCount,
+        invocationStartedAt: Date.now(),
+      });
+
+    // Inside the re-send bound a re-send is deduplicated against the held
+    // retry message; past it none is made, though the queue would take one.
+    vi.setSystemTime(movedAtMs + STEP_RESEND_MAX_AGE_MS - 60_000);
+    await redeliver(2);
+    expect(liveStepMessages()).toHaveLength(1);
+    vi.setSystemTime(movedAtMs + QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS + 1);
+    await redeliver(3);
+    expect(liveStepMessages()).toHaveLength(1);
+
+    vi.setSystemTime(movedAtMs + flakyRetryAfterMs + 1000);
+    await world.runUntilIdle();
+    expect(calls.resend_flaky).toBe(2);
+    expect(await runResult(world)).toBe(7);
   });
 });

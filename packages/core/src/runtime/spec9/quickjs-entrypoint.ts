@@ -486,7 +486,6 @@ export async function runWorkflowWithQuickJS(params: {
       new Set(
         stepsToReenqueue({
           events,
-          messageId: ownerMessageId ?? '',
           deliveryCount: deliveryAttempt,
           nowMs: Date.now(),
         }).resend

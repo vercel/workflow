@@ -58,13 +58,16 @@ export interface StepResends {
  * whose last event is the `step_retrying` that moved it to the background.
  * The orchestrator delivery that ran the failed attempt writes it and stamps
  * it with its own message (`creatorMessageId`, see
- * {@link withRetryCreator}); the crash window between that write and the
- * enqueue of the step's retry message is closed by a later delivery of that
- * message, within the same age bound counted from the `step_retrying`. A
- * `step_retrying` the step's own message wrote (a later attempt) carries no
- * creator: that message stays unacknowledged until the step ends, so no
- * orchestrator re-sends it. Nor does one from a log written before the
- * stamp existed.
+ * {@link withRetryCreator}). A delivery that dies between that write and the
+ * enqueue of the step's retry message leaves the step with no message, and
+ * the orchestrator never runs it inline again (its retry belongs to its own
+ * message), so the same rule as a background step's creation closes the
+ * window: any orchestrator delivery that is not its message's first re-sends
+ * it, whichever delivery wrote the `step_retrying`, within the same age bound
+ * counted from that write. A `step_retrying` the step's own message wrote (a
+ * later attempt) carries no creator: that message stays unacknowledged until
+ * the step ends, so no orchestrator re-sends it. Nor does one from a log
+ * written before the stamp existed.
  *
  * `recovery` is a delivery of a message a World sent after it lost its
  * queue (`reenqueueActiveRuns` with `queueLost`, world-local after a
@@ -75,14 +78,13 @@ export interface StepResends {
  */
 export function stepsToReenqueue(params: {
   events: readonly Event[];
-  messageId: string;
   deliveryCount: number | undefined;
   nowMs: number;
   recovery?: boolean;
   /** Steps this invocation already re-sent, or found too old. */
   exclude?: { has(correlationId: string): boolean };
 }): StepResends {
-  const { events, messageId, deliveryCount, nowMs, exclude } = params;
+  const { events, deliveryCount, nowMs, exclude } = params;
   const recovery = params.recovery === true;
   const out: StepResends = { resend: [], tooOld: [] };
   if (!recovery && deliveryCount === 1) return out;
@@ -158,7 +160,7 @@ export function stepsToReenqueue(params: {
     let sentAtMs: number | undefined;
     if (!step.inline) {
       if (!step.started) sentAtMs = step.createdAtMs;
-    } else if (step.lastIsRetrying && step.retryCreator === messageId) {
+    } else if (step.lastIsRetrying && step.retryCreator !== undefined) {
       sentAtMs = step.retriedAtMs;
     }
     if (sentAtMs === undefined) continue;
@@ -243,9 +245,9 @@ function eventTimeMs(event: Event): number {
 /**
  * `data` with this orchestrator delivery's message (`messageId`) stamped as
  * the creator when it is a `step_retrying`: the write that moves an inline
- * step's retry to the background, which only a later delivery of
- * `messageId` may re-send (see {@link stepsToReenqueue}). Any other event is returned
- * as is.
+ * step's retry to the background, which any later orchestrator delivery that
+ * is not its message's first may re-send (see {@link stepsToReenqueue}). Any
+ * other event is returned as is.
  */
 export function withRetryCreator<
   T extends { eventType: string; eventData?: unknown },

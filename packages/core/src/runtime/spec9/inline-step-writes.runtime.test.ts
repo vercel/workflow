@@ -930,9 +930,3 @@ describe.each([
     expect(new Set(created).size).toBe(THREE_BATCH_FAN_OUT);
   });
 });
-
-// Known gap, see `stepMessageRetentionSeconds`: a retry message can outlive
-// its queue's dedupe window.
-it.todo(
-  "runs an inline step's background retry once when its retryAfter outlives the queue's dedupe window"
-);

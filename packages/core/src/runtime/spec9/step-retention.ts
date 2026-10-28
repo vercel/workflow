@@ -23,10 +23,15 @@ export const STEP_RETRY_EXPIRY_SLACK_SECONDS = 30 * 60;
  * {@link retryOutlivesMessage} covers a span that exceeds even the maximum.
  *
  * A step's message is sent with an idempotency key, and a queue's dedupe
- * window can be shorter than this retention (`QueueOptions.idempotencyKey`).
- * An inline step whose retry moved to its own message with a `retryAfter`
- * past that window can have the message sent a second time after the window
- * closed, and two messages then own one step's body. Not verified.
+ * window can be shorter than this retention (`QueueOptions.idempotencyKey`):
+ * a message can outlive the dedupe of its own key, for example an inline
+ * step's retry moved to its own message with a `retryAfter` past the window.
+ * A send of the same step after the window closed would make a second
+ * message, a second owner of the step's body. The runtime's re-send rule
+ * only sends a step again while its last send (its creation, or the
+ * `step_retrying` that moved it) is younger than `STEP_RESEND_MAX_AGE_MS`,
+ * inside every World's minimum dedupe window, so it never makes one (see
+ * `stepsToReenqueue`).
  */
 export function stepMessageRetentionSeconds(maxRetries: number): number {
   return maxRetries > 0 ? MAX_STEP_MESSAGE_RETENTION_SECONDS : DAY_SECONDS;

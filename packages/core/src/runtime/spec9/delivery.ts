@@ -417,7 +417,6 @@ async function runDelivery(
     if (!resendGate) return new Set();
     const decided = stepsToReenqueue({
       events,
-      messageId: creatorMessageId,
       deliveryCount: metadata.deliveryCount,
       nowMs: Date.now(),
       recovery: recoveryDelivery,
