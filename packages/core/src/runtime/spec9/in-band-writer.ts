@@ -28,15 +28,17 @@ import { creationBatchBytes } from './step-wait-creation.js';
  * writes as superseded, for that write and for every write after it. The
  * orchestrator delivery that sees it stops writing and stops starting inline
  * step bodies, sends the queue messages its own committed writes still owe
- * (see {@link InBandWriter.onAccepted}) and one plain orchestrator wake, and
- * acknowledges its message.
+ * (see {@link InBandWriter.onAccepted}), and asks for a redelivery of its own
+ * message (`{ timeoutSeconds: 1 }`) instead of acknowledging it. The
+ * redelivery is counted as an attempt.
  *
  * The refusal does not say that another writer is running. The World
  * refuses a write whose expected count is stale, which happens when another
  * orchestrator wrote in-band, when the World sealed this writer's own
  * position because its write outlived the World's staleness bound, or when
  * an earlier write of this writer was refused after the World had allocated
- * its position. The wake covers the cases with no other writer.
+ * its position. The redelivery covers the cases with no other writer, and
+ * re-sends whatever a delivery that died left unsent.
  */
 export class OrchestratorSupersededError extends Error {
   constructor(readonly cause: unknown) {

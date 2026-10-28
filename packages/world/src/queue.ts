@@ -890,6 +890,20 @@ export function singleOrchestratorContinuationPayload(
  */
 export const QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How long, in milliseconds, a single-orchestrator run's step message whose
+ * deliveries keep failing must go on being redelivered at least, from its
+ * first delivery. A delivery that throws before it writes anything (the
+ * step's input cannot be read, say) leaves the step's log as it was; past
+ * the runtime's delivery cap, a delivery that finds the step's log showing
+ * no activity for this long fails the step (`MAX_DELIVERIES_EXCEEDED`) and
+ * wakes the run. A queue that gives up on the message sooner strands the
+ * run. world-vercel retains a step message for at least a day; world-local
+ * backs off its retries so that its safety limit lasts longer than this;
+ * world-postgres keeps retrying a job without a time limit.
+ */
+export const QUEUE_MIN_STEP_REDELIVERY_SPAN_MS = 60 * 60 * 1000;
+
 export interface QueueOptions {
   deploymentId?: string;
   /**

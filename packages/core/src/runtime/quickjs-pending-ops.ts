@@ -29,6 +29,7 @@ import {
 import {
   type CreateEventRequest,
   type EventBatchResult,
+  SPEC_VERSION_LEGACY,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
 } from '@workflow/world';
@@ -317,7 +318,9 @@ export async function dispatchPendingOps(params: {
                 requestedAt: new Date(),
               },
               {
-                specVersion: workflowRun.specVersion,
+                // A run row with no recorded version is a legacy run, as on
+                // every other spec 8 QuickJS send.
+                specVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
                 idempotencyKey: `hook_conflict_${hook.correlationId}`,
               }
             );
@@ -823,7 +826,18 @@ interface BatchedCreation {
  * so the caller handles it as it handles a conflicted single write's.
  * Any other item refusal fails the pass with the error a single write of
  * that status throws (429 a `ThrottleError`, 410 a `RunExpiredError`, else a
- * `WorkflowWorldError`), and the batches behind it are not sent. A spec 9
+ * `WorkflowWorldError`), and the batches behind it are not sent.
+ *
+ * The node engine's batches (`writeAll` in `spec9/step-wait-creation.ts`)
+ * fail the pass only on a 429 or a 5xx, and leave any other refused item to
+ * the next replay, which derives it again. The difference is deliberate: this
+ * engine's caller sends a message for every step past the inline cap that no
+ * batch reported (`dispatched.reportedStepCids`), since it cannot tell a
+ * step whose creation a batch refused from one created by a single write, so
+ * a refused step creation that the pass went on past would get a message
+ * with no `step_created` behind it. The node engine sends a message only for
+ * a creation it saw committed. Transient refusals end the same way on both:
+ * the delivery fails and the queue redelivers it. A spec 9
  * batch is not atomic, so the items around a refusal may have committed:
  * the redelivery re-derives the missing creations and re-sends the steps
  * that never got a message (`stepsToReenqueue`). The
@@ -899,9 +913,13 @@ async function commitCreationBatches(params: {
       };
     });
     if (created.length > 0) {
-      reports.push(
-        params.hooksSettled.then(() => batches.onStepsCreated(created))
+      const report = params.hooksSettled.then(() =>
+        batches.onStepsCreated(created)
       );
+      // Observed as it is stored: a report that rejects while the batches
+      // behind it go out is awaited, and its error thrown, only below.
+      report.catch(() => {});
+      reports.push(report);
     }
     if (failure) break;
   }
