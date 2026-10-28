@@ -909,10 +909,11 @@ export function createQueue(
    * and must be inserted next to it.
    *
    * - A single-orchestrator run's keyed message (spec >= 9: a step's
-   *   execution message, a near-due wait timer) is sent with a key only to
-   *   be deduplicated: the runtime sends it again from later deliveries of
-   *   the run (the re-send rule), and a second job would be a second owner
-   *   of the step's body. `'unsafe_dedupe'` makes the send a no-op while any
+   *   execution message, each hop of a wait's timer) is sent with a key only
+   *   to be deduplicated: the runtime sends it again from later deliveries
+   *   of the run (the re-send rule, a timer every delivery that may owe it
+   *   sends), and a second job would be a second owner of the step's body,
+   *   or a second chain of a long wait's hops. `'unsafe_dedupe'` makes the send a no-op while any
    *   job holds the key: a locked one (being delivered), one waiting out its
    *   delay, or one in retry backoff, whose attempts and `run_at` it keeps.
    *   The key is free again once the job completes and is deleted.

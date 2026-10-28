@@ -617,6 +617,10 @@ export class AppendOnlyWorld {
     const index = this.held.indexOf(held);
     if (index === -1) return false;
     this.held.splice(index, 1);
+    // The queue keeps the key of a message it coalesced, as of one it
+    // delivered: the message is consumed.
+    const key = held.opts?.idempotencyKey as string | undefined;
+    if (key !== undefined) this.acknowledgedKeys.add(key);
     this.activeOrchestrator.coalesced++;
     this.coalescedMessages++;
     return true;

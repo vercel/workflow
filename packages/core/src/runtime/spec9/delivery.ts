@@ -221,6 +221,7 @@ import {
 import { handleSuspension, pendingQueueDrain } from './suspension-handler.js';
 import {
   nearDueTimerIdempotencyKey,
+  rearmsCoalescableTimer,
   sendNearDueTimerOnce,
   waitTimerMessage,
 } from './wait-timer.js';
@@ -1040,6 +1041,8 @@ async function runDelivery(
       resumeAtMs: hopResumeAtMs,
       seconds: Math.max(0, Math.ceil((hopResumeAtMs - now) / 1000)),
       nowMs: now,
+      attempt: waitContinuation.attempt,
+      afterHopAtMs: waitContinuation.hopAtMs,
     });
     runtimeLogger.debug('Wait timer hop; sending the next hop', {
       workflowRunId: runId,
@@ -1048,9 +1051,12 @@ async function runDelivery(
       intermediate: next.waitContinuation.resumeAtMs !== undefined,
     });
     span?.setAttributes(Attribute.WorkflowNoopDelivery(true));
+    // Keyed by the next hop's deadline: a redelivery of this hop, or of a
+    // hop another sender started for the same deadline, is deduped.
     await wakeSelf(
       { waitContinuation: next.waitContinuation },
-      next.delaySeconds
+      next.delaySeconds,
+      next.idempotencyKey
     );
     return undefined;
   }
@@ -3453,6 +3459,9 @@ async function runDelivery(
         newInline = created.createdSteps.filter((step) => step.inline);
         trackInFlightCreation(chunks.rest);
       } else {
+        // A new wait's timer goes out before its `wait_created` commits
+        // (`armWaitsBeforeCreation`).
+        await armWaitsBeforeCreation(plan.events);
         created = await plan.commit();
         newInline = created.createdSteps.filter((step) => step.inline);
       }
@@ -4130,6 +4139,60 @@ async function runDelivery(
     }
 
     /**
+     * Sends, before this delivery commits the `wait_created` events in
+     * `creating`, the timer of its own chain's earliest open wait when that
+     * is one of them. Otherwise only a later delivery of this message would
+     * know the timer is owed (`ownedWaitChains`): a delivery that commits the
+     * creation and fails before the send, and whose redelivery the queue
+     * coalesces into a delivery of another message, would leave the wait
+     * with no timer. Sent first, the timer is out before the creation
+     * commits; if the commit then fails, the stray timer finds no wait, or
+     * finds the wait the redelivery created and re-arms it, under that
+     * wait's key. A wait already due gets none: whichever delivery comes
+     * next completes it, and arms the next timer of its chain before that
+     * completion commits (`chainTimersBeforeCompletion`).
+     */
+    async function armWaitsBeforeCreation(
+      creating: readonly CreateEventRequest[]
+    ): Promise<void> {
+      const now = Date.now();
+      const created = creating.flatMap((request) => {
+        if (request.eventType !== 'wait_created' || !request.correlationId) {
+          return [];
+        }
+        const resumeAtMs = +new Date(request.eventData.resumeAt);
+        return resumeAtMs > now
+          ? [{ correlationId: request.correlationId, resumeAtMs }]
+          : [];
+      });
+      if (created.length === 0) return;
+      const ownChain = openWaits(knownEvents()).filter(
+        (wait) => waitCreatorMessageId(wait.event) === creatorMessageId
+      );
+      for (const wait of waitTimersToArm(
+        [...ownChain, ...created],
+        creatorMessageId,
+        undefined
+      )) {
+        if ('event' in wait) continue;
+        if (!timedWaits.has(wait.correlationId)) await sendWaitTimer(wait);
+      }
+    }
+
+    /**
+     * The loaded log, plus the `wait_created` events this delivery committed
+     * that it has not absorbed yet.
+     */
+    function knownEvents(): Event[] {
+      return [
+        ...(log?.events ?? []),
+        ...[...ownOpenWaits.values()].filter(
+          (wait) => !log?.events.some((event) => event.eventId === wait.eventId)
+        ),
+      ];
+    }
+
+    /**
      * Arms, before a handoff, the timer of each chain of this delivery's
      * message whose earliest open wait this delivery created and sent no
      * timer for. A World may continue a handed-off run on a new message
@@ -4195,20 +4258,35 @@ async function runDelivery(
     ): Promise<void> {
       timedWaits.add(wait.correlationId);
       const now = Date.now();
+      // The wait this timer delivery is for is still open: its timer came
+      // before the wait was due and spent its key, so the re-arm takes the
+      // next attempt's.
+      const attempt =
+        waitContinuation?.correlationId === wait.correlationId
+          ? waitContinuation.attempt + 1
+          : 0;
       const timer = waitTimerMessage({
         correlationId: wait.correlationId,
         resumeAtMs: wait.resumeAtMs,
         seconds: Math.max(0, Math.ceil((wait.resumeAtMs - now) / 1000)),
         nowMs: now,
+        attempt,
       });
       try {
-        const send = (idempotencyKey?: string) =>
+        const send = (idempotencyKey: string) =>
           wakeSelf(
             { waitContinuation: timer.waitContinuation },
             timer.delaySeconds,
             idempotencyKey
           );
-        if (options.nearDue) {
+        if (
+          options.nearDue ||
+          rearmsCoalescableTimer({
+            mayHoldCoalescedTimer,
+            intermediate: timer.waitContinuation.resumeAtMs !== undefined,
+            attempt,
+          })
+        ) {
           const key = nearDueTimerIdempotencyKey({
             correlationId: wait.correlationId,
             resumeAtMs: wait.resumeAtMs,
@@ -4216,7 +4294,7 @@ async function runDelivery(
           });
           await sendNearDueTimerOnce(key, () => send(key));
         } else {
-          await send();
+          await send(timer.idempotencyKey);
         }
       } catch (error) {
         timedWaits.delete(wait.correlationId);

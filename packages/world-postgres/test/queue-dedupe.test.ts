@@ -174,6 +174,33 @@ describe.skipIf(process.platform === 'win32')(
         expect(jobs[0]!.run_at.getTime()).toBe(before!.run_at.getTime());
       });
 
+      it("adds no second job for a wait timer's hop sent again while the first waits out its delay", async () => {
+        const key = `wait:wait_${ulid()}:7200000:3600000`;
+        const sendHop = () =>
+          queue.queue(
+            '__wkf_workflow_dedupe-step',
+            {
+              runId: 'wrun_dedupe',
+              waitContinuation: {
+                correlationId: 'wait_dedupe',
+                attempt: 0,
+                resumeAtMs: 7_200_000,
+                hopAtMs: 3_600_000,
+              },
+              runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            },
+            { idempotencyKey: key, delaySeconds: 3600 }
+          );
+        await sendHop();
+        const [before] = await jobsFor(key);
+
+        await sendHop();
+
+        const jobs = await jobsFor(key);
+        expect(jobs).toHaveLength(1);
+        expect(jobs[0]!.run_at.getTime()).toBe(before!.run_at.getTime());
+      });
+
       it('adds a job again once the key is free', async () => {
         const stepId = `step_${ulid()}`;
         await sendStep(stepId);

@@ -484,6 +484,14 @@ export const WorkflowInvokePayloadSchema = z.compile(
          * due when the wait is.
          */
         resumeAtMs: z.number().optional(),
+        /**
+         * The deadline (epoch ms) of this intermediate hop, set beside
+         * `resumeAtMs`. Hops are anchored on the wait's deadline, and each
+         * is keyed by its own deadline, so the delivery of this hop sends
+         * the one after it: one it could not compute from its own clock
+         * when it was delivered a little early.
+         */
+        hopAtMs: z.number().optional(),
       })
       .optional()
       .catch(undefined),
@@ -868,14 +876,19 @@ export interface QueueOptions {
    * step would be a second owner of its body.
    *
    * Every wake of a spec 9 run's orchestrator (after a background step's
-   * outcome, `resumeHook()`, `cancel()`, a force-claimed hook, a timer, a
-   * fence refusal) carries no key: a duplicate wake costs one cheap delivery,
+   * outcome, `resumeHook()`, `cancel()`, a force-claimed hook, a fence
+   * refusal) carries no key: a duplicate wake costs one cheap delivery,
    * while a key can be absorbed by a delivery that is already exiting and
-   * lose the wakeup. The one exception is a near-due re-arm, the timer a
-   * delivery that may hold a coalesced timer sends for an open wait due
-   * within a few seconds, whatever its chain: it carries
-   * `wait:<correlationId>:<resumeAt>:<second>`, because every such delivery
-   * sends one for every near-due wait, and only the key keeps that linear.
+   * lose the wakeup. A wait's timer is the exception. Each hop of it carries
+   * `wait:<correlationId>:<resumeAt>:<hopAt>`, the wait, its deadline and the
+   * hop's own deadline (epoch ms; hops are anchored on the wait's deadline),
+   * so the timers every delivery that may owe one sends for the same hop are
+   * one message; a re-arm after a timer that came before its wait was due
+   * appends `:a<attempt>`. A near-due re-arm, the timer a delivery that may
+   * hold a coalesced timer sends for an open wait due within a few seconds,
+   * whatever its chain, carries `wait:<correlationId>:<resumeAt>:s<second>`,
+   * the sender's second in place of the hop's deadline. Deduplicate these as
+   * you do a step's key.
    * Wakes of runs below spec 9 keep their earlier keys (`hook-<resumeId>`,
    * `hook-force-claim-<hookId>`, the QuickJS engine's
    * `hook_conflict_<correlationId>`).

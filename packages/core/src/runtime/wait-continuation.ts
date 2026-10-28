@@ -90,7 +90,7 @@ export const WAIT_CONTINUATION_MAX_DELAY_SECONDS = 82_800;
 export const NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS = 2;
 
 /** Effective max continuation delay. Override: `WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS`. */
-const getWaitContinuationMaxDelaySeconds = (): number =>
+export const getWaitContinuationMaxDelaySeconds = (): number =>
   envNumber(
     'WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS',
     WAIT_CONTINUATION_MAX_DELAY_SECONDS,

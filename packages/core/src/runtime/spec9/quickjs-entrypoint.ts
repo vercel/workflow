@@ -155,6 +155,7 @@ import {
 import { runStepSingleFlight } from './step-single-flight.js';
 import {
   nearDueTimerIdempotencyKey,
+  rearmsCoalescableTimer,
   sendNearDueTimerOnce,
   waitTimerMessage,
 } from './wait-timer.js';
@@ -520,8 +521,8 @@ export async function runWorkflowWithQuickJS(params: {
   /** Waits whose timer this invocation sent. */
   const scheduledWaitContinuations = new Set<string>();
   /**
-   * A timer wake: delayed, and carrying no idempotency key, except a
-   * near-due re-arm (`nearDueTimerIdempotencyKey`).
+   * A timer wake: delayed, and keyed by its hop (`waitTimerMessage`), or, a
+   * near-due re-arm, by the sender's second (`nearDueTimerIdempotencyKey`).
    */
   const queueWaitTimer = async (
     correlationId: string,
@@ -530,14 +531,15 @@ export async function runWorkflowWithQuickJS(params: {
     options: { nearDue?: boolean } = {}
   ): Promise<void> => {
     const nowMs = Date.now();
+    const attempt = nextWaitContinuationAttempt(correlationId);
     const timer = waitTimerMessage({
       correlationId,
       resumeAtMs,
       seconds,
       nowMs,
-      attempt: nextWaitContinuationAttempt(correlationId),
+      attempt,
     });
-    const send = async (idempotencyKey?: string) =>
+    const send = async (idempotencyKey: string) =>
       queueMessage(
         world,
         getWorkflowQueueName(workflowRun.workflowName, namespace),
@@ -550,10 +552,17 @@ export async function runWorkflowWithQuickJS(params: {
         {
           specVersion: workflowRun.specVersion,
           delaySeconds: timer.delaySeconds,
-          ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+          idempotencyKey,
         }
       );
-    if (options.nearDue) {
+    if (
+      options.nearDue ||
+      rearmsCoalescableTimer({
+        mayHoldCoalescedTimer: armsNearDueWaits,
+        intermediate: timer.waitContinuation.resumeAtMs !== undefined,
+        attempt,
+      })
+    ) {
       const key = nearDueTimerIdempotencyKey({
         correlationId,
         resumeAtMs,
@@ -561,7 +570,7 @@ export async function runWorkflowWithQuickJS(params: {
       });
       await sendNearDueTimerOnce(key, () => send(key));
     } else {
-      await send();
+      await send(timer.idempotencyKey);
     }
     params.onWaitTimerSent?.(correlationId);
   };
@@ -577,10 +586,12 @@ export async function runWorkflowWithQuickJS(params: {
       seconds: number;
     }[]
   ): Promise<void> => {
+    // The earliest of each chain is picked before the waits this delivery
+    // armed are left out: a chain whose earliest wait has its timer needs no
+    // other.
     const owned = candidates
       .filter(
         (wait) =>
-          !scheduledWaitContinuations.has(wait.correlationId) &&
           !completedWaits.has(wait.correlationId) &&
           armsWaitTimer(wait.correlationId)
       )
@@ -590,6 +601,7 @@ export async function runWorkflowWithQuickJS(params: {
       ownerMessageId ?? '',
       waitContinuation?.correlationId
     )) {
+      if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
       await queueWaitTimer(wait.correlationId, wait.seconds, wait.resumeAtMs);
       wfdiag('wait_continuation_scheduled', {
@@ -2059,6 +2071,35 @@ export async function runWorkflowWithQuickJS(params: {
             },
           }
         : undefined;
+      // A new wait's timer goes out before its `wait_created` commits: the
+      // earliest open wait of each chain this delivery arms, when the pass
+      // creates waits (see `armWaitsBeforeCreation` in `delivery.ts`). A
+      // wait already due gets none; this delivery completes it below.
+      if (
+        opsToDispatch.some(
+          (op) =>
+            op.type === 'wait' &&
+            !op.hasCreatedEvent &&
+            !writtenOpIds.has(op.correlationId)
+        )
+      ) {
+        const now = Date.now();
+        await armWaitTimers(
+          opsToDispatch.flatMap((op) => {
+            if (op.type !== 'wait') return [];
+            if (completedWaitIds2.has(op.correlationId)) return [];
+            const resumeAtMs = new Date((op as PendingWait).resumeAt).getTime();
+            if (resumeAtMs <= now) return [];
+            return [
+              {
+                correlationId: op.correlationId,
+                resumeAtMs,
+                seconds: Math.max(1, Math.ceil((resumeAtMs - now) / 1000)),
+              },
+            ];
+          })
+        );
+      }
       const dispatched = await dispatchPendingOps({
         eventSpecVersion: SPEC_VERSION_CURRENT,
         stampCreations: true,

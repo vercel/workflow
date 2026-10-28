@@ -897,8 +897,9 @@ export function createQueue(config?: APIConfig): Queue {
         deploymentId: opts?.deploymentId,
       },
       sendOptions: {
-        // Set only on a step's execution message; a wake carries none (see
-        // `QueueOptions.idempotencyKey`). Passed through as given.
+        // Set on a step's execution message and on a wait's timer; a wake
+        // carries none (see `QueueOptions.idempotencyKey`). Passed through
+        // as given.
         idempotencyKey: opts?.idempotencyKey,
         ...(concurrencyKey !== undefined && {
           experimental_concurrencyKey: concurrencyKey,

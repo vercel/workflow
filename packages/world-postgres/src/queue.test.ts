@@ -616,7 +616,8 @@ describe('postgres queue http execution', () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
     const spec9 = { runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR };
-    // A step's execution message, and a near-due wait timer.
+    // A step's execution message, a wait's last timer, and an intermediate
+    // hop of a long wait's timer, each keyed by the runtime.
     await queue.queue(
       '__wkf_workflow_test-step',
       { runId: 'run_01ABC', stepId: 'step_01ABC', stepName: 'step', ...spec9 },
@@ -629,7 +630,21 @@ describe('postgres queue http execution', () => {
         waitContinuation: { correlationId: 'wait_01ABC', attempt: 0 },
         ...spec9,
       },
-      { idempotencyKey: 'wait:wait_01ABC:1', delaySeconds: 3 }
+      { idempotencyKey: 'wait:wait_01ABC:2000:2000', delaySeconds: 3 }
+    );
+    await queue.queue(
+      '__wkf_workflow_test',
+      {
+        runId: 'run_01ABC',
+        waitContinuation: {
+          correlationId: 'wait_01ABC',
+          attempt: 0,
+          resumeAtMs: 2000,
+          hopAtMs: 1000,
+        },
+        ...spec9,
+      },
+      { idempotencyKey: 'wait:wait_01ABC:2000:1000', delaySeconds: 1 }
     );
     // A wake carries no key: its job key is its message id, whatever mode.
     await queue.queue('__wkf_workflow_test', { runId: 'run_01ABC', ...spec9 });
@@ -639,6 +654,7 @@ describe('postgres queue http execution', () => {
         (call) => (call[2] as { jobKeyMode?: string } | undefined)?.jobKeyMode
       );
     expect(modes).toEqual([
+      'unsafe_dedupe',
       'unsafe_dedupe',
       'unsafe_dedupe',
       'preserve_run_at',

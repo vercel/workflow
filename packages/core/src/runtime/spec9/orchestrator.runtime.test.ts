@@ -36,6 +36,7 @@ import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
   stepMessageRetentionSeconds,
 } from './step-retention.js';
+import { waitTimerIdempotencyKey } from './wait-timer.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -1643,7 +1644,15 @@ describe.each([
         undefined
     );
     expect(timers).toHaveLength(1);
-    expect(timers[0]?.opts?.idempotencyKey).toBeUndefined();
+    // Keyed by its one hop, due with the wait.
+    const resumeAtMs = +new Date(data(created)?.resumeAt as Date);
+    expect(timers[0]?.opts?.idempotencyKey).toBe(
+      waitTimerIdempotencyKey({
+        correlationId: created!.correlationId!,
+        resumeAtMs,
+        hopAtMs: resumeAtMs,
+      })
+    );
     expect(timers[0]?.opts?.delaySeconds).toBeGreaterThan(0);
 
     // An unrelated wake (a different message) does not arm another timer.
