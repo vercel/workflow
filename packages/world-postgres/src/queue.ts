@@ -17,6 +17,7 @@ import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  isSingleOrchestratorMessage,
   MessageId,
   parseQueueName,
   parseQueueRoute,
@@ -24,6 +25,7 @@ import {
   QueuePayloadSchema,
   QueuePrefix,
   resolveQueueNamespace,
+  singleOrchestratorRunIdOf,
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
@@ -108,12 +110,12 @@ const graphileLogger = createGraphileLogger();
  * the workflow body inline, so response headers arrive only once that work is
  * done, and a bound here declares a slow-but-healthy delivery crashed and
  * redelivers it while the original is still running (two executions of the
- * same steps). Crash recovery does not need one: `reenqueueActiveRuns`
- * re-enqueues active runs on start, and with `jobLockStaleSeconds` set a
- * running delivery renews its job lock and any other process releases a job
- * whose lock goes unrenewed (because its process died) for redelivery (see
- * `job-lease.ts`). Without it, Graphile Worker resets a dead worker's lock
- * only after 4 hours.
+ * same steps). Crash recovery is covered by Graphile's stale-lock reset, which
+ * releases a dead worker's job and its named queue only once the lock is
+ * older than 4 hours (`resetLockedAt` in graphile-worker), plus
+ * `reenqueueActiveRuns` on start. A spec 9 run's orchestrator deliveries all
+ * use the run's named queue, so a hard-killed worker can hold them back for
+ * that long; see the README.
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
@@ -293,6 +295,22 @@ export function createQueue(
   const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
+  /**
+   * The Graphile named queue of one run's orchestrator deliveries.
+   *
+   * Graphile runs the jobs of a named queue one at a time, across every
+   * worker and process sharing the database, so a single-orchestrator run's
+   * (spec >= 9) orchestrator deliveries never overlap: the queue half of the
+   * single-writer guarantee (the in-band fence in storage.ts is the other).
+   * Step messages, health checks and the messages of earlier runs carry no
+   * queue name and keep full parallelism (see `singleOrchestratorRunIdOf`).
+   * A delayed job (a timer, a `{ timeoutSeconds }` redelivery) does not hold
+   * the queue: only a running job locks it.
+   *
+   * The invoke executor lane uses the same name, so a run's ordinary and
+   * executor deliveries serialize with each other too, including while a
+   * deployment switches `enableInvoke`.
+   */
   const executorQueueName = (runId: string) =>
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
@@ -444,10 +462,12 @@ export function createQueue(
     delaySeconds,
     jobKey,
     executorRunId,
+    serialRunId,
     attemptOffset,
     deliveryOffset,
     createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
+    jobKeyMode = 'preserve_run_at',
   }: {
     queueId: string;
     prefix?: QueuePrefix;
@@ -460,10 +480,21 @@ export function createQueue(
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
+    /** Run the job on the invoke executor task, in this run's named queue. */
     executorRunId?: string;
+    /** An orchestrator delivery for this run: run it in the run's named queue. */
+    serialRunId?: string;
     attemptOffset?: number;
     deliveryOffset?: number;
     maxAttempts?: number;
+    /**
+     * What a job already holding `jobKey` does with this one (see
+     * {@link jobKeyModeFor}). `'preserve_run_at'` replaces an unlocked job
+     * (keeping its `run_at` while it has no attempts), and next to a locked
+     * one inserts a second job. `'unsafe_dedupe'` makes the add a no-op
+     * while any job holds the key, locked or not.
+     */
+    jobKeyMode?: 'preserve_run_at' | 'unsafe_dedupe';
   }) {
     const utils = workerUtils;
     if (!utils) {
@@ -475,6 +506,7 @@ export function createQueue(
         ? new Date(Date.now() + delaySeconds * 1000)
         : undefined;
 
+    const runQueue = executorRunId ?? serialRunId;
     await utils.addJob(
       executorRunId ? executorTask() : getJobQueueName(),
       MessageData.encode({
@@ -491,20 +523,10 @@ export function createQueue(
         headers,
       }),
       {
-        ...(jobKey
-          ? {
-              jobKey,
-              // A duplicate keyed publish may be an immediate replay of a
-              // delayed retry. Keep the first job's run_at so deduplication
-              // cannot erase the retry backoff.
-              jobKeyMode: 'preserve_run_at' as const,
-            }
-          : {}),
+        ...(jobKey ? { jobKey, jobKeyMode } : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts,
-        ...(executorRunId
-          ? { queueName: executorQueueName(executorRunId) }
-          : {}),
+        ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
       }
     );
   }
@@ -877,6 +899,32 @@ export function createQueue(
     }
   }
 
+  /**
+   * The Graphile job-key mode of a publish (`queue`). A follow-up job the
+   * queue schedules itself (a reschedule, a transfer to the executor) keeps
+   * `'preserve_run_at'`: it is sent while the job it continues is locked,
+   * and must be inserted next to it.
+   *
+   * - A single-orchestrator run's keyed message (spec >= 9: a step's
+   *   execution message, a near-due wait timer) is sent with a key only to
+   *   be deduplicated: the runtime sends it again from later deliveries of
+   *   the run (the re-send rule), and a second job would be a second owner
+   *   of the step's body. `'unsafe_dedupe'` makes the send a no-op while any
+   *   job holds the key: a locked one (being delivered), one waiting out its
+   *   delay, or one in retry backoff, whose attempts and `run_at` it keeps.
+   *   The key is free again once the job completes and is deleted.
+   * - Any other keyed publish keeps `'preserve_run_at'`: a duplicate may be
+   *   an immediate replay of a delayed retry, and keeping the first job's
+   *   `run_at` keeps that backoff.
+   */
+  const jobKeyModeFor = (
+    message: unknown,
+    idempotencyKey: string | undefined
+  ): 'preserve_run_at' | 'unsafe_dedupe' =>
+    idempotencyKey !== undefined && isSingleOrchestratorMessage(message)
+      ? 'unsafe_dedupe'
+      : 'preserve_run_at';
+
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
     const { prefix, id: queueId } = parseQueueName(queue);
@@ -900,7 +948,14 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
-      ...(input ? { executorRunId: input.runId } : {}),
+      jobKeyMode: jobKeyModeFor(message, opts?.idempotencyKey),
+      // Only the SDK's own prefix carries workflow runs; a queue consumer's
+      // own messages are never serialized by run.
+      ...(input
+        ? { executorRunId: input.runId }
+        : prefix === ownPrefix()
+          ? { serialRunId: singleOrchestratorRunIdOf(message) }
+          : {}),
     });
     return { messageId };
   };
@@ -951,10 +1006,12 @@ export function createQueue(
       const attempt = graphileHelpers.success
         ? graphileHelpers.data.job.attempts + (messageData.attemptOffset ?? 0)
         : messageData.attempt;
-      // `attempt` is what core counts against its max-deliveries cap, and a
-      // `{ timeoutSeconds }` reschedule starts it over (as it always has), so
-      // a step retried in place many times on one message is not failed by
-      // the cap. `deliveryCount` keeps counting across reschedules.
+      // `attempt` is what core counts against its max-deliveries cap. A
+      // `{ timeoutSeconds: n > 0 }` reschedule starts it over (as it always
+      // has), so a step retried in place many times on one message is not
+      // failed by the cap; a spec 9 handoff (`{ timeoutSeconds: 0 }`) carries
+      // it over (`attemptOffset`). `deliveryCount` keeps counting across both,
+      // and is what a spec 9 orchestrator's re-send rule reads.
       const deliveryCount = graphileHelpers.success
         ? graphileHelpers.data.job.attempts +
           (messageData.deliveryOffset ?? messageData.attemptOffset ?? 0)
@@ -1025,6 +1082,14 @@ export function createQueue(
         }
 
         if (result.type === 'reschedule') {
+          // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a
+          // handoff: the next delivery continues this one and reports the
+          // same `attempt` (see `Queue.createQueueHandler`). Core derives a
+          // delivery's creator identity from `attempt`, so a crash
+          // redelivery that hands off must stay a redelivery for its
+          // successor.
+          const handoff =
+            result.timeoutSeconds === 0 && isSingleOrchestratorMessage(body);
           // Schedule the follow-up job before we return so a crash cannot
           // lose the wake-up request.
           await addGraphileJob({
@@ -1036,16 +1101,24 @@ export function createQueue(
             // replacement is a new Graphile job whose own attempt count
             // starts again at 1; the deliveries made so far ride along as
             // `deliveryOffset`, so the handler sees the next deliveryCount.
+            // A handoff also carries the attempts so far as
+            // `attemptOffset`; any other reschedule starts `attempt` over,
+            // so a step retried in place many times on one message is not
+            // failed by core's max-deliveries cap.
             messageId: messageData.messageId,
             createdAt: messageData.createdAt,
-            attempt: attempt + 1,
-            attemptOffset: messageData.attemptOffset,
+            attempt: handoff ? attempt : attempt + 1,
+            attemptOffset: handoff ? attempt - 1 : messageData.attemptOffset,
             deliveryOffset: deliveryCount,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
             jobKey: messageData.idempotencyKey ?? messageData.messageId,
-            ...(orchestration ? { executorRunId: orchestration.runId } : {}),
+            ...(orchestration
+              ? { executorRunId: orchestration.runId }
+              : prefix === queue
+                ? { serialRunId: singleOrchestratorRunIdOf(body) }
+                : {}),
           });
           return 'rescheduled';
         }
@@ -1057,8 +1130,12 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
-        // A delivery can hold an inline step until another wake aborts it.
-        // Run-level exclusion here would also exclude that required wake.
+        // Wakes carry no key, and get no run-level exclusion here. A
+        // single-orchestrator run's orchestrator deliveries are serialized by
+        // its named queue (see `executorQueueName`), and its orchestrator
+        // reads new events from the log itself while it runs an inline step.
+        // An earlier run's delivery can hold an inline step until another
+        // wake aborts it, and run-level exclusion would exclude that wake.
         await executeTask();
         return;
       }
