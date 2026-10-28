@@ -44,7 +44,10 @@ type Retry = (
 
 /** An in-memory Vercel Queues: what `@vercel/queue`'s client sends to. */
 const vqs = vi.hoisted(() => {
+  class ConcurrencyCoalescedPendingError extends Error {}
   const state = {
+    /** `experimental_maxCoalescedReruns` the adapter registered. */
+    maxReruns: 0,
     messages: [] as QueuedMessage[],
     sent: [] as QueuedMessage[],
     keys: new Set<string>(),
@@ -75,16 +78,15 @@ const vqs = vi.hoisted(() => {
     state.sent.push(message);
     return { messageId };
   };
-  return { state, send };
+  return { state, send, ConcurrencyCoalescedPendingError };
 });
 
 vi.mock(
   '../../../../world-vercel/node_modules/@vercel/queue/dist/index.mjs',
   () => {
-    class ConcurrencyCoalescedPendingError extends Error {}
     class ConsumerDiscoveryError extends Error {}
     return {
-      ConcurrencyCoalescedPendingError,
+      ConcurrencyCoalescedPendingError: vqs.ConcurrencyCoalescedPendingError,
       ConsumerDiscoveryError,
       // biome-ignore lint/complexity/useArrowFunction: `new QueueClient(...)`
       QueueClient: vi.fn().mockImplementation(function () {
@@ -99,9 +101,13 @@ vi.mock(
               status: 'sent',
               ...vqs.send(topic, payload, opts),
             })),
-          handleCallback: (callback: Callback, options: { retry: Retry }) => {
+          handleCallback: (
+            callback: Callback,
+            options: { retry: Retry; experimental_maxCoalescedReruns: number }
+          ) => {
             vqs.state.callback = callback;
             vqs.state.retry = options.retry;
+            vqs.state.maxReruns = options.experimental_maxCoalescedReruns;
             return async () => new Response('ok');
           },
         };
@@ -257,6 +263,54 @@ describe.each([
       expect(message.opts.idempotencyKey).toEqual(expect.any(String));
       expect(message.opts.experimental_concurrencyKey).toBeUndefined();
     }
+  });
+  it('continues a start message close to its expiry on a new message when its coalesced re-runs run out, and the run completes', async () => {
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
+    const [start] = vqs.state.messages;
+    await deliver(start!);
+    // The first step's message is out; its completion's wake is coalesced
+    // into a delivery of the start message that has used its re-runs, so the
+    // queue refuses that re-run's acknowledgment and hands the message off.
+    const step = vqs.state.messages.find(
+      (message) => message.wrapper.payload.stepId !== undefined
+    )!;
+    await deliver(step);
+    const wake = vqs.state.messages.find(
+      (message) => message.wrapper.payload.stepId === undefined
+    )!;
+    vqs.state.messages.splice(vqs.state.messages.indexOf(wake), 1);
+    vqs.state.messages.push(start!);
+    const metadata = {
+      messageId: start!.messageId,
+      deliveryCount: start!.deliveryCount,
+      createdAt: start!.createdAt,
+      expiresAt: new Date(Date.now()),
+      experimental_coalesced: { rerun: vqs.state.maxReruns, coalescedCount: 1 },
+    };
+    const sentBefore = vqs.state.sent.length;
+    await vqs.state.callback!(structuredClone(start!.wrapper), metadata);
+    expect(
+      vqs.state.retry!(
+        new vqs.ConcurrencyCoalescedPendingError('coalesced'),
+        metadata
+      )
+    ).toEqual({ afterSeconds: 0, experimental_handoff: true });
+
+    const [continuation] = vqs.state.sent
+      .slice(sentBefore)
+      .filter((message) => message.wrapper.payload.stepId === undefined);
+    expect(continuation).toBeDefined();
+    expect(continuation!.messageId).not.toBe(start!.messageId);
+    expect('runInput' in continuation!.wrapper.payload).toBe(false);
+    expect(continuation!.opts.experimental_concurrencyKey).toBe(
+      start!.opts.experimental_concurrencyKey
+    );
+
+    start!.handoffCount++;
+    await runUntilIdle();
+    expect(await runResult(store)).toBe(13);
+    expect(calls).toEqual({ contract_slow: 1, contract_add: 1 });
+    expect(eventsOf(store, 'run_started')).toHaveLength(1);
   });
 
   // The node engine hands a delivery off at its inline deadline; the QuickJS

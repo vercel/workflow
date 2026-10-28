@@ -89,7 +89,9 @@ import { missingDeploymentIdMessage } from './deployment-id.js';
 import {
   createQueue,
   DEFAULT_MESSAGE_RETENTION_SECONDS,
+  isLastCoalescedRerun,
   logHandoffOutcome,
+  MAX_COALESCED_RERUNS,
   MAX_REDELIVERY_DELAY_SECONDS,
   ORCHESTRATOR_ROTATION_DELAY_SECONDS,
   ORCHESTRATOR_ROTATION_EXPIRY_MARGIN_SECONDS,
@@ -1485,6 +1487,142 @@ describe('createQueue', () => {
         } finally {
           infoSpy.mockRestore();
         }
+      });
+
+      describe('when its coalesced re-runs run out', () => {
+        const lastRerun = {
+          rerun: MAX_COALESCED_RERUNS,
+          coalescedCount: 3,
+        };
+        // The run's start message: its spec stamp rides in `runInput`.
+        const startPayload = {
+          runId: 'wrun_abc',
+          traceCarrier: { traceparent: '00-abc-def-01' },
+          runInput: {
+            input: new Uint8Array([1]),
+            deploymentId: 'dpl_original',
+            workflowName: 'workflow',
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          },
+        };
+        /** Runs the last re-run of an acknowledging delivery. */
+        const lastRerunOf = async (metadata: Record<string, unknown>) => {
+          const { handler, retry } = captureHandler(undefined);
+          await handler(
+            {
+              payload: startPayload,
+              queueName: '__wkf_workflow_test',
+              deploymentId: 'dpl_original',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 4,
+              experimental_coalesced: lastRerun,
+              ...metadata,
+            }
+          );
+          return retry;
+        };
+        let infoSpy: ReturnType<typeof vi.spyOn>;
+        beforeEach(() => {
+          vi.useFakeTimers({ toFake: ['Date'] });
+          vi.setSystemTime(NOW);
+          infoSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+        });
+        afterEach(() => {
+          infoSpy.mockRestore();
+        });
+
+        it('knows the last re-run from the re-run cap', () => {
+          expect(isLastCoalescedRerun({})).toBe(false);
+          expect(
+            isLastCoalescedRerun({
+              experimental_coalesced: { rerun: MAX_COALESCED_RERUNS - 1 },
+            })
+          ).toBe(false);
+          expect(
+            isLastCoalescedRerun({ experimental_coalesced: lastRerun })
+          ).toBe(true);
+        });
+
+        it.each([
+          ['close to its expiry', { createdAt: expiringIn(margin - 60) }],
+          [
+            'close to its handoff bound',
+            {
+              createdAt: expiringIn(margin + 60 * 60),
+              experimental_handoffCount: handoffLimit,
+            },
+          ],
+        ])('continues a message %s on a new one, without its runInput', async (_, metadata) => {
+          await lastRerunOf(metadata);
+          expect(mockSend).toHaveBeenCalledTimes(1);
+          const [, wrapper, sendOpts] = mockSend.mock.calls[0];
+          expect(wrapper.payload).toEqual({
+            runId: 'wrun_abc',
+            runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            traceCarrier: startPayload.traceCarrier,
+          });
+          expect(sendOpts).toMatchObject({
+            experimental_concurrencyKey: 'wrun_abc',
+          });
+        });
+
+        it('keeps the same-message handoff far from both limits', async () => {
+          const retry = await lastRerunOf({
+            createdAt: expiringIn(margin + 60 * 60),
+            experimental_handoffCount: handoffLimit - 1,
+          });
+          expect(mockSend).not.toHaveBeenCalled();
+          expect(
+            retry(new MockConcurrencyCoalescedPendingError(3), {
+              messageId: 'msg-123',
+              deliveryCount: 4,
+            })
+          ).toEqual({ afterSeconds: 0, experimental_handoff: true });
+        });
+
+        it('does not continue on an earlier re-run, which the library may still acknowledge', async () => {
+          const { handler } = captureHandler(undefined);
+          await handler(
+            {
+              payload: startPayload,
+              queueName: '__wkf_workflow_test',
+              deploymentId: 'dpl_original',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 4,
+              createdAt: expiringIn(margin - 60),
+              experimental_coalesced: {
+                ...lastRerun,
+                rerun: lastRerun.rerun - 1,
+              },
+            }
+          );
+          expect(mockSend).not.toHaveBeenCalled();
+        });
+
+        it('leaves a step message on its own message', async () => {
+          const { handler } = captureHandler(undefined);
+          await handler(
+            {
+              payload: spec9({
+                runId: 'wrun_abc',
+                stepId: 'step_1',
+                stepName: 'step',
+              }),
+              queueName: '__wkf_workflow_test',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 1,
+              createdAt: expiringIn(margin - 60),
+              experimental_coalesced: lastRerun,
+            }
+          );
+          expect(mockSend).not.toHaveBeenCalled();
+        });
       });
 
       it('hands a step message off on the same message, never on a new one', async () => {

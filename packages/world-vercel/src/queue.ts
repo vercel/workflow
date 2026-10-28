@@ -454,6 +454,21 @@ export function logHandoffOutcome(
 const MAX_COALESCED_RERUNS = 32;
 
 /**
+ * Whether `metadata` is the last coalesced re-run `@vercel/queue` gives one
+ * delivery (`MAX_COALESCED_RERUNS`). If its acknowledgment is refused again,
+ * the library hands the message off with no further call into the handler.
+ * Exported for unit tests.
+ */
+export function isLastCoalescedRerun(metadata: {
+  experimental_coalesced?: { rerun: number };
+}): boolean {
+  return (metadata.experimental_coalesced?.rerun ?? 0) >= MAX_COALESCED_RERUNS;
+}
+
+/** Exported for unit tests. */
+export { MAX_COALESCED_RERUNS };
+
+/**
  * The longest redelivery delay VQS honors for one hop (it clamps
  * `afterSeconds` to [5s, 900s]). Exported for unit tests.
  */
@@ -1101,6 +1116,63 @@ export function createQueue(config?: APIConfig): Queue {
               )
             : runHandler());
 
+          /**
+           * Continues a spec 9 orchestrator message close to its expiry, or
+           * to its handoff bound (`orchestratorMessageRotation`), on a new
+           * message, and returns `true` once it was sent; `false` when the
+           * message is not due or is not an orchestrator message. A step
+           * message keeps its own (its idempotency key would drop a copy).
+           *
+           * The new message is a continuation (spec stamp, run context, so
+           * the same concurrency key, and what the message is a wake for),
+           * never a copy: the run's start message carries `runInput`, which
+           * on a first delivery selects the runtime's fresh-start path. It is
+           * delayed past this delivery's acknowledgment. Callers rotate only
+           * once the runtime sent every message its committed writes owe, so
+           * this message's id owes nothing more.
+           */
+          const rotateIfDue = async (): Promise<boolean> => {
+            if ('invoke' in payload && payload.invoke === true) return false;
+            const rotation = orchestratorMessageRotation(metadata);
+            const continuation =
+              rotation === undefined
+                ? undefined
+                : singleOrchestratorContinuationPayload(payload);
+            if (rotation === undefined || continuation === undefined) {
+              return false;
+            }
+            await queue(queueName, continuation, {
+              deploymentId,
+              delaySeconds: ORCHESTRATOR_ROTATION_DELAY_SECONDS,
+              specVersion: continuation.runSpecVersion,
+            });
+            console.info(
+              `[workflow] Continuing run "${getRunIdFromPayload(payload)}" on a new message instead of handing off message "${metadata.messageId}" (${rotation}; handoffs: ${metadata.experimental_handoffCount ?? 0})`
+            );
+            return true;
+          };
+
+          // The last coalesced re-run of a delivery that acknowledges. If
+          // more messages were coalesced into it meanwhile, `@vercel/queue`
+          // refuses the acknowledgment and hands the message off itself
+          // (`ConcurrencyCoalescedPendingError` in `retry` below), which
+          // keeps the message's expiry and handoff count and cannot send.
+          // So a message due for rotation is continued on a new one here,
+          // before that acknowledgment. If the acknowledgment then succeeds,
+          // the continuation is one extra wake, which replays from the log.
+          if (
+            isLastCoalescedRerun(metadata) &&
+            !(
+              typeof result === 'object' &&
+              result !== null &&
+              'timeoutSeconds' in result &&
+              typeof result.timeoutSeconds === 'number'
+            ) &&
+            (await rotateIfDue())
+          ) {
+            return;
+          }
+
           if (
             !('invoke' in payload && payload.invoke === true) &&
             typeof result === 'object' &&
@@ -1139,37 +1211,10 @@ export function createQueue(config?: APIConfig): Queue {
             const afterSeconds = Number.isFinite(result.timeoutSeconds)
               ? Math.max(0, Math.ceil(result.timeoutSeconds))
               : MAX_REDELIVERY_DELAY_SECONDS;
-            const rotation =
-              afterSeconds === 0
-                ? orchestratorMessageRotation(metadata)
-                : undefined;
-            // Only an orchestrator message continues on a new one: a step
-            // message keeps its own (its idempotency key would drop a copy).
-            const continuation =
-              rotation === undefined
-                ? undefined
-                : singleOrchestratorContinuationPayload(payload);
-            if (rotation !== undefined && continuation !== undefined) {
-              // A handoff would keep a message about to expire, or to
-              // exhaust its handoffs: continue on a new one instead, and
-              // acknowledge this one. The runtime asks for a handoff only
-              // once every message its committed writes owe was sent, so
-              // this message's id owes nothing more. The new message is a
-              // continuation (spec stamp, run context, so the same
-              // concurrency key, and what the message is a wake for), never
-              // a copy: the run's start message carries `runInput`, which on
-              // a first delivery selects the runtime's fresh-start path. It
-              // is delayed past this acknowledgment.
-              await queue(queueName, continuation, {
-                deploymentId,
-                delaySeconds: ORCHESTRATOR_ROTATION_DELAY_SECONDS,
-                specVersion: continuation.runSpecVersion,
-              });
-              console.info(
-                `[workflow] Continuing run "${getRunIdFromPayload(payload)}" on a new message instead of handing off message "${metadata.messageId}" (${rotation}; handoffs: ${metadata.experimental_handoffCount ?? 0})`
-              );
-              return;
-            }
+            // A handoff of a message close to its expiry, or to exhausting
+            // its handoffs, continues on a new message instead, and this one
+            // is acknowledged.
+            if (afterSeconds === 0 && (await rotateIfDue())) return;
             throw new RedeliverSameMessage(afterSeconds);
           }
         } finally {
@@ -1200,6 +1245,8 @@ export function createQueue(config?: APIConfig): Queue {
             // one. Hand the message off: its next delivery replays from the
             // log, which holds what those messages were sent for, and it is
             // not counted as an attempt.
+            // A message due for rotation was already continued on a new one
+            // by its last re-run (see `isLastCoalescedRerun`).
             console.debug(
               `[workflow] Handing off message "${messageId}" with coalesced messages still pending after ${MAX_COALESCED_RERUNS} re-runs (delivery ${deliveryCount})`
             );
