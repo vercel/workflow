@@ -19,11 +19,36 @@ import {
   type World,
 } from '@workflow/world';
 import { vi } from 'vitest';
-import {
-  MAX_IN_BAND_CREATION_BATCH_BYTES,
-  MAX_IN_BAND_CREATION_BATCH_EVENTS,
-} from '../runtime/constants.js';
-import { creationBatchBytes } from '../runtime/spec9/step-wait-creation.js';
+
+/**
+ * The limits world-vercel puts on one `createBatch` call, the World this fake
+ * models: at most 100 events, and at most 768 KiB of frame meta and payloads.
+ * They are the World's, held here apart from the runtime's own batch budget
+ * (`MAX_IN_BAND_CREATION_BATCH_*` in `runtime/constants.ts`), so a change to
+ * that budget, or to how the runtime counts a batch's bytes, cannot raise
+ * what this fake accepts along with it.
+ */
+export const WORLD_EVENT_BATCH_LIMITS = Object.freeze({
+  maxEvents: 100,
+  maxBytes: 768 * 1024,
+});
+
+/**
+ * The bytes one batch item takes on the wire, as this fake counts them,
+ * independently of the runtime's estimate: its JSON with every binary
+ * payload left out, plus each payload's length.
+ */
+export function eventBatchItemBytes(event: unknown): number {
+  let payloadBytes = 0;
+  const json = JSON.stringify(event, (_key, value: unknown) => {
+    if (ArrayBuffer.isView(value)) {
+      payloadBytes += value.byteLength;
+      return null;
+    }
+    return value;
+  });
+  return Buffer.byteLength(json ?? '') + payloadBytes;
+}
 
 /** One `world.queue` call recorded by {@link AppendOnlyWorld}. */
 export interface RecordedQueueCall {
@@ -147,6 +172,8 @@ export class AppendOnlyWorld {
    * late send under it is dropped too.
    */
   private readonly acknowledgedKeys = new Set<string>();
+  /** When each idempotency key was last sent as a new message (epoch ms). */
+  private readonly keySentAtMs = new Map<string, number>();
 
   constructor(
     readonly options: {
@@ -244,6 +271,15 @@ export class AppendOnlyWorld {
        * held in transit.
        */
       beforeList?: (params: ListEventsParams) => void | Promise<void>;
+      /**
+       * How long the queue deduplicates an idempotency key after the send
+       * that made it held a message, in ms of the (possibly faked) system
+       * clock, whether that message is still held, being delivered, or was
+       * acknowledged. Past it a send under the key is a new message, as on a
+       * queue with a finite dedupe window (world-vercel's is 24 hours).
+       * Absent: a key is deduplicated for as long as the fake lives.
+       */
+      keyDedupeWindowMs?: number;
     } = {}
   ) {}
 
@@ -867,22 +903,27 @@ export class AppendOnlyWorld {
             { batch: true }
           );
         }
-        // A World refuses an oversized batch whole (world-vercel caps it by
-        // event count and bytes); this one caps it at what the runtime may
-        // send.
-        if (batch.length > MAX_IN_BAND_CREATION_BATCH_EVENTS) {
+        // A World refuses an oversized batch whole, by event count and by
+        // bytes (see WORLD_EVENT_BATCH_LIMITS). A lone event is not refused
+        // for its size: world-vercel stores a large payload out of line.
+        // Every other payload byte is counted, which is stricter than
+        // world-vercel, whose byte limit covers only inline-bound payloads.
+        if (batch.length > WORLD_EVENT_BATCH_LIMITS.maxEvents) {
           throw new WorkflowWorldError(
-            `An event batch may carry at most ${MAX_IN_BAND_CREATION_BATCH_EVENTS} events`,
+            `An event batch may carry at most ${WORLD_EVENT_BATCH_LIMITS.maxEvents} events`,
             { status: 400 }
           );
         }
         const batchBytes = batch.reduce(
-          (sum, item) => sum + creationBatchBytes(item.event),
+          (sum, item) => sum + eventBatchItemBytes(item.event),
           0
         );
-        if (batch.length > 1 && batchBytes > MAX_IN_BAND_CREATION_BATCH_BYTES) {
+        if (
+          batch.length > 1 &&
+          batchBytes > WORLD_EVENT_BATCH_LIMITS.maxBytes
+        ) {
           throw new WorkflowWorldError(
-            `An event batch may carry at most ${MAX_IN_BAND_CREATION_BATCH_BYTES} bytes`,
+            `An event batch may carry at most ${WORLD_EVENT_BATCH_LIMITS.maxBytes} bytes`,
             { status: 400 }
           );
         }
@@ -976,17 +1017,26 @@ export class AppendOnlyWorld {
           self.coalescedMessages++;
           return { messageId };
         }
-        const key = options?.idempotencyKey;
+        const key = options?.idempotencyKey as string | undefined;
         // Deduplicate like a queue does while the keyed message exists
-        // (held, or being delivered) and after it was acknowledged.
+        // (held, or being delivered) and after it was acknowledged, within
+        // the key's dedupe window when there is one.
+        const sentAtMs =
+          key !== undefined ? self.keySentAtMs.get(key) : undefined;
+        const windowOpen =
+          self.options.keyDedupeWindowMs === undefined ||
+          sentAtMs === undefined ||
+          Date.now() - sentAtMs < self.options.keyDedupeWindowMs;
         if (
           key !== undefined &&
+          windowOpen &&
           (self.held.some((held) => held.opts?.idempotencyKey === key) ||
-            self.deliveringKeys.has(key as string) ||
-            self.acknowledgedKeys.has(key as string))
+            self.deliveringKeys.has(key) ||
+            self.acknowledgedKeys.has(key))
         ) {
           return { messageId: null };
         }
+        if (key !== undefined) self.keySentAtMs.set(key, Date.now());
         const delaySeconds = (options?.delaySeconds as number | undefined) ?? 0;
         self.held.push({
           message,

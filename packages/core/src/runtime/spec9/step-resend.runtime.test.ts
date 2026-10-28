@@ -5,7 +5,10 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import type { Event } from '@workflow/world';
+import {
+  type Event,
+  QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS,
+} from '@workflow/world';
 import {
   afterAll,
   afterEach,
@@ -245,6 +248,45 @@ describe.each([
           span.attributes[REENQUEUE_COUNT] === 0
       )
     ).toBe(true);
+  });
+
+  it("never leaves a step two live messages, inside the queue's key dedupe window or past it", async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // The queue forgets a key once its window passed, while the step's first
+    // message is still held: a re-send then would be a second message.
+    const { world, start } = await setupOrchestratorRun(
+      stepWorkflow,
+      [],
+      { keyDedupeWindowMs: QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS },
+      engine
+    );
+    await world.deliver(start);
+    const createdAtMs = Date.now();
+    const liveStepMessages = () =>
+      world.held.filter(
+        (held) => (held.message as { stepId?: string }).stepId !== undefined
+      );
+    expect(liveStepMessages()).toHaveLength(1);
+    const redeliver = (deliveryCount: number) =>
+      world.deliver({
+        ...start,
+        deliveryCount,
+        invocationStartedAt: Date.now(),
+      });
+
+    // Inside the re-send bound the step is sent again, and the queue
+    // deduplicates it against the live message.
+    vi.setSystemTime(createdAtMs + STEP_RESEND_MAX_AGE_MS - 60_000);
+    await redeliver(2);
+    expect(stepMessageIds(world)).toHaveLength(2);
+    expect(liveStepMessages()).toHaveLength(1);
+
+    // Just past the window the queue would take a re-send as a new message,
+    // and none is made.
+    vi.setSystemTime(createdAtMs + QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS + 1);
+    await redeliver(3);
+    expect(stepMessageIds(world)).toHaveLength(2);
+    expect(liveStepMessages()).toHaveLength(1);
   });
 
   it('does not re-send on a first delivery', async () => {
