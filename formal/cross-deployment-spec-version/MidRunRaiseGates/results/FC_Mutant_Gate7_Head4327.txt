@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 70 and seed 3464297795182165904 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 112266] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 3 and seed -6257879177071050518 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 30729] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/ForceClaimGate.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/TLC.tla
@@ -12,9 +12,9 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module ForceClaimGate
-Starting... (2026-09-25 01:42:28)
+Starting... (2026-10-28 18:12:43)
 Computing initial states...
-Finished computing initial states: 2 distinct states generated at 2026-09-25 01:42:29.
+Finished computing initial states: 2 distinct states generated at 2026-10-28 18:12:44.
 Error: Invariant NoStrandedVictim is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -27,9 +27,9 @@ State 1: <Initial predicate>
 /\ sSnap = [status |-> "none", spec |-> 0]
 /\ token = "none"
 /\ claim = "idle"
-/\ vSpec = 7
+/\ vSpec = 6
 /\ vStatus = "pending"
-/\ stamp = 7
+/\ stamp = 6
 
 State 2: <RunStarted line 133, col 3 to line 141, col 20 of module ForceClaimGate>
 /\ raisedLive = FALSE
@@ -43,7 +43,7 @@ State 2: <RunStarted line 133, col 3 to line 141, col 20 of module ForceClaimGat
 /\ claim = "idle"
 /\ vSpec = 7
 /\ vStatus = "running"
-/\ stamp = 7
+/\ stamp = 6
 
 State 3: <CreateHook line 171, col 3 to line 175, col 20 of module ForceClaimGate>
 /\ raisedLive = FALSE
@@ -57,7 +57,7 @@ State 3: <CreateHook line 171, col 3 to line 175, col 20 of module ForceClaimGat
 /\ claim = "idle"
 /\ vSpec = 7
 /\ vStatus = "running"
-/\ stamp = 7
+/\ stamp = 6
 
 State 4: <ClaimRead line 184, col 3 to line 189, col 20 of module ForceClaimGate>
 /\ raisedLive = FALSE
@@ -71,7 +71,7 @@ State 4: <ClaimRead line 184, col 3 to line 189, col 20 of module ForceClaimGate
 /\ claim = "read"
 /\ vSpec = 7
 /\ vStatus = "running"
-/\ stamp = 7
+/\ stamp = 6
 
 State 5: <ClaimDecide line 192, col 3 to line 201, col 74 of module ForceClaimGate>
 /\ raisedLive = FALSE
@@ -85,9 +85,9 @@ State 5: <ClaimDecide line 192, col 3 to line 201, col 74 of module ForceClaimGa
 /\ claim = "done"
 /\ vSpec = 7
 /\ vStatus = "running"
-/\ stamp = 7
+/\ stamp = 6
 
-62 states generated, 26 distinct states found, 7 states left on queue.
+56 states generated, 23 distinct states found, 7 states left on queue.
 The depth of the complete state graph search is 5.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 3 and the 95th percentile is 3).
-Finished in 00s at (2026-09-25 01:42:29)
+Finished in 01s at (2026-10-28 18:12:44)

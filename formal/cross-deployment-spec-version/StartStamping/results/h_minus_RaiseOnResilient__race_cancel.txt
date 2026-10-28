@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 69 and seed 1481931591192152200 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 71398] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 66 and seed 1640143601762861453 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 54873] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:34:13)
+Starting... (2026-10-28 19:06:09)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -71,7 +71,7 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:34:14.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-10-28 19:06:11.
 Error: Invariant NoAvoidableBrick is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -306,8 +306,8 @@ State 6: <XReplay line 723, col 5 to line 734, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "U", sp |-> 3, n |-> 100],
   [t |-> "RS", k |-> "U", sp |-> 0, n |-> 101] }
 
-12769 states generated, 5586 distinct states found, 3258 states left on queue.
+12189 states generated, 5245 distinct states found, 3082 states left on queue.
 The depth of the complete state graph search is 6.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 5 and the 95th percentile is 4).
-Finished in 01s at (2026-09-25 19:34:14)
+Finished in 02s at (2026-10-28 19:06:11)
 exit=12

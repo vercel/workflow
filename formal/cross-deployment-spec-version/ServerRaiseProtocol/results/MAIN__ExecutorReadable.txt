@@ -1,19 +1,19 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 24 and seed -5727232644399620512 with 3 workers on 8 cores with 2731MB heap and 64MB offheap memory [pid: 79995] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /tmp/tmp.NF6zcSxX9m/ServerRaiseProtocol.tla
-Parsing file /tmp/Naturals.tla
-Parsing file /tmp/FiniteSets.tla
-Parsing file /tmp/Sequences.tla
+Running breadth-first search Model-Checking with fp 11 and seed 7969639614070392384 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 71987] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.TqKt4kYJRW/ServerRaiseProtocol.tla
+Parsing file /tmp/tmp.TqKt4kYJRW/Naturals.tla
+Parsing file /tmp/tmp.TqKt4kYJRW/FiniteSets.tla
+Parsing file /tmp/tmp.TqKt4kYJRW/Sequences.tla
 Semantic processing of module Naturals
 Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module ServerRaiseProtocol
-Starting... (2026-09-25 19:45:38)
+Starting... (2026-10-28 20:17:09)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
 Computed 8 initial states...
-Finished computing initial states: 12 distinct states generated at 2026-09-25 19:45:38.
+Finished computing initial states: 12 distinct states generated at 2026-10-28 20:17:09.
 Error: Invariant ExecutorReadable is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -30,7 +30,7 @@ State 1: <Initial predicate>
 /\ sawUlid = FALSE
 /\ hist = {}
 /\ eturbo = <<FALSE, FALSE>>
-/\ exec = 6
+/\ exec = [v |-> 6, on |-> FALSE]
 /\ crashes = 0
 /\ cpc = "row"
 /\ epc = <<"fetch", "fetch">>
@@ -42,7 +42,7 @@ State 1: <Initial predicate>
    [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
 /\ erf = <<FALSE, FALSE>>
 
-State 2: <ExFetch line 492, col 3 to line 509, col 21 of module ServerRaiseProtocol>
+State 2: <ExFetch line 521, col 3 to line 539, col 21 of module ServerRaiseProtocol>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ wleft = 2
 /\ eid = <<"U", "U">>
@@ -56,7 +56,7 @@ State 2: <ExFetch line 492, col 3 to line 509, col 21 of module ServerRaiseProto
 /\ sawUlid = FALSE
 /\ hist = {}
 /\ eturbo = <<FALSE, FALSE>>
-/\ exec = 6
+/\ exec = [v |-> 6, on |-> FALSE]
 /\ crashes = 0
 /\ cpc = "row"
 /\ epc = <<"rs_create", "fetch">>
@@ -68,7 +68,7 @@ State 2: <ExFetch line 492, col 3 to line 509, col 21 of module ServerRaiseProto
    [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
 /\ erf = <<FALSE, FALSE>>
 
-State 3: <ExRsCreate line 512, col 3 to line 538, col 22 of module ServerRaiseProtocol>
+State 3: <ExRsCreate line 542, col 3 to line 568, col 22 of module ServerRaiseProtocol>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ wleft = 2
 /\ eid = <<"U", "U">>
@@ -82,7 +82,7 @@ State 3: <ExRsCreate line 512, col 3 to line 538, col 22 of module ServerRaisePr
 /\ sawUlid = FALSE
 /\ hist = {[st |-> "pending", sp |-> 3]}
 /\ eturbo = <<FALSE, FALSE>>
-/\ exec = 6
+/\ exec = [v |-> 6, on |-> FALSE]
 /\ crashes = 0
 /\ cpc = "row"
 /\ epc = <<"trans", "fetch">>
@@ -94,7 +94,7 @@ State 3: <ExRsCreate line 512, col 3 to line 538, col 22 of module ServerRaisePr
    [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
 /\ erf = <<FALSE, FALSE>>
 
-State 4: <ExTrans line 676, col 3 to line 728, col 41 of module ServerRaiseProtocol>
+State 4: <ExTrans line 706, col 3 to line 758, col 41 of module ServerRaiseProtocol>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ wleft = 2
 /\ eid = <<"U", "U">>
@@ -108,7 +108,7 @@ State 4: <ExTrans line 676, col 3 to line 728, col 41 of module ServerRaiseProto
 /\ sawUlid = FALSE
 /\ hist = {[st |-> "pending", sp |-> 3], [st |-> "running", sp |-> 3]}
 /\ eturbo = <<FALSE, FALSE>>
-/\ exec = 6
+/\ exec = [v |-> 6, on |-> FALSE]
 /\ crashes = 0
 /\ cpc = "row"
 /\ epc = <<"rs_insert", "fetch">>
@@ -120,7 +120,7 @@ State 4: <ExTrans line 676, col 3 to line 728, col 41 of module ServerRaiseProto
    [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
 /\ erf = <<FALSE, FALSE>>
 
-State 5: <ExRsInsert line 731, col 3 to line 739, col 40 of module ServerRaiseProtocol>
+State 5: <ExRsInsert line 761, col 3 to line 769, col 40 of module ServerRaiseProtocol>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ wleft = 2
 /\ eid = <<"U", "U">>
@@ -135,7 +135,7 @@ State 5: <ExRsInsert line 731, col 3 to line 739, col 40 of module ServerRaisePr
 /\ sawUlid = FALSE
 /\ hist = {[st |-> "pending", sp |-> 3], [st |-> "running", sp |-> 3]}
 /\ eturbo = <<FALSE, FALSE>>
-/\ exec = 6
+/\ exec = [v |-> 6, on |-> FALSE]
 /\ crashes = 0
 /\ cpc = "row"
 /\ epc = <<"replay", "fetch">>
@@ -147,7 +147,7 @@ State 5: <ExRsInsert line 731, col 3 to line 739, col 40 of module ServerRaisePr
    [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
 /\ erf = <<FALSE, FALSE>>
 
-1062 states generated, 751 distinct states found, 453 states left on queue.
+1078 states generated, 762 distinct states found, 462 states left on queue.
 The depth of the complete state graph search is 5.
 The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 5 and the 95th percentile is 4).
-Finished in 00s at (2026-09-25 19:45:38)
+Finished in 01s at (2026-10-28 20:17:09)

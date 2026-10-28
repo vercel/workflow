@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 32 and seed -5492207411842010025 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 56686] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Running breadth-first search Model-Checking with fp 66 and seed -6619238648666129249 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 17383] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
 Parsing file /tmp/TLC.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:15:14)
+Starting... (2026-10-28 17:53:17)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -73,7 +73,8 @@ Computed 2048 initial states...
 Computed 4096 initial states...
 Computed 8192 initial states...
 Computed 16384 initial states...
-Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 19:15:15.
+Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-10-28 17:53:20.
+Progress(8) at 2026-10-28 17:53:23: 111,690 states generated (111,690 s/min), 51,596 distinct states found (51,596 ds/min), 18,721 states left on queue.
 Error: Invariant NoMixedIdentityLog is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -190,8 +191,8 @@ State 3: <XRsCreate line 694, col 5 to line 709, col 79 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {}
 
-State 4: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
-/\ xpc = <<"rsEvt", "upg">>
+State 4: <XRsEvt line 712, col 5 to line 716, col 53 of module StartStamping>
+/\ xpc = <<"trans", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
   t |-> "T_S6",
@@ -213,8 +214,8 @@ State 4: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
      rn |-> 0 ] >>
 /\ att = <<1, 1>>
 /\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
-/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "pending", sp |-> 3]>>
-/\ clk = 100
+/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "none", sp |-> 0]>>
+/\ clk = 101
 /\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<3, 0>>
@@ -226,9 +227,9 @@ State 4: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ hist = {[st |-> "pending", sp |-> 3]}
 /\ mint = <<6, 6>>
 /\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {}
+/\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 5: <XRsEvt line 712, col 5 to line 716, col 53 of module StartStamping>
+State 5: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ xpc = <<"trans", "upg">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -423,8 +424,8 @@ State 9: <XIns line 675, col 5 to line 681, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 6, n |-> 1],
   [t |-> "RS", k |-> "U", sp |-> 0, n |-> 101] }
 
-186123 states generated, 86134 distinct states found, 27438 states left on queue.
+185332 states generated, 85685 distinct states found, 27313 states left on queue.
 The depth of the complete state graph search is 9.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 3).
-Finished in 03s at (2026-09-25 19:15:17)
+Finished in 07s at (2026-10-28 17:53:24)
 exit=12

@@ -1,18 +1,18 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 111 and seed 1159338408777213377 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 20278] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 115 and seed -8306571555078755364 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 58476] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/RolloutSkew.tla
-Parsing file /tmp/Naturals.tla
-Parsing file /tmp/Sequences.tla
-Parsing file /tmp/FiniteSets.tla
-Parsing file /tmp/TLC.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate/Naturals.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate/Sequences.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate/FiniteSets.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate/TLC.tla
 Semantic processing of module Naturals
 Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module RolloutSkew
-Starting... (2026-10-28 18:00:14)
+Starting... (2026-10-28 19:08:39)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-10-28 18:00:15.
+Finished computing initial states: 1 distinct state generated at 2026-10-28 19:08:39.
 Error: Invariant NoMixedIdentityLog is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -173,7 +173,7 @@ State 7: <Ins line 153, col 3 to line 156, col 41 of module RolloutSkew>
   [sp |-> 8, st |-> "cancelled"],
   [sp |-> 8, st |-> "pending"] }
 
-1096 states generated, 601 distinct states found, 400 states left on queue.
+1071 states generated, 593 distinct states found, 399 states left on queue.
 The depth of the complete state graph search is 7.
 The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 9 and the 95th percentile is 6).
-Finished in 01s at (2026-10-28 18:00:15)
+Finished in 00s at (2026-10-28 19:08:39)

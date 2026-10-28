@@ -44,7 +44,9 @@ RESULTS="$HERE/results"
 mkdir -p "$RESULTS"
 
 tlc() { # <dir> <cfg> <out>
-  (cd "$1" && timeout "$TLC_TIMEOUT" "$JAVA" -XX:+UseParallelGC -Xmx"$XMX" \
+  # own java.io.tmpdir: TLC unpacks its standard modules there, and runs
+  # sharing /tmp (JOBS > 1) can read one another's half-written copies
+  (cd "$1" && timeout "$TLC_TIMEOUT" "$JAVA" -XX:+UseParallelGC -Xmx"$XMX" -Djava.io.tmpdir="$1" \
      -cp "$TLA2TOOLS" tlc2.TLC -workers "$WORKERS" -metadir "$1/states" \
      -config "$2" ServerRaiseProtocol.tla) > "$3" 2>&1
   local rc=$?
@@ -81,11 +83,12 @@ for cfg in "${CONFIGS[@]}"; do
   tmp="$(mktemp -d)"
   cp "$HERE/ServerRaiseProtocol.tla" "$HERE/$cfg.cfg" "$tmp/"
   tlc "$tmp" "$cfg.cfg" "$RESULTS/$cfg.txt"
-  # gen_cfgs.py marks configs checked with their own invariant list only
+  # gen_cfgs.py marks configs that skip the isolation runs (no-isolation)
+  # or the isolation and progress runs (headline-only)
   if grep -q '^\\\* run.sh: headline-only' "$HERE/$cfg.cfg"; then
     rm -rf "$tmp"; continue
   fi
-  if [ "$ONLY_HEADLINE" = 0 ] && [ "$cfg" != RECOMMENDED_D3 ]; then
+  if [ "$ONLY_HEADLINE" = 0 ] && ! grep -q '^\\\* run.sh: no-isolation' "$HERE/$cfg.cfg"; then
     for kind in INVARIANT PROPERTY; do
       if [ $kind = INVARIANT ]; then names=("${INVARIANTS[@]}"); else names=("${PROPERTIES[@]}"); fi
       for p in "${names[@]}"; do

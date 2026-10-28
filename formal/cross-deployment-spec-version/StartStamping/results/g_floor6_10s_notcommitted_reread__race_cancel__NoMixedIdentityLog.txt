@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 87 and seed -4177930367258673219 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 66716] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Running breadth-first search Model-Checking with fp 82 and seed 4330421108510207594 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 32865] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
 Parsing file /tmp/TLC.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:27:46)
+Starting... (2026-10-28 18:19:22)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -71,7 +71,7 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:27:47.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-10-28 18:19:23.
 Error: Invariant NoMixedIdentityLog is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -383,8 +383,8 @@ State 8: <XIns line 675, col 5 to line 681, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "U", sp |-> 3, n |-> 100],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-59372 states generated, 27063 distinct states found, 13380 states left on queue.
+60095 states generated, 27359 distinct states found, 13514 states left on queue.
 The depth of the complete state graph search is 8.
-The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 8 and the 95th percentile is 4).
-Finished in 02s at (2026-09-25 19:27:48)
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 7 and the 95th percentile is 4).
+Finished in 03s at (2026-10-28 18:19:24)
 exit=12

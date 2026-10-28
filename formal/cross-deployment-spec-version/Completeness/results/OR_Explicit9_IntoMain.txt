@@ -1,16 +1,16 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 115 and seed 7744135901235372415 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 21580] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 60 and seed -2014953095021409553 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 59547] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/OrchestratorRaise.tla
-Parsing file /tmp/Naturals.tla
-Parsing file /tmp/FiniteSets.tla
-Parsing file /tmp/Sequences.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/OR_Explicit9_IntoMain/Naturals.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/OR_Explicit9_IntoMain/FiniteSets.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/OR_Explicit9_IntoMain/Sequences.tla
 Semantic processing of module Naturals
 Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module OrchestratorRaise
-Starting... (2026-10-28 18:01:05)
+Starting... (2026-10-28 19:09:14)
 Computing initial states...
-Finished computing initial states: 2 distinct states generated at 2026-10-28 18:01:05.
+Finished computing initial states: 2 distinct states generated at 2026-10-28 19:09:15.
 Error: Invariant NoApiRefusal is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -37,4 +37,4 @@ State 2: <ExStart line 128, col 3 to line 176, col 35 of module OrchestratorRais
 
 8 states generated, 8 distinct states found, 4 states left on queue.
 The depth of the complete state graph search is 2.
-Finished in 01s at (2026-10-28 18:01:05)
+Finished in 00s at (2026-10-28 19:09:15)

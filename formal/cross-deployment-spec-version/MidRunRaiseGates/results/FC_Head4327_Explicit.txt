@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 92 and seed 815407670257476965 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 112065] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 70 and seed -4687249872025861858 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 30624] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/ForceClaimGate.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/TLC.tla
@@ -12,10 +12,10 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module ForceClaimGate
-Starting... (2026-09-25 01:42:24)
+Starting... (2026-10-28 18:12:39)
 Computing initial states...
 Computed 2 initial states...
-Finished computing initial states: 3 distinct states generated at 2026-09-25 01:42:24.
+Finished computing initial states: 3 distinct states generated at 2026-10-28 18:12:39.
 Error: Invariant NoStrandedVictim is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -88,7 +88,7 @@ State 5: <ClaimDecide line 192, col 3 to line 201, col 74 of module ForceClaimGa
 /\ vStatus = "running"
 /\ stamp = 8
 
-149 states generated, 49 distinct states found, 0 states left on queue.
-The depth of the complete state graph search is 7.
+86 states generated, 35 distinct states found, 11 states left on queue.
+The depth of the complete state graph search is 5.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 3 and the 95th percentile is 2).
-Finished in 00s at (2026-09-25 01:42:24)
+Finished in 01s at (2026-10-28 18:12:39)

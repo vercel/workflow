@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 11 and seed -2251993426262445056 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 63007] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 9 and seed -5935229936215880934 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 30464] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/MidRunRaiseGates.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/Sequences.tla
@@ -12,14 +12,15 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module MidRunRaiseGates
-Starting... (2026-09-25 19:22:28)
+Starting... (2026-10-28 18:12:29)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
 Computed 8 initial states...
 Computed 16 initial states...
 Computed 32 initial states...
-Finished computing initial states: 64 distinct states generated at 2026-09-25 19:22:28.
+Finished computing initial states: 64 distinct states generated at 2026-10-28 18:12:29.
+Progress(8) at 2026-10-28 18:12:32: 156,225 states generated (156,225 s/min), 49,092 distinct states found (49,092 ds/min), 23,514 states left on queue.
 Error: Invariant ReplayConsistent is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -232,7 +233,7 @@ State 8: <KPatch line 607, col 3 to line 622, col 20 of module MidRunRaiseGates>
 /\ refused = {}
 /\ recovered = FALSE
 
-166369 states generated, 51966 distinct states found, 24715 states left on queue.
+166891 states generated, 52059 distinct states found, 24742 states left on queue.
 The depth of the complete state graph search is 8.
-The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 7 and the 95th percentile is 4).
-Finished in 02s at (2026-09-25 19:22:30)
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 6 and the 95th percentile is 4).
+Finished in 04s at (2026-10-28 18:12:32)

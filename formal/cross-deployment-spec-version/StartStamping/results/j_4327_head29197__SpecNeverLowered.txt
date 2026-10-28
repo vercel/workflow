@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 110 and seed 495423810221555561 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 75386] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Running breadth-first search Model-Checking with fp 26 and seed 2389166915806595738 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 45107] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
 Parsing file /tmp/TLC.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:41:19)
+Starting... (2026-10-28 18:49:43)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -73,15 +73,15 @@ Computed 2048 initial states...
 Computed 4096 initial states...
 Computed 8192 initial states...
 Computed 16384 initial states...
-Finished computing initial states: 23710 states generated, with 384 of them distinct at 2026-09-25 19:41:20.
-Progress(13) at 2026-09-25 19:41:23: 556,590 states generated (556,590 s/min), 237,946 distinct states found (237,946 ds/min), 43,477 states left on queue.
+Finished computing initial states: 23710 states generated, with 384 of them distinct at 2026-10-28 18:49:45.
+Progress(8) at 2026-10-28 18:49:48: 137,020 states generated (137,020 s/min), 60,724 distinct states found (60,724 ds/min), 20,625 states left on queue.
 Model checking completed. No error has been found.
   Estimates of the probability that TLC did not check all reachable states
   because two distinct states had the same fingerprint:
   calculated (optimistic):  val = 1.3E-8
-  based on the actual fingerprints:  val = 7.2E-9
+  based on the actual fingerprints:  val = 2.3E-9
 1041114 states generated, 370032 distinct states found, 0 states left on queue.
 The depth of the complete state graph search is 18.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 4 and the 95th percentile is 2).
-Finished in 06s at (2026-09-25 19:41:25)
+Finished in 13s at (2026-10-28 18:49:56)
 exit=0

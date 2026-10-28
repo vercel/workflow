@@ -1,4 +1,12 @@
 Completeness/results/AttestSound.txt  PROVED
+Completeness/results/OR_Explicit9_IntoMain.txt  VIOLATION(NoApiRefusal)
+Completeness/results/OR_Main.txt  PASS
+Completeness/results/OR_SO_Cap.txt  PASS
+Completeness/results/OR_SO_NoCap.txt  VIOLATION(NoApiRefusal)
+Completeness/results/OR_SO_NoCap_RaiseOnly.txt  VIOLATION(OrchestratorMatchesRun)
+Completeness/results/OR_SO_NoCap_ServerCaps9.txt  PASS
+Completeness/results/OutputCodec.txt  PROVED
+Completeness/results/ProbeMisread.txt  PROVED
 Completeness/results/RS_AllNew_AsIs.txt  VIOLATION(NoMixedIdentityLog)
 Completeness/results/RS_AllNew_Fixed.txt  PASS
 Completeness/results/RS_AllNew_Fixed_Terminal.txt  PASS
@@ -619,6 +627,8 @@ ServerRaiseProtocol/results/RECOMMENDED_noP5__RunCreatedSpecMatchesRow.txt  PASS
 ServerRaiseProtocol/results/RECOMMENDED_noP5__SpecMonotonic.txt  PASS
 ServerRaiseProtocol/results/RECOMMENDED_noP5__SpecNeverLowered.txt  PASS
 ServerRaiseProtocol/results/RECOMMENDED_noP5__TerminalIsFinal.txt  PASS
+ServerRaiseProtocol/results/WSMAIN_flagFlip_crash.txt  VIOLATION(NoMixedIdentityLog)
+ServerRaiseProtocol/results/WSMAIN_flagFlip_crash_slotStamps.txt  PASS
 StartStamping/results/PC_firstMiss_fast.txt  PASS
 StartStamping/results/PC_firstMiss_mid.txt  PASS
 StartStamping/results/PC_firstMiss_mid_evict.txt  PASS
@@ -703,7 +713,7 @@ StartStamping/results/c2_764_malformed__default__CallerCanReadResult.txt  PASS
 StartStamping/results/c2_764_malformed__default__NoAvoidableBrick.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/c2_764_malformed__default__NoAvoidableStuck.txt  PASS
 StartStamping/results/c2_764_malformed__default__NoMixedIdentityLog.txt  VIOLATION(NoMixedIdentityLog)
-StartStamping/results/c2_764_malformed__race_cancel.txt  VIOLATION(NoResurrect)
+StartStamping/results/c2_764_malformed__race_cancel.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/c2_764_malformed__race_recovery.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/c_4327_4366_1044.txt  VIOLATION(NoOverStamp)
 StartStamping/results/c_4327_4366_1044__AttrGateMatchesStamp.txt  PASS
@@ -763,7 +773,7 @@ StartStamping/results/d_floor3_2s_resilientfix__default__CallerCanReadResult.txt
 StartStamping/results/d_floor3_2s_resilientfix__default__NoAvoidableBrick.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/d_floor3_2s_resilientfix__default__NoAvoidableStuck.txt  VIOLATION(NoAvoidableStuck)
 StartStamping/results/d_floor3_2s_resilientfix__default__NoMixedIdentityLog.txt  VIOLATION(NoMixedIdentityLog)
-StartStamping/results/d_floor3_2s_resilientfix__race_cancel.txt  VIOLATION(NoResurrect)
+StartStamping/results/d_floor3_2s_resilientfix__race_cancel.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/d_floor3_2s_resilientfix__race_recovery.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/e_floor3_2s_allfixes.txt  VIOLATION(NoOverStamp)
 StartStamping/results/e_floor3_2s_allfixes__AttrGateMatchesStamp.txt  PASS
@@ -1034,5 +1044,5 @@ StartStamping/results/m_mutant_attest_above_max__default__CallerCanReadResult.tx
 StartStamping/results/m_mutant_attest_above_max__default__NoAvoidableBrick.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/m_mutant_attest_above_max__default__NoAvoidableStuck.txt  VIOLATION(NoAvoidableStuck)
 StartStamping/results/m_mutant_attest_above_max__default__NoMixedIdentityLog.txt  PASS
-StartStamping/results/m_mutant_attest_above_max__race_cancel.txt  VIOLATION(NoResurrect)
+StartStamping/results/m_mutant_attest_above_max__race_cancel.txt  VIOLATION(NoAvoidableBrick)
 StartStamping/results/m_mutant_attest_above_max__race_recovery.txt  VIOLATION(NoAvoidableBrick)

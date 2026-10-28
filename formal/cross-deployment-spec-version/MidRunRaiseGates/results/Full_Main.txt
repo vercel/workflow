@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 77 and seed 559858365004442660 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 67211] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 16 and seed -8745997903744927195 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 30589] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/MidRunRaiseGates.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/Sequences.tla
@@ -12,12 +12,12 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module MidRunRaiseGates
-Starting... (2026-09-25 19:28:23)
+Starting... (2026-10-28 18:12:37)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
 Computed 8 initial states...
-Finished computing initial states: 16 distinct states generated at 2026-09-25 19:28:23.
+Finished computing initial states: 16 distinct states generated at 2026-10-28 18:12:38.
 Error: Invariant ExecutorCanReplay is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -36,7 +36,7 @@ State 1: <Initial predicate>
 /\ rv = 0
 /\ rowEx = FALSE
 /\ st = "none"
-/\ turbo = <<FALSE, TRUE>>
+/\ turbo = <<FALSE, FALSE>>
 /\ replayFail = FALSE
 /\ cpc = "row"
 /\ stamp = 3
@@ -62,7 +62,7 @@ State 2: <SFetch line 330, col 3 to line 345, col 20 of module MidRunRaiseGates>
 /\ rv = 0
 /\ rowEx = FALSE
 /\ st = "none"
-/\ turbo = <<FALSE, TRUE>>
+/\ turbo = <<FALSE, FALSE>>
 /\ replayFail = FALSE
 /\ cpc = "row"
 /\ stamp = 3
@@ -88,7 +88,7 @@ State 3: <SRsCreate line 348, col 3 to line 362, col 40 of module MidRunRaiseGat
 /\ rv = 3
 /\ rowEx = TRUE
 /\ st = "pending"
-/\ turbo = <<FALSE, TRUE>>
+/\ turbo = <<FALSE, FALSE>>
 /\ replayFail = FALSE
 /\ cpc = "row"
 /\ stamp = 3
@@ -114,7 +114,7 @@ State 4: <STrans line 475, col 3 to line 496, col 39 of module MidRunRaiseGates>
 /\ rv = 3
 /\ rowEx = TRUE
 /\ st = "running"
-/\ turbo = <<FALSE, TRUE>>
+/\ turbo = <<FALSE, FALSE>>
 /\ replayFail = FALSE
 /\ cpc = "row"
 /\ stamp = 3
@@ -124,7 +124,7 @@ State 4: <STrans line 475, col 3 to line 496, col 39 of module MidRunRaiseGates>
 /\ refused = {}
 /\ recovered = FALSE
 
-616 states generated, 351 distinct states found, 237 states left on queue.
+579 states generated, 333 distinct states found, 228 states left on queue.
 The depth of the complete state graph search is 4.
 The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 5 and the 95th percentile is 5).
-Finished in 00s at (2026-09-25 19:28:23)
+Finished in 01s at (2026-10-28 18:12:38)

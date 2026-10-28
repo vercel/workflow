@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 12 and seed -9183378922210853647 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 63070] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 79 and seed 5446838511845515541 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 30514] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/MidRunRaiseGates.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/Sequences.tla
@@ -12,12 +12,12 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module MidRunRaiseGates
-Starting... (2026-09-25 19:22:31)
+Starting... (2026-10-28 18:12:33)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
 Computed 8 initial states...
-Finished computing initial states: 16 distinct states generated at 2026-09-25 19:22:31.
+Finished computing initial states: 16 distinct states generated at 2026-10-28 18:12:34.
 Error: Invariant CallerCanDecode is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -55,7 +55,7 @@ State 2: <SFetch line 330, col 3 to line 345, col 20 of module MidRunRaiseGates>
 /\ log = <<>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
-/\ pc = <<"fetch", "rs_create">>
+/\ pc = <<"rs_create", "fetch">>
 /\ hidx = <<0, 0>>
 /\ exe = <<6, 6>>
 /\ hist = {}
@@ -81,7 +81,7 @@ State 3: <SRsCreate line 348, col 3 to line 362, col 40 of module MidRunRaiseGat
 /\ log = <<[g |-> {6}, t |-> "rc"]>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
-/\ pc = <<"fetch", "trans">>
+/\ pc = <<"trans", "fetch">>
 /\ hidx = <<0, 0>>
 /\ exe = <<6, 6>>
 /\ hist = {[v |-> 6, st |-> "pending"]}
@@ -94,7 +94,7 @@ State 3: <SRsCreate line 348, col 3 to line 362, col 40 of module MidRunRaiseGat
 /\ stamp = 3
 /\ kpc = "read"
 /\ via = <<FALSE, FALSE>>
-/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ held = <<[v |-> 6, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
@@ -107,7 +107,7 @@ State 4: <STrans line 475, col 3 to line 496, col 39 of module MidRunRaiseGates>
 /\ log = <<[g |-> {6}, t |-> "rc"]>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
-/\ pc = <<"fetch", "ins">>
+/\ pc = <<"ins", "fetch">>
 /\ hidx = <<0, 0>>
 /\ exe = <<6, 6>>
 /\ hist = {[v |-> 6, st |-> "pending"], [v |-> 6, st |-> "running"]}
@@ -120,7 +120,7 @@ State 4: <STrans line 475, col 3 to line 496, col 39 of module MidRunRaiseGates>
 /\ stamp = 3
 /\ kpc = "read"
 /\ via = <<FALSE, FALSE>>
-/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ held = <<[v |-> 6, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
@@ -133,7 +133,7 @@ State 5: <SIns line 499, col 3 to line 509, col 39 of module MidRunRaiseGates>
 /\ log = <<[g |-> {6}, t |-> "rc"], [g |-> {6}, t |-> "rs"]>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
-/\ pc = <<"fetch", "replay">>
+/\ pc = <<"replay", "fetch">>
 /\ hidx = <<0, 0>>
 /\ exe = <<6, 6>>
 /\ hist = {[v |-> 6, st |-> "pending"], [v |-> 6, st |-> "running"]}
@@ -146,7 +146,7 @@ State 5: <SIns line 499, col 3 to line 509, col 39 of module MidRunRaiseGates>
 /\ stamp = 3
 /\ kpc = "read"
 /\ via = <<FALSE, FALSE>>
-/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ held = <<[v |-> 6, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
@@ -158,8 +158,8 @@ State 6: <SReplay line 518, col 3 to line 525, col 39 of module MidRunRaiseGates
 /\ raised = TRUE
 /\ log = <<[g |-> {6}, t |-> "rc"], [g |-> {6}, t |-> "rs"]>>
 /\ hfresh = <<FALSE, FALSE>>
-/\ gvv = <<0, 6>>
-/\ pc = <<"fetch", "work">>
+/\ gvv = <<6, 0>>
+/\ pc = <<"work", "fetch">>
 /\ hidx = <<0, 0>>
 /\ exe = <<6, 6>>
 /\ hist = {[v |-> 6, st |-> "pending"], [v |-> 6, st |-> "running"]}
@@ -172,7 +172,7 @@ State 6: <SReplay line 518, col 3 to line 525, col 39 of module MidRunRaiseGates
 /\ stamp = 3
 /\ kpc = "read"
 /\ via = <<FALSE, FALSE>>
-/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ held = <<[v |-> 6, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
@@ -184,8 +184,8 @@ State 7: <SWork line 528, col 3 to line 536, col 39 of module MidRunRaiseGates>
 /\ raised = TRUE
 /\ log = <<[g |-> {6}, t |-> "rc"], [g |-> {6}, t |-> "rs"], [g |-> {6}, t |-> "w"]>>
 /\ hfresh = <<FALSE, FALSE>>
-/\ gvv = <<0, 6>>
-/\ pc = <<"fetch", "complete">>
+/\ gvv = <<6, 0>>
+/\ pc = <<"complete", "fetch">>
 /\ hidx = <<0, 0>>
 /\ exe = <<6, 6>>
 /\ hist = {[v |-> 6, st |-> "pending"], [v |-> 6, st |-> "running"]}
@@ -198,7 +198,7 @@ State 7: <SWork line 528, col 3 to line 536, col 39 of module MidRunRaiseGates>
 /\ stamp = 3
 /\ kpc = "read"
 /\ via = <<FALSE, FALSE>>
-/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ held = <<[v |-> 6, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
@@ -213,8 +213,8 @@ State 8: <SComplete line 543, col 3 to line 555, col 39 of module MidRunRaiseGat
    [g |-> {6}, t |-> "w"],
    [g |-> {6}, t |-> "tm"] >>
 /\ hfresh = <<FALSE, FALSE>>
-/\ gvv = <<0, 6>>
-/\ pc = <<"fetch", "done">>
+/\ gvv = <<6, 0>>
+/\ pc = <<"done", "fetch">>
 /\ hidx = <<0, 0>>
 /\ exe = <<6, 6>>
 /\ hist = { [v |-> 6, st |-> "pending"],
@@ -229,11 +229,11 @@ State 8: <SComplete line 543, col 3 to line 555, col 39 of module MidRunRaiseGat
 /\ stamp = 3
 /\ kpc = "read"
 /\ via = <<FALSE, FALSE>>
-/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ held = <<[v |-> 6, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-28944 states generated, 9731 distinct states found, 4907 states left on queue.
+27902 states generated, 9456 distinct states found, 4789 states left on queue.
 The depth of the complete state graph search is 8.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 6 and the 95th percentile is 4).
-Finished in 01s at (2026-09-25 19:22:32)
+Finished in 02s at (2026-10-28 18:12:35)

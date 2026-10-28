@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 126 and seed -7910599051815578452 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 66830] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Running breadth-first search Model-Checking with fp 108 and seed -6253689365358651556 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 32981] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
 Parsing file /tmp/TLC.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:27:52)
+Starting... (2026-10-28 18:19:29)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -71,8 +71,8 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:27:53.
-Progress(11) at 2026-09-25 19:27:56: 497,846 states generated (497,846 s/min), 210,493 distinct states found (210,493 ds/min), 92,035 states left on queue.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-10-28 18:19:31.
+Progress(10) at 2026-10-28 18:19:34: 221,032 states generated (221,032 s/min), 98,222 distinct states found (98,222 ds/min), 46,577 states left on queue.
 Error: Invariant NoAvoidableStuck is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -265,8 +265,8 @@ State 5: <XUpg line 579, col 5 to line 603, col 48 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 6: <XTx line 607, col 5 to line 631, col 79 of module StartStamping>
-/\ xpc = <<"trans", "fetch">>
+State 6: <KRead line 765, col 5 to line 769, col 56 of module StartStamping>
+/\ xpc = <<"tx", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
   t |-> "T_S6",
@@ -287,23 +287,23 @@ State 6: <XTx line 607, col 5 to line 631, col 79 of module StartStamping>
      rk |-> "none",
      rn |-> 0 ] >>
 /\ att = <<1, 1>>
-/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 6]
-/\ held = <<[st |-> "pending", sp |-> 6], [st |-> "none", sp |-> 0]>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
+/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "none", sp |-> 0]>>
 /\ clk = 101
 /\ crashes = 0
 /\ rdone = 0
 /\ rsp = <<0, 0>>
 /\ cpc = "done"
-/\ kpc = "idle"
+/\ kpc = "patch"
 /\ outc = <<FALSE, "none">>
 /\ resur = FALSE
-/\ peak = 6
-/\ hist = {[st |-> "pending", sp |-> 3], [st |-> "pending", sp |-> 6]}
+/\ peak = 3
+/\ hist = {[st |-> "pending", sp |-> 3]}
 /\ mint = <<6, 6>>
-/\ kheld = [st |-> "none", sp |-> 0]
-/\ log = {[t |-> "RC", k |-> "S", sp |-> 6, n |-> 1]}
+/\ kheld = [st |-> "pending", sp |-> 3]
+/\ log = {[t |-> "RC", k |-> "U", sp |-> 3, n |-> 100]}
 
-State 7: <KRead line 765, col 5 to line 769, col 56 of module StartStamping>
+State 7: <XTx line 607, col 5 to line 631, col 79 of module StartStamping>
 /\ xpc = <<"trans", "fetch">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
@@ -589,8 +589,8 @@ State 13: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 6, n |-> 1],
   [t |-> "RK", k |-> "U", sp |-> 0, n |-> 101] }
 
-1177073 states generated, 465486 distinct states found, 179761 states left on queue.
+1164024 states generated, 460272 distinct states found, 178221 states left on queue.
 The depth of the complete state graph search is 13.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 10 and the 95th percentile is 4).
-Finished in 07s at (2026-09-25 19:27:58)
+Finished in 12s at (2026-10-28 18:19:42)
 exit=12

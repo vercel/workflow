@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 4 and seed -1433351299422880706 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 106862] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 85 and seed 7789585945393333893 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 29132] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/MidRunRaiseGates.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/Sequences.tla
@@ -12,21 +12,23 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module MidRunRaiseGates
-Starting... (2026-09-25 01:37:07)
+Starting... (2026-10-28 18:10:40)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
 Computed 8 initial states...
 Computed 16 initial states...
 Computed 32 initial states...
-Finished computing initial states: 64 distinct states generated at 2026-09-25 01:37:08.
-Progress(9) at 2026-09-25 01:37:11: 270,731 states generated (270,731 s/min), 79,422 distinct states found (79,422 ds/min), 34,028 states left on queue.
+Finished computing initial states: 64 distinct states generated at 2026-10-28 18:10:41.
+Progress(8) at 2026-10-28 18:10:44: 162,241 states generated (162,241 s/min), 49,953 distinct states found (49,953 ds/min), 21,819 states left on queue.
 Error: Invariant NoMixedIdentityLog is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -42,14 +44,17 @@ State 1: <Initial predicate>
 /\ cpc = "row"
 /\ stamp = 3
 /\ kpc = "read"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 2: <CallerRow line 233, col 3 to line 243, col 20 of module MidRunRaiseGates>
+State 2: <CallerRow line 280, col 3 to line 290, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -65,14 +70,17 @@ State 2: <CallerRow line 233, col 3 to line 243, col 20 of module MidRunRaiseGat
 /\ cpc = "evt"
 /\ stamp = 3
 /\ kpc = "read"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 3: <CallerEvt line 246, col 3 to line 250, col 20 of module MidRunRaiseGates>
+State 3: <CallerEvt line 293, col 3 to line 297, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {}, t |-> "rc"]>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -88,14 +96,17 @@ State 3: <CallerEvt line 246, col 3 to line 250, col 20 of module MidRunRaiseGat
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "read"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 4: <SFetch line 272, col 3 to line 284, col 20 of module MidRunRaiseGates>
+State 4: <SFetch line 330, col 3 to line 345, col 20 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {}, t |-> "rc"]>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -111,14 +122,17 @@ State 4: <SFetch line 272, col 3 to line 284, col 20 of module MidRunRaiseGates>
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "read"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 5: <SCheck line 316, col 3 to line 326, col 20 of module MidRunRaiseGates>
+State 5: <SCheck line 385, col 3 to line 395, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {}, t |-> "rc"]>>
 /\ hfresh = <<FALSE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -134,14 +148,17 @@ State 5: <SCheck line 316, col 3 to line 326, col 20 of module MidRunRaiseGates>
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "read"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 6: <SHead line 329, col 3 to line 350, col 20 of module MidRunRaiseGates>
+State 6: <SHead line 398, col 3 to line 423, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {}, t |-> "rc"]>>
 /\ hfresh = <<TRUE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -157,14 +174,17 @@ State 6: <SHead line 329, col 3 to line 350, col 20 of module MidRunRaiseGates>
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "read"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 7: <STx line 353, col 3 to line 373, col 20 of module MidRunRaiseGates>
+State 7: <STx line 444, col 3 to line 465, col 40 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {6}, t |-> "rc"]>>
 /\ hfresh = <<TRUE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -180,14 +200,17 @@ State 7: <STx line 353, col 3 to line 373, col 20 of module MidRunRaiseGates>
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "read"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 8: <KRead line 487, col 3 to line 493, col 20 of module MidRunRaiseGates>
+State 8: <KRead line 598, col 3 to line 604, col 20 of module MidRunRaiseGates>
 /\ kheld = [v |-> 3, st |-> "pending"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {6}, t |-> "rc"]>>
 /\ hfresh = <<TRUE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -203,14 +226,17 @@ State 8: <KRead line 487, col 3 to line 493, col 20 of module MidRunRaiseGates>
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "patch"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 9: <KPatch line 496, col 3 to line 510, col 20 of module MidRunRaiseGates>
+State 9: <KPatch line 607, col 3 to line 622, col 20 of module MidRunRaiseGates>
 /\ kheld = [v |-> 3, st |-> "pending"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {6}, t |-> "rc"]>>
 /\ hfresh = <<TRUE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -228,14 +254,17 @@ State 9: <KPatch line 496, col 3 to line 510, col 20 of module MidRunRaiseGates>
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "insert"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 10: <KInsert line 513, col 3 to line 517, col 20 of module MidRunRaiseGates>
+State 10: <KInsert line 625, col 3 to line 629, col 20 of module MidRunRaiseGates>
 /\ kheld = [v |-> 3, st |-> "pending"]
 /\ att = <<1, 1>>
+/\ wleft = 0
 /\ outComp = FALSE
+/\ raised = FALSE
 /\ log = <<[g |-> {6}, t |-> "rc"], [g |-> {}, t |-> "tm"]>>
 /\ hfresh = <<TRUE, FALSE>>
 /\ gvv = <<0, 0>>
@@ -253,11 +282,12 @@ State 10: <KInsert line 513, col 3 to line 517, col 20 of module MidRunRaiseGate
 /\ cpc = "done"
 /\ stamp = 3
 /\ kpc = "done"
+/\ via = <<FALSE, FALSE>>
 /\ held = <<[v |-> 3, st |-> "pending"], [v |-> 0, st |-> "none"]>>
 /\ refused = {}
 /\ recovered = FALSE
 
-376050 states generated, 108188 distinct states found, 46916 states left on queue.
+375083 states generated, 107861 distinct states found, 46774 states left on queue.
 The depth of the complete state graph search is 10.
-The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 7 and the 95th percentile is 4).
-Finished in 04s at (2026-09-25 01:37:11)
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 8 and the 95th percentile is 4).
+Finished in 06s at (2026-10-28 18:10:46)

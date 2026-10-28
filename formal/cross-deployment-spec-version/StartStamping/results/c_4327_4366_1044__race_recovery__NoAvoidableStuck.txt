@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 79 and seed 694530198097905767 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 58380] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Running breadth-first search Model-Checking with fp 40 and seed -2828379604289551395 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 18353] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
 Parsing file /tmp/TLC.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:16:32)
+Starting... (2026-10-28 17:55:57)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -71,8 +71,8 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:16:33.
-Progress(12) at 2026-09-25 19:16:36: 429,273 states generated (429,273 s/min), 182,936 distinct states found (182,936 ds/min), 49,646 states left on queue.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-10-28 17:55:59.
+Progress(10) at 2026-10-28 17:56:02: 147,285 states generated (147,285 s/min), 69,058 distinct states found (69,058 ds/min), 27,785 states left on queue.
 Error: Invariant NoAvoidableStuck is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -152,7 +152,7 @@ State 2: <CRow line 500, col 5 to line 510, col 41 of module StartStamping>
 /\ log = {}
 
 State 3: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
-/\ xpc = <<"upg", "fetch">>
+/\ xpc = <<"fetch", "upg">>
 /\ scn = [ a |-> FALSE,
   c |-> "C_V4",
   t |-> "T_S6",
@@ -174,7 +174,7 @@ State 3: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
      rn |-> 0 ] >>
 /\ att = <<1, 1>>
 /\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
-/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "none", sp |-> 0]>>
+/\ held = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
 /\ clk = 100
 /\ crashes = 0
 /\ rdone = 0
@@ -585,8 +585,8 @@ State 13: <XFetch line 541, col 5 to line 566, col 25 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "U", sp |-> 3, n |-> 100],
   [t |-> "RS", k |-> "U", sp |-> 0, n |-> 101] }
 
-457637 states generated, 193927 distinct states found, 51055 states left on queue.
+457609 states generated, 193902 distinct states found, 51058 states left on queue.
 The depth of the complete state graph search is 13.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
-Finished in 04s at (2026-09-25 19:16:36)
+Finished in 10s at (2026-10-28 17:56:06)
 exit=12

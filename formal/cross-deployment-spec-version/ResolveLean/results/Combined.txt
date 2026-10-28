@@ -489,4 +489,4 @@ v5local | cli(run spec 3) | timeout | resilient | stamp=3 | #1044 finals=[3] ok 
 v5local | cli(run spec 3) | no-channel | fresh | stamp=3 | #1044 finals=[3] ok | fixed finals=[3] ok
 v5local | cli(run spec 3) | no-channel | run_created-late | stamp=3 | #1044 finals=[3] ok | fixed finals=[3] ok
 v5local | cli(run spec 3) | no-channel | resilient | stamp=3 | #1044 finals=[3] ok | fixed finals=[3] ok
-exit=0 elapsed=72s
+exit=0 elapsed=167s

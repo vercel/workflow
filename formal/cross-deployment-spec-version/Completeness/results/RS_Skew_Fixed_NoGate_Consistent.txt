@@ -1,18 +1,18 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 124 and seed -7561292535887964260 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 20315] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 57 and seed -4665451243191315177 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 58512] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/RolloutSkew.tla
-Parsing file /tmp/Naturals.tla
-Parsing file /tmp/Sequences.tla
-Parsing file /tmp/FiniteSets.tla
-Parsing file /tmp/TLC.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate_Consistent/Naturals.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate_Consistent/Sequences.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate_Consistent/FiniteSets.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/RS_Skew_Fixed_NoGate_Consistent/TLC.tla
 Semantic processing of module Naturals
 Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module RolloutSkew
-Starting... (2026-10-28 18:00:17)
+Starting... (2026-10-28 19:08:40)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-10-28 18:00:18.
+Finished computing initial states: 1 distinct state generated at 2026-10-28 19:08:40.
 Error: Invariant NoMixedIdentityLog is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -37,14 +37,14 @@ State 1: <Initial predicate>
         kind |-> "U" ] ]
 /\ hist = {[sp |-> 3, st |-> "pending"]}
 
-State 2: <Begin line 103, col 3 to line 111, col 46 of module RolloutSkew>
-/\ phase = "old"
+State 2: <Forward line 74, col 3 to line 76, col 44 of module RolloutSkew>
+/\ phase = "mixed"
 /\ flag = FALSE
 /\ log = <<[t |-> "rc", k |-> "U"]>>
 /\ row = [sp |-> 3, st |-> "pending"]
 /\ req = [ k |->
-      [ pc |-> "kpatch",
-        ver |-> "old",
+      [ pc |-> "idle",
+        ver |-> "none",
         held |-> [sp |-> 3, st |-> "pending"],
         kind |-> "U" ],
   s1 |->
@@ -59,7 +59,7 @@ State 2: <Begin line 103, col 3 to line 111, col 46 of module RolloutSkew>
         kind |-> "U" ] ]
 /\ hist = {[sp |-> 3, st |-> "pending"]}
 
-State 3: <Forward line 74, col 3 to line 76, col 44 of module RolloutSkew>
+State 3: <Begin line 103, col 3 to line 111, col 46 of module RolloutSkew>
 /\ phase = "mixed"
 /\ flag = FALSE
 /\ log = <<[t |-> "rc", k |-> "U"]>>
@@ -173,7 +173,7 @@ State 7: <Ins line 153, col 3 to line 156, col 41 of module RolloutSkew>
   [sp |-> 8, st |-> "cancelled"],
   [sp |-> 8, st |-> "pending"] }
 
-915 states generated, 580 distinct states found, 383 states left on queue.
+822 states generated, 552 distinct states found, 374 states left on queue.
 The depth of the complete state graph search is 7.
-The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 6 and the 95th percentile is 5).
-Finished in 01s at (2026-10-28 18:00:18)
+The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 7 and the 95th percentile is 6).
+Finished in 00s at (2026-10-28 19:08:41)

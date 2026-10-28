@@ -1,12 +1,12 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 87 and seed -4940127040988138654 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 82038] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/ProbeCache.tla
+Running breadth-first search Model-Checking with fp 22 and seed -4150156266524743860 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 49633] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/ProbeCache.tla
 Parsing file /tmp/Naturals.tla
 Semantic processing of module Naturals
 Semantic processing of module ProbeCache
-Starting... (2026-09-25 19:46:54)
+Starting... (2026-10-28 19:01:12)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-09-25 19:46:54.
+Finished computing initial states: 1 distinct state generated at 2026-10-28 19:01:12.
 Error: Invariant NoLongFallbackRun is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -163,8 +163,8 @@ State 22: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
 /\ last = "fallback"
 /\ ent = "miss"
 
-8331 states generated, 2709 distinct states found, 13 states left on queue.
-The depth of the complete state graph search is 33.
+6702 states generated, 2216 distinct states found, 63 states left on queue.
+The depth of the complete state graph search is 24.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
-Finished in 00s at (2026-09-25 19:46:54)
+Finished in 00s at (2026-10-28 19:01:12)
 exit=12

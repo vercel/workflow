@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 6 and seed 8667672738051477218 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 70331] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 100 and seed -5155967437611666297 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 54336] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:32:59)
+Starting... (2026-10-28 19:04:01)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -71,7 +71,7 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:33:00.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-10-28 19:04:02.
 Error: Invariant CallerCanReadResult is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -429,8 +429,8 @@ State 9: <XComplete line 739, col 5 to line 755, col 74 of module StartStamping>
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2],
   [t |-> "RX", k |-> "S", sp |-> 0, n |-> 3] }
 
-62500 states generated, 28653 distinct states found, 12535 states left on queue.
+59525 states generated, 27383 distinct states found, 12116 states left on queue.
 The depth of the complete state graph search is 9.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 6 and the 95th percentile is 4).
-Finished in 02s at (2026-09-25 19:33:01)
+Finished in 04s at (2026-10-28 19:04:04)
 exit=12

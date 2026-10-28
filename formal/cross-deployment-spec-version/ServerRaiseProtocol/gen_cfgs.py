@@ -130,6 +130,13 @@ CONFIGS = {
   "MAIN": ("pre-PR reference: main with #1061 + #1065, no attestation, no P3, delete-and-rebuild", MAIN),
   "MAIN_crash": ("MAIN + request crashes", dict(MAIN, **CRASH)),
 }
+# Configs checked by their safety and progress runs only: three deliveries,
+# or crashes on top of HEAD/MAIN, where each per-property isolation run is a
+# full state space of up to 35M states.
+NO_ISOLATION = {"RECOMMENDED_D3", "HEAD_crash", "HEAD_turbo_crash", "HEAD_turboFix_crash",
+                "HEAD_crash_settled", "HEAD_turbo_crash_settled",
+                "HEAD_turboFix_crash_settled", "MAIN_turbo_crash_settled",
+                "MAIN_turbo_crash_settled_slotStamps", "HEAD_flagOff_crash", "MAIN_crash"}
 INVARIANTS = ["TypeOK", "NoMixedIdentityLog", "ExecutorReadable", "RunCreatedPresent",
               "RunCreatedFirstAndUnique", "RunCreatedSpecMatchesRow", "NoDoomedRun",
               "SpecNeverLowered", "ReplayNeverFails", "NoStuck"]
@@ -147,6 +154,9 @@ if __name__ == "__main__":
             if opts.get("headline_only"):
                 # run.sh: no per-property isolation runs and no progress run
                 f.write("\\* run.sh: headline-only\n")
+            elif name in NO_ISOLATION:
+                # run.sh: the safety and progress runs only
+                f.write("\\* run.sh: no-isolation\n")
             f.write("SPECIFICATION Spec\nCONSTANTS\n")
             for k, v in c.items():
                 f.write(f"  {k} = {fmt(v)}\n")

@@ -39,7 +39,10 @@ cd "$(dirname "$0")"
 TLA2TOOLS="${TLA2TOOLS:-$HOME/.local/opt/tla2tools.jar}"
 JAVA="${JAVA:-java}"
 WORKERS="${TLC_WORKERS:-2}"
-TLC=("$JAVA" -XX:+UseParallelGC -Xmx2g -cp "$TLA2TOOLS" tlc2.TLC -workers "$WORKERS")
+# Each run gets its own java.io.tmpdir: TLC unpacks its standard modules
+# there, and runs sharing /tmp (JOBS > 1) can read one another's half-written
+# copies.
+TLC=("$JAVA" -XX:+UseParallelGC -Xmx2g)
 AINVS="NoOverStamp CallerCap CallerCapExplicit AttrGateMatchesStamp AttributesGateCorrect TargetCanReadInput StampRunnable CallerCanReadOwnStamp"
 BINVS="NoBrick NoAvoidableBrick NoMixedIdentityLog NoStuck NoAvoidableStuck NoResurrect SpecNeverLowered SingleRunCreated NoOverRaise CallerCanReadResult"
 DEFAULT_BINVS="NoAvoidableBrick NoMixedIdentityLog NoAvoidableStuck CallerCanReadResult"
@@ -49,11 +52,11 @@ ONLY="${ONLY:-}"   # optional: run only variants whose name matches this regex
 
 [[ -z "$ONLY" ]] && rm -rf results generated
 mkdir -p results generated
-run() { # <cfg> <result-name>
+run() { # <cfg> <result-name> [workers]
   local meta
   meta="$(mktemp -d)"
   echo ">>> $2"
-  timeout 900 "${TLC[@]}" -metadir "$meta" -config "$1" StartStamping.tla \
+  timeout 900 "${TLC[@]}" -Djava.io.tmpdir="$meta" -cp "$TLA2TOOLS" tlc2.TLC -workers "${3:-$WORKERS}" -metadir "$meta" -config "$1" StartStamping.tla \
     > "results/$2.txt" 2>&1
   local rc=$?
   echo "exit=$rc" >> "results/$2.txt"
@@ -81,7 +84,12 @@ gen() {
     echo "    TypeOK"
     for i in $invs; do echo "    $i"; done
   } > "generated/$out.cfg"
-  run "generated/$out.cfg" "$out"
+  # Several invariants in one run: one worker, so that which of them TLC
+  # reports first (the verdict pinned in expected-verdicts.txt) does not
+  # depend on scheduling.
+  local n; n=$(echo $invs | wc -w)
+  if [ "$n" -gt 1 ]; then run "generated/$out.cfg" "$out" 1
+  else run "generated/$out.cfg" "$out"; fi
 }
 RACE_CANCEL=('RaceScope="attesting"' 'CancelEnabled=TRUE')
 RACE_RECOVERY=('RaceScope="attesting"' 'RecoveryEnabled=TRUE' 'MaxCrashes=1')
@@ -120,7 +128,7 @@ if [[ -z "$ONLY" || "PC_" =~ $ONLY ]]; then
     n="${cfg%.cfg}"
     meta="$(mktemp -d)"
     echo ">>> $n"
-    timeout 900 "${TLC[@]}" -metadir "$meta" -config "$cfg" ProbeCache.tla \
+    timeout 900 "${TLC[@]}" -Djava.io.tmpdir="$meta" -cp "$TLA2TOOLS" tlc2.TLC -workers "$WORKERS" -metadir "$meta" -config "$cfg" ProbeCache.tla \
       > "results/$n.txt" 2>&1
     echo "exit=$?" >> "results/$n.txt"
     grep -E "is violated|properties were violated|No error has been found|distinct states found" \

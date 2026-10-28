@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 126 and seed 372687865068685181 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 57192] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 40 and seed 6689356821383993274 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 29953] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/MidRunRaiseGates.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/Sequences.tla
@@ -12,15 +12,15 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module MidRunRaiseGates
-Starting... (2026-09-25 19:15:32)
+Starting... (2026-10-28 18:11:44)
 Computing initial states...
 Computed 2 initial states...
 Computed 4 initial states...
 Computed 8 initial states...
 Computed 16 initial states...
 Computed 32 initial states...
-Finished computing initial states: 64 distinct states generated at 2026-09-25 19:15:32.
-Progress(9) at 2026-09-25 19:15:35: 387,265 states generated (387,265 s/min), 117,322 distinct states found (117,322 ds/min), 50,556 states left on queue.
+Finished computing initial states: 64 distinct states generated at 2026-10-28 18:11:44.
+Progress(8) at 2026-10-28 18:11:47: 124,170 states generated (124,170 s/min), 42,015 distinct states found (42,015 ds/min), 19,948 states left on queue.
 Error: Action property TerminalAbsorbing is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -49,7 +49,7 @@ State 1: <Initial predicate>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 2: <SFetch line 319, col 3 to line 334, col 20 of module MidRunRaiseGates>
+State 2: <SFetch line 330, col 3 to line 345, col 20 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -75,7 +75,7 @@ State 2: <SFetch line 319, col 3 to line 334, col 20 of module MidRunRaiseGates>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 3: <CallerRow line 269, col 3 to line 279, col 39 of module MidRunRaiseGates>
+State 3: <CallerRow line 280, col 3 to line 290, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -101,7 +101,7 @@ State 3: <CallerRow line 269, col 3 to line 279, col 39 of module MidRunRaiseGat
 /\ refused = {}
 /\ recovered = FALSE
 
-State 4: <CallerEvt line 282, col 3 to line 286, col 39 of module MidRunRaiseGates>
+State 4: <CallerEvt line 293, col 3 to line 297, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -127,7 +127,7 @@ State 4: <CallerEvt line 282, col 3 to line 286, col 39 of module MidRunRaiseGat
 /\ refused = {}
 /\ recovered = FALSE
 
-State 5: <SRsCreate line 337, col 3 to line 351, col 40 of module MidRunRaiseGates>
+State 5: <SRsCreate line 348, col 3 to line 362, col 40 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -153,7 +153,7 @@ State 5: <SRsCreate line 337, col 3 to line 351, col 40 of module MidRunRaiseGat
 /\ refused = {}
 /\ recovered = FALSE
 
-State 6: <SRsRefetch line 364, col 3 to line 371, col 39 of module MidRunRaiseGates>
+State 6: <SRsRefetch line 375, col 3 to line 382, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -179,7 +179,7 @@ State 6: <SRsRefetch line 364, col 3 to line 371, col 39 of module MidRunRaiseGa
 /\ refused = {}
 /\ recovered = FALSE
 
-State 7: <SCheck line 374, col 3 to line 384, col 39 of module MidRunRaiseGates>
+State 7: <SCheck line 385, col 3 to line 395, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -205,7 +205,7 @@ State 7: <SCheck line 374, col 3 to line 384, col 39 of module MidRunRaiseGates>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 8: <SHead line 387, col 3 to line 412, col 39 of module MidRunRaiseGates>
+State 8: <SHead line 398, col 3 to line 423, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -231,7 +231,7 @@ State 8: <SHead line 387, col 3 to line 412, col 39 of module MidRunRaiseGates>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 9: <STx line 433, col 3 to line 454, col 40 of module MidRunRaiseGates>
+State 9: <STx line 444, col 3 to line 465, col 40 of module MidRunRaiseGates>
 /\ kheld = [v |-> 0, st |-> "none"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -257,7 +257,7 @@ State 9: <STx line 433, col 3 to line 454, col 40 of module MidRunRaiseGates>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 10: <KRead line 587, col 3 to line 593, col 20 of module MidRunRaiseGates>
+State 10: <KRead line 598, col 3 to line 604, col 20 of module MidRunRaiseGates>
 /\ kheld = [v |-> 6, st |-> "pending"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -283,7 +283,7 @@ State 10: <KRead line 587, col 3 to line 593, col 20 of module MidRunRaiseGates>
 /\ refused = {}
 /\ recovered = FALSE
 
-State 11: <KPatch line 596, col 3 to line 611, col 20 of module MidRunRaiseGates>
+State 11: <KPatch line 607, col 3 to line 622, col 20 of module MidRunRaiseGates>
 /\ kheld = [v |-> 6, st |-> "pending"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -311,7 +311,7 @@ State 11: <KPatch line 596, col 3 to line 611, col 20 of module MidRunRaiseGates
 /\ refused = {}
 /\ recovered = FALSE
 
-State 12: <SReread line 457, col 3 to line 461, col 39 of module MidRunRaiseGates>
+State 12: <SReread line 468, col 3 to line 472, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 6, st |-> "pending"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -339,7 +339,7 @@ State 12: <SReread line 457, col 3 to line 461, col 39 of module MidRunRaiseGate
 /\ refused = {}
 /\ recovered = FALSE
 
-State 13: <STrans line 464, col 3 to line 485, col 39 of module MidRunRaiseGates>
+State 13: <STrans line 475, col 3 to line 496, col 39 of module MidRunRaiseGates>
 /\ kheld = [v |-> 6, st |-> "pending"]
 /\ att = <<1, 1>>
 /\ wleft = 2
@@ -368,7 +368,7 @@ State 13: <STrans line 464, col 3 to line 485, col 39 of module MidRunRaiseGates
 /\ refused = {}
 /\ recovered = FALSE
 
-1954481 states generated, 523918 distinct states found, 185538 states left on queue.
+1961493 states generated, 525324 distinct states found, 185991 states left on queue.
 The depth of the complete state graph search is 13.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 9 and the 95th percentile is 4).
-Finished in 08s at (2026-09-25 19:15:40)
+Finished in 22s at (2026-10-28 18:12:05)

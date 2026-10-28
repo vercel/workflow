@@ -310,7 +310,8 @@ Code mapping is in the `.tla` header and `gen_cfgs.py`.
 - `MidRunRaiseGates.tla` does three things:
   - It checks #1044's hard-coded "crossing 6 or 7 needs a fresh log" rule
     against an allow-list alternative over versions 1..9. `StructuralSet`
-    is a constant, so a hypothetical structural 9 can be added.
+    is a constant, so a structural 9 can be added (hypothetical when written;
+    workflow-server now defines 9 as structural, see N2).
   - It adds reader-code and caller-code dimensions (`ExecutorCanReplay`,
     `CallerCanDecode`), turbo, recovery and resurrection.
   - It checks a "Full" configuration with all concurrency (8.6M states with
@@ -360,7 +361,7 @@ Code mapping is in the `.tla` header and `gen_cfgs.py`.
   deploy or rollback.
 - `SharedPool.tla`: world-postgres mixed-version worker pools, rolling
   upgrade and rollback, and package skew with the kill switch.
-- `AttestSound.lean` (6 theorems): when #4366's attestation matches what the
+- `AttestSound.lean` (10 theorems): when #4366's attestation matches what the
   executor can actually read.
 - `ProbeMisread.lean` (11 theorems, new): the #4916 probe payload against a
   4.x responder's invoke-first union and a 5.x responder's health-first
@@ -405,19 +406,32 @@ classifies every result file with `verdicts.py` into `results/verdicts.txt`
 (PASS / VIOLATION(<property>) / PROVED / ERROR / FAILED), compares that
 against `expected-verdicts.txt`, and prints a per-model summary.
 
-The last full run (`JOBS=5 ./run.sh`, 2026-09-25, 8 cores) took 1 h 46 min
-wall time. ServerRaiseProtocol alone takes 1 h 46 min and bounds the total;
-StartStamping takes 46 min, MidRunRaiseGates 6 min, ResolveLean 4 min and
-Completeness under 1 min. Run serially, the suite takes about 2 h 45 min.
-All 783 verdicts matched `expected-verdicts.txt`:
+The last full rerun was on 2026-10-28, on a fresh 8-core, 16 GB box (Java 21,
+Lean 4.34.1, tla2tools v1.7.4). Every model's `run.sh` was run, several at
+once, for about 3 h 30 min of wall time. ServerRaiseProtocol is most of
+that, at about 3 h on 3 workers; StartStamping takes about 1 h 30 min,
+MidRunRaiseGates 30 min, ResolveLean 7 min and Completeness about 1 min.
+All 1,048 verdicts match `expected-verdicts.txt`:
 
 | model | result files | pass | violation | proved | errors |
 |---|---:|---:|---:|---:|---:|
-| StartStamping | 321 | 140 | 181 | 0 | 0 |
-| ServerRaiseProtocol | 387 | 249 | 138 | 0 | 0 |
-| MidRunRaiseGates | 47 | 19 | 28 | 0 | 0 |
+| StartStamping | 417 | 176 | 241 | 0 | 0 |
+| ServerRaiseProtocol | 537 | 362 | 175 | 0 | 0 |
+| MidRunRaiseGates | 56 | 22 | 34 | 0 | 0 |
 | ResolveLean | 5 | 0 | 0 | 5 (112 theorems) | 0 |
-| Completeness | 23 | 10 | 12 | 1 (6 theorems) | 0 |
+| Completeness | 33 | 14 | 16 | 3 (25 theorems) | 0 |
+
+Three things make the run reproducible. They were found by this rerun:
+
+- A run that checks several properties and is expected to fail uses one TLC
+  worker. With several workers, which violated property TLC reports first
+  depends on scheduling, and the pinned verdict names it.
+- Each TLC run has its own `java.io.tmpdir`. TLC unpacks its standard
+  modules there, and parallel runs that share `/tmp` can parse one
+  another's half-written copies.
+- ServerRaiseProtocol configs marked `no-isolation` or `headline-only` in
+  `gen_cfgs.py` skip the per-property isolation runs (and, for
+  `headline-only`, the progress run).
 
 A "violation" is often the *expected* outcome. Examples: a counterexample
 against the code as written, a mutant, a reachability witness, or an
@@ -463,7 +477,7 @@ whole bounded state space; "proved" means a Lean theorem.
 | ServerRaiseProtocol | RECOMMENDED minus P1 / P1e / P3 / P4 / P5 | NoDoomedRun / RunCreatedSpecMatchesRow / NoMixedIdentityLog / NoDoomedRun / NoDoomedRun | violated (each is necessary); P2 is redundant under P5 | `RECOMMENDED_no*.txt` |
 | ServerRaiseProtocol | RECOMMENDED_crash_noGrace | NoMixedIdentityLog | violated (the 60 s recovery grace window is load-bearing) | `RECOMMENDED_crash_noGrace.txt` |
 | MidRunRaiseGates | Default_S67 / AllowList_S67 | ReplayConsistent, NoNeedlessRefusal | pass | `MidRunRaiseGates/results/Default_S67.txt` |
-| MidRunRaiseGates | Default_S679 (hypothetical structural 9) | ReplayConsistent | violated (default-allow is not future-proof) | `Default_S679.txt` |
+| MidRunRaiseGates | Default_S679 (structural 9, now real on the server) | ReplayConsistent | violated (default-allow is not future-proof) | `Default_S679.txt` |
 | MidRunRaiseGates | G1_NotCommitted / G1_ResilientStart | ExecutorCanReplay | violated | `G1_*.txt` |
 | MidRunRaiseGates | G2_CancelRace / G2_StaleStarters | NoMixedIdentityLog | violated | `G2_*.txt` |
 | MidRunRaiseGates | G3_StableCaller | CallerCanDecode | violated; G3_StableCaller_StampGate passes | `G3_*.txt` |

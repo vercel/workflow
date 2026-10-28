@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 44 and seed -367381227829586177 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 112411] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 114 and seed 4413487087642008560 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 30834] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/ForceClaimGate.tla
 Parsing file /tmp/Integers.tla
 Parsing file /tmp/TLC.tla
@@ -12,9 +12,9 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module ForceClaimGate
-Starting... (2026-09-25 01:42:33)
+Starting... (2026-10-28 18:12:48)
 Computing initial states...
-Finished computing initial states: 2 distinct states generated at 2026-09-25 01:42:33.
+Finished computing initial states: 2 distinct states generated at 2026-10-28 18:12:48.
 Error: Invariant W_ReadThenRaise_Refused is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -101,7 +101,7 @@ State 6: <ClaimDecide line 192, col 3 to line 201, col 74 of module ForceClaimGa
 /\ vStatus = "running"
 /\ stamp = 7
 
-179 states generated, 62 distinct states found, 4 states left on queue.
-The depth of the complete state graph search is 8.
-The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 3 and the 95th percentile is 2).
-Finished in 00s at (2026-09-25 01:42:33)
+123 states generated, 51 distinct states found, 15 states left on queue.
+The depth of the complete state graph search is 6.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 3 and the 95th percentile is 3).
+Finished in 01s at (2026-10-28 18:12:48)

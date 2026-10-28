@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 9 and seed -5834088555696837281 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 80616] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Running breadth-first search Model-Checking with fp 69 and seed 1332856417607098139 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 48864] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/formal-baseline/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
 Parsing file /tmp/TLC.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:45:59)
+Starting... (2026-10-28 18:59:35)
 << "VARIANT",
    "CallerHas4327",
    TRUE,
@@ -73,8 +73,8 @@ Computed 2048 initial states...
 Computed 4096 initial states...
 Computed 8192 initial states...
 Computed 16384 initial states...
-Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 19:46:00.
-Progress(10) at 2026-09-25 19:46:03: 282,882 states generated (282,882 s/min), 128,739 distinct states found (128,739 ds/min), 37,191 states left on queue.
+Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-10-28 18:59:37.
+Progress(8) at 2026-10-28 18:59:40: 116,016 states generated (116,016 s/min), 53,734 distinct states found (53,734 ds/min), 19,292 states left on queue.
 Error: Invariant NoAvoidableStuck is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -591,8 +591,8 @@ State 13: <XReplay line 723, col 5 to line 734, col 41 of module StartStamping>
 /\ log = { [t |-> "RC", k |-> "S", sp |-> 9, n |-> 1],
   [t |-> "RS", k |-> "S", sp |-> 0, n |-> 2] }
 
-600196 states generated, 262624 distinct states found, 49168 states left on queue.
+599421 states generated, 262201 distinct states found, 49294 states left on queue.
 The depth of the complete state graph search is 13.
-The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 7 and the 95th percentile is 3).
-Finished in 06s at (2026-09-25 19:46:05)
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
+Finished in 11s at (2026-10-28 18:59:46)
 exit=12

@@ -21,9 +21,8 @@
 #                 workers and a 2 GB heap, so JOBS=5 wants ~8 cores and 12 GB.
 #   WORKERS=N     TLC workers per run (default 2).
 #   TLC_TIMEOUT=s per TLC run (default 900). ServerRaiseProtocol has runs of
-#                 a few minutes each; the whole suite takes about 2 h 45 min
-#                 serially, 1 h 46 min with JOBS=5 (bounded by
-#                 ServerRaiseProtocol).
+#                 a few minutes each and bounds the total: about 3 h on an
+#                 8-core box (2026-10-28), StartStamping about 1 h 30 min.
 #
 # Output
 #   <Model>/results/*.txt   full TLC / Lean output, rewritten by the run

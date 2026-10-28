@@ -9,8 +9,9 @@ mkdir -p results states
 fail=0
 tlc() { # module cfg expected
   local out="results/$2.txt"
-  rm -rf "states/$2"
-  timeout "${TLC_TIMEOUT:-900}" "${JAVA:-java}" -XX:+UseParallelGC -Xmx2g -cp "$JAR" tlc2.TLC \
+  rm -rf "states/$2"; mkdir -p "states/$2"
+  # own java.io.tmpdir: TLC unpacks its standard modules there (JOBS > 1)
+  timeout "${TLC_TIMEOUT:-900}" "${JAVA:-java}" -XX:+UseParallelGC -Xmx2g -Djava.io.tmpdir="states/$2" -cp "$JAR" tlc2.TLC \
     -workers "${WORKERS:-2}" -deadlock -metadir "states/$2" -config "$2.cfg" "$1.tla" > "$out" 2>&1
   local got=pass
   grep -qE "is violated|Error:" "$out" && got=violation

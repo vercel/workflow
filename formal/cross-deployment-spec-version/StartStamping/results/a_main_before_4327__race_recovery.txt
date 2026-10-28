@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 52 and seed 3453044658221179424 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 49830] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 12 and seed -8699681482184692489 with 1 worker on 8 cores with 1820MB heap and 64MB offheap memory [pid: 52841] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
 Parsing file /tmp/Naturals.tla
 Parsing file /tmp/FiniteSets.tla
@@ -10,7 +10,7 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module StartStamping
-Starting... (2026-09-25 19:10:45)
+Starting... (2026-10-28 19:02:56)
 << "VARIANT",
    "CallerHas4327",
    FALSE,
@@ -71,7 +71,7 @@ Computed 512 initial states...
 Computed 1024 initial states...
 Computed 2048 initial states...
 Computed 4096 initial states...
-Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-09-25 19:10:46.
+Finished computing initial states: 4672 states generated, with 72 of them distinct at 2026-10-28 19:02:57.
 Error: Invariant NoResurrect is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -418,8 +418,8 @@ State 9: <XTrans line 635, col 5 to line 671, col 77 of module StartStamping>
 /\ kheld = [st |-> "none", sp |-> 0]
 /\ log = {[t |-> "RC", k |-> "U", sp |-> 1, n |-> 100]}
 
-70371 states generated, 33122 distinct states found, 14351 states left on queue.
+70540 states generated, 33130 distinct states found, 14349 states left on queue.
 The depth of the complete state graph search is 9.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 4 and the 95th percentile is 4).
-Finished in 02s at (2026-09-25 19:10:47)
+Finished in 04s at (2026-10-28 19:03:00)
 exit=12

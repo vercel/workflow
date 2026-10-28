@@ -91,8 +91,14 @@ for r in "${RUNS[@]}"; do
   out="results/$cfg.txt"
   rm -rf "states/$cfg"
   echo ">>> $cfg ($mod.tla), expecting $expect"
-  timeout "$TLC_TIMEOUT" "$JAVA" -XX:+UseParallelGC -Xmx2g -cp "$TLA2TOOLS" tlc2.TLC \
-    -workers "$WORKERS" -metadir "$HERE/states/$cfg" -config "$cfg.cfg" "$mod.tla" >"$out" 2>&1
+  # A run expected to fail uses one worker: with several, which of two
+  # violated properties TLC reports first depends on scheduling, and the
+  # verdict pinned in expected-verdicts.txt names it.
+  w="$WORKERS"; [ "$expect" = violation ] && w=1
+  # own java.io.tmpdir: TLC unpacks its standard modules there (JOBS > 1)
+  mkdir -p "$HERE/states/$cfg"
+  timeout "$TLC_TIMEOUT" "$JAVA" -XX:+UseParallelGC -Xmx2g -Djava.io.tmpdir="$HERE/states/$cfg" \
+    -cp "$TLA2TOOLS" tlc2.TLC -workers "$w" -metadir "$HERE/states/$cfg" -config "$cfg.cfg" "$mod.tla" >"$out" 2>&1
   rm -rf "states/$cfg"
   if grep -q "No error has been found" "$out"; then got=pass
   elif grep -qE "is violated" "$out"; then got=violation
