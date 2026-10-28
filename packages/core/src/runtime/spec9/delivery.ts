@@ -2746,7 +2746,6 @@ async function runDelivery(
             for (const next of chainTimersBeforeCompletion({
               openWaits: openWaits(log.events),
               completing: due.map((wait) => wait.correlationId),
-              timerFor: waitContinuation?.correlationId,
             })) {
               if (!timedWaits.has(next.correlationId)) {
                 await sendWaitTimer(next);

@@ -62,6 +62,12 @@ const oneSleep = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
     return "done";
   }${registerWorkflow()}`;
 
+const threeSleeps = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow() {
+    await Promise.all([sleep("1h"), sleep("2h"), sleep("3h")]);
+    return "done";
+  }${registerWorkflow()}`;
+
 const longSleep = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
     await sleep("${LONG_SLEEP_SECONDS}s");
@@ -518,6 +524,35 @@ describe.each([
     vi.setSystemTime(Date.now() + 2 * 60 * 60_000);
     await world.runUntilIdle();
     expect(eventsOf(world, 'wait_completed')).toHaveLength(1);
+    expect(await runResult(world)).toBe('done');
+  });
+
+  it("keeps a chain of open sleeps armed when a timer delivery completes its own sleep, fails, and its redelivery is coalesced into another message's delivery", async () => {
+    const { world, runId, start } = await setupOrchestratorRun(
+      threeSleeps,
+      [],
+      { coalesce: true },
+      engine
+    );
+    await world.deliver(start);
+    const [firstTimer] = timers(world);
+    expect(timers(world)).toHaveLength(1);
+
+    // The first sleep's timer completes its sleep, and the delivery fails
+    // right after the commit: two sleeps of the chain are still open.
+    vi.setSystemTime(Date.now() + 61 * 60_000);
+    loseNextWriteOf(world, 'wait_completed');
+    await expect(world.deliver(firstTimer!)).rejects.toThrow();
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(1);
+    const redelivery = takeRedelivery(world, firstTimer!);
+
+    await deliverWakeCoalescing(world, runId, redelivery);
+    // The chain's next sleep got its timer before the completion committed.
+    expect(timers(world)).toHaveLength(1);
+
+    vi.setSystemTime(Date.now() + 3 * 60 * 60_000);
+    await world.runUntilIdle();
+    expect(eventsOf(world, 'wait_completed')).toHaveLength(3);
     expect(await runResult(world)).toBe('done');
   });
 

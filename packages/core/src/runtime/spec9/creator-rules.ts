@@ -354,28 +354,25 @@ export function schedulesWaitTimer(params: {
  * by a delivery that holds the completion in memory (`ownedWaitChains`), so
  * a delivery that commits the completion and fails before the send would
  * leave the chain with no timer: its redelivery no longer knows it
- * completed the wait. Sent first, the timer is either out before the
- * completion commits, or the send failed, nothing committed, and the
+ * completed the wait, and the queue may coalesce that redelivery into a
+ * delivery that owns no chain. Sent first, the timer is either out before
+ * the completion commits, or the send failed, nothing committed, and the
  * redelivery finds the wait still open and due and decides again. A
- * duplicate timer finds its wait open and re-arms what is left, or
- * completed and arms nothing.
+ * duplicate timer is deduplicated by its hop's key, or finds its wait open
+ * and re-arms what is left, or completed and arms nothing.
  *
- * The wait a timer delivery is for (`timerFor`) is left out: a redelivery
- * of that timer owns its chain anyway. So is a wait with no recorded
- * creator, whose chain no delivery owns.
+ * A timer delivery completing its own wait counts like any other: the
+ * redelivery of a timer owns its chain (`ownedWaitChains`), but a
+ * redelivery the queue coalesces into another delivery is never made. A
+ * wait with no recorded creator is left out: no delivery owns its chain.
  */
 export function chainTimersBeforeCompletion<
   W extends { correlationId: string; resumeAtMs: number; event?: Event },
->(params: {
-  openWaits: readonly W[];
-  completing: Iterable<string>;
-  timerFor: string | undefined;
-}): W[] {
-  const { openWaits, timerFor } = params;
+>(params: { openWaits: readonly W[]; completing: Iterable<string> }): W[] {
+  const { openWaits } = params;
   const completing = new Set(params.completing);
   const next = new Map<string, W>();
   for (const correlationId of completing) {
-    if (correlationId === timerFor) continue;
     const creator = waitCreatorMessageId(
       openWaits.find((wait) => wait.correlationId === correlationId)?.event
     );

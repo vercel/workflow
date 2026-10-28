@@ -348,7 +348,7 @@ describe('wait timer ownership', () => {
     ).toEqual(['a1', 'a2', 'b1', 'own']);
   });
 
-  it("names each completing wait's chain's next open wait, except the timer's own and creatorless ones", () => {
+  it("names each completing wait's chain's next open wait, except creatorless ones", () => {
     const open = [
       { correlationId: 'a1', resumeAtMs: 10, event: wait('a1', 'msg_a') },
       { correlationId: 'a2', resumeAtMs: 30, event: wait('a2', 'msg_a') },
@@ -360,13 +360,14 @@ describe('wait timer ownership', () => {
       { correlationId: 'x1', resumeAtMs: 10, event: wait('x1') },
       { correlationId: 'x2', resumeAtMs: 40, event: wait('x2') },
     ];
-    const next = (completing: string[], timerFor?: string) =>
-      chainTimersBeforeCompletion({ openWaits: open, completing, timerFor })
+    const next = (completing: string[]) =>
+      chainTimersBeforeCompletion({ openWaits: open, completing })
         .map((w) => w.correlationId)
         .sort();
     // a1 and a3 complete together: a2 is next.
     expect(next(['a1', 'a3', 'b1', 'x1'])).toEqual(['a2', 'b2']);
-    expect(next(['a1', 'c1'], 'c1')).toEqual(['a3']);
+    // A timer delivery completing its own wait (c1) arms its chain's next.
+    expect(next(['a1', 'c1'])).toEqual(['a3', 'c2']);
     // The last wait of its chain: nothing to arm.
     expect(next(['b1', 'b2'])).toEqual([]);
   });

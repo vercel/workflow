@@ -646,7 +646,6 @@ export async function runWorkflowWithQuickJS(params: {
     for (const wait of chainTimersBeforeCompletion({
       openWaits: openWaits(log),
       completing,
-      timerFor: waitContinuation?.correlationId,
     })) {
       if (scheduledWaitContinuations.has(wait.correlationId)) continue;
       scheduledWaitContinuations.add(wait.correlationId);
