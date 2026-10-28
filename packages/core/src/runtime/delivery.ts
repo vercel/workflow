@@ -57,7 +57,6 @@ import type { RunInputActivity } from './invocations.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
-import { rememberRunSpecVersion } from './run-spec-routing.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 
 type QueueHandler = Parameters<Queue['createQueueHandler']>[1];
@@ -102,7 +101,7 @@ export interface WorkflowDelivery {
   readonly prefetchedRun: WorkflowRun | undefined;
   /**
    * The spec version of the run, as routing resolved it (the message's
-   * stamp, this process's memory of the run, or the run itself). Every
+   * stamp or hint, or the run itself; see `resolveRunSpec`). Every
    * orchestrator message the delivery sends carries it, so a World that
    * reads the run's spec off the payload never sees an unstamped one.
    */
@@ -115,9 +114,8 @@ export interface WorkflowDelivery {
  *
  * Routing trusts a message's `runSpecVersion` hint (see `resolveRunSpec`),
  * so a wrong hint can deliver a run's message to the other orchestrator. The
- * row is authoritative: this records it for the process, so later messages of
- * the run route by it, and sends the message again with the run's version as
- * its hint, which the next delivery routes to the right orchestrator. The
+ * row is authoritative: this sends the message again with the run's version
+ * as its hint, which the next delivery routes to the right orchestrator. The
  * caller acknowledges its message without writing anything else.
  *
  * A first delivery (`runInput`) is never handed on: its version is the one
@@ -143,7 +141,6 @@ export async function handOffToRunOrchestrator(params: {
   ) {
     return false;
   }
-  rememberRunSpecVersion(run.runId, runSpecVersion);
   runtimeLogger.warn(
     "Delivery reached the orchestrator of another spec version than its run's; handing it on",
     {

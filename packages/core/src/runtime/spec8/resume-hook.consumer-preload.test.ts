@@ -387,8 +387,10 @@ async function runResumeConsumerScenario(options: {
   await handler(new Request('http://localhost', { method: 'POST' }));
   expect(capturedHandler).toBeDefined();
 
+  // Stamped with the run's spec version, as `resumeHook()` stamps its wake.
   let delivery: unknown = {
     runId,
+    runSpecVersion: SPEC8_EVENT_SPEC_VERSION,
     hookInput: {
       hookId: hookCorrelationId,
       resumeId,

@@ -6,6 +6,7 @@ import {
 } from '@workflow/errors';
 import {
   type Event,
+  messageRunSpecVersion,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
 } from '@workflow/world';
@@ -458,9 +459,9 @@ describe.each([
         expect(new Set(keys).size).toBe(width);
         for (const call of messages) {
           expect(call.opts?.idempotencyKey).toEqual(expect.any(String));
-          expect(
-            (call.message as { runSpecVersion?: number }).runSpecVersion
-          ).toBe(SPEC_VERSION_CURRENT);
+          expect(messageRunSpecVersion(call.message)).toBe(
+            SPEC_VERSION_CURRENT
+          );
         }
 
         await world.runUntilIdle(4 * width);

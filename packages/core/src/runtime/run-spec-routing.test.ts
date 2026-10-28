@@ -1,3 +1,4 @@
+import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -8,7 +9,7 @@ import {
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { handOffToRunOrchestrator } from './delivery.js';
-import { rememberRunSpecVersion, resolveRunSpec } from './run-spec-routing.js';
+import { resolveRunSpec } from './run-spec-routing.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -38,56 +39,70 @@ afterEach(() => {
 });
 
 describe('resolveRunSpec', () => {
-  it('lets a later hint replace a wrong one', async () => {
+  const route = (runId: string, message: Partial<WorkflowInvokePayload>) =>
+    resolveRunSpec({ runId, ...message } as WorkflowInvokePayload);
+
+  it('routes a stamped message by its stamp, without reading the run', async () => {
     const { get } = worldWithRun(SPEC_VERSION_SINGLE_ORCHESTRATOR);
     const runId = freshRunId();
-    const route = (message: Partial<WorkflowInvokePayload>) =>
-      resolveRunSpec({ runId, ...message } as WorkflowInvokePayload);
-
-    expect(
-      (await route({ runSpecVersion: SPEC_VERSION_LEGACY })).specVersion
-    ).toBe(SPEC_VERSION_LEGACY);
-    expect(
-      (await route({ runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }))
-        .specVersion
-    ).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
-    // The unstamped message after it follows the corrected hint.
-    expect((await route({})).specVersion).toBe(
-      SPEC_VERSION_SINGLE_ORCHESTRATOR
-    );
+    const stamps: Partial<WorkflowInvokePayload>[] = [
+      { runInput: { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM } },
+      { runContext: { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM } },
+      { runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM },
+    ] as Partial<WorkflowInvokePayload>[];
+    for (const stamp of stamps) {
+      await expect(route(runId, stamp)).resolves.toEqual({
+        specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      });
+    }
     expect(get).not.toHaveBeenCalled();
   });
 
-  it('prefers a version read from the run over any hint', async () => {
-    const { get } = worldWithRun(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+  it('prefers a run identity stamp over the hint', async () => {
+    worldWithRun(SPEC_VERSION_SINGLE_ORCHESTRATOR);
     const runId = freshRunId();
-    const route = (message: Partial<WorkflowInvokePayload>) =>
-      resolveRunSpec({ runId, ...message } as WorkflowInvokePayload);
-
-    expect((await route({})).specVersion).toBe(
-      SPEC_VERSION_SINGLE_ORCHESTRATOR
-    );
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(
-      (await route({ runSpecVersion: SPEC_VERSION_LEGACY })).specVersion
-    ).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
-    expect((await route({})).specVersion).toBe(
-      SPEC_VERSION_SINGLE_ORCHESTRATOR
-    );
-    expect(get).toHaveBeenCalledTimes(1);
+    const runContext = { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR };
+    await expect(
+      route(runId, {
+        runContext,
+        runSpecVersion: SPEC_VERSION_LEGACY,
+      } as Partial<WorkflowInvokePayload>)
+    ).resolves.toEqual({ specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR });
   });
 
-  it('never lets a hint replace an authoritative version', () => {
+  it('reads the run once per unstamped message, and hands the run on', async () => {
+    const { get } = worldWithRun(SPEC_VERSION_SINGLE_ORCHESTRATOR);
     const runId = freshRunId();
-    rememberRunSpecVersion(runId, SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
-    rememberRunSpecVersion(runId, SPEC_VERSION_LEGACY, {
-      authoritative: false,
+    for (let i = 1; i <= 2; i++) {
+      const spec = await route(runId, {});
+      expect(spec.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+      expect(spec.run?.runId).toBe(runId);
+      // Nothing is remembered between messages.
+      expect(get).toHaveBeenCalledTimes(i);
+    }
+    // A stamped message after them still reads nothing.
+    await route(runId, { runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR });
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('routes a run that records no version as legacy', async () => {
+    const { get } = worldWithRun(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    get.mockResolvedValueOnce({
+      runId: 'x',
+      deploymentId: 'dpl_routing',
+      status: 'running',
+    } as never);
+    await expect(route(freshRunId(), {})).resolves.toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
     });
-    return expect(
-      resolveRunSpec({ runId } as WorkflowInvokePayload).then(
-        (r) => r.specVersion
-      )
-    ).resolves.toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+  });
+
+  it("routes a run that cannot be found by the World's own version", async () => {
+    const { world, get } = worldWithRun(SPEC_VERSION_LEGACY);
+    get.mockRejectedValueOnce(new WorkflowRunNotFoundError('wrun_missing'));
+    await expect(route(freshRunId(), {})).resolves.toEqual({
+      specVersion: world.specVersion,
+    });
   });
 });
 
@@ -101,7 +116,7 @@ describe('handOffToRunOrchestrator', () => {
       status: 'running',
     }) as WorkflowRun;
 
-  it('re-sends a misrouted message with its run version, and routing then follows the run', async () => {
+  it('re-sends a misrouted message with its run version', async () => {
     const { world, queue } = worldWithRun(SPEC_VERSION_SINGLE_ORCHESTRATOR);
     const runId = freshRunId();
     const message = {
@@ -137,10 +152,7 @@ describe('handOffToRunOrchestrator', () => {
       deploymentId: 'dpl_routing',
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
-    // The process now routes the run, and the original wrong hint, by it.
-    expect((await resolveRunSpec(message)).specVersion).toBe(
-      SPEC_VERSION_SINGLE_ORCHESTRATOR
-    );
+    // The re-sent message routes to the run's orchestrator.
     expect((await resolveRunSpec(sent)).specVersion).toBe(
       SPEC_VERSION_SINGLE_ORCHESTRATOR
     );

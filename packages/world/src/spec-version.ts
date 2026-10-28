@@ -186,7 +186,10 @@ export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
  * the single orchestrator, kept to one writer by the World's in-band fence,
  * and earlier runs with the spec 8 orchestrator, which needs no fence. A run
  * keeps the version it was created with, so changing a setting only affects
- * new runs.
+ * new runs. (A backend may raise a running run across
+ * {@link CAPABILITY_ONLY_SPEC_VERSIONS}, never across a structural version
+ * such as {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, so a run never changes
+ * orchestrator.)
  *
  * A function rather than a constant so a World reads the settings where it is
  * created.

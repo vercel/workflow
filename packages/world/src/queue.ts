@@ -677,6 +677,18 @@ export function isIntermediateWaitHop(payload: unknown): boolean {
  * message without a run, and a message from a producer that predates the
  * fields. A World treats `undefined` as a run below spec 9: every runtime
  * that creates spec 9 runs stamps its messages.
+ *
+ * A producer outside that runtime (an older SDK, or another client of the
+ * World) may still send a message for a spec 9 run that is unstamped or
+ * stamped below 9, and nothing can prevent it. The World then treats it as a
+ * message of an earlier run: world-vercel sends it without the run's
+ * concurrency key, and world-local and world-postgres do not serialize it, so
+ * it can run beside the run's serialized orchestrator. The runtime still
+ * routes it to the run's orchestrator (from the run itself, or by handing it
+ * on once the run is loaded), and the in-band fence refuses the second
+ * writer's in-band writes, so the run's log stays correct. The cost is wasted
+ * orchestrator work, which can include running the body of an inline step a
+ * second time; it does not corrupt the log.
  */
 export function messageRunSpecVersion(payload: unknown): number | undefined {
   if (typeof payload !== 'object' || payload === null) return undefined;

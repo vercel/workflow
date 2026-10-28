@@ -2329,7 +2329,9 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
                 runId,
                 requestedAt: new Date(),
                 ...(opts.withRunInput === false
-                  ? {}
+                  ? // A continuation names the run's version, as every
+                    // orchestrator message the runtime sends does.
+                    { runSpecVersion: SPEC_VERSION_CURRENT }
                   : {
                       runInput: {
                         input: await dehydrateWorkflowArguments(

@@ -7,19 +7,11 @@ import {
   runResult,
   setupOrchestratorRun,
 } from '../../test-support/orchestrator-harness.js';
-import {
-  RUN_SPEC_VERSION_CACHE_SIZE,
-  rememberRunSpecVersion,
-} from '../run-spec-routing.js';
 import { setWorld } from '../world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
-registerStepFunction('ss_add', async (a: number, b: number) => {
-  // The step's own wake goes out after its body: forget the run here.
-  evictRememberedSpecs();
-  return a + b;
-});
+registerStepFunction('ss_add', async (a: number, b: number) => a + b);
 
 const workflowCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("ss_add");
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
@@ -29,14 +21,6 @@ const workflowCode = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("s
     const b = await add(a, 3);
     return b;
   }${registerWorkflow()}`;
-
-/** Fills this process's run spec memory with other runs, evicting `runId`. */
-function evictRememberedSpecs(): void {
-  const prefix = `wrun_other_${Math.random().toString(36).slice(2)}_`;
-  for (let i = 0; i < RUN_SPEC_VERSION_CACHE_SIZE; i++) {
-    rememberRunSpecVersion(`${prefix}${i}`, SPEC_VERSION_CURRENT);
-  }
-}
 
 beforeEach(() => {
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
@@ -52,18 +36,12 @@ afterEach(() => {
 describe.each([
   'node',
   'quickjs',
-] as const)('spec stamps on a spec 9 run after the process forgot its spec (%s engine)', (engine) => {
+] as const)('spec stamps on a spec 9 run (%s engine)', (engine) => {
   it('stamps every message it sends with the run spec version', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    // Every delivery remembers the run's spec version as it routes the
-    // message. Forgetting it before every write (and in every step body)
-    // leaves a message stamped only if its sender names the version.
-    const { world } = await setupOrchestratorRun(
-      workflowCode,
-      [],
-      { beforeCreate: () => evictRememberedSpecs() },
-      engine
-    );
+    // Every message the run's deliveries send names its spec version, so
+    // the World can key and serialize it without reading the run.
+    const { world } = await setupOrchestratorRun(workflowCode, [], {}, engine);
     const before = world.queueCalls.length;
     for (let i = 0; i < 20 && world.held.length > 0; i++) {
       vi.setSystemTime(Date.now() + 2 * 3_600_000);
