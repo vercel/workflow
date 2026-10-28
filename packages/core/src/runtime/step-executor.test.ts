@@ -1389,12 +1389,48 @@ describe('executeStep — forwarded writable key lookup failures', () => {
 
   const OWNER_RUN_ID = 'wrun_forwarded_owner';
 
+  /** The shape world-vercel throws for a non-2xx run-key response */
+  function runKeyFetchError(status: number): Error {
+    return Object.assign(new Error(`Failed to fetch run key: HTTP ${status}`), {
+      name: 'RunKeyFetchError',
+      status,
+    });
+  }
+
+  async function awaitClosed(writable: WritableStream<string>) {
+    const writer = writable.getWriter();
+    await writer.write('forwarded snapshot');
+    // `write()` early-acks, so a key lookup failure errors the stream after
+    // it returns, and `close()` on an errored stream rejects with a generic
+    // TypeError. `closed` rejects with the lookup error itself; awaiting it
+    // makes the step throw that error.
+    await writer.close().catch(() => {});
+    await writer.closed;
+  }
+
+  /** Write, release the lock and return, without awaiting `closed` */
+  async function releaseLock(writable: WritableStream<string>) {
+    const writer = writable.getWriter();
+    await writer.write('forwarded snapshot');
+    writer.releaseLock();
+  }
+
   /**
    * Runs a step that writes to a writable forwarded from another run, with
    * the owner's key lookup (`getEncryptionKeyForRun`) failing with `lookupError`
-   * on the first attempt and succeeding on any later one.
+   * on the first attempt (after `lookupDelayMs`) and succeeding on any later
+   * one. `body` is the step's use of the writable.
    */
-  async function runForwardedWritableStep(lookupError: Error) {
+  async function runForwardedWritableStep(
+    lookupError: Error,
+    {
+      body = awaitClosed,
+      lookupDelayMs = 0,
+    }: {
+      body?: (writable: WritableStream<string>) => Promise<void>;
+      lookupDelayMs?: number;
+    } = {}
+  ) {
     const world = makeWorld();
     setWorld(world);
     world.streams.write = vi.fn(async () => {}) as typeof world.streams.write;
@@ -1402,7 +1438,12 @@ describe('executeStep — forwarded writable key lookup failures', () => {
     world.getEncryptionKeyForRun = vi.fn(async (runId: string) => {
       if (runId !== OWNER_RUN_ID) return undefined;
       ownerLookups += 1;
-      if (ownerLookups === 1) throw lookupError;
+      if (ownerLookups === 1) {
+        if (lookupDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, lookupDelayMs));
+        }
+        throw lookupError;
+      }
       return undefined;
     }) as World['getEncryptionKeyForRun'];
 
@@ -1430,14 +1471,7 @@ describe('executeStep — forwarded writable key lookup failures', () => {
       stepName,
       Object.assign(
         async (writable: WritableStream<string>) => {
-          const writer = writable.getWriter();
-          await writer.write('forwarded snapshot');
-          // `write()` early-acks, so a key lookup failure errors the stream
-          // after it returns, and `close()` on an errored stream rejects with
-          // a generic TypeError. `closed` rejects with the lookup error
-          // itself; awaiting it makes the step throw that error.
-          await writer.close().catch(() => {});
-          await writer.closed;
+          await body(writable);
           return 'ok';
         },
         { maxRetries: MAX_RETRIES }
@@ -1492,11 +1526,39 @@ describe('executeStep — forwarded writable key lookup failures', () => {
     ).toHaveLength(1);
   });
 
-  it('fails the step without retrying when the key lookup fails with a 404', async () => {
+  it('retries the step when the key lookup fails with an HTTP 429, and the retry completes', async () => {
+    const { world, runId, stepId, execute } = await runForwardedWritableStep(
+      runKeyFetchError(429)
+    );
+
+    expect((await execute(1)).type).toBe('retry');
+    expect(await eventsFor(world, runId, stepId, 'step_failed')).toHaveLength(
+      0
+    );
+    const retried = await errorOf(world, runId, stepId, 'step_retrying');
+    expect(retried.name).toBe('RunKeyFetchError');
+
+    expect((await execute(2)).type).toBe('completed');
+  });
+
+  it('retries the step when a slow transient key lookup fails after the step released the writer lock', async () => {
     const { world, runId, stepId, execute } = await runForwardedWritableStep(
       new WorkflowWorldError('GET /v1/workflow/run-key failed', {
-        status: 404,
-      })
+        code: 'TRANSPORT',
+      }),
+      { body: releaseLock, lookupDelayMs: 1500 }
+    );
+
+    expect((await execute(1)).type).toBe('retry');
+    expect(await eventsFor(world, runId, stepId, 'step_failed')).toHaveLength(
+      0
+    );
+    expect((await execute(2)).type).toBe('completed');
+  });
+
+  it('fails the step without retrying when the key lookup fails with an HTTP 404', async () => {
+    const { world, runId, stepId, execute } = await runForwardedWritableStep(
+      runKeyFetchError(404)
     );
 
     expect((await execute(1)).type).toBe('failed');

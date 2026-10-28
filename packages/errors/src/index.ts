@@ -505,7 +505,8 @@ export class RuntimeDecryptionError extends WorkflowRuntimeError {
  * error (e.g. a `404`, or the run that owns the stream does not exist). The
  * original failure is the `cause`.
  *
- * Transient lookup failures (transport, timeout, `429`, `5xx`) are not
+ * Transient lookup failures (transport, timeout, or an HTTP `429` / `5xx`
+ * status, whether or not the world threw a `WorkflowWorldError`) are not
  * wrapped in this error; they surface as themselves so the step retries.
  *
  * Fatal, so the step skips the retry loop.

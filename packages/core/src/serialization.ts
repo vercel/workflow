@@ -277,6 +277,24 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
   }
 }
 
+/**
+ * Whether a failed encryption key lookup is worth retrying: a retryable world
+ * error (transport, timeout, `429`, `5xx`), or any error carrying a numeric
+ * HTTP `status` of `429` or `>= 500`. Worlds that fetch keys over HTTP do not
+ * necessarily throw `WorkflowWorldError` for a non-2xx response (world-vercel
+ * throws a plain `Error` with `status`), so the status check covers those.
+ */
+function isTransientKeyLookupError(error: unknown): boolean {
+  if (isRetryableWorldError(error)) {
+    return true;
+  }
+  const status =
+    typeof error === 'object' && error !== null
+      ? (error as { status?: unknown }).status
+      : undefined;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -350,15 +368,15 @@ export function getSerializeStream(
           return;
         }
         // A key lookup failure is not a SerializationError either: nothing
-        // was serialized yet. A transient world error (transport, timeout,
-        // 429, 5xx) passes through unwrapped so the step retries; anything
-        // else (e.g. a 404) becomes a fatal NonTransientEncryptionKeyLookupError.
+        // was serialized yet. A transient failure passes through unwrapped so
+        // the step retries; anything else (e.g. a 404) becomes a fatal
+        // NonTransientEncryptionKeyLookupError.
         if (!keyState.resolved) {
           controller.error(
-            isRetryableWorldError(error)
+            isTransientKeyLookupError(error)
               ? error
               : new NonTransientEncryptionKeyLookupError(
-                  'Failed to resolve the encryption key for a stream chunk',
+                  `Failed to resolve the encryption key for stream writes (owner run key lookup failed: ${error instanceof Error ? error.message : String(error)})`,
                   { cause: error }
                 )
           );

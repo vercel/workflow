@@ -6070,12 +6070,36 @@ describe('stream encryption round-trip', () => {
     expect(error).toBe(lookupError);
   });
 
+  /** The shape world-vercel throws for a non-2xx run-key response */
+  function runKeyFetchError(status: number): Error {
+    return Object.assign(new Error(`Failed to fetch run key: HTTP ${status}`), {
+      name: 'RunKeyFetchError',
+      status,
+    });
+  }
+
+  it.each([
+    429, 500, 503,
+  ])('should pass a key lookup HTTP %i without a world error type through unwrapped so the step retries', async (status) => {
+    const lookupError = runKeyFetchError(status);
+
+    const error = await serializeError(() => Promise.reject(lookupError), {
+      hello: 'world',
+    });
+
+    expect(error).toBe(lookupError);
+  });
+
   it.each([
     {
       label: '404',
       lookupError: new WorkflowWorldError('GET /v1/workflow/run-key failed', {
         status: 404,
       }),
+    },
+    {
+      label: 'HTTP 404 without a world error type',
+      lookupError: runKeyFetchError(404),
     },
     { label: 'non-world error', lookupError: new Error('bad key material') },
   ])('should raise a fatal NonTransientEncryptionKeyLookupError for a key lookup $label', async ({
@@ -6090,6 +6114,7 @@ describe('stream encryption round-trip', () => {
     expect((error as NonTransientEncryptionKeyLookupError).cause).toBe(
       lookupError
     );
+    expect((error as Error).message).toContain(lookupError.message);
   });
 
   it('should still raise a SerializationError for a chunk that cannot be serialized', async () => {

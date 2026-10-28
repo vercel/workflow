@@ -3,4 +3,4 @@
 '@workflow/core': patch
 ---
 
-Stop reporting a failed encryption key lookup in `getSerializeStream` as a fatal `SerializationError`. A transient world error (transport, timeout, 429, 5xx) now surfaces as itself so the step retries; any other lookup failure is a fatal `NonTransientEncryptionKeyLookupError`.
+Retry steps whose stream encryption key lookup fails transiently instead of failing them with a `SerializationError`
