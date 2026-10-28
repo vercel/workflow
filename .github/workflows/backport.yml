@@ -324,6 +324,40 @@ jobs:
           mkdir -p ~/.local/share/opencode
           jq -n --arg key "$AI_GATEWAY_TOKEN" '{vercel:{type:"api",key:$key}}' > ~/.local/share/opencode/auth.json
 
+      - name: Seed opencode model catalog
+        if: steps.existing-pr.outputs.exists != 'true'
+        run: |
+          set -euo pipefail
+
+          # opencode resolves `--model` against its models.dev catalog, which
+          # it loads from the first of: the disk cache at
+          # `$XDG_CACHE_HOME/opencode/models.json`, the snapshot bundled into
+          # the binary at build time, and only then the network. A fresh
+          # runner has no disk cache, so every `opencode run` starts from the
+          # bundled snapshot and refreshes from models.dev in a background
+          # fiber. A model newer than the pinned opencode release (e.g.
+          # `anthropic/claude-opus-5.5` on 1.18.4) then resolves only if that
+          # refresh wins the race against the first model lookup; when it
+          # loses, the run dies with `ProviderModelNotFoundError` (runs
+          # 40409043694 and 40781884040). Writing the cache file up front makes
+          # resolution deterministic for every later `opencode run`.
+          CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/opencode"
+          mkdir -p "$CACHE_DIR"
+          TMP=$(mktemp)
+          # Fail open: without the seed we are back to the racy behavior, which
+          # still succeeds for models in the bundled snapshot.
+          if ! curl -sfL --max-time 30 --retry 3 https://models.dev/api.json -o "$TMP" || ! jq -e 'type == "object"' "$TMP" > /dev/null 2>&1; then
+            echo "::warning::Could not fetch the models.dev catalog; opencode will fall back to its bundled snapshot."
+            exit 0
+          fi
+          mv "$TMP" "$CACHE_DIR/models.json"
+
+          if ! jq -e --arg m "$AI_MODEL" '.vercel.models[$m] != null' "$CACHE_DIR/models.json" > /dev/null; then
+            echo "::error::models.dev does not list '${AI_MODEL}' under the vercel provider, so opencode cannot resolve \`--model vercel/${AI_MODEL}\` even though the AI Gateway serves it. Pick a model models.dev lists (https://models.dev/api.json, \`.vercel.models\`)."
+            exit 1
+          fi
+          echo "Seeded opencode model catalog with '${AI_MODEL}'."
+
       - name: Decide whether to backport
         id: decide
         if: steps.existing-pr.outputs.exists != 'true'
