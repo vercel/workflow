@@ -68,6 +68,35 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // persistent state and return another timeoutSeconds if needed.
 const MAX_SAFE_TIMEOUT_MS = 2147483647;
 
+/**
+ * The most deliveries world-local makes of one message (handoffs aside): a
+ * guard against a message that fails forever. The runtime enforces its own
+ * delivery cap well below it.
+ */
+export const MAX_LOCAL_SAFETY_LIMIT = 256;
+
+/** Failed deliveries retried 5s apart, before the backoff grows. */
+const LINEAR_RETRY_DELIVERIES = 32;
+const LINEAR_RETRY_DELAY_MS = 5_000;
+const MAX_RETRY_DELAY_MS = 60_000;
+
+/**
+ * The delay before world-local retries a message whose `failedDeliveries`-th
+ * delivery failed: 5s for the first 32, as Vercel Queues does, then doubling
+ * up to a minute. So the {@link MAX_LOCAL_SAFETY_LIMIT} deliveries of a
+ * message that keeps failing span hours, longer than the runtime's stall
+ * window for a step message (`QUEUE_MIN_STEP_REDELIVERY_SPAN_MS` in
+ * `@workflow/world`), and a step whose every delivery throws is failed
+ * rather than left with no message.
+ */
+export function localRetryDelayMs(failedDeliveries: number): number {
+  if (failedDeliveries <= LINEAR_RETRY_DELIVERIES) return LINEAR_RETRY_DELAY_MS;
+  return Math.min(
+    MAX_RETRY_DELAY_MS,
+    LINEAR_RETRY_DELAY_MS * 2 ** (failedDeliveries - LINEAR_RETRY_DELIVERIES)
+  );
+}
+
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
 const DEFAULT_CONCURRENCY_LIMIT = 1000;
@@ -324,10 +353,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           releaseRun?.();
         };
       };
-      // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow handler
-      // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
-      const MAX_LOCAL_SAFETY_LIMIT = 256;
       // Handoffs counted as such per message, as Vercel Queues bounds them;
       // past it a handoff counts toward `attempt` and the safety limit.
       const MAX_LOCAL_HANDOFFS = 10_000;
@@ -341,6 +366,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // Deliveries that ended in a handoff, which `attempt` and the safety
       // limit leave out.
       let handoffs = 0;
+      // Deliveries whose handler answered with an error.
+      let failedDeliveries = 0;
       let releaseDelivery: (() => void) | undefined;
       const endDelivery = () => {
         releaseDelivery?.();
@@ -472,11 +499,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             }
           );
 
-          // 5s linear backoff to approximate VQS retry timing in local dev.
-          // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient: the handler enforces the real
-          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000, undefined, { signal: closeSignal });
+          // Backs off as VQS does (see `localRetryDelayMs`).
+          failedDeliveries++;
+          await setTimeout(localRetryDelayMs(failedDeliveries), undefined, {
+            signal: closeSignal,
+          });
         }
 
         console.error(

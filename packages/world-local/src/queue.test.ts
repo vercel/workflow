@@ -5,6 +5,7 @@ import type { WorkflowInvokePayload } from '@workflow/world';
 import {
   MessageId,
   NODE_HTTP_ENV_VAR,
+  QUEUE_MIN_STEP_REDELIVERY_SPAN_MS,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   ValidQueueName,
 } from '@workflow/world';
@@ -15,6 +16,8 @@ import {
   DEFAULT_BODY_TIMEOUT_MS,
   DEFAULT_HEADERS_TIMEOUT_MS,
   getQueueAgentOptions,
+  localRetryDelayMs,
+  MAX_LOCAL_SAFETY_LIMIT,
 } from './queue';
 
 // Mock node:timers/promises so setTimeout resolves immediately
@@ -1322,5 +1325,19 @@ describe('per-prefix delivery routes', () => {
     });
     expect(handler).not.toHaveBeenCalled();
     await localQueue.close();
+  });
+});
+
+describe('localRetryDelayMs', () => {
+  it("keeps retrying a failing message for longer than a step message's stall window", () => {
+    let spanMs = 0;
+    let previous = 0;
+    for (let failed = 1; failed < MAX_LOCAL_SAFETY_LIMIT; failed++) {
+      const delay = localRetryDelayMs(failed);
+      expect(delay).toBeGreaterThanOrEqual(previous);
+      previous = delay;
+      spanMs += delay;
+    }
+    expect(spanMs).toBeGreaterThan(QUEUE_MIN_STEP_REDELIVERY_SPAN_MS);
   });
 });

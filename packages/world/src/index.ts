@@ -114,6 +114,7 @@ export {
   parseQueueName,
   parseQueueRoute,
   QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS,
+  QUEUE_MIN_STEP_REDELIVERY_SPAN_MS,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,

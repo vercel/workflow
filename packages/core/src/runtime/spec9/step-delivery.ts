@@ -1,4 +1,8 @@
-import { type Event, isTerminalRunEventType } from '@workflow/world';
+import {
+  type Event,
+  isTerminalRunEventType,
+  QUEUE_MIN_STEP_REDELIVERY_SPAN_MS,
+} from '@workflow/world';
 
 /**
  * What a background step's queue handler does with one delivery of the step's
@@ -139,9 +143,11 @@ export function decideStepDelivery(params: {
  * {@link stepDeliveryStalled}). Far longer than the gaps a healthy step
  * leaves between its writes: a World redelivers a failed or deferred
  * delivery within minutes, a step body runs at most for its function's
- * deadline, and its start is written before the body runs.
+ * deadline, and its start is written before the body runs. A World keeps
+ * redelivering a failing step message at least this long
+ * (`QUEUE_MIN_STEP_REDELIVERY_SPAN_MS`), so a stuck step is reached.
  */
-export const STEP_DELIVERY_STALL_WINDOW_MS = 60 * 60 * 1000;
+export const STEP_DELIVERY_STALL_WINDOW_MS = QUEUE_MIN_STEP_REDELIVERY_SPAN_MS;
 
 /**
  * Whether a step message delivered past the delivery cap is stuck: none of
