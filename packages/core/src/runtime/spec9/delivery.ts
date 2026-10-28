@@ -34,7 +34,6 @@ import {
   type RunInput,
   type SerializedData,
   SPEC_VERSION_CURRENT,
-  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   slotToEventId,
   type WorkflowInvokePayload,
@@ -86,7 +85,6 @@ import {
   MAX_BATCH_EVENTS,
   MAX_IN_BAND_CREATION_BATCH_BYTES,
   MAX_RUN_AHEAD_RESTARTS,
-  STEP_DISPATCH_QUEUE_BATCH_SIZE,
 } from '../constants.js';
 import {
   clampMaxEvents,
@@ -121,15 +119,12 @@ import {
   maxEventSlot,
   mergeReportedEvents,
   queueMessage,
-  queueMessages,
   REPLAY_RESOLVE_DATA,
   resolveRunEncryptionKey,
   rootRunIdFrom,
-  runDispatchContext,
   type SlotSnapshotParams,
   settleEventSlotGap,
   slotSnapshotParams,
-  stepDispatchIdempotencyKey,
 } from '../helpers.js';
 import {
   dispatchRunCompletedHooks,
@@ -188,11 +183,9 @@ import {
   awaitsExternalWork,
   dueWaits,
   type InlineStepSpec,
-  MAX_STEP_MESSAGE_INPUT_BYTES,
   nextTimerAt,
   openWaits,
   type StepMessageSpec,
-  stepCreatedAtField,
   stepCreationOf,
 } from './log-state.js';
 import {
@@ -210,6 +203,10 @@ import {
 } from './run-ahead.js';
 import { executeStep, mayRunBeforeItsStart } from './step-executor.js';
 import { handleStepMessage } from './step-handler.js';
+import {
+  sendStepDispatchMessages,
+  stepDispatchMessage,
+} from './step-message.js';
 import {
   retryOutlivesMessage,
   stepMessageRetentionSeconds,
@@ -4053,13 +4050,10 @@ async function runDelivery(
     }
 
     /**
-     * Enqueues background step messages: one message per
-     * step, with a key stable for the step and a retention
-     * that covers its retries. The messages go out in
-     * parallel queue batches of at most
-     * {@link STEP_DISPATCH_QUEUE_BATCH_SIZE}; the enqueue
-     * fails, with the first failed batch's error, once every
-     * batch settled, as one batch of all of them would.
+     * Enqueues background step messages (see
+     * `stepDispatchMessage`), in parallel queue batches (see
+     * `sendStepDispatchMessages`). The steps count as sent only
+     * once every batch went out.
      */
     async function enqueueStepMessages(
       run: WorkflowRun,
@@ -4069,73 +4063,19 @@ async function runDelivery(
     ): Promise<void> {
       if (steps.length === 0) return;
       const traceCarrier = await nextTraceCarrier();
-      const binaryTransport =
-        (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
-      const messages = steps.map((step, index) => {
-        const maxRetries =
-          getStepFunction(step.stepName)?.maxRetries ??
-          DEFAULT_STEP_MAX_RETRIES;
-        const carryInput =
-          binaryTransport &&
-          step.input instanceof Uint8Array &&
-          step.input.byteLength <= MAX_STEP_MESSAGE_INPUT_BYTES;
-        return {
-          message: {
-            runId,
-            stepId: step.correlationId,
-            stepName: step.stepName,
+      await sendStepDispatchMessages(
+        world,
+        getWorkflowQueueName(workflowName, namespace),
+        steps,
+        (step, index) =>
+          stepDispatchMessage({
+            run,
+            step,
             traceCarrier,
-            requestedAt: new Date(),
-            runContext: runDispatchContext(run),
-            ...(step.stepCreatedEventId
-              ? {
-                  stepCreatedEventId: step.stepCreatedEventId,
-                }
-              : {}),
-            ...stepCreatedAtField(step),
-            ...(carryInput
-              ? {
-                  stepInput: {
-                    input: step.input as Uint8Array,
-                  },
-                }
-              : {}),
-            ...(step.stepAttempt && step.stepAttempt > 1
-              ? { stepAttempt: step.stepAttempt }
-              : {}),
+            delaySeconds,
             ...(index === 0 && hookResumeTiming ? { hookResumeTiming } : {}),
-          },
-          opts: {
-            idempotencyKey: stepDispatchIdempotencyKey(
-              step.correlationId,
-              step.stepName
-            ),
-            retentionSeconds: stepMessageRetentionSeconds(maxRetries),
-            ...(delaySeconds !== undefined && delaySeconds > 0
-              ? { delaySeconds }
-              : {}),
-          },
-        };
-      });
-      const queueName = getWorkflowQueueName(workflowName, namespace);
-      const batches: (typeof messages)[] = [];
-      for (
-        let offset = 0;
-        offset < messages.length;
-        offset += STEP_DISPATCH_QUEUE_BATCH_SIZE
-      ) {
-        batches.push(
-          messages.slice(offset, offset + STEP_DISPATCH_QUEUE_BATCH_SIZE)
-        );
-      }
-      const sent = await Promise.allSettled(
-        batches.map((batch) => queueMessages(world, queueName, batch))
+          })
       );
-      const failed = sent.find(
-        (outcome): outcome is PromiseRejectedResult =>
-          outcome.status === 'rejected'
-      );
-      if (failed) throw failed.reason;
       for (const step of steps) noteStepMessageSent(step.correlationId);
     }
 
