@@ -10,6 +10,7 @@ import type {
   PaginationOptions,
   ResolveData,
 } from './shared.js';
+import { StartHookSchema } from './start-hook.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
@@ -454,10 +455,14 @@ const HookConflictEventSchema = BaseEventSchema.extend({
      * `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`, so its runtime would not
      * understand the involuntary disposal — the forced hook gets the
      * ordinary `HookConflictError` it opted out of instead of stranding
-     * that run. Absent on a conflict answered by a World that does not
-     * implement forcing at all.
+     * that run. `start-reservation`: the token is a `start({ hook })`
+     * reservation its run has not adopted yet, which cannot be force-claimed
+     * (there is no Hook to take over). Absent on a conflict answered by a
+     * World that does not implement forcing at all.
      */
-    forceRefusedReason: z.literal('victim-spec-version').optional(),
+    forceRefusedReason: z
+      .enum(['victim-spec-version', 'start-reservation'])
+      .optional(),
   }),
 });
 
@@ -559,6 +564,12 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
        * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
        */
       encryptionPublicKey: z.string().optional(),
+      /**
+       * Reserve this Hook token atomically with the run's creation. Only sent
+       * to Worlds that declare `capabilities.atomicStartHook`; see
+       * `start-hook.ts` for the admission contract.
+       */
+      startHook: StartHookSchema.optional(),
     })
     .refine(
       (value) =>
@@ -601,6 +612,12 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       /** Dynamic code carried for resilient run creation. */
       dynamicWorkflowCode: SerializedDataSchema.optional(),
       dynamicWorkflowCodeRef: z.string().optional(),
+      /**
+       * Mirrors `run_created.eventData.startHook` for the queued copy of an
+       * atomic start. Either write may admit the candidate, and both must
+       * reach the same decision; see `start-hook.ts`.
+       */
+      startHook: StartHookSchema.optional(),
     })
     .refine(
       (value) =>

@@ -322,6 +322,12 @@ To turn it on, set `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` (or `jobLockSta
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.
 
+### `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK`
+
+Set to `1` (or `true`) to enable [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) on the Postgres World. Off by default; without it, `start({ hook })` throws before it enqueues anything.
+
+Every worker that serves the database must run a version with start Hook support before you turn it on, because the queue does not route by deployment: an older worker that picks up a candidate's queued message creates its run without the reservation, and the start is no longer idempotent (`start()` reports that the World did not confirm the reservation). For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while reservations are live.
+
 ### `WORKFLOW_QUEUE_NAMESPACE`
 
 Queue topic namespace shared by build output and the Postgres World. Default: unset.

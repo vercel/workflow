@@ -3,6 +3,7 @@ import {
   ERROR_SLUGS,
   HookForceClaimedError,
   HookNotFoundError,
+  HookReservedError,
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -30,6 +31,7 @@ import {
   SerializationFormat,
   sealTo,
 } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
@@ -305,7 +307,83 @@ function asLazyMetadataHook(hook: ResumableHook): Hook {
  */
 export async function getHookByToken(token: string): Promise<Hook> {
   const world = await getWorldLazy();
-  return withLazyMetadata(await world.hooks.getByToken(token)).hook;
+  return withLazyMetadata(await getByTokenAwaitingOwner(world, token)).hook;
+}
+
+/**
+ * How long a lookup inside a step keeps asking again while the token is
+ * reserved (`HookReservedError`: its owner has not registered its Hook yet,
+ * typically because it is still starting), before throwing it to the step's
+ * ordinary retries.
+ */
+export const HOOK_RESERVED_STEP_WAIT_MS = 30_000;
+
+/**
+ * `world.hooks.getByToken`, except that inside a step a `HookReservedError`
+ * is waited out for up to {@link HOOK_RESERVED_STEP_WAIT_MS}, asking again
+ * after each answer's `retryAfter`. A step's retries are few and a second
+ * apart, so they alone would give up on an owner that takes a few seconds to
+ * start. Outside a step the error is thrown at once, for the caller to
+ * handle.
+ */
+async function getByTokenAwaitingOwner(
+  world: Awaited<ReturnType<typeof getWorldLazy>>,
+  token: string,
+  /** The `hook.resume` span, which records the lookup's result and waits. */
+  span?: Span,
+  /** Whether this lookup follows a takeover of the token mid-resume. */
+  redirected = false
+): Promise<ResumableHook> {
+  const inStep = contextStorage.getStore()?.stepMetadata !== undefined;
+  const deadline = Date.now() + HOOK_RESERVED_STEP_WAIT_MS;
+  let waits = 0;
+  let waitedMs = 0;
+  const recordWaits = () => {
+    if (waits === 0) return;
+    span?.setAttributes({
+      ...Attribute.HookReservedWaits(waits),
+      ...Attribute.HookReservedWaitMs(waitedMs),
+    });
+  };
+  for (;;) {
+    try {
+      const hook = await world.hooks.getByToken(token);
+      recordWaits();
+      span?.setAttributes(
+        Attribute.HookLookupResult(redirected ? 'redirected' : 'found')
+      );
+      return hook;
+    } catch (error) {
+      if (HookReservedError.is(error)) {
+        const waitMs = Math.max(1, error.retryAfter ?? 1) * 1000;
+        if (inStep && Date.now() + waitMs <= deadline) {
+          const before = Date.now();
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          waits++;
+          waitedMs += Date.now() - before;
+          continue;
+        }
+      }
+      recordWaits();
+      recordLookupFailure(span, error);
+      throw error;
+    }
+  }
+}
+
+/** Records a by-token lookup's `reserved` or `not_found` answer on `span`. */
+function recordLookupFailure(span: Span | undefined, error: unknown): void {
+  if (HookReservedError.is(error)) {
+    span?.setAttributes({
+      ...Attribute.HookLookupResult('reserved'),
+      ...Attribute.HookReservedByRunId(error.runId),
+      ...(error.retryAfter !== undefined
+        ? Attribute.HookReservedRetryAfter(error.retryAfter)
+        : {}),
+    });
+  } else if (HookNotFoundError.is(error)) {
+    span?.setAttributes(Attribute.HookLookupResult('not_found'));
+  }
 }
 
 /**
@@ -523,7 +601,8 @@ async function resumeHookImpl<T = any>(
             fresh,
             resumeRequestedAtMs,
             resumeId,
-            webhookOnly
+            webhookOnly,
+            redirects > 0
           );
         } catch (err) {
           if (
@@ -600,6 +679,10 @@ async function resumeHookImpl<T = any>(
             try {
               relocated = await world.hooks.getByToken(token);
             } catch (lookupError) {
+              recordLookupFailure(span, lookupError);
+              // The token is reserved by a run that has not registered its
+              // Hook yet: that, not the stale not-found, is the answer.
+              if (HookReservedError.is(lookupError)) throw lookupError;
               if (!HookNotFoundError.is(lookupError)) {
                 runtimeLogger.warn(
                   'Hook resume: re-resolving the token after a not-found failed; surfacing the original error',
@@ -623,6 +706,7 @@ async function resumeHookImpl<T = any>(
               assertResendable(err);
               redirects++;
               span?.setAttributes({
+                ...Attribute.HookLookupResult('redirected'),
                 'workflow.hook.resume_redirects': redirects,
                 'workflow.hook.resume_redirect_to_run': relocated.runId,
               });
@@ -648,14 +732,21 @@ async function resumeHookAttempt<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   logicalResumeId: string,
-  webhookOnly: boolean
+  webhookOnly: boolean,
+  /** Whether a takeover redirected this resume to the token's new owner. */
+  redirected = false
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
     let hook: ResumableHook;
     if (suppliedToken) {
       try {
-        hook = await world.hooks.getByToken(tokenOrHook);
+        hook = await getByTokenAwaitingOwner(
+          world,
+          tokenOrHook,
+          span,
+          redirected
+        );
       } catch (lookupError) {
         if (HookNotFoundError.is(lookupError)) {
           notFoundReasons.set(lookupError, 'lookup');

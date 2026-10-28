@@ -41,6 +41,9 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
+  atomicStartHook?: {
+    active: boolean;
+  };
   maxConcurrency?: boolean;
   inBandFence?: boolean;
   hookForceClaim?: boolean;
@@ -64,7 +67,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence).
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence). Set `atomicStartHook.active` only when the World implements [atomic start Hook admission](#optional-atomic-start-hook-admission). Without it, `start({ hook })` throws before it enqueues anything.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -290,6 +293,24 @@ A writer that finds no snapshot takes its count from a refusal:
 A writer that was refused while writing stops writing from the log it held; only a writer that loads the log again, as above, takes up the refusal's counters.
 
 The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the counters (from the snapshot, or from a refusal where the World lists none) and a stale in-band write end to end when the World declares the capability.
+
+### Optional: atomic start Hook admission
+
+[`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) makes a start idempotent on a Hook token. `start()` enqueues the candidate run first and then writes `run_created`; the queue consumer's `run_started` carries the same request in `eventData.startHook`, and either write may reach the World first. Declare `capabilities.atomicStartHook: { active: true }` when `events.create()` implements all of the following for a `run_created`, or a `run_started` that creates the run, carrying `eventData.startHook = { token, tokenRetentionUntil?, metadata? }`:
+
+- **Atomic reservation.** Reserve the token and create the run as one decision. A run must never exist for a candidate that was refused, and a crash between the two must be recoverable by retrying the candidate.
+- **One immutable decision per candidate `runId`.** Every later attempt for the same `runId`, through either write, returns the first decision even if the token has since changed hands: an accepted candidate returns its run (never `EntityConflictError`), and a refused one throws `HookConflictError` with the same `conflictingRunId`.
+- **Echo.** The `run` returned from `run_created` for an accepted candidate carries `startHook`.
+- **Ownership.** No other run can take the token, by `start({ hook })` or `createHook()`, until the owning run has ended and `tokenRetentionUntil` (when set) has passed. Another run's `createHook()` with the token gets a `hook_conflict` naming the owner.
+- **Adoption.** The owning run's own `createHook({ token })` adopts the reservation instead of conflicting. Disposing that Hook does not release the token before the run ends, and its retention extends the reservation's, never shortens it, even after the Hook is disposed. If the `hook_created` carries no metadata, the Hook takes `startHook.metadata`.
+- **Lookups before adoption.** `hooks.getByToken()` for a token reserved by a run that has not ended and has not adopted it throws `HookReservedError` from `@workflow/errors` naming that run (retryable). It answers not found once the run ended without adopting, or after the adopted Hook was disposed.
+- **Force claims.** A forced `createHook()` against an adopted reservation moves the reservation, with its retention, to the claimer. An unadopted reservation cannot be force-claimed: answer `hook_conflict` with `forceRefusedReason: 'start-reservation'`, so the caller gets an ordinary `HookConflictError` rather than a failure saying the World cannot force-claim.
+- **Orphans.** A candidate whose run was never created must not hold the token forever. A candidate older than `START_HOOK_CANDIDATE_MAX_AGE_MS` (24 hours, the same bound `run_created` applies to client-minted run IDs) can never be created.
+- **Permanent refusals.** A request you will never admit (an invalid retention, a candidate past the orphan bound) throws `WorkflowWorldError` with `code: START_HOOK_ADMISSION_REJECTED`, so the queued copy stops retrying. Every copy of the candidate must get the same answer. Set its `reason` to one of `invalid`, `expired`, `token_mismatch`, `ordinary_run` or `disabled` (`StartHookRejectionReason`), which `start()` and the queued copy record on their spans as `workflow.start_hook.rejection_reason`.
+- **Cancelling an uncreated candidate.** A `run_cancelled` for a run ID with no run but an accepted decision fences the candidate (no copy can create it any more), releases its token as for an ended run, and throws `WorkflowWorldError` with `code: START_HOOK_CANDIDATE_CANCELLED`. With no decision, throw `WorkflowRunNotFoundError` as for any missing run.
+- **Switching admission off.** If you can switch admission off, either record the refusal as the candidate's decision and answer `START_HOOK_ADMISSION_REJECTED`, or throw `WorkflowWorldError` with `code: START_HOOK_ADMISSION_DISABLED` and record nothing. The second is not final: `start()` reports it as `WorkflowStartError`, and the queued copy is redelivered, because another copy may be admitted once admission is back on.
+
+`world-local` declares it; `world-postgres` declares it only with `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1`, and `world-vercel` only with `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1`. The conformance suite in [`packages/world/src/test-support/atomic-start-hook-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/atomic-start-hook-conformance.ts) checks these rules against a World's storage.
 
 ## Queue interface
 

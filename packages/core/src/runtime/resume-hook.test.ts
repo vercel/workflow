@@ -1,6 +1,7 @@
 import {
   HookForceClaimedError,
   HookNotFoundError,
+  HookReservedError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import {
@@ -18,10 +19,29 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
-import { resumeHook, resumeWebhook } from './resume-hook.js';
+import { contextStorage } from '../step/context-storage.js';
+import { trace } from '../telemetry.js';
+import {
+  getHookByToken,
+  HOOK_RESERVED_STEP_WAIT_MS,
+  resumeHook,
+  resumeWebhook,
+} from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+/** Hands the next `hook.resume` span to the test, returning what it records. */
+function captureResumeSpan(): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {};
+  vi.mocked(trace).mockImplementationOnce(((_name: string, fn: any) =>
+    fn({
+      setAttributes: (attrs: Record<string, unknown>) =>
+        Object.assign(attributes, attrs),
+      addEvent: () => {},
+    })) as any);
+  return attributes;
+}
 vi.mock('../telemetry.js', async (importOriginal) => ({
   // Everything else real: the Request-body stream writes below go through
   // the ordinary span helpers.
@@ -543,8 +563,10 @@ describe('resumeHook', () => {
         getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
       } as unknown as World);
 
+      const span = captureResumeSpan();
       const resumed = await resumeHook('shared', { n: 1 });
       expect(resumed.runId).toBe('wrun_claimer');
+      expect(span['workflow.hook.lookup_result']).toBe('redirected');
       expect(getByToken).toHaveBeenCalledTimes(2);
       expect(createEvent).toHaveBeenCalledTimes(2);
       expect(createEvent.mock.calls[0][0]).toBe('wrun_victim');
@@ -999,6 +1021,39 @@ describe('resumeHook', () => {
       expect(queue).not.toHaveBeenCalled();
     });
 
+    it('surfaces HookReservedError, not the stale not-found, when the re-resolve finds the token reserved', async () => {
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(victimHook)
+        .mockRejectedValueOnce(
+          new HookReservedError('shared', 'wrun_owner', { retryAfter: 1 })
+        );
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: {
+          create: vi
+            .fn()
+            .mockRejectedValue(new HookNotFoundError('hook_victim')),
+        },
+        queue: vi.fn(),
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      const span = captureResumeSpan();
+      const error = await resumeHook('shared', { n: 1 }).catch(
+        (e: unknown) => e
+      );
+      expect(HookReservedError.is(error)).toBe(true);
+      expect(error).toMatchObject({ runId: 'wrun_owner' });
+      expect(span).toMatchObject({
+        'workflow.hook.lookup_result': 'reserved',
+        'workflow.hook.reserved_by_run_id': 'wrun_owner',
+        'workflow.hook.reserved_retry_after': 1,
+      });
+    });
+
     it('re-looks the token up a few times when the World lags behind a completed takeover', async () => {
       // The World answered hook-force-claimed, so the transfer is done; a
       // lookup index that trails its writes by a few ms (world-local's files)
@@ -1057,5 +1112,139 @@ describe('resumeHook', () => {
       expect(createEvent).toHaveBeenCalledTimes(4);
       expect(queue).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('a lookup of a reserved token', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.useRealTimers();
+  });
+
+  const hook = {
+    runId: 'wrun_owner',
+    hookId: 'hook_1',
+    token: 'order:reserved',
+    ownerId: 'owner_1',
+    projectId: 'project_1',
+    environment: 'production',
+    createdAt: new Date(),
+  } satisfies Hook;
+  const reserved = () =>
+    new HookReservedError(hook.token, hook.runId, { retryAfter: 1 });
+  const inStep = <T>(fn: () => Promise<T>) =>
+    contextStorage.run(
+      {
+        stepMetadata: {
+          stepName: 'route',
+          stepId: 'step_1',
+          stepStartedAt: new Date(),
+          attempt: 1,
+        },
+      } as any,
+      fn
+    );
+
+  it('inside a step, waits out an owner that adopts after a few seconds', async () => {
+    vi.useFakeTimers();
+    const getByToken = vi
+      .fn()
+      .mockRejectedValueOnce(reserved())
+      .mockRejectedValueOnce(reserved())
+      .mockRejectedValueOnce(reserved())
+      .mockRejectedValueOnce(reserved())
+      .mockResolvedValue(hook);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+    } as unknown as World);
+
+    const found = inStep(() => getHookByToken(hook.token));
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect((await found).hookId).toBe('hook_1');
+    expect(getByToken).toHaveBeenCalledTimes(5);
+  });
+
+  it('inside a step, throws HookReservedError once the wait is used up', async () => {
+    vi.useFakeTimers();
+    const getByToken = vi.fn().mockRejectedValue(reserved());
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+    } as unknown as World);
+
+    const found = inStep(() => getHookByToken(hook.token)).catch(
+      (e: unknown) => e
+    );
+    await vi.advanceTimersByTimeAsync(HOOK_RESERVED_STEP_WAIT_MS + 1_000);
+
+    expect(HookReservedError.is(await found)).toBe(true);
+  });
+
+  it('outside a step, throws HookReservedError at once', async () => {
+    const getByToken = vi.fn().mockRejectedValue(reserved());
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+    } as unknown as World);
+
+    const error = await getHookByToken(hook.token).catch((e: unknown) => e);
+    expect(HookReservedError.is(error)).toBe(true);
+    expect(getByToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a reserved answer on the hook.resume span, with no waits outside a step', async () => {
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken: vi.fn().mockRejectedValue(reserved()) },
+    } as unknown as World);
+
+    const span = captureResumeSpan();
+    const error = await resumeHook(hook.token, { n: 1 }).catch(
+      (e: unknown) => e
+    );
+    expect(HookReservedError.is(error)).toBe(true);
+    expect(span).toMatchObject({
+      'workflow.hook.lookup_result': 'reserved',
+      'workflow.hook.reserved_by_run_id': 'wrun_owner',
+      'workflow.hook.reserved_retry_after': 1,
+    });
+    expect(span).not.toHaveProperty('workflow.hook.reserved_waits');
+  });
+
+  it("records a step's waits on the hook.resume span, then the reserved answer", async () => {
+    vi.useFakeTimers();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken: vi.fn().mockRejectedValue(reserved()) },
+    } as unknown as World);
+
+    const span = captureResumeSpan();
+    const resumed = inStep(() => resumeHook(hook.token, { n: 1 })).catch(
+      (e: unknown) => e
+    );
+    await vi.advanceTimersByTimeAsync(HOOK_RESERVED_STEP_WAIT_MS + 1_000);
+
+    expect(HookReservedError.is(await resumed)).toBe(true);
+    const waits = HOOK_RESERVED_STEP_WAIT_MS / 1000;
+    expect(span).toMatchObject({
+      'workflow.hook.lookup_result': 'reserved',
+      'workflow.hook.reserved_waits': waits,
+      'workflow.hook.reserved_wait_ms': waits * 1000,
+    });
+  });
+
+  it('records a lookup that found nothing as not_found', async () => {
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: {
+        getByToken: vi.fn().mockRejectedValue(new HookNotFoundError('t')),
+      },
+    } as unknown as World);
+
+    const span = captureResumeSpan();
+    await resumeHook('t', { n: 1 }).catch(() => undefined);
+    expect(span['workflow.hook.lookup_result']).toBe('not_found');
   });
 });
