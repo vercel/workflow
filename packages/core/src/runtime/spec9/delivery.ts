@@ -3223,7 +3223,7 @@ async function runDelivery(
       // progress. The hook write is already folded into the
       // log (a fold that left a hole reads first, see
       // `logBehind`), so the next pass reads nothing more.
-      if (hookResult?.hasHookConflict) {
+      if (hookResult && hookResult.hookConflictCorrelationIds.length > 0) {
         const fresh = hookResult.hookConflictCorrelationIds.filter(
           (id) => !continuedHookIds.has(id)
         );
@@ -3241,7 +3241,7 @@ async function runDelivery(
         // until the next pass resolves it.
         return { type: 'reload', retainSession: true };
       }
-      if (hookResult?.hasAwaitedHookCreation) {
+      if (hookResult && hookResult.awaitedHookCorrelationIds.length > 0) {
         const fresh = hookResult.awaitedHookCorrelationIds.filter(
           (id) => !continuedHookIds.has(id)
         );

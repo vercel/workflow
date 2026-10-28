@@ -183,11 +183,11 @@ describe('handleSuspension', () => {
       }),
       expect.anything()
     );
-    expect(result.hasAwaitedHookCreation).toBe(true);
+    expect(result.awaitedHookCorrelationIds).not.toHaveLength(0);
     expect('timeoutSeconds' in result).toBe(false);
   });
 
-  it('still returns owned pending steps when an awaited hook is created with a step', async () => {
+  it('writes a step created alongside an awaited hook', async () => {
     const eventsCreate = vi.fn().mockResolvedValue({
       event: {
         eventType: 'hook_created',
@@ -221,10 +221,13 @@ describe('handleSuspension', () => {
       run,
     });
 
-    expect(result.hasAwaitedHookCreation).toBe(true);
+    expect(result.awaitedHookCorrelationIds).toEqual(['hook_awaited']);
     expect('timeoutSeconds' in result).toBe(false);
-    expect(result.pendingSteps).toHaveLength(1);
-    expect(result.createdStepCorrelationIds).toContain('step_parallel');
+    expect(
+      eventsCreate.mock.calls.find(
+        ([, event]) => event.eventType === 'step_created'
+      )?.[1]
+    ).toMatchObject({ correlationId: 'step_parallel' });
   });
 
   it('does not immediately continue after creating a hook without a getConflict awaiter', async () => {
@@ -251,7 +254,7 @@ describe('handleSuspension', () => {
       run,
     });
 
-    expect(result.hasAwaitedHookCreation).toBe(false);
+    expect(result.awaitedHookCorrelationIds).toEqual([]);
     expect('timeoutSeconds' in result).toBe(false);
   });
 
@@ -604,7 +607,7 @@ describe('handleSuspension', () => {
         return { event };
       });
 
-      const result = await handleSuspension({
+      await handleSuspension({
         suspension: new WorkflowSuspension(
           new Map<string, QueueItem>([
             hook('hook_1'),
@@ -630,8 +633,6 @@ describe('handleSuspension', () => {
         'step_created',
         'wait_created',
       ]);
-      expect([...result.createdStepCorrelationIds]).toEqual(['s_1']);
-      expect(result.hasHookEvents).toBe(true);
     });
 
     it("does not hold other writes for a forced creation's victim wake", async () => {
@@ -842,7 +843,7 @@ describe('handleSuspension', () => {
         };
       });
 
-      const result = await handleSuspension({
+      await handleSuspension({
         suspension: new WorkflowSuspension(
           new Map<string, QueueItem>([
             hook('hook_1'),
@@ -862,8 +863,6 @@ describe('handleSuspension', () => {
         slotToEventId(3),
       ]);
       expect(eventLog.cursor).toBe(`eid:${slotToEventId(2)}`);
-      // Two writes, so the log is not claimed complete.
-      expect(result.eventLogCarriedForward).toBe(false);
     });
 
     it('counts only the stretch a hook create outlasts the other writes', async () => {
@@ -952,8 +951,8 @@ describe('handleSuspension', () => {
       { eventType: 'hook_disposed', correlationId: 'hook_old' },
       { eventType: 'hook_created', correlationId: 'hook_new' },
     ]);
-    expect(result.hasHookConflict).toBe(false);
-    expect(result.hasAwaitedHookCreation).toBe(true);
+    expect(result.hookConflictCorrelationIds).toEqual([]);
+    expect(result.awaitedHookCorrelationIds).not.toHaveLength(0);
   });
 
   it('creates a hook before disposing it when both happen within one suspension', async () => {
@@ -1013,7 +1012,7 @@ describe('handleSuspension', () => {
       run,
     });
 
-    expect(result.hasHookConflict).toBe(true);
+    expect(result.hookConflictCorrelationIds).not.toHaveLength(0);
     expect(
       eventsCreate.mock.calls.some(
         ([, event]) => event.eventType === 'hook_disposed'
@@ -1128,14 +1127,13 @@ describe('handleSuspension', () => {
         events: [skipped],
       }));
 
-      const result = await handleSuspension({
+      await handleSuspension({
         suspension: new WorkflowSuspension(oneWait(), globalThis),
         world: createWorld(eventsCreate),
         run,
         eventLog,
       });
 
-      expect(result.reportedEventCount).toBe(1);
       // The replay that resumes from this log sees the skipped event without
       // reloading, and the log still says how far it reaches.
       expect(eventLog.events.map((e) => e.eventId)).toEqual([
@@ -1158,14 +1156,13 @@ describe('handleSuspension', () => {
         hasMore: true,
       }));
 
-      const result = await handleSuspension({
+      await handleSuspension({
         suspension: new WorkflowSuspension(oneWait(), globalThis),
         world: createWorld(eventsCreate),
         run,
         eventLog,
       });
 
-      expect(result.reportedEventCount).toBe(0);
       expect(eventLog.events.map((e) => e.eventId)).toEqual([slotToEventId(1)]);
       expect(maxEventSlot(eventLog.events)).toBe(1);
     });
@@ -1264,12 +1261,10 @@ describe('handleSuspension', () => {
         'hook_created',
       ]);
       expect(eventLog.cursor).toBe(`eid:${slotToEventId(2)}`);
-      expect(result.eventLogCarriedForward).toBe(true);
       expect(result.awaitedHookCorrelationIds).toEqual(['hook_awaited']);
       expect(result.hookConflictCorrelationIds).toEqual([]);
       // A delta is not a skipped-slot report: it extends the tail, so the
       // caller's cached scan positions stay valid.
-      expect(result.reportedEventCount).toBe(0);
     });
 
     it('folds a committed hook_conflict into the caller log and says so', async () => {
@@ -1305,13 +1300,12 @@ describe('handleSuspension', () => {
         'hook_conflict',
       ]);
       expect(eventLog.cursor).toBe(`eid:${slotToEventId(2)}`);
-      expect(result.eventLogCarriedForward).toBe(true);
-      expect(result.hasHookConflict).toBe(true);
+      expect(result.hookConflictCorrelationIds).not.toHaveLength(0);
       expect(result.hookConflictCorrelationIds).toEqual(['hook_taken']);
       // A conflict means the hook was never created, so its `getConflict()`
       // awaiter is settled by the conflict rather than by a creation — the
       // caller takes the conflict branch, not the awaited-creation one.
-      expect(result.hasAwaitedHookCreation).toBe(false);
+      expect(result.awaitedHookCorrelationIds).toEqual([]);
       expect(result.awaitedHookCorrelationIds).toEqual([]);
     });
 
@@ -1347,8 +1341,6 @@ describe('handleSuspension', () => {
       });
 
       expect(result.hookConflictCorrelationIds).toEqual(['hook_taken']);
-      expect(result.eventLogCarriedForward).toBe(false);
-      expect(result.waitTimeout).toBeUndefined();
     });
 
     it('leaves the log alone on a conflict when the World returns no delta', async () => {
@@ -1376,7 +1368,6 @@ describe('handleSuspension', () => {
 
       expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
       expect(eventLog.cursor).toBe('eid:cursor_1');
-      expect(result.eventLogCarriedForward).toBe(false);
       expect(result.hookConflictCorrelationIds).toEqual(['hook_taken']);
     });
 
@@ -1403,7 +1394,6 @@ describe('handleSuspension', () => {
       for (const call of eventsCreate.mock.calls) {
         expect(call[2]?.sinceCursor).toBeUndefined();
       }
-      expect(result.eventLogCarriedForward).toBe(false);
       expect([...result.awaitedHookCorrelationIds].sort()).toEqual([
         'hook_a',
         'hook_b',
@@ -1422,7 +1412,7 @@ describe('handleSuspension', () => {
         hasMore: true,
       }));
 
-      const result = await handleSuspension({
+      await handleSuspension({
         suspension: new WorkflowSuspension(
           new Map([awaitedHook()]),
           globalThis
@@ -1434,7 +1424,6 @@ describe('handleSuspension', () => {
 
       expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
       expect(eventLog.cursor).toBe('eid:cursor_1');
-      expect(result.eventLogCarriedForward).toBe(false);
     });
 
     it('leaves the log alone when the World returns no delta', async () => {
@@ -1459,15 +1448,14 @@ describe('handleSuspension', () => {
 
       expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
       expect(eventLog.cursor).toBe('eid:cursor_1');
-      expect(result.eventLogCarriedForward).toBe(false);
-      expect(result.hasAwaitedHookCreation).toBe(true);
+      expect(result.awaitedHookCorrelationIds).not.toHaveLength(0);
     });
 
     it('asks for no delta on a log with no cursor (turbo)', async () => {
       const eventLog = { events: [], cursor: null };
       const eventsCreate = deltaWorld(1);
 
-      const result = await handleSuspension({
+      await handleSuspension({
         suspension: new WorkflowSuspension(
           new Map([awaitedHook()]),
           globalThis
@@ -1478,7 +1466,6 @@ describe('handleSuspension', () => {
       });
 
       expect(eventsCreate.mock.calls[0][2]?.sinceCursor).toBeUndefined();
-      expect(result.eventLogCarriedForward).toBe(false);
     });
   });
 });
@@ -1496,10 +1483,14 @@ describe('serializationBlockers', () => {
     );
   }
 
-  async function runSuspension(item: QueueItem) {
-    const eventsCreate = vi
-      .fn()
+  const eventsCreate = vi.fn();
+  beforeEach(() => {
+    eventsCreate
+      .mockReset()
       .mockImplementation(async (_runId, event) => ({ event }));
+  });
+
+  async function runSuspension(item: QueueItem) {
     const world = createWorld(eventsCreate);
     return handleSuspension({
       suspension: new WorkflowSuspension(
@@ -1617,7 +1608,14 @@ describe('serializationBlockers', () => {
     const value = vmGetterObject();
     const result = await runStep([value]);
     expect(result.serializationBlockers).not.toEqual([]);
-    expect([...result.createdStepCorrelationIds]).toEqual(['step_1']);
+    expect(eventsCreate).toHaveBeenCalledWith(
+      run.runId,
+      expect.objectContaining({
+        eventType: 'step_created',
+        correlationId: 'step_1',
+      }),
+      expect.anything()
+    );
   });
 });
 
