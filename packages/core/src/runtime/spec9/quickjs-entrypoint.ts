@@ -168,15 +168,13 @@ function stepMessageOf(params: {
   workflowRun: WorkflowRun;
   step: PendingStep;
   traceCarrier: Record<string, string>;
-  purpose: Parameters<typeof queueStepMessage>[0]['purpose'];
   stepInput?: Uint8Array;
   stepAttempt?: number;
   stepCreatedEventId?: string;
   stepCreatedAt?: Date;
   delaySeconds?: number;
 }) {
-  const { runId, workflowRun, step, traceCarrier, purpose, delaySeconds } =
-    params;
+  const { runId, workflowRun, step, traceCarrier, delaySeconds } = params;
   return {
     message: {
       runId,
@@ -199,15 +197,15 @@ function stepMessageOf(params: {
       runContext: runDispatchContext(workflowRun),
     },
     opts: {
-      // The 'dispatch' key is step-identity-scoped (correlationId + hashed
-      // step name), shared with the node engine's dispatch of the same step
-      // so the two stay mutually exclusive, without a stale message for a
-      // reassigned correlation id absorbing its legitimate dispatch. See
+      // The key is step-identity-scoped (correlationId + hashed step name),
+      // shared with the node engine's dispatch of the same step so the two
+      // stay mutually exclusive, without a stale message for a reassigned
+      // correlation id absorbing its legitimate dispatch. See
       // stepDispatchIdempotencyKey.
-      idempotencyKey:
-        purpose === 'dispatch'
-          ? stepDispatchIdempotencyKey(step.correlationId, step.stepId)
-          : `${step.correlationId}:${purpose}`,
+      idempotencyKey: stepDispatchIdempotencyKey(
+        step.correlationId,
+        step.stepId
+      ),
       retentionSeconds: stepMessageRetentionSeconds(
         getStepFunction(step.stepId)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES
       ),
@@ -259,7 +257,6 @@ async function queueStepMessages(params: {
             workflowRun,
             step,
             traceCarrier,
-            purpose: 'dispatch',
             stepAttempt,
             stepCreatedAt,
           })
@@ -299,22 +296,6 @@ async function queueStepMessage(params: {
   /** Run-origin trace carrier accessor (see runWorkflowWithQuickJS). */
   nextTraceCarrier: () => Promise<Record<string, string>>;
   /**
-   * Publish purpose, used to bucket the idempotency key. Worlds retire
-   * used keys (VQS retention TTL, world-postgres completed-keys cache),
-   * so a key shared across purposes silently swallows the second
-   * publish. See wait-continuation.ts for the same hazard on wait
-   * keys. `dispatch` is the plain background handoff (overflow / crash
-   * recovery) and uses the step-identity-scoped dispatch key
-   * (stepDispatchIdempotencyKey) so it stays mutually
-   * exclusive with the node engine's dispatch of the same step;
-   * `backstop:<epoch>` covers delayed crash backstops, scoped to the
-   * ownership epoch so a refreshed lease re-arms a NEW backstop instead
-   * of being absorbed by the in-flight one; `retry:<n>` covers delayed
-   * retry/throttle re-enqueues, scoped to the attempt so each backoff
-   * hop is enqueueable.
-   */
-  purpose: 'dispatch' | `backstop:${string}` | `retry:${number}`;
-  /**
    * The serialized (possibly encrypted) step input to carry on the message
    * as `stepInput`, so the step handler need not read its `step_created`
    * back. Only set on `dispatch` publishes of a step whose `step_created`
@@ -340,7 +321,6 @@ async function queueStepMessage(params: {
     delaySeconds,
     namespace,
     nextTraceCarrier,
-    purpose,
     stepInput,
     wfdiag,
   } = params;
@@ -350,7 +330,6 @@ async function queueStepMessage(params: {
     workflowRun,
     step,
     traceCarrier,
-    purpose,
     stepInput,
     stepAttempt: params.stepAttempt,
     stepCreatedEventId: params.stepCreatedEventId,
@@ -367,7 +346,7 @@ async function queueStepMessage(params: {
   wfdiag('step_queued', {
     stepId: step.stepId,
     correlationId: step.correlationId,
-    purpose,
+    purpose: 'dispatch',
     delaySeconds: delaySeconds ?? 0,
   });
 }
@@ -422,9 +401,9 @@ export async function runWorkflowWithQuickJS(params: {
   maxEventsLimit?: number;
   /**
    * Queue delivery attempt of the message driving this invocation (from
-   * the queue handler's metadata; 1 = first delivery). Surfaced in
-   * diagnostics; crash recovery itself is driven by the ownership-lease
-   * decision table in the loop, not by the attempt count.
+   * the queue handler's metadata; 1 = first delivery). A redelivery may own
+   * wait chains a crashed delivery left (see `ownedWaitChains`), and the
+   * step re-send rule reads it.
    */
   deliveryAttempt?: number;
   /**
@@ -1440,43 +1419,6 @@ export async function runWorkflowWithQuickJS(params: {
   const recordedAbortIds = new Set<string>();
   // Waits for which THIS invocation already completed/scheduled work.
   const completedWaitIds2 = new Set<string>();
-  // Inline-ownership state per step correlationId, derived from every
-  // event this invocation observes (initial log + every feed): the
-  // quickjs analog of the replay-derived ownership on the node engine's
-  // StepInvocationQueueItem (see step-ownership.ts). Latest-wins:
-  // events arrive in log order, so a later step_started overwrites the
-  // stamp; a step_retrying lapses ownership permanently for the id.
-  const stepOwnership = new Map<
-    string,
-    { owner?: string; startedAtMs?: number; sawRetrying: boolean }
-  >();
-  const observeEventsForOwnership = (observed: Event[]): void => {
-    for (const e of observed) {
-      if (e.correlationId === undefined) continue;
-      if (e.eventType === 'step_started') {
-        const owner =
-          'eventData' in e &&
-          e.eventData &&
-          'ownerMessageId' in e.eventData &&
-          typeof e.eventData.ownerMessageId === 'string'
-            ? e.eventData.ownerMessageId
-            : undefined;
-        const prior = stepOwnership.get(e.correlationId);
-        stepOwnership.set(e.correlationId, {
-          owner,
-          startedAtMs: e.createdAt ? +new Date(e.createdAt) : undefined,
-          sawRetrying: prior?.sawRetrying ?? false,
-        });
-      } else if (e.eventType === 'step_retrying') {
-        const prior = stepOwnership.get(e.correlationId);
-        stepOwnership.set(e.correlationId, {
-          ...(prior ?? {}),
-          sawRetrying: true,
-        });
-      }
-    }
-  };
-  observeEventsForOwnership(events);
   const maxInlineSteps = getMaxInlineSteps();
   const budget = new ReplayBudget();
   const workflowStartedAt = workflowRun.startedAt
@@ -1572,7 +1514,6 @@ export async function runWorkflowWithQuickJS(params: {
     }
     logView.advanceCursor(cursor, listedWithoutCursor ? undefined : listed);
     logView.markFed(unseen);
-    observeEventsForOwnership(unseen);
     return unseen;
   };
 
@@ -1590,7 +1531,6 @@ export async function runWorkflowWithQuickJS(params: {
     for (const e of queued) {
       if (e.eventId) seenEventIds.add(e.eventId);
     }
-    observeEventsForOwnership(queued);
     return queued;
   };
 
@@ -1892,7 +1832,6 @@ export async function runWorkflowWithQuickJS(params: {
           delaySeconds: result.timeoutSeconds,
           namespace,
           nextTraceCarrier,
-          purpose: 'dispatch',
           onSent: params.onStepMessageSent,
           stepAttempt: 2,
           wfdiag,
@@ -2145,7 +2084,6 @@ export async function runWorkflowWithQuickJS(params: {
           step,
           namespace,
           nextTraceCarrier,
-          purpose: 'dispatch',
           onSent: params.onStepMessageSent,
           ...(createdEventId ? { stepCreatedEventId: createdEventId } : {}),
           ...(createdAt ? { stepCreatedAt: createdAt } : {}),
@@ -2218,7 +2156,7 @@ export async function runWorkflowWithQuickJS(params: {
       // exits, nothing would ever re-invoke the run to observe the
       // failure. Raise the requeue signal (same mechanism as inline
       // terminals) and mark the steps handled so later turns don't
-      // re-finalize or backstop-queue them.
+      // re-finalize or queue them.
       if (dispatched.failedSerializationStepCids.size > 0) {
         pendingRequeueSignal = true;
         for (const cid of dispatched.failedSerializationStepCids) {
