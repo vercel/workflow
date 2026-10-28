@@ -125,6 +125,11 @@ export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="10"
 
 # Optional: Internal pg.Pool max size (default: 10)
 export WORKFLOW_POSTGRES_MAX_POOL_SIZE="10"
+
+# Optional: Seconds a running delivery's job lock may go unrenewed before
+# another process redelivers the job (default: 0, off; 30 is a good value
+# when more than one process shares the database, see "Crash recovery")
+export WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS="30"
 ```
 
 ### Programmatic Usage
@@ -165,6 +170,7 @@ A connection the server ends emits an `'error'` event, and an `'error'` event wi
 | `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it, and the World adds no `'error'` listeners to it (see above). |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `10`                                                                                   | Number of concurrent active step executions per process                                              |
+| `jobLockStaleSeconds` | `number` | `process.env.WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` or `0` (off) | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job. `0` turns renewal and the release of stale locks off. `30` is a good value when more than one process shares the database. See [Crash recovery](#crash-recovery). |
 
 ## Environment Variables
 
@@ -175,6 +181,7 @@ A connection the server ends emits an `'error'` event, and an `'error'` event wi
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `10`                                            |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
+| `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` | Seconds a running delivery's job lock may go unrenewed before another process redelivers the job; `0` disables | `0` (off) |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 
@@ -285,6 +292,7 @@ would read every converted value shifted.
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
+- With `jobLockStaleSeconds` set, a running delivery renews its job lock, and a job whose process died is redelivered by another process after `jobLockStaleSeconds` (see below)
 
 Deliveries for the same run may execute concurrently. A workflow request can
 execute a step inline and wait for a hook wake to abort that step, so the queue
@@ -292,6 +300,16 @@ cannot hold a per-run lock for the entire request. Each queue instance coalesces
 in-flight and recently completed deliveries with the same idempotency key.
 Handlers must still tolerate at-least-once delivery across worker processes,
 restarts, or completed-message cache eviction.
+
+### Crash recovery
+
+Graphile Worker on its own keeps a dead worker's job locked for 4 hours. By default (`jobLockStaleSeconds: 0`), a delivery whose process died mid-delivery is therefore recovered only by the next `start()`, which re-enqueues active runs, or after those 4 hours.
+
+Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to turn on lock renewal. A running delivery then renews its Graphile job lock every quarter of `jobLockStaleSeconds`, and at least every 10 seconds, and every process that runs workers releases this World's flow and step jobs whose locks have gone unrenewed for `jobLockStaleSeconds`. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used.
+
+Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
+
+It's off by default because of rolling upgrades. Processes on an earlier version don't renew their locks, so an upgraded process would redeliver any of their deliveries that run longer than the window, and when the earlier-version process finishes such a delivery, its acknowledgement isn't fenced on the lock holder and can delete the redelivered job's row. So turn it on only once every process that shares the database runs a version that includes `jobLockStaleSeconds`, and set the same value on all of them.
 
 ## Troubleshooting
 
