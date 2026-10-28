@@ -110,12 +110,15 @@ const graphileLogger = createGraphileLogger();
  * the workflow body inline, so response headers arrive only once that work is
  * done, and a bound here declares a slow-but-healthy delivery crashed and
  * redelivers it while the original is still running (two executions of the
- * same steps). Crash recovery is covered by Graphile's stale-lock reset, which
- * releases a dead worker's job and its named queue only once the lock is
- * older than 4 hours (`resetLockedAt` in graphile-worker), plus
- * `reenqueueActiveRuns` on start. A spec 9 run's orchestrator deliveries all
- * use the run's named queue, so a hard-killed worker can hold them back for
- * that long; see the README.
+ * same steps). Crash recovery does not need one: `reenqueueActiveRuns`
+ * re-enqueues active runs on start, and with `jobLockStaleSeconds` set a
+ * running delivery renews its job lock and any other process releases a job
+ * whose lock goes unrenewed (because its process died), and the lock of its
+ * named queue, for redelivery (see `job-lease.ts`). Without it, Graphile
+ * Worker resets a dead worker's job and named-queue locks only after 4 hours
+ * (`resetLockedAt`). A spec 9 run's orchestrator deliveries all use the run's
+ * named queue, so without it a hard-killed worker can hold them back for that
+ * long; see the README.
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
@@ -1199,8 +1202,8 @@ export function createQueue(
       taskList,
     });
     // Graphile Worker only resets locks older than 4 hours. Release this
-    // World's jobs (including invoke mode's executor jobs and their per-run
-    // queue locks) whose holders stopped renewing them.
+    // World's jobs (including spec 9 orchestrator and invoke executor jobs
+    // and their per-run queue locks) whose holders stopped renewing them.
     jobLeases.startSweeper([getJobQueueName(), executorTask()]);
   }
 

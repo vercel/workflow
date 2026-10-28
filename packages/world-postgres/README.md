@@ -337,7 +337,7 @@ and its token can be reused. If the token is never reused, the expired
 
 Graphile Worker on its own keeps a dead worker's job locked for 4 hours. By default (`jobLockStaleSeconds: 0`), a delivery whose process died mid-delivery is therefore recovered only by the next `start()`, which re-enqueues active runs, or after those 4 hours.
 
-Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to turn on lock renewal. A running delivery then renews its Graphile job lock every quarter of `jobLockStaleSeconds`, and at least every 10 seconds, and every process that runs workers releases this World's jobs whose locks have gone unrenewed for `jobLockStaleSeconds`. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. In invoke mode, the release covers the run's executor queue too.
+Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to turn on lock renewal. A running delivery then renews its Graphile job lock every quarter of `jobLockStaleSeconds`, and at least every 10 seconds, and every process that runs workers releases this World's jobs whose locks have gone unrenewed for `jobLockStaleSeconds`. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. The release covers the run's named queue too (a spec 9 run's orchestrator deliveries, or invoke mode's executor queue).
 
 Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
 
@@ -402,7 +402,8 @@ unlocked queue, and it clears a stale lock only once it is older than 4 hours
 (`resetLockedAt`). Until then every later orchestrator delivery of that run
 (step completions, hook resumes, timers) waits, so a spec 9 run whose worker
 was hard-killed can stall for up to 4 hours. A graceful shutdown releases the
-lock. Spec 8 runs without invocation use no named queue and are not affected.
+lock. With `jobLockStaleSeconds` set, another process releases the job and the
+queue lock once they go unrenewed for that window (see Crash recovery). Spec 8 runs without invocation use no named queue and are not affected.
 
 Each queue instance coalesces in-flight and recently completed deliveries with
 the same idempotency key. Handlers must still tolerate at-least-once delivery
