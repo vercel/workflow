@@ -24,9 +24,29 @@ const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
 const FAST_DISCOVERY_SOURCE_EXTENSION_SET = new Set(
   FAST_DISCOVERY_SOURCE_EXTENSIONS
 );
+/**
+ * TypeScript's `.js`-to-`.ts` import rewriting, which the rest of the
+ * toolchain already implements (esbuild natively, webpack and Vite through
+ * `resolve.extensionAlias`). A `.ts` file following NodeNext module
+ * resolution writes `./x.js` for a sibling that only exists as `./x.ts`, and
+ * TypeScript itself prescribes that spelling.
+ *
+ * The original extension stays first in every list so a project shipping both
+ * `x.js` and `x.ts` keeps resolving to the file it resolved to before; the
+ * aliases are only ever reached on a miss.
+ */
+const FAST_DISCOVERY_EXTENSION_ALIASES: Record<string, string[]> = {
+  '.js': ['.js', '.ts', '.tsx'],
+  '.jsx': ['.jsx', '.tsx'],
+  '.mjs': ['.mjs', '.mts'],
+  '.cjs': ['.cjs', '.cts'],
+};
 const fastDiscoveryResolve = promisify(
   enhancedResolveOriginal.create({
     extensions: [...FAST_DISCOVERY_SOURCE_EXTENSIONS, '.json', '.node'],
+    // Deep package imports are spelled the same way, so a bare specifier like
+    // `pkg/sub.js` needs the same rewriting as a relative one.
+    extensionAlias: FAST_DISCOVERY_EXTENSION_ALIASES,
     fullySpecified: false,
     conditionNames: ['node', 'import', 'require'],
   })
@@ -66,7 +86,45 @@ export interface DiscoveredEntries {
    * of these paths can extend it again. Watch-mode integrations track them.
    */
   unresolvedImportCandidates?: Set<string>;
+  /**
+   * Imports that matched nothing on disk, as written by files that declare
+   * workflow code themselves. These are the edges whose loss changes what the
+   * build registers: the module behind one was never read, so any
+   * `"use workflow"`/`"use step"` function it defines is absent from the
+   * bundles and only surfaces as a runtime `WorkflowNotRegisteredError` or
+   * `StepNotRegisteredError`. Builders report them so the build says so
+   * instead.
+   */
+  unresolvedDirectiveImports?: UnresolvedDirectiveImport[];
 }
+
+/** One import discovery could not follow out of a file declaring workflow code. */
+export interface UnresolvedDirectiveImport {
+  /** Absolute path of the file that wrote the import. */
+  importer: string;
+  /** The specifier exactly as written. */
+  specifier: string;
+}
+
+/**
+ * What discovery decided about one import specifier.
+ *
+ * `filePath === null` has two meanings that must not be conflated: the module
+ * is missing, or it resolved to something discovery deliberately does not
+ * follow (an installed package without a workflow dependency, a stylesheet,
+ * an asset). Only the first is worth reporting, so the distinction is carried
+ * rather than recomputed.
+ */
+interface ImportResolution {
+  filePath: string | null;
+  missing: boolean;
+}
+
+/** An import that resolved to something outside the graph discovery walks. */
+const IMPORT_OUTSIDE_GRAPH: ImportResolution = {
+  filePath: null,
+  missing: false,
+};
 
 interface FastDiscoverEntriesOptions {
   entryPoints: string[];
@@ -550,7 +608,7 @@ export async function fastDiscoverEntries({
 }: FastDiscoverEntriesOptions): Promise<void> {
   const readLimit = createLimiter(FAST_DISCOVERY_READ_CONCURRENCY);
   const resolveLimit = createLimiter(FAST_DISCOVERY_RESOLVE_CONCURRENCY);
-  const resolveCache = new Map<string, Promise<string | null>>();
+  const resolveCache = new Map<string, Promise<ImportResolution>>();
   const fileExistsCache = new Map<string, Promise<boolean>>();
   const tsconfigPathByDirCache = new Map<string, Promise<string | undefined>>();
   const tsconfigAliasesCache = new Map<string, Promise<TsconfigPathAlias[]>>();
@@ -578,6 +636,7 @@ export async function fastDiscoverEntries({
   };
 
   const unresolvedImportCandidates = new Set<string>();
+  const unresolvedDirectiveImports: UnresolvedDirectiveImport[] = [];
 
   const readSource = async (filePath: string): Promise<string | null> => {
     return await readLimit(async () => {
@@ -624,19 +683,38 @@ export async function fastDiscoverEntries({
   };
 
   /** Every source path `resolvePathLikeSpecifier` would accept for `basePath`. */
-  const pathLikeCandidates = (basePath: string): string[] =>
-    FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extname(basePath))
-      ? [basePath]
-      : [
-          ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map(
-            (candidateExtension) => `${basePath}${candidateExtension}`
-          ),
-          ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map((candidateExtension) =>
-            join(basePath, `index${candidateExtension}`)
-          ),
-        ];
+  const pathLikeCandidates = (basePath: string): string[] => {
+    const extension = extname(basePath);
+    if (FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension)) {
+      const aliases = FAST_DISCOVERY_EXTENSION_ALIASES[extension];
+      if (!aliases) {
+        return [basePath];
+      }
+      // `./x.js` is also how TypeScript spells an import of `./x.ts`. An
+      // explicit extension never implies a directory index, so the candidates
+      // stay one per alias.
+      const withoutExtension = basePath.slice(0, -extension.length);
+      return aliases.map((alias) => `${withoutExtension}${alias}`);
+    }
 
-  const recordUnresolved = async (basePaths: string[]): Promise<void> => {
+    return [
+      ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map(
+        (candidateExtension) => `${basePath}${candidateExtension}`
+      ),
+      ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map((candidateExtension) =>
+        join(basePath, `index${candidateExtension}`)
+      ),
+    ];
+  };
+
+  /**
+   * Record where a module was expected, and report whether anything was
+   * actually missing. `false` means every base path pointed at a file that
+   * exists but is not something discovery follows, which is not a missing
+   * module and must not be reported as one.
+   */
+  const recordUnresolved = async (basePaths: string[]): Promise<boolean> => {
+    let recorded = false;
     for (const basePath of basePaths) {
       // An existing non-source file (a stylesheet, an image) is an import that
       // resolved to something discovery does not follow, not a missing module.
@@ -649,7 +727,9 @@ export async function fastDiscoverEntries({
       for (const candidate of pathLikeCandidates(basePath)) {
         unresolvedImportCandidates.add(normalizePath(candidate));
       }
+      recorded = true;
     }
+    return recorded;
   };
 
   const findTsconfigPathForImporter = (
@@ -817,12 +897,16 @@ export async function fastDiscoverEntries({
   const resolveRelativeImport = async (
     importer: string,
     specifier: string
-  ): Promise<string | null> => {
+  ): Promise<ImportResolution> => {
     const resolved = await resolvePathLikeSpecifier(importer, specifier);
-    if (!resolved) {
-      await recordUnresolved([resolveBasePath(importer, specifier)]);
+    if (resolved) {
+      return { filePath: resolved, missing: false };
     }
-    return resolved;
+
+    const missing = await recordUnresolved([
+      resolveBasePath(importer, specifier),
+    ]);
+    return { filePath: null, missing };
   };
 
   const resolveBareSpecifier = async (
@@ -840,37 +924,72 @@ export async function fastDiscoverEntries({
   const resolveImport = (
     importer: string,
     specifier: string
-  ): Promise<string | null> => {
+  ): Promise<ImportResolution> => {
     const cacheKey = `${dirname(importer)}\0${specifier}`;
     const cached = resolveCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const resolvedPromise = resolveLimit(async () => {
-      if (isRelativeOrAbsoluteSpecifier(specifier)) {
-        return resolveRelativeImport(importer, specifier);
-      }
+    const resolvedPromise = resolveLimit(
+      async (): Promise<ImportResolution> => {
+        if (isRelativeOrAbsoluteSpecifier(specifier)) {
+          return resolveRelativeImport(importer, specifier);
+        }
 
-      const alias = await resolveWithTsconfigPaths(importer, specifier);
-      if (alias.resolved) {
-        return alias.resolved;
-      }
+        const alias = await resolveWithTsconfigPaths(importer, specifier);
+        if (alias.resolved) {
+          return { filePath: alias.resolved, missing: false };
+        }
 
-      // An installed package discovery chooses not to follow is resolved as
-      // far as the graph is concerned, even under a catch-all alias like `*`.
-      if (!(await shouldResolveBareSpecifier(specifier))) {
-        return null;
-      }
+        // An installed package discovery chooses not to follow is resolved as
+        // far as the graph is concerned, even under a catch-all alias like `*`.
+        if (!(await shouldResolveBareSpecifier(specifier))) {
+          return IMPORT_OUTSIDE_GRAPH;
+        }
 
-      const resolved = await resolveBareSpecifier(importer, specifier);
-      if (!resolved) {
-        await recordUnresolved(alias.basePaths);
+        const resolved = await resolveBareSpecifier(importer, specifier);
+        if (resolved) {
+          return { filePath: resolved, missing: false };
+        }
+
+        // A bare specifier that matched a tsconfig alias names a path inside
+        // the project, so a miss there is a module that should have been
+        // there. A bare specifier that matched no alias is a package: an
+        // uninstalled one already fails the bundle with esbuild's own error,
+        // and a type-only import of an absent optional peer is not a problem
+        // at all, so neither is reported as missing here.
+        const missing = await recordUnresolved(alias.basePaths);
+        return { filePath: null, missing };
       }
-      return resolved;
-    });
+    );
     resolveCache.set(cacheKey, resolvedPromise);
     return resolvedPromise;
+  };
+
+  /**
+   * Keep an import that went nowhere, when the file that wrote it declares
+   * workflow code itself. Those imports are what decide the rest of what this
+   * build registers, so an edge discovery cannot follow out of one is the
+   * shape of a workflow that silently fails to register — worth reporting
+   * rather than dropping.
+   *
+   * An import that merely left the graph (an installed package discovery does
+   * not descend into, a stylesheet) is not missing and never recorded.
+   */
+  const reportUnresolvedImport = ({
+    importer,
+    specifier,
+    missing,
+    importerDeclaresWorkflowCode,
+  }: UnresolvedDirectiveImport & {
+    missing: boolean;
+    importerDeclaresWorkflowCode: boolean;
+  }): void => {
+    if (!missing || !importerDeclaresWorkflowCode) {
+      return;
+    }
+    unresolvedDirectiveImports.push({ importer, specifier });
   };
 
   const shouldFollowImportsFromFile = async (
@@ -891,7 +1010,8 @@ export async function fastDiscoverEntries({
   const processImportSpecifier = async (
     filePath: string,
     specifier: string,
-    shouldFollow: boolean
+    shouldFollow: boolean,
+    importerDeclaresWorkflowCode: boolean
   ): Promise<void> => {
     if (NODE_BUILTIN_SPECIFIERS.has(specifier)) {
       return;
@@ -900,8 +1020,17 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    const resolved = await resolveImport(filePath, specifier);
+    const { filePath: resolved, missing } = await resolveImport(
+      filePath,
+      specifier
+    );
     if (!resolved) {
+      reportUnresolvedImport({
+        importer: filePath,
+        specifier,
+        missing,
+        importerDeclaresWorkflowCode,
+      });
       return;
     }
 
@@ -920,12 +1049,9 @@ export async function fastDiscoverEntries({
     }
 
     addImportParent(filePath, resolved);
+    // `enqueueFile` filters these too, but stopping here keeps a non-source
+    // import out of the queue entirely.
     if (!isJsTsFile(resolved) || isGeneratedBuildArtifactPath(resolved)) {
-      return;
-    }
-
-    if (specifier.startsWith('.')) {
-      enqueueFile(resolved);
       return;
     }
 
@@ -970,7 +1096,12 @@ export async function fastDiscoverEntries({
 
     await Promise.all(
       specifiers.map((specifier) =>
-        processImportSpecifier(filePath, specifier, shouldFollow)
+        processImportSpecifier(
+          filePath,
+          specifier,
+          shouldFollow,
+          forceFollowImports
+        )
       )
     );
   };
@@ -1005,4 +1136,11 @@ export async function fastDiscoverEntries({
 
   state.discoveredFiles = processedFiles;
   state.unresolvedImportCandidates = unresolvedImportCandidates;
+  // Sorted so a build log (and a test asserting on one) reads the same way
+  // twice: the walk itself is concurrency-ordered.
+  state.unresolvedDirectiveImports = unresolvedDirectiveImports.sort(
+    (left, right) =>
+      left.importer.localeCompare(right.importer) ||
+      left.specifier.localeCompare(right.specifier)
+  );
 }

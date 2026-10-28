@@ -1,0 +1,9 @@
+---
+"@workflow/builders": patch
+---
+
+Stop workflow discovery from losing imports in silence, which shipped builds that registered fewer workflows than the app could start.
+
+- Follow TypeScript's `.js`-to-`.ts` import rewriting. A `.ts` file using NodeNext module resolution writes `./x.js` for a sibling that only exists as `./x.ts`, which every bundler in the toolchain resolves and discovery took literally: the module was never scanned and the workflow it declared never registered, with a successful build and a runtime `WorkflowNotRegisteredError` as the only signal. `.js`/`.jsx`/`.mjs`/`.cjs` specifiers now fall back to their `.ts`/`.tsx`/`.mts`/`.cts` counterparts, for relative paths and deep package imports alike. The written extension is still tried first, so a project shipping both `x.js` and `x.ts` resolves to the same file it did before.
+- Report, rather than drop, an import that resolves to nothing when the file that wrote it declares `"use workflow"`, `"use step"`, or a serde class. Those imports decide what the build registers, so a production build now prints which file and which specifier went nowhere instead of leaving the gap to surface as `WorkflowNotRegisteredError`/`StepNotRegisteredError` at runtime. Imports that merely leave the graph — an installed package discovery does not descend into, a stylesheet, an uninstalled package that already fails the bundle on its own — are not reported. Development builds stay quiet, where writing an import before creating its target is a normal editing state the watcher already handles.
+- Fail a production build when the workflow manifest cannot be created, instead of warning and reporting success. The manifest is what records which workflows a deployment registered, so a build that cannot write one cannot be verified. Development and watch builds keep warning and continuing.

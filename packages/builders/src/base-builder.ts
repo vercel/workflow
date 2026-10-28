@@ -31,6 +31,7 @@ import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import {
   type DiscoveredEntries,
   fastDiscoverEntries,
+  type UnresolvedDirectiveImport,
 } from './fast-discovery.js';
 import { assertFlowBundleIsSandboxSafe } from './flow-bundle-safety.js';
 import {
@@ -229,6 +230,11 @@ export abstract class BaseBuilder {
    * to avoid duplicate warnings across multiple discoverEntries() calls.
    */
   private warnedExternalPackages = new Set<string>();
+  /**
+   * `importer\0specifier` pairs already reported, so the several bundles a
+   * build creates from one discovery pass don't repeat the same warning.
+   */
+  private warnedUnresolvedDirectiveImports = new Set<string>();
   private workflowBuildStartTime: number | undefined;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
 
@@ -522,6 +528,60 @@ export abstract class BaseBuilder {
     }
   }
 
+  /**
+   * Report imports discovery could not follow out of files that declare
+   * workflow code. The module behind one of these was never read, so whatever
+   * it declares is absent from this build's bundles — which, until the run
+   * fails, looks exactly like a successful build.
+   *
+   * Development builds are exempt. Writing `import './billing/workflow'`
+   * before creating the file is a normal editing state there, and the dev
+   * watcher already tracks the path so the next save picks it up; see
+   * `unresolvedImportCandidates`.
+   */
+  private warnAboutUnresolvedDirectiveImports(state: DiscoveredEntries): void {
+    if (this.isDevelopmentBuild) {
+      return;
+    }
+
+    const unreported = (state.unresolvedDirectiveImports ?? []).filter(
+      ({ importer, specifier }) => {
+        const key = `${importer}\0${specifier}`;
+        if (this.warnedUnresolvedDirectiveImports.has(key)) {
+          return false;
+        }
+        this.warnedUnresolvedDirectiveImports.add(key);
+        return true;
+      }
+    );
+
+    if (unreported.length === 0) {
+      return;
+    }
+
+    const describe = ({ importer, specifier }: UnresolvedDirectiveImport) =>
+      `    ${chalk.bold(this.toDisplayPath(importer))} → ${chalk.bold(`"${specifier}"`)}`;
+    const importerCount = new Set(unreported.map(({ importer }) => importer))
+      .size;
+
+    console.warn(
+      `\n${chalk.yellow('⚠')} Warning: Workflow could not resolve ${unreported.length} ${pluralize('import', 'imports', unreported.length)} written by ${importerCount} ${pluralize('file', 'files', importerCount)} that ${pluralize('declares', 'declare', importerCount)} workflow code:` +
+        `\n${unreported.map(describe).join('\n')}` +
+        `\n  ${chalk.bold('Those modules were not scanned')}, so any "use workflow" or "use step" function they define is not registered in this build` +
+        `\n  and starting it fails at runtime with WorkflowNotRegisteredError or StepNotRegisteredError.` +
+        `\n  Check the specifier, or open an issue at https://github.com/vercel/workflow/issues if the path is correct.\n`
+    );
+  }
+
+  /** A path as a build log should show it: relative to the app, forward slashes. */
+  private toDisplayPath(filePath: string): string {
+    const relativePath = relative(this.config.workingDir, filePath).replace(
+      /\\/g,
+      '/'
+    );
+    return relativePath.startsWith('../') ? filePath : relativePath;
+  }
+
   protected async discoverEntries(
     inputs: string[],
     outdir: string,
@@ -572,6 +632,9 @@ export abstract class BaseBuilder {
       `Discovering workflow directives`,
       `${Date.now() - discoverStart}ms`
     );
+
+    // Warn about imports the walk could not follow out of workflow code
+    this.warnAboutUnresolvedDirectiveImports(state);
 
     // Warn about external packages that contain workflow code
     await this.warnAboutExternalWorkflowPackages();
@@ -2419,12 +2482,34 @@ export const OPTIONS = handler;`;
 
       return manifestJson;
     } catch (error) {
-      console.warn(
-        'Failed to create manifest:',
-        error instanceof Error ? error.message : String(error)
-      );
       this.resetWorkflowBuildTimer();
-      return undefined;
+      const message = error instanceof Error ? error.message : String(error);
+
+      // A development build keeps the old warn-and-continue behavior: a
+      // half-written graph is routine while editing, the dev server is not
+      // what ships, and killing it over a manifest is worse than the missing
+      // file.
+      if (this.isDevelopmentBuild) {
+        console.warn('Failed to create manifest:', message);
+        return undefined;
+      }
+
+      // A production build is a different matter. The manifest is what says
+      // which workflows this deployment registered — the build summary, the
+      // diagnostics artifact collected by the platform, and any check that
+      // compares the app against its registrations all read it. Swallowing
+      // the failure shipped a deployment nobody could verify and reported
+      // success doing it.
+      throw new WorkflowBuildError(
+        `Failed to create the workflow manifest: ${message}`,
+        {
+          hint:
+            'The workflow bundles were built, but the manifest describing them could not be generated, ' +
+            'so this build cannot report which workflows it registered. Re-run the build; if it keeps ' +
+            'failing, open an issue at https://github.com/vercel/workflow/issues with the error above.',
+          cause: error,
+        }
+      );
     }
   }
 
