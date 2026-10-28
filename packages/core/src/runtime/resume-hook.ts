@@ -668,6 +668,21 @@ async function resumeHookAttempt<T = any>(
       hook = hookFreshlyLookedUp
         ? tokenOrHook
         : HookResumeHandleSchema.parse(tokenOrHook);
+      if (!hookFreshlyLookedUp) {
+        // Validation omits user metadata so it cannot hydrate it. Preserve
+        // its descriptor without reading it: in-process Hooks carry a lazy
+        // getter, while raw World hooks can still carry serialized metadata.
+        const metadata = Object.getOwnPropertyDescriptor(
+          tokenOrHook,
+          'metadata'
+        );
+        if (metadata) {
+          Object.defineProperty(hook, 'metadata', {
+            ...metadata,
+            configurable: true,
+          });
+        }
+      }
     }
     // `resumeWebhook()` checked the hook it looked up; a redirect lands on a
     // different hook, and one taken over by `createHook({ experimental_force

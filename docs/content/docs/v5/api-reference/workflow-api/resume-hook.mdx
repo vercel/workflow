@@ -80,13 +80,17 @@ session state; JSON and other ordinary serializers are supported.
 ```typescript
 import { getHookByToken, resumeHook } from 'workflow/api';
 
-// First delivery: resolve once and store on your server.
-const hook = await getHookByToken(token);
-await session.save({ hook });
+// Resolve once; save the returned JSON alongside your server-side session.
+export async function prepareSession(token: string): Promise<string> {
+  const hook = await getHookByToken(token);
+  return JSON.stringify(hook);
+}
 
-// Later deliveries: reuse the stored Hook.
-const { hook: storedHook } = await session.load();
-await resumeHook(storedHook, message);
+// Load that JSON for later deliveries, then save the updated snapshot.
+export async function deliverMessage(storedHook: string, message: unknown): Promise<string> {
+  const hook = await resumeHook(JSON.parse(storedHook), message);
+  return JSON.stringify(hook);
+}
 ```
 
 A Hook object targets that specific hook and its force-claim successor. It does
