@@ -412,7 +412,10 @@ function observeHandoffOutcomes(client: QueueClient): void {
       }
     | undefined;
   const changeVisibility = api?.changeVisibility;
-  if (!api || typeof changeVisibility !== 'function') return;
+  if (!api || typeof changeVisibility !== 'function') {
+    warnHandoffOutcomesUnobserved();
+    return;
+  }
   api.changeVisibility = async (options) => {
     const result = await changeVisibility.call(api, options);
     if (options.experimental_handoff) {
@@ -420,6 +423,24 @@ function observeHandoffOutcomes(client: QueueClient): void {
     }
     return result;
   };
+}
+
+// per-copy-ok: one warning per module copy is enough, and a copy that
+// warned again would only repeat it.
+let handoffOutcomesWarned = false;
+
+/**
+ * Warns, once, that this `@vercel/queue` exposes no API client to observe
+ * (see {@link observeHandoffOutcomes}): handoffs still work, but their
+ * outcomes go unlogged. `queue-api-client.test.ts` pins the hook against the
+ * installed version.
+ */
+function warnHandoffOutcomesUnobserved(): void {
+  if (handoffOutcomesWarned) return;
+  handoffOutcomesWarned = true;
+  console.warn(
+    '[workflow] This @vercel/queue version exposes no API client to observe, so the outcome of each handoff is not logged'
+  );
 }
 
 /** Exported for unit tests. */
