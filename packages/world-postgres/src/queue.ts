@@ -48,6 +48,7 @@ import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
+import { createJobLeases, resolveJobLockStaleSeconds } from './job-lease.js';
 import { MessageData } from './message.js';
 
 /**
@@ -279,6 +280,9 @@ export function createQueue(
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  const jobLeases = createJobLeases(pool, {
+    staleSeconds: resolveJobLockStaleSeconds(config.jobLockStaleSeconds),
+  });
   /**
    * The Workflow SDK prefix this World serves: messages on it (and jobs that
    * predate the stored prefix) are workflow runs, which the run-scoped
@@ -1167,9 +1171,13 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
+    taskList[getJobQueueName()] = jobLeases.wrap(
+      createTaskHandler(workflowPrefix)
+    );
     if (invocations)
-      taskList[executorTask()] = createTaskHandler(workflowPrefix, true);
+      taskList[executorTask()] = jobLeases.wrap(
+        createTaskHandler(workflowPrefix, true)
+      );
 
     runner = await run({
       pgPool: pool,
@@ -1190,6 +1198,10 @@ export function createQueue(
       pollInterval: config.pollInterval ?? 500, // per worker; LISTEN/NOTIFY only wakes idle workers early
       taskList,
     });
+    // Graphile Worker only resets locks older than 4 hours. Release this
+    // World's jobs (including invoke mode's executor jobs and their per-run
+    // queue locks) whose holders stopped renewing them.
+    jobLeases.startSweeper([getJobQueueName(), executorTask()]);
   }
 
   return {
@@ -1228,6 +1240,9 @@ export function createQueue(
         await activeRunner.promise.catch(() => {});
         runner = null;
       }
+      // After the runner, whose active deliveries keep renewing while it
+      // drains them.
+      await jobLeases.stop();
       if (workerUtils) {
         await workerUtils.release();
         workerUtils = null;
