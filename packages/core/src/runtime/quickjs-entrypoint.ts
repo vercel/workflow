@@ -2401,6 +2401,9 @@ export async function runWorkflowWithQuickJS(params: {
         // doesn't block the event loop either.)
         await new Promise((resolve) => setImmediate(resolve));
         const t0 = tick();
+        // Informational (not sealed): lets the World report the heap size
+        // the size ceiling applies to.
+        metadata.plaintextBytes = snapshot.data.byteLength;
         const toStore = await sealSnapshot({
           runId,
           heap: snapshot.data,

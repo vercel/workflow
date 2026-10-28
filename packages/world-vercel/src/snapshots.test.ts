@@ -129,6 +129,32 @@ describe('snapshots storage', () => {
       expect(r.bodyBytes).toBe(Number(r.contentLength));
     });
 
+    it('reports the heap size and event count as headers when known', async () => {
+      const seen: Record<string, string | string[] | undefined>[] = [];
+      server.handle = (req, res) => {
+        seen.push(req.headers);
+        res.writeHead(200);
+        res.end('ok');
+      };
+      const storage = createSnapshotsStorage();
+      await storage.save('wrun_test', new Uint8Array(1024), {
+        eventsCursor: 'eid:test',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        plaintextBytes: 7_012_564,
+        eventCount: 2001,
+      });
+      await storage.save('wrun_test', new Uint8Array(1024), {
+        eventsCursor: 'eid:test',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      });
+
+      expect(seen[0]?.['x-snapshot-plaintext-bytes']).toBe('7012564');
+      expect(seen[0]?.['x-snapshot-event-count']).toBe('2001');
+      // Absent rather than fabricated when the runtime didn't say.
+      expect(seen[1]?.['x-snapshot-plaintext-bytes']).toBeUndefined();
+      expect(seen[1]?.['x-snapshot-event-count']).toBeUndefined();
+    });
+
     it('retries on transient 503 and sends the full body on every attempt (regression: undici fetch+RetryAgent loses Buffer body on retry)', async () => {
       // First attempt: 503 (transient). Second: 200.
       // The undici fetch() + RetryAgent combo wraps Buffer bodies in a
