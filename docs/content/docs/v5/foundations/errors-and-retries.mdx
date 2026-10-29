@@ -184,6 +184,8 @@ On Vercel, backend connection failures and interrupted event streams use the exi
 
 The SDK also replaces its shared events connection pool after repeated HTTP/2 session failures, and retries event-log reads whose HTTP/2 stream the backend resets. An events request that receives no response data for 60 seconds fails and is retried instead of stalling the invocation. Invalid backend URLs, including unsupported protocols and embedded credentials, fail immediately. Fetch requests to blocked ports or with unsupported headers (such as `Expect`) also fail without retrying. Interrupted event writes retain their existing retries; caller cancellations do not trigger another write.
 
+Writing to a stream forwarded from another run looks up that run's encryption key first. A transient lookup failure (a connection error, a timeout, an HTTP `429`, or a `5xx`) uses the step's retry policy. Any other lookup failure, such as an HTTP `404` when the owner run no longer exists, fails the step without retrying, with a `EncryptionKeyLookupError` whose `cause` is the original failure.
+
 A connection failure does not prove that the backend rejected a write: it may have accepted it before the response was lost. Continue to make step side effects [idempotent](/docs/foundations/idempotency).
 
 Failed-run logs include the underlying error causes and their codes, exposing socket, DNS, or TLS errors behind messages such as `TypeError: fetch failed`. If a cause cannot be read, the log includes `[unavailable cause]` and the run can still be recorded as failed.
