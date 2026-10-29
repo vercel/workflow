@@ -3,7 +3,6 @@ import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   type QueueOptions,
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
 } from '@workflow/world';
@@ -345,7 +344,7 @@ globalThis.__private_workflows = new Map([['resent', resent]]);
         const runId = `wrun_${ulid()}`;
         await world.events.create(runId, {
           eventType: 'run_created',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: {
             deploymentId: 'postgres',
             workflowName: 'resent',
@@ -355,7 +354,7 @@ globalThis.__private_workflows = new Map([['resent', resent]]);
         });
         await world.queue('__wkf_workflow_resent', {
           runId,
-          runSpecVersion: SPEC_VERSION_CURRENT,
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         });
 
         await until(

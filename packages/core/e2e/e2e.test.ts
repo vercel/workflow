@@ -537,6 +537,29 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  // Spec 9 is opt-in: the spec 9 lane sets `WORKFLOW_SPEC_VERSION=9` on its
+  // deployment and on this runner (a cross-deployment start stamps the lower
+  // of the two), and every other lane runs the default. Fails loudly when the
+  // setting stops reaching either side, which would otherwise leave the
+  // spec 9 lane silently testing spec 8.
+  testJsOnly(
+    'stamps the spec version the lane opts in to',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('addTenWorkflow'), [123]);
+      expect(await run.returnValue).toBe(133);
+      const row = await (await getWorld()).runs.get(run.runId);
+      if (
+        process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+        String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+      ) {
+        expect(row.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+      } else {
+        expect(row.specVersion).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+      }
+    }
+  );
+
   // Test that "use step" / "use workflow" functions inside dot-prefixed
   // directories like `.well-known/agent/` are discovered and executed correctly.
   // Only runs on Next.js workbenches where the test file is placed.
@@ -3000,10 +3023,13 @@ describe.concurrent('e2e', () => {
       async (ctx) => {
         await skipUnlessForceClaimSupported(ctx);
         // The victim has to be a run below the force-claim spec version,
-        // executed by this deployment. A single-orchestrator runtime executes
-        // no such run (`start()` refuses to create one), so this lane cannot
-        // produce the victim; the refusal is covered by the backend's tests.
-        if (SPEC_VERSION_CURRENT >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        // executed by this deployment. The spec 9 lane skips it, since its
+        // point is the spec 9 runtime; the default lanes run it, and the
+        // refusal is also covered by the backend's tests.
+        if (
+          process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+          String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+        ) {
           ctx.skip();
           return;
         }

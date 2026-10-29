@@ -10,6 +10,7 @@ import {
   type Event,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
 } from '@workflow/world';
@@ -117,6 +118,8 @@ describe('wakeUpRun', () => {
       runId: 'wrun_123',
       pagination: { sortOrder: 'asc' },
       resolveData: 'none',
+      // The run's own version, as the World's read hint.
+      specVersion: 2,
     });
     expect(world.queue).toHaveBeenCalled();
   });
@@ -192,8 +195,8 @@ describe('reenqueueRun', () => {
 });
 
 // A run started by a newer SDK: this one cannot write that version's format,
-// so everything it writes to the run is capped at its own.
-const NEWER_THAN_THIS_SDK = SPEC_VERSION_CURRENT + 1;
+// so everything it writes to the run is capped at the highest it supports.
+const NEWER_THAN_THIS_SDK = SPEC_VERSION_MAX_SUPPORTED + 1;
 
 describe('writes to a run started by a newer SDK', () => {
   const waitCreated: Event = {
@@ -213,7 +216,7 @@ describe('writes to a run started by a newer SDK', () => {
 
     expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
       eventType: 'run_cancelled',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
@@ -235,7 +238,7 @@ describe('writes to a run started by a newer SDK', () => {
     // coalesces it into a running delivery.
     expect(vi.mocked(world.queue).mock.calls[0][2]).toEqual({
       deploymentId: expect.any(String),
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
@@ -246,7 +249,7 @@ describe('writes to a run started by a newer SDK', () => {
     await reenqueueRun(world, 'wrun_123');
 
     expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 

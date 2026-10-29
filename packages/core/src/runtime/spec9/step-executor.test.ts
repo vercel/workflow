@@ -13,7 +13,7 @@ import type {
   Event,
   World,
 } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -247,7 +247,7 @@ async function setupStep(
 ) {
   const created = await world.events.create(null, {
     eventType: 'run_created',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     eventData: {
       deploymentId: 'dpl_test',
       workflowName: 'wf',
@@ -257,7 +257,7 @@ async function setupStep(
   const runId = created.run!.runId;
   await world.events.create(runId, {
     eventType: 'run_started',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     eventData: {},
   } as never);
   const stepId = `step_local_${counter}`;
@@ -268,7 +268,7 @@ async function setupStep(
   )) as Uint8Array;
   await world.events.create(runId, {
     eventType: 'step_created',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     correlationId: stepId,
     eventData: { stepName, input: stepInput },
   });
@@ -983,7 +983,7 @@ describe('executeStep — turbo run-ready barrier', () => {
   async function turboStep(world: World, stepName: string) {
     const created = await world.events.create(null, {
       eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       eventData: {
         deploymentId: 'dpl_test',
         workflowName: 'wf',
@@ -1001,14 +1001,14 @@ describe('executeStep — turbo run-ready barrier', () => {
     const runReadyBarrier = startGate.promise.then(async () => {
       await world.events.create(runId, {
         eventType: 'run_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {},
       } as never);
     });
     const startAfter = runReadyBarrier.then(async () => {
       await world.events.create(runId, {
         eventType: 'step_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: stepId,
         eventData: { stepName, input, inline: true },
       });
@@ -1223,7 +1223,7 @@ describe('executeStep — turbo run-ready barrier', () => {
     const runReadyBarrier = createGate.promise.then(async () => {
       await world.events.create(runId, {
         eventType: 'run_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {
           deploymentId: 'dpl_test',
           workflowName: 'wf',
@@ -1234,7 +1234,7 @@ describe('executeStep — turbo run-ready barrier', () => {
     const startAfter = runReadyBarrier.then(async () => {
       await world.events.create(runId, {
         eventType: 'step_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: stepId,
         eventData: { stepName, input, inline: true },
       });

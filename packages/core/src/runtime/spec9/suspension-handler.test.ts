@@ -6,7 +6,7 @@ import {
 } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import {
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowRun,
   type World,
@@ -264,7 +264,7 @@ describe('handleSuspension', () => {
       hookId: 'hook_victim',
       workflowName: 'victim-workflow',
       deploymentId: 'dpl_victim',
-      runSpecVersion: SPEC_VERSION_CURRENT,
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     };
     const forcedCreation = (
       slot: number,
@@ -290,7 +290,7 @@ describe('handleSuspension', () => {
         runId: run.runId,
         correlationId: hookId,
         createdAt,
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {
           token: `channel:${hookId}`,
           force: true,
@@ -309,7 +309,7 @@ describe('handleSuspension', () => {
         runId: run.runId,
         correlationId,
         createdAt: new Date(),
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData,
       }) as Event;
     const worldWithQueue = (
@@ -345,7 +345,7 @@ describe('handleSuspension', () => {
       expect(queueName).toContain('victim-workflow');
       expect(message).toEqual({
         runId: 'wrun_victim',
-        runSpecVersion: SPEC_VERSION_CURRENT,
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       });
       expect(options).toMatchObject({ deploymentId: 'dpl_victim' });
       expect(options.idempotencyKey).toBeUndefined();
@@ -368,7 +368,7 @@ describe('handleSuspension', () => {
       expect(queue).toHaveBeenCalledTimes(1);
       expect(queue.mock.calls[0][1]).toEqual({
         runId: 'wrun_victim',
-        runSpecVersion: SPEC_VERSION_CURRENT,
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       });
     });
 
@@ -425,7 +425,7 @@ describe('handleSuspension', () => {
       expect(queue).toHaveBeenCalledTimes(1);
       expect(queue.mock.calls[0][1]).toEqual({
         runId: 'wrun_victim',
-        runSpecVersion: SPEC_VERSION_CURRENT,
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       });
     });
 

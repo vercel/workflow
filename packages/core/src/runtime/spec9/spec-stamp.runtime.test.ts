@@ -1,4 +1,7 @@
-import { messageRunSpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  messageRunSpecVersion,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../private.js';
 import {
@@ -72,7 +75,9 @@ describe.each([
       )
     ).toBe(true);
     for (const call of sent) {
-      expect(messageRunSpecVersion(call.message)).toBe(SPEC_VERSION_CURRENT);
+      expect(messageRunSpecVersion(call.message)).toBe(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      );
     }
   });
 });

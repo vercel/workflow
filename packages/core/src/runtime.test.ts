@@ -8,7 +8,7 @@ import {
 import {
   type CreateEventParams,
   type Event,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
@@ -114,7 +114,7 @@ async function runWorkflowHandlerWithEvents(
   );
 
   setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     // Declares atomic, immutable deployments (as world-vercel does); worlds
     // that leave it unset (local/postgres) skip the deployment guard.
     capabilities: { inBandFence: true, deploymentAffinity: true },
@@ -209,7 +209,7 @@ describe('workflowEntrypoint replay guards', () => {
     updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     startedAt: new Date('2024-01-01T00:00:00.000Z'),
     deploymentId: 'dpl_origin',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   });
 
   const mustNotRun = `async function workflow() {
@@ -230,7 +230,7 @@ describe('workflowEntrypoint replay guards', () => {
     expect(queueCalls).toHaveLength(1);
     expect(queueCalls[0].opts).toMatchObject({
       deploymentId: 'dpl_origin',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       delaySeconds: 1,
     });
     expect(queueCalls[0].message).toMatchObject({
@@ -275,7 +275,7 @@ describe('workflowEntrypoint replay guards', () => {
     const runContext = includeRunContext
       ? {
           deploymentId: workflowRun.deploymentId,
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           startedAt: Number(workflowRun.startedAt),
           rootRunId: workflowRun.runId,
         }
@@ -444,7 +444,7 @@ describe('workflowEntrypoint replay guards', () => {
     });
 
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
@@ -979,7 +979,7 @@ describe('workflowEntrypoint replay guards', () => {
     });
 
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
@@ -1172,7 +1172,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
           if (opts.retryingQueuedStep) {
             recordEvent({
               eventType: 'step_retrying',
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: data.correlationId,
               eventData: { stepName: data.eventData?.stepName },
             });
@@ -1188,7 +1188,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
           if (lazy?.input !== undefined) {
             recordEvent({
               eventType: 'step_created',
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: data.correlationId,
               eventData: { stepName: lazy.stepName, input: lazy.input },
             });
@@ -1241,7 +1241,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     const recordStepExecution = vi.fn();
 
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       telemetry: { recordStepExecution },
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
@@ -1462,7 +1462,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
           if (d?.input !== undefined)
             rec({
               eventType: 'step_created',
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: data.correlationId,
               eventData: { stepName: d.stepName, input: d.input },
             });
@@ -1493,7 +1493,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       return { messageId: null };
     });
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
       createQueueHandler: vi.fn(
@@ -1588,7 +1588,7 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
       runId: opts.runId,
       workflowName: 'workflow',
       status: 'running',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       input: await dehydrateWorkflowArguments([], opts.runId, undefined, []),
       createdAt: new Date('2024-01-01T00:00:00.000Z'),
       updatedAt: new Date('2024-01-01T00:00:00.000Z'),
@@ -1606,7 +1606,7 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
         runId: opts.runId,
         createdAt: new Date(),
         eventType: 'step_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: 'step_other',
         eventData: { stepName: 'otherStep', input: dehydratedInput },
       } as unknown as Event,
@@ -1661,7 +1661,7 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
     const runsGet = vi.fn(async () => workflowRun);
     setWorld({
       capabilities: { inBandFence: true },
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1681,7 +1681,7 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
                   ? {
                       runContext: {
                         deploymentId: 'test-deployment',
-                        specVersion: SPEC_VERSION_CURRENT,
+                        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
                         startedAt: Date.parse('2024-01-01T00:00:00.000Z'),
                         rootRunId: opts.runId,
                       },
@@ -1865,7 +1865,7 @@ describe('workflowEntrypoint turbo mode', () => {
       input: await dehydrateWorkflowArguments([], runId, undefined, []),
       deploymentId: 'test-deployment',
       workflowName: 'workflow',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       executionContext: {},
     };
   }
@@ -1928,7 +1928,7 @@ describe('workflowEntrypoint turbo mode', () => {
           if (d?.input !== undefined) {
             rec({
               eventType: 'step_created',
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: data.correlationId,
               eventData: { stepName: d.stepName, input: d.input },
             });
@@ -1956,7 +1956,7 @@ describe('workflowEntrypoint turbo mode', () => {
 
     setWorld({
       capabilities: { inBandFence: true },
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       ...(opts.currentDeploymentId
         ? { capabilities: { inBandFence: true, deploymentAffinity: true } }
         : {}),
@@ -2243,7 +2243,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
             eventId: slotToEventId(1),
             runId,
             eventType: 'run_created',
-            specVersion: SPEC_VERSION_CURRENT,
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
             createdAt: new Date(),
             eventData: {
               deploymentId: 'test-deployment',
@@ -2292,7 +2292,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
           if (d?.input !== undefined) {
             rec({
               eventType: 'step_created',
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: data.correlationId,
               eventData: { stepName: d.stepName, input: d.input },
             });
@@ -2318,7 +2318,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     );
 
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => 'test-deployment'),
       createQueueHandler: vi.fn(
@@ -2331,7 +2331,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
                 ...(opts.withRunInput === false
                   ? // A continuation names the run's version, as every
                     // orchestrator message the runtime sends does.
-                    { runSpecVersion: SPEC_VERSION_CURRENT }
+                    { runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
                   : {
                       runInput: {
                         input: await dehydrateWorkflowArguments(
@@ -2342,7 +2342,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
                         ),
                         deploymentId: 'test-deployment',
                         workflowName: 'workflow',
-                        specVersion: SPEC_VERSION_CURRENT,
+                        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
                         executionContext: {},
                       },
                     }),
@@ -2552,7 +2552,7 @@ describe('workflowEntrypoint run-failure logging', () => {
     updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     startedAt: new Date('2024-01-01T00:00:00.000Z'),
     deploymentId: 'test-deployment',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   });
 
   /**
@@ -2699,7 +2699,7 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
       snapshot: { seq: 2, seqInBand: 2 },
     }));
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => 'dpl_test'),
       createQueueHandler: vi.fn(
@@ -2709,7 +2709,7 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
               {
                 runId,
                 requestedAt: new Date(),
-                runSpecVersion: SPEC_VERSION_CURRENT,
+                runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               },
               {
                 requestId: 'req',

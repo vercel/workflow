@@ -4,7 +4,7 @@ import {
   type CreateEventRequest,
   type Event,
   getEventDataPayloadField,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
@@ -548,7 +548,7 @@ async function drive(
     updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     startedAt: new Date('2024-01-01T00:00:00.000Z'),
     deploymentId: 'test-deployment',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   };
   const events: Event[] = [];
   // What a replay read hands back: the log, minus step inputs when the caller
@@ -626,7 +626,7 @@ async function drive(
           eventId: slotToEventId(++seq),
           runId,
           eventType: 'hook_received',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: hookCreated.correlationId,
           eventData: {
             token: hookCreated.eventData.token,
@@ -656,7 +656,7 @@ async function drive(
           eventId: slotToEventId(++seq),
           runId,
           eventType: 'wait_completed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: waitCreated.correlationId,
           eventData: { resumeAt: waitCreated.eventData.resumeAt },
           createdAt: new Date(),
@@ -692,7 +692,7 @@ async function drive(
           eventId: slotToEventId(++seq),
           runId,
           eventType: 'wait_completed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: waitCreated.correlationId,
           eventData: { resumeAt: waitCreated.eventData.resumeAt },
           createdAt: new Date(),
@@ -738,7 +738,7 @@ async function drive(
 
   setWorld({
     capabilities: { inBandFence: true },
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
         async () => {

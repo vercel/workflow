@@ -17,7 +17,6 @@ import { join } from 'node:path';
 import { globalSingleton } from '@workflow/utils';
 import type { Event, World } from '@workflow/world';
 import {
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
 } from '@workflow/world';
@@ -134,18 +133,18 @@ describe('world-local restart recovery of an inline step', () => {
     {
       engine: 'node',
       workflowVm: undefined,
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     },
     {
       engine: 'quickjs',
       workflowVm: 'quickjs',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     },
   ])('dispatches the step at once instead of waiting out the lease ($engine, spec $specVersion)', async ({
     workflowVm,
     specVersion,
   }) => {
-    const singleOrchestrator = specVersion === SPEC_VERSION_CURRENT;
+    const singleOrchestrator = specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR;
     const creation = singleOrchestrator ? [] : ['step_created'];
     const release = singleOrchestrator ? [] : ['step_retrying'];
     let bodyRuns = 0;

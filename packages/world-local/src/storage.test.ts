@@ -920,9 +920,18 @@ describe('Storage', () => {
       });
 
       it('records a single-orchestrator step created by its start alone, keeping the input on it', async () => {
+        const { runId: testRunId } = await createRun(
+          storage,
+          {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
         await storage.events.create(testRunId, {
           eventType: 'step_started',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: 'lazy_step_2',
           eventData: {
             stepName: 'lazy-step',

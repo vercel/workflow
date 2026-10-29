@@ -3,7 +3,7 @@ import {
   HookNotFoundError,
   RunExpiredError,
 } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createIdFactory } from './ids.js';
 import {
@@ -13,7 +13,7 @@ import {
   type StaleRead,
 } from './store.js';
 
-const SPEC = SPEC_VERSION_CURRENT;
+const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
 
 function setup(options?: Omit<SimStoreOptions, 'now' | 'ids'>) {
   let now = 1_704_067_200_000;

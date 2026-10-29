@@ -7,7 +7,7 @@ import {
 import {
   type Event,
   messageRunSpecVersion,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -461,7 +461,7 @@ describe.each([
         for (const call of messages) {
           expect(call.opts?.idempotencyKey).toEqual(expect.any(String));
           expect(messageRunSpecVersion(call.message)).toBe(
-            SPEC_VERSION_CURRENT
+            SPEC_VERSION_SINGLE_ORCHESTRATOR
           );
         }
 
@@ -1770,7 +1770,7 @@ describe.each([
     await world.deliver(world.enqueue(QUEUE, { runId }));
     expect(world.creates.length).toBe(creates);
     listSpy.mockRestore();
-    expect(SPEC_VERSION_CURRENT).toBeGreaterThan(0);
+    expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBeGreaterThan(0);
   });
 
   describe('a delivery the fence refuses', () => {

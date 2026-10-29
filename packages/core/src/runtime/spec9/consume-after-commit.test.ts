@@ -1,6 +1,6 @@
 import {
   type Event,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
@@ -26,7 +26,7 @@ function seeded(options: ConstructorParameters<typeof AppendOnlyWorld>[0]) {
 
 const waitCompleted = {
   eventType: 'wait_completed',
-  specVersion: SPEC_VERSION_CURRENT,
+  specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   correlationId: 'wait_a',
 } as const;
 

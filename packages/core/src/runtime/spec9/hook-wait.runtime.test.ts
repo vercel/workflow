@@ -17,7 +17,7 @@ import {
 import {
   type Event,
   type Hook,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -124,11 +124,11 @@ function view(
         projectId: 'project_test',
         environment: 'production',
         createdAt: created.createdAt,
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         resumeContext: {
           deploymentId: 'dpl_test',
           workflowName: 'workflow',
-          runSpecVersion: SPEC_VERSION_CURRENT,
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           workflowCoreVersion: '5.0.0',
         },
       } as Hook;

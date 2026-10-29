@@ -1,6 +1,6 @@
 import {
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   type World,
 } from '@workflow/world';
@@ -23,7 +23,7 @@ describe('publishForceClaimVictimWake', () => {
       hookId: 'hook_victim',
       workflowName: 'victimWorkflow',
       deploymentId: 'dpl_victim',
-      runSpecVersion: SPEC_VERSION_CURRENT,
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     },
   };
 
@@ -40,11 +40,11 @@ describe('publishForceClaimVictimWake', () => {
     expect(queueName).toContain('victimWorkflow');
     expect(message).toEqual({
       runId: 'wrun_victim',
-      runSpecVersion: SPEC_VERSION_CURRENT,
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
     expect(options).toMatchObject({
       deploymentId: 'dpl_victim',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
     // A wake carries no idempotency key.
     expect(options).not.toHaveProperty('idempotencyKey');

@@ -6,7 +6,7 @@
  * World, so this is where what one side sends and the other reads meet.
  */
 import {
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -236,11 +236,14 @@ describe.each([
           input,
           deploymentId: 'dpl_test',
           workflowName: 'workflow',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           executionContext: { workflowVm: engine },
         },
       } as never,
-      { deploymentId: 'dpl_test', specVersion: SPEC_VERSION_CURRENT }
+      {
+        deploymentId: 'dpl_test',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      }
     );
   });
 
@@ -350,7 +353,7 @@ describe.each([
       expect(continuation!.messageId).not.toBe(start!.messageId);
       expect(continuation!.wrapper.payload).toMatchObject({
         runId,
-        runSpecVersion: SPEC_VERSION_CURRENT,
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       });
       expect('runInput' in continuation!.wrapper.payload).toBe(false);
       expect(continuation!.opts.experimental_concurrencyKey).toBe(

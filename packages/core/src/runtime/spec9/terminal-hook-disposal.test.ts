@@ -7,7 +7,7 @@ import type {
   WorkflowRun,
   World,
 } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import { ReplayPayloadCache } from '../../replay-payload-cache.js';
@@ -43,7 +43,7 @@ describe.each([
       updatedAt: now,
       startedAt: now,
       deploymentId: 'dpl_terminal_hook',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     };
     const workflowCode = `
       var createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
@@ -57,7 +57,7 @@ describe.each([
     );
     const writeStream = vi.fn();
     const world = {
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: {},
       events: {
         create,
@@ -308,7 +308,7 @@ describe.each([
       const input = await dehydrateWorkflowArguments([], 'run', undefined, []);
       const created = await world.events.create(null, {
         eventType: 'run_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {
           deploymentId: 'dpl_retention',
           workflowName: 'workflow',
@@ -319,7 +319,7 @@ describe.each([
       assert(initialRun);
       await world.events.create(initialRun.runId, {
         eventType: 'run_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {},
       });
       const run = await world.runs.get(initialRun.runId);
@@ -348,7 +348,7 @@ describe.each([
         assert(hook);
         await world.events.create(run.runId, {
           eventType: 'hook_created',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: hook.correlationId,
           eventData: {
             token: hook.token,
@@ -357,7 +357,7 @@ describe.each([
         });
         await world.events.create(run.runId, {
           eventType: 'hook_received',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: hook.correlationId,
           eventData: {
             token: hook.token,
@@ -389,14 +389,14 @@ describe.each([
           const output = (await result) as Uint8Array;
           await world.events.create(run.runId, {
             eventType: 'run_completed',
-            specVersion: SPEC_VERSION_CURRENT,
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
             eventData: { output },
           });
         } else {
           await expect(result).rejects.toThrow('workflow failed');
           await world.events.create(run.runId, {
             eventType: 'run_failed',
-            specVersion: SPEC_VERSION_CURRENT,
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
             eventData: {
               error: await dehydrateRunError(
                 new Error('workflow failed'),
@@ -426,7 +426,7 @@ describe.each([
       // token claimed, so this registration must succeed because of disposal.
       const next = await world.events.create(null, {
         eventType: 'run_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {
           deploymentId: 'dpl_retention',
           workflowName: 'workflow',
@@ -436,7 +436,7 @@ describe.each([
       assert(next.run);
       const claim = await world.events.create(next.run.runId, {
         eventType: 'hook_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: 'hook_reclaimed',
         eventData: { token: 'retained' },
       });

@@ -6,9 +6,12 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  mintedSpecVersion,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
@@ -1772,12 +1775,48 @@ async function workflow() {
       });
     });
 
+    it.each([
+      undefined,
+      String(SPEC_VERSION_SINGLE_ORCHESTRATOR),
+    ])('starts a spec 8 run on a World written to the earlier guide (WORKFLOW_SPEC_VERSION=%s)', async (requested) => {
+      // The earlier "Building a World" guide: `specVersion:
+      // mintedSpecVersion()` and no fence. Opting in to spec 9 does not
+      // reach such a World, so it keeps creating spec 8 runs.
+      vi.stubEnv('WORKFLOW_SPEC_VERSION', requested);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const world = createWorld({
+          specVersion: mintedSpecVersion(),
+          capabilities: {},
+        });
+        expect(world.specVersion).toBe(SPEC_VERSION_DEFAULT_MINTED);
+        await start(validWorkflow, [], {
+          deploymentId: 'dpl_target_456',
+          world,
+        });
+        // An explicit target with no probe channel is stamped below spec 8
+        // (see the cross-deployment tests); never spec 9.
+        const created = mockEventsCreate.mock.calls[0]?.[1];
+        expect(created).toMatchObject({ eventType: 'run_created' });
+        expect(created.specVersion).toBeLessThanOrEqual(
+          SPEC_VERSION_DEFAULT_MINTED
+        );
+      } finally {
+        warn.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
     it('refuses a World without the in-band fence for a spec 9 run, before any write', async () => {
       await expect(
         start(validWorkflow, [], {
           deploymentId: 'dpl_target_456',
-          specVersion: SPEC_VERSION_CURRENT,
-          world: createWorld({ capabilities: { maxConcurrency: true } }),
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          // A World that declares spec 9 without implementing the fence.
+          world: createWorld({
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            capabilities: { maxConcurrency: true },
+          }),
         })
       ).rejects.toThrow(/capabilities\.inBandFence/);
       expect(mockGetDeploymentId).not.toHaveBeenCalled();

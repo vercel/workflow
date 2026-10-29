@@ -13,7 +13,7 @@
 import {
   type CreateEventRequest,
   type Event,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowRun,
   type World,
@@ -40,7 +40,7 @@ const workflowRun: WorkflowRun = {
   status: 'running',
   input: [],
   deploymentId: 'dpl_claimer',
-  specVersion: SPEC_VERSION_CURRENT,
+  specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   startedAt,
   createdAt: startedAt,
   updatedAt: startedAt,
@@ -59,7 +59,7 @@ const event = (
     runId,
     correlationId,
     createdAt,
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     eventData,
   }) as Event;
 
@@ -75,7 +75,7 @@ const forcedCreation = (slot: number, createdAt: Date = new Date()) =>
         hookId: 'hook_victim',
         workflowName: 'victim-workflow',
         deploymentId: 'dpl_victim',
-        runSpecVersion: SPEC_VERSION_CURRENT,
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       },
     },
     'hook_claimer',
@@ -86,7 +86,7 @@ const forcedCreation = (slot: number, createdAt: Date = new Date()) =>
 async function replayWith(events: Event[]) {
   const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
   setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     capabilities: {},
     events: {
       list: vi.fn(async () => ({ data: events, cursor: null, hasMore: false })),
@@ -128,7 +128,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(queueName).toContain('victim-workflow');
     expect(message).toEqual({
       runId: 'wrun_victim',
-      runSpecVersion: SPEC_VERSION_CURRENT,
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
     expect(options).toMatchObject({
       deploymentId: 'dpl_victim',
@@ -181,7 +181,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(queue).toHaveBeenCalledTimes(1);
     expect(queue.mock.calls[0][1]).toEqual({
       runId: 'wrun_victim',
-      runSpecVersion: SPEC_VERSION_CURRENT,
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
   });
 
@@ -218,7 +218,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
       }
     );
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { hookForceClaim: true },
       events: {
         list: vi.fn(async () => ({ data: [], cursor: null, hasMore: false })),
@@ -238,7 +238,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
                 runId: `wrun_victim_${letter}`,
                 hookId: `hook_victim_${letter}`,
                 workflowName: 'victim-workflow',
-                runSpecVersion: SPEC_VERSION_CURRENT,
+                runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               },
             },
           };
@@ -296,7 +296,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
       }
     );
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { hookForceClaim: true },
       events: {
         list: vi.fn(async () => ({ data: [], cursor: null, hasMore: false })),

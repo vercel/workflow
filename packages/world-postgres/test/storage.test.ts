@@ -1118,8 +1118,19 @@ describe('Storage (Postgres integration)', () => {
       });
 
       it('records a single-orchestrator step created by its start alone, keeping the input on it', async () => {
+        const spec9 = await events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+        });
+        const testRunId = spec9.run!.runId;
         await events.create(testRunId, {
           eventType: 'step_started',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: 'lazy-step-2',
           eventData: {
             stepName: 'lazy-step',

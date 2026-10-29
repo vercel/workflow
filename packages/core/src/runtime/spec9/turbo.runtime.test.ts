@@ -1,7 +1,7 @@
 import { InBandSupersededError, RunExpiredError } from '@workflow/errors';
 import {
   type Event,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
 import { ulid } from 'ulid';
@@ -102,7 +102,7 @@ async function runInputFor(runId: string, args: unknown[]) {
     input: await dehydrateWorkflowArguments(args, runId, undefined, []),
     deploymentId: 'dpl_test',
     workflowName: 'workflow',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     executionContext: { workflowVm: currentEngine },
   };
 }

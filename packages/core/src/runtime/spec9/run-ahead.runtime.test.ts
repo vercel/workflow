@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { InBandSupersededError, RetryableError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { type Event, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { type Event, SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
@@ -967,7 +967,7 @@ describe.each([
     expect(completed?.params?.inBand).toBe(true);
     expect(completed?.event.correlationId).toBe(wait.correlationId);
     expect(dataOf(completed?.event)?.resumeAt).toEqual(dataOf(wait)?.resumeAt);
-    expect(completed?.event.specVersion).toBe(SPEC_VERSION_CURRENT);
+    expect(completed?.event.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
   });
 });
 

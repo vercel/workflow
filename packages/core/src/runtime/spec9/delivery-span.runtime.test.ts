@@ -5,7 +5,7 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import {
   afterAll,
   afterEach,
@@ -81,7 +81,9 @@ describe('workflow.execute span', () => {
     await world.deliver(start);
 
     const [span] = executeSpans();
-    expect(span?.attributes[SPEC_VERSION]).toBe(SPEC_VERSION_CURRENT);
+    expect(span?.attributes[SPEC_VERSION]).toBe(
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
     expect(span?.attributes[ATTEMPT]).toBe(1);
     expect(span?.attributes[DELIVERY_COUNT]).toBe(1);
     expect(span?.attributes[EXIT_REASON]).toBeUndefined();

@@ -1,5 +1,5 @@
 import {
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   type WorkflowRun,
   type World,
@@ -17,7 +17,7 @@ const run = {
   runId: 'wrun_step_message',
   deploymentId: 'dpl_step_message',
   workflowName: 'workflow',
-  specVersion: SPEC_VERSION_CURRENT,
+  specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   startedAt: new Date(1_700_000_000_000),
 } as WorkflowRun;
 

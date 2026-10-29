@@ -157,13 +157,14 @@ describe('slot event ids', () => {
   });
 
   it('leaves no hole when a rejected write is overtaken by another', async () => {
-    const runId = await startRun();
+    // A single-orchestrator run: its creation-bearing starts are appends.
+    const runId = await startRun(SPEC_VERSION_SINGLE_ORCHESTRATOR);
     const width = 8;
     for (let i = 0; i < width; i++) {
       await storage.events.create(runId, {
         eventType: 'step_started',
         correlationId: `step_${i}`,
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: { stepName: `step${i}`, input: serialized([]) },
       } as any);
     }
@@ -179,7 +180,7 @@ describe('slot event ids', () => {
         storage.events.create(runId, {
           eventType: 'step_started',
           correlationId: `step_${i}`,
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: { stepName: `step${i}`, input: serialized([]) },
         } as any)
       )
@@ -189,7 +190,7 @@ describe('slot event ids', () => {
     await storage.events.create(runId, {
       eventType: 'step_created',
       correlationId: 'step_after',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       eventData: { stepName: 'after', input: serialized([]) },
     } as any);
 

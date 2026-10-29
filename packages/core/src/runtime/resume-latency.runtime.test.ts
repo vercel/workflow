@@ -29,7 +29,7 @@ import {
   type CreateEventRequest,
   type Event,
   type HookResumeTiming,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
@@ -341,7 +341,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     status: 'running',
     input: workflowArgs,
     deploymentId,
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     startedAt,
     createdAt: startedAt,
     updatedAt: startedAt,
@@ -361,7 +361,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     const t = +startedAt + ++eventIndex * 100;
     return {
       ...data,
-      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+      specVersion: data.specVersion ?? SPEC_VERSION_SINGLE_ORCHESTRATOR,
       runId,
       eventId: slotToEventId(eventIndex),
       createdAt: new Date(t),
@@ -377,13 +377,16 @@ async function runScenario(options: ScenarioOptions = {}) {
   const durableEvents: Event[] = [
     event({
       eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       eventData: { deploymentId, workflowName, input: workflowArgs },
     }),
-    event({ eventType: 'run_started', specVersion: SPEC_VERSION_CURRENT }),
+    event({
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    }),
     event({
       eventType: 'hook_created',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: hookCorrelationId,
       eventData: { token: hookToken },
     }),
@@ -404,7 +407,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     durableEvents.push(
       event({
         eventType: 'step_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: preCreated.correlationId,
         eventData: {
           stepName: preCreated.stepName,
@@ -426,7 +429,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     durableEvents.push(
       event({
         eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: pendingStepCorrelationId,
         eventData: { stepName: 'pendingStep' },
       } as CreateEventRequest)
@@ -439,7 +442,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     durableEvents.push({
       ...event({
         eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: pendingStepCorrelationId,
         eventData: {
           stepName: 'pendingStep',
@@ -454,7 +457,7 @@ async function runScenario(options: ScenarioOptions = {}) {
   durableEvents.push({
     ...event({
       eventType: 'hook_received',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: hookCorrelationId,
       eventData: { token: hookToken, payload: payloadBytes },
     }),
@@ -568,7 +571,7 @@ async function runScenario(options: ScenarioOptions = {}) {
   const queue = vi.fn().mockResolvedValue({ messageId: 'msg_resume_ttr' });
 
   setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     capabilities: { inBandFence: true, deploymentAffinity: true },
     getDeploymentId: vi.fn(
       async () => options.ambientDeploymentId ?? deploymentId

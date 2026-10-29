@@ -7,7 +7,7 @@ import {
 import {
   HOOK_RESUME_DEDUP_VERSION,
   type Hook,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -95,13 +95,13 @@ describe('resumeHook durable resume', () => {
     projectId: 'project_1',
     environment: 'production',
     createdAt: new Date(),
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   } satisfies Hook;
 
   const currentContext = {
     deploymentId: 'deployment_resume',
     workflowName: 'processOrder',
-    runSpecVersion: SPEC_VERSION_CURRENT,
+    runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     workflowCoreVersion: '5.0.0',
   };
 
@@ -119,7 +119,7 @@ describe('resumeHook durable resume', () => {
     const queue = overrides.queue ?? vi.fn();
     const getByToken = overrides.getByToken ?? vi.fn().mockResolvedValue(hook);
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities,
       hooks: { getByToken },
       runs: { get: vi.fn() },
@@ -197,7 +197,7 @@ describe('resumeHook durable resume', () => {
     await resumeHook(hook.token, { foo: 'bar' });
 
     expect(createEvent.mock.calls[0][1]).toMatchObject({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
   });
 
@@ -498,7 +498,7 @@ describe('resumeHook durable resume', () => {
     const queue = vi.fn().mockRejectedValue(discovery);
     const { getByToken } = makeWorld(hook, { queue });
     setWorld({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { hookResumeDedup: true },
       hooks: { getByToken },
       runs: { get: vi.fn() },

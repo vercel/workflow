@@ -1,5 +1,8 @@
 import { RUN_ERROR_CODES, WorkflowWorldError } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, type WorkflowRun } from '@workflow/world';
+import {
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type WorkflowRun,
+} from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import { loadWorkflowRunEventsFrom } from '../../test-support/load-events.js';
@@ -33,7 +36,7 @@ function seeded(options: ConstructorParameters<typeof AppendOnlyWorld>[0]) {
 const waitCreated = (cid: string) =>
   ({
     eventType: 'wait_created',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     correlationId: cid,
     eventData: { resumeAt: new Date() },
   }) as const;
@@ -85,7 +88,7 @@ describe('InBandWriter', () => {
     const payload = new Uint8Array([1, 2, 3]);
     const written = await writer.create({
       eventType: 'step_completed',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: 'step_a',
       eventData: { stepName: 'add', result: payload },
     } as never);
