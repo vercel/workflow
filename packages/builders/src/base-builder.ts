@@ -2348,7 +2348,11 @@ export const OPTIONS = handler;`;
    * build as production, so CLI/Vercel production builds default to off.
    */
   protected get isDevelopmentBuild(): boolean {
-    return this.config.watch === true || process.env.NODE_ENV === 'development';
+    return (
+      this.config.watch === true ||
+      this.config.development === true ||
+      process.env.NODE_ENV === 'development'
+    );
   }
 
   /**

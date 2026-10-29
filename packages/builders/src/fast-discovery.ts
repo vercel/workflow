@@ -41,6 +41,13 @@ const FAST_DISCOVERY_EXTENSION_ALIASES: Record<string, string[]> = {
   '.mjs': ['.mjs', '.mts'],
   '.cjs': ['.cjs', '.cts'],
 };
+/**
+ * Declaration files, which TypeScript also accepts for `./x.js` and `./x`.
+ * Discovery never follows one — a `.d.ts` declares types, so it cannot hold a
+ * `"use workflow"` function — but finding one is how an unresolved import is
+ * recognized as a type-only import rather than a missing module.
+ */
+const FAST_DISCOVERY_DECLARATION_EXTENSIONS = ['.d.ts', '.d.mts', '.d.cts'];
 const fastDiscoveryResolve = promisify(
   enhancedResolveOriginal.create({
     extensions: [...FAST_DISCOVERY_SOURCE_EXTENSIONS, '.json', '.node'],
@@ -321,7 +328,14 @@ function addImportParent(parent: string, child: string): void {
 }
 
 function extractImportSpecifiers(source: string): string[] {
-  const sourceWithoutComments = stripCommentsFromSource(source);
+  // Template-literal text is masked as well as comments. An import specifier
+  // can never be template text — every pattern below requires a quoted
+  // literal — but a template literal can easily *contain* import-looking text,
+  // and an agent workflow whose prompt shows a code sample is the ordinary
+  // case. Reading those as imports both over-discovers and, now that an
+  // unresolved one is reported, warns about a build that is correct.
+  // Interpolations keep being scanned as code: the scanner tracks `${…}`.
+  const sourceWithoutComments = stripCommentsFromSource(source, true);
   if (
     !sourceWithoutComments.includes('import') &&
     !sourceWithoutComments.includes('require') &&
@@ -708,9 +722,35 @@ export async function fastDiscoverEntries({
   };
 
   /**
+   * Whether a declaration file stands where this import points.
+   *
+   * `import type { Env } from './env.js'` with only `env.d.ts` on disk is the
+   * NodeNext spelling of a type-only import, and an extensionless `./types`
+   * resolves to `types.d.ts` the same way. TypeScript erases the import, so
+   * nothing downstream ever objects — but a declaration file cannot carry a
+   * `"use workflow"` function, so there is no registration behind it to lose
+   * and nothing to report.
+   */
+  const hasDeclarationCounterpart = async (
+    basePath: string
+  ): Promise<boolean> => {
+    const extension = extname(basePath);
+    const withoutExtension = FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension)
+      ? basePath.slice(0, -extension.length)
+      : basePath;
+
+    for (const declarationExtension of FAST_DISCOVERY_DECLARATION_EXTENSIONS) {
+      if (await fileExists(`${withoutExtension}${declarationExtension}`)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /**
    * Record where a module was expected, and report whether anything was
-   * actually missing. `false` means every base path pointed at a file that
-   * exists but is not something discovery follows, which is not a missing
+   * actually missing. `false` means every base path pointed at something that
+   * exists but is not a module discovery follows, which is not a missing
    * module and must not be reported as one.
    */
   const recordUnresolved = async (basePaths: string[]): Promise<boolean> => {
@@ -722,6 +762,9 @@ export async function fastDiscoverEntries({
         !FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extname(basePath)) &&
         (await isExistingFile(basePath))
       ) {
+        continue;
+      }
+      if (await hasDeclarationCounterpart(basePath)) {
         continue;
       }
       for (const candidate of pathLikeCandidates(basePath)) {
@@ -792,16 +835,29 @@ export async function fastDiscoverEntries({
   const resolveWithTsconfigPaths = async (
     importer: string,
     specifier: string
-  ): Promise<{ resolved: string | null; basePaths: string[] }> => {
+  ): Promise<{
+    resolved: string | null;
+    basePaths: string[];
+    namedAliasBasePaths: string[];
+  }> => {
     const basePaths: string[] = [];
+    // Where a *named* alias said the module would be. A catch-all `"*"`
+    // matches every bare specifier, package names included, and TypeScript
+    // falls back to normal package resolution when the substitution misses —
+    // `import type { Handler } from 'aws-lambda'` with only
+    // `@types/aws-lambda` installed lands here. So a miss under `*` alone is
+    // no more "a module that should have been there" than the no-alias case,
+    // and only a named alias like `@/*` is evidence of one. Both still seed
+    // the watcher, which wants to know about a file that may yet appear.
+    const namedAliasBasePaths: string[] = [];
     if (specifier.startsWith('.') || isAbsolute(specifier)) {
-      return { resolved: null, basePaths };
+      return { resolved: null, basePaths, namedAliasBasePaths };
     }
 
     const tsconfigPath = await findTsconfigPathForImporter(importer);
     const tsconfigPathAliases = await loadAliasesForTsconfig(tsconfigPath);
     if (tsconfigPathAliases.length === 0) {
-      return { resolved: null, basePaths };
+      return { resolved: null, basePaths, namedAliasBasePaths };
     }
 
     for (const alias of tsconfigPathAliases) {
@@ -813,16 +869,19 @@ export async function fastDiscoverEntries({
       for (const target of alias.targets) {
         const targetPath = applyTsconfigPathTarget(target, captures);
         basePaths.push(resolveBasePath(importer, targetPath));
+        if (alias.pattern !== '*') {
+          namedAliasBasePaths.push(resolveBasePath(importer, targetPath));
+        }
         try {
           const resolved = await resolvePathLikeSpecifier(importer, targetPath);
           if (resolved) {
-            return { resolved, basePaths };
+            return { resolved, basePaths, namedAliasBasePaths };
           }
         } catch {}
       }
     }
 
-    return { resolved: null, basePaths };
+    return { resolved: null, basePaths, namedAliasBasePaths };
   };
 
   const findPackageInfoBySpecifier = (
@@ -953,13 +1012,15 @@ export async function fastDiscoverEntries({
           return { filePath: resolved, missing: false };
         }
 
-        // A bare specifier that matched a tsconfig alias names a path inside
-        // the project, so a miss there is a module that should have been
-        // there. A bare specifier that matched no alias is a package: an
-        // uninstalled one already fails the bundle with esbuild's own error,
-        // and a type-only import of an absent optional peer is not a problem
-        // at all, so neither is reported as missing here.
-        const missing = await recordUnresolved(alias.basePaths);
+        // Seed the watcher from everywhere the module might appear, but take
+        // the verdict only from named aliases: one names a path inside the
+        // project, so a miss there is a module that should have been there.
+        // A bare specifier matching no alias — or only a catch-all `*` — is a
+        // package, and an uninstalled one already fails the bundle with
+        // esbuild's own error while a type-only import of an absent optional
+        // peer is not a problem at all, so neither is reported as missing.
+        await recordUnresolved(alias.basePaths);
+        const missing = await recordUnresolved(alias.namedAliasBasePaths);
         return { filePath: null, missing };
       }
     );

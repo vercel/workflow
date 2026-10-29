@@ -594,6 +594,103 @@ export async function order() {
       expect(unresolved).toEqual([]);
     });
 
+    // `import type { Env } from './env.js'` with only `env.d.ts` on disk is
+    // the NodeNext spelling of a type-only import, and `./types` resolves to
+    // `types.d.ts` the same way. TypeScript erases both, so nothing else ever
+    // objects — and a declaration file cannot hold a `"use workflow"`
+    // function, so there is no registration behind it to lose.
+    it('reports nothing for a type-only import backed by a declaration file', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\n`,
+        'src/workflows/order.ts': `import type { Env } from './env.js';
+import type { Db } from './lib/db';
+
+export async function order(_env: Env, _db: Db) {
+  'use workflow';
+  return 1;
+}
+`,
+        'src/workflows/env.d.ts': `export type Env = { url: string };\n`,
+        'src/workflows/lib/db.d.ts': `export type Db = { query(): void };\n`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    it.each([
+      '.d.mts',
+      '.d.cts',
+    ])('reports nothing for a declaration file written as %s', async (extension) => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\n`,
+        'src/workflows/order.ts': `import type { Env } from './env.js';
+
+export async function order(_env: Env) {
+  'use workflow';
+  return 1;
+}
+`,
+        [`src/workflows/env${extension}`]: `export type Env = string;\n`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    // An agent workflow whose prompt shows a code sample is the ordinary case,
+    // and template text is not code.
+    it('reports nothing for import-looking text inside a template literal', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/agent';\n`,
+        'src/workflows/agent.ts': `const SYSTEM = \`Answer with snippets such as:
+import { db } from './lib/db'
+require('./lib/other')
+\`;
+
+export async function agent() {
+  'use workflow';
+  return SYSTEM;
+}
+`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    // A catch-all alias matches package names too, and TypeScript falls back
+    // to normal package resolution when the substitution misses.
+    it('reports nothing for a package that only matched a catch-all alias', async () => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const tsconfigFile = join(testRoot, 'tsconfig.json');
+      writeFile(
+        tsconfigFile,
+        JSON.stringify({ compilerOptions: { paths: { '*': ['./src/*'] } } })
+      );
+      writeFile(entryFile, `import './workflows/order';\n`);
+      writeFile(
+        join(testRoot, 'src', 'workflows', 'order.ts'),
+        `import type { Handler } from 'aws-lambda';
+
+export async function order(_handler: Handler) {
+  'use workflow';
+  return 1;
+}
+`
+      );
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out'),
+        tsconfigFile
+      );
+
+      expect(discovered.unresolvedDirectiveImports).toEqual([]);
+      // The watcher still learns where it would land, so creating the file
+      // later rebuilds.
+      expect(discovered.unresolvedImportCandidates).toContain(
+        normalize(join(testRoot, 'src', 'aws-lambda.ts'))
+      );
+    });
+
     it('reports nothing for assets and uninstalled packages', async () => {
       const unresolved = await discover({
         'src/entry.ts': `import './workflows/order';\n`,

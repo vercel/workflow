@@ -129,6 +129,22 @@ export async function order() {
       expect(unresolvedWarnings()).toEqual([]);
     });
 
+    // `@workflow/nest` rebuilds at application startup — every
+    // `nest start --watch` restart — and `@workflow/vitest` rebuilds per test
+    // run under `NODE_ENV=test`. Neither watches nor sets
+    // `NODE_ENV=development`, so without this they would be read as deploy
+    // builds and warn on every restart.
+    it('stays quiet for a builder that declares itself a development build', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      const entryFile = writeWorkflowWithMissingImport();
+
+      await createBuilder(testRoot, {
+        development: true,
+      }).discoverEntriesPublic([entryFile], join(testRoot, 'out'));
+
+      expect(unresolvedWarnings()).toEqual([]);
+    });
+
     it('stays quiet in watch mode', async () => {
       vi.stubEnv('NODE_ENV', 'production');
       const entryFile = writeWorkflowWithMissingImport();
@@ -169,6 +185,7 @@ export async function order() {
     // back fails the way a broken or missing bundle would.
     const createManifestForMissingBundle = (overrides?: {
       watch?: boolean;
+      development?: boolean;
     }): Promise<string | undefined> => {
       const manifestDir = join(testRoot, '.well-known/workflow/v1');
       mkdirSync(manifestDir, { recursive: true });
@@ -203,6 +220,18 @@ export async function order() {
       vi.stubEnv('NODE_ENV', 'development');
 
       await expect(createManifestForMissingBundle()).resolves.toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        'Failed to create manifest:',
+        expect.any(String)
+      );
+    });
+
+    it('keeps warning and continuing for a declared development build', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+
+      await expect(
+        createManifestForMissingBundle({ development: true })
+      ).resolves.toBeUndefined();
       expect(warnSpy).toHaveBeenCalledWith(
         'Failed to create manifest:',
         expect.any(String)
