@@ -3037,10 +3037,15 @@ describe.concurrent('e2e', () => {
         expect(exists, 'no run should exist for the refused candidate').toBe(
           false
         );
+        // The World's not-found answer for a log that doesn't exist: the
+        // Vercel World answers a 404, the others an empty page or not found.
         const { data: candidateEvents } = await world.events
           .list({ runId: candidate, resolveData: 'none' })
           .catch((error: unknown) => {
-            if (WorkflowRunNotFoundError.is(error)) {
+            if (
+              WorkflowRunNotFoundError.is(error) ||
+              (WorkflowWorldError.is(error) && error.status === 404)
+            ) {
               return { data: [] as WorkflowEvent[] };
             }
             throw error;
