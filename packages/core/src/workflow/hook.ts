@@ -21,6 +21,7 @@ import {
   scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from '../private.js';
+import { replayPayloadEventKey } from '../replay-payload-cache.js';
 import type { Run } from '../runtime/run.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
@@ -447,7 +448,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               try {
                 const prepared =
                   await ctx.replayPayloadCache.prepareEventPayload(
-                    event.eventId,
+                    replayPayloadEventKey(event),
                     'payload',
                     event.eventData.payload
                   );
@@ -522,7 +523,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const prepared = await ctx.replayPayloadCache.prepareEventPayload(
-                event.eventId,
+                replayPayloadEventKey(event),
                 'payload',
                 event.eventData.payload
               );

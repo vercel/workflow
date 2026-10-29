@@ -144,6 +144,14 @@ export interface WorkflowOrchestratorContext {
    * into boundary N+1.
    */
   suspensionGeneration: number;
+  /**
+   * The {@link suspensionGeneration} whose idle poll
+   * ({@link scheduleWorkflowSuspension}) is running, if one is. Every pending
+   * consumer signals the end of the log, so one boundary of an N-wide fan-out
+   * raises N signals; they share this one poll instead of each running its
+   * own. Optional so lightweight test contexts need not set it.
+   */
+  suspensionPollGeneration?: number;
   eventsConsumer: EventsConsumer;
   /**
    * Map of pending invocations keyed by correlationId.
@@ -1021,9 +1029,15 @@ export function isDeliveryIdle(ctx: WorkflowOrchestratorContext): boolean {
  */
 export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,
-  fn: () => void
+  fn: () => void,
+  /**
+   * Checked before every poll: once it returns true the poll ends without
+   * calling `fn`, instead of polling on until idle only to drop the call.
+   */
+  isStale?: () => boolean
 ): void {
   const check = () => {
+    if (isStale?.()) return;
     if (!isDeliveryIdle(ctx)) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
@@ -1038,26 +1052,57 @@ export function scheduleWhenIdle(
   setTimeout(check, 0);
 }
 
-/** Schedule a generation-guarded suspension after deliveries settle. */
+/**
+ * Schedule a generation-guarded suspension after deliveries settle.
+ *
+ * At most one idle poll runs per generation: a signal raised while that
+ * generation's poll runs joins it, and the poll ends as soon as the
+ * generation moves on. The poll that runs is the earliest one of its
+ * generation, so the suspension is raised no earlier than the first of N
+ * independent polls would have raised it. Before this, each pending consumer
+ * at the end of the log started its own poll, and polls of past generations
+ * kept polling until idle: a lingering orchestrator resuming a 1024-wide
+ * fan-out once per incoming outcome ran about 10^8 timers, which kept the
+ * process busy for over a minute after the last outcome arrived.
+ */
 export function scheduleWorkflowSuspension(
   ctx: WorkflowOrchestratorContext
 ): void {
   const generation = ctx.suspensionGeneration;
-  scheduleWhenIdle(ctx, () => {
-    if (generation !== ctx.suspensionGeneration) return;
-    const suspension = new WorkflowSuspension(
-      ctx.invocationsQueue,
-      ctx.globalThis
-    );
-    // Taken at idle, the same instant the queue is: the awaiters that are
-    // pending now are exactly the ones this suspension's outcome depends on.
-    if (ctx.hookPayloadAwaiters) {
-      const observed = new Set<string>();
-      for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
-        if (isAwaited()) observed.add(correlationId);
-      }
-      suspension.observedHookIds = observed;
+  if (generation !== undefined && ctx.suspensionPollGeneration === generation) {
+    return;
+  }
+  ctx.suspensionPollGeneration = generation;
+  const release = () => {
+    if (ctx.suspensionPollGeneration === generation) {
+      ctx.suspensionPollGeneration = undefined;
     }
-    ctx.onWorkflowError(suspension);
-  });
+  };
+  const isStale = () => {
+    if (generation === ctx.suspensionGeneration) return false;
+    release();
+    return true;
+  };
+  scheduleWhenIdle(
+    ctx,
+    () => {
+      release();
+      if (generation !== ctx.suspensionGeneration) return;
+      const suspension = new WorkflowSuspension(
+        ctx.invocationsQueue,
+        ctx.globalThis
+      );
+      // Taken at idle, the same instant the queue is: the awaiters that are
+      // pending now are exactly the ones this suspension's outcome depends on.
+      if (ctx.hookPayloadAwaiters) {
+        const observed = new Set<string>();
+        for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
+          if (isAwaited()) observed.add(correlationId);
+        }
+        suspension.observedHookIds = observed;
+      }
+      ctx.onWorkflowError(suspension);
+    },
+    isStale
+  );
 }
