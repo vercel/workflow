@@ -2,7 +2,13 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setWorkflowBasePath } from '@workflow/utils';
 import type { WorkflowInvokePayload } from '@workflow/world';
-import { MessageId, NODE_HTTP_ENV_VAR, ValidQueueName } from '@workflow/world';
+import {
+  MessageId,
+  NODE_HTTP_ENV_VAR,
+  QUEUE_MIN_STEP_REDELIVERY_SPAN_MS,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  ValidQueueName,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import {
@@ -10,6 +16,8 @@ import {
   DEFAULT_BODY_TIMEOUT_MS,
   DEFAULT_HEADERS_TIMEOUT_MS,
   getQueueAgentOptions,
+  localRetryDelayMs,
+  MAX_LOCAL_SAFETY_LIMIT,
 } from './queue';
 
 // Mock node:timers/promises so setTimeout resolves immediately
@@ -917,6 +925,204 @@ describe('node:http mode', () => {
   });
 });
 
+describe('per-run orchestrator serialization', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+  const spec9 = (runId: string) => ({
+    runId,
+    runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  });
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Registers a handler that records every delivery and holds each one until
+   * the test releases it, tracking how many deliveries of each run's
+   * orchestrator overlap.
+   */
+  function holdingHandler() {
+    const started: { runId: string; stepId?: string }[] = [];
+    const releases: (() => void)[] = [];
+    const active = new Map<string, number>();
+    const maxActive = new Map<string, number>();
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (message) => {
+        const { runId, stepId } = message as {
+          runId: string;
+          stepId?: string;
+        };
+        const key = stepId ? `${runId}/${stepId}` : runId;
+        active.set(key, (active.get(key) ?? 0) + 1);
+        maxActive.set(
+          key,
+          Math.max(maxActive.get(key) ?? 0, active.get(key) ?? 0)
+        );
+        started.push({ runId, stepId });
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active.set(key, (active.get(key) ?? 1) - 1);
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    return { started, releases, maxActive };
+  }
+
+  it('holds a second orchestrator delivery of a spec 9 run until the first finishes', async () => {
+    const { started, releases, maxActive } = holdingHandler();
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    // Give the second delivery every chance to start.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(started).toHaveLength(1);
+
+    releases[0]?.();
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    releases[1]?.();
+    expect(maxActive.get('run_a')).toBe(1);
+  });
+
+  // A spec 8 orchestrator can hold an inline step until another wake of
+  // the same run aborts it, so its deliveries must not wait for each other.
+  it('never holds back an orchestrator delivery of a spec 8 or unstamped run', async () => {
+    const { started, releases } = holdingHandler();
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR - 1,
+    });
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR - 1,
+    });
+    await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
+    await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
+    await vi.waitFor(() => expect(started).toHaveLength(4));
+    for (const release of releases) release();
+  });
+
+  it('keeps different runs, and a run’s steps, in parallel with its orchestrator', async () => {
+    const { started, releases } = holdingHandler();
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_b'));
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      stepId: 'step_1',
+      stepName: 'add',
+    });
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      stepId: 'step_2',
+      stepName: 'add',
+    });
+    await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      {
+        __healthCheck: true,
+        correlationId: 'hc_1',
+        runId: 'run_a',
+      } as any
+    );
+    await vi.waitFor(() => expect(started).toHaveLength(5));
+    for (const release of releases) release();
+  });
+
+  it('frees the run while a delivery waits out its timeoutSeconds', async () => {
+    let firstCalls = 0;
+    const order: string[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (message) => {
+        const { tag } = message as { tag: string };
+        order.push(tag);
+        if (tag === 'first' && firstCalls++ === 0) {
+          return { timeoutSeconds: 1 };
+        }
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    // `setTimeout` from node:timers/promises is mocked to resolve at once, so
+    // hold the redelivery delay open on a promise this test controls.
+    const { setTimeout: mockedSleep } = await import('node:timers/promises');
+    let wakeRedelivery!: () => void;
+    vi.mocked(mockedSleep).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          wakeRedelivery = () => resolve(undefined);
+        }) as any
+    );
+    await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      { ...spec9('run_a'), tag: 'first' } as any
+    );
+    await vi.waitFor(() => expect(order).toEqual(['first']));
+    await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      { ...spec9('run_a'), tag: 'second' } as any
+    );
+    // The first message is between deliveries, so the second one runs.
+    await vi.waitFor(() => expect(order).toEqual(['first', 'second']));
+    wakeRedelivery();
+    await vi.waitFor(() => expect(order).toEqual(['first', 'second', 'first']));
+  });
+});
+
+describe('handoff', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+  });
+
+  /** Delivers one message, answering `{ timeoutSeconds: 0 }` twice. */
+  async function deliveriesOf(payload: Record<string, unknown>) {
+    const seen: { attempt: number; deliveryCount?: number; id: string }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, meta) => {
+        seen.push({
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+          id: meta.messageId,
+        });
+        return seen.length < 3 ? { timeoutSeconds: 0 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    await localQueue.queue('__wkf_workflow_test' as any, payload as any);
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    return seen;
+  }
+
+  it('redelivers a spec 9 message at once without counting the handed-off deliveries as attempts', async () => {
+    const seen = await deliveriesOf({
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    expect(seen.map((d) => d.attempt)).toEqual([1, 1, 1]);
+    expect(seen.map((d) => d.deliveryCount)).toEqual([1, 2, 3]);
+    expect(new Set(seen.map((d) => d.id)).size).toBe(1);
+  });
+
+  it('counts an earlier run’s immediate redelivery as an attempt', async () => {
+    const seen = await deliveriesOf({ runId: 'run_a' });
+    expect(seen.map((d) => d.attempt)).toEqual([1, 2, 3]);
+    expect(seen.map((d) => d.deliveryCount)).toEqual([1, 2, 3]);
+  });
+});
+
 describe('per-prefix delivery routes', () => {
   let server: Server | undefined;
 
@@ -1059,14 +1265,18 @@ describe('per-prefix delivery routes', () => {
         workflowPayload
       );
       // The first attempt goes to the flow route, which this app doesn't have.
-      await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0));
+      // The server records the request before the client reads the 404 and
+      // logs it, so wait for the log too.
+      await vi.waitFor(() => {
+        expect(requests.length).toBeGreaterThan(0);
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining('HTTP 404'),
+          expect.objectContaining({
+            hint: expect.stringContaining('world.registerRoute'),
+          })
+        );
+      });
       expect(requests[0]?.path).toBe('/.well-known/workflow/v1/flow');
-      expect(consoleError).toHaveBeenCalledWith(
-        expect.stringContaining('HTTP 404'),
-        expect.objectContaining({
-          hint: expect.stringContaining('world.registerRoute'),
-        })
-      );
 
       localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
       await vi.waitFor(() =>
@@ -1115,5 +1325,19 @@ describe('per-prefix delivery routes', () => {
     });
     expect(handler).not.toHaveBeenCalled();
     await localQueue.close();
+  });
+});
+
+describe('localRetryDelayMs', () => {
+  it("keeps retrying a failing message for longer than a step message's stall window", () => {
+    let spanMs = 0;
+    let previous = 0;
+    for (let failed = 1; failed < MAX_LOCAL_SAFETY_LIMIT; failed++) {
+      const delay = localRetryDelayMs(failed);
+      expect(delay).toBeGreaterThanOrEqual(previous);
+      previous = delay;
+      spanMs += delay;
+    }
+    expect(spanMs).toBeGreaterThan(QUEUE_MIN_STEP_REDELIVERY_SPAN_MS);
   });
 });

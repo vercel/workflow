@@ -1,0 +1,274 @@
+import type { Event, SerializedData } from '@workflow/world';
+
+/**
+ * Upper bound on a step input carried on its queue message. Larger inputs are
+ * read back from the step's `step_created` by the step's invocation. Staying
+ * under the queue's inline threshold keeps step messages on its fast path.
+ */
+export const MAX_STEP_MESSAGE_INPUT_BYTES = 128 * 1024;
+
+/** A background step message to enqueue. */
+export interface StepMessageSpec {
+  correlationId: string;
+  stepName: string;
+  stepCreatedEventId?: string;
+  /**
+   * When the step's `step_created` was committed (its `createdAt`), for a
+   * background step's first message. Re-sends carry the creation's time, not
+   * the re-send's. Sent only when the message starts at attempt 1.
+   */
+  stepCreatedAt?: Date;
+  input?: SerializedData;
+  stepAttempt?: number;
+  /**
+   * A re-send (see `stepsToReenqueue`): its message is marked, so that its
+   * handler reads the log before it runs the body.
+   */
+  resent?: boolean;
+}
+
+/** An inline step to run in this process. */
+export interface InlineStepSpec {
+  correlationId: string;
+  stepName: string;
+  input?: SerializedData;
+  createdEventId?: string;
+  attempt: number;
+  firstStartedAt?: Date;
+  /**
+   * The step's creation-bearing `step_started`, when the orchestrator wrote
+   * it (its creation batch). The executor then writes no start.
+   */
+  started?: { startedAt: Date; postSentAtMs?: number; completedAtMs?: number };
+  /** The World's refusal of that creation-bearing start. */
+  startRefusal?: Error;
+  /**
+   * Settles once the step's creation committed, when the body starts while
+   * that commit is in flight (turbo), with its creation-bearing start.
+   * Otherwise its `step_started` waits for it.
+   */
+  startAfter?: Promise<
+    | { startedAt: Date; postSentAtMs?: number; completedAtMs?: number }
+    | undefined
+  >;
+}
+
+/** What the log says about one step. */
+export interface LogStepState {
+  correlationId: string;
+  stepName: string;
+  createdEventId: string;
+  /** The `createdAt` of the step's `step_created`; absent for an inline
+   *  step, which a `step_started` creates. */
+  createdAt?: Date;
+  inline: boolean;
+  starts: number;
+  /** When the step's first attempt started. */
+  firstStartedAt?: Date;
+  terminal: boolean;
+  /** The step's last event is a `step_retrying`. */
+  lastIsRetrying: boolean;
+  /**
+   * An inline-mode step that is open and has not moved to the background:
+   * the current orchestrator runs it (again) in its own process. A
+   * `step_retrying` moves it to its own message for good: that message runs
+   * every later attempt, so a later attempt's `step_started` does not make
+   * it runnable inline again (see {@link awaitsExternalWork}).
+   */
+  runnableInline: boolean;
+}
+
+/**
+ * The creation a step event records: a `step_created`, or a creation-bearing
+ * `step_started`. A single-orchestrator run (spec >= 9) records an inline
+ * step by its first `step_started` alone, with what a `step_created` carries
+ * (stepName, workflowName, input, `inline: true`), less `creatorMessageId`. It is
+ * told apart by `inline: true`, which no other start carries: a replay page
+ * may omit the start's input.
+ */
+export function stepCreationOf(
+  event: Event
+):
+  | { stepName: string; inline: boolean; creatorMessageId?: string }
+  | undefined {
+  if (event.eventType === 'step_created') {
+    return {
+      stepName: event.eventData.stepName,
+      inline: event.eventData.inline === true,
+      creatorMessageId: event.eventData.creatorMessageId,
+    };
+  }
+  // An inline step's creator is never read (only a background step is
+  // re-enqueued by its creator), so its creating start does not record one.
+  if (
+    event.eventType === 'step_started' &&
+    event.eventData?.inline === true &&
+    event.eventData.stepName !== undefined
+  ) {
+    return {
+      stepName: event.eventData.stepName,
+      inline: true,
+    };
+  }
+  return undefined;
+}
+
+export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
+  const steps = new Map<string, LogStepState>();
+  const retried = new Set<string>();
+  for (const event of events) {
+    const cid = event.correlationId;
+    if (!cid) continue;
+    if (!steps.has(cid)) {
+      const creation = stepCreationOf(event);
+      if (creation) {
+        steps.set(cid, {
+          correlationId: cid,
+          stepName: creation.stepName,
+          createdEventId: event.eventId,
+          ...(event.eventType === 'step_created'
+            ? { createdAt: new Date(event.createdAt) }
+            : {}),
+          inline: creation.inline,
+          starts: 0,
+          terminal: false,
+          lastIsRetrying: false,
+          runnableInline: false,
+        });
+      }
+    }
+    if (event.eventType === 'step_created') continue;
+    const step = steps.get(cid);
+    if (!step || step.terminal) continue;
+    switch (event.eventType) {
+      case 'step_started':
+        step.starts++;
+        step.firstStartedAt ??= new Date(event.createdAt);
+        step.lastIsRetrying = false;
+        break;
+      case 'step_retrying':
+        step.lastIsRetrying = true;
+        retried.add(cid);
+        break;
+      case 'step_completed':
+      case 'step_failed':
+        step.terminal = true;
+        break;
+      default:
+        break;
+    }
+  }
+  const out = [...steps.values()];
+  for (const step of out) {
+    step.runnableInline =
+      step.inline && !step.terminal && !retried.has(step.correlationId);
+  }
+  return out;
+}
+
+/**
+ * Whether the run waits on work that happens outside its orchestrator: an
+ * open hook (created, not disposed), or a step running from its own message
+ * that has no outcome yet. That is a background step, or an inline step that
+ * retried: an inline step's retry moves it to its own message, which runs
+ * every later attempt.
+ *
+ * Any open hook counts, however rarely it is resumed: a run that keeps a hook
+ * open for its whole life (a cancel or approval hook beside a polling loop)
+ * makes every pass that finds nothing to run linger, even one that just
+ * armed a timer much longer than the linger window.
+ */
+export function awaitsExternalWork(events: readonly Event[]): boolean {
+  const openHooks = new Set<string>();
+  const retried = new Set<string>();
+  for (const event of events) {
+    if (!event.correlationId) continue;
+    if (event.eventType === 'hook_created') openHooks.add(event.correlationId);
+    else if (event.eventType === 'hook_disposed') {
+      openHooks.delete(event.correlationId);
+    } else if (event.eventType === 'step_retrying') {
+      retried.add(event.correlationId);
+    }
+  }
+  if (openHooks.size > 0) return true;
+  return analyzeLogSteps(events).some(
+    (step) =>
+      !step.terminal && (!step.inline || retried.has(step.correlationId))
+  );
+}
+
+/** An open wait: created and not completed. */
+export interface OpenWait {
+  correlationId: string;
+  resumeAt: Date;
+  resumeAtMs: number;
+  event: Event;
+}
+
+export function openWaits(events: readonly Event[]): OpenWait[] {
+  const completed = new Set<string>();
+  for (const event of events) {
+    if (event.eventType === 'wait_completed' && event.correlationId) {
+      completed.add(event.correlationId);
+    }
+  }
+  const seen = new Set<string>();
+  const out: OpenWait[] = [];
+  for (const event of events) {
+    if (event.eventType !== 'wait_created' || !event.correlationId) continue;
+    if (completed.has(event.correlationId) || seen.has(event.correlationId)) {
+      continue;
+    }
+    seen.add(event.correlationId);
+    const resumeAt = new Date(event.eventData.resumeAt);
+    out.push({
+      correlationId: event.correlationId,
+      resumeAt,
+      resumeAtMs: resumeAt.getTime(),
+      event,
+    });
+  }
+  return out;
+}
+
+/**
+ * Open waits whose deadline has passed, and open waits named in `wakeUp`
+ * (`run.wakeUp()`), whatever their deadline.
+ */
+export function dueWaits(
+  events: readonly Event[],
+  nowMs: number,
+  wakeUp?: ReadonlySet<string>
+): OpenWait[] {
+  return openWaits(events).filter(
+    (wait) => wait.resumeAtMs <= nowMs || wakeUp?.has(wait.correlationId)
+  );
+}
+
+/** The earliest open wait's deadline, as `ConsumedPosition` fields. */
+export function nextTimerAt(events: readonly Event[]): {
+  nextTimerAtMs?: number;
+} {
+  let earliest: number | undefined;
+  for (const wait of openWaits(events)) {
+    if (earliest === undefined || wait.resumeAtMs < earliest) {
+      earliest = wait.resumeAtMs;
+    }
+  }
+  return earliest === undefined ? {} : { nextTimerAtMs: earliest };
+}
+
+/**
+ * A step message's `stepCreatedAt`, as epoch ms: the creation time of a
+ * step whose message starts at attempt 1, which its handler passes on that
+ * attempt's `step_started`. Left off a retry's message (a step start latency
+ * metric covers only the first attempt) and when the time is not known.
+ */
+export function stepCreatedAtField(step: {
+  stepCreatedAt?: Date;
+  stepAttempt?: number;
+}): { stepCreatedAt?: number } {
+  if (step.stepAttempt !== undefined && step.stepAttempt > 1) return {};
+  const ms = step.stepCreatedAt?.getTime();
+  return ms !== undefined && Number.isFinite(ms) ? { stepCreatedAt: ms } : {};
+}

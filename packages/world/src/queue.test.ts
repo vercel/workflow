@@ -4,14 +4,21 @@ import {
   getQueueTopicPrefix,
   getRunQueueNamespace,
   HealthCheckPayloadSchema,
+  isSingleOrchestratorMessage,
+  messageRunSpecVersion,
+  orchestratorRunIdOf,
   parseQueueName,
   parseQueueRoute,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
+  SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS,
+  singleOrchestratorContinuationPayload,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from './spec-version.js';
 
 describe('getQueueTopicPrefix', () => {
   it('returns default workflow prefix without namespace', () => {
@@ -362,6 +369,169 @@ describe('RunInputSchema environment', () => {
       runId: 'wrun_01ABC',
       runInput: { environment: 'production' },
     });
+  });
+});
+
+describe('orchestratorRunIdOf', () => {
+  it('names the run of an orchestrator delivery', () => {
+    expect(orchestratorRunIdOf({ runId: 'wrun_a' })).toBe('wrun_a');
+    expect(
+      orchestratorRunIdOf({ runId: 'wrun_a', runInput: { input: [] } })
+    ).toBe('wrun_a');
+  });
+
+  it('leaves step messages and health checks unserialized', () => {
+    expect(
+      orchestratorRunIdOf({ runId: 'wrun_a', stepId: 'step_1' })
+    ).toBeUndefined();
+    expect(
+      orchestratorRunIdOf({
+        __healthCheck: true,
+        correlationId: 'hc_1',
+        runId: 'wrun_a',
+      })
+    ).toBeUndefined();
+  });
+
+  it('is undefined for anything without a run id', () => {
+    expect(orchestratorRunIdOf(undefined)).toBeUndefined();
+    expect(orchestratorRunIdOf('wrun_a')).toBeUndefined();
+    expect(orchestratorRunIdOf({ runId: 1 })).toBeUndefined();
+  });
+});
+
+describe('messageRunSpecVersion', () => {
+  const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
+
+  it('reads runInput, then runContext, then the runSpecVersion hint', () => {
+    expect(
+      messageRunSpecVersion({
+        runId: 'wrun_a',
+        runInput: { specVersion: SPEC },
+      })
+    ).toBe(SPEC);
+    expect(
+      messageRunSpecVersion({
+        runId: 'wrun_a',
+        stepId: 'step_1',
+        runContext: { specVersion: SPEC },
+      })
+    ).toBe(SPEC);
+    expect(
+      messageRunSpecVersion({ runId: 'wrun_a', runSpecVersion: SPEC })
+    ).toBe(SPEC);
+  });
+
+  it('is undefined for health checks and unstamped messages', () => {
+    expect(
+      messageRunSpecVersion({
+        __healthCheck: true,
+        correlationId: 'hc_1',
+        runId: 'wrun_a',
+        runSpecVersion: SPEC,
+      })
+    ).toBeUndefined();
+    expect(messageRunSpecVersion({ runId: 'wrun_a' })).toBeUndefined();
+    expect(messageRunSpecVersion(undefined)).toBeUndefined();
+  });
+
+  it('treats only spec >= 9 messages as single-orchestrator ones', () => {
+    expect(
+      isSingleOrchestratorMessage({ runId: 'a', runSpecVersion: SPEC })
+    ).toBe(true);
+    expect(
+      isSingleOrchestratorMessage({ runId: 'a', runSpecVersion: SPEC - 1 })
+    ).toBe(false);
+    expect(isSingleOrchestratorMessage({ runId: 'a' })).toBe(false);
+  });
+
+  it('serializes the orchestrator deliveries of spec 9 runs only', () => {
+    expect(
+      singleOrchestratorRunIdOf({ runId: 'wrun_a', runSpecVersion: SPEC })
+    ).toBe('wrun_a');
+    expect(
+      singleOrchestratorRunIdOf({
+        runId: 'wrun_a',
+        stepId: 'step_1',
+        runSpecVersion: SPEC,
+      })
+    ).toBeUndefined();
+    expect(
+      singleOrchestratorRunIdOf({ runId: 'wrun_a', runSpecVersion: SPEC - 1 })
+    ).toBeUndefined();
+    expect(singleOrchestratorRunIdOf({ runId: 'wrun_a' })).toBeUndefined();
+  });
+});
+
+describe('singleOrchestratorContinuationPayload', () => {
+  const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
+
+  it('classifies every payload field', () => {
+    expect(Object.keys(SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS).sort()).toEqual(
+      Object.keys(WorkflowInvokePayloadSchema.shape).sort()
+    );
+  });
+
+  it("drops the start message's runInput and keeps its spec stamp", () => {
+    const traceCarrier = { traceparent: '00-abc-def-01' };
+    const continuation = singleOrchestratorContinuationPayload({
+      runId: 'wrun_a',
+      requestedAt: new Date(),
+      traceCarrier,
+      runInput: { specVersion: SPEC, workflowName: 'w' },
+    });
+    expect(continuation).toEqual({
+      runId: 'wrun_a',
+      runSpecVersion: SPEC,
+      traceCarrier,
+    });
+    expect(WorkflowInvokePayloadSchema.parse(continuation)).toEqual(
+      continuation
+    );
+    expect(singleOrchestratorRunIdOf(continuation)).toBe('wrun_a');
+  });
+
+  it('keeps what a wake is for, and drops the rest', () => {
+    const wake = {
+      runId: 'wrun_a',
+      runSpecVersion: SPEC,
+      runContext: { specVersion: SPEC, deploymentId: 'dpl_a' },
+      waitContinuation: { correlationId: 'wait_1', attempt: 2 },
+      completeWaits: ['wait_2'],
+      hookInput: { hookId: 'hook_1', resumeId: 'r_1', token: 't', payload: 1 },
+      recovery: true,
+      hookResumeTiming: { resumedAt: 1 },
+      deploymentMismatchRetryCount: 2,
+      serverErrorRetryCount: 3,
+    };
+    const continuation = singleOrchestratorContinuationPayload(wake);
+    expect(continuation).toEqual({
+      runId: wake.runId,
+      runSpecVersion: SPEC,
+      runContext: wake.runContext,
+      waitContinuation: wake.waitContinuation,
+      completeWaits: wake.completeWaits,
+      hookInput: wake.hookInput,
+    });
+  });
+
+  it('is undefined for step messages and runs below spec 9', () => {
+    expect(
+      singleOrchestratorContinuationPayload({
+        runId: 'wrun_a',
+        stepId: 'step_1',
+        runSpecVersion: SPEC,
+      })
+    ).toBeUndefined();
+    expect(
+      singleOrchestratorContinuationPayload({
+        runId: 'wrun_a',
+        runSpecVersion: SPEC - 1,
+      })
+    ).toBeUndefined();
+    expect(
+      singleOrchestratorContinuationPayload({ runId: 'wrun_a' })
+    ).toBeUndefined();
   });
 });
 

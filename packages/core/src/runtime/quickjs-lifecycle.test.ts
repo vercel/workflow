@@ -19,8 +19,8 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
-import { runWorkflowWithQuickJS } from './quickjs-entrypoint.js';
 import { startQuickJSWorkflow } from './quickjs-runtime.js';
+import { runWorkflowWithQuickJS } from './spec9/quickjs-entrypoint.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));

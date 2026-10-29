@@ -70,7 +70,7 @@ export class JobLockLostError extends Error {
 }
 
 // Refresh the lock of every job that is still held by the worker that claimed
-// it, and the lock of its named queue (invoke mode's per-run executor queue).
+// it, and the lock of its named queue (a spec 9 run's or invoke mode's per-run queue).
 // A `(job, worker)` pair missing from the result no longer holds the lock. The
 // pair matters: after a release, another worker of this process can hold the
 // same job id while the stale holder is still running.

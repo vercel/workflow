@@ -7,11 +7,13 @@ import {
 } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
+  isSingleOrchestratorMessage,
   MessageId,
   parseQueueName,
   parseQueueRoute,
   type Queue,
   QueuePrefix,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
   WORKFLOW_FLOW_ROUTE,
 } from '@workflow/world';
@@ -65,6 +67,35 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // When the clamped timeout fires, the handler will recalculate remaining time from
 // persistent state and return another timeoutSeconds if needed.
 const MAX_SAFE_TIMEOUT_MS = 2147483647;
+
+/**
+ * The most deliveries world-local makes of one message (handoffs aside): a
+ * guard against a message that fails forever. The runtime enforces its own
+ * delivery cap well below it.
+ */
+export const MAX_LOCAL_SAFETY_LIMIT = 256;
+
+/** Failed deliveries retried 5s apart, before the backoff grows. */
+const LINEAR_RETRY_DELIVERIES = 32;
+const LINEAR_RETRY_DELAY_MS = 5_000;
+const MAX_RETRY_DELAY_MS = 60_000;
+
+/**
+ * The delay before world-local retries a message whose `failedDeliveries`-th
+ * delivery failed: 5s for the first 32, as Vercel Queues does, then doubling
+ * up to a minute. So the {@link MAX_LOCAL_SAFETY_LIMIT} deliveries of a
+ * message that keeps failing span hours, longer than the runtime's stall
+ * window for a step message (`QUEUE_MIN_STEP_REDELIVERY_SPAN_MS` in
+ * `@workflow/world`), and a step whose every delivery throws is failed
+ * rather than left with no message.
+ */
+export function localRetryDelayMs(failedDeliveries: number): number {
+  if (failedDeliveries <= LINEAR_RETRY_DELIVERIES) return LINEAR_RETRY_DELAY_MS;
+  return Math.min(
+    MAX_RETRY_DELAY_MS,
+    LINEAR_RETRY_DELAY_MS * 2 ** (failedDeliveries - LINEAR_RETRY_DELIVERIES)
+  );
+}
 
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
@@ -156,6 +187,40 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Per-run mutual exclusion for orchestrator deliveries, in FIFO order.
+ *
+ * `acquire(runId)` resolves once every earlier holder for that run has
+ * released, with the release function. Keys are dropped when the last holder
+ * releases, so the map holds only runs with a delivery in flight or waiting.
+ */
+export function createRunGate() {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    async acquire(runId: string): Promise<() => void> {
+      const previous = tails.get(runId) ?? Promise.resolve();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.then(() => held);
+      tails.set(runId, tail);
+      await previous;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        release();
+        if (tails.get(runId) === tail) tails.delete(runId);
+      };
+    },
+    /** Runs with a delivery in flight or waiting. For tests. */
+    size(): number {
+      return tails.size;
+    },
+  };
+}
+
 export function createQueue(config: Partial<Config>): LocalQueue {
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
@@ -171,6 +236,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
+  // A single-orchestrator run's (spec >= 9) orchestrator deliveries go one at
+  // a time, like a concurrency key on Vercel Queues: the single-writer
+  // guarantee's queue half (the in-band fence is the other). Step messages,
+  // health checks and earlier runs' messages are not gated (see
+  // `singleOrchestratorRunIdOf`), so a run's steps keep running in parallel
+  // with each other and with its orchestrator.
+  const runGate = createRunGate();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
   // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
@@ -223,6 +295,15 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const msg = message as Record<string, unknown>;
     const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
+    // Keyed by prefix as well, so a run id never gates deliveries on another
+    // prefix (a queue consumer of its own, or another namespace).
+    const orchestratorRunKey = (() => {
+      const id = singleOrchestratorRunIdOf(message);
+      return id === undefined ? undefined : `${prefix}${id}`;
+    })();
+    // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a handoff: the
+    // redelivery starts at once and the handed-off delivery is not an attempt.
+    const handsOff = isSingleOrchestratorMessage(message);
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -244,20 +325,37 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await setTimeout(delayMs, undefined, { signal: closeSignal });
       }
 
-      const token = semaphore.tryAcquire();
-      if (!token) {
-        // Debug-gated: this is the semaphore doing its job. A fan-out wider
-        // than the limit queues behind it and every message still runs, so a
-        // per-message warning turns a healthy wide run into a wall of output.
-        debugLog(
-          `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
-        );
-        await semaphore.acquire();
-      }
-      // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow handler
-      // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
-      const MAX_LOCAL_SAFETY_LIMIT = 256;
+      /**
+       * Takes this message's delivery slots: its run's orchestrator gate
+       * first (when it is an orchestrator delivery), then a worker slot. The
+       * gate is taken first so a delivery waiting for its run holds no worker
+       * slot. Both are held for one delivery attempt only and released before
+       * any sleep (a `{ timeoutSeconds }` redelivery delay, a retry backoff),
+       * because a message that is not being delivered occupies neither, as on
+       * Vercel Queues.
+       */
+      const acquireDelivery = async (): Promise<() => void> => {
+        const releaseRun = orchestratorRunKey
+          ? await runGate.acquire(orchestratorRunKey)
+          : undefined;
+        if (!semaphore.tryAcquire()) {
+          // Debug-gated: this is the semaphore doing its job. A fan-out wider
+          // than the limit queues behind it and every message still runs, so
+          // a per-message warning turns a healthy wide run into a wall of
+          // output.
+          debugLog(
+            `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
+          );
+          await semaphore.acquire();
+        }
+        return () => {
+          semaphore.release();
+          releaseRun?.();
+        };
+      };
+      // Handoffs counted as such per message, as Vercel Queues bounds them;
+      // past it a handoff counts toward `attempt` and the safety limit.
+      const MAX_LOCAL_HANDOFFS = 10_000;
       // Number of times the message has actually reached a handler (returned
       // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
       // not the loop counter, is the attempt the handler sees via
@@ -265,14 +363,27 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
       let delivery = 0;
+      // Deliveries that ended in a handoff, which `attempt` and the safety
+      // limit leave out.
+      let handoffs = 0;
+      // Deliveries whose handler answered with an error.
+      let failedDeliveries = 0;
+      let releaseDelivery: (() => void) | undefined;
+      const endDelivery = () => {
+        releaseDelivery?.();
+        releaseDelivery = undefined;
+      };
       try {
-        for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+        for (let loop = 0; loop - handoffs < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+          releaseDelivery = await acquireDelivery();
+          if (closeSignal.aborted) return;
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(delivery + 1),
+            'x-vqs-message-attempt': String(delivery + 1 - handoffs),
+            'x-vqs-message-delivery-count': String(delivery + 1),
             'x-vqs-message-created-at': createdAt,
           };
           const directHandler = directHandlers.get(prefix);
@@ -312,6 +423,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             delivery++;
             text = await response.text();
           } catch (err) {
+            endDelivery();
             // A transport can fail before response headers or while consuming
             // the body. Both are transient: back off and retry the same
             // durable message rather than leaving its run stalled. Two
@@ -343,6 +455,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             continue;
           }
 
+          endDelivery();
           if (response.ok) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
@@ -358,6 +471,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   await setTimeout(timeoutMs, undefined, {
                     signal: closeSignal,
                   });
+                } else if (handsOff && handoffs < MAX_LOCAL_HANDOFFS) {
+                  handoffs++;
                 }
                 continue;
               }
@@ -384,11 +499,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             }
           );
 
-          // 5s linear backoff to approximate VQS retry timing in local dev.
-          // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient: the handler enforces the real
-          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000, undefined, { signal: closeSignal });
+          // Backs off as VQS does (see `localRetryDelayMs`).
+          failedDeliveries++;
+          await setTimeout(localRetryDelayMs(failedDeliveries), undefined, {
+            signal: closeSignal,
+          });
         }
 
         console.error(
@@ -401,7 +516,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         );
       } finally {
-        semaphore.release();
+        endDelivery();
       }
     })()
       .catch((err) => {

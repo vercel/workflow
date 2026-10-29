@@ -198,7 +198,10 @@ describe('createWorkflowRunEvent retry wiring', () => {
 
   it('still maps a hook_disposed 404 to HookNotFoundError, after the retry loop, without retrying', async () => {
     createV4Mock.mockImplementation(async () => {
-      throw new WorkflowWorldError('not found', { status: 404 });
+      throw new WorkflowWorldError('not found', {
+        status: 404,
+        code: 'not-found',
+      });
     });
 
     await expect(
@@ -211,6 +214,23 @@ describe('createWorkflowRunEvent retry wiring', () => {
     ).rejects.toBeInstanceOf(HookNotFoundError);
     // 404 is definitive → one attempt; the mapping wraps the retry loop.
     expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a 404 without an error code alone: a missing route is not a missing hook', async () => {
+    createV4Mock.mockImplementation(async () => {
+      throw new WorkflowWorldError('v4 createEvent failed: HTTP 404', {
+        status: 404,
+      });
+    });
+
+    const err = await createWorkflowRunEvent(
+      RUN_ID,
+      { eventType: 'hook_received', correlationId: 'hook_1', specVersion: 2 },
+      undefined,
+      CONFIG
+    ).catch((e) => e);
+    expect(err).not.toBeInstanceOf(HookNotFoundError);
+    expect(WorkflowWorldError.is(err) && err.status).toBe(404);
   });
 
   it('does not retry an excluded event type (step_started) even on a 5xx', async () => {

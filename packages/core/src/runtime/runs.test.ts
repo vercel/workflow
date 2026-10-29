@@ -10,6 +10,8 @@ import {
   type Event,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +44,7 @@ import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
   cancelRun,
   cancelRuns,
+  pendingWakeUpWaits,
   recreateRunFromExisting,
   reenqueueRun,
   wakeUpRun,
@@ -115,6 +118,8 @@ describe('wakeUpRun', () => {
       runId: 'wrun_123',
       pagination: { sortOrder: 'asc' },
       resolveData: 'none',
+      // The run's own version, as the World's read hint.
+      specVersion: 2,
     });
     expect(world.queue).toHaveBeenCalled();
   });
@@ -170,7 +175,8 @@ describe('reenqueueRun', () => {
 
     expect(world.queue).toHaveBeenCalledWith(
       '__wkf_workflow_test-workflow',
-      { runId: 'wrun_123' },
+      // The routing hint is the run's own spec version.
+      { runId: 'wrun_123', runSpecVersion: 2 },
       expect.anything()
     );
   });
@@ -181,15 +187,16 @@ describe('reenqueueRun', () => {
 
     expect(world.queue).toHaveBeenCalledWith(
       '__eve_wkf_workflow_test-workflow',
-      { runId: 'wrun_123' },
+      // The routing hint is the run's own spec version.
+      { runId: 'wrun_123', runSpecVersion: 2 },
       expect.anything()
     );
   });
 });
 
 // A run started by a newer SDK: this one cannot write that version's format,
-// so everything it writes to the run is capped at its own.
-const NEWER_THAN_THIS_SDK = SPEC_VERSION_CURRENT + 1;
+// so everything it writes to the run is capped at the highest it supports.
+const NEWER_THAN_THIS_SDK = SPEC_VERSION_MAX_SUPPORTED + 1;
 
 describe('writes to a run started by a newer SDK', () => {
   const waitCreated: Event = {
@@ -209,23 +216,29 @@ describe('writes to a run started by a newer SDK', () => {
 
     expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
       eventType: 'run_cancelled',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
-  it("caps wakeUpRun's wait_completed and wake at this SDK's version", async () => {
+  it("caps wakeUpRun's wake at this SDK's version, and leaves the wait to the orchestrator", async () => {
     const world = createMockWorld({
       run: { specVersion: NEWER_THAN_THIS_SDK },
       events: [waitCreated],
     });
     await wakeUpRun(world, 'wrun_123');
 
-    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
-      eventType: 'wait_completed',
-      specVersion: SPEC_VERSION_CURRENT,
+    // A single-orchestrator run's waits are completed in-band by its
+    // orchestrator: the wake names them instead.
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(vi.mocked(world.queue).mock.calls[0][1]).toMatchObject({
+      runId: 'wrun_123',
+      completeWaits: [waitCreated.correlationId],
     });
-    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
-      specVersion: SPEC_VERSION_CURRENT,
+    // An ordinary orchestrator message: best-effort on a queue that
+    // coalesces it into a running delivery.
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toEqual({
+      deploymentId: expect.any(String),
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
@@ -236,7 +249,7 @@ describe('writes to a run started by a newer SDK', () => {
     await reenqueueRun(world, 'wrun_123');
 
     expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
@@ -251,6 +264,52 @@ describe('writes to a run started by a newer SDK', () => {
     expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
       specVersion: SPEC_VERSION_LEGACY,
     });
+  });
+});
+
+describe('wakeUpRun pending-wake marks', () => {
+  const openWait = (runId: string, correlationId: string): Event =>
+    ({
+      eventId: `evnt_${correlationId}`,
+      runId,
+      eventType: 'wait_created',
+      correlationId,
+      eventData: { resumeAt: new Date(Date.now() + 3_600_000) },
+      createdAt: new Date(),
+    }) as Event;
+
+  function singleOrchestratorWorld(runId: string, events: Event[]) {
+    const world = createMockWorld({
+      run: { runId, specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+      events,
+    });
+    return world;
+  }
+
+  it('leaves a sleep open to waitForSleep after a wake whose publish failed', async () => {
+    const runId = 'wrun_wake_publish_failed';
+    const world = singleOrchestratorWorld(runId, [openWait(runId, 'wait_a')]);
+    vi.mocked(world.queue).mockRejectedValueOnce(new Error('queue down'));
+
+    await expect(wakeUpRun(world, runId)).rejects.toThrow('queue down');
+
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(pendingWakeUpWaits(runId).has('wait_a')).toBe(false);
+  });
+
+  it('keeps the mark of an earlier published wake when a later one fails', async () => {
+    const runId = 'wrun_wake_earlier_mark';
+    const world = singleOrchestratorWorld(runId, [
+      openWait(runId, 'wait_a'),
+      openWait(runId, 'wait_b'),
+    ]);
+    await wakeUpRun(world, runId, { correlationIds: ['wait_a'] });
+    expect(pendingWakeUpWaits(runId).has('wait_a')).toBe(true);
+
+    vi.mocked(world.queue).mockRejectedValueOnce(new Error('queue down'));
+    await expect(wakeUpRun(world, runId)).rejects.toThrow('queue down');
+
+    expect([...pendingWakeUpWaits(runId)]).toEqual(['wait_a']);
   });
 });
 

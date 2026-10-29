@@ -1,5 +1,6 @@
 import { z } from 'zod/v4';
 import { SerializedDataSchema } from './serialization.js';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from './spec-version.js';
 
 export type QueueKind = 'workflow';
 
@@ -386,6 +387,24 @@ export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 export const WorkflowInvokePayloadSchema = z.compile(
   z.object({
     runId: z.string(),
+    /**
+     * The run's persisted spec version (`WorkflowRun.specVersion`), which picks
+     * the orchestrator that drives it. A routing hint only: a message without
+     * it (from a producer that predates the field, or one the World sends
+     * itself) is routed off the run instead, and a step message's
+     * `runContext` or a first delivery's `runInput` carries the same value.
+     */
+    runSpecVersion: z.number().int().optional().catch(undefined),
+    /**
+     * Set on a message a World sent to resume a run after it lost its queue
+     * (`reenqueueActiveRuns` with `queueLost`, world-local after a restart):
+     * every message the run had queued, its step messages and wait timers,
+     * died with the queue. A single-orchestrator delivery of it re-sends
+     * every open step message and arms every open wait's timer. A consumer
+     * that predates the field ignores it, and `.catch(undefined)` keeps a
+     * malformed value from failing the parse.
+     */
+    recovery: z.literal(true).optional().catch(undefined),
     /** Process this input and return the handler's result as response data. */
     invoke: z.literal(true).optional(),
     /** Identifies one input across retries, separately from the queue delivery ID. */
@@ -394,7 +413,9 @@ export const WorkflowInvokePayloadSchema = z.compile(
     traceCarrier: TraceCarrierSchema.optional(),
     requestedAt: z.coerce.date().optional(),
     /**
-     * Consecutive replay divergences in this recovery chain and latest position.
+     * Consecutive replay divergences in this recovery chain and latest position
+     * (spec <= 8 runs: a spec 9 orchestrator recovers within its delivery and
+     * never sends it).
      *
      * `eventIds` is every divergent event id in the chain, oldest first, so the
      * terminal failure can say whether each recovery replay diverged at the same
@@ -455,14 +476,76 @@ export const WorkflowInvokePayloadSchema = z.compile(
       .object({
         correlationId: z.string(),
         attempt: z.number().int().nonnegative(),
+        /**
+         * The wait's `resumeAt` (epoch ms), set only on an intermediate hop
+         * of a spec 9 wait longer than one queue delay: a timer sent to fire
+         * before the wait is due, only so that the next hop can be sent (see
+         * {@link isIntermediateWaitHop}). Absent on a final hop, the timer
+         * due when the wait is.
+         */
+        resumeAtMs: z.number().optional(),
+        /**
+         * The deadline (epoch ms) of this intermediate hop, set beside
+         * `resumeAtMs`. Hops are anchored on the wait's deadline, and each
+         * is keyed by its own deadline, so the delivery of this hop sends
+         * the one after it: one it could not compute from its own clock
+         * when it was delivered a little early.
+         */
+        hopAtMs: z.number().optional(),
       })
       .optional()
       .catch(undefined),
+    /**
+     * Waits the orchestrator completes on this delivery whatever their
+     * `resumeAt` (spec >= 9): `run.wakeUp()` names them here instead of
+     * writing `wait_completed` itself, so the orchestrator writes it in-band,
+     * in log order with its own decisions. A wait already completed, or not
+     * open, is ignored. The message is an ordinary orchestrator message: a
+     * queue that coalesces it into a running delivery drops the names, and
+     * the waits then run their full length (`run.wakeUp()` is best-effort
+     * there). `.catch(undefined)` so a malformed value degrades to "no waits
+     * named" rather than failing the parse.
+     */
+    completeWaits: z.array(z.string()).optional().catch(undefined),
     /** Step ID for inline step execution in combined handler. If provided, the flow execution
      * will jump directly to execute the step with the given ID before doing an event replay. */
     stepId: z.string().optional(),
     /** Step name, sent alongside stepId to avoid loading the event log to resolve the name. */
     stepName: z.string().optional(),
+    /**
+     * The attempt this step message starts with (spec >= 9). Absent means 1.
+     * Set above 1 when a step that ran inline in the orchestrator failed with
+     * a retryable error and its retry moved to this message. A message whose
+     * `stepAttempt` is above 1 counts as a retry, so its handler reads the
+     * log before running the body.
+     */
+    stepAttempt: z.number().int().positive().optional(),
+    /**
+     * Set on a step message the orchestrator sent again (spec >= 9): a
+     * re-send of a step whose message a delivery that died may never have
+     * sent (`Queue.createQueueHandler`). Normally the step's stable key
+     * deduplicates it against the first message. When it does go out as a
+     * new message, its handler reads the log before running the body even on
+     * the message's first delivery: the re-send was decided from a log that
+     * can be older than the step's progress, so the step may already have
+     * an outcome.
+     */
+    stepResent: z.boolean().optional(),
+    /**
+     * Event id of the step's `step_created` (spec >= 9). The step handler
+     * reads the step's input from that event when the message does not carry
+     * it in {@link WorkflowInvokePayloadSchema.shape.stepInput}.
+     */
+    stepCreatedEventId: z.string().optional(),
+    /**
+     * When the step's `step_created` was committed, as epoch milliseconds
+     * (spec >= 9): the `createdAt` the World answered it with. The step
+     * handler passes it on the step's first-attempt `step_started` as
+     * `CreateEventParams.stepCreatedAt`, for creation-to-start latency
+     * telemetry. Absent on retry messages and from older runtimes.
+     * `.catch(undefined)` so a malformed value only drops the telemetry.
+     */
+    stepCreatedAt: z.number().optional().catch(undefined),
     /** Run creation data, only present on the first queue delivery from start() */
     runInput: RunInputSchema.optional(),
     /**
@@ -558,9 +641,311 @@ export const QueuePayloadSchema = z.compile(
 );
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
+/**
+ * The run whose orchestrator a queue message is a delivery for, or
+ * `undefined` when the message is not an orchestrator delivery.
+ *
+ * An orchestrator delivery is a {@link WorkflowInvokePayload} without a
+ * `stepId`: the start of a run, a wake after a step outcome, a hook resume,
+ * a cancellation or a timer. A step execution message (`stepId` set), a
+ * health check (`__healthCheck`, which may carry the `runId` it prepares)
+ * and an intermediate hop of a long wait's timer
+ * ({@link isIntermediateWaitHop}) are not, and keep full parallelism.
+ *
+ * A run's orchestrator deliveries are serialized only on single-orchestrator
+ * runs (spec >= 9, see {@link singleOrchestratorRunIdOf}).
+ */
+export function orchestratorRunIdOf(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const message = payload as Record<string, unknown>;
+  if (message.__healthCheck === true) return undefined;
+  if (typeof message.stepId === 'string') return undefined;
+  if (isIntermediateWaitHop(payload)) return undefined;
+  return typeof message.runId === 'string' ? message.runId : undefined;
+}
+
+/**
+ * Whether a queue message is an intermediate hop of a long wait's timer
+ * chain: a timer the runtime sends to fire before its wait is due, because
+ * the wait is longer than one queue delay, so that the delivery sends the
+ * next hop. Marked by `waitContinuation.resumeAtMs`, which only such a hop
+ * carries.
+ *
+ * Its delivery is not an orchestrator delivery: it reads only the run's
+ * status, writes nothing, sends the next hop (the last one an ordinary
+ * timer) and acknowledges. So it is never serialized behind, or coalesced
+ * into, a delivery of its run ({@link orchestratorRunIdOf} leaves it out),
+ * and it must not be: a coalesced hop is never delivered, and the holder's
+ * re-run, which finds its wait not yet due, would not send the next one.
+ */
+export function isIntermediateWaitHop(payload: unknown): boolean {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const continuation = (payload as Record<string, unknown>).waitContinuation;
+  return (
+    typeof continuation === 'object' &&
+    continuation !== null &&
+    Number.isFinite((continuation as { resumeAtMs?: unknown }).resumeAtMs)
+  );
+}
+
+/**
+ * The spec version of the run a queue message belongs to, as the message
+ * says it: a first delivery's `runInput.specVersion`, a step message's
+ * `runContext.specVersion`, or the `runSpecVersion` hint the runtime stamps
+ * on every other message of a run. `undefined` for a health check, a
+ * message without a run, and a message from a producer that predates the
+ * fields. A World treats `undefined` as a run below spec 9: every runtime
+ * that creates spec 9 runs stamps its messages.
+ *
+ * A producer outside that runtime (an older SDK, or another client of the
+ * World) may still send a message for a spec 9 run that is unstamped or
+ * stamped below 9, and nothing can prevent it. The World then treats it as a
+ * message of an earlier run: world-vercel sends it without the run's
+ * concurrency key, and world-local and world-postgres do not serialize it, so
+ * it can run beside the run's serialized orchestrator. The runtime still
+ * routes it to the run's orchestrator (from the run itself, or by handing it
+ * on once the run is loaded), and the in-band fence refuses the second
+ * writer's in-band writes, so the run's log stays correct. The cost is wasted
+ * orchestrator work, which can include running the body of an inline step a
+ * second time; it does not corrupt the log.
+ */
+export function messageRunSpecVersion(payload: unknown): number | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const message = payload as Record<string, unknown>;
+  if (message.__healthCheck === true) return undefined;
+  if (typeof message.runId !== 'string') return undefined;
+  const version = (value: unknown) =>
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { specVersion?: unknown }).specVersion === 'number'
+      ? (value as { specVersion: number }).specVersion
+      : undefined;
+  return (
+    version(message.runInput) ??
+    version(message.runContext) ??
+    (typeof message.runSpecVersion === 'number'
+      ? message.runSpecVersion
+      : undefined)
+  );
+}
+
+/**
+ * Whether a queue message belongs to a single-orchestrator run (spec >= 9),
+ * by {@link messageRunSpecVersion}. The handler-result semantics of
+ * {@link Queue.createQueueHandler} and per-run serialization apply to these
+ * messages; a message of an earlier run keeps the World's earlier behavior.
+ */
+export function isSingleOrchestratorMessage(payload: unknown): boolean {
+  const specVersion = messageRunSpecVersion(payload);
+  return (
+    specVersion !== undefined && specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+  );
+}
+
+/**
+ * The run whose orchestrator deliveries a World serializes for this message:
+ * {@link orchestratorRunIdOf} for a message of a single-orchestrator run
+ * (spec >= 9), else `undefined`.
+ *
+ * A World serializes these per run: at most one delivery for a given run id
+ * is in flight at a time, the others wait behind it, and step messages are
+ * never held back by it. That is the queue half of the single-writer
+ * guarantee; the in-band fence is the other half, and makes an overlap that
+ * the queue still lets through (a delivery that outlives its lease) safe.
+ *
+ * Messages of earlier runs (spec <= 8) are not serialized: a spec 8
+ * orchestrator can hold an inline step until another wake of the same run
+ * aborts it, and run-level exclusion would hold that wake back.
+ */
+export function singleOrchestratorRunIdOf(
+  payload: unknown
+): string | undefined {
+  return isSingleOrchestratorMessage(payload)
+    ? orchestratorRunIdOf(payload)
+    : undefined;
+}
+
+/**
+ * What a single-orchestrator continuation message takes from the message it
+ * replaces, field by field of {@link WorkflowInvokePayload} (see
+ * {@link singleOrchestratorContinuationPayload}). Typed as a record of every
+ * payload field, so a new field fails the typecheck until it is classified
+ * here.
+ *
+ * - `'carry'`: copied. The run (`runId`), its identity on step messages
+ *   (`runContext`), the trace link (`traceCarrier`), and what the message is
+ *   a wake for: the wait a timer is for (`waitContinuation`), the waits a
+ *   `run.wakeUp()` names (`completeWaits`), and a legacy hook resume
+ *   (`hookInput`, which the orchestrator writes deduplicated by its
+ *   `resumeId`, so a second copy writes nothing).
+ * - `'stamp'`: `runSpecVersion`, set to the spec version the replaced
+ *   message carried in any of its fields ({@link messageRunSpecVersion}), so
+ *   the continuation is routed and serialized as the run's other messages
+ *   are, even though it drops `runInput`.
+ * - `'drop'`: not copied. `runInput` marks the run's first orchestrator
+ *   message, and with a first delivery count it is what selects the
+ *   runtime's fresh-start path, which assumes a log holding only
+ *   `run_created`; a continuation always continues a progressed run.
+ *   `requestedAt` and `hookResumeTiming` measure the request that sent the
+ *   replaced message. `recovery` asks a delivery to re-send everything a lost
+ *   queue held, which the replaced message's delivery did. `invoke`,
+ *   `requestId` and `input` are a request/response invocation, not a
+ *   continuation. The retry counters (`replayDivergence`,
+ *   `preconditionReinvocations`, `serverErrorRetryCount`,
+ *   `deploymentMismatchRetryCount`) belong to runs below spec 9 or to one
+ *   chain of re-enqueues. The step fields (`stepId` and the rest) are never
+ *   on an orchestrator message.
+ */
+export const SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS = {
+  runId: 'carry',
+  runContext: 'carry',
+  traceCarrier: 'carry',
+  waitContinuation: 'carry',
+  completeWaits: 'carry',
+  hookInput: 'carry',
+  runSpecVersion: 'stamp',
+  runInput: 'drop',
+  requestedAt: 'drop',
+  hookResumeTiming: 'drop',
+  recovery: 'drop',
+  invoke: 'drop',
+  requestId: 'drop',
+  input: 'drop',
+  replayDivergence: 'drop',
+  preconditionReinvocations: 'drop',
+  serverErrorRetryCount: 'drop',
+  deploymentMismatchRetryCount: 'drop',
+  stepId: 'drop',
+  stepName: 'drop',
+  stepAttempt: 'drop',
+  stepResent: 'drop',
+  stepCreatedEventId: 'drop',
+  stepCreatedAt: 'drop',
+  stepInput: 'drop',
+} as const satisfies Record<
+  keyof WorkflowInvokePayload,
+  'carry' | 'stamp' | 'drop'
+>;
+
+/**
+ * The payload a World sends when it continues a single-orchestrator run's
+ * orchestrator message on a new message instead of handing it off (as
+ * world-vercel does for a message close to its expiry), or `undefined` when
+ * `payload` is not an orchestrator message of a single-orchestrator run
+ * ({@link singleOrchestratorRunIdOf}), which a World hands off instead.
+ *
+ * Built from an explicit list of fields
+ * ({@link SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS}), never by copying: the
+ * replaced message may be the run's start message, and a copy of its
+ * `runInput` on a message delivered for the first time would take the
+ * runtime's fresh-start path over a log that already holds the run's
+ * progress, and could run completed step bodies again.
+ */
+export function singleOrchestratorContinuationPayload(
+  payload: unknown
+): WorkflowInvokePayload | undefined {
+  if (singleOrchestratorRunIdOf(payload) === undefined) return undefined;
+  const source = payload as Record<string, unknown>;
+  const continuation: Record<string, unknown> = {};
+  for (const [field, rule] of Object.entries(
+    SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS
+  )) {
+    if (rule === 'carry' && source[field] !== undefined) {
+      continuation[field] = source[field];
+    }
+  }
+  continuation.runSpecVersion = messageRunSpecVersion(payload);
+  return continuation as WorkflowInvokePayload;
+}
+
+/**
+ * The shortest time, in milliseconds, a World's queue must deduplicate sends
+ * that carry a single-orchestrator run's step key
+ * (`QueueOptions.idempotencyKey` on a step's execution message): for at
+ * least this long after the key's first send, while the message that send
+ * made lives (held, delayed, being delivered or in retry backoff), every
+ * later send under the key is a no-op. The runtime sends a step's message
+ * again from later deliveries of its run (see `Queue.createQueueHandler`)
+ * only while the step's last send is this young, less a margin, so each such
+ * re-send is deduplicated against the step's live message instead of giving
+ * the step a second owner.
+ *
+ * A re-send is decided from the log its delivery loaded, which can be older
+ * than the step's progress: the step's message may have been delivered, run
+ * the step to its outcome and been acknowledged since. A World is not
+ * required to keep the key past the acknowledgment, nor to refuse a
+ * `step_started` for a step that already has an outcome. The runtime marks a
+ * re-sent message (`stepResent`), and its handler reads the run's log before
+ * it runs the body, even on the message's first delivery, so a re-send the
+ * queue takes as a new message after the step's outcome acknowledges without
+ * running it. A World that does either of the two still gets the same result
+ * without that read.
+ *
+ * world-vercel keeps a key for `min(retention, 24h)` whether or not its
+ * message was acknowledged, and retains a step message for at least this
+ * long. world-local and world-postgres keep it while the first message lives
+ * (world-postgres: while its job exists, with Graphile's `unsafe_dedupe`),
+ * which a step message outlives only by completing, and both refuse a
+ * `step_started` for a step that already has an outcome.
+ */
+export const QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long, in milliseconds, a single-orchestrator run's step message whose
+ * deliveries keep failing must go on being redelivered at least, from its
+ * first delivery. A delivery that throws before it writes anything (the
+ * step's input cannot be read, say) leaves the step's log as it was; past
+ * the runtime's delivery cap, a delivery that finds the step's log showing
+ * no activity for this long fails the step (`MAX_DELIVERIES_EXCEEDED`) and
+ * wakes the run. A queue that gives up on the message sooner strands the
+ * run. world-vercel retains a step message for at least a day; world-local
+ * backs off its retries so that its safety limit lasts longer than this;
+ * world-postgres keeps retrying a job without a time limit.
+ */
+export const QUEUE_MIN_STEP_REDELIVERY_SPAN_MS = 60 * 60 * 1000;
+
 export interface QueueOptions {
   deploymentId?: string;
+  /**
+   * Deduplicates sends that carry the same key while the first message with
+   * that key exists (on Vercel Queues: for `min(retention, 24h)`).
+   *
+   * On a spec 9 run's messages the runtime sets it on a step's execution
+   * message, with a key stable for the step, because a second message for a
+   * step would be a second owner of its body.
+   *
+   * Every wake of a spec 9 run's orchestrator (after a background step's
+   * outcome, `resumeHook()`, `cancel()`, a force-claimed hook, a fence
+   * refusal) carries no key: a duplicate wake costs one cheap delivery,
+   * while a key can be absorbed by a delivery that is already exiting and
+   * lose the wakeup. A wait's timer is the exception. Each hop of it carries
+   * `wait:<correlationId>:<resumeAt>:<hopAt>`, the wait, its deadline and the
+   * hop's own deadline (epoch ms; hops are anchored on the wait's deadline),
+   * so the timers that a message's first delivery and every sender of an
+   * intermediate hop send for the same hop are one message; a re-arm after a
+   * timer that came before its wait was due appends `:a<attempt>`. A
+   * delivery that may hold a coalesced timer (any but its message's first)
+   * keys a wait's last hop by its second instead (the near-due key below),
+   * so a redelivery of a delivery that sent a wait's last hop and then failed
+   * can add one duplicate timer. The duplicate finds its wait completed, or
+   * re-arms it. A near-due re-arm, the timer a delivery that may
+   * hold a coalesced timer sends for an open wait due within a few seconds,
+   * whatever its chain, carries `wait:<correlationId>:<resumeAt>:s<second>`,
+   * the sender's second in place of the hop's deadline. Deduplicate these as
+   * you do a step's key.
+   * Wakes of runs below spec 9 keep their earlier keys (`hook-<resumeId>`,
+   * `hook-force-claim-<hookId>`, the QuickJS engine's
+   * `hook_conflict_<correlationId>`).
+   */
   idempotencyKey?: string;
+  /**
+   * How long the message may live, in seconds, including every redelivery.
+   * Set on step messages so that the message outlives its step's whole retry
+   * span (the step is retried in place on the same message). A World caps it
+   * at what its queue supports (Vercel Queues: 7 days) and uses its default
+   * when it is absent.
+   */
+  retentionSeconds?: number;
   headers?: Record<string, string>;
   /** Delay message delivery by this many seconds */
   delaySeconds?: number;
@@ -678,25 +1063,107 @@ export interface Queue {
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
-   * A rejected handler must retry the same message with an incremented attempt.
-   * With `invoke: true`, the return value is response data delivered by World.
-   * Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
    *
-   * `meta.messageId` SHOULD be stable across redeliveries of the same message
-   * (one ID per enqueued message, reused on every delivery attempt). The
-   * runtime's inline step ownership uses it as a liveness lease: the lazy
-   * `step_started` records the handling invocation's messageId, and only a
-   * delivery of that same message may re-execute the step before the
-   * ownership lease expires (crash recovery via queue redelivery). A World
-   * whose queue mints a fresh ID per delivery degrades gracefully: owner
-   * redeliveries fall back to the delayed-backstop path instead of executing
-   * immediately, adding recovery latency but never wedging or duplicating.
+   * Handler outcomes, for a message that is not an `invoke: true` request.
+   * What a `{ timeoutSeconds }` result asks for depends on the run the
+   * message belongs to ({@link isSingleOrchestratorMessage}):
    *
-   * `meta.deliveryCount`, when the World reports it, is 1 on a message's first
-   * delivery and increments on every redelivery, whatever caused it (lease
-   * lapse, a rejected handler, a `{ timeoutSeconds }` result). A World whose
-   * queue cannot say leaves it `undefined`. `meta.createdAt`, when known, is
-   * when the message was first enqueued, unchanged across its redeliveries.
+   * - **Single-orchestrator run (spec >= 9), `{ timeoutSeconds: n }` with
+   *   `n > 0`**: do NOT acknowledge the message. Deliver the SAME message
+   *   again (same `messageId`, next `deliveryCount`) after about `n` seconds.
+   *   The runtime returns this from a step handler to retry a step in place
+   *   after `retryAfter`, and from an orchestrator delivery to defer the run
+   *   (an inline step start refused for load) or to stand down after the
+   *   in-band fence refused its write, whose redelivery must count as one
+   *   (next `deliveryCount`) so that it re-sends what a delivery that died
+   *   left unsent. A World MAY clamp `n` to what
+   *   its queue supports (Vercel Queues clamps a redelivery delay to
+   *   [5s, 900s]); the runtime tolerates an early redelivery by checking the
+   *   log and asking again. A World whose queue cannot redeliver the same
+   *   message may publish a new message with the same payload instead,
+   *   provided it carries the same `messageId` and the next `deliveryCount`
+   *   in `meta` on delivery; otherwise the runtime's re-send rule loses its
+   *   anchor (see `meta.deliveryCount`).
+   * - **Single-orchestrator run, `{ timeoutSeconds: 0 }`: a handoff.** The
+   *   delivery is not done and continues in a fresh one. Deliver the SAME
+   *   message again at once, and do not count this delivery toward
+   *   `attempt`. The orchestrator returns this when its invocation must end
+   *   before its work does (the invocation deadline, a stream flush, the
+   *   replay budget, a wait or a write it cannot read yet). The runtime never
+   *   returns it where the next delivery has to count as an attempt: a
+   *   fence-refused delivery sends what its writes owe and returns
+   *   `{ timeoutSeconds: n }` with `n > 0`. A World should not treat a non-finite
+   *   `n` as a handoff (a handoff is not an attempt, so a handler that kept
+   *   returning one would never stop); world-vercel redelivers after its
+   *   longest delay.
+   * - **Earlier runs (spec <= 8), `{ timeoutSeconds: n }`**: continue the run
+   *   after about `n` seconds (`0`: at once), by redelivering the same message
+   *   or by publishing a new message with the same payload. world-vercel
+   *   publishes a new message, with up to 23 hours of delay, before it
+   *   acknowledges this one; world-local and world-postgres redeliver.
+   * - **Resolves with anything else**: acknowledge the message.
+   * - **Rejects**: retry the same message, with a World-chosen backoff.
+   *
+   * With `invoke: true`, the return value is response data delivered by the
+   * World and is never queue control.
+   *
+   * `meta` describes the delivery:
+   *
+   * - `messageId` SHOULD be stable across redeliveries of the same message
+   *   (one id per enqueued message, reused on every delivery), and MUST be
+   *   for a World that creates spec 9 runs. On a spec 9 run the runtime
+   *   records it on `step_created` and `wait_created` (`creatorMessageId`):
+   *   the delivery that wrote a wait's `wait_created`, or a later delivery of
+   *   that message, schedules the wait's timer. On earlier runs the runtime's
+   *   inline step ownership uses it as a liveness lease: the lazy
+   *   `step_started` records the handling invocation's messageId, and only a
+   *   delivery of that same message may re-execute the step before the
+   *   ownership lease expires. A World whose queue mints a fresh id per
+   *   delivery degrades gracefully there: owner redeliveries fall back to the
+   *   delayed-backstop path, adding recovery latency but never wedging or
+   *   duplicating.
+   * - `deliveryCount` is 1 on a message's first delivery and increments on
+   *   every redelivery, whatever caused it (lease lapse, a rejected handler, a
+   *   `{ timeoutSeconds }` result, a handoff, a coalesced re-run). An
+   *   orchestrator delivery whose count is above 1 re-sends, once per
+   *   invocation and under each step's stable key, every background step
+   *   that has a `step_created` and no `step_started`: a delivery that died
+   *   between the two left it with no message. The queue must therefore
+   *   follow any delivery that dies with a delivery counted above 1, of the
+   *   same message or of one it was coalesced into, and must dedupe a step
+   *   key for at least {@link QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS} while the
+   *   step's first message lives. Leave it `undefined`
+   *   when the queue cannot say: the runtime then treats every delivery as a
+   *   possible redelivery and reads the run's log before running a step
+   *   body, which is correct but slower. A queue that reports 1 for a redelivery breaks
+   *   the at-most-once guarantee of a `maxRetries: 0` step.
+   * - `createdAt` is when the message was first enqueued, when known.
+   * - `attempt` is `deliveryCount` less the deliveries that followed a
+   *   handoff (`{ timeoutSeconds: 0 }` on a single-orchestrator run) and less
+   *   coalesced re-runs (below). It is what the runtime's delivery cap
+   *   counts. On a World with neither it equals `deliveryCount`.
+   * - A World whose queue coalesces a run's orchestrator messages into the
+   *   delivery that is running (world-vercel, with `@vercel/queue`'s
+   *   experimental concurrency key) runs the handler again within that
+   *   delivery when coalesced messages arrived while it ran. Each such
+   *   re-run reports the next `deliveryCount` (the delivery's count plus the
+   *   re-runs so far) and leaves `attempt` unchanged: a coalesced message is
+   *   never delivered, so a re-run must read the run's log, as a redelivery
+   *   does, and whatever those messages were sent for was committed to the
+   *   log before they were sent. Two orchestrator payload fields carry more
+   *   than the log. `run.wakeUp()`'s `completeWaits` is best-effort:
+   *   coalesced, it is lost, and the waits run their full length. A timer's
+   *   `waitContinuation` names its wait: coalesced, the name is lost, which
+   *   costs nothing for a final timer (the holder's re-run sees the wait due
+   *   and completes it, and the delivery that completes a wait arms the next
+   *   one of its chain), and an intermediate hop of a long wait, which would
+   *   lose its chain, is never coalesced ({@link isIntermediateWaitHop}).
+   * - `invocationStartedAt` (epoch ms) is when the function invocation running
+   *   this handler call began, when the World knows it. It is the same for
+   *   every coalesced re-run of a delivery, which all share that invocation:
+   *   the runtime measures its inline deadline from it, so a late re-run does
+   *   not get a fresh budget the invocation no longer has. Absent: the runtime
+   *   measures from the start of each handler call.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -709,6 +1176,7 @@ export interface Queue {
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;
+        invocationStartedAt?: number;
       }
     ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;

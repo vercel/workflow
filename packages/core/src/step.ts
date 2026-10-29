@@ -9,6 +9,7 @@ import {
   scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from './private.js';
+import { replayPayloadEventKey } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 import { markUseStepClosureFn } from './serialization/hardened.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
@@ -53,7 +54,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         stepName,
         args,
       });
-      ctx.eventsConsumer.subscribe((event) => {
+      // Keyed to the step: for another entity's event the consumer only
+      // declines, so the walk does not offer it those events.
+      ctx.eventsConsumer.subscribeFor(correlationId, (event) => {
         if (!event) {
           // We've reached the end of the events, so this step has either not been run or is currently running.
           // Crucially, if we got here, then this step Promise does
@@ -63,19 +66,18 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
-        stepLogger.debug('Step consumer event processing', {
-          correlationId,
-          stepName,
-          args: args.join(', '),
-          incomingCorrelationId: event.correlationId,
-          isMatch: correlationId === event.correlationId,
-          eventType: event.eventType,
-        });
-
         if (event.correlationId !== correlationId) {
           // We're not interested in this event - the correlationId belongs to a different entity
           return EventConsumerResult.NotConsumed;
         }
+
+        // Logged for this step's own events only, so the line costs one
+        // call per event rather than one per pending step per event.
+        stepLogger.debug('Step consumer event processing', {
+          correlationId,
+          stepName,
+          eventType: event.eventType,
+        });
 
         const eventStepName =
           'eventData' in event &&
@@ -193,7 +195,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const prepared = await ctx.replayPayloadCache.prepareEventPayload(
-                event.eventId,
+                replayPayloadEventKey(event),
                 'error',
                 event.eventData.error
               );
@@ -288,7 +290,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // is likewise released inside the slot, before the detached defer, so
           // `scheduleWhenIdle` can still reach idle and retire the barriers
           // this deferral may be waiting on.
-          const completedEventId = event.eventId;
+          const completedEventKey = replayPayloadEventKey(event);
           const serializedResult = event.eventData.result;
           const eventIndex = ctx.eventsConsumer.eventIndex;
           const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step', {
@@ -306,11 +308,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const hydratedResult = await ctx.replayPayloadCache.getStepResult(
-                completedEventId,
+                completedEventKey,
                 async () => {
                   const prepared =
                     await ctx.replayPayloadCache.prepareEventPayload(
-                      completedEventId,
+                      completedEventKey,
                       'result',
                       serializedResult
                     );

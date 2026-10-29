@@ -547,3 +547,7 @@ To use the PostgreSQL world, set the `WORKFLOW_TARGET_WORLD` environment variabl
 ```bash
 export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
 ```
+
+## Spec 9 (experimental)
+
+Runs of the experimental spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`) run their orchestrator deliveries one at a time through the run's Graphile named queue, with or without invocation, and publish their keyed messages with the `unsafe_dedupe` job key mode. A worker killed mid-job leaves that named queue locked, so such a run can stall for up to 4 hours unless `jobLockStaleSeconds` is set. See [world-postgres on spec 9 runs](https://workflow-sdk.dev/docs/changelog/spec-9#first-party-worlds).

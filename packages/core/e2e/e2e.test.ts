@@ -13,6 +13,7 @@ import {
 import { createWorkflowUrl } from '@workflow/utils';
 import {
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   type World,
 } from '@workflow/world';
@@ -533,6 +534,29 @@ describe.concurrent('e2e', () => {
         input: [123],
         output: 133,
       });
+    }
+  );
+
+  // Spec 9 is opt-in: the spec 9 lane sets `WORKFLOW_SPEC_VERSION=9` on its
+  // deployment and on this runner (a cross-deployment start stamps the lower
+  // of the two), and every other lane runs the default. Fails loudly when the
+  // setting stops reaching either side, which would otherwise leave the
+  // spec 9 lane silently testing spec 8.
+  testJsOnly(
+    'stamps the spec version the lane opts in to',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('addTenWorkflow'), [123]);
+      expect(await run.returnValue).toBe(133);
+      const row = await (await getWorld()).runs.get(run.runId);
+      if (
+        process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+        String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+      ) {
+        expect(row.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+      } else {
+        expect(row.specVersion).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+      }
     }
   );
 
@@ -1470,9 +1494,18 @@ describe.concurrent('e2e', () => {
               expect(result.stack).toContain('99_e2e.ts');
             }
 
-            // Verify step failed via CLI (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
+            // Verify step failed via CLI (--withData needed to resolve errorRef).
+            // Polled: on world-vercel a single-orchestrator run's step list
+            // is built from analytics rows that lag the run's events, so a
+            // step written moments ago can still be missing.
+            const steps = await cliInspectJsonUntil(
+              `steps --runId ${run.runId} --withData`,
+              (json) =>
+                json.some(
+                  (s: any) =>
+                    s.stepName.includes('errorStepFn') && s.status === 'failed'
+                ),
+              { timeoutMs: 45_000 }
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('errorStepFn')
@@ -1528,9 +1561,17 @@ describe.concurrent('e2e', () => {
               expect(result.stack).toContain('helpers.ts');
             }
 
-            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
+            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef).
+            // Polled for the reason given in the previous test.
+            const steps = await cliInspectJsonUntil(
+              `steps --runId ${run.runId} --withData`,
+              (json) =>
+                json.some(
+                  (s: any) =>
+                    s.stepName.includes('stepThatThrowsFromHelper') &&
+                    s.status === 'failed'
+                ),
+              { timeoutMs: 45_000 }
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('stepThatThrowsFromHelper')
@@ -2223,7 +2264,17 @@ describe.concurrent('e2e', () => {
 
       expect(events.some((e) => e.eventType === 'hook_created')).toBe(true);
       expect(events.some((e) => e.eventType === 'hook_received')).toBe(false);
-      expect(events.some((e) => e.eventType === 'step_created')).toBe(true);
+      // The step was created: by a `step_created`, or, for a step run inline,
+      // by its first `step_started` alone.
+      expect(
+        events.some(
+          (e) =>
+            e.eventType === 'step_created' ||
+            (e.eventType === 'step_started' &&
+              (e.eventData as { inline?: boolean } | undefined)?.inline ===
+                true)
+        )
+      ).toBe(true);
       expect(events.some((e) => e.eventType === 'step_completed')).toBe(true);
     }
   );
@@ -2971,6 +3022,17 @@ describe.concurrent('e2e', () => {
       { timeout: 90_000 },
       async (ctx) => {
         await skipUnlessForceClaimSupported(ctx);
+        // The victim has to be a run below the force-claim spec version,
+        // executed by this deployment. The spec 9 lane skips it, since its
+        // point is the spec 9 runtime; the default lanes run it, and the
+        // refusal is also covered by the backend's tests.
+        if (
+          process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+          String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+        ) {
+          ctx.skip();
+          return;
+        }
         const token = `force-legacy-${Math.random().toString(36).slice(2)}`;
         // A run stamped one spec version below the one that understands
         // `hook_disposed{forceClaimedBy}`. Its runtime here is the current

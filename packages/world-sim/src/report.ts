@@ -489,7 +489,7 @@ export interface MarkdownSummaryOptions {
   title?: string;
   /**
    * Which world produced these results, as short `key=value` chips above the
-   * table, such as `log=append-only`, `fence=off`. A summary that does not
+   * table, such as `log=append-only`. A summary that does not
    * say which world it ran in is unreadable next to another one, and the
    * whole point of this book is comparing two runs of it.
    */

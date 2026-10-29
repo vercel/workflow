@@ -90,7 +90,7 @@ export const WAIT_CONTINUATION_MAX_DELAY_SECONDS = 82_800;
 export const NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS = 2;
 
 /** Effective max continuation delay. Override: `WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS`. */
-const getWaitContinuationMaxDelaySeconds = (): number =>
+export const getWaitContinuationMaxDelaySeconds = (): number =>
   envNumber(
     'WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS',
     WAIT_CONTINUATION_MAX_DELAY_SECONDS,
@@ -103,6 +103,34 @@ const getNearElapsedWaitThresholdSeconds = (): number =>
     'WORKFLOW_NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS',
     NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS
   );
+
+/**
+ * A suspending spec 9 delivery that may hold a coalesced timer sends a timer
+ * for every open wait due within this many seconds, or the near-elapsed
+ * threshold if that is larger, whichever delivery owns the wait's chain (see
+ * {@link getNearDueWaitWindowSeconds}).
+ */
+export const NEAR_DUE_WAIT_WINDOW_SECONDS = 5;
+
+/**
+ * Seconds within which a suspending spec 9 delivery that may hold a
+ * coalesced timer sends a timer for an open wait whatever chain it is in:
+ * the larger of {@link NEAR_DUE_WAIT_WINDOW_SECONDS} and the near-elapsed
+ * threshold.
+ *
+ * A wait's last timer is due with the wait on the sender's clock, rounded up
+ * to a whole second, so a host whose clock runs behind the queue's can
+ * receive it before the wait is due. Coalesced into a delivery that does not
+ * own the wait's chain, that timer is never delivered on its own, and the
+ * delivery finds nothing due and arms nothing: the wait would never
+ * complete. So every delivery that may hold a coalesced message (any but its
+ * message's first: a coalesced re-run counts above 1) covers every wait this
+ * close. Its re-arms carry `nearDueTimerIdempotencyKey` (in
+ * `spec9/wait-timer.ts`), so the re-arms of one wait within a second are one
+ * message, and a process sends each key once.
+ */
+export const getNearDueWaitWindowSeconds = (): number =>
+  Math.max(getNearElapsedWaitThresholdSeconds(), NEAR_DUE_WAIT_WINDOW_SECONDS);
 
 export interface WaitContinuationDispatch {
   delaySeconds: number;

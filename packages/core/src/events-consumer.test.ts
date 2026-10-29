@@ -1568,3 +1568,122 @@ describe('sealed-log noop events (specVersion 7)', () => {
     expect(onUnconsumedEvent).not.toHaveBeenCalled();
   });
 });
+
+describe('keyed consumers (subscribeFor)', () => {
+  const event = (eventId: string, correlationId?: string): Event =>
+    ({
+      eventId,
+      runId: 'wrun_keyed',
+      eventType: 'step_started',
+      correlationId,
+      createdAt: new Date(),
+    }) as unknown as Event;
+
+  it('offers a keyed consumer its own events and the end of the log, never another entity', async () => {
+    const events = [event('e1', 'step_a'), event('e2', 'step_b')];
+    const consumer = new EventsConsumer(events, defaultOptions);
+    const seenA: (string | null)[] = [];
+    const seenB: (string | null)[] = [];
+    consumer.subscribeFor('step_a', (e) => {
+      seenA.push(e?.eventId ?? null);
+      return e ? EventConsumerResult.Consumed : EventConsumerResult.NotConsumed;
+    });
+    consumer.subscribeFor('step_b', (e) => {
+      seenB.push(e?.eventId ?? null);
+      return e ? EventConsumerResult.Consumed : EventConsumerResult.NotConsumed;
+    });
+    await waitForNextTick();
+    // Each subscribe starts a walk, and each walk that reaches the end of
+    // the log offers its `null` to every consumer.
+    expect(seenA.filter((id) => id !== null)).toEqual(['e1']);
+    expect(seenB.filter((id) => id !== null)).toEqual(['e2']);
+    expect(seenA).toContain(null);
+    expect(seenB).toContain(null);
+    expect(consumer.eventIndex).toBe(2);
+  });
+
+  it('keeps registration order between keyed and unkeyed consumers', async () => {
+    const calls: string[] = [];
+    const claim =
+      (name: string, result: EventConsumerResult) => (e: Event | null) => {
+        if (e) calls.push(`${name}:${e.eventId}`);
+        return e ? result : EventConsumerResult.NotConsumed;
+      };
+    const consumer = new EventsConsumer(
+      [event('e1', 'step_a'), event('e2', 'step_a'), event('e3', 'step_a')],
+      defaultOptions
+    );
+    // Registered in this order; each would claim any event it is offered.
+    consumer.subscribe(claim('first', EventConsumerResult.Finished));
+    consumer.subscribeFor(
+      'step_a',
+      claim('keyed', EventConsumerResult.Finished)
+    );
+    consumer.subscribe(claim('last', EventConsumerResult.Consumed));
+    await waitForNextTick();
+    expect(calls).toEqual(['first:e1', 'keyed:e2', 'last:e3']);
+    // Finished consumers left the walk, keyed ones included.
+    expect(consumer.callbacks).toHaveLength(1);
+  });
+
+  it('consumes the same events in the same order as unkeyed consumers would', async () => {
+    // Pseudo-random but fixed: entities, events and consumers that each
+    // claim only their own entity's events, as a keyed consumer promises.
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    const entities = Array.from({ length: 12 }, (_, i) => `step_${i}`);
+    const log = Array.from({ length: 200 }, (_, i) =>
+      event(
+        `e${i}`,
+        random() < 0.1
+          ? undefined
+          : entities[Math.floor(random() * entities.length)]
+      )
+    );
+    const plan = entities.flatMap((entity) =>
+      Array.from({ length: 1 + Math.floor(random() * 3) }, () => ({
+        entity,
+        finishAfter: 1 + Math.floor(random() * 6),
+        keyed: random() < 0.7,
+      }))
+    );
+    // An unkeyed catch-all that claims events with no correlation id.
+    const run = async (useKeys: boolean) => {
+      const consumed: string[] = [];
+      const consumer = new EventsConsumer(log, {
+        ...defaultOptions,
+        onUnconsumedEvent: () => {},
+      });
+      consumer.subscribe((e) => {
+        if (e && e.correlationId === undefined) {
+          consumed.push(`run:${e.eventId}`);
+          return EventConsumerResult.Consumed;
+        }
+        return EventConsumerResult.NotConsumed;
+      });
+      plan.forEach(({ entity, finishAfter, keyed }, index) => {
+        let claimed = 0;
+        const fn = (e: Event | null) => {
+          if (!e || e.correlationId !== entity) {
+            return EventConsumerResult.NotConsumed;
+          }
+          consumed.push(`${index}:${e.eventId}`);
+          return ++claimed >= finishAfter
+            ? EventConsumerResult.Finished
+            : EventConsumerResult.Consumed;
+        };
+        if (useKeys && keyed) consumer.subscribeFor(entity, fn);
+        else consumer.subscribe(fn);
+      });
+      await waitForNextTick();
+      return { consumed, index: consumer.eventIndex };
+    };
+    const unkeyed = await run(false);
+    const keyed = await run(true);
+    expect(keyed).toEqual(unkeyed);
+    expect(unkeyed.consumed.length).toBeGreaterThan(0);
+  });
+});
