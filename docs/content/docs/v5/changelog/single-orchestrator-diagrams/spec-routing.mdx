@@ -57,12 +57,13 @@ The World decides the queue side from the payload alone, with `messageRunSpecVer
 | world-local, world-postgres | Not serialized per run | Serialized per run (run gate, Graphile named queue) |
 | Wake idempotency keys | `hook-<resumeId>`, `hook-force-claim-<hookId>` | None on wakes; each hop of a wait's timer carries `wait:<correlationId>:<resumeAt>:<hopAt>`, and a near-due re-arm `wait:<correlationId>:<resumeAt>:s<second>` |
 | `run.wakeUp()` | Writes `wait_completed` out-of-band | Sends `completeWaits` to the orchestrator |
+| world-vercel events API | v4 routes, batches over HTTP | v5 routes, batches over the run's socket when the WS transport is on |
 
 world-local and world-postgres serialize only spec 9 runs (`singleOrchestratorRunIdOf`, `packages/world/src/queue.ts:705`). A spec 8 delivery can hold an inline step until another wake of the same run aborts it, and a per-run gate would hold that wake back.
 
 ## Minting new runs
 
-`mintedSpecVersion()` returns 9, or the version `WORKFLOW_SPEC_VERSION` names (6 to 9), or 6 when `WORKFLOW_SEALED_LOG=0` is set and `WORKFLOW_SPEC_VERSION` is not (`packages/world/src/spec-version.ts`). First-party Worlds call it when they are created, so `WORKFLOW_SPEC_VERSION=8` works as a kill switch: new runs are spec 8, runs in flight keep their version. An unrecognised value is ignored with a one-time warning. This is the behaviour at this head; the planned opt-in flips the default to 8 and mints 9 only for `WORKFLOW_SPEC_VERSION=9` on a World with the in-band fence (review page, section 10).
+`mintedSpecVersion(env, { inBandFence })` returns 8 by default, or 6 when `WORKFLOW_SEALED_LOG=0` is set and `WORKFLOW_SPEC_VERSION` is not, or the version `WORKFLOW_SPEC_VERSION` names (6 to 9). It returns 9 only when the World passes `{ inBandFence: true }`; otherwise `WORKFLOW_SPEC_VERSION=9` mints 8 with a one-time warning (`packages/world/src/spec-version.ts`). First-party Worlds call it with their capability when they are created, so unsetting the variable makes new runs spec 8 again while runs in flight keep their version. An unrecognised value is ignored with a one-time warning (review page, section 10).
 
 ## Stamps at every send site
 
@@ -169,6 +170,7 @@ sequenceDiagram
 - Routing keeps no per-process memory of run versions. An earlier version cached them; the spec 8 orchestrator's own sends relied on that cache for their hint and now stamp it explicitly.
 - `withRunSpecVersion` never overwrites a `runSpecVersion` the payload already carries (`packages/core/src/runtime/run-spec-routing.ts:86`).
 - A health check has no run spec and is never keyed or gated (`packages/world/src/queue.ts:696`).
-- The in-band fence is checked where a spec 9 run is created (`start()`) and where its orchestrator delivery begins writing (the `InBandWriter`); a World that declares spec 8 creates spec 8 runs and is not checked (`assertWorldSupportsInBandFence`, `packages/core/src/runtime/world-compatibility.ts:78`).
-- `WORKFLOW_SPEC_VERSION` accepts an integer from 6 to 9; any other value is ignored with a one-time warning and the default is minted (`mintedSpecVersion`, `packages/world/src/spec-version.ts:202`).
+- The in-band fence is checked where a spec 9 run is created (`start()`) and where its orchestrator delivery begins writing (the `InBandWriter`); a World that declares spec 8 creates spec 8 runs and is not checked (`assertWorldSupportsInBandFence`, `packages/core/src/runtime/world-compatibility.ts`).
+- On world-vercel, the events API route follows the run: spec 8 and below on v4, spec 9 on v5. Writes route by the version stamped on the event, reads by the `specVersion` hint the spec 9 orchestrator passes; a read without it uses v4. Spec 8 batches always go over HTTP (`eventsApiVersion`, `packages/world-vercel/src/events-v4.ts`).
+- `WORKFLOW_SPEC_VERSION` accepts an integer from 6 to 9; any other value is ignored with a one-time warning and the default (8) is minted, and 9 on a World without the fence mints 8 with a warning (`mintedSpecVersion`, `packages/world/src/spec-version.ts`).
 - An older SDK's 400 is answered on the write, so no stale wake is left queued for a spec 9 run.

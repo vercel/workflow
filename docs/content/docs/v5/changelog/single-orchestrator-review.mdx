@@ -17,7 +17,7 @@ The PR does four things:
 
 1. **Spec 9 runtime.** A new orchestrator under `packages/core/src/runtime/spec9/`.
 2. **Spec 8 kept side by side.** The previous orchestrator moves to `packages/core/src/runtime/spec8/`, and each delivery is routed by the run's stored spec version.
-3. **World contract changes.** A required in-band fence for Worlds that declare spec 9, a `{ timeoutSeconds: 0 }` handoff every World implements for spec 9 runs, in-band event time and per-entity batch order as part of the spec 9 storage contract, and optional coalescing.
+3. **World contract changes.** A required in-band fence for Worlds that create spec 9 runs, a `{ timeoutSeconds: 0 }` handoff such a World implements for spec 9 runs, in-band event time and per-entity batch order as part of the spec 9 storage contract, and optional coalescing.
 4. **Vercel queue serialization.** On Vercel, spec 9 runs are kept to one orchestrator invocation by a Vercel Queues concurrency key per run on the existing `__wkf_workflow_*` topic. Spec 8 runs keep `main`'s queue topology and behavior. This needs `@vercel/queue` 0.9.0 or later, the first release with the experimental concurrency key and lease handoff support.
 
 ## 2. The spec 9 model
@@ -114,11 +114,11 @@ export async function approval(requestId: string) {
 }
 ```
 
-During that week the app upgrades to a World that declares spec 9. When the sleep ends, the run's stored spec version is still 8, so the delivery goes to the spec 8 orchestrator, which reads the spec 8 log as it always did. New runs started after the upgrade are spec 9. `world-testing` has a test that does exactly this with world-local (`spec8-upgrade.test.ts`).
+During that week the app upgrades and opts in to spec 9 (`WORKFLOW_SPEC_VERSION=9`). When the sleep ends, the run's stored spec version is still 8, so the delivery goes to the spec 8 orchestrator, which reads the spec 8 log as it always did. New runs started after the upgrade are spec 9. `world-testing` has a test that does exactly this with world-local (`spec8-upgrade.test.ts`).
 
 ### Choosing the spec for new runs
 
-`mintedSpecVersion()` returns the current version (9), or 8 when [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version) is set. First-party Worlds call it when they are created, so the variable also works as a kill switch: setting it makes new runs spec 8 without touching runs already in flight. `WORKFLOW_SEALED_LOG=0` keeps its meaning while `WORKFLOW_SPEC_VERSION` is unset: new runs are spec 6. `WORKFLOW_SPEC_VERSION` accepts 6 to 9 and warns once on any other value. Before merge this flips to opt-in, with spec 8 as the default (section 10).
+`mintedSpecVersion()` returns the current version (8), or 9 when [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec_version) is set and the World passes `{ inBandFence: true }`. First-party Worlds call it when they are created, so unsetting the variable makes new runs spec 8 again without touching runs already in flight. `WORKFLOW_SEALED_LOG=0` keeps its meaning while `WORKFLOW_SPEC_VERSION` is unset: new runs are spec 6. `WORKFLOW_SPEC_VERSION` accepts 6 to 9 and warns once on any other value (section 10).
 
 ### Writers outside the orchestrator
 
@@ -139,7 +139,7 @@ The delivery bodies and step executors were left separate: they are mostly diffe
 |---|---|
 | `capabilities.inBandFence` | **Required** for a World that declares spec 9. The runtime refuses such a World without it, in `start()` and at the start of every spec 9 delivery. This is the only new capability. |
 | Handler result `{ timeoutSeconds }` | Its meaning now depends on the message's run, read off the payload (`messageRunSpecVersion`, `isSingleOrchestratorMessage` in `@workflow/world`). Spec 9 run: `n > 0` redelivers the same message after `n` seconds; `0` is a **handoff** (below). Spec 8 and earlier: unchanged from `main`, continue after `n` seconds by a redelivery or a new message (world-vercel sends a new message, up to 23 hours out). An unstamped message counts as spec 8. |
-| Handoff, `{ timeoutSeconds: 0 }` on a spec 9 run | New, required of every World. Deliver the same message again at once and do not count this delivery toward `attempt`. world-vercel uses the Vercel Queues lease handoff. world-local redelivers the same message with `attempt` unchanged, behind any orchestrator message of the run already waiting at its gate; world-postgres reschedules it on a new Graphile job with no delay, behind jobs already on the run's queue, and carries `attempt` over (`1f7b912923`). A fence-refused delivery returns `{ timeoutSeconds: 1 }` instead, an ordinary counted redelivery (section 5). |
+| Handoff, `{ timeoutSeconds: 0 }` on a spec 9 run | New, required of every World that creates spec 9 runs. Deliver the same message again at once and do not count this delivery toward `attempt`. world-vercel uses the Vercel Queues lease handoff. world-local redelivers the same message with `attempt` unchanged, behind any orchestrator message of the run already waiting at its gate; world-postgres reschedules it on a new Graphile job with no delay, behind jobs already on the run's queue, and carries `attempt` over (`1f7b912923`). A fence-refused delivery returns `{ timeoutSeconds: 1 }` instead, an ordinary counted redelivery (section 5). |
 | `meta.attempt` | `deliveryCount` less the deliveries that followed a handoff and less coalesced re-runs. The delivery cap counts it. On a World with neither it equals `deliveryCount`. |
 | `meta.deliveryCount` on a coalesced re-run | The delivery's count plus the re-run number, so the runtime treats the re-run as a redelivery (turbo off, log read). There is no separate re-run field. |
 | `meta.deliveryCount` above 1 | Now load-bearing for liveness: an orchestrator delivery counted above 1 re-sends every unstarted background step (section 5, "Re-sending what a dead delivery owed"). A World must follow a delivery that dies with one counted above 1 (a redelivery of the same message, or a re-run of the delivery it was coalesced into), and dedupe a step's stable key for at least `QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS` (24 hours, `@workflow/world`; world-postgres with `unsafe_dedupe`, section 6) while the step's first message lives. |
@@ -150,7 +150,7 @@ The delivery bodies and step executors were left separate: they are mostly diffe
 | Per-entity `createBatch` order | Part of the spec 9 storage contract, no capability. world-vercel's backend orders batches; world-local and world-postgres have no `createBatch`. |
 | `step_started.creatorMessageId` | Removed. Only a background step's `step_created`, a `wait_created` and an orchestrator's `step_retrying` record their creator; nothing reads an inline step's. A background step's creator is kept for diagnostics: the re-send rule no longer reads it. |
 
-world-local and world-postgres declare the fence and serialize orchestrator deliveries per run for spec 9 runs only, with an in-process per-run gate and a per-run Graphile named queue. Spec 8 runs are not serialized there, as on `main`: a spec 8 delivery can hold an inline step until another wake of the same run aborts it, and run-level exclusion would hold that wake back. Neither coalesces, and both mint spec 9 runs by default (section 7, "world-local and world-postgres do not coalesce").
+world-local and world-postgres declare the fence and serialize orchestrator deliveries per run for spec 9 runs only, with an in-process per-run gate and a per-run Graphile named queue. Spec 8 runs are not serialized there, as on `main`: a spec 8 delivery can hold an inline step until another wake of the same run aborts it, and run-level exclusion would hold that wake back. Neither coalesces, and both mint spec 9 runs only when `WORKFLOW_SPEC_VERSION=9` is set (section 7, "world-local and world-postgres do not coalesce").
 
 ## 5. Vercel queue serialization
 
@@ -273,9 +273,11 @@ What the redelivery costs: one more invocation after about a second (Vercel Queu
 A sleep's timer is a delayed message carrying `waitContinuation` (the wait it is for). Two rules keep a timer that Vercel Queues coalesces from losing anything:
 
 - **The delivery that completes a wait arms the next one.** A delivery arms the earliest open wait of each wait chain it owns: the waits its own message created, and the waits created with any wait whose `wait_completed` it committed (`ownedWaitChains`, `waitTimersToArm` in `spec9/creator-rules.ts`), plus its own wait when it is a timer delivered before its wait is due. It sends a new wait's timer before the `wait_created` commits (`armWaitsBeforeCreation`, `e3018c00c3`), and the chain's next timer before a `wait_completed` commits, a timer delivery completing its own wait included (`chainTimersBeforeCompletion`, `3ba56bbd43`, `af8f076626`), so a delivery that fails after either commit leaves the chain armed. A redelivery of a timer message (a crash) also owns its timer's chain, and a suspending delivery that may hold a coalesced timer (any delivery but its message's first) arms every open wait due within `max(5s, near-elapsed threshold)`, whatever its chain, so a final timer coalesced slightly early is not lost (`66b355d28c`). Every timer carries an idempotency key: each hop `wait:<correlationId>:<resumeAt>:<hopAt>`, with hops anchored on the wait's deadline, so the senders of one hop send one message (`e3018c00c3`), and the near-due re-arms `wait:<correlationId>:<resumeAt>:s<second>`, so their cost stays linear in the number of waits (`dcddeb7378`; section 6, "Timer keys"). A recovery delivery (world-local after a restart) owns every chain.
-- **Hops before the last are unkeyed.** A wait longer than one queue delay (`WAIT_CONTINUATION_MAX_DELAY_SECONDS`, 23 hours) is reached in hops. Every hop but the last carries the wait's deadline (`waitContinuation.resumeAtMs`), which `isIntermediateWaitHop` in `@workflow/world` reads, and `orchestratorRunIdOf` leaves out, so world-vercel sends it with no concurrency key and world-local and world-postgres do not hold it behind the running delivery. Its delivery reads only the run's status, writes nothing, sends the next hop and acknowledges, so it is safe next to a live orchestrator. The last hop is an ordinary keyed timer: coalesced, the holder's re-run sees the wait due and completes it, and the rule above arms the next.
+- **Hops before the last carry no concurrency key.** A wait longer than one queue delay (`WAIT_CONTINUATION_MAX_DELAY_SECONDS`, 23 hours) is reached in hops. Every hop but the last carries the wait's deadline (`waitContinuation.resumeAtMs`), which `isIntermediateWaitHop` in `@workflow/world` reads, and `orchestratorRunIdOf` leaves out, so world-vercel sends it with no concurrency key and world-local and world-postgres do not hold it behind the running delivery. Its delivery reads only the run's status, writes nothing, sends the next hop and acknowledges, so it is safe next to a live orchestrator. The last hop is an ordinary keyed timer: coalesced, the holder's re-run sees the wait due and completes it, and the rule above arms the next.
 
 If the lock was released before a keyed timer came due, Vercel Queues compares the timer's due time, not its send time, with the release, so the timer is delivered normally.
+
+How sleeps and waits changed from spec 8, with diagrams of hop chains, timer keys, chain ownership, `run.wakeUp()`, linger and recovery: [Timers and waits](/docs/changelog/single-orchestrator-diagrams/timers-and-waits).
 
 ## 6. Decisions and tradeoffs
 
@@ -334,7 +336,7 @@ Spec 9 used to rely on one rule for liveness: only a redelivery of the message t
 
 ### Other decisions of the 2026-10-26 review
 
-- **Opt-in.** Spec 9 becomes opt-in once the PR is approved: minting only reads `WORKFLOW_SPEC_VERSION`, events route by each run's own spec (option B), and one e2e lane runs spec 9 (section 10).
+- **Opt-in.** Spec 9 is opt-in: minting only reads `WORKFLOW_SPEC_VERSION`, events route by each run's own spec (option B), and one e2e lane runs spec 9 (section 10, done).
 - **Background starts are awaited (3a).** A background step's body starts once its `step_started` committed; `WORKFLOW_OPTIMISTIC_BACKGROUND_START=1` restores the optimistic start. The trade-off is one start round trip of latency per background body, against a step queued before `run.cancel()` running its side effects and a throttled start running its body more than once (section 7).
 - **Linger guidance (3b).** An open hook keeps every pass lingering for up to `WORKFLOW_ORCHESTRATOR_LINGER_MS`. For this release that is documented with guidance (dispose a hook once it is no longer needed, or lower the linger for a deployment with a long-lived hook beside a polling `sleep()`); a burst-aware hook linger is a follow-up (section 12).
 - **Linger only while the feed is live (3c).** A delivery lingers only while `LiveLogFeed.isLive` holds, and the feed's `onFeedDown` ends the linger at once (`6292be4ee8`).
@@ -489,7 +491,7 @@ The smaller items:
 - **Handoff-outcome logging** ([4394000449](https://github.com/vercel/workflow/pull/4661#discussion_r4394000449); `15b1f0a6ae`) warns once when `@vercel/queue` exposes no API client to wrap, and `world-vercel/src/queue-api-client.test.ts` checks the hook against the installed `@vercel/queue`, not a mock.
 - **Docs**: the kill-switch bullet of `WORKFLOW_SPEC_VERSION` says runs already at spec 9 stay there and that rolling back to an older release is not a kill switch; turbo mode describes both orchestrators' paths; the spec 8 pages say "Applies to spec 8 runs"; the spec-routing table cites function names.
 
-Still open from that review: the opt-in flip (section 10), and the throws before the step delivery cap check (`resolveRunIdentity`, `guardDeployment`, the log read, the fail path's key fetch), which need the run and the log the cap path reads, so moving the check ahead of them is not a small change; it is follow-up 14.
+Still open from that review: the throws before the step delivery cap check (`resolveRunIdentity`, `guardDeployment`, the log read, the fail path's key fetch), which need the run and the log the cap path reads, so moving the check ahead of them is not a small change; it is follow-up 14.
 
 ## 7. Known gaps and risks
 
@@ -552,7 +554,7 @@ Expected cost: one more round trip before each background body, a small rise in 
 
 ### world-local and world-postgres do not coalesce (open)
 
-Both mint spec 9 runs by default (`mintedSpecVersion()` in `packages/world-local/src/index.ts` and `packages/world-postgres/src/index.ts`). Both serialize a spec 9 run's orchestrator deliveries, but neither coalesces orchestrator messages, so every background completion's wake becomes its own orchestrator delivery, run one after another behind the run's gate. A 97-step fan-out sends 97 wakes and gets 97 orchestrator deliveries. A delivery that finds the log tail at the position this process last consumed acknowledges after one tail read (`consumed-position.ts`); every other one loads the full log and replays. world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has the same shape: its spec 9 messages are unkeyed on per-run topics, so nothing is coalesced and each wake is one function invocation.
+Both mint spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set (`mintedSpecVersion()` in `packages/world-local/src/index.ts` and `packages/world-postgres/src/index.ts`). Both serialize a spec 9 run's orchestrator deliveries, but neither coalesces orchestrator messages, so every background completion's wake becomes its own orchestrator delivery, run one after another behind the run's gate. A 97-step fan-out sends 97 wakes and gets 97 orchestrator deliveries. A delivery that finds the log tail at the position this process last consumed acknowledges after one tail read (`consumed-position.ts`); every other one loads the full log and replays. world-vercel under `WORKFLOW_SEQUENTIAL_REPLAYS=1` has the same shape: its spec 9 messages are unkeyed on per-run topics, so nothing is coalesced and each wake is one function invocation.
 
 What they implement today of the handoff semantics, from the code:
 
@@ -651,7 +653,7 @@ The three blocking findings and the dedupe-window nit are fixed (section 6, "Fix
 - **A new wait's timer lost at creation** ([4404623775](https://github.com/vercel/workflow/pull/4661#discussion_r4404623775)): fixed, `e3018c00c3`.
 - **The `timerFor` exclusion, completion form** ([4365355506](https://github.com/vercel/workflow/pull/4661#discussion_r4365355506)): fixed, `af8f076626`.
 - **The creator-scoped inline-retry re-send** ([4365355501](https://github.com/vercel/workflow/pull/4661#discussion_r4365355501)): fixed, `008530f26c`.
-- **The opt-in flip**: open (section 10).
+- **The opt-in flip**: done (section 10).
 
 ### An inline step's retry could run twice after 24 hours (fixed)
 
@@ -781,9 +783,9 @@ After 32 re-runs, a refused acknowledgment used to go to the retry handler, whic
 
 The rule now keeps no per-entity record. Within one batch of events, the host holds each id's first terminal position. Across batches it reads closure from state the VM already has: a step, wait or attribute id the VM has drawn with no resolver left, an outcome buffered for an id not drawn yet, or a user hook whose entry has been released or force-claimed. Only terminals that VM state cannot show (a disposal that reached the log before this VM disposed the hook, an `AbortController` hook, an id outside the ULID scheme) go into a small heap record, dropped once VM state shows them, so it survives a snapshot. Six tests cover a live session and a snapshot restore. Residual: that record still grows by one entry per hook disposed before this VM reached its `dispose()` and never matched later (a hook force-claimed before this VM created it, for example), which I expect to be rare in production but have not measured.
 
-## 10. Planned before merge: opt-in
+## 10. Opt-in (done)
 
-Decided, not implemented yet. Once the PR is approved, spec 9 becomes opt-in: spec 8 stays the default for new runs, and one e2e lane runs spec 9. Until then the code on this branch mints spec 9 by default, as the rest of this page describes. The sites that change carry a "Planned before merge (spec 9 opt-in)" comment.
+Implemented on this branch: spec 8 is the default for new runs, and spec 9 is opt-in with `WORKFLOW_SPEC_VERSION=9`. A default user who upgrades the SDK gets spec 8 runs on the spec 8 orchestrator, on the same events API routes and batch transport as `main`. The "Planned before merge (spec 9 opt-in)" comments are gone from the code.
 
 ### Principle
 
@@ -793,25 +795,22 @@ One knob, `WORKFLOW_SPEC_VERSION`, gates minting only: the version a World stamp
 |---|---|---|
 | unset | any | 8 (6 when `WORKFLOW_SEALED_LOG=0`) |
 | `9` | yes | 9 |
-| `9` | no | 8, warning once ("World does not declare the in-band fence") |
+| `9` | no | 8, warning once ("the World does not declare the in-band writer fence") |
 | `6` to `8` | any | that value |
 | any other value | any | the default above, warning once |
 
-### Steps
+### What changed
 
-1. **Capability-gated minting.** `mintedSpecVersion(env, { inBandFence })` implements the table. A call with no options can never return 9, so a custom World written to the earlier "Building a World" guide (`specVersion: mintedSpecVersion()`) keeps minting spec 8 runs now and after a later default-on. world-local, world-postgres and world-vercel pass their real capability. Add `SPEC_VERSION_DEFAULT_MINTED` (8) as the documented default.
-2. **`SPEC_VERSION_CURRENT` back to 8**, its previous value and documented meaning. The spec 9 runtime stamps `SPEC_VERSION_SINGLE_ORCHESTRATOR` explicitly (a mechanical change across `runtime/spec9/*.ts`, world-sim and tests that use `SPEC_VERSION_CURRENT` to mean 9). The smaller alternative, keeping `CURRENT = 9` and changing only minting, leaves a World that pinned `SPEC_VERSION_CURRENT` throwing on upgrade and the constant's docstring false.
-3. **`specVersionForRunWrite` caps at `SPEC_VERSION_MAX_SUPPORTED`**, not `SPEC_VERSION_CURRENT`. Load-bearing: without it, a flag-off process stamps 8 on the `hook_received`, `run_cancelled` and wake events it writes to a spec 9 run.
-4. **`start()` keeps the fence assertion**, now reachable only by a World that hard-codes 9, with an error naming `capabilities.inBandFence` and `WORKFLOW_SPEC_VERSION`. Cross-deployment `start()` already stamps `min(target, caller)`, so the docs say to set the variable on every deployment and process that calls `start()`, not only on the target.
-5. **Events API routing follows the run (1a, option B).** On world-vercel, writes for runs at spec 9 or above use v5 of the events API and every other run's writes use v4; reads use v4 unless the spec 9 orchestrator asks for the v5 snapshot. The route never reads the flag. "Opt-in" then means a default user's runs behave as on `main`, wire included. Cost: two client routes stay maintained until default-on, and one more conditional per events call. The 404-to-`HookNotFoundError` narrowing already landed (`80972c8d9c`).
-6. **Rollback floor.** Rolling back below this release is not safe for runs created as spec 9: an older SDK cannot write to them. Documented next to the env var.
-7. **Wording.** The changeset and docs describe spec 9 as opt-in (`.changeset/single-orchestrator-runtime.md`, `building-a-world.mdx`, `upgrading-to-v5.mdx`, `runtime-tuning.mdx`, the World migration skill).
-8. **A dedicated spec 9 e2e lane (1b).** A new job `e2e-vercel-spec9` (nextjs-turbopack), cloned from `e2e-vercel-ws-transport`, the existing pattern for a second deployment with its own env:
-   - `WORKFLOW_SPEC_VERSION=9` in the deploy env **and** in the "Run E2E Tests" step env. The test runner's own World caps a cross-deployment start at `min(target, caller)`, so with only the deploy env set the lane silently tests spec 8.
-   - One assertion that a run created in the lane has `specVersion === 9`, so the lane fails loudly if the variable stops propagating.
-   - Added to `summary.needs` and `e2e-required-check.needs`.
-   - Optional: a world-postgres cell with the flag on, since several findings are postgres-specific. If it runs through turbo, `WORKFLOW_SPEC_VERSION` may need turbo pass-through; not verified.
-   - The `.github/workflows` edit needs a token with the `workflow` scope.
+1. **Capability-gated minting.** `mintedSpecVersion(env, { inBandFence })` implements the table. A call with no options never returns 9, so a custom World written to the earlier "Building a World" guide (`specVersion: mintedSpecVersion()`) keeps minting spec 8 runs now and after a later default-on. world-local, world-postgres and world-vercel pass their declared capability. `@workflow/world` exports `SPEC_VERSION_DEFAULT_MINTED` (8) and the `MintedSpecVersionOptions` type.
+2. **`SPEC_VERSION_CURRENT` is 8 again**, its previous value and documented meaning. The spec 9 runtime stamps `SPEC_VERSION_SINGLE_ORCHESTRATOR` explicitly (`runtime/spec9/*.ts`, the test-support Worlds, world-sim, and the tests that used `SPEC_VERSION_CURRENT` to mean 9). `SPEC_VERSION_MAX_SUPPORTED` stays 9.
+3. **`specVersionForRunWrite` caps at `SPEC_VERSION_MAX_SUPPORTED`**, not `SPEC_VERSION_CURRENT`. Load-bearing: a flag-off process still stamps 9 on the `hook_received`, `run_cancelled` and wake events it writes to a spec 9 run. The bare `SPEC_VERSION_CURRENT` fallbacks in world-local and world-postgres were reviewed: world-local's orphaned-step release stamps the run's own version, and the `RunNotSupportedError` sites name `SPEC_VERSION_MAX_SUPPORTED`.
+4. **`start()` keeps the fence assertion**, now reachable only by a World that declares spec 9 some other way. Its error names `capabilities.inBandFence` and `mintedSpecVersion(process.env, { inBandFence: true })`. Cross-deployment `start()` stamps `min(target, caller)`, so the docs say to set the variable on every deployment and process that calls `start()`, not only on the target.
+5. **Events API routing follows the run (1a, option B).** On world-vercel, all five run-scoped sites (single create, batch, the `hook_received` preload, get and list) route by the run's or the event's spec version: spec 8 and below use the v4 routes exactly as on `main`, spec 9 uses v5. Writes route by the version stamped on the event (and by the attested executor version on `run_started`). Reads take a new hint, `ListEventsParams.specVersion` and `GetEventParams.specVersion`, which the spec 9 orchestrator passes on every read it makes, on both engines (the QuickJS read path included); reads without it use v4. The route never reads the flag.
+6. **Batch transport.** A spec 8 run's batches go over HTTP, as on `main`, whatever the WebSocket transport setting; only a spec 9 run's batches may use the run's socket. The batch function's docstring says so.
+7. **world-testing conformance.** The in-band fence tests skip again for a World that does not declare `capabilities.inBandFence`, as on `main`, so a custom World following the earlier guide passes `createTestSuite()`. The embedded suite runs once at the default and once with `WORKFLOW_SPEC_VERSION=9`.
+8. **Rollback floor and fleet rule**, documented next to the env var in [runtime tuning](/docs/configuration/runtime-tuning#workflow_spec_version) and on the [single orchestrator](/docs/changelog/single-orchestrator) page: every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release before anyone sets `WORKFLOW_SPEC_VERSION=9`. An older process fails a spec 9 run's deliveries and calls with `RunNotSupportedError`; the run stalls without corruption and recovers once the process is upgraded again.
+9. **Wording.** The changesets and docs describe spec 9 as opt-in (`runtime-tuning.mdx`, `building-a-world.mdx`, which restores the spec 8 contract as the default and moves the spec 9 contract to "Supporting spec 9 runs", `upgrading-to-v5.mdx`, `single-orchestrator.mdx`, `worlds/v5/vercel.mdx`, `event-sourcing.mdx`, `errors-and-retries.mdx`, `turbo-mode.md`, `get-run.mdx`, `precondition-failed-error.mdx`, the World migration skill).
+10. **A dedicated spec 9 e2e lane (1b)**, prepared as a workflow patch because a `.github/workflows` change needs a token with the `workflow` scope: a job `e2e-vercel-spec9` (nextjs-turbopack), cloned from `e2e-vercel-ws-transport`, with `WORKFLOW_SPEC_VERSION=9` in the deploy env **and** in the "Run E2E Tests" step env (the test runner's own World caps a cross-deployment start at `min(target, caller)`, so with only the deploy env set the lane would silently test spec 8), an assertion that a run in the lane has `specVersion === 9`, and the job added to `summary.needs` and `e2e-required-check.needs`. With the flip, the default Vercel lanes run spec 8 again.
 
 ### Runs already created as spec 9 when the flag is turned off
 
@@ -820,37 +819,23 @@ Assuming the deployment that turns it off runs this release or newer:
 | Path | Behaviour |
 |---|---|
 | Orchestrator deliveries | Spec 9 orchestrator: routing uses the run's stamp, or `runs.get`. Skew protection keeps the run on its creating deployment anyway. |
-| Hook resumes and webhooks from the flag-off deployment | Work: `hook_received` is stamped with the run's spec (needs step 3), and the wake goes to the run's deployment with its spec version. |
+| Hook resumes and webhooks from the flag-off deployment | Work: `hook_received` is stamped with the run's spec (item 3) and written on v5, and the wake goes to the run's deployment with its spec version. |
 | `cancel()` | Works: stamped via `specVersionForRunWrite(run.specVersion)`. |
 | `wakeUp()` | Works, best-effort as for any spec 9 run. |
 | world-local and world-postgres gate | Serialized: the gate reads the message stamp, and recovery messages are stamped (`dd5037fef7`). |
-| Rollback below this release | Not safe (step 6). |
-
-### Files touched by the flip
-
-- `packages/world/src/spec-version.ts`, `index.ts`, `recovery.ts`, with `recovery.test.ts` and the spec-version tests
-- `packages/world-local/src/index.ts`, with the spec 9 rows of `core/src/runtime/world-local-restart-recovery.test.ts`
-- `packages/world-postgres/src/index.ts`, `queue.ts`, README, with `test/queue-http.test.ts`
-- `packages/world-vercel/src/index.ts`, `events.ts`, `events-v4.ts`, `utils.ts` (comment)
-- `packages/core/src/runtime/start.ts`, `world-compatibility.ts` (error message and comment), `run-spec-version.ts`, `helpers.ts`, `resume-hook.ts`, `hook-wake.ts`, `run-spec-routing.ts`, `spec9/*.ts` (the constant rename), and a new test in `start.test.ts` for a World written to the earlier guide
-- `packages/world-sim/src/queue.ts`, `scenario.ts`, `store.ts`, and the fenced `workbench/sim-world/scenarios/*`
-- `packages/world-testing`: a queue handoff conformance case
-- Docs: `runtime-tuning.mdx`, `building-a-world.mdx`, `upgrading-to-v5.mdx`, `single-orchestrator.mdx` (spec 8 stays the default; opting in with `WORKFLOW_SPEC_VERSION=9` on every deployment and process that calls `start()`, since a cross-deployment start stamps `min(target, caller)`; the rollback floor), `worlds/v5/vercel.mdx` ("the default for new runs"), `single-orchestrator-diagrams/spec-routing.mdx`, this page, `skills/migrating-world-v4-to-v5/SKILL.md`
-- `.changeset/single-orchestrator-runtime.md`
-- `.github/scripts/vercel-e2e-matrix.js` (and its test), `.github/workflows/tests.yml`
-- The PR description's "Known gaps"
+| Rollback below this release | Not safe (item 8). |
 
 What the flip does not change: it reduces exposure, not correctness. The liveness and semantics items in section 12 still apply to opted-in runs and to the spec 9 lane.
 
 ## 11. Before merge
 
-- Flip spec 9 to opt-in once the PR is approved (section 10). These pages describe spec 9 as the default today, which is true at this head, and change with the flip: `worlds/v5/vercel.mdx`, `runtime-tuning.mdx` (`WORKFLOW_SPEC_VERSION`), `worlds/v5/building-a-world.mdx`, `worlds/v5/upgrading-to-v5.mdx` (`mintedSpecVersion()`), `skills/migrating-world-v4-to-v5/SKILL.md`, the changeset, and section 3 and the `spec-routing` diagram page here.
+- Spec 9 is opt-in (section 10, done). Land the `e2e-vercel-spec9` workflow patch with a token that has the `workflow` scope.
 - Keep the Vercel e2e lanes green on the final head. CI on `c9446d4c09` passed every check, including E2E Required Check and the nest lanes, which `d617404712` fixed by pinning the nest workbench to Node 24.
 - Re-verify handoffs on Vercel now that they are signalled with `{ timeoutSeconds: 0 }`, and re-run the benchmarks, including durabench's fan-out after the fan-out latency fixes (section 7).
 - Move the Vercel dashboard's wake-up action to a `@workflow/core` release with this change (section 7).
 - Re-run the storm workflows on Vercel (`stepStormReproWorkflow`, `hookStormReproWorkflow`) to confirm the cascade is gone (section 7).
-- Run the e2e suite on Vercel with spec 8 runs (`WORKFLOW_SPEC_VERSION=8`) to confirm the restored new-message continuation, and with `WORKFLOW_SEQUENTIAL_REPLAYS=1` to confirm spec 9 runs work unkeyed on the per-run topics.
-- No Vercel e2e lane runs spec 8 at this head: every lane mints spec 9. A spec 8 run's queued step attempts failed on world-vercel with "Invalid input" because its `step_started` response came back lazy (fixed in `[world-vercel]` "Resolve a spec 8 step_started response", covered by `spec8/world-vercel-step-input.contract.test.ts`), and only a manual spec 8 run on the preview found it. The opt-in flip makes the default Vercel lanes run spec 8 again; until it lands, add a spec 8 cell (`WORKFLOW_SPEC_VERSION=8`) to the Vercel e2e matrix, or run that suite by hand on the final head.
+- Confirm on the default (spec 8) Vercel e2e lanes that the restored new-message continuation and the v4 event routes behave as on `main`, and run the suite with `WORKFLOW_SPEC_VERSION=9` and `WORKFLOW_SEQUENTIAL_REPLAYS=1` to confirm spec 9 runs work unkeyed on the per-run topics.
+- With the opt-in flip, the default Vercel e2e lanes run spec 8 again. Before it, every lane minted spec 9, and a spec 8 run's queued step attempts failed on world-vercel with "Invalid input" because its `step_started` response came back lazy (fixed in `[world-vercel]` "Resolve a spec 8 step_started response", covered by `spec8/world-vercel-step-input.contract.test.ts`), and only a manual spec 8 run on the preview found it.
 - Decide the release channel: a 5.x minor or a v6 beta.
 - Decide whether to close the earlier stacked PRs that this one supersedes.
 - Decide whether coalescing in world-local and world-postgres has to land before spec 9 is opted into there, or before it becomes their default, or ships as a follow-up (section 7, "world-local and world-postgres do not coalesce").
@@ -866,9 +851,9 @@ One entry per larger follow-up, to be opened as an issue each once this PR merge
 
 Decided and implemented: any non-first orchestrator delivery re-sends unstarted background steps within the dedupe window, a fence refusal ends in a counted redelivery of its message, and world-local's recovery messages carry a recovery marker (section 6, "Liveness"). The related timer, rotation and step-cap findings are fixed too.
 
-### 2. Per-run events API routing and the opt-in flip (if not done at merge)
+### 2. Per-run events API routing and the opt-in flip (done in this PR, not to file)
 
-Section 10's plan: capability-gated minting under `WORKFLOW_SPEC_VERSION`, `SPEC_VERSION_CURRENT` back to 8, the `specVersionForRunWrite` cap at `SPEC_VERSION_MAX_SUPPORTED`, the `start()` error wording, the rollback floor, world-vercel routing each run's events by its spec version (v4 below spec 9), and the dedicated spec 9 e2e lane with the variable in both the deploy and the test-runner env and a `specVersion === 9` assertion. Planned to land before merge; this entry exists only if any part slips. [4365355530](https://github.com/vercel/workflow/pull/4661#discussion_r4365355530), [4365355532](https://github.com/vercel/workflow/pull/4661#discussion_r4365355532), [4365355548](https://github.com/vercel/workflow/pull/4661#discussion_r4365355548).
+Section 10's plan: capability-gated minting under `WORKFLOW_SPEC_VERSION`, `SPEC_VERSION_CURRENT` back to 8, the `specVersionForRunWrite` cap at `SPEC_VERSION_MAX_SUPPORTED`, the `start()` error wording, the rollback floor, world-vercel routing each run's events by its spec version (v4 below spec 9), and the dedicated spec 9 e2e lane with the variable in both the deploy and the test-runner env and a `specVersion === 9` assertion. Implemented in this PR (section 10); only the e2e lane's workflow patch still needs a token with the `workflow` scope. [4365355530](https://github.com/vercel/workflow/pull/4661#discussion_r4365355530), [4365355532](https://github.com/vercel/workflow/pull/4661#discussion_r4365355532), [4365355548](https://github.com/vercel/workflow/pull/4661#discussion_r4365355548).
 
 ### 3. Durable `run.wakeUp()` on spec 9
 

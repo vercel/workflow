@@ -1,9 +1,18 @@
 ---
 title: Single orchestrator
-description: One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. Replaces lazy inline start, batched claims and inline step ownership on spec 9 runs.
+description: Opt-in spec 9 runs (WORKFLOW_SPEC_VERSION=9). One orchestrator invocation per run makes every decision, step and wait events become plain appends, and an in-band fence keeps overlapping orchestrator invocations from both writing. Replaces lazy inline start, batched claims and inline step ownership on spec 9 runs.
 ---
 
 # Single orchestrator
+
+## Opting in
+
+New runs are spec 8 runs by default, and nothing on this page applies to them. Spec 9 is opt-in: set [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec_version).
+
+- **Upgrade the whole fleet first.** Every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release or later before anyone sets the variable. An older SDK cannot read or write a spec 9 run: on that process, the run's deliveries, `resumeHook()` and `cancel()` fail with `RunNotSupportedError`. The run stalls without corruption and continues once the process runs this release again.
+- **Set it on every caller of `start()`.** A start that targets another deployment stamps the lower of the caller's and the target's versions, so set the variable on every deployment and process that calls `start()`, not only on the target.
+- **Rollback floor.** Once spec 9 runs exist, do not roll back below this release. To stop creating spec 9 runs, unset the variable on a deployment of this release or later instead: runs already created as spec 9 keep their orchestrator, and hook resumes, webhooks, `cancel()` and `wakeUp()` still work for them.
+- The Vercel, Local and Postgres Worlds implement the in-band fence spec 9 runs need. A World that does not declare it keeps creating spec 8 runs.
 
 ## What changes
 
@@ -28,7 +37,7 @@ The queue delivers a run's orchestrator messages one at a time, but an invocatio
 
 ## Queue serialization on Vercel
 
-On Vercel, a spec 9 run's messages go to the same per-workflow queue topic as before (`__wkf_workflow_<name>`), whose consumer has no `maxConcurrency`. Each orchestrator message carries the run id as the queue's concurrency key. The queue keeps one delivery of a run active and folds the run's other orchestrator messages into it: when the delivery finishes, the queue reports them and the orchestrator reads the log again in the same delivery instead of starting another invocation. Step messages carry no key and run in parallel. A delivery that has to end before the run's work does (its deadline, a stream flush, the replay budget) hands its message off to the next delivery (`{ timeoutSeconds: 0 }`), which does not count as a failed attempt. Every World implements the handoff. Spec 8 runs keep their previous queue behavior: unkeyed messages on the same topic, and a new message for every continuation. Flow routes keep their single queue trigger. Under [`WORKFLOW_SEQUENTIAL_REPLAYS=1`](/worlds/vercel#workflow_sequential_replays), every run uses per-run topics consumed with `maxConcurrency: 1`, and spec 9 messages are then sent without a key.
+On Vercel, a spec 9 run's messages go to the same per-workflow queue topic as before (`__wkf_workflow_<name>`), whose consumer has no `maxConcurrency`. Each orchestrator message carries the run id as the queue's concurrency key. The queue keeps one delivery of a run active and folds the run's other orchestrator messages into it: when the delivery finishes, the queue reports them and the orchestrator reads the log again in the same delivery instead of starting another invocation. Step messages carry no key and run in parallel. A delivery that has to end before the run's work does (its deadline, a stream flush, the replay budget) hands its message off to the next delivery (`{ timeoutSeconds: 0 }`), which does not count as a failed attempt. The Vercel, Local and Postgres Worlds implement the handoff. Spec 8 runs keep their previous queue behavior: unkeyed messages on the same topic, and a new message for every continuation. Flow routes keep their single queue trigger. Under [`WORKFLOW_SEQUENTIAL_REPLAYS=1`](/worlds/vercel#workflow_sequential_replays), every run uses per-run topics consumed with `maxConcurrency: 1`, and spec 9 messages are then sent without a key.
 
 ## Run-ahead
 
@@ -42,11 +51,11 @@ When no writer other than the orchestrator could change what the workflow does n
 
 ## Spec 8 runs
 
-Runs created at spec version 8 and below keep the previous orchestrator, which this runtime still includes. A run keeps the orchestrator of the version it was created with, so in-flight runs are unaffected when a World starts creating spec 9 runs. A World that declares spec 8 keeps creating spec 8 runs and needs no fence, and the first-party Worlds create them under [`WORKFLOW_SPEC_VERSION=8`](/docs/configuration/runtime-tuning#workflow_spec_version).
+Spec 8 is the default for new runs. Runs created at spec version 8 and below keep the previous orchestrator, which this runtime still includes. A run keeps the orchestrator of the version it was created with, so in-flight runs are unaffected when a deployment opts in to spec 9, and spec 9 runs keep theirs when it opts out again. A World that declares spec 8 keeps creating spec 8 runs and needs no fence. On the Vercel World, spec 8 runs keep the events API routes and batch transport of earlier releases; only spec 9 runs use the new routes.
 
 ## What spec 9 runs no longer use
 
-Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, and the precondition guard. They remain on spec 8 runs, and their settings are listed under [Settings for spec 8 runs](/docs/configuration/runtime-tuning#settings-for-spec-8-runs).
+Lazy inline step start, batched step claims, optimistic inline start outside turbo's first delivery, inline step ownership and its backstop wakes, and the precondition guard. They remain on spec 8 runs, and their settings are listed under [Runtime tuning](/docs/configuration/runtime-tuning#replay-and-queue-delivery).
 
 ## Costs
 

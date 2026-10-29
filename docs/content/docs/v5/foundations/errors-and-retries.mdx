@@ -33,9 +33,11 @@ async function callApi(endpoint: string) {
 callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
-A failed step is retried after about a second by default. Read on to see how this can be customized.
+Steps get enqueued immediately after a failure. Read on to see how this can be customized.
 
-### How a retry runs
+### How a retry runs on spec 9 runs
+
+Runs created with [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec_version) (opt-in; see [Single orchestrator](/docs/changelog/single-orchestrator)) retry differently. A failed step is retried after about a second by default, and:
 
 - A step that runs from the queue keeps one queue message for its whole life. A retry writes a `step_retrying` event and asks for that same message again after the retry delay, so a retry never creates a second message, and the message is acknowledged only once the step completes or fails for good.
 - A step that ran inline in the workflow's own invocation moves to the queue for its retry.
@@ -142,13 +144,13 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
 <Callout type="info">
-  Setting <code>maxRetries = 0</code> means the step will not be retried on
-  failure. If the invocation running it dies after the step started, the step
-  fails instead of running again, so it runs at most once per live owner. A
-  duplicate delivery after the queue lease expired can still run it twice, so
-  make a step that must never repeat idempotent. The default is
-  <code>maxRetries = 3</code>, meaning the step can run up to 4 times total (1
-  initial attempt + 3 retries).
+  Setting <code>maxRetries = 0</code> means the step will run once but will not
+  be retried on failure. The default is <code>maxRetries = 3</code>, meaning the
+  step can run up to 4 times total (1 initial attempt + 3 retries). On spec 9
+  runs, if the invocation running such a step dies after the step started, the
+  step fails instead of running again, so it runs at most once per live owner.
+  A duplicate delivery after the queue lease expired can still run it twice, so
+  make a step that must never repeat idempotent.
 </Callout>
 
 ## Serialization failures

@@ -382,9 +382,9 @@ Custom workflow-server URL for direct runtime requests, or for the proxy to forw
 
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 
-Runs at spec version 9 (the default for new runs) already run one orchestrator invocation at a time: their orchestrator messages carry the run's id as a [Vercel Queues](https://vercel.com/docs/queues) concurrency key on the shared flow topic, and the world-vercel backend fences the orchestrator's writes. This variable matters for runs of earlier spec versions (for example runs created under `WORKFLOW_SPEC_VERSION=8`).
+Set `WORKFLOW_SEQUENTIAL_REPLAYS=1` to guarantee that **at most one orchestrator (flow) invocation runs at a time per workflow run**. This behavior is off by default; without it, the runtime relies on idempotency and the event log to tolerate concurrent flow invocations of the same run.
 
-Set `WORKFLOW_SEQUENTIAL_REPLAYS=1` to guarantee that **at most one orchestrator (flow) invocation runs at a time per workflow run** for those runs too. This behavior is off by default; without it, the runtime relies on idempotency and the event log to tolerate concurrent flow invocations of a spec 8 run.
+Runs at spec version 9 (opt-in with [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec_version)) already run one orchestrator invocation at a time without it: their orchestrator messages carry the run's id as a [Vercel Queues](https://vercel.com/docs/queues) concurrency key on the shared flow topic, and world-vercel fences the orchestrator's writes. Spec 8 runs, the default, are the ones this variable serializes.
 
 When enabled, each run's orchestrator messages are given their own queue topic and the flow trigger is configured with `maxConcurrency: 1`, so [Vercel Queues](https://vercel.com/docs/queues) processes replays for a given run strictly one at a time. Step executions (which ride the flow topic in the combined handler model) get a per-step topic, so steps keep full parallelism.
 

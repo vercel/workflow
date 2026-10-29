@@ -5,11 +5,11 @@ description: Fast-path the first delivery of a run by backgrounding run_started,
 
 # Turbo mode
 
-Turbo mode changes only the first delivery of a run's first orchestrator message; every other delivery takes the normal path. Both orchestrators have it, and each implements it its own way: runs on the [single orchestrator](/docs/changelog/single-orchestrator) model (spec version 9) take the path in [Spec 9 runs](#spec-9-runs), and earlier runs (spec version 8 and below) the one in [Spec 8 runs](#spec-8-runs). `WORKFLOW_TURBO=0` turns both off.
+Turbo mode changes only the first delivery of a run's first orchestrator message; every other delivery takes the normal path. Both orchestrators have it, and each implements it its own way: spec 8 runs, the default for new runs, take the path in [Spec 8 runs](#spec-8-runs), and runs on the opt-in [single orchestrator](/docs/changelog/single-orchestrator) model (spec version 9, `WORKFLOW_SPEC_VERSION=9`) the one in [Spec 9 runs](#spec-9-runs). `WORKFLOW_TURBO=0` turns both off.
 
 ## Motivation
 
-The first invocation of a workflow run is where time-to-first-step matters most, yet it pays the most fixed network latency before any user code runs. Without turbo, these round-trips sit in front of the first step body:
+The first invocation of a workflow run is where time-to-first-step matters most, yet it pays the most fixed network latency before any user code runs. Without turbo, these round-trips sit in front of the first step body of a spec 9 run:
 
 1. **The event log is loaded**, together with the in-band fence count, and the run is read, before anything is written.
 2. **`run_started` is awaited**, and the log is loaded again to pick it up.

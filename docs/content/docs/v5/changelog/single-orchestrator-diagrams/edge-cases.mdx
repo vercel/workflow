@@ -294,7 +294,7 @@ sequenceDiagram
 
 ## Uncoalesced wakes on world-local and world-postgres
 
-Both mint spec 9 runs by default and serialize a run's orchestrator deliveries, but neither coalesces.
+Both mint spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set and serialize a run's orchestrator deliveries, but neither coalesces.
 
 ```mermaid
 sequenceDiagram

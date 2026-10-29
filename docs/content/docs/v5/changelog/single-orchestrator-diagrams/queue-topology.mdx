@@ -182,7 +182,7 @@ stateDiagram-v2
 
 ## world-local and world-postgres
 
-Both declare the fence, mint spec 9 runs by default (`mintedSpecVersion()`, `packages/world-local/src/index.ts:147`, `packages/world-postgres/src/index.ts:79`), and serialize a spec 9 run's orchestrator deliveries with `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. Neither coalesces: a second orchestrator message waits and is delivered after the running one, so every background completion's wake is its own orchestrator delivery.
+Both declare the fence, mint spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set (`mintedSpecVersion(process.env, { inBandFence })` in `packages/world-local/src/index.ts` and `packages/world-postgres/src/index.ts`), and serialize a spec 9 run's orchestrator deliveries with `singleOrchestratorRunIdOf` (spec 9 by stamp, then `orchestratorRunIdOf`). Spec 8 runs, step messages, health checks and intermediate hops are not gated. Neither coalesces: a second orchestrator message waits and is delivered after the running one, so every background completion's wake is its own orchestrator delivery.
 
 | | world-local | world-postgres |
 |---|---|---|

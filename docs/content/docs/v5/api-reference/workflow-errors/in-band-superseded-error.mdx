@@ -8,7 +8,7 @@ related:
   - /docs/configuration/runtime-tuning
 ---
 
-A World throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) when it refuses a write made by a run's orchestrator because another invocation of the same run's orchestrator has written in-band since this one loaded the event log.
+A World throws `InBandSupersededError` (HTTP 412, code `in-band-superseded`) when it refuses a write made by a run's orchestrator because another invocation of the same run's orchestrator has written in-band since this one loaded the event log. The runtime sends fenced in-band writes on spec 9 runs (opt-in with `WORKFLOW_SPEC_VERSION=9`), so the error only arises for those runs.
 
 <Callout>
 The Workflow runtime handles this error. The refused invocation stops writing and starts no further inline step bodies. It sends the queue messages its own committed writes still owe (the message of a background step it created, the timer of a wait it created), then asks for a redelivery of its queue message about a second later instead of acknowledging it. The redelivery re-sends any step message a second delivery of the same message committed and never sent, and continues the run if no other invocation does. A redelivery counts toward [`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries), except on the Postgres World, which starts `attempt` over on a delayed redelivery. It never adopts the counts the error carries. You will only encounter it when interacting with World storage APIs directly.
