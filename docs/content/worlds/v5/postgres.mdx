@@ -314,7 +314,7 @@ Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#k
 
 Set to `1` (or `true`) to enable [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) on the Postgres World. Off by default; without it, `start({ hook })` throws before it enqueues anything.
 
-Every worker that serves the database must run a version with start Hook support before you turn it on, because the queue does not route by deployment: an older worker that picks up a candidate's queued message creates its run without the reservation, and the start is no longer idempotent (`start()` reports that the World did not confirm the reservation). For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while reservations are live.
+Stop workers running a previous version before you turn it on. The queue does not route by deployment, so an older worker that picks up a candidate's queued message would create its run without the start Hook, and the start would no longer be idempotent (`start()` reports that the World did not confirm the start Hook). For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while start Hooks are live.
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
 

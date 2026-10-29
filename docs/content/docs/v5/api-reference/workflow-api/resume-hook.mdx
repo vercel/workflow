@@ -16,7 +16,7 @@ It durably writes the `hook_received` event and only then publishes a workflow w
 
 `resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended. See [durable hook resume](/docs/changelog/lazy-hook-resume).
 
-It throws [`HookReservedError`](/docs/api-reference/workflow-errors/hook-reserved-error) instead when the token is reserved by a run started with [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) that has not registered its hook yet. Retry after its `retryAfter`; see [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner). Callers on an SDK older than `start({ hook })` get a retryable `TooEarlyError` for the same answer, never `HookNotFoundError`, so a `HookNotFoundError` check in older code (another service, the CLI) doesn't treat a reserved token as free.
+A run started with [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) has its start Hook from the moment it is admitted, so `resumeHook()` with that token works right away, even before the run starts executing. Payloads sent before the workflow calls `createHook({ token })` are kept and delivered in order once it does. See [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner).
 
 If `resumeHook()` throws any other error, the outcome is ambiguous only in dispatch, never in durability: the event may already be durable even though the workflow wake failed, and any later wake of the run delivers it. Calling `resumeHook()` again creates a new `resumeId` and can append a second `hook_received`. Callers that need at-most-once behavior across separate invocations must retain and deduplicate their own request key.
 
@@ -169,6 +169,8 @@ export async function POST(request: Request) {
 ### Resume or start
 
 A common endpoint shape is "resume or start": one route that resumes the active workflow run for a business key if one exists, or starts a new run otherwise. This comes up when the workflow uses a deterministic hook token as its idempotency key, for example, one active run per order or conversation.
+
+On a World that supports [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts), flip the order: start with the token first, and on `HookConflictError` resume the owner's start Hook, which accepts payloads right away. See [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner). Without it, use the pattern below.
 
 `resumeHook()` is the resume half of that flow. Try it first; if it throws `HookNotFoundError`, no active run owns the token yet, so start the workflow. One subtlety: `start()` returns before the new run executes and registers its hook, so you cannot resume immediately after starting. Retry the resume until the hook is registered: if you drop the payload and only start the workflow, the data from this request is lost.
 
