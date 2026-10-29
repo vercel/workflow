@@ -69,10 +69,17 @@ import { SerializedDataSchema } from './serialization.js';
  *   (`{ token, hookId, tokenRetentionUntil? }`; a World may strip
  *   `metadata`): the runtime binds the workflow's `createHook({ token })` to
  *   the start Hook from it on every replay.
- * - **Orphans.** A candidate accepted but never created (the creating writer
- *   died or stalled before its run existed) holds its token for the World's
- *   hold, resolves as not found, and accepts no resumes: nobody was told it
- *   was admitted. Once the candidate's `runId` is older than
+ * - **Orphans.** A candidate whose run was never created (the creating
+ *   writer died or stalled before its run existed) holds its token for the
+ *   World's hold, and is never released while it can still be created. What
+ *   it looks like until then depends on how far admission got: a claim made
+ *   before the candidate was admitted (world-local, whose acceptance is the
+ *   run itself) is not a Hook yet, so it resolves as not found and takes no
+ *   resumes; an accepted candidate whose run is still to be written (a World
+ *   that admits in more than one write, such as the Vercel backend across
+ *   regions) has its start Hook, resolves by token, and answers a delivery
+ *   with a retryable error until its run appears. Once the candidate's
+ *   `runId` is older than
  *   {@link START_HOOK_CANDIDATE_MAX_AGE_MS} (the same bound `run_created`
  *   already enforces on client-minted ids) it can never be created, its token
  *   is free, and further attempts for it are refused with

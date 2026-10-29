@@ -113,7 +113,11 @@ export interface AtomicStartHookConformanceOptions {
   orphanHoldMs?: number;
   /**
    * Leaves an accepted candidate whose run is not stored yet, for a World
-   * that admits in more than one write (the Vercel backend across regions):
+   * that admits in more than one write (the Vercel backend across regions).
+   * None of the Worlds in this repository can be in that state (world-local
+   * admits with the run record, world-postgres in one transaction), so no
+   * fixture provides it here; the Vercel backend's own suite and the e2e
+   * lane against it cover the case. Same contract:
    * its start Hook exists and resolves by token, a delivery to it gets a
    * retryable answer (`retryAfter`) rather than not found while the run can
    * still appear, and it holds its token until the 24h bound or a fence.
@@ -242,7 +246,9 @@ export function atomicStartHookConformance(
   const virtualRetention =
     options.retentionReadsAdvanceClock === true &&
     options.advanceClock !== undefined;
-  const RETENTION_MS = virtualRetention ? 3_600_000 : 5_000;
+  // Real time must cover the several writes each test makes before it
+  // checks the token is still held, on a slow runner too.
+  const RETENTION_MS = virtualRetention ? 3_600_000 : 10_000;
   /** Waits (or moves the clock) until `until` has passed. */
   async function passRetention(until: number): Promise<void> {
     if (virtualRetention) {
@@ -952,6 +958,8 @@ export function atomicStartHookConformance(
       const acceptedRowlessTest =
         advance && options.stageAcceptedRowlessCandidate ? test : test.skip;
 
+      // Skipped unless a World provides `stageAcceptedRowlessCandidate` (see
+      // the option); in this repository none can stage that state.
       acceptedRowlessTest(
         'an accepted candidate with no run yet resolves, holds its token, and answers deliveries with a retry',
         async () => {
