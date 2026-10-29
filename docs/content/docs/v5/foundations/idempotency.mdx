@@ -96,8 +96,8 @@ export async function POST(request: Request) {
   const { orderId, note } = await request.json();
   const token = `order:${orderId}`;
 
+  let owner: string | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
-    let owner: string | undefined;
     try {
       const run = await start(processOrder, [orderId, note], { hook: { token } });
       return Response.json({ runId: run.runId, started: true });
@@ -121,7 +121,8 @@ export async function POST(request: Request) {
     }
   }
 
-  throw new Error(`Could not start or resume ${token}`);
+  // Still refused: a finished owner holds the token for its retention.
+  throw new Error(`Run ${owner} holds ${token}; it can't be started or resumed`);
 }
 ```
 
@@ -130,7 +131,7 @@ Every caller either starts the run, delivers its payload to the owner, or learns
 - The owner ended in the meantime, so the next `start()` is admitted as the new owner.
 - The owner is still running but has [disposed its start Hook](#keep-the-token-after-the-run-ends). It keeps the token until it ends, so neither a new start nor a resume can succeed until then. The example reports that run rather than retrying.
 
-If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps refusing new starts until the retention passes, and its Hook can no longer be resumed, so the loop above gives up after its attempts. Use `getRun(error.conflictingRunId)` to tell the caller what the finished run returned.
+If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps refusing new starts until the retention passes, and its Hook can no longer be resumed, so the loop above gives up after its attempts and names that run. Use `getRun(owner)` to tell the caller what the finished run returned.
 
 ### Receive the payloads in the workflow
 

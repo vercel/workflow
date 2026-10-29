@@ -21,6 +21,7 @@ import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
 import { throwForErrorResponse } from './events-v4.js';
 import { errorForResponse } from './http-core.js';
 import { createWorld, EXPERIMENTAL_START_HOOK_ENV } from './index.js';
+import { encode as encodeRunId } from './run-id/index.js';
 
 vi.mock('./get-deadline.js', () => ({
   getDeadline: vi.fn(async () => undefined),
@@ -355,6 +356,20 @@ describe('local candidate-age check (world-vercel)', () => {
     ).catch((e: unknown) => e);
     expect(error).toMatchObject({
       status: 400,
+      code: START_HOOK_ADMISSION_REJECTED,
+      reason: 'expired',
+    });
+  });
+
+  it('reads the age of a region-tagged run id the same way', async () => {
+    const tagged = `wrun_${encodeRunId(ulid(Date.now() - 25 * 60 * 60 * 1000), 'iad1')}`;
+    const error = await createWorkflowRunEvent(
+      tagged,
+      created({ token: 'order:1' }),
+      undefined,
+      config
+    ).catch((e: unknown) => e);
+    expect(error).toMatchObject({
       code: START_HOOK_ADMISSION_REJECTED,
       reason: 'expired',
     });
