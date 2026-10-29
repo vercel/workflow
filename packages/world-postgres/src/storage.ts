@@ -28,10 +28,12 @@ import {
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
+  isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
   stripEventDataRefs,
+  TERMINAL_WORKFLOW_RUN_STATUSES,
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -813,6 +815,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // One transaction with its event: a run left `running` without its
         // run_started would take the early return above on every later
         // delivery, so the event would never be written.
+        // The UPDATE is guarded like the terminal one below: a run that ended
+        // after the validation read above must not move back to `running`,
+        // which would leave a row with a completion and a live status.
         value = await drizzle.transaction(async (tx) => {
           const [runValue] = await tx
             .update(Schema.runs)
@@ -821,10 +826,26 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               startedAt: now,
               updatedAt: now,
             })
-            .where(eq(Schema.runs.runId, effectiveRunId))
+            .where(
+              and(
+                eq(Schema.runs.runId, effectiveRunId),
+                notInArray(Schema.runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
+              )
+            )
             .returning();
           if (runValue) {
             run = deserializeRunError(compact(runValue));
+          } else {
+            const [existing] = await tx
+              .select({ status: Schema.runs.status })
+              .from(Schema.runs)
+              .where(eq(Schema.runs.runId, effectiveRunId))
+              .limit(1);
+            if (existing && isTerminalWorkflowRunStatus(existing.status)) {
+              throw new RunExpiredError(
+                `Workflow run "${effectiveRunId}" is already in terminal state "${existing.status}"`
+              );
+            }
           }
           return insertOwnEvent(tx);
         });
