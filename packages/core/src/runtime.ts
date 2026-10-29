@@ -261,18 +261,6 @@ function isEarlyAdvanceOutcome(
 }
 
 /**
- * Thrown by a replay pass that reached the end of the workflow while inline
- * steps of this delivery are still running. The catch settles them and
- * replays again, so the run is never completed or failed over a step body
- * this delivery is still executing.
- */
-class InlineStepsStillRunning extends Error {
-  static is(value: unknown): value is InlineStepsStillRunning {
-    return value instanceof InlineStepsStillRunning;
-  }
-}
-
-/**
  * Apply the optional client-side event-limit override.
  * `WORKFLOW_MAX_EVENTS_OVERRIDE`, when set to a positive integer, clamps the
  * server-supplied per-run event ceiling to a smaller value so enforcement can
@@ -3829,20 +3817,13 @@ export function workflowEntrypoint(
                       });
                       replayRecoveryReporter.activate();
 
-                      // Never complete the run over a step body this delivery
-                      // is still executing (a `Promise.race` loser, or a step
-                      // the workflow stopped awaiting): the catch settles them
-                      // and replays again. Steps that already settled cleanly
-                      // have written their terminal events and hold nothing
-                      // back.
-                      if (
-                        inlineStepsInFlight.size > 0 &&
-                        !inlineStepsInFlight.takeIfAllSettled(
-                          isEarlyAdvanceOutcome
-                        )
-                      ) {
-                        throw new InlineStepsStillRunning();
-                      }
+                      // Inline steps of this delivery may still be running (a
+                      // `Promise.race` loser, or a step the workflow stopped
+                      // awaiting). The run completes now regardless: their
+                      // later step events are the World's to accept or refuse
+                      // against a terminal run, and the handler still waits
+                      // for their bodies before it returns (the `.finally` on
+                      // this delivery).
 
                       // Workflow completed. Do NOT reload-and-retry the create
                       // in place: `result` was computed by this replay, so a
@@ -3883,26 +3864,6 @@ export function workflowEntrypoint(
                       });
                       return;
                     } catch (err) {
-                      // The pass completed or failed the workflow (or its
-                      // replay threw) while inline steps from an earlier pass
-                      // still run. Settle them and act on their outcomes as a
-                      // batch would, then replay from a fresh session over
-                      // the log they extended: the run's terminal event is
-                      // written only once no step body of this delivery is
-                      // running, as when every batch was awaited whole.
-                      if (
-                        !WorkflowSuspension.is(err) &&
-                        inlineStepsInFlight.size > 0 &&
-                        (InlineStepsStillRunning.is(err) ||
-                          !inlineStepsInFlight.takeIfAllSettled(
-                            isEarlyAdvanceOutcome
-                          ))
-                      ) {
-                        retainedSession = null;
-                        const inlineAction = await settleInlineStepsInFlight();
-                        if (inlineAction.done) return inlineAction.value;
-                        continue;
-                      }
                       if (WorkflowSuspension.is(err)) {
                         replayRecoveryReporter.activate();
                         // Synchronous workflow-execution duration for THIS

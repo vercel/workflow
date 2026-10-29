@@ -383,8 +383,10 @@ export function isTurboEnabled(): boolean {
  * invocation, with the siblings still in flight. A branch whose step settled
  * can then start its next step without waiting for the slowest sibling. The
  * siblings stay owned by this invocation: the replay neither creates, queues
- * nor recovers them, and the workflow is never completed or failed while one
- * is still running.
+ * nor recovers them. A pass that ends the workflow writes the run's terminal
+ * event right away; the invocation still waits for the siblings' bodies
+ * before it returns, and their later step events are the World's to accept or
+ * refuse against the terminal run.
  *
  * Reads `process.env.WORKFLOW_INLINE_EARLY_ADVANCE` lazily. Default **ON**;
  * disabled only by an explicit `'0'` / `'false'` (case-insensitive), which

@@ -104,21 +104,6 @@ export class InlineStepsInFlight<
     return { early: false, settled: await this.settleAll() };
   }
 
-  /**
-   * Remove every tracked step if all of them already settled and pass
-   * `isClean`, and report whether it did. Nothing is waited for: a step that
-   * settled cleanly wrote its terminal event and needs nothing more.
-   */
-  takeIfAllSettled(
-    isClean: (outcome: PromiseSettledResult<Result>) => boolean
-  ): boolean {
-    for (const entry of this.#entries.values()) {
-      if (!entry.outcome || !isClean(entry.outcome)) return false;
-    }
-    this.#take(() => true);
-    return true;
-  }
-
   /** Wait for every tracked step and remove them all from tracking. */
   async settleAll(): Promise<InlineStepSettlement<Step, Result>[]> {
     await Promise.all([...this.#entries.values()].map((e) => e.done));

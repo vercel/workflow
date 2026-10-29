@@ -102,25 +102,4 @@ describe('InlineStepsInFlight', () => {
     expect(round.early).toBe(false);
     expect(round.settled).toHaveLength(2);
   });
-
-  it('takes settled clean steps without waiting, and nothing while one runs', async () => {
-    const steps = new InlineStepsInFlight<{ correlationId: string }, Result>();
-    const a = trackStep(steps, 'a');
-    const b = trackStep(steps, 'b');
-    a.execution.resolve({ type: 'completed' });
-    await a.execution.promise;
-    expect(steps.takeIfAllSettled(isClean)).toBe(false);
-    expect(steps.size).toBe(2);
-
-    b.execution.resolve({ type: 'retry' });
-    await steps.settle(false, isClean).then(() => {});
-    expect(steps.size).toBe(0);
-
-    const c = trackStep(steps, 'c');
-    c.execution.resolve({ type: 'completed' });
-    await c.execution.promise;
-    await Promise.resolve();
-    expect(steps.takeIfAllSettled(isClean)).toBe(true);
-    expect(steps.ids.size).toBe(0);
-  });
 });
