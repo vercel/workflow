@@ -498,6 +498,22 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * telemetry field. Anything unparseable degrades to "no measurement".
      */
     hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
+    /**
+     * Marks a continuation an invocation enqueued because one of its parallel
+     * inline steps settled while the others were still running in it. The
+     * settled branch advances in the receiving invocation instead of waiting
+     * for those siblings.
+     *
+     * The receiver replays advance-only: it acts on the work its own replay
+     * creates and leaves the still-running siblings to the invocation that
+     * owns them, which replays once they settle. A consumer that predates the
+     * field replays the ordinary way, which costs only re-dispatches the queue
+     * dedupes.
+     *
+     * `.catch(undefined)` for the reason `hookResumeTiming` has it: a malformed
+     * value must read as "not advance-only" rather than fail the parse.
+     */
+    advanceOnly: z.literal(true).optional().catch(undefined),
   })
 );
 

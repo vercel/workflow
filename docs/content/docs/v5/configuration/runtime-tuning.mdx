@@ -198,6 +198,31 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Records which queue message owns each inline step execution, so a wake (hook resume, elapsed wait) that replays the run mid-step schedules a delayed backstop instead of immediately redispatching and reexecuting the step. See [Inline step message ownership](/docs/changelog/step-message-ownership).
 - Set `0` or `false` to revert to the previous unconditional immediate re-dispatch.
 
+### `WORKFLOW_EAGER_BRANCH_REPLAY`
+
+- Default: enabled
+- Node.js VM engine only. Lets each branch of a `Promise.all` start its next step as soon as its own step settles, instead of once every step pending beside it has. A background step whose siblings are still running replays the run, and an inline step that settles before the rest of its inline batch hands the run to a fresh invocation. Both replays act only on work they create, so a branch with nothing left to do costs one replay and no writes. See [Branches advance independently](/docs/changelog/eager-processing#branches-advance-independently).
+- Applies only while at most [`WORKFLOW_EAGER_BRANCH_REPLAY_MAX_PENDING`](#workflow_eager_branch_replay_max_pending) other steps are pending beside the settled one, and only once they are still running after [`WORKFLOW_EAGER_BRANCH_REPLAY_DELAY_MS`](#workflow_eager_branch_replay_delay_ms).
+- On the QuickJS engine (`WORKFLOW_VM=quickjs`), a branch still waits for the steps pending beside it.
+- Set `0` or `false` to restore that behavior on the Node.js engine too, so each round of a fan-out takes as long as its slowest step.
+
+### `WORKFLOW_EAGER_BRANCH_REPLAY_MAX_PENDING`
+
+- Default: `8`
+- Minimum: `0`
+- The most other steps that may be pending beside a settled step for its branch to advance at once under [`WORKFLOW_EAGER_BRANCH_REPLAY`](#workflow_eager_branch_replay). In a wider fan-out a branch waits for its siblings, as it does with the feature off.
+- The bound exists because an early replay does work only when the settled branch has a step after the one that settled. In a wide fan-out of one-step branches, every settlement but the last replays for nothing, and each replay reads a log that grows with the fan-out. With the bound, such a fan-out pays at most this many extra replays per round.
+- Raise it to let the branches of wider fan-outs advance independently, at the cost of up to one replay per settlement in them.
+
+### `WORKFLOW_EAGER_BRANCH_REPLAY_DELAY_MS`
+
+- Default: `250`
+- Minimum: `0`
+- How long a settled branch under [`WORKFLOW_EAGER_BRANCH_REPLAY`](#workflow_eager_branch_replay) waits for the steps pending beside it before it advances on its own. If they have all settled by then, the run replays once for all of them, as it does with the feature off.
+- Only the steps that ran alongside the settled one count. A branch doesn't wait for steps that other branches created after advancing on their own.
+- An early replay costs about as much as an ordinary one, so it only pays off when the branch would otherwise wait longer than that. Steps that settle close together, as in most fan-outs of short steps, are cheaper to replay once for.
+- A branch beside a long-running sibling, such as a tool call beside a model call, starts its next step this much after its own step settles. Set `0` to advance at once, at the cost of a replay per settlement in short-step fan-outs.
+
 ### `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`
 
 - Default: `860`
