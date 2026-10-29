@@ -15,12 +15,18 @@ import {
   START_HOOK_ADMISSION_REJECTED,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, type WorkflowRun } from '@workflow/world';
+import {
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type WorkflowRun,
+} from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import { workflowEntrypoint } from '../runtime.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import { setWorld } from './world.js';
+
+/** These cover the spec 8 delivery; spec9/start-hook.runtime.test.ts covers the single orchestrator. */
+const SPEC_8 = SPEC_VERSION_SINGLE_ORCHESTRATOR - 1;
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
@@ -79,7 +85,7 @@ async function deliver(opts: {
   });
   const queue = vi.fn(async () => ({ messageId: null }));
   setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_8,
     getDeploymentId: vi.fn(async () => 'test-deployment'),
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
@@ -92,7 +98,7 @@ async function deliver(opts: {
                 input,
                 deploymentId: 'test-deployment',
                 workflowName: 'workflow',
-                specVersion: SPEC_VERSION_CURRENT,
+                specVersion: SPEC_8,
                 executionContext: {},
                 ...(opts.encryptionPublicKey
                   ? { encryptionPublicKey: opts.encryptionPublicKey }

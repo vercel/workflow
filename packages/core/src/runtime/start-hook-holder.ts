@@ -1,6 +1,10 @@
 import { WorkflowRunNotFoundError } from '@workflow/errors';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
-import { getRunQueueNamespace } from '@workflow/world';
+import {
+  getRunQueueNamespace,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { getWorkflowQueueName } from './helpers.js';
 
@@ -80,18 +84,33 @@ export async function wakePendingStartHookHolder(
     ) {
       return skipped('too_young');
     }
+    // A single-orchestrator run's orchestrator messages travel one at a time
+    // on the run's own channel, which `runSpecVersion` routes to. A key would
+    // also move the wake off that channel, and it isn't needed there: a
+    // duplicate wake is one cheap delivery (see `wakeRunAfterOutOfBandWrite`).
+    const singleOrchestrator =
+      (holder.specVersion ?? SPEC_VERSION_LEGACY) >=
+      SPEC_VERSION_SINGLE_ORCHESTRATOR;
     await world.queue(
       getWorkflowQueueName(
         holder.workflowName,
         getRunQueueNamespace(holder.executionContext)
       ),
-      { runId: holder.runId, traceCarrier } satisfies WorkflowInvokePayload,
+      {
+        runId: holder.runId,
+        traceCarrier,
+        ...(singleOrchestrator
+          ? { requestedAt: new Date(nowMs), runSpecVersion: holder.specVersion }
+          : {}),
+      } satisfies WorkflowInvokePayload,
       {
         deploymentId: holder.deploymentId,
         ...(holder.specVersion !== undefined
           ? { specVersion: holder.specVersion }
           : {}),
-        idempotencyKey: startHookHolderWakeKey(holder.runId, nowMs),
+        ...(singleOrchestrator
+          ? {}
+          : { idempotencyKey: startHookHolderWakeKey(holder.runId, nowMs) }),
       }
     );
     runtimeLogger.info(

@@ -135,6 +135,12 @@ import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import { resolveRunStartHook } from '../start-hook-binding.js';
+import {
+  ackRefusedStartHookCandidate,
+  admitsTurboStart,
+  recordAcceptedStartHookCandidate,
+} from '../start-hook-delivery.js';
 import { computeStepLatencyTracking } from '../step-latency.js';
 import { useQuickJSVm } from '../vm-mode.js';
 import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
@@ -639,9 +645,13 @@ async function runDelivery(
   // does a re-run of a delivery whose queue coalesced other
   // messages into it, which the World reports as one too.
   // A restart in place (see `MAX_RUN_AHEAD_RESTARTS`) is not turbo.
+  // Never for a `start({ hook })` candidate: its `run_started`
+  // may refuse it, and turbo runs inline step bodies before that
+  // write returns (see `admitsTurboStart`).
   let turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
+    admitsTurboStart(runInput) &&
     metadata.attempt === 1 &&
     (metadata.deliveryCount ?? 1) === 1 &&
     !incomingStepId &&
@@ -1284,6 +1294,11 @@ async function runDelivery(
         continue;
       }
       if (turboStartFailure) {
+        // Defensive: turbo is off for start Hook candidates, so a
+        // backgrounded `run_started` never decides one.
+        if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
+          return undefined;
+        }
         if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
           runtimeLogger.info('Run already finished during setup, skipping', {
             workflowRunId: runId,
@@ -1351,6 +1366,9 @@ async function runDelivery(
               // Without the key, a run this event creates could never
               // receive sealed writes.
               encryptionPublicKey: runInput.encryptionPublicKey,
+              // The queued copy of `start({ hook })`: this write may
+              // be the one that admits or refuses the candidate.
+              startHook: runInput.startHook,
             },
           }
         : {}),
@@ -1559,6 +1577,11 @@ async function runDelivery(
           const started = await createEvent(runStartedRequest(), {
             requestId,
           });
+          recordAcceptedStartHookCandidate(
+            runInput,
+            started.run ?? { runId },
+            span
+          );
           run = started.run ?? run;
           maxEventsLimit = clampMaxEvents(started.maxEvents);
           runStartedReceivedAtMs = Date.now();
@@ -1566,6 +1589,12 @@ async function runDelivery(
             resumeTracking.setupSource = 'run_started';
           }
         } catch (err) {
+          // A refused `start({ hook })` candidate: nothing ran and
+          // it never becomes a run. Narrowed to the two admission
+          // answers; every other error keeps its handling below.
+          if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
+            return undefined;
+          }
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info('Run already finished during setup, skipping', {
               workflowRunId: runId,
@@ -2902,6 +2931,14 @@ async function runDelivery(
               drainPendingQueue: pendingQueueDrain(world, (data, params) =>
                 writeInBand(data, params)
               ),
+              // `start({ hook })` runs: the body's createHook with the start
+              // token binds to the Hook the admission created. Undefined for
+              // every other run.
+              startHook: resolveRunStartHook({
+                events: log.events,
+                workflowRun,
+                runInput,
+              }),
             });
           }
           await payloadPrewarm;

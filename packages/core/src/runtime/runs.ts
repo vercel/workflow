@@ -272,9 +272,9 @@ export async function cancelRun(
     };
     await world.events.create(runId, eventRequest, {
       v1Compat: compatMode,
-      ...(isSingleOrchestratorRun(run) ? { inBand: false } : {}),
+      ...(run && isSingleOrchestratorRun(run) ? { inBand: false } : {}),
     });
-    await wakeRunAfterOutOfBandWrite(world, run);
+    if (run) await wakeRunAfterOutOfBandWrite(world, run);
   } catch (err) {
     // The World fenced a candidate that never became a run: cancelled.
     if (
