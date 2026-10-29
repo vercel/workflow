@@ -32,7 +32,7 @@ import {
   type SerializedData,
   SNAPSHOT_FORMAT_VERSION,
   type SnapshotMetadata,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   type WorkflowRun,
 } from '@workflow/world';
@@ -1185,7 +1185,7 @@ export async function runWorkflowWithQuickJS(params: {
     try {
       const result = await createEvent({
         eventType: 'wait_completed',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId,
         eventData: { resumeAt: new Date(event.eventData.resumeAt) },
       });
@@ -1616,7 +1616,7 @@ export async function runWorkflowWithQuickJS(params: {
     const written = await createEvent(
       {
         eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: step.correlationId,
         eventData: {
           stepName: step.stepId,
@@ -2102,7 +2102,7 @@ export async function runWorkflowWithQuickJS(params: {
         );
       }
       const dispatched = await dispatchPendingOps({
-        eventSpecVersion: SPEC_VERSION_CURRENT,
+        eventSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         stampCreations: true,
         world,
         runId,
@@ -2189,7 +2189,7 @@ export async function runWorkflowWithQuickJS(params: {
             try {
               await createEvent({
                 eventType: 'wait_completed',
-                specVersion: SPEC_VERSION_CURRENT,
+                specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
                 correlationId: wait.correlationId,
                 eventData: { resumeAt: new Date(wait.resumeAt) },
               });
@@ -2576,7 +2576,7 @@ export async function runWorkflowWithQuickJS(params: {
     if (result.completed.drainOperations?.length) {
       try {
         await dispatchPendingOps({
-          eventSpecVersion: SPEC_VERSION_CURRENT,
+          eventSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           stampCreations: true,
           world,
           runId,
@@ -2613,7 +2613,7 @@ export async function runWorkflowWithQuickJS(params: {
     try {
       await terminalCreateEvent({
         eventType: 'run_completed',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {
           output: await encryptSerializedData(
             result.completed.result,
@@ -2878,7 +2878,7 @@ export async function runWorkflowWithQuickJS(params: {
     if (result.failed.drainOperations?.length) {
       try {
         await dispatchPendingOps({
-          eventSpecVersion: SPEC_VERSION_CURRENT,
+          eventSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           stampCreations: true,
           world,
           runId,
@@ -3020,7 +3020,7 @@ export async function runWorkflowWithQuickJS(params: {
     try {
       await terminalCreateEvent({
         eventType: 'run_failed',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         eventData: {
           error: dehydratedError,
           errorCode,

@@ -30,7 +30,7 @@ import {
   type Event,
   getQueueTopicPrefix,
   type QueuePayload,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
 } from '@workflow/world';
 import { createVirtualClock, type VirtualClock } from './clock.js';
@@ -576,7 +576,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   }
 
   const world: SimWorld = {
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     capabilities: {
       // The queue hands out one orchestrator delivery per run at a time
       // (see queue.ts), and the store fences in-band writes.

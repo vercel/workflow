@@ -80,12 +80,16 @@ export function assertWorldSupportsInBandFence(
 ): void {
   if (world.capabilities?.inBandFence === true) return;
   throw new WorkflowRuntimeError(
-    'The configured World does not declare the in-band writer fence ' +
-      '(`capabilities.inBandFence`), which this Workflow runtime requires ' +
-      `for spec version ${SPEC_VERSION_SINGLE_ORCHESTRATOR} runs. ` +
-      'A World must return `snapshot: { seq, seqInBand }` from `events.list` ' +
-      'and refuse a stale in-band write with `InBandSupersededError` (412). ' +
-      'Install a World package version that implements it; see "Building a World" ' +
-      'in the Workflow docs.'
+    `Spec version ${SPEC_VERSION_SINGLE_ORCHESTRATOR} runs require the in-band ` +
+      'writer fence (`capabilities.inBandFence`), which the configured World ' +
+      'does not declare. ' +
+      'A World that has not implemented the fence should declare ' +
+      '`specVersion: mintedSpecVersion()`, which creates spec 8 runs. Once it ' +
+      'returns `snapshot: { seq, seqInBand }` from `events.list` and refuses a ' +
+      'stale in-band write with `InBandSupersededError` (412), it can declare ' +
+      '`capabilities.inBandFence: true` and ' +
+      '`specVersion: mintedSpecVersion(process.env, { inBandFence: true })`, ' +
+      'which creates spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set. ' +
+      'See "Building a World" in the Workflow docs.'
   );
 }

@@ -408,15 +408,16 @@ export interface Storage {
    *   `step_failed` and `wait_completed` must stay accepted after the run
    *   ended.
    * - Each write says whether the orchestrator made it
-   *   ({@link CreateEventParams.inBand}). The **in-band fence** is required:
-   *   `list` returns a `snapshot`, and a stale in-band write is refused with
-   *   `InBandSupersededError` before anything is written, which keeps the
-   *   run to one writer even when two orchestrator invocations overlap. The
-   *   queue delivering a run's orchestrator messages one at a time
-   *   (`WorldCapabilities.maxConcurrency`) makes such an overlap rare; the
-   *   fence is what makes it safe. A World declares the fence with
-   *   `WorldCapabilities.inBandFence`, and the runtime refuses a World that
-   *   does not.
+   *   ({@link CreateEventParams.inBand}). The **in-band fence** is required
+   *   for these runs: `list` returns a `snapshot`, and a stale in-band write
+   *   is refused with `InBandSupersededError` before anything is written,
+   *   which keeps the run to one writer even when two orchestrator
+   *   invocations overlap. The queue delivering a run's orchestrator
+   *   messages one at a time (`WorldCapabilities.maxConcurrency`) makes such
+   *   an overlap rare; the fence is what makes it safe. A World declares the
+   *   fence with `WorldCapabilities.inBandFence`; the runtime refuses to
+   *   create or drive a spec 9 run on a World that does not, and such a
+   *   World creates spec 8 runs (see `mintedSpecVersion`).
    * - An in-band write's `createdAt` is the `occurredAt` it was sent with
    *   ({@link CreateEventParams.occurredAt}), on creates and on batch items
    *   alike. The runtime's run-ahead hands an inline step's outcome to the
@@ -649,8 +650,9 @@ export interface Storage {
  * closed (keep their conservative behavior) unless the World explicitly
  * declares it.
  *
- * One member is required rather than optional: {@link inBandFence}. The
- * runtime refuses a World that does not declare it.
+ * {@link inBandFence} is required for spec 9 runs, which are opt-in
+ * (`WORKFLOW_SPEC_VERSION=9`): the runtime refuses to create or drive one on
+ * a World that does not declare it. A World without it creates spec 8 runs.
  */
 export interface WorldCapabilities {
   /**
@@ -690,11 +692,13 @@ export interface WorldCapabilities {
 
   /**
    * The World implements the in-band writer fence on single-orchestrator runs
-   * (spec >= 9). **Required**: this is the one member of
-   * {@link WorldCapabilities} the runtime does not treat as optional:
-   * `@workflow/core` refuses a World that does not declare it in `start()`
-   * and at the start of every orchestrator delivery, before it writes
-   * anything.
+   * (spec >= 9). **Required for spec 9 runs**: `@workflow/core` refuses to
+   * create one in `start()`, or to begin a spec 9 orchestrator delivery, on
+   * a World that does not declare it, before it writes anything. Spec 9 runs
+   * are opt-in (`WORKFLOW_SPEC_VERSION=9`), and a World that declares this
+   * passes `{ inBandFence: true }` to `mintedSpecVersion` so the setting can
+   * take effect. A World without it creates spec 8 runs, which need no
+   * fence.
    *
    * Declaring it commits the World to all of:
    *

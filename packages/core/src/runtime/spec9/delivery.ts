@@ -33,7 +33,7 @@ import {
   isTerminalWorkflowRunStatus,
   type RunInput,
   type SerializedData,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   slotToEventId,
   type WorkflowInvokePayload,
@@ -255,7 +255,7 @@ function turboRunCreatedEvent(runId: string, input: RunInput): Event {
     eventId: slotToEventId(FIRST_EVENT_SLOT),
     runId,
     eventType: 'run_created',
-    specVersion: input.specVersion ?? SPEC_VERSION_CURRENT,
+    specVersion: input.specVersion ?? SPEC_VERSION_SINGLE_ORCHESTRATOR,
     createdAt: new Date(runIdCreatedAt(runId) ?? Date.now()),
     eventData: {
       deploymentId: input.deploymentId,
@@ -1329,7 +1329,7 @@ async function runDelivery(
   function runStartedRequest() {
     return {
       eventType: 'run_started' as const,
-      specVersion: runInput?.specVersion ?? SPEC_VERSION_CURRENT,
+      specVersion: runInput?.specVersion ?? SPEC_VERSION_SINGLE_ORCHESTRATOR,
       ...(runInput
         ? {
             eventData: {
@@ -1651,7 +1651,7 @@ async function runDelivery(
         await createEvent(
           {
             eventType: 'hook_received',
-            specVersion: SPEC_VERSION_CURRENT,
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
             correlationId: hookInput.hookId,
             eventData: {
               token: hookInput.token,
@@ -2759,7 +2759,7 @@ async function runDelivery(
             const completed = await createEvent(
               {
                 eventType: 'wait_completed' as const,
-                specVersion: SPEC_VERSION_CURRENT,
+                specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
                 correlationId: wait.correlationId,
                 eventData: { resumeAt: wait.resumeAt },
               },
@@ -2905,7 +2905,7 @@ async function runDelivery(
               completed = await createEvent(
                 {
                   eventType: 'run_completed',
-                  specVersion: SPEC_VERSION_CURRENT,
+                  specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
                   eventData: { output: workflowResult.output },
                 },
                 { requestId }
@@ -4470,7 +4470,7 @@ async function runDelivery(
       failedResult = await createEvent(
         {
           eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData: { error: dehydratedError, errorCode },
         },
         {
@@ -4550,7 +4550,7 @@ export const spec9Orchestrator: Orchestrator = {
       await writer.create(
         {
           eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           eventData,
         },
         { requestId, ...slotSnapshotParams(loaded.events) }

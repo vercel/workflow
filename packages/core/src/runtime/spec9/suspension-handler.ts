@@ -8,7 +8,7 @@ import {
   type CreateEventParams,
   type CreateEventRequest,
   type SerializedData,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
@@ -292,7 +292,7 @@ export async function handleSuspension({
     eventLog,
     forceClaimVictimWakes,
     createGuarded,
-    eventSpecVersion: SPEC_VERSION_CURRENT,
+    eventSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     terminalDrain,
   });
   const {
@@ -350,7 +350,7 @@ export async function handleSuspension({
           await createGuarded(
             {
               eventType: 'step_created' as const,
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: queueItem.correlationId,
               eventData: {
                 stepName: queueItem.stepName,
@@ -384,7 +384,7 @@ export async function handleSuspension({
           await createGuarded(
             {
               eventType: 'wait_created' as const,
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: queueItem.correlationId,
               eventData: { resumeAt: queueItem.resumeAt },
             },
@@ -418,7 +418,7 @@ export async function handleSuspension({
           await createGuarded(
             {
               eventType: 'attr_set',
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: queueItem.correlationId,
               eventData: {
                 changes: queueItem.changes,

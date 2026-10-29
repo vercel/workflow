@@ -45,8 +45,10 @@ export function createWorld(config?: APIConfig): World {
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
   // Read once: the runtime validates this declaration, and `run_started`
-  // attests the same value (see `APIConfig.mintedSpecVersion`).
-  const specVersion = mintedSpecVersion();
+  // attests the same value (see `APIConfig.mintedSpecVersion`). The backend
+  // fences in-band writes (`capabilities.inBandFence` below), so
+  // `WORKFLOW_SPEC_VERSION=9` creates spec 9 runs; spec 8 otherwise.
+  const specVersion = mintedSpecVersion(process.env, { inBandFence: true });
   config = { ...config, mintedSpecVersion: specVersion };
 
   return {

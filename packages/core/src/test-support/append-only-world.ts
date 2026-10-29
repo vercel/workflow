@@ -12,7 +12,7 @@ import {
   type ListEventsParams,
   orchestratorRunIdOf,
   type QueueBatchResult,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorContinuationPayload,
   slotToEventId,
   type WorkflowRun,
@@ -285,7 +285,10 @@ export class AppendOnlyWorld {
 
   /** Seed a run as if `run_created` had been written. */
   seedRun(run: Omit<WorkflowRun, 'specVersion'> & { specVersion?: number }) {
-    this.run = { specVersion: SPEC_VERSION_CURRENT, ...run } as WorkflowRun;
+    this.run = {
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      ...run,
+    } as WorkflowRun;
     this.append({
       eventType: 'run_created',
       runId: run.runId,
@@ -307,7 +310,10 @@ export class AppendOnlyWorld {
     run: Omit<WorkflowRun, 'specVersion'> & { specVersion?: number },
     events: readonly Event[]
   ) {
-    this.run = { specVersion: SPEC_VERSION_CURRENT, ...run } as WorkflowRun;
+    this.run = {
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      ...run,
+    } as WorkflowRun;
     for (const event of events) {
       this.events.push(structuredClone(event));
       this.applyToRun(event);
@@ -337,7 +343,7 @@ export class AppendOnlyWorld {
       executionContext: eventData.executionContext,
       input: eventData.input,
       status: 'pending',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       createdAt: new Date(),
       updatedAt: new Date(),
     } as unknown as WorkflowRun;
@@ -425,7 +431,7 @@ export class AppendOnlyWorld {
       runId: this.run?.runId ?? partial.runId,
       eventId: slotToEventId(slot),
       createdAt: createdAt ?? new Date(),
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     } as Event;
     this.events.push(event);
     this.events.sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
@@ -997,7 +1003,7 @@ export class AppendOnlyWorld {
     if (self.options.noBatch) delete events.createBatch;
 
     const world = {
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       events,
       runs: {
         async get() {

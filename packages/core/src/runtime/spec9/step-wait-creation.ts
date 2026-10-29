@@ -9,7 +9,7 @@ import {
   type CreateEventRequest,
   type Event,
   type SerializedData,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
 } from '@workflow/world';
 import type {
@@ -257,7 +257,7 @@ export async function planStepsAndWaits(
       // body as soon as it commits.
       events.push({
         eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: entry.item.correlationId,
         eventData: {
           stepName: entry.item.stepName,
@@ -270,7 +270,7 @@ export async function planStepsAndWaits(
     } else {
       events.push({
         eventType: 'step_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: entry.item.correlationId,
         eventData: {
           stepName: entry.item.stepName,
@@ -285,7 +285,7 @@ export async function planStepsAndWaits(
   for (const item of waitItems) {
     events.push({
       eventType: 'wait_created',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: item.correlationId,
       eventData: {
         resumeAt: item.resumeAt,
@@ -647,7 +647,7 @@ async function finalizeUnserializableStep(
   )) as SerializedData;
   await writer.create({
     eventType: 'step_created',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     correlationId: item.correlationId,
     eventData: {
       stepName: item.stepName,
@@ -659,7 +659,7 @@ async function finalizeUnserializableStep(
   });
   await writer.create({
     eventType: 'step_failed',
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     correlationId: item.correlationId,
     eventData: {
       stepName: item.stepName,

@@ -1,4 +1,4 @@
-import type { Queue, Storage, World } from '@workflow/world';
+import type { Queue, Storage, World, WorldCapabilities } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
@@ -75,27 +75,32 @@ export function createWorld(
   const storage = createStorage(drizzle, runStatusListener);
   const streamer = createStreamer(pool, drizzle);
 
+  const capabilities = {
+    hookRetention: { active: true },
+    // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
+    // upload path, so `start()` always sends the code inline.
+    dynamicWorkflowCode: true,
+    hookResumeDedup: true,
+    ...(config.enableInvoke ? { invoke: true } : {}),
+    // One transaction re-points the token, journals the victim's
+    // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
+    // the hook_created branch of storage.ts.
+    hookForceClaim: true,
+    // A single-orchestrator run's orchestrator deliveries share one
+    // Graphile named queue (see queue.ts), and the events storage fences
+    // in-band writes and stores them at their `occurredAt` (see
+    // storage.ts): the two halves of the single-writer guarantee.
+    maxConcurrency: true,
+    // Required by the runtime; see in-band-fence.test.ts for conformance.
+    inBandFence: true,
+  } satisfies WorldCapabilities;
   return {
-    specVersion: mintedSpecVersion(),
-    capabilities: {
-      hookRetention: { active: true },
-      // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
-      // upload path, so `start()` always sends the code inline.
-      dynamicWorkflowCode: true,
-      hookResumeDedup: true,
-      ...(config.enableInvoke ? { invoke: true } : {}),
-      // One transaction re-points the token, journals the victim's
-      // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
-      // the hook_created branch of storage.ts.
-      hookForceClaim: true,
-      // A single-orchestrator run's orchestrator deliveries share one
-      // Graphile named queue (see queue.ts), and the events storage fences
-      // in-band writes and stores them at their `occurredAt` (see
-      // storage.ts): the two halves of the single-writer guarantee.
-      maxConcurrency: true,
-      // Required by the runtime; see in-band-fence.test.ts for conformance.
-      inBandFence: true,
-    },
+    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
+    // the in-band fence declared above; spec 8 otherwise.
+    specVersion: mintedSpecVersion(process.env, {
+      inBandFence: capabilities.inBandFence,
+    }),
+    capabilities,
     ...storage,
     ...streamer,
     ...queue,

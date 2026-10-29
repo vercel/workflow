@@ -46,7 +46,6 @@ import {
   type PaginationOptions,
   type ResolveData,
   requireEventSlot,
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type Step,
   type Storage,
@@ -662,7 +661,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
     const resolveData: ResolveData = entityResolveData(
       params?.resolveData ?? 'all'
     );
-    const specVersion = data.specVersion ?? SPEC_VERSION_CURRENT;
+    const specVersion = data.specVersion ?? SPEC_VERSION_SINGLE_ORCHESTRATOR;
 
     let runId: string;
     if (data.eventType === 'run_created' && !runIdArg) {

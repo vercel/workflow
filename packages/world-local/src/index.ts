@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { QueuePrefix, World } from '@workflow/world';
+import type { QueuePrefix, World, WorldCapabilities } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
@@ -143,33 +143,38 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     tag
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
+  const capabilities = {
+    hookRetention: { active: true },
+    // Stored whole on the run record; no upload path, so `start()` always
+    // sends the code inline.
+    dynamicWorkflowCode: true,
+    // world-local deduplicates concurrent `hook_received` writes sharing a
+    // `(runId, resumeId)` via a filesystem sidecar claim (see
+    // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
+    // path converges on one event in dev exactly as it does on Vercel.
+    hookResumeDedup: true,
+    // The token claim lock serializes the takeover behind
+    // `createHook({ experimental_force: true })`; see the hook_created
+    // branch of storage/events-storage.ts.
+    hookForceClaim: true,
+    // The queue delivers a single-orchestrator run's orchestrator messages
+    // one at a time (an in-process per-run gate, see queue.ts): with the
+    // fence, the two halves of the single-writer guarantee. An in-band
+    // write is stored at its `occurredAt` (events-storage.ts), as the
+    // spec-9 contract requires.
+    maxConcurrency: true,
+    // A per-run in-band count on disk, under a lock file, so every process
+    // on the data directory shares it; see the in-band writer fence in
+    // storage/events-storage.ts.
+    inBandFence: true,
+  } satisfies WorldCapabilities;
   return {
-    specVersion: mintedSpecVersion(),
-    capabilities: {
-      hookRetention: { active: true },
-      // Stored whole on the run record; no upload path, so `start()` always
-      // sends the code inline.
-      dynamicWorkflowCode: true,
-      // world-local deduplicates concurrent `hook_received` writes sharing a
-      // `(runId, resumeId)` via a filesystem sidecar claim (see
-      // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
-      // path converges on one event in dev exactly as it does on Vercel.
-      hookResumeDedup: true,
-      // The token claim lock serializes the takeover behind
-      // `createHook({ experimental_force: true })`; see the hook_created
-      // branch of storage/events-storage.ts.
-      hookForceClaim: true,
-      // The queue delivers a single-orchestrator run's orchestrator messages
-      // one at a time (an in-process per-run gate, see queue.ts): with the
-      // fence, the two halves of the single-writer guarantee. An in-band
-      // write is stored at its `occurredAt` (events-storage.ts), as the
-      // spec-9 contract requires.
-      maxConcurrency: true,
-      // A per-run in-band count on disk, under a lock file, so every process
-      // on the data directory shares it; see the in-band writer fence in
-      // storage/events-storage.ts.
-      inBandFence: true,
-    },
+    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
+    // the in-band fence declared above; spec 8 otherwise.
+    specVersion: mintedSpecVersion(process.env, {
+      inBandFence: capabilities.inBandFence,
+    }),
+    capabilities,
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {

@@ -56,6 +56,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
@@ -1554,7 +1555,7 @@ function createUnfencedEventsStorage(
         if (requiresNewerWorld(currentRun.specVersion)) {
           throw new RunNotSupportedError(
             currentRun.specVersion!,
-            SPEC_VERSION_CURRENT
+            SPEC_VERSION_MAX_SUPPORTED
           );
         }
 

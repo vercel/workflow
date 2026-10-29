@@ -5,6 +5,7 @@ import {
   isStepEventType,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_MAX_SUPPORTED,
   type Storage,
 } from '@workflow/world';
 
@@ -69,7 +70,12 @@ export async function releaseOrphanedSteps(
     try {
       await storage.events.create(runId, {
         eventType: 'step_retrying',
-        specVersion: SPEC_VERSION_CURRENT,
+        // The run's own version, so a reader of an older run never meets an
+        // event stamped above what it supports.
+        specVersion: Math.min(
+          run.specVersion ?? SPEC_VERSION_CURRENT,
+          SPEC_VERSION_MAX_SUPPORTED
+        ),
         correlationId: stepId,
         eventData: {
           ...(step.stepName !== undefined && { stepName: step.stepName }),

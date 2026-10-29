@@ -21,7 +21,7 @@ import type {
   World,
 } from '@workflow/world';
 import {
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
 
@@ -275,7 +275,7 @@ export async function failStepForExhaustedRetries(params: {
   try {
     const result = await params.createEvent({
       eventType: 'step_failed',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: params.stepId,
       eventData: {
         stepName: params.stepName,
@@ -335,7 +335,7 @@ export async function failStepForExhaustedDeliveries(params: {
   try {
     const result = await params.createEvent({
       eventType: 'step_failed',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: params.stepId,
       eventData: {
         stepName: params.stepName,
@@ -455,7 +455,7 @@ export async function executeStep(
         const result = await createEvent(
           {
             eventType: 'step_failed',
-            specVersion: SPEC_VERSION_CURRENT,
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
             correlationId: stepId,
             eventData: {
               stepName,
@@ -515,7 +515,7 @@ export async function executeStep(
     let stepStartedAt: Date;
     const startEvent = {
       eventType: 'step_started' as const,
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: stepId,
       eventData: {
         stepName,
@@ -992,7 +992,7 @@ export async function executeStep(
           const failed = await createEvent(
             {
               eventType: 'step_failed',
-              specVersion: SPEC_VERSION_CURRENT,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               correlationId: stepId,
               eventData: {
                 stepName,
@@ -1103,7 +1103,7 @@ export async function executeStep(
       try {
         retrying = await createEvent({
           eventType: 'step_retrying',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: stepId,
           eventData: {
             stepName,
@@ -1150,7 +1150,7 @@ export async function executeStep(
       completedResult = await createEvent(
         {
           eventType: 'step_completed',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           correlationId: stepId,
           eventData: {
             stepName,

@@ -147,9 +147,11 @@ export type SpecVersionSource =
  * its event log, and for a cross-deployment start that is the target, not
  * this caller. The capability probe runs inside the target and reports the
  * version the target itself mints (which already honours the target's own
- * `WORKFLOW_SEALED_LOG` switch), so that is the answer, capped at what this
- * caller's World mints: the caller writes `run_created` and the arguments,
- * and must never stamp a version it could not have written itself.
+ * `WORKFLOW_SPEC_VERSION` and `WORKFLOW_SEALED_LOG` settings), so that is the
+ * answer, capped at what this caller's World mints: the caller writes
+ * `run_created` and the arguments, and must never stamp a version it could
+ * not have written itself. A spec 9 run therefore needs
+ * `WORKFLOW_SPEC_VERSION=9` on both the caller and the target.
  *
  * When the target does not report a usable version:
  *
@@ -651,10 +653,9 @@ export async function start<TArgs extends unknown[], TResult>(
       assertWorldSupportsRuntimeProtocol(world);
       // A World that mints single-orchestrator runs must provide their fence,
       // so a misconfigured one fails before anything is read or written.
-      // Planned before merge (spec 9 opt-in): once `mintedSpecVersion()`
-      // returns 9 only for a World that passes `inBandFence: true`, this is
-      // reachable only by a World that hard-codes 9, and its error names the
-      // capability and `WORKFLOW_SPEC_VERSION`.
+      // `mintedSpecVersion()` returns 9 only to a World that passes
+      // `inBandFence: true`, so this is reached only by a World that declares
+      // spec 9 some other way (a literal, or the wrong capability).
       if (world.specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
         assertWorldSupportsInBandFence(world);
       }

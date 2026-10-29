@@ -175,7 +175,10 @@ export {
   SNAPSHOT_FORMAT_VERSION,
   SnapshotMetadataSchema,
 } from './snapshots.js';
-export type { SpecVersion } from './spec-version.js';
+export type {
+  MintedSpecVersionOptions,
+  SpecVersion,
+} from './spec-version.js';
 export {
   CAPABILITY_ONLY_SPEC_VERSIONS,
   crossesStructuralSpecVersion,
@@ -184,6 +187,7 @@ export {
   requiresNewerWorld,
   SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_ENV_VAR,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,

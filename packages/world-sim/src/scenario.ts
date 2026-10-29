@@ -24,7 +24,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { resumeHook, setWorld, start } from '@workflow/core/runtime';
 import {
   type Event,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowRun,
   type WorkflowRunStatus,
 } from '@workflow/world';
@@ -281,7 +281,7 @@ export async function runScenario(
       await world.asExternal(() =>
         world.events.create(runId, {
           eventType: 'run_cancelled',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
           ...(reason ? { eventData: { cancelReason: reason } } : {}),
         })
       );

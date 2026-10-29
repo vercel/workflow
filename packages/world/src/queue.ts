@@ -1104,11 +1104,19 @@ export interface Queue {
    *
    * `meta` describes the delivery:
    *
-   * - `messageId` MUST be stable across redeliveries of the same message
-   *   (one id per enqueued message, reused on every delivery). The runtime
+   * - `messageId` SHOULD be stable across redeliveries of the same message
+   *   (one id per enqueued message, reused on every delivery), and MUST be
+   *   for a World that creates spec 9 runs. On a spec 9 run the runtime
    *   records it on `step_created` and `wait_created` (`creatorMessageId`):
    *   the delivery that wrote a wait's `wait_created`, or a later delivery of
-   *   that message, schedules the wait's timer.
+   *   that message, schedules the wait's timer. On earlier runs the runtime's
+   *   inline step ownership uses it as a liveness lease: the lazy
+   *   `step_started` records the handling invocation's messageId, and only a
+   *   delivery of that same message may re-execute the step before the
+   *   ownership lease expires. A World whose queue mints a fresh id per
+   *   delivery degrades gracefully there: owner redeliveries fall back to the
+   *   delayed-backstop path, adding recovery latency but never wedging or
+   *   duplicating.
    * - `deliveryCount` is 1 on a message's first delivery and increments on
    *   every redelivery, whatever caused it (lease lapse, a rejected handler, a
    *   `{ timeoutSeconds }` result, a handoff, a coalesced re-run). An

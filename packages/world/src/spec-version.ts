@@ -125,30 +125,35 @@ export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
 
 /**
  * Current spec version: event-sourced architecture with native attributes,
- * compressed payloads, slot-numbered event ids, sealed-log sequencing,
- * involuntary hook disposal, and the single-orchestrator model.
+ * compressed payloads, slot-numbered event ids, sealed-log sequencing, and
+ * involuntary hook disposal.
  *
- * This is the version a World stamps on the runs it creates (see
- * {@link mintedSpecVersion}). The lowest version this runtime accepts from a
- * World is lower: see `assertWorldSupportsRuntimeProtocol` in
+ * This is the version a World stamps on the runs it creates by default (see
+ * {@link mintedSpecVersion}). The single-orchestrator model,
+ * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, sits one version above it and is
+ * opt-in, so this stays below {@link SPEC_VERSION_MAX_SUPPORTED}: the runtime
+ * reads and drives runs of both. The lowest version this runtime accepts from
+ * a World is lower still: see `assertWorldSupportsRuntimeProtocol` in
  * `@workflow/core`, which floors at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}.
  *
- * A World declares `mintedSpecVersion()` rather than a literal, so a bump
- * moves the declaration with the package. Pinning a literal would leave the
- * adapter one version behind the next bump.
+ * A World declares `mintedSpecVersion()` rather than this constant or a
+ * literal, so a bump moves the declaration with the package. Pinning a
+ * literal would leave the adapter one version behind the next bump.
  *
  * Bumping this does not touch runs already created: their stamped version is
  * persisted, every version test in the runtime is `>=`, and a World resolves a
  * run's identity scheme from what is stored rather than from this constant.
- *
- * Planned before merge of the single-orchestrator change (spec 9 opt-in):
- * this goes back to {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM} (8), its
- * previous value and meaning, so a World that pinned it keeps minting spec 8
- * runs. The spec 9 runtime then stamps `SPEC_VERSION_SINGLE_ORCHESTRATOR`
- * explicitly instead of this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
+
+/**
+ * The spec version {@link mintedSpecVersion} returns when no setting changes
+ * it: {@link SPEC_VERSION_CURRENT}. Spec 9 runs are created only on request
+ * (`WORKFLOW_SPEC_VERSION=9`), and only by a World that declares the in-band
+ * fence.
+ */
+export const SPEC_VERSION_DEFAULT_MINTED = SPEC_VERSION_CURRENT as SpecVersion;
 
 /**
  * Environment variable that selects the spec version new runs are created
@@ -166,47 +171,61 @@ export const SPEC_VERSION_ENV_VAR = 'WORKFLOW_SPEC_VERSION';
  */
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
+/** What a World can do that decides which spec versions it may mint. */
+export interface MintedSpecVersionOptions {
+  /**
+   * The World implements the in-band writer fence
+   * (`WorldCapabilities.inBandFence`). Spec 9 runs need it, so without it
+   * {@link mintedSpecVersion} never returns
+   * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}.
+   */
+  inBandFence?: boolean;
+}
+
 /**
  * The spec version a World should stamp on the runs it creates.
  *
- * - `WORKFLOW_SPEC_VERSION` set to an integer from
- *   {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to
- *   {@link SPEC_VERSION_MAX_SUPPORTED} (surrounding whitespace ignored):
- *   that version. Any other non-empty value is ignored, with a warning once
- *   per process.
- * - Otherwise `WORKFLOW_SEALED_LOG=0` (or `false`): the slot-identity
- *   version, as on earlier releases. A deployment whose readers cannot read
- *   sealed-log runs yet keeps working.
- * - Otherwise {@link SPEC_VERSION_CURRENT}.
+ * | `WORKFLOW_SPEC_VERSION` | `inBandFence` | returns |
+ * |---|---|---|
+ * | unset | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8), or {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} (6) with `WORKFLOW_SEALED_LOG=0` |
+ * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
+ * | `9` | not `true` | the default, with a warning once per process |
+ * | `6` to `8` | any | that version |
+ * | anything else | any | the default, with a warning once per process |
  *
- * When both variables are set, `WORKFLOW_SPEC_VERSION` wins and a warning is
- * logged once.
+ * Values are trimmed. When both variables are set, `WORKFLOW_SPEC_VERSION`
+ * wins and a warning is logged once.
  *
- * The runtime drives runs of every version in that range: spec 9 runs with
- * the single orchestrator, kept to one writer by the World's in-band fence,
- * and earlier runs with the spec 8 orchestrator, which needs no fence. A run
- * keeps the version it was created with, so changing a setting only affects
- * new runs. (A backend may raise a running run across
- * {@link CAPABILITY_ONLY_SPEC_VERSIONS}, never across a structural version
- * such as {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, so a run never changes
+ * A call with no options never returns 9. A World written to an earlier
+ * "Building a World" guide, which declares `specVersion: mintedSpecVersion()`,
+ * keeps creating spec 8 runs whatever the environment says, and only a World
+ * that implements the fence and passes `{ inBandFence: true }` can create
+ * spec 9 runs.
+ *
+ * The setting gates minting only. The runtime drives runs of every version
+ * from {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to
+ * {@link SPEC_VERSION_MAX_SUPPORTED}: spec 9 runs with the single
+ * orchestrator, kept to one writer by the World's in-band fence, and earlier
+ * runs with the spec 8 orchestrator, which needs no fence. Everything that
+ * reads, routes or writes to an existing run follows the version stamped on
+ * that run, so changing the setting only affects new runs. (A backend may
+ * raise a running run across {@link CAPABILITY_ONLY_SPEC_VERSIONS}, never
+ * across a structural version such as
+ * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, so a run never changes
  * orchestrator.)
  *
  * A function rather than a constant so a World reads the settings where it is
  * created.
- *
- * Planned before merge (spec 9 opt-in): this takes
- * `{ inBandFence?: boolean }`, and returns 9 only for
- * `WORKFLOW_SPEC_VERSION=9` on a World that passes `inBandFence: true`
- * (warning once and returning 8 otherwise); unset returns 8. A call with no
- * options, as a World written to the earlier "Building a World" guide makes,
- * can then never return 9. The flag gates minting only: reads, routing and
- * writes to an existing run follow that run's stamped version.
  */
 export function mintedSpecVersion(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  options: MintedSpecVersionOptions = {}
 ): SpecVersion {
   const sealedLogRaw = env[SEALED_LOG_ENV_VAR];
   const sealedLogSet = sealedLogRaw !== undefined && sealedLogRaw !== '';
+  const fallback = envFlag(SEALED_LOG_ENV_VAR, true, env)
+    ? SPEC_VERSION_DEFAULT_MINTED
+    : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
   const requested = env[SPEC_VERSION_ENV_VAR]?.trim();
   if (requested !== undefined && requested !== '') {
     const version = Number(requested);
@@ -221,6 +240,16 @@ export function mintedSpecVersion(
           `${SPEC_VERSION_ENV_VAR} and ${SEALED_LOG_ENV_VAR} are both set; new runs use ${SPEC_VERSION_ENV_VAR}=${version} and ${SEALED_LOG_ENV_VAR} is ignored.`
         );
       }
+      if (
+        version >= SPEC_VERSION_SINGLE_ORCHESTRATOR &&
+        options.inBandFence !== true
+      ) {
+        warnOnce(
+          `${SPEC_VERSION_ENV_VAR}=${requested}:no-fence`,
+          `Ignoring ${SPEC_VERSION_ENV_VAR}=${version}: the World does not declare the in-band writer fence (capabilities.inBandFence) that spec ${SPEC_VERSION_SINGLE_ORCHESTRATOR} runs need, so new runs use spec ${fallback}.`
+        );
+        return fallback;
+      }
       return version as SpecVersion;
     }
     warnOnce(
@@ -228,9 +257,7 @@ export function mintedSpecVersion(
       `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}.`
     );
   }
-  return envFlag(SEALED_LOG_ENV_VAR, true, env)
-    ? SPEC_VERSION_CURRENT
-    : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+  return fallback;
 }
 
 /**
