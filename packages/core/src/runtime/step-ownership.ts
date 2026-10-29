@@ -81,6 +81,46 @@ export function backstopIdempotencyKey(step: StepInvocationQueueItem): string {
   return `${step.correlationId}:backstop:${step.lastStartedAt}`;
 }
 
+/** Remaining lease of a pending inline step owned by another delivery. */
+export function pendingForeignInlineLeaseSeconds(
+  events: Event[],
+  messageId: string,
+  nowMs: number
+): number {
+  const starts = new Map<string, { owner: string; startedAt: number }>();
+  const released = new Set<string>();
+  for (const event of events) {
+    const id = event.correlationId;
+    if (id === undefined) continue;
+    if (event.eventType === 'step_started') {
+      const owner = event.eventData?.ownerMessageId;
+      if (typeof owner === 'string') {
+        starts.set(id, { owner, startedAt: +event.createdAt });
+      } else {
+        starts.delete(id);
+      }
+    } else if (
+      event.eventType === 'step_completed' ||
+      event.eventType === 'step_failed' ||
+      event.eventType === 'step_retrying'
+    ) {
+      released.add(id);
+    }
+  }
+  const leaseSeconds = getInlineOwnershipLeaseSeconds();
+  let remaining = 0;
+  for (const [id, start] of starts) {
+    if (released.has(id) || start.owner === messageId) continue;
+    const seconds = Math.ceil(
+      (start.startedAt + leaseSeconds * 1000 - nowMs) / 1000
+    );
+    if (Number.isFinite(seconds)) {
+      remaining = Math.max(remaining, Math.min(leaseSeconds, seconds));
+    }
+  }
+  return remaining;
+}
+
 /**
  * Whether any of the given pending correlation IDs is inline-owned by
  * `messageId` per the raw event log: its LATEST `step_started` carries

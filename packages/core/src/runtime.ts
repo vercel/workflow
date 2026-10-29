@@ -135,6 +135,7 @@ import {
   backstopIdempotencyKey,
   hasPendingStepOwnedByMessage,
   isStepOwnershipActive,
+  pendingForeignInlineLeaseSeconds,
   stepLeaseRemainingSeconds,
 } from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
@@ -3844,6 +3845,19 @@ export function workflowEntrypoint(
                         throw new InlineStepsStillRunning();
                       }
 
+                      // A hook/wait wake may reach a terminal result while
+                      // another delivery still owns an inline race loser.
+                      const foreignInlineDelay = inlineEarlyAdvance
+                        ? pendingForeignInlineLeaseSeconds(
+                            eventLog.events,
+                            metadata.messageId,
+                            Date.now()
+                          )
+                        : 0;
+                      if (foreignInlineDelay > 0) {
+                        return await reinvoke(foreignInlineDelay);
+                      }
+
                       // Workflow completed. Do NOT reload-and-retry the create
                       // in place: `result` was computed by this replay, so a
                       // stale (412) rejection must force a *fresh replay* (which
@@ -5838,6 +5852,20 @@ export function workflowEntrypoint(
                           );
                         } else if (replayStart > 0) {
                           replayRecoveryReporter.activate();
+                        }
+
+                        // Leave terminalization to the delivery still running
+                        // the inline body, with a lease-bounded recovery wake.
+                        const foreignInlineDelay =
+                          inlineEarlyAdvance && eventLog.type === 'ready'
+                            ? pendingForeignInlineLeaseSeconds(
+                                eventLog.events,
+                                metadata.messageId,
+                                Date.now()
+                              )
+                            : 0;
+                        if (foreignInlineDelay > 0) {
+                          return await reinvoke(foreignInlineDelay);
                         }
 
                         // User code errors and terminal runtime errors fail the run.
