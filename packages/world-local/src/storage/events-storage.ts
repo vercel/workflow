@@ -11,6 +11,7 @@ import {
   RunNotSupportedError,
   START_HOOK_ADMISSION_REJECTED,
   START_HOOK_CANDIDATE_CANCELLED,
+  ThrottleError,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
@@ -3303,6 +3304,20 @@ export function createEventsStorage(
                   RunRecordSchema,
                   tag
                 );
+                // A start Hook whose run is not written yet (its admitting
+                // writer stalled or died, and the classifier above still
+                // holds it): it cannot be told, and its writer could still
+                // publish the run. Retry until the run exists, or until the
+                // classifier fences the candidate and releases the token.
+                if (
+                  victimRun === null &&
+                  isStartHookId(existingClaim.runId, existingClaim.hookId)
+                ) {
+                  throw new ThrottleError(
+                    `The start Hook holding this token belongs to a run that is still being created; retry`,
+                    { retryAfter: 1 }
+                  );
+                }
                 const victimRunning =
                   victimRun !== null &&
                   !isTerminalWorkflowRunStatus(victimRun.status);

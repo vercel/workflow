@@ -13,6 +13,7 @@ import {
   HookNotFoundError,
   START_HOOK_ADMISSION_REJECTED,
   START_HOOK_CANDIDATE_CANCELLED,
+  ThrottleError,
 } from '@workflow/errors';
 import {
   type AnyEventRequest,
@@ -485,6 +486,92 @@ describe('atomic start Hook (world-local)', () => {
     const listed = await storage.runs.list({});
     expect(listed.data.map((r) => r.runId)).not.toContain(stalled);
     expect(listed.data.map((r) => r.runId)).toHaveLength(1);
+  });
+
+  it('makes a forced createHook retry while a stalled writer may still publish its run, then takes the token from it', async () => {
+    const token = 'order:stalled-force';
+    const stalled = `wrun_${ulid()}`;
+    const realWriteExclusive = fsModule.writeExclusive;
+    let reachedPublication!: () => void;
+    const atPublication = new Promise<void>((r) => {
+      reachedPublication = r;
+    });
+    let resume!: () => void;
+    const resumed = new Promise<void>((r) => {
+      resume = r;
+    });
+    const pause = vi
+      .spyOn(fsModule, 'writeExclusive')
+      .mockImplementation(async (filePath, data) => {
+        if (
+          filePath.includes(`${path.sep}runs${path.sep}${stalled}`) &&
+          !data.includes('startHookFence')
+        ) {
+          reachedPublication();
+          await resumed;
+        }
+        return realWriteExclusive(filePath, data);
+      });
+    const claimer = `wrun_${ulid()}`;
+    await create(claimer, {
+      eventType: 'run_created',
+      specVersion: SPEC,
+      eventData: {
+        deploymentId: 'dpl_local',
+        workflowName: 'wf',
+        input: new Uint8Array([1]),
+      },
+    } as AnyEventRequest);
+    await create(claimer, {
+      eventType: 'run_started',
+      specVersion: SPEC,
+    } as AnyEventRequest);
+    const claimerHookId = `hook_${ulid()}`;
+    const force = () =>
+      create(claimer, {
+        eventType: 'hook_created',
+        correlationId: claimerHookId,
+        specVersion: SPEC,
+        eventData: { token, force: true },
+      } as AnyEventRequest);
+
+    try {
+      // A claims the token and stalls inside the run's publication, and its
+      // lease is lost; the orphan grace has not passed.
+      const a = create(stalled, creating('run_created', token)).catch(
+        (e: unknown) => e
+      );
+      await atPublication;
+      await fs.rm(`${hookTokenClaimPath(testDir, token)}.lock`, {
+        recursive: true,
+        force: true,
+      });
+
+      // The forced creation cannot tell a run that does not exist yet, and
+      // must not take the token from under its writer: retryable.
+      const refused = await force().catch((e: unknown) => e);
+      expect(ThrottleError.is(refused)).toBe(true);
+      expect(refused).toMatchObject({ retryAfter: 1 });
+
+      // A publishes its run; the retry then takes the token like any Hook's,
+      // and tells A.
+      resume();
+      // (Its own call may still fail releasing the lock it lost.)
+      await a;
+      expect((await storage.runs.get(stalled)).runId).toBe(stalled);
+      expect((await force()).event?.eventType).toBe('hook_created');
+      const disposed = (
+        await storage.events.list({ runId: stalled })
+      ).data.find((e) => e.eventType === 'hook_disposed');
+      expect(disposed).toMatchObject({
+        correlationId: startHookId(stalled),
+        eventData: {
+          forceClaimedBy: { runId: claimer, hookId: claimerHookId },
+        },
+      });
+    } finally {
+      pause.mockRestore();
+    }
   });
 
   it('answers not found for an orphan while it holds its token, and after', async () => {
