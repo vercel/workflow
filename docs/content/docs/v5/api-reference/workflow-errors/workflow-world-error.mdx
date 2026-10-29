@@ -46,7 +46,10 @@ interface WorkflowWorldError {
   code?: string;
   /** The URL that was requested, if available. */
   url?: string;
-  /** Retry-After value in seconds, present on 429 and 425 responses. */
+  /**
+   * Retry-After value in seconds, present on 429 and 425 responses, and on a
+   * Vercel World 503 for a start Hook whose run is still being created.
+   */
   retryAfter?: number;
   /**
    * Why the World gave \`code\`, when it says. For a start Hook request

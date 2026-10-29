@@ -95,7 +95,7 @@ export function resolveRunStartHook({
       from = source;
     } else if (candidate.token !== found.token) {
       throw new WorkflowRuntimeError(
-        `Workflow run "${workflowRun.runId}" has conflicting start Hook tokens: ${from} carries "${found.token}" but ${source} carries "${candidate.token}".`
+        `Workflow run "${workflowRun.runId}" has conflicting start Hook tokens: ${from} and ${source} carry different ones.`
       );
     } else if (
       found.tokenRetentionUntil === undefined &&
