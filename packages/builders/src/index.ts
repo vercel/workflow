@@ -1,3 +1,14 @@
+export {
+  extractWorkflowManifestComment,
+  findUnregisteredWorkflows,
+  formatUnregisteredWorkflows,
+  getManifestWorkflowIds,
+  readWorkflowAppGraph,
+  recordWorkflowAppGraphEntry,
+  resetWorkflowAppGraph,
+  type UnregisteredWorkflow,
+  type WorkflowAppGraphEntry,
+} from './app-graph.js';
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';

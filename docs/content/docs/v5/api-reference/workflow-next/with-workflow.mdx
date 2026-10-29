@@ -53,15 +53,16 @@ runtime.
 
 ### Registration check
 
-Discovery only follows plain string specifiers, so a workflow reached through a
-computed `import()` is compiled into your application without being registered
+Discovery only follows literal string specifiers, so a workflow reached through
+a computed `import()` is compiled into your application without being registered
 in the generated flow route. `start()` still accepts it, and every run fails
 with [`workflow-not-registered`](/docs/errors/workflow-not-registered).
 
-After `next build` compiles, `withWorkflow()` compares the workflow IDs in the
-server output against the workflows the flow route registered, and fails the
-build when the first set contains something the second does not, naming the
-workflow and the output files that reference it. Set
+As Next.js compiles, the transform reports each workflow ID it stamps into your
+code. When the build finishes, `withWorkflow()` compares those against the
+workflows the flow route registered and fails the build on anything the first
+set has and the second does not, naming the workflow and the module that
+declared it. Set
 [`WORKFLOW_REGISTRATION_CHECK`](/docs/configuration/build-and-diagnostics#workflow_registration_check)
 to `warn` to report it without failing, or to `off` to skip the check.
 
