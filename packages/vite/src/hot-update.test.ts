@@ -1,4 +1,4 @@
-import type { BaseBuilder } from '@workflow/builders';
+import { type BaseBuilder, createBuildQueue } from '@workflow/builders';
 import type { HotUpdateOptions } from 'vite';
 import { describe, expect, it, vi } from 'vitest';
 import { workflowHotUpdatePlugin } from './hot-update.js';
@@ -7,13 +7,17 @@ const WORKFLOW_SOURCE = `export async function flow() {\n  'use workflow';\n}\n`
 
 type DiscoveredEntries = ReturnType<BaseBuilder['getSettledDiscoveredEntries']>;
 
-function setup(discovered?: DiscoveredEntries) {
-  const build = vi.fn(async () => {});
+function setup(
+  discovered?: DiscoveredEntries,
+  build = vi.fn(async () => {}),
+  enqueue?: (task: () => Promise<void>) => Promise<void>
+) {
   const plugin = workflowHotUpdatePlugin({
     builder: {
       build,
       getSettledDiscoveredEntries: () => discovered,
     } as unknown as BaseBuilder,
+    enqueue,
   });
   const hotUpdate = plugin.hotUpdate as (
     ctx: HotUpdateOptions
@@ -45,11 +49,13 @@ function discovery({
   workflows = [] as string[],
   steps = [] as string[],
   serde = [] as string[],
+  files = [] as string[],
 }): DiscoveredEntries {
   return {
     discoveredWorkflows: new Set(workflows),
     discoveredSteps: new Set(steps),
     discoveredSerdeFiles: new Set(serde),
+    discoveredFiles: new Set([...workflows, ...steps, ...serde, ...files]),
   };
 }
 
@@ -140,5 +146,41 @@ describe('workflowHotUpdatePlugin', () => {
     await hotUpdate(deletion('/app/src/lib/plain.ts', 1_000));
 
     expect(build).toHaveBeenCalledOnce();
+  });
+
+  it('rebuilds when a deleted file without a directive was in the discovered graph', async () => {
+    const { build, hotUpdate, deletion } = setup(
+      discovery({
+        workflows: ['/lib/flow.ts'],
+        files: ['/app/workflows/registry.ts'],
+      })
+    );
+
+    await hotUpdate(deletion('/app/workflows/registry.ts', 1_000));
+
+    expect(build).toHaveBeenCalledOnce();
+  });
+
+  it('merges a batch of deleted graph files into one follow up build', async () => {
+    const files = Array.from({ length: 30 }, (_, i) => `/app/src/dep${i}.ts`);
+    let release = () => {};
+    const build = vi.fn(
+      () => new Promise<void>((resolve) => (release = resolve))
+    );
+    const { hotUpdate, deletion } = setup(
+      discovery({ files: ['/app/src/first.ts', ...files] }),
+      build,
+      createBuildQueue()
+    );
+
+    const first = hotUpdate(deletion('/app/src/first.ts', 1_000));
+    await vi.waitFor(() => expect(build).toHaveBeenCalledOnce());
+    const batch = files.map((file, i) => hotUpdate(deletion(file, 2_000 + i)));
+    release();
+    await vi.waitFor(() => expect(build).toHaveBeenCalledTimes(2));
+    release();
+    await Promise.all([first, ...batch]);
+
+    expect(build).toHaveBeenCalledTimes(2);
   });
 });

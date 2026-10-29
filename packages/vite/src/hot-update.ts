@@ -33,13 +33,8 @@ async function affectsBuild(
   try {
     content = await read();
   } catch {
-    const discovered = builder.getSettledDiscoveredEntries();
-    return (
-      !discovered ||
-      discovered.discoveredWorkflows.has(file) ||
-      discovered.discoveredSteps.has(file) ||
-      discovered.discoveredSerdeFiles.has(file)
-    );
+    const graph = builder.getSettledDiscoveredEntries()?.discoveredFiles;
+    return !graph || graph.has(file);
   }
 
   const patterns = detectWorkflowPatterns(content);
