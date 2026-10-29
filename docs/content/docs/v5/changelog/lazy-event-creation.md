@@ -5,9 +5,6 @@ description: Defer step_created for the inline step and fold it into a single st
 
 # Lazy inline step start
 
-> Applies to spec 8 runs, the default for new runs. Runs created at spec version 9 (opt-in with `WORKFLOW_SPEC_VERSION=9`, see [single orchestrator](/docs/changelog/spec-9)) use a different mechanism.
-
-
 ## Motivation
 
 The owned-inline runtime path used to write two separate world events for a step it already owns and is about to run inline:

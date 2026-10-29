@@ -252,23 +252,6 @@ const config: NextConfig = {
         destination: '/cookbook/agent-patterns/agent-cancellation',
         permanent: true,
       },
-      // The spec 9 (single orchestrator) changelog, its review page and its
-      // diagram pages were consolidated into one page.
-      {
-        source: '/docs/changelog/single-orchestrator',
-        destination: '/docs/changelog/spec-9',
-        permanent: true,
-      },
-      {
-        source: '/docs/changelog/single-orchestrator-review',
-        destination: '/docs/changelog/spec-9',
-        permanent: true,
-      },
-      {
-        source: '/docs/changelog/single-orchestrator-diagrams/:path*',
-        destination: '/docs/changelog/spec-9',
-        permanent: true,
-      },
       // setAttributes graduated from experimental_setAttributes; the API
       // reference page moved with it.
       {

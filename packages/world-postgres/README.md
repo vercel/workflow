@@ -337,7 +337,7 @@ and its token can be reused. If the token is never reused, the expired
 
 Graphile Worker on its own keeps a dead worker's job locked for 4 hours. By default (`jobLockStaleSeconds: 0`), a delivery whose process died mid-delivery is therefore recovered only by the next `start()`, which re-enqueues active runs, or after those 4 hours.
 
-Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to turn on lock renewal. A running delivery then renews its Graphile job lock every quarter of `jobLockStaleSeconds`, and at least every 10 seconds, and every process that runs workers releases this World's jobs whose locks have gone unrenewed for `jobLockStaleSeconds`. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. The release covers the run's named queue too (a spec 9 run's orchestrator deliveries, or invoke mode's executor queue).
+Set `jobLockStaleSeconds` (or `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`) to turn on lock renewal. A running delivery then renews its Graphile job lock every quarter of `jobLockStaleSeconds`, and at least every 10 seconds, and every process that runs workers releases this World's jobs whose locks have gone unrenewed for `jobLockStaleSeconds`. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows: about 45 seconds at 30. `30` is a good value when more than one process shares the database. The redelivery counts the attempt the dead process used. In invoke mode, the release covers the run's executor queue too.
 
 Use the same value on every process that shares the database. Keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a connection from its pool. A delivery whose renewals stall past the window is redelivered while it still runs, and the original delivery is not acknowledged when it finishes. Workflow and step handlers already tolerate that at-least-once delivery.
 
@@ -382,44 +382,12 @@ but before replaying them.
 Reuse an `idempotencyKey` with the same payload when retrying an invocation.
 Without a key, each call creates a new input.
 
-A spec 9 run's orchestrator deliveries (starts, wakes after a step outcome,
-hook resumes, cancellations and timers) execute one at a time, with or without
-invocation. Each one is a Graphile job in the run's named queue,
-`workflow_flows:<runId>:executor`, and Graphile permits one active job per named
-queue across worker processes. Step jobs and health checks carry no named queue,
-so a run's steps execute concurrently with each other and with its orchestrator.
-An orchestrator blocked on an inline step reads new events, such as a hook
-payload, from the log while it waits, so it never needs a second delivery of its
-own run to make progress. A spec 8 run's deliveries (without invocation) carry
-no named queue either: a spec 8 orchestrator can hold an inline step until
-another wake of the same run aborts it. A delayed job does not hold its queue. This is the
-queue half of the single-writer guarantee; the other half is the in-band fence
-on event writes, which refuses a stale orchestrator that outlived its job's lock.
-
-A worker that is killed mid-job (`SIGKILL`, out of memory, container eviction)
-leaves that run's named queue locked. Graphile Worker only takes jobs from an
-unlocked queue, and it clears a stale lock only once it is older than 4 hours
-(`resetLockedAt`). Until then every later orchestrator delivery of that run
-(step completions, hook resumes, timers) waits, so a spec 9 run whose worker
-was hard-killed can stall for up to 4 hours. A graceful shutdown releases the
-lock. With `jobLockStaleSeconds` set, another process releases the job and the
-queue lock once they go unrenewed for that window (see Crash recovery). Spec 8 runs without invocation use no named queue and are not affected.
-
-Each queue instance coalesces in-flight and recently completed deliveries with
-the same idempotency key. Handlers must still tolerate at-least-once delivery
+With invocation disabled (the default), deliveries for the same run may execute
+concurrently. A workflow request can execute a step inline and wait for a hook
+wake to abort that step, so the queue cannot hold a per-run lock for the entire
+request. Each queue instance coalesces in-flight and recently completed deliveries
+with the same idempotency key. Handlers must still tolerate at-least-once delivery
 across worker processes, restarts, or completed-message cache eviction.
-
-A message sent with an idempotency key becomes a Graphile job with that job
-key. A spec 9 run's keyed messages (a step's execution message, a near-due wait
-timer) use the `unsafe_dedupe` job key mode: a send is a no-op while any job
-holds the key, locked (being delivered), delayed, or in retry backoff, so a
-re-send from a later orchestrator delivery never adds a second job for a step,
-which another worker could run, and never resets a job's attempts or `run_at`.
-The key is free once the job completes and is deleted. This meets the queue
-contract's dedupe window (`QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS` in
-`@workflow/world`) while the step's message lives. A reschedule (a handoff, a
-retry in place) is sent while its job is locked, and keyed messages of earlier
-runs keep their behaviour, so both use `preserve_run_at`.
 
 With invocation enabled, each Graphile worker pool registers two task
 identifiers. A task identifier selects a handler. A named queue controls which
@@ -429,9 +397,6 @@ jobs can execute concurrently. The default job prefix produces these names:
 | --- | --- | --- |
 | `workflow_flows_executor` | Start or resume workflow execution | `workflow_flows:<runId>:executor`, one queue per run |
 | `workflow_flows` | Step execution and health checks | No run-scoped named queue |
-
-With invocation disabled, a spec 9 run's workflow execution jobs use the
-`workflow_flows` task identifier in the same per-run named queue.
 
 Graphile permits one active job per run's named queue across worker processes.
 Different runs, step jobs, and health checks can execute concurrently.
@@ -582,3 +547,7 @@ To use the PostgreSQL world, set the `WORKFLOW_TARGET_WORLD` environment variabl
 ```bash
 export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
 ```
+
+## Spec 9 (experimental)
+
+Runs of the experimental spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`) run their orchestrator deliveries one at a time through the run's Graphile named queue, with or without invocation, and publish their keyed messages with the `unsafe_dedupe` job key mode. A worker killed mid-job leaves that named queue locked, so such a run can stall for up to 4 hours unless `jobLockStaleSeconds` is set. See [world-postgres on spec 9 runs](https://workflow-sdk.dev/docs/changelog/spec-9#first-party-worlds).

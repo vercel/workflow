@@ -110,16 +110,6 @@ checks can run concurrently. `queueConcurrency` limits total active jobs per
 worker process and defaults to 50. A custom job prefix replaces `workflow_` in
 these names.
 
-A spec 9 run's (opt-in, `WORKFLOW_SPEC_VERSION=9`) orchestrator deliveries use the same per-run named queue with
-invocation disabled too. A worker that is killed mid-job (`SIGKILL`, out of
-memory, container eviction) leaves the queue locked, and Graphile Worker only
-clears a stale lock once it is older than 4 hours. Until then the run's later
-deliveries wait, so such a run can stall for up to 4 hours. A graceful shutdown
-releases the lock. With
-[`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds)
-set, another process releases the job and the queue lock once they have gone
-unrenewed for that many seconds.
-
 The HTTP receiver checks each execution request against its active Graphile job
 before processing pending inputs. Updated workers and receivers move legacy
 orchestration requests to the run's named queue. Before acknowledging an execution
@@ -404,7 +394,7 @@ Closing the world stops new queue claims and waits for active jobs. After Graphi
 The Postgres World uses PostgreSQL as a durable backend:
 
 - **Storage**: Workflow runs, events, steps, and hooks are stored in PostgreSQL tables.
-- **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries. A message sent with an idempotency key becomes a job with that key. For a spec 9 run's keyed messages (a step's execution message, each hop of a wait's timer) the job key mode is `unsafe_dedupe`: a send is a no-op while any job holds the key, whether it is waiting, being delivered, or backing off after a failure, so a re-send never adds a second job for a step or a second chain of a long wait's hops, nor resets a job's retry backoff. The key is free again once the job completes. A reschedule (a handoff or a retry in place) and keyed messages of earlier runs use `preserve_run_at`.
+- **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries.
 - **Crash recovery**: The next `start()` re-enqueues active runs. With [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) set, a running delivery also renews its job lock, and if its process dies, any other process redelivers the job once its lock has gone unrenewed for that many seconds.
 - **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution. If the database drops the `LISTEN` connection, the World reconnects every second and re-reads persisted chunks for open stream readers, so readers don't miss chunks written during the outage.
 

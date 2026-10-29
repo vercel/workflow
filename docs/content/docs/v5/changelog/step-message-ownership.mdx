@@ -5,9 +5,6 @@ description: Why inline step_started now records its owning queue message ID, wh
 
 # Inline step message ownership
 
-> Applies to spec 8 runs, the default for new runs. Runs created at spec version 9 (opt-in with `WORKFLOW_SPEC_VERSION=9`, see [single orchestrator](/docs/changelog/spec-9)) use a different mechanism.
-
-
 > Fixes [#2780](https://github.com/vercel/workflow/issues/2780) (duplicate
 > inline step execution when a hook or wait wakes a run mid-step). This page
 > is the design defense for the change: what it does, why each choice was

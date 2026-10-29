@@ -42,7 +42,7 @@ interface WorldCapabilities {
     active: boolean;
   };
   maxConcurrency?: boolean;
-  inBandFence?: boolean; // required to create spec 9 runs, see Supporting spec 9 runs
+  inBandFence?: boolean;
   hookForceClaim?: boolean;
   dynamicWorkflowCode?: boolean;
 }
@@ -64,7 +64,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses, and, for spec 9 runs, delivers a run's orchestrator messages one at a time (see [Single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence)); the runtime takes no fast path from it. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#single-writer-guarantee-and-the-in-band-fence). It is required only for a World that creates spec 9 runs; see [Supporting spec 9 runs](#supporting-spec-9-runs).
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence).
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -96,13 +96,9 @@ export function createWorld(): World {
 
 The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
 
-`mintedSpecVersion()` returns the current spec version (8), the version [`WORKFLOW_SPEC_VERSION`](/docs/configuration/runtime-tuning#workflow_spec_version) names (6 to 8), or the slot-identity version (6) when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) is set and `WORKFLOW_SPEC_VERSION` is not. Called with no options, it never returns 9: `WORKFLOW_SPEC_VERSION=9` is ignored, with a one-time warning, so a World that does not implement the in-band fence never creates a spec 9 run. Call it inside `createWorld()` so a process can create Worlds in both modes. It reads `process.env` by default; in a host without `process`, such as a browser, pass the environment as its argument.
+`mintedSpecVersion()` returns the current spec version, or the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) opts new runs out. Call it inside `createWorld()` so a process can create Worlds in both modes. It reads `process.env` by default; in a host without `process`, such as a browser, pass the environment as its argument.
 
-Calling it keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number, or `SPEC_VERSION_CURRENT`, which does not follow `WORKFLOW_SPEC_VERSION`, leaves your World out of step. Keep `@workflow/world` in the same release channel as the `workflow` version your users install. See [Spec versions](/worlds/upgrading-to-v5#spec-versions) for what each version requires of a World.
-
-The runtime drives runs of spec versions 6 to 9 with two orchestrators: the spec 8 orchestrator drives versions 6 to 8 (`WORKFLOW_SEALED_LOG=0` still creates spec 6 runs, and [`WORKFLOW_SPEC_VERSION`](/docs/configuration/runtime-tuning#workflow_spec_version) accepts 6 to 8 as well), and the single orchestrator drives spec 9. It picks the orchestrator from the version stamped on the run, never from what your World declares now. Spec 8 is the default, and everything on this page outside [Supporting spec 9 runs](#supporting-spec-9-runs) describes it. A World written to this contract, declaring `specVersion: mintedSpecVersion()`, upgrades the `workflow` package without changes and keeps creating spec 8 runs, which need no fence.
-
-Spec 9, the single-orchestrator model, is opt-in. A World that implements the in-band fence declares `capabilities.inBandFence: true` and passes it on, `mintedSpecVersion(process.env, { inBandFence: true })`, and then creates spec 9 runs when `WORKFLOW_SPEC_VERSION=9` is set. The first-party Worlds do this. See [Supporting spec 9 runs](#supporting-spec-9-runs).
+Calling it keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number, or `SPEC_VERSION_CURRENT`, which does not follow `WORKFLOW_SEALED_LOG`, leaves your World out of step. Keep `@workflow/world` in the same release channel as the `workflow` version your users install. See [Spec versions](/worlds/upgrading-to-v5#spec-versions) for what each version requires of a World.
 
 ## The event log model
 
@@ -165,17 +161,13 @@ interface Storage {
 2. Atomically update the affected entity (run, step, or hook)
 3. Return both the created event and the updated entity
 
-On a spec 9 run, step and wait events are appends instead, and the result carries no step or wait entity; see [Supporting spec 9 runs](#supporting-spec-9-runs).
-
-**Batch writes:** `events.createBatch()` is optional, and implementing it is what declares it. The runtime folds a suspension's `step_created` and `wait_created` writes into batches only when the method exists, and otherwise takes the single-event path unchanged. Implement it with real atomicity per attempt, so a lost race leaves nothing behind, or do not implement it at all. The events land in request order at consecutive positions, and a concurrent writer may push the whole batch above the caller's view of the log. No skipped-event report accompanies the result, so a position-tracking caller compares the committed positions against what it expected and reloads. Reject the whole batch, with a request-level error, for `run_created`, `run_started`, `run_cancelled`, `hook_created`, `hook_disposed`, `attr_set`, for more events targeting one entity than a single write can express, and for a batch over your own size caps. The one legal same-entity pair is `step_created` followed by `step_started`, which creates the step born-running, and there the input must ride the `step_created`. Spec 9 runs batch differently; see [Supporting spec 9 runs](#supporting-spec-9-runs).
+**Batch writes:** `events.createBatch()` is optional, and implementing it is what declares it. The runtime folds a suspension's `step_created` and `wait_created` writes into batches only when the method exists, and otherwise takes the single-event path unchanged. Implement it with real atomicity per attempt, so a lost race leaves nothing behind, or do not implement it at all. The events land in request order at consecutive positions, and a concurrent writer may push the whole batch above the caller's view of the log. No skipped-event report accompanies the result, so a position-tracking caller compares the committed positions against what it expected and reloads. Reject the whole batch, with a request-level error, for `run_created`, `run_started`, `run_cancelled`, `hook_created`, `hook_disposed`, `attr_set`, for more events targeting one entity than a single write can express, and for a batch over your own size caps. The one legal same-entity pair is `step_created` followed by `step_started`, which creates the step born-running, and there the input must ride the `step_created`.
 
 **Throttled step results:** `step_completed`, `step_retrying`, and a `step_failed` marked with `afterStepBody: true` in `CreateEventParams` record a step body that already ran. If your World retries throttled writes, keep these waiting longer than other writes, because losing one to queue redelivery runs the body again. `@workflow/world-vercel` waits until the invocation's deadline. The flag is advisory, and a World may ignore it.
 
 **Run creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
 **Event data resolution:** `events.list()` and `events.create()` accept `resolveData: 'skip-step-inputs'`, and the runtime replays with it. The World may leave `input` out of `step_created` and `step_started` events, and returns everything else as for `'all'`. Treat any value other than `'none'` as `'all'`, because a World that tests `resolveData === 'all'` strips step results and breaks every replay. Map the value with `entityResolveData()` from `@workflow/world` before passing it to an entity read.
-
-**Abandoned reads:** `events.list()` may receive a `signal` (an `AbortSignal`). The runtime aborts it when it gives up on a read and sends the read again, and it never uses the abandoned read's result. Cancel the request when the signal aborts, so a held read does not keep a connection open. A World that ignores the signal is still correct.
 
 **Run listing:** `runs.list({ status })` accepts a single status or an array. With an array, return runs whose status matches any listed value, and return no runs for an empty array (the same semantics as SQL `IN ()`). Treat an omitted `status` as no filter.
 
@@ -233,7 +225,7 @@ Two properties have to hold, and both are about what a reader can conclude from 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
 - **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
 
-Allocate the position **at the commit** in the same operation that appends the event. This makes a reader's log a *prefix* of the run's log rather than a prefix with a hole. Nothing can land behind a position that a reader has passed. Assigning a position earlier, such as in a request handler, and committing later breaks the property that every replay depends on, unless you seal abandoned positions as described below. This is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate on spec 8 runs.
+Allocate the position **at the commit** in the same operation that appends the event. This makes a reader's log a *prefix* of the run's log rather than a prefix with a hole. Nothing can land behind a position that a reader has passed. Assigning a position earlier, such as in a request handler, and committing later breaks the property that every replay depends on, unless you seal abandoned positions as described below. This is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
 
 #### Optional: pre-assigned positions and `noop` sealing
 
@@ -241,13 +233,13 @@ Spec version 7 supports one alternative to allocate-at-commit for Worlds whose s
 
 The runtime skips `noop` events during replay. It never delivers them to a consumer or uses them to advance the deterministic clock, so a sealed log replays identically to one whose writers filled the holes. `noop` isn't user-creatable and is never sent to `events.create()`. Only your read path may write one. Worlds that allocate at the commit, through a synchronous counter or unique-constraint append, maintain perfect density and don't need sealing. `world-local` and `world-postgres` never seal, and a World that allocates at the commit is spec 7 compliant without additional work.
 
-The version a World stamps comes from `mintedSpecVersion()`: 8 by default, the slot-identity version (6) when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it, or the version [`WORKFLOW_SPEC_VERSION`](/docs/configuration/runtime-tuning#workflow_spec_version) selects. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
+The version a World stamps comes from `mintedSpecVersion()`: 8 by default or the slot-identity version (6) when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
-Not every write carries `eventCount`, and a World is free to skip the report read for event types whose writer never holds a log to merge it into (the step executor's `step_started`, `step_retrying`, `step_completed`, and `step_failed`, and the run-terminal `run_completed`, `run_failed`, and `run_cancelled`). On a spec 9 run every in-band write carries `eventCount`, and out-of-band writes (a background step's events, `resumeHook()`, `cancel()`) carry none. Which writes send `eventCount` or `sinceCursor`, and why, is tabulated in [Events returned on a write](/docs/how-it-works/event-sourcing#events-returned-on-a-write). When a write carries both, the `sinceCursor` delta is a superset of the report, so return the delta and skip the report.
+Not every write carries `eventCount`, and a World is free to skip the report read for event types whose writer never holds a log to merge it into (the step executor's `step_started`, `step_retrying`, `step_completed`, and `step_failed`, and the run-terminal `run_completed`, `run_failed`, and `run_cancelled`). Which writes send `eventCount` or `sinceCursor`, and why, is tabulated in [Events returned on a write](/docs/how-it-works/event-sourcing#events-returned-on-a-write). When a write carries both, the `sinceCursor` delta is a superset of the report, so return the delta and skip the report.
 
-On spec 8 runs, independent concurrent hook registrations in a hooks-only suspension deliberately omit `eventCount` and `sinceCursor`, even though the worker holds a loaded log. The Node.js runtime waits for every registration to settle and verifies that their returned events fill every position immediately after that log. A gap, incomplete response, or missing committed-event cursor keeps the normal history reload. Mixed suspensions, forced claims, and same-token lifecycle operations keep their usual catch-up parameters.
+Independent concurrent hook registrations in a hooks-only suspension deliberately omit `eventCount` and `sinceCursor`, even though the worker holds a loaded log. The Node.js runtime waits for every registration to settle and verifies that their returned events fill every position immediately after that log. A gap, incomplete response, or missing committed-event cursor keeps the normal history reload. Mixed suspensions, forced claims, and same-token lifecycle operations keep their usual catch-up parameters.
 
 ### Optional: returning a committed-event cursor
 
@@ -272,11 +264,20 @@ Two rules make this safe:
 
 A rejection may include the events the caller was missing as `{ events, cursor }` on the error's `details`. Include them only when you can prove that the set fully accounts for the discrepancy, isn't truncated, and contains only events from the run being written. The runtime merges them directly into the replay's event log, so incorrect data is worse than no delta. Otherwise, omit them, and the runtime performs a full reload.
 
-The runtime handles a rejection wherever it arrives on a spec 8 run. It restarts the replay in-process from a corrected log and invokes a fresh replay after spending that budget. It never retries the rejected write as-is because a replay working from a corrected log derives different events. This behavior requires no declaration or capability. Spec 9 runs do not act on it: there the [in-band fence](#single-writer-guarantee-and-the-in-band-fence) is the only refusal the runtime acts on, and a stale snapshot is answered with a skipped-slot report.
+The runtime handles a rejection wherever it arrives. It restarts the replay in-process from a corrected log and invokes a fresh replay after spending that budget. It never retries the rejected write as-is because a replay working from a corrected log derives different events. This behavior requires no declaration or capability.
 
-### Optional: the in-band writer fence on spec 8 runs
+### Optional: the in-band writer fence
 
-A spec 8 run needs no fence: its writes do not carry `inBand: true`. The [single-writer section](#single-writer-guarantee-and-the-in-band-fence) describes the fence a World implements to create spec 9 runs. A World that fences may also fence earlier runs with the same rules, except that it may list no snapshot as long as every refusal carries both counters, read together.
+The in-band writer fence keeps a run to one orchestrator writer when two orchestrator invocations of the same run overlap, for example a delivery that outlives its queue lease while a redelivery of the run is already running. A write made by the run's orchestrator is **in-band** (`params.inBand: true`). Everything else is **out-of-band**: a background step's own events, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`, and `attr_set` from `setAttributes()` outside the workflow.
+
+The fence is optional. The runtime sends `inBand` only on runs of the experimental spec 9 runtime, so a World without the fence stays fully supported and keeps creating spec 8 runs. Declare `capabilities.inBandFence: true` when you implement all of the following:
+
+- **Two counters per run.** Next to whatever allocates event positions, keep `seq`, the highest position allocated to any write, and `seqInBand`, the number of positions allocated to in-band writes. `run_created` counts as in-band and is never fenced itself, so a new run holds `seq = 1, seqInBand = 1` (`IN_BAND_SEQ_AT_RUN_CREATION` from `@workflow/world`).
+- **List snapshot, or counters on a refusal.** On every `events.list()` page of a slot-numbered run, return `snapshot: { seq, seqInBand }`, read before the listing. A full load, followed to `hasMore: false`, covers every position up to the first page's `seq`. A fenced writer takes its count from that first page, never from counting events, because a count cannot tell which positions were in-band. If your store cannot read the counters on a list, you may list no snapshot, as long as every refusal carries both counters, read together (see below).
+- **Fenced in-band creates.** An in-band write carries `expectedSeqInBand`. Accept it only when that equals `seqInBand`, and advance both counters by the positions it allocates in the same atomic operation as the allocation. On a mismatch, throw `InBandSupersededError` from `@workflow/errors` (HTTP 412, `in-band-superseded`) and write and allocate nothing, so a refusal never leaves a hole. A batch is one fenced allocation for the whole block.
+- **Fence first.** Decide the fence before anything else the write does. A stale writer must touch no entity row. If the write updates entity state as well as appending, make the check, the update and the append one atomic operation (in Postgres, one transaction that locks the run's counter row first).
+- **Missing count.** Answer an in-band write without `expectedSeqInBand` with a 400 (`WorkflowWorldError` with `status: 400`).
+- **Out-of-band creates** (`inBand: false` or absent) allocate unconditionally, move `seq`, and never move `seqInBand`. The fence never refuses them.
 
 `world-local`, `world-postgres` and `world-vercel` declare the fence. `world-vercel`'s backend fences in-band writes on every run with an event sequencer (spec version 7 and later). On an older run it answers an in-band write with a 400 (`WorkflowWorldError`, `code: 'in-band-fence-unsupported'`) rather than writing it unfenced, so a writer decides whether to fence from the run's spec version. Its list responses carry the snapshot only where the backend reports one, so a writer there can find none.
 
@@ -287,6 +288,8 @@ A writer that finds no snapshot takes its count from a refusal:
 3. **Write at `seqInBand`.** That log holds every in-band write `seqInBand` counts, so the writer sends its next in-band write with `expectedSeqInBand: seqInBand`, and advances by the positions each accepted write allocated.
 
 A writer that was refused while writing stops writing from the log it held; only a writer that loads the log again, as above, takes up the refusal's counters.
+
+The conformance suite in [`packages/world/src/test-support/in-band-fence-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/in-band-fence-conformance.ts) checks each rule against a World's `events` storage, and `createTestSuite()` from `@workflow/world-testing` checks the counters (from the snapshot, or from a refusal where the World lists none) and a stale in-band write end to end when the World declares the capability.
 
 ## Queue interface
 
@@ -328,29 +331,7 @@ interface Queue {
 }
 ```
 
-`meta.messageId` should be stable across redeliveries of one message. The optional `meta.deliveryCount` is 1 on a message's first delivery and increments on every redelivery; leave it `undefined` when your queue cannot say. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries. A World that creates spec 9 runs has the stricter rules below.
-
-The handler's result is queue control. What a `{ timeoutSeconds }` result asks for depends on the spec version of the message's run, which `messageRunSpecVersion(payload)` and `isSingleOrchestratorMessage(payload)` from `@workflow/world` read off the message (the runtime stamps every message of a spec 9 run):
-
-- **Spec 9 run, `{ timeoutSeconds: n }` with `n > 0`**: do not acknowledge; deliver the **same** message again (same `messageId`, next `deliveryCount`) after about `n` seconds. The runtime returns it from a step's message to retry the step in place, and from an orchestrator delivery to defer the run (an inline step start refused for load) or to stand down after the in-band fence refused its write (`n` is 1; the redelivery must report the next `deliveryCount`, see below). You may clamp `n`; the runtime checks the log on an early redelivery and asks again. Sleeps never use it: a timer is a new delayed message.
-- **Spec 9 run, `{ timeoutSeconds: 0 }`: a handoff.** The delivery is not done. Deliver the **same** message again at once, and leave this delivery out of `meta.attempt`. A spec 9 orchestrator returns it when its invocation has to end before its work does: the invocation deadline, a stream flush, the replay budget, a wait or write it cannot read yet. A World that creates spec 9 runs implements it. Do not treat a non-finite `n` as a handoff: a handoff is not an attempt, so a handler that kept returning one would be redelivered forever. world-vercel redelivers after its longest delay (900 seconds) instead.
-- **Earlier runs (spec 8 and below), `{ timeoutSeconds: n }`**: continue the run after about `n` seconds, `0` meaning at once. Redeliver the same message, or publish a new message with the same payload and acknowledge this one. Count the redelivery toward `meta.attempt` as usual. world-vercel publishes a new message, with up to 23 hours of delay, so a long sleep or retry chain is bounded by neither the queue's redelivery delay nor the delivery cap. A message whose spec version cannot be read is an earlier run's.
-- **Anything else**: acknowledge.
-- **A rejection**: retry the same message with your own backoff.
-
-For spec 9 runs, `meta.messageId` must be stable across redeliveries of one message, and `meta.deliveryCount` must be 1 only on a message's first delivery (leave it `undefined` if your queue cannot say; the runtime then reads the log before every step body). A spec 9 orchestrator delivery counted above 1 re-sends, once per invocation and under each step's stable idempotency key, every background step that has a `step_created`, no `step_started`, and a creation less than 23 hours old, and every inline step whose last event is the orchestrator's `step_retrying` that moved its retry to the background, less than 23 hours old: a delivery that died between the write and the send left it with no message. So a delivery that dies must be followed by one counted above 1 (a redelivery of the same message, or a re-run of the delivery it was coalesced into), and your queue must deduplicate a step's key for at least `QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS` (24 hours, exported by `@workflow/world`) after its first send, while the message that send made lives, or the re-send gives the step a second message. The runtime stops re-sending an hour inside that window. Deduplicate whatever state the first message is in: waiting out a delay, being delivered, or backing off after a failed delivery. A send next to a message that is being delivered must not create a second one, and one next to a message in backoff must not reset its attempts or its schedule. world-vercel keeps a key for `min(retention, 24h)`; world-local while the first message lives; world-postgres while a Graphile job holds the key (`unsafe_dedupe`).
-
-A re-send is decided from the log the delivery loaded, which can be older than the step's progress: by the time it reaches your queue, the step's message may have run the step to its outcome and been acknowledged. Your World does not have to keep the key past that acknowledgment, nor to refuse a `step_started` for a step that already has an outcome: the runtime marks a re-sent message (`stepResent` on the payload), and its handler reads the run's log before running the body even on the message's first delivery, so a re-send the queue takes as a new message acknowledges without running the step. Either guarantee makes that read redundant, and the first-party Worlds give one: world-vercel keeps the key for its whole window whether or not the message was acknowledged, and world-local and world-postgres refuse a `step_started` for a step that already has an outcome. Carry `stepResent` through as you carry the rest of the payload.
-
-Keep redelivering a step message whose deliveries fail for at least `QUEUE_MIN_STEP_REDELIVERY_SPAN_MS` (one hour, exported by `@workflow/world`) from its first delivery. A delivery that throws before it writes anything leaves the step's log unchanged; past the delivery cap, the runtime fails such a step (`MAX_DELIVERIES_EXCEEDED`) once its log shows no activity for that long, and wakes the run. A queue that gives up on the message sooner leaves the run running with no step message. world-local backs its retries off, as Vercel Queues does, so that its 256-delivery safety limit spans hours.
-
-The runtime also sends an idempotency key on every wait timer. Each hop of a wait's timer carries `wait:<correlationId>:<resumeAt>:<hopAt>`, where `hopAt` is the hop's own deadline in epoch milliseconds (a long wait is reached in hops anchored on its deadline, at most 23 hours apart), so the timers several deliveries send for one hop are one message; a re-arm after a timer that came before its wait was due appends `:a<attempt>`, and a near-due re-arm, or a wait's last hop sent by a delivery that may hold a coalesced timer, carries `wait:<correlationId>:<resumeAt>:s<second>`. These need the same deduplication as a step key. An intermediate hop (`waitContinuation.resumeAtMs` set, see `isIntermediateWaitHop`) also carries `waitContinuation.hopAtMs`. A step with `maxRetries: 0` runs at most once per live owner only if a redelivery never reports 1 (a duplicate delivery after a lease expiry is a second owner). `meta.attempt` is `deliveryCount` less the deliveries that followed a handoff (and less coalesced re-runs, below); the runtime's delivery cap counts it, so on a World with neither it equals `deliveryCount`.
-
-**Spec 9 runs: deliver a run's orchestrator messages one at a time.** This is the queue half of the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence), described there with the fence. It applies to the Workflow SDK's own prefix only; a queue consumer's own messages on another prefix are delivered as they come.
-
-On a spec 9 run's messages, `QueueOptions.idempotencyKey` is set on step messages, with a key stable for the step, and on wait timers (above). No wake of a spec 9 run's orchestrator carries a key: each background step's outcome sends one undelayed wake, which your queue coalesces into the run's running orchestrator delivery if it coalesces, or delivers after it. Step messages also carry `retentionSeconds`, which you cap at what your queue supports.
-
-Optionally, implement `events.subscribe(runId, afterSlot, onEvent, options)` to push a run's newly committed events, in slot order, to a running orchestrator. It is best effort: the runtime also polls the log tail and drops any pushed event that is not the next slot it expects. Return an unsubscribe function, and report a dropped connection through `options.onError`.
+`meta.messageId` should be stable across redeliveries of one message. The optional `meta.deliveryCount` is 1 on a message's first delivery and increments on every redelivery; leave it `undefined` when your queue cannot say. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries.
 
 ### Queue prefixes and delivery routes
 
@@ -376,7 +357,7 @@ interface Queue {
 
 Keep a message's full queue name from `queue()` to its delivery, including its prefix. A World that delivers by path should also have `createQueueHandler(prefix, ...)` refuse a message outside `prefix` (the Local World answers 400), so a misrouted message is retried rather than run by the wrong consumer.
 
-If your World re-enqueues active runs when it starts, send each run back to the queue namespace it recorded at creation, `executionContext.queueNamespace` (read it with `getRunQueueNamespace()` from `@workflow/world`), rather than to the starting process's own namespace. `reenqueueActiveRuns()` from `@workflow/world` does this. If your queue does not survive a restart (an in-memory queue, as the Local World's), pass `{ queueLost: true }` as its fifth argument: each message then carries `recovery: true`, and a spec 9 delivery of it re-sends every open step message, started or not, and arms every open wait's timer, which died with the queue. A queue that persists its messages leaves it unset. The Workflow SDK's `start()` records the namespace when one is set, and a library that creates its own runs records its own.
+If your World re-enqueues active runs when it starts, send each run back to the queue namespace it recorded at creation, `executionContext.queueNamespace` (read it with `getRunQueueNamespace()` from `@workflow/world`), rather than to the starting process's own namespace. `reenqueueActiveRuns()` from `@workflow/world` does this. The Workflow SDK's `start()` records the namespace when one is set, and a library that creates its own runs records its own.
 
 ### Invocation delivery
 
@@ -475,106 +456,6 @@ The SDK also sends an internal `HealthCheckPayload` through the same workflow qu
 - Implement idempotency using the `idempotencyKey` option when provided
 - Honor the `delaySeconds` option. Waits (`sleep()`) are delivered as ordinary delayed continuations on the workflow queue, so a World that ignores `delaySeconds` redelivers immediately and causes every sleeping run to enter a busy loop
 - Optionally honor the `region` option, a routing hint naming the region a message should be dispatched in; Worlds without a regional dimension ignore it
-
-## Supporting spec 9 runs
-
-Spec 9 (`SPEC_VERSION_SINGLE_ORCHESTRATOR`, the single-orchestrator model) is opt-in, for users and for Worlds. A World that does nothing in this section keeps working and creates spec 8 runs. To let users opt in with `WORKFLOW_SPEC_VERSION=9`:
-
-1. Implement the [single-writer guarantee](#single-writer-guarantee-and-the-in-band-fence) below: one orchestrator delivery per run at a time, and the in-band fence.
-2. Implement the spec 9 storage and queue rules: the event rules below, and the spec 9 queue rules in [Queue interface](#queue-interface).
-3. Declare `capabilities.inBandFence: true`, and pass it to `mintedSpecVersion`:
-
-{/* @skip-typecheck - partial World, the other members are elided */}
-```typescript
-import { mintedSpecVersion } from '@workflow/world';
-
-export function createWorld(): World {
-  const capabilities = { inBandFence: true, maxConcurrency: true };
-  return {
-    specVersion: mintedSpecVersion(process.env, {
-      inBandFence: capabilities.inBandFence,
-    }),
-    capabilities,
-    // ...
-  };
-}
-```
-
-4. Keep serving the spec 8 runs the World already created: they keep running on the spec 8 orchestrator. Decide from each run's stored `specVersion`, as world-local, world-postgres and world-vercel do. A World that drops what spec 8 needs fails those runs.
-
-The runtime refuses to create or drive a spec 9 run on a World that does not declare the fence. A World that hard-codes `specVersion: 9` without it fails `start()` with an error naming `capabilities.inBandFence`.
-
-### Spec 9 event rules
-
-**Step and wait events are appends (spec 9).** On a single-orchestrator run, `step_created`, `step_started`, `step_retrying`, `step_completed`, `step_failed`, `wait_created` and `wait_completed` are plain appends. The runtime keeps the step and wait lifecycles correct itself: one orchestrator per run decides every step and wait event, a background step's invocation decides from the log alone, and replay treats any event after an entity's terminal event as inert. Your World may keep step and wait records for `steps.get()` / `steps.list()`, and may refuse writes that do not fit them, but the runtime never relies on such a refusal, and a World that accepts every step and wait append is fully correct. Two run checks still apply: refuse `step_created`, `step_started`, `step_retrying` and `wait_created` on a terminal run (`RunExpiredError`), and keep accepting `step_completed`, `step_failed` and `wait_completed` after it. Return no step or wait entity on the result.
-
-**Inline steps are created by their first `step_started` (spec 9).** A step the orchestrator runs inline has no `step_created`: its first `step_started` (`attempt: 1`) carries what a `step_created` carries, `stepName`, `workflowName`, `input` and `inline: true` (but no `creatorMessageId`, which only a background step's creation needs), and is the step's creation. Store it as one event, keep its `input` (as for a `step_created`), and write no `step_created` beside it. A background step keeps `step_created` followed by its invocation's own `step_started`. Only a step's first start carries an input; later starts are ordinary starts. The runtime still reads logs with a `step_created` for an inline step, so a World does not rewrite older runs.
-
-Persist the fields the runtime adds to `eventData` and return them from `events.list()`: `inline` and `creatorMessageId` on `step_created`, `inline` on an inline step's first `step_started`, `creatorMessageId` on `wait_created`, `attempt` on `step_started`, `attempt` on `step_retrying` and `step_failed`, and `stepName` on every step event.
-
-**In-band and out-of-band writes.** Every write says whether the run's orchestrator made it (`params.inBand`). In-band writes also carry `params.expectedSeqInBand` and `params.eventCount`, and your World must fence them: see [Single-writer guarantee and the in-band fence](#single-writer-guarantee-and-the-in-band-fence).
-
-**Batch writes (spec 9).** The runtime writes a suspension's step and wait creations (inline steps' `step_started`, background steps' `step_created`, and `wait_created`) as one batch only when the method exists, and otherwise writes them one at a time. The events land in request order at consecutive positions. On a spec 9 run a batch is not atomic: an item may fail while the others commit, and each item reports its own outcome. Batch params carry `inBand`, `expectedSeqInBand` and `eventCount` for the whole block; the World allocates the block in one conditional allocation and returns the block's skipped-slot report and `allocated` count at the top level of the result. Reject the whole batch, with a request-level error, for anything other than step and wait events, and for a batch over your own size caps.
-
-### Single-writer guarantee and the in-band fence
-
-On a spec 9 run one orchestrator invocation at a time makes every decision for the run. Its writes are **in-band**: `run_started`, `run_completed`, `run_failed`, `step_created`, `wait_created`, `wait_completed`, `hook_created`, `hook_disposed`, an `attr_set` from the workflow body, a `hook_received` it writes for a resume carried on its own queue message, and every event of a step it runs inline. Everything else is **out-of-band**: a background step's own events, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`, and `attr_set` from `setAttributes()` outside the workflow. Classification is by writer, not by event type, and the runtime states it on every write as `params.inBand`.
-
-Two mechanisms keep a run to one in-band writer, and a World implements both:
-
-1. **Queue serialization** makes two orchestrators of one run rare.
-2. **The in-band fence** makes the overlap the queue cannot rule out safe: a delivery that outlives its queue lease (an event loop stalled past its visibility timeout, then resumed) while a redelivery of the same run is already running.
-
-#### Queue: one orchestrator delivery per run
-
-`singleOrchestratorRunIdOf(payload)` from `@workflow/world` returns the run a message is an orchestrator delivery for (a start, a wake, a hook resume, a cancellation, a timer) when the run is a spec 9 run, or `undefined` for a step message, a health check, an intermediate hop of a long wait's timer (below), or an earlier run's message. While one delivery for such a run is in flight, hold the run's other orchestrator deliveries until it responds; never hold step messages back. Do not hold back an earlier run's deliveries: a spec 8 orchestrator can hold an inline step until another wake of the same run aborts it. A delivery that is waiting out a `{ timeoutSeconds }` delay is not in flight. The runtime never needs a second delivery of a run to make progress: an orchestrator blocked on an inline step reads new events from the log itself.
-
-Declare `capabilities.maxConcurrency` when your queue does this. world-postgres uses a Graphile named queue per run and world-local an in-process per-run gate. world-vercel uses a concurrency key per run on the shared flow topic (below), or, under `WORKFLOW_SEQUENTIAL_REPLAYS=1`, a per-run topic consumed with `maxConcurrency: 1`. This half is a frequency mechanism: the runtime takes no fast path from it, and correctness rests on the fence.
-
-A queue may **coalesce** instead of holding: while one delivery of a run is in flight, it drops the run's other orchestrator messages and records them on that delivery, as world-vercel does with the queue's concurrency key. That is safe because whatever an orchestrator message is sent for is committed to the log before it is sent, with one exception, and one thing the World has to do:
-
-- **Re-run the delivery.** When messages were coalesced into a delivery, call the handler again within it before acknowledging, with `meta.deliveryCount` advanced by one per re-run and `meta.attempt` unchanged. The runtime treats a re-run as a redelivery and reads the log. Pass the same `meta.invocationStartedAt` (when the function invocation began, epoch ms) to every re-run: the runtime measures its inline deadline from it, so a late re-run hands off instead of taking a fresh budget. When you bound the re-runs, hand the message off once they are used up instead of failing it.
-- **`run.wakeUp()` is best-effort.** Its message names the waits to complete (`completeWaits`), which the log does not hold. Coalesced, the names are lost and the waits run their full length. That is accepted: coalesce it like any other orchestrator message. A queue that holds messages instead delivers it after the running delivery.
-- **A timer names its wait** (`waitContinuation`), which is the other payload field the log does not hold. Coalescing a final timer, the one due with its wait, loses nothing: the holder's re-run sees the wait due and completes it, and the delivery that completes a wait arms the next timer of the waits created with it. A wait longer than one queue delay (23 hours) is reached in hops, and every hop but the last carries the wait's deadline (`waitContinuation.resumeAtMs`; `isIntermediateWaitHop(payload)` from `@workflow/world` reads it). Never serialize or coalesce an intermediate hop: its delivery reads only the run's status, writes nothing, and sends the next hop, and a coalesced hop would leave the rest of the sleep without a timer. `singleOrchestratorRunIdOf` already returns `undefined` for one, so a World that keys and holds by it is right without more work.
-
-This is why an orchestrator that has to end early hands its message off (`{ timeoutSeconds: 0 }`) rather than sending itself a new message: on a coalescing queue the new message would be coalesced into its own delivery and run again in the same invocation.
-
-#### Storage: the in-band fence
-
-Declare `capabilities.inBandFence: true`. A World that creates spec 9 runs must: the runtime checks it in `start()` and at the start of every spec 9 orchestrator delivery, and throws a `WorkflowRuntimeError` naming the capability when it is missing, before anything is written. A spec 9 run has no unfenced mode.
-
-Keep, per run, two counters next to whatever allocates event positions: `seq`, the highest position allocated to any write, and `seqInBand`, the number of positions allocated to in-band writes. `run_created` counts as in-band, so a new run holds `seq = 1, seqInBand = 1`. Then:
-
-- **List snapshot.** On every `events.list()` page of a spec 9 run, return `snapshot: { seq, seqInBand }`, read (strongly consistently) before the listing. A full load, followed to `hasMore: false`, must cover every position up to the first page's `seq`, each one committed or sealed. The runtime takes its count from the first page of a full load, never from counting events: a count cannot tell which positions were in-band. A load of a non-empty log without a snapshot fails the run as a World contract error.
-- **Fenced in-band creates.** An in-band write (`inBand: true`) carries `expectedSeqInBand`. Accept it only when that equals `seqInBand`, and advance both counters by the positions it allocates (1 for a create, the block size for a batch) in the same atomic operation as the allocation. On a mismatch, throw `InBandSupersededError` (HTTP 412, `in-band-superseded`) and write and allocate nothing, so a refusal never leaves a hole. Never use the conflict (409) path for it.
-- **Fence first.** Decide the fence before anything else the write does. A stale writer must touch no entity row and must hear 412, never a 409 for an entity the current writer created. If the write updates entity state as well as appending, make the check, the update and the append one atomic operation (Postgres: one transaction that locks the run's counter row first).
-- **Missing count.** Answer an in-band write without `expectedSeqInBand` with a 400 (`WorkflowWorldError` with `status: 400`).
-- **Out-of-band creates** (`inBand: false` or absent) allocate unconditionally, move `seq`, and never move `seqInBand`. The fence never refuses them.
-- **Allocation and report.** Return `allocated` on the result: how many positions the write took (0 for a write that converged on an event the log already held). For an in-band write, return the events on the positions between `eventCount` and the write's own (the skipped-slot report) in `events`, complete, or with `hasMore: true` when you could not produce all of it.
-- **Event time.** Store an in-band write's `occurredAt` as the event's `createdAt`, on creates and batch items alike. The runtime hands an inline step's outcome to the workflow before the write commits (run-ahead), and the workflow clock moves to that time; replay reads the stored one. The runtime checks every such write's stored time, and on a mismatch stops the delivery and turns run-ahead off for your World for the rest of the process.
-- **Batch order.** If you implement `createBatch`, order it per entity: once you refuse an item, refuse every later item of the batch with the same `correlationId`, so a step's outcome never commits behind its refused creation. The runtime puts a step's creation and outcome in one batch.
-
-When a write is refused, the runtime stops that orchestrator invocation: it writes nothing more and starts no further inline step bodies. It sends the queue messages its own committed writes still owe, the message of each background step it created and the timer of each wait it created that it had not sent yet (each step message under its usual idempotency key, so one sent twice is deduplicated), and then returns `{ timeoutSeconds: 1 }` instead of acknowledging its message. A refusal does not prove that another orchestrator is running (a World may refuse a write whose own position it sealed), and when the other writer is a second delivery of the same message it may die before sending what its writes owe. The redelivery is counted above 1, so it re-sends what is missing (see `meta.deliveryCount` above) and continues the run. Count it toward `meta.attempt`, so that a run whose every write is refused reaches the delivery cap. If the invocation dies before those messages go out, the handler never responds, and your queue redelivers the message, with the same effect. It never adopts the counts the error carries.
-
-#### Conformance
-
-Run the shared suite against your events storage. It checks the capability, the snapshot of a new run, acceptance and advancement at the current count, a refused stale write that leaves the log and counts unchanged, out-of-band writes that move only `seq`, a race of concurrent in-band writers holding the same count (exactly one wins), the 400 for a missing count, that an in-band write is stored at its `occurredAt`, and that the step bookkeeping fields survive the round trip. It imports `vitest`.
-
-{/* @skip-typecheck - depends on your World's own factories */}
-```typescript
-import { inBandFenceConformance } from '@workflow/world/test-support/in-band-fence-conformance.js';
-import { createWorld } from './index.js';
-
-inBandFenceConformance({
-  name: 'my-world',
-  events: () => createWorld().events, // fresh storage per test
-  capabilities: () => createWorld().capabilities,
-  newRunId: () => null, // or a `wrun_` id when your World needs the client to mint it
-  atRunCreation: 1, // in-band positions a new run holds
-});
-```
-
-`createTestSuite()` from `@workflow/world-testing`, which runs workflows against your configured World, also checks the snapshot of a finished run's log and a stale in-band write end to end when the World declares the capability, and skips those checks when it does not.
 
 ## Streamer interface
 
@@ -799,3 +680,7 @@ Your World will then appear on the [Worlds ecosystem](/worlds) page with its com
   "docs": "https://github.com/you/your-world#readme"
 }
 ```
+
+## Supporting spec 9 runs (experimental)
+
+Everything above is the contract for spec 8 runs, which every World needs. A World may also let its users opt in to the experimental spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`). To do so it implements the [in-band writer fence](#optional-the-in-band-writer-fence), serializes each spec 9 run's orchestrator deliveries, follows the spec 9 queue and deduplication rules, declares `capabilities.inBandFence: true`, and passes it on as `mintedSpecVersion(process.env, { inBandFence: true })`. `mintedSpecVersion()` called with no options never returns 9, so a World that does none of this keeps creating spec 8 runs. See [Implementing spec 9 in a World](/docs/changelog/spec-9#implementing-spec-9-in-a-world) and [World contract changes](/docs/changelog/spec-9#world-contract-changes).
