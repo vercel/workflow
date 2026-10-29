@@ -3,22 +3,26 @@ import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
- * The in-band writer fence every World implements: the runtime refuses a World
+ * The in-band writer fence (`WorldCapabilities.inBandFence`), which spec 9
+ * runs need: the runtime refuses to create or drive a spec 9 run on a World
  * that does not declare it, and relies on it to keep a run to one writer when
  * two orchestrator deliveries overlap. A World can run every workflow in this
  * suite without the fence ever refusing anything, because the queue rarely
  * lets two deliveries of a run overlap, so the fence is checked directly here.
- * See the single-writer section of the building-a-world guide.
+ *
+ * Skipped for a World that does not declare the fence. Such a World creates
+ * spec 8 runs (`mintedSpecVersion()` never returns 9 for it), which need no
+ * fence. See the single-writer section of the building-a-world guide.
  */
 export function inBandFence(world: string) {
   test(
     "declares the in-band fence and reports a run's counters",
     { timeout: 30_000 },
-    async () => {
+    async (ctx) => {
       const server = await startServer({ world }).then(createFetcher);
-      expect(await server.getCapabilities()).toMatchObject({
-        inBandFence: true,
-      });
+      if ((await server.getCapabilities()).inBandFence !== true) {
+        ctx.skip();
+      }
 
       const result = await server.invoke(
         'workflows/addition.ts',
@@ -58,8 +62,11 @@ export function inBandFence(world: string) {
   test(
     'refuses a stale in-band write before writing anything',
     { timeout: 30_000 },
-    async () => {
+    async (ctx) => {
       const server = await startServer({ world }).then(createFetcher);
+      if ((await server.getCapabilities()).inBandFence !== true) {
+        ctx.skip();
+      }
       const probe = await server.probeFence();
 
       expect(probe.atCreation).not.toBeNull();

@@ -2,18 +2,19 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
 } from '@workflow/world';
 import { expect, onTestFinished, test, vi } from 'vitest';
 import { createFetcher, startServer } from '../src/util.mjs';
 import type { Hook } from '../workflows/hooks.ts';
 
-// A Local World that created a spec 8 run is upgraded to one that declares
-// spec 9 while the run waits on a hook. The upgraded server keeps driving the
-// run with the spec 8 orchestrator, and its new runs are spec 9.
+// A Local World that created a spec 8 run is restarted with spec 9 opted in
+// (`WORKFLOW_SPEC_VERSION=9`) while the run waits on a hook. The restarted
+// server keeps driving the run with the spec 8 orchestrator, and its new runs
+// are spec 9.
 test(
-  'a spec 8 run in flight finishes after its World moves to spec 9',
+  'a spec 8 run in flight finishes after its World opts in to spec 9',
   { timeout: 60_000 },
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), 'workflow-spec8-upgrade-'));
@@ -42,7 +43,10 @@ test(
 
     const after = await startServer({
       world: 'local',
-      env: { WORKFLOW_SPEC_VERSION: '', WORKFLOW_LOCAL_DATA_DIR: dataDir },
+      env: {
+        WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SINGLE_ORCHESTRATOR),
+        WORKFLOW_LOCAL_DATA_DIR: dataDir,
+      },
     }).then(createFetcher);
     await after.resumeHook<typeof Hook>(token, { data: 'last', done: true });
 
@@ -64,7 +68,7 @@ test(
       events.slice(resumedAt).some((e) => e.eventType === 'step_created')
     ).toBe(true);
 
-    // A new run on the upgraded World is a single-orchestrator run.
+    // A new run on the opted-in World is a single-orchestrator run.
     const fresh = await after.invoke(
       'workflows/addition.ts',
       'addition',
@@ -78,6 +82,6 @@ test(
       },
       { interval: 200, timeout: 25_000 }
     );
-    expect(freshRun.specVersion).toBe(SPEC_VERSION_CURRENT);
+    expect(freshRun.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
   }
 );
