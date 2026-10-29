@@ -1,6 +1,7 @@
 import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import type { StreamWriteSession } from '@workflow/world';
+import { envNumber } from '@workflow/world';
 import type { WebSocket } from 'ws';
 import { createThrottleWaiter } from './event-retry.js';
 import { decodeFrame } from './frames.js';
@@ -64,10 +65,32 @@ type PendingRequest = {
   resolve: (meta: Record<string, unknown>) => void;
   reject: (error: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+  /** Resolves once the request has its reply or has failed. */
+  settled: Promise<void>;
   sentAt?: number;
   replyReceivedAt?: number;
 };
 const MAX_IDLE_RECONNECTS = 3;
+/**
+ * The server admits 4 pending messages per stream socket (workflow-server
+ * `WS_STREAM_MESSAGE_LIMITS`), counting the one it is executing.
+ */
+const MAX_PIPELINE_DEPTH = 4;
+
+/**
+ * Experimental: how many single-frame write requests may be outstanding on an
+ * open stream socket (`WORKFLOW_STREAM_WS_PIPELINE_DEPTH`, default 1). v1
+ * allows pipelining (`docs/workflow-stream-ws-v1.md` "Ordering and unknown
+ * outcomes"): the server runs admitted requests serially in receive order and
+ * is fail-stop. Read per session.
+ */
+export function getStreamWsPipelineDepth(): number {
+  return envNumber('WORKFLOW_STREAM_WS_PIPELINE_DEPTH', 1, {
+    integer: true,
+    min: 1,
+    max: MAX_PIPELINE_DEPTH,
+  });
+}
 
 function now(): number {
   return performance.now();
@@ -221,7 +244,13 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private tail = Promise.resolve();
   private inbound = Promise.resolve();
   private nextReqId = 1;
-  private pending: PendingRequest | undefined;
+  /**
+   * Sent requests awaiting their reply, oldest first. The server replies in
+   * receive order, so a reply always belongs to the head. Holds at most one
+   * request unless pipelining is configured.
+   */
+  private pendings: PendingRequest[] = [];
+  private readonly pipelineDepthLimit = getStreamWsPipelineDepth();
   private poisonError: unknown;
   /** The socket that returned a 429 whose retry is still waiting. */
   private throttledSocket: WebSocket | undefined;
@@ -265,15 +294,48 @@ class VercelStreamWriteSession implements StreamWriteSession {
       sessionFirstWrite: !this.sessionHasWrite,
     };
     this.sessionHasWrite = true;
-    return this.enqueue(() => this.writeInternal(chunkSeq, chunks, timing));
+    let pipelined: { ack: Promise<void> } | undefined;
+    const queued = this.enqueue(async () => {
+      pipelined = await this.writeInternal(chunkSeq, chunks, timing);
+    });
+    // A pipelined write leaves the operation chain once its frame is sent, so
+    // the next write can go out before this one's reply. Its ack still
+    // settles this call.
+    return queued.then(() => pipelined?.ack);
+  }
+
+  /**
+   * How many write groups the caller may have outstanding right now. Above
+   * one only while an open socket carries writes and no throttle is pending;
+   * every other mode stays strictly serial.
+   */
+  pipelineDepth(): number {
+    if (this.pipelineDepthLimit <= 1) return 1;
+    if (this.mode !== 'ws' || this.throttledSocket) return 1;
+    return this.pipelineDepthLimit;
+  }
+
+  /** Waits until every pipelined request has its reply (or failed). */
+  private async settleOutstanding(limit = 0): Promise<void> {
+    while (this.pendings.length > limit) {
+      await this.pendings[0]!.settled;
+    }
   }
 
   private async writeInternal(
     chunkSeq: number,
     chunks: (string | Uint8Array)[],
     timing: WriteTiming
-  ): Promise<void> {
+  ): Promise<{ ack: Promise<void> } | undefined> {
     this.assertUsable();
+    if (this.pendings.length > 0 || this.pipelineDepth() > 1) {
+      const pipelined = await this.writePipelined(chunkSeq, chunks, timing);
+      if (pipelined) return pipelined;
+      // Not eligible: run the serial path below with nothing outstanding, so
+      // its throttle retry and transport fallback keep their v1 preconditions.
+      await this.settleOutstanding();
+      this.assertUsable();
+    }
     if (this.mode === 'deferred') {
       await this.writeFirstGroup(chunks, timing);
       return;
@@ -333,6 +395,77 @@ class VercelStreamWriteSession implements StreamWriteSession {
       }
       offset = end;
     }
+  }
+
+  /**
+   * Sends a one-frame group on the open socket without waiting for earlier
+   * replies, up to the pipeline depth. Returns once the frame is sent; `ack`
+   * settles with its reply. Returns undefined, sending nothing, when the group
+   * is not eligible (socket not open, throttled, or more than one frame).
+   *
+   * Any failure of a pipelined request poisons the writer, including a 429:
+   * v1 permits resending a rejected request only when nothing else was
+   * outstanding, which a pipelining client cannot guarantee.
+   */
+  private async writePipelined(
+    chunkSeq: number,
+    chunks: (string | Uint8Array)[],
+    timing: WriteTiming
+  ): Promise<{ ack: Promise<void> } | undefined> {
+    if (this.pipelineDepth() <= 1) return undefined;
+    const maxMessageBytes = wsMaxMessageBytes();
+    const binaryChunks = normalizeStreamChunks(chunks);
+    if (
+      streamWsWriteBatchEnd(binaryChunks, 0, maxMessageBytes) < chunks.length
+    ) {
+      return undefined;
+    }
+    await this.settleOutstanding(this.pipelineDepthLimit - 1);
+    this.assertUsable();
+    if (this.pipelineDepth() <= 1) return undefined;
+    let markSent!: () => void;
+    const sent = new Promise<void>((resolve) => {
+      markSent = resolve;
+    });
+    const reply = this.request(
+      'write',
+      (reqId) =>
+        encodeStreamWsWriteRequest(
+          { type: 'write', reqId, chunkSeq, numChunks: binaryChunks.length },
+          binaryChunks
+        ),
+      timing,
+      { chunkSeq, numChunks: binaryChunks.length },
+      maxMessageBytes,
+      markSent
+    );
+    const ack = reply.then(
+      (meta) => {
+        if (meta.type !== 'write_ack') {
+          throw this.poison(
+            new Error(`stream WebSocket write received ${meta.type}`)
+          );
+        }
+      },
+      (error) => {
+        if (error instanceof StreamWsRequestNotSentError) throw error;
+        // A throttled or failed pipelined request cannot be retried safely.
+        this.failUnknown(error);
+        throw this.poisonError;
+      }
+    );
+    // Observed by the caller once the chain releases it; keep an early
+    // failure from being reported as unhandled in between.
+    ack.catch(() => {});
+    try {
+      await Promise.race([sent, reply]);
+    } catch (error) {
+      if (!(error instanceof StreamWsRequestNotSentError))
+        throw this.poisonError ?? error;
+      // Nothing was sent: the serial path takes the group.
+      return undefined;
+    }
+    return { ack };
   }
 
   /**
@@ -428,6 +561,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
 
   release(): Promise<void> {
     return this.enqueue(async () => {
+      // Pipelined writes still need their replies on this socket.
+      await this.settleOutstanding();
       if (this.mode === 'closed' || this.mode === 'poisoned') return;
       // A released handle remains usable over HTTP with the same sequence
       // space, without retaining or reconnecting its idle socket.
@@ -440,9 +575,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
     this.mode = 'closed';
     this.terminated.abort();
     this.finishDrainWait();
-    const pending = this.pending;
-    this.pending = undefined;
-    if (pending) {
+    const pendings = this.pendings;
+    this.pendings = [];
+    for (const pending of pendings) {
       clearTimeout(pending.timer);
       pending.reject(new Error('stream writer transport disposed'));
     }
@@ -451,6 +586,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
 
   close(): Promise<void> {
     return this.enqueue(async () => {
+      await this.settleOutstanding();
       this.assertUsable();
       if (
         this.mode === 'deferred' ||
@@ -709,7 +845,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         this.handleDrain(reply.reason, reply.graceMs);
         return;
       }
-      const pending = this.pending;
+      const pending = this.pendings[0];
       if (
         !pending ||
         reply.reqId === undefined ||
@@ -722,7 +858,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         }
         throw new Error('stream WebSocket reply cannot be correlated');
       }
-      this.pending = undefined;
+      this.pendings.shift();
       pending.replyReceivedAt = receivedAt;
       clearTimeout(pending.timer);
       if (reply.type === 'close_ack') this.closeAcknowledged = true;
@@ -756,7 +892,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       () => {
         this.drainTimer = undefined;
         if (this.mode !== 'draining' || socket !== this.socket) return;
-        if (this.pending) {
+        if (this.pendings.length > 0) {
           this.failUnknown(
             new Error('stream WebSocket drain expired before request reply')
           );
@@ -784,7 +920,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     ) {
       return;
     }
-    if (this.pending) {
+    if (this.pendings.length > 0) {
       this.failUnknown(new Error('stream WebSocket closed before reply'));
       return;
     }
@@ -845,7 +981,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
     buildFrame: (reqId: number) => Uint8Array,
     writeTiming?: WriteTiming,
     writeMetadata?: WriteMetadata,
-    maxMessageBytes = wsMaxMessageBytes()
+    maxMessageBytes = wsMaxMessageBytes(),
+    onSent?: () => void
   ): Promise<Record<string, unknown>> {
     this.assertUsable();
     const ws = this.socket;
@@ -913,8 +1050,25 @@ class VercelStreamWriteSession implements StreamWriteSession {
               );
             }, getRequestTimeoutMs());
             timer.unref?.();
-            pending = { reqId, operation, resolve, reject, timer };
-            this.pending = pending;
+            let settle!: () => void;
+            const settled = new Promise<void>((done) => {
+              settle = done;
+            });
+            pending = {
+              reqId,
+              operation,
+              resolve: (meta) => {
+                settle();
+                resolve(meta);
+              },
+              reject: (error) => {
+                settle();
+                reject(error);
+              },
+              timer,
+              settled,
+            };
+            this.pendings.push(pending);
             try {
               if (detailedTiming) {
                 recordFirstWriteSend(
@@ -928,6 +1082,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
                 if (!error) return;
                 this.failUnknown(error);
               });
+              onSent?.();
             } catch (error) {
               this.failUnknown(error);
             }
@@ -1065,7 +1220,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
 
   private isIdleThrottledSocket(socket: WebSocket): boolean {
     return (
-      !this.pending && socket === this.throttledSocket && socket === this.socket
+      this.pendings.length === 0 &&
+      socket === this.throttledSocket &&
+      socket === this.socket
     );
   }
 
@@ -1084,9 +1241,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private failUnknown(error: unknown): void {
     const poisoned = this.poison(error);
     this.finishDrainWait();
-    const pending = this.pending;
-    this.pending = undefined;
-    if (pending) {
+    const pendings = this.pendings;
+    this.pendings = [];
+    for (const pending of pendings) {
       clearTimeout(pending.timer);
       pending.reject(poisoned);
     }

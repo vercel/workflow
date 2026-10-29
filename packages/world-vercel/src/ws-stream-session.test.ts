@@ -1703,3 +1703,171 @@ describe('v1 stream WebSocket message byte budget', () => {
     expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
   });
 });
+
+describe('experimental WebSocket write pipelining', () => {
+  function reply(
+    socket: InstanceType<typeof FakeWebSocket>,
+    meta: Record<string, unknown>
+  ): void {
+    socket.reply(encodeFrame(meta, new Uint8Array()));
+  }
+
+  afterEach(() => {
+    delete process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH;
+  });
+
+  it('stays serial by default', async () => {
+    const { session, socket } = await openSession();
+    expect(session.pipelineDepth?.()).toBe(1);
+    const first = session.write(0, ['a']);
+    const second = session.write(1, ['b']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(socket.sent).toHaveLength(1);
+    reply(socket, { type: 'write_ack', reqId: 1 });
+    await first;
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    await second;
+  });
+
+  it('reports depth 1 until the socket opens', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '2';
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session } = makeSession();
+    expect(session.pipelineDepth?.()).toBe(1);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    expect(session.pipelineDepth?.()).toBe(2);
+  });
+
+  it('sends up to the depth before replies, in order, and acks each write', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '2';
+    const { session, socket, writeHttp } = await openSession();
+    let firstDone = false;
+    let secondDone = false;
+    const first = session.write(0, ['a']).then(() => {
+      firstDone = true;
+    });
+    const second = session.write(1, ['b', 'c']).then(() => {
+      secondDone = true;
+    });
+    const third = session.write(3, ['d']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // The third waits for a slot.
+    expect(socket.sent).toHaveLength(2);
+    expect((await decodeOne(socket.sent[0])).meta).toEqual({
+      type: 'write',
+      reqId: 1,
+      chunkSeq: 0,
+      numChunks: 1,
+    });
+    expect((await decodeOne(socket.sent[1])).meta).toEqual({
+      type: 'write',
+      reqId: 2,
+      chunkSeq: 1,
+      numChunks: 2,
+    });
+
+    reply(socket, { type: 'write_ack', reqId: 1 });
+    await first;
+    expect(secondDone).toBe(false);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect((await decodeOne(socket.sent[2])).meta).toMatchObject({
+      reqId: 3,
+      chunkSeq: 3,
+    });
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    reply(socket, { type: 'write_ack', reqId: 3 });
+    await Promise.all([second, third]);
+    expect(firstDone && secondDone).toBe(true);
+
+    const closing = session.close();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(4));
+    reply(socket, { type: 'close_ack', reqId: 4 });
+    socket.emit('close', 1000);
+    await closing;
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('releases the socket only after outstanding writes are acknowledged', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '2';
+    const { session, socket } = await openSession();
+    const first = session.write(0, ['a']);
+    const second = session.write(1, ['b']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    let released = false;
+    const releasing = Promise.resolve(session.release?.()).then(() => {
+      released = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(released).toBe(false);
+    expect(socket.closed).toEqual([]);
+    reply(socket, { type: 'write_ack', reqId: 1 });
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    await Promise.all([first, second, releasing]);
+    expect(socket.closed).toContainEqual([1000, 'stream writer released']);
+  });
+
+  it('poisons every outstanding write when the socket closes before replies', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '3';
+    const { session, socket, writeHttp } = await openSession();
+    const first = session.write(0, ['a']);
+    const second = session.write(1, ['b']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    socket.emit('close', 1006);
+    await expect(first).rejects.toThrow('closed before reply');
+    await expect(second).rejects.toThrow('closed before reply');
+    await expect(session.write(2, ['c'])).rejects.toThrow();
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('poisons rather than retrying a throttled pipelined write', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '2';
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { session, socket, writeHttp } = await openSession();
+    const first = session.write(0, ['a']);
+    const second = session.write(1, ['b']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    reply(socket, {
+      type: 'error',
+      reqId: 1,
+      status: 429,
+      retryAfter: '1',
+    });
+    await expect(first).rejects.toThrow('throttled');
+    await expect(second).rejects.toThrow();
+    expect(socket.sent).toHaveLength(2);
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('rejects a reply that is not for the oldest outstanding request', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '2';
+    const { session, socket } = await openSession();
+    const first = session.write(0, ['a']);
+    const second = session.write(1, ['b']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    await expect(first).rejects.toThrow('cannot be correlated');
+    await expect(second).rejects.toThrow('cannot be correlated');
+  });
+
+  it('keeps multi-frame groups serial behind outstanding writes', async () => {
+    process.env.WORKFLOW_STREAM_WS_PIPELINE_DEPTH = '2';
+    const { session, socket } = await openSession();
+    const first = session.write(0, ['a']);
+    const chunks = Array.from({ length: 1001 }, () => new Uint8Array([1]));
+    const big = session.write(1, chunks);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(socket.sent).toHaveLength(1);
+    reply(socket, { type: 'write_ack', reqId: 1 });
+    await first;
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    reply(socket, { type: 'write_ack', reqId: 3 });
+    await big;
+  });
+});

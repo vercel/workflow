@@ -1379,6 +1379,17 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         const world = await worldPromise;
         return world.streams.createWriteSession?.(runId, name, { writerId });
       });
+    // Synchronously readable once resolved, so dispatch can ask the session
+    // whether it accepts pipelined writes without an extra await.
+    let resolvedSession: StreamWriteSession | undefined;
+    writeSessionPromise.then(
+      (session) => {
+        resolvedSession = session;
+      },
+      () => {}
+    );
+    const sessionPipelineDepth = (): number =>
+      resolvedSession?.pipelineDepth?.() ?? 1;
     let nextChunkSeq = 0;
 
     // ------------------------------------------------------------------
@@ -1415,6 +1426,8 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     /** The in-flight dispatch chain. At most one, preserving chunk order. */
     let inFlight: Promise<void> | null = null;
+    /** Wakes a pipelined dispatch chain blocked on its oldest write. */
+    let wakePipelinedLoop: (() => void) | undefined;
     /**
      * Sticky failure: once a dispatch fails, the failed group is re-queued
      * (retained, exactly as the previous implementation retained its buffer)
@@ -1531,6 +1544,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
     const dispatchLoop = async (): Promise<void> => {
       while (buffer.length > 0) {
+        // The session now accepts pipelined writes (its socket opened): end
+        // this serial chain; startDispatch's restart picks the pipelined one.
+        if (sessionPipelineDepth() > 1) return;
         if (flushTimer) {
           clearTimeout(flushTimer);
           flushTimer = null;
@@ -1569,10 +1585,102 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
+    /**
+     * Experimental pipelined dispatch, used only while the write session
+     * reports a depth above one (`StreamWriteSession.pipelineDepth`). Groups
+     * are taken and their writer-local sequence reserved in order, and up to
+     * `depth` writes are outstanding at once; the session sends them in call
+     * order. A chunk that arrives while a slot is free goes out at once
+     * instead of waiting for the previous group's acknowledgement. Any failure
+     * is sticky, as in the serial chain.
+     */
+    const pipelinedDispatchLoop = async (
+      session: StreamWriteSession
+    ): Promise<void> => {
+      type Outstanding = { done: Promise<void>; settled: boolean };
+      const outstanding: Outstanding[] = [];
+      let failure: { error: unknown } | undefined;
+      while (true) {
+        while (outstanding[0]?.settled) outstanding.shift();
+        if (failure) {
+          if (outstanding.length === 0) throw failure.error;
+        } else if (
+          buffer.length > 0 &&
+          outstanding.length < Math.max(1, session.pipelineDepth?.() ?? 1)
+        ) {
+          if (flushTimer) {
+            clearTimeout(flushTimer);
+            flushTimer = null;
+          }
+          const groupT0 = bufferT0;
+          const groupTakenAt = Date.now();
+          const { group, bytes } = takeGroup();
+          inFlightChunks += group.length;
+          inFlightBytes += bytes;
+          bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
+          const chunkSeq = nextChunkSeq;
+          nextChunkSeq += group.length;
+          const dispatchAt = Date.now();
+          const entry: Outstanding = {
+            done: Promise.resolve(),
+            settled: false,
+          };
+          entry.done = session.write(chunkSeq, group).then(
+            () => {
+              entry.settled = true;
+              inFlightChunks -= group.length;
+              inFlightBytes -= bytes;
+              if (groupT0 !== undefined) {
+                recordStreamWriteFlush(
+                  groupT0,
+                  dispatchAt,
+                  runId,
+                  name,
+                  group.length,
+                  bytes,
+                  Date.now() - dispatchAt
+                );
+              }
+              const relieved = capacityWaiters;
+              capacityWaiters = [];
+              for (const w of relieved) w.resolve();
+            },
+            (error) => {
+              entry.settled = true;
+              inFlightChunks -= group.length;
+              inFlightBytes -= bytes;
+              failure ??= { error };
+            }
+          );
+          outstanding.push(entry);
+          continue;
+        } else if (outstanding.length === 0) {
+          return;
+        }
+        // Wait for the oldest write to settle, or for a new chunk while a
+        // slot is free.
+        await new Promise<void>((resolve) => {
+          wakePipelinedLoop = resolve;
+          void outstanding[0]!.done.then(resolve);
+        });
+        wakePipelinedLoop = undefined;
+      }
+    };
+
     /** Start (or join) the dispatch chain. Never leaves an unhandled rejection. */
     const startDispatch = (): void => {
-      if (inFlight || sinkError !== undefined || buffer.length === 0) return;
-      inFlight = dispatchLoop().then(
+      if (inFlight) {
+        wakePipelinedLoop?.();
+        return;
+      }
+      if (sinkError !== undefined || buffer.length === 0) return;
+      const pipelineSession =
+        sessionPipelineDepth() > 1 ? resolvedSession : undefined;
+      inFlight = (
+        pipelineSession
+          ? pipelinedDispatchLoop(pipelineSession)
+          : dispatchLoop()
+      ).then(
         () => {
           inFlight = null;
           // A write can land in the microtask gap between the loop's
@@ -1618,7 +1726,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      * `sendGroup` awaits the same promise before any request leaves.
      */
     const scheduleGroupCommit = (): void => {
-      if (flushTimer || inFlight) return;
+      if (inFlight) {
+        // A pipelined chain may have a free slot for this chunk.
+        wakePipelinedLoop?.();
+        return;
+      }
+      if (flushTimer) return;
       if (resolvedFlushIntervalMs === undefined) {
         // Promise.resolve: everywhere else the world is only ever awaited,
         // which tolerates a synchronous value (tests stub getWorldLazy that
