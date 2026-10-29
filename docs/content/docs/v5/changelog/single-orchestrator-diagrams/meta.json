@@ -11,6 +11,7 @@
     "queue-topology",
     "timers-and-waits",
     "hooks",
+    "live-feed",
     "spec-routing",
     "edge-cases"
   ],

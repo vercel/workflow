@@ -217,7 +217,7 @@ sequenceDiagram
     O->>O: buffer, fold in only between passes
 ```
 
-A push that is late, duplicated or out of order is dropped and the poll fills it in, so correctness never depends on the push (`live-feed.ts:167`). world-local has no `subscribe`, so it is the poll alone there, and a delivery on world-local never lingers (`delivery.ts:2346`).
+A push that is late, duplicated or out of order is dropped and the poll fills it in, so correctness never depends on the push (`live-feed.ts:167`). world-local has no `subscribe`, so it is the poll alone there, and a delivery on world-local never lingers (`delivery.ts:2346`). How the push and both polls work, and which failures each covers, is on [Live event feed](/docs/changelog/single-orchestrator-diagrams/live-feed).
 
 ## Edge cases
 
