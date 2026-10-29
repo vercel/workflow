@@ -10,7 +10,7 @@ function deferred() {
 }
 
 describe('createBuildQueue', () => {
-  it('merges every build requested during a running build into one follow-up build', async () => {
+  it('merges every build requested during a running build into one follow up build', async () => {
     const enqueue = createBuildQueue();
     const first = deferred();
     const build = vi.fn(() => first.promise);
@@ -51,7 +51,7 @@ describe('createBuildQueue', () => {
     expect(newer).toHaveBeenCalledOnce();
   });
 
-  it('starts another build for a request made after the follow-up build began', async () => {
+  it('starts another build for a request made after the follow up build began', async () => {
     const enqueue = createBuildQueue();
     const second = deferred();
     const build = vi.fn(async () => {
