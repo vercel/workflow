@@ -88,7 +88,7 @@ export async function POST(request: Request) {
 A duplicate request often carries data the owner should receive, such as a follow-up message in a chat. Since the start Hook exists from the moment the run is admitted, you can resume it right away on a conflict, even before the owner starts executing:
 
 ```typescript title="app/api/orders/route.ts" lineNumbers
-import { resumeHook, start } from "workflow/api";
+import { getRun, resumeHook, start } from "workflow/api";
 import { HookConflictError, HookNotFoundError } from "workflow/errors";
 import { processOrder } from "./workflows/process-order";
 
@@ -97,19 +97,27 @@ export async function POST(request: Request) {
   const token = `order:${orderId}`;
 
   for (let attempt = 0; attempt < 3; attempt++) {
+    let owner: string | undefined;
     try {
       const run = await start(processOrder, [orderId, note], { hook: { token } });
       return Response.json({ runId: run.runId, started: true });
     } catch (error) {
       if (!HookConflictError.is(error)) throw error;
+      owner = error.conflictingRunId;
     }
 
     try {
       const hook = await resumeHook(token, { note }); // [!code highlight]
       return Response.json({ runId: hook.runId, started: false });
     } catch (error) {
-      // The owner ended between the conflict and the resume: start again.
       if (!HookNotFoundError.is(error)) throw error; // [!code highlight]
+      // Not found: either the owner ended in the meantime (start again), or
+      // it is still running but disposed its start Hook, so it keeps the
+      // token and accepts nothing more.
+      const status = owner ? await getRun(owner).status : undefined;
+      if (status === "pending" || status === "running") {
+        throw new Error(`Run ${owner} owns ${token} but no longer accepts payloads`);
+      }
     }
   }
 
@@ -117,7 +125,10 @@ export async function POST(request: Request) {
 }
 ```
 
-Every caller either starts the run or delivers its payload to the owner. While the owner is live, the loop needs at most two calls. A `HookNotFoundError` after a conflict means the owner ended in the meantime, so the next `start()` is admitted as the new owner.
+Every caller either starts the run, delivers its payload to the owner, or learns which run owns the token. While the owner's start Hook is open, the loop needs at most two calls. A `HookNotFoundError` after a conflict means one of two things:
+
+- The owner ended in the meantime, so the next `start()` is admitted as the new owner.
+- The owner is still running but has [disposed its start Hook](#keep-the-token-after-the-run-ends). It keeps the token until it ends, so neither a new start nor a resume can succeed until then. The example reports that run rather than retrying.
 
 If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps refusing new starts until the retention passes, and its Hook can no longer be resumed, so the loop above gives up after its attempts. Use `getRun(error.conflictingRunId)` to tell the caller what the finished run returned.
 
@@ -147,7 +158,7 @@ export async function processOrder(orderId: string, note: string) {
 - `createHook({ token })` with the run's start token returns a handle bound to the start Hook. It doesn't register a new Hook, so it adds no step, and `await hook.getConflict()` resolves `null`.
 - Payloads resumed before the workflow opens the Hook are kept, and are delivered in order once it does.
 - If the workflow never opens it, the token was only an idempotency key. The run completes normally, and unread payloads are simply left unread.
-- `metadata`, `experimental_minRetention`, `isWebhook` and `experimental_force` belong on `start({ hook })`, not on this `createHook()`. Passing them there throws.
+- `metadata` and `experimental_minRetention` belong on `start({ hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `experimental_force` to this `createHook()` throws.
 
 ### Keep the token after the run ends
 

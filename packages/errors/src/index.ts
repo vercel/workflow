@@ -272,11 +272,13 @@ export type WorkflowStartStage = 'queue' | 'admission';
  * is unknown, not failed: the candidate may still become the run that owns the
  * token. `runId` identifies the candidate for inspection.
  *
- * Safe to retry: retrying the logical request with the same Hook token can
- * never admit a second owner. If the first candidate was
- * admitted, the retry throws `HookConflictError` naming it; otherwise the
- * retry's candidate becomes the owner. Inside a workflow, the `start()` step
- * retries it like any other transient failure.
+ * Safe to retry while the token is held: if the first candidate was admitted
+ * and still holds the token, the retry throws `HookConflictError` naming it;
+ * if it was not admitted, the retry's candidate becomes the owner. The token
+ * is held until the owner ends, then for any `experimental_minRetention`; a
+ * retry after that is admitted as a new run, so set a retention that covers
+ * the retry window when a repeat must never run. Inside a workflow, the
+ * `start()` step retries it like any other transient failure.
  *
  * Use the static `WorkflowStartError.is()` method for type-safe checking in
  * catch blocks.
@@ -295,7 +297,7 @@ export class WorkflowStartError extends WorkflowError {
     super(
       `Could not confirm whether workflow run "${runId}" was ${
         stage === 'queue' ? 'queued' : 'admitted'
-      }: ${causeMessage}. Retrying with the same hook token is safe: it never admits a second run.`,
+      }: ${causeMessage}. Retrying with the same hook token is safe while the token is held: it never admits a second run while the first one holds it.`,
       { cause }
     );
     this.name = 'WorkflowStartError';

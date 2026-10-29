@@ -97,9 +97,10 @@ export const StartHookSchema = z.object({
   hookId: z.string().optional(),
   /**
    * The start Hook's minimum retention, like `createHook()`'s
-   * `tokenRetentionUntil`: once the run has ended, the Hook keeps its token
-   * until this time has passed. Disposing the Hook frees the token earlier.
-   * Requires `capabilities.hookRetention`.
+   * `tokenRetentionUntil`: once the run has ended, the token stays held
+   * until this time has passed, whether or not the Hook was disposed (the
+   * run holds its start Hook token until it ends). Requires
+   * `capabilities.hookRetention`.
    */
   tokenRetentionUntil: z.coerce.date().optional(),
   /**

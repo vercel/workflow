@@ -96,7 +96,7 @@ describe('atomic start Hook (world-postgres)', () => {
       vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
       vi.setSystemTime(target);
     },
-    // No `stageOrphan`: the start Hook and the run commit in one
+    // No `stageUnacknowledgedClaim`: the start Hook and the run commit in one
     // transaction, so the orphan state cannot exist (asserted below).
   });
 
