@@ -87,6 +87,9 @@ type DrizzlishOfType<T extends object> = {
  */
 export type SerializedContent = any[];
 
+/** The start Hook a run row keeps: `run.startHook`, without its metadata. */
+export type RunStartHook = Omit<StartHook, 'metadata'> & { hookId: string };
+
 export const runs = schema.table(
   'workflow_runs',
   {
@@ -150,12 +153,12 @@ export const runs = schema.table(
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
     /**
-     * The Hook token this run reserved through `start({ hook })`, as admitted,
-     * without its metadata (which lives on the reservation's placeholder Hook
-     * row). Display and echo only: the placeholder row is what holds the
-     * token. Null on every other run.
+     * The start Hook this run was admitted with through `start({ hook })`,
+     * without its metadata (which lives on the start Hook's own row in
+     * `workflow_hooks`). Echo only: the Hook row is what holds the token.
+     * Null on every other run.
      */
-    startHook: Cbor<StartHook>()('start_hook_cbor'),
+    startHook: Cbor<RunStartHook>()('start_hook_cbor'),
     createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     updatedAt: timestamptz('updated_at')
       .default(sql`now()`)
@@ -254,7 +257,7 @@ export const eventSlots = schema.table('workflow_event_slots', {
  * `start-hook.ts` in @workflow/world, and `../start-hook.ts` here).
  *
  * - `accepted` rows are written in the same transaction as the run they
- *   admit and its reservation (a placeholder row in `workflow_hooks`).
+ *   admit and its start Hook (an ordinary row in `workflow_hooks`).
  * - `rejected` rows record the owner the candidate lost to, so a later
  *   attempt for the same candidate answers the same `conflicting_run_id`
  *   even after the owner has released the token.
@@ -347,31 +350,16 @@ export const hooks = schema.table(
     // each by-token lookup, never persisted), so it must not become a column.
     /**
      * This row's claim on `token` is unique: at most one row per token has
-     * it (`workflow_hooks_token_claim_unique`), so two writers racing for a
-     * token conflict on the insert. Set on every row this version writes
-     * except a Hook that adopts its run's start reservation, whose
-     * placeholder row holds the claim. Rows written before it existed have
-     * it false and keep the old read-then-insert check only.
+     * it (`workflow_hooks_token_claim_unique`), so two `start({ hook })`
+     * admissions racing for a token conflict on the insert instead of both
+     * winning. Set only on a run's start Hook (written by its admission);
+     * every Hook a `hook_created` writes leaves it false and keeps the
+     * read-then-insert check.
      */
     claimsToken: boolean('claims_token').notNull().default(false),
-    /**
-     * A `start({ hook })` reservation's placeholder: no Hook, just the run
-     * holding the token (`run_id`), its retention and the start's metadata.
-     * Never returned as a Hook. Its `hook_id` is `shr_<candidate run id>`.
-     */
-    isStartReservation: boolean('is_start_reservation')
-      .notNull()
-      .default(false),
-    /**
-     * On a placeholder: when the holder's `createHook()` first adopted it.
-     * Until then a by-token lookup answers `HookReservedError`.
-     */
-    adoptedAt: timestamptz('adopted_at'),
   } satisfies DrizzlishOfType<
     Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'> & {
       claimsToken?: boolean;
-      isStartReservation?: boolean;
-      adoptedAt?: Date;
     }
   >,
   (tb) => [

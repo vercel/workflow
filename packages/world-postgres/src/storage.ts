@@ -4,7 +4,6 @@ import {
   EntityConflictError,
   HookForceClaimedError,
   HookNotFoundError,
-  HookReservedError,
   InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
@@ -48,12 +47,12 @@ import {
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
-  HOOK_RESERVED_RETRY_AFTER_SECONDS,
   HookSchema,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
   isLegacySpecVersion,
+  isStartHookId,
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
@@ -82,7 +81,6 @@ import {
   isNull,
   lt,
   lte,
-  ne,
   notExists,
   notInArray,
   or,
@@ -103,14 +101,11 @@ import {
   type RunStatusListener,
 } from './run-status.js';
 import {
-  adoptStartReservation,
+  admittedStartHook,
   decideStartHookAdmission,
-  HOOK_TOKEN_CLAIM_UNIQUE,
-  logStartReservationReleased,
+  runStartHook,
   type StartHookDecision,
   startHookConflict,
-  startHookWithoutMetadata,
-  transferStartReservation,
 } from './start-hook.js';
 import { compact } from './util.js';
 
@@ -292,12 +287,7 @@ async function forceClaimRefusal(
       : await db
           .select({ runId: Schema.hooks.runId, hookId: Schema.hooks.hookId })
           .from(Schema.hooks)
-          .where(
-            and(
-              eq(Schema.hooks.token, token),
-              eq(Schema.hooks.isStartReservation, false)
-            )
-          )
+          .where(eq(Schema.hooks.token, token))
           .limit(1);
   return new HookForceClaimedError(
     token ?? '',
@@ -1041,22 +1031,7 @@ async function handleLegacyEventPostgres(
 
       // Delete all hooks and waits for this run
       await Promise.all([
-        // A start reservation outlives its run's cancellation for its
-        // retention, like the run's end by any other way.
-        drizzle
-          .delete(Schema.hooks)
-          .where(
-            and(
-              eq(Schema.hooks.runId, runId),
-              or(
-                eq(Schema.hooks.isStartReservation, false),
-                isNull(Schema.hooks.tokenRetentionUntil),
-                lte(Schema.hooks.tokenRetentionUntil, sql`now()`)
-              )
-            )
-          )
-          .returning({ isStartReservation: Schema.hooks.isStartReservation })
-          .then((deleted) => logStartReservationReleased(runId, deleted)),
+        drizzle.delete(Schema.hooks).where(eq(Schema.hooks.runId, runId)),
         drizzle.delete(Schema.waits).where(eq(Schema.waits.runId, runId)),
       ]);
 
@@ -1328,14 +1303,8 @@ function createUnfencedEventsStorage(
     .limit(1)
     .prepare('events_get_step_for_validation');
 
-  // A start reservation's placeholder row holds its token like a Hook does;
-  // a live Hook on the token is read first.
   const getHookByToken = drizzle
-    .select({
-      hookId: Schema.hooks.hookId,
-      runId: Schema.hooks.runId,
-      isStartReservation: Schema.hooks.isStartReservation,
-    })
+    .select({ hookId: Schema.hooks.hookId, runId: Schema.hooks.runId })
     .from(Schema.hooks)
     .where(
       and(
@@ -1346,7 +1315,6 @@ function createUnfencedEventsStorage(
         )
       )
     )
-    .orderBy(asc(Schema.hooks.isStartReservation))
     .limit(1)
     .prepare('events_get_hook_by_token');
 
@@ -1384,7 +1352,7 @@ function createUnfencedEventsStorage(
           { status: 400 }
         );
       }
-      // The start Hook reservation, on either creating write. Validated
+      // The start Hook, on either creating write. Validated
       // before anything is written; a refusal is permanent, so it carries
       // the code that stops the queued copy of the candidate retrying.
       const startHook: StartHook | undefined =
@@ -1568,7 +1536,8 @@ function createUnfencedEventsStorage(
                   // would otherwise be lost for the rest of the run's life.
                   encryptionPublicKey: runInputData.encryptionPublicKey,
                   dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
-                  startHook: startHook && startHookWithoutMetadata(startHook),
+                  startHook:
+                    startHook && runStartHook(effectiveRunId, startHook),
                   status: 'pending',
                 })
                 .onConflictDoNothing()
@@ -1595,7 +1564,11 @@ function createUnfencedEventsStorage(
                   attributes: runInputData.attributes,
                   allowReservedAttributes: runInputData.allowReservedAttributes,
                   encryptionPublicKey: runInputData.encryptionPublicKey,
-                  ...(startHook ? { startHook } : {}),
+                  ...(startHook
+                    ? {
+                        startHook: admittedStartHook(effectiveRunId, startHook),
+                      }
+                    : {}),
                 },
                 specVersion: effectiveSpecVersion,
               });
@@ -1898,7 +1871,7 @@ function createUnfencedEventsStorage(
         let startHookDecision: StartHookDecision | undefined;
         const created = await drizzle.transaction(async (tx) => {
           // Atomic start: decide the candidate in the transaction that
-          // creates its run, so the reservation and the run commit together.
+          // creates its run, so the start Hook and the run commit together.
           if (startHook) {
             startHookDecision = await decideStartHookAdmission(
               tx,
@@ -1910,12 +1883,12 @@ function createUnfencedEventsStorage(
               return undefined;
             }
             if (
-              startHookDecision.decision === 'unreserved' ||
+              startHookDecision.decision === 'ordinary' ||
               startHookDecision.replayed
             ) {
               // Accepted earlier (by this call's retry or the queued copy):
               // answer with that run rather than EntityConflictError. A run
-              // created without the reservation (by a worker that predates
+              // created without a start Hook (by a worker that predates
               // start Hooks) is answered the same way: its `startHook` is
               // absent, which `start()` reports as a start that was not
               // idempotent rather than a refusal.
@@ -1959,7 +1932,7 @@ function createUnfencedEventsStorage(
               attributes: eventData.attributes,
               encryptionPublicKey: eventData.encryptionPublicKey,
               dynamicWorkflowCode: eventData.dynamicWorkflowCode,
-              startHook: startHook && startHookWithoutMetadata(startHook),
+              startHook: startHook && runStartHook(effectiveRunId, startHook),
               status: 'pending',
             })
             .onConflictDoNothing()
@@ -1981,8 +1954,14 @@ function createUnfencedEventsStorage(
           const {
             dynamicWorkflowCode: _dynamicWorkflowCode,
             dynamicWorkflowCodeRef: _dynamicWorkflowCodeRef,
-            ...storedEventData
+            ...runCreatedData
           } = eventData;
+          const storedEventData = startHook
+            ? {
+                ...runCreatedData,
+                startHook: admittedStartHook(effectiveRunId, startHook),
+              }
+            : runCreatedData;
           const eventValue = await insertEventRow(tx, {
             runId: effectiveRunId,
             eventId: firstEventId,
@@ -2029,6 +2008,11 @@ function createUnfencedEventsStorage(
             input?: unknown;
           } & Record<string, unknown>;
           storedEventData = rest;
+        } else if (data.eventType === 'run_created' && startHook) {
+          storedEventData = {
+            ...data.eventData,
+            startHook: admittedStartHook(effectiveRunId, startHook),
+          };
         } else {
           storedEventData = data.eventData;
         }
@@ -2194,17 +2178,11 @@ function createUnfencedEventsStorage(
           // every row lock this transaction needs is held before it takes a
           // position: a hook_disposed holding a hook's lock while it inserts
           // must never wait on a position this transaction holds.
-          logStartReservationReleased(
-            effectiveRunId,
-            await tx
-              .delete(Schema.hooks)
-              .where(
-                and(eq(Schema.hooks.runId, effectiveRunId), hookRetentionEnded)
-              )
-              .returning({
-                isStartReservation: Schema.hooks.isStartReservation,
-              })
-          );
+          await tx
+            .delete(Schema.hooks)
+            .where(
+              and(eq(Schema.hooks.runId, effectiveRunId), hookRetentionEnded)
+            );
           await tx
             .delete(Schema.waits)
             .where(eq(Schema.waits.runId, effectiveRunId));
@@ -2600,31 +2578,26 @@ function createUnfencedEventsStorage(
       // Uses prepared statement for token uniqueness check (performance optimization)
       if (data.eventType === 'hook_created') {
         const { eventData } = data;
+        // A run's start Hook is created by its admission (`run_created`
+        // stands for its creation), never by a `hook_created`.
+        if (
+          data.correlationId &&
+          isStartHookId(effectiveRunId, data.correlationId)
+        ) {
+          throw new WorkflowWorldError(
+            `Hook "${data.correlationId}" is the start Hook of run "${effectiveRunId}", created by its admission`,
+            { status: 400 }
+          );
+        }
 
         // Check for duplicate token using prepared statement
         const [existingHook] = await getHookByToken.execute({
           token: eventData.token,
         });
-        // A start reservation (`start({ hook })`) is a placeholder row, read
-        // above like any Hook (a live Hook first). Another run's owns the
-        // token as surely as a live Hook does; a forced creation can take a
-        // reservation only together with its live Hook, which the read
-        // returns instead (see the takeover). The owning run's own
-        // `createHook()` with the token adopts it.
-        const ownReservation =
-          existingHook?.isStartReservation === true &&
-          existingHook.runId === effectiveRunId;
-        const reservationBlocks =
-          existingHook?.isStartReservation === true && !ownReservation;
-        const blockingHook = ownReservation ? undefined : existingHook;
         // Set when the create ends in a `hook_conflict`: `null` for the plain
         // conflict of an unforced create, a reason when a forced create was
         // declined on purpose. Left `undefined` when the hook was created.
-        let forceRefusedReason:
-          | 'victim-spec-version'
-          | 'start-reservation'
-          | null
-          | undefined;
+        let forceRefusedReason: 'victim-spec-version' | null | undefined;
         // The run named on that `hook_conflict`: the owner the read below
         // found, or the one a forced takeover found holding the token when it
         // declined.
@@ -2661,127 +2634,61 @@ function createUnfencedEventsStorage(
             throw err;
           }
         };
-        const TOKEN_CLAIMED = Symbol('token claimed by another live Hook');
-        /**
-         * Creates the Hook. Returns `false`, writing nothing, when another
-         * writer's claim on the token committed first: the unique claim index
-         * made this insert wait for it. The caller answers `hook_conflict`.
-         */
-        const insertFreshHook = async (): Promise<boolean> => {
-          let created: Awaited<ReturnType<typeof writeFreshHook>>;
-          try {
-            created = await journaledHookCreated(writeFreshHook);
-          } catch (err) {
-            if (err === TOKEN_CLAIMED) return false;
-            const pgErr = pgErrorOf(err);
-            if (
-              pgErr.code === '23505' &&
-              pgErr.constraint === HOOK_TOKEN_CLAIM_UNIQUE
-            ) {
-              return false;
-            }
-            throw err;
-          }
+        const insertFreshHook = async (): Promise<void> => {
+          const created = await journaledHookCreated(() =>
+            drizzle.transaction(async (tx) => {
+              await tx
+                .delete(Schema.hooks)
+                .where(
+                  and(
+                    eq(Schema.hooks.token, eventData.token),
+                    exists(ownerRunIsTerminal),
+                    hookRetentionEnded
+                  )
+                );
+
+              const [hookValue] = await tx
+                .insert(Schema.hooks)
+                .values({
+                  runId: effectiveRunId,
+                  hookId: data.correlationId!,
+                  token: eventData.token,
+                  metadata: eventData.metadata as SerializedContent,
+                  ownerId: '', // TODO: get from context
+                  projectId: '', // TODO: get from context
+                  environment: '', // TODO: get from context
+                  tokenRetentionUntil: eventData.tokenRetentionUntil,
+                  // Propagate specVersion from the event to the hook entity
+                  specVersion: effectiveSpecVersion,
+                  isWebhook: eventData.isWebhook,
+                  isSystem: eventData.isSystem ?? false,
+                })
+                .onConflictDoNothing()
+                .returning();
+              const eventValue = await insertEventRow(tx, {
+                runId: effectiveRunId,
+                eventId: await getEventId(tx),
+                correlationId: data.correlationId,
+                eventType: 'hook_created',
+                eventData: storedEventData,
+                specVersion: effectiveSpecVersion,
+              });
+              if (!eventValue) {
+                throw new EntityConflictError(
+                  `hook_created for run "${effectiveRunId}" could not be created`
+                );
+              }
+              return { hookValue, eventValue };
+            }, SLOT_INSERT_TRANSACTION)
+          );
           if (created.hookValue) {
             created.hookValue.metadata ||= created.hookValue.metadataJson;
             hook = HookSchema.parse(compact(created.hookValue));
           }
           eventId = created.eventValue.eventId;
           value = { createdAt: created.eventValue.createdAt };
-          return true;
         };
-        const writeFreshHook = () =>
-          drizzle.transaction(async (tx) => {
-            // The run's own reservation: this Hook adopts it. A retention
-            // the Hook brings extends the reservation (and outlives the
-            // Hook's disposal), and the reservation's metadata fills in for
-            // a Hook created without any. The placeholder keeps the token's
-            // claim, so the adopting Hook does not take one.
-            const adopted = ownReservation
-              ? await adoptStartReservation(
-                  tx,
-                  eventData.token,
-                  effectiveRunId,
-                  eventData.tokenRetentionUntil
-                )
-              : undefined;
-            if (adopted) {
-              // The adoption's UPDATE locked the placeholder, so a concurrent
-              // adoption by another of the run's Hooks waits for this one and
-              // then finds it here: only one live Hook adopts the token.
-              const [live] = await tx
-                .select({ hookId: Schema.hooks.hookId })
-                .from(Schema.hooks)
-                .where(
-                  and(
-                    eq(Schema.hooks.token, eventData.token),
-                    eq(Schema.hooks.isStartReservation, false),
-                    ne(Schema.hooks.hookId, data.correlationId!),
-                    or(
-                      gt(Schema.hooks.tokenRetentionUntil, sql`now()`),
-                      notExists(ownerRunIsTerminal)
-                    )
-                  )
-                )
-                .limit(1);
-              if (live) throw TOKEN_CLAIMED;
-            }
-            const hookMetadata =
-              eventData.metadata ?? adopted?.metadata ?? undefined;
-            if (
-              eventData.metadata === undefined &&
-              hookMetadata !== undefined
-            ) {
-              storedEventData = {
-                ...(storedEventData as Record<string, unknown>),
-                metadata: hookMetadata,
-              };
-            }
-            await tx
-              .delete(Schema.hooks)
-              .where(
-                and(
-                  eq(Schema.hooks.token, eventData.token),
-                  exists(ownerRunIsTerminal),
-                  hookRetentionEnded
-                )
-              );
-
-            const [hookValue] = await tx
-              .insert(Schema.hooks)
-              .values({
-                runId: effectiveRunId,
-                hookId: data.correlationId!,
-                token: eventData.token,
-                metadata: hookMetadata as SerializedContent,
-                ownerId: '', // TODO: get from context
-                projectId: '', // TODO: get from context
-                environment: '', // TODO: get from context
-                tokenRetentionUntil: eventData.tokenRetentionUntil,
-                // Propagate specVersion from the event to the hook entity
-                specVersion: effectiveSpecVersion,
-                isWebhook: eventData.isWebhook,
-                isSystem: eventData.isSystem ?? false,
-                claimsToken: adopted === undefined,
-              })
-              .onConflictDoNothing({ target: Schema.hooks.hookId })
-              .returning();
-            const eventValue = await insertEventRow(tx, {
-              runId: effectiveRunId,
-              eventId: await getEventId(tx),
-              correlationId: data.correlationId,
-              eventType: 'hook_created',
-              eventData: storedEventData,
-              specVersion: effectiveSpecVersion,
-            });
-            if (!eventValue) {
-              throw new EntityConflictError(
-                `hook_created for run "${effectiveRunId}" could not be created`
-              );
-            }
-            return { hookValue, eventValue };
-          }, SLOT_INSERT_TRANSACTION);
-        if (blockingHook) {
+        if (existingHook) {
           // Idempotency: if the existing hook is the *same* (runId, hookId)
           // we are trying to create, this is either a duplicate / replayed
           // processing of the same hook_created (not a real conflict), or
@@ -2800,14 +2707,7 @@ function createUnfencedEventsStorage(
           //     and events INSERT): skip the hook insert (the existing
           //     row already has the desired state) and fall through to
           //     the events INSERT below, completing the partial write.
-          if (reservationBlocks) {
-            // A forced creation cannot take a reservation with no live Hook
-            // (there is nothing to take over): the ordinary conflict, marked
-            // so.
-            forceRefusedReason =
-              eventData.force === true ? 'start-reservation' : null;
-          } else if (
-            existingHook &&
+          if (
             existingHook.runId === effectiveRunId &&
             existingHook.hookId === data.correlationId
           ) {
@@ -2874,20 +2774,13 @@ function createUnfencedEventsStorage(
             const OWNER_CHANGED = Symbol('owner changed before lock');
             const takeoverAttempt = () =>
               drizzle.transaction(async (tx) => {
-                // A live Hook to take: never a reservation's placeholder,
-                // which goes along with its Hook (below).
                 const [candidate] = await tx
                   .select({
                     runId: Schema.hooks.runId,
                     hookId: Schema.hooks.hookId,
                   })
                   .from(Schema.hooks)
-                  .where(
-                    and(
-                      eq(Schema.hooks.token, eventData.token),
-                      eq(Schema.hooks.isStartReservation, false)
-                    )
-                  )
+                  .where(eq(Schema.hooks.token, eventData.token))
                   .limit(1);
                 if (!candidate) {
                   return { free: true as const };
@@ -2906,12 +2799,7 @@ function createUnfencedEventsStorage(
                 const [victim] = await tx
                   .select()
                   .from(Schema.hooks)
-                  .where(
-                    and(
-                      eq(Schema.hooks.token, eventData.token),
-                      eq(Schema.hooks.isStartReservation, false)
-                    )
-                  )
+                  .where(eq(Schema.hooks.token, eventData.token))
                   .for('update')
                   .limit(1);
                 if (!victim) {
@@ -2990,16 +2878,6 @@ function createUnfencedEventsStorage(
                 await tx
                   .delete(Schema.hooks)
                   .where(eq(Schema.hooks.hookId, victim.hookId));
-                // A start reservation the victim holds on this token goes
-                // with its Hook, so the claimer owns the token until it ends
-                // rather than leaving it pinned to a run that may never end.
-                const tookReservation = await transferStartReservation(
-                  tx,
-                  eventData.token,
-                  victim.runId,
-                  effectiveRunId,
-                  eventData.tokenRetentionUntil
-                );
                 const [inserted] = await tx
                   .insert(Schema.hooks)
                   .values({
@@ -3015,8 +2893,6 @@ function createUnfencedEventsStorage(
                     isWebhook: eventData.isWebhook,
                     isSystem: eventData.isSystem ?? false,
                     claimedFrom,
-                    // The moved placeholder holds the claim, as an adoption's.
-                    claimsToken: !tookReservation,
                   })
                   .returning();
                 // Our `hook_created`, in the same transaction as the takeover:
@@ -3081,67 +2957,53 @@ function createUnfencedEventsStorage(
               value = { createdAt: takeover.journaled.createdAt };
             }
           }
-        } else if (!(await insertFreshHook())) {
-          // Another writer claimed the token first; it is visible now.
-          const [owner] = await getHookByToken.execute({
-            token: eventData.token,
-          });
-          if (!owner) {
-            throw new WorkflowWorldError(
-              `Hook token "${eventData.token}" changed owner while being claimed; retry`,
-              { status: 503 }
-            );
-          }
-          forceRefusedReason =
-            eventData.force === true && owner.isStartReservation
-              ? 'start-reservation'
-              : null;
-          conflictingRunId = owner.runId;
-        }
-        if (forceRefusedReason !== undefined) {
-          // Cross-hook / cross-run conflict: a different
-          // (runId, hookId) holds this token — or a forced creation the
-          // takeover above declined. Create a hook_conflict event instead
-          // of throwing 409. This lets the workflow continue and fail
-          // gracefully when the hook is awaited.
-          const conflictEventData = {
-            token: eventData.token,
-            conflictingRunId,
-            ...(forceRefusedReason !== null && { forceRefusedReason }),
-          };
-          const conflictValue = await insertEventRow(drizzle, {
-            runId: effectiveRunId,
-            eventId: await getEventId(),
-            correlationId: data.correlationId,
-            eventType: 'hook_conflict',
-            eventData: conflictEventData,
-            specVersion: effectiveSpecVersion,
-          });
+          if (forceRefusedReason !== undefined) {
+            // Cross-hook / cross-run conflict: a different
+            // (runId, hookId) holds this token — or a forced creation the
+            // takeover above declined. Create a hook_conflict event instead
+            // of throwing 409. This lets the workflow continue and fail
+            // gracefully when the hook is awaited.
+            const conflictEventData = {
+              token: eventData.token,
+              conflictingRunId,
+              ...(forceRefusedReason !== null && { forceRefusedReason }),
+            };
+            const conflictValue = await insertEventRow(drizzle, {
+              runId: effectiveRunId,
+              eventId: await getEventId(),
+              correlationId: data.correlationId,
+              eventType: 'hook_conflict',
+              eventData: conflictEventData,
+              specVersion: effectiveSpecVersion,
+            });
 
-          if (!conflictValue) {
-            throw new EntityConflictError(
-              `hook_conflict for run "${effectiveRunId}" could not be created`
-            );
-          }
-          const conflictEventId = conflictValue.eventId;
-          eventId = conflictEventId;
+            if (!conflictValue) {
+              throw new EntityConflictError(
+                `hook_conflict for run "${effectiveRunId}" could not be created`
+              );
+            }
+            const conflictEventId = conflictValue.eventId;
+            eventId = conflictEventId;
 
-          const conflictResult = {
-            eventType: 'hook_conflict' as const,
-            correlationId: data.correlationId,
-            eventData: conflictEventData,
-            ...conflictValue,
-            runId: effectiveRunId,
-            eventId: conflictEventId,
-          };
-          const parsedConflict = EventSchema.parse(conflictResult);
-          const resolveData = params?.resolveData ?? 'all';
-          return {
-            event: stripEventDataRefs(parsedConflict, resolveData),
-            run,
-            step,
-            hook: undefined,
-          };
+            const conflictResult = {
+              eventType: 'hook_conflict' as const,
+              correlationId: data.correlationId,
+              eventData: conflictEventData,
+              ...conflictValue,
+              runId: effectiveRunId,
+              eventId: conflictEventId,
+            };
+            const parsedConflict = EventSchema.parse(conflictResult);
+            const resolveData = params?.resolveData ?? 'all';
+            return {
+              event: stripEventDataRefs(parsedConflict, resolveData),
+              run,
+              step,
+              hook: undefined,
+            };
+          }
+        } else {
+          await insertFreshHook();
         }
       }
 
@@ -3811,23 +3673,19 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
     gt(hooks.tokenRetentionUntil, sql`now()`),
     notExists(ownerRunIsTerminal)
   );
-  // A start reservation's placeholder row is read like a Hook on its token
-  // (a live Hook first) and never returned as one.
   const getByToken = drizzle
     .select()
     .from(hooks)
     .where(and(eq(hooks.token, sql.placeholder('token')), available))
-    .orderBy(asc(hooks.isStartReservation))
     .limit(1)
     .prepare('workflow_hooks_get_by_token');
-  const isHook = eq(hooks.isStartReservation, false);
 
   return {
     async get(hookId, params) {
       const [value] = await drizzle
         .select()
         .from(hooks)
-        .where(and(eq(hooks.hookId, hookId), available, isHook))
+        .where(and(eq(hooks.hookId, hookId), available))
         .limit(1);
       if (!value) {
         throw new HookNotFoundError(hookId);
@@ -3840,23 +3698,7 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
     },
     async getByToken(token, params) {
       const [value] = await getByToken.execute({ token });
-      if (!value) throw new HookNotFoundError(token);
-      if (value.isStartReservation) {
-        // A start reservation with no live Hook. While its run is live and
-        // has not adopted it, the token is owned, just not resumable yet:
-        // retryable, not missing.
-        if (!value.adoptedAt) {
-          const [owner] = await drizzle
-            .select({ status: runs.status })
-            .from(runs)
-            .where(eq(runs.runId, value.runId))
-            .limit(1);
-          if (owner && !isTerminalWorkflowRunStatus(owner.status)) {
-            throw new HookReservedError(token, value.runId, {
-              retryAfter: HOOK_RESERVED_RETRY_AFTER_SECONDS,
-            });
-          }
-        }
+      if (!value) {
         throw new HookNotFoundError(token);
       }
       value.metadata ||= value.metadataJson;
@@ -3877,7 +3719,6 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .where(
           and(
             available,
-            isHook,
             map(params.runId, (id) => eq(hooks.runId, id)),
             map(fromCursor, (c) => cursorFn(hooks.hookId, c))
           )

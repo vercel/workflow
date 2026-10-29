@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { RETENTION_ATTRIBUTE } from '@workflow/world';
+import { RETENTION_ATTRIBUTE, startHookId } from '@workflow/world';
 import { ulid } from 'ulid';
 import {
   afterAll,
@@ -230,10 +230,7 @@ describe('Retention ($retention: 0)', () => {
   }
 
   describe('$retention: "0"', () => {
-    it.each([
-      ['unadopted', false],
-      ['adopted', true],
-    ])("drops an %s start Hook's metadata from the run and its reservation, keeping the token", async (_label, adopt) => {
+    it("drops a start Hook's metadata from its Hook row, keeping the Hook and its token for its retention", async () => {
       const runId = `wrun_${ulid()}`;
       const token = `start-${ulid()}`;
       const tokenRetentionUntil = new Date(Date.now() + 60 * 60 * 1000);
@@ -253,13 +250,6 @@ describe('Retention ($retention: 0)', () => {
         },
       } as never);
       await events.create(runId, { eventType: 'run_started' });
-      if (adopt) {
-        await events.create(runId, {
-          eventType: 'hook_created',
-          correlationId: `hook_${ulid()}`,
-          eventData: { token },
-        });
-      }
       await events.create(runId, {
         eventType: 'run_completed',
         eventData: { output: new Uint8Array([2]) },
@@ -272,17 +262,18 @@ describe('Retention ($retention: 0)', () => {
         tokenRetentionUntil.getTime()
       );
       const { rows } = await pool.query(
-        `SELECT metadata_cbor, token_retention_until
+        `SELECT hook_id, metadata_cbor, token_retention_until
            FROM workflow.workflow_hooks
-          WHERE token = $1 AND is_start_reservation`,
+          WHERE token = $1`,
         [token]
       );
       expect(rows).toHaveLength(1);
+      expect(rows[0].hook_id).toBe(startHookId(runId));
       expect(rows[0].metadata_cbor).toBeNull();
       expect(rows[0].token_retention_until.getTime()).toBe(
         tokenRetentionUntil.getTime()
       );
-      // The reservation still holds the token for its retention.
+      // The start Hook still holds the token for its retention.
       const contender = `wrun_${ulid()}`;
       const refused = await events
         .create(contender, {

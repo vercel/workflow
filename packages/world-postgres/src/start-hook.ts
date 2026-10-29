@@ -5,9 +5,9 @@ import {
 } from '@workflow/errors';
 import { debugLog } from '@workflow/utils';
 import {
-  type SerializedData,
   START_HOOK_CANDIDATE_MAX_AGE_MS,
   type StartHook,
+  startHookId,
   TERMINAL_WORKFLOW_RUN_STATUSES,
   ulidToDate,
 } from '@workflow/world';
@@ -29,40 +29,45 @@ import {
   type DrizzleTransaction,
   Schema,
 } from './drizzle/index.js';
-import type { SerializedContent } from './drizzle/schema.js';
+import type { RunStartHook, SerializedContent } from './drizzle/schema.js';
 
 /**
  * `start({ hook })` admission for world-postgres. See `start-hook.ts` in
  * @workflow/world for the contract.
  *
- * A reservation is a placeholder row in `workflow_hooks`
- * (`is_start_reservation`), so the by-token read every Hook creation and
- * lookup already does finds it, and nothing that never uses `start({ hook })`
- * pays for it. The placeholder holds the token for its run (`run_id`, the
- * candidate until a forced `createHook()` moves it) while that run is not
- * terminal or its `token_retention_until` is in the future, like any Hook row.
+ * An accepted candidate's admission inserts its start Hook, an ordinary row
+ * in `workflow_hooks` with hook id `startHookId(runId)`, in the transaction
+ * that records the decision and creates the run. From that commit on the
+ * Hook resolves by token and accepts deliveries like any Hook, and it follows
+ * the ordinary Hook lifecycle: `hook_disposed` deletes the row, and the run's
+ * end deletes it unless its `token_retention_until` is in the future. No
+ * `hook_created` is ever written for it: `run_created` stands for it.
  *
- * Rows this version writes claim their token (`claims_token`), and a partial
- * unique index allows one claiming row per token, so an admission racing a
- * Hook creation for the same token conflicts on the insert instead of both
- * winning. The decision and the run it admits commit in one transaction, so
- * an accepted candidate always has its run.
+ * The start Hook row claims its token (`claims_token`), and a partial unique
+ * index allows one claiming row per token, so two admissions racing for one
+ * token conflict on the insert instead of both winning. Postgres has no
+ * orphan state: the decision, the Hook row and the run commit together or
+ * not at all.
  */
-
-/** The `hook_id` of a candidate's reservation placeholder. */
-export function startReservationHookId(candidateRunId: string): string {
-  return `shr_${candidateRunId}`;
-}
 
 /** The constraint a second claim of one token violates. */
 export const HOOK_TOKEN_CLAIM_UNIQUE = 'workflow_hooks_token_claim_unique';
 
-/** `token` with its metadata dropped: what the run row keeps. */
-export function startHookWithoutMetadata(
+/** The start Hook as the run's `run_created` event carries it. */
+export function admittedStartHook(
+  runId: string,
   startHook: StartHook
-): Omit<StartHook, 'metadata'> {
+): StartHook & { hookId: string } {
+  return { ...startHook, hookId: startHookId(runId) };
+}
+
+/** The start Hook without its metadata: what the run row keeps. */
+export function runStartHook(
+  runId: string,
+  startHook: StartHook
+): RunStartHook {
   const { metadata: _metadata, ...rest } = startHook;
-  return rest;
+  return { ...rest, hookId: startHookId(runId) };
 }
 
 const hooks = Schema.hooks;
@@ -107,8 +112,8 @@ async function findActiveTokenOwner(
 export type StartHookDecision =
   | { decision: 'accepted'; replayed: boolean }
   | { decision: 'rejected'; conflictingRunId: string }
-  /** The run exists with no decision: created without the reservation. */
-  | { decision: 'unreserved' };
+  /** The run exists with no decision: created without a start Hook. */
+  | { decision: 'ordinary' };
 
 /**
  * Decides admission for candidate `runId` inside the transaction that would
@@ -116,12 +121,12 @@ export type StartHookDecision =
  *
  * - A recorded decision is returned as-is (`replayed: true` for an accepted
  *   one, whose run already exists).
- * - A run that exists with no decision was created without the reservation
- *   (by a worker that predates start Hooks): `unreserved`, and nothing is
+ * - A run that exists with no decision was created without a start Hook
+ *   (by a worker that predates start Hooks): `ordinary`, and nothing is
  *   written.
  * - A new candidate is accepted when no other run holds the token, writing
- *   its placeholder and `accepted`; the caller then creates the run in the
- *   same transaction.
+ *   its start Hook row and `accepted`; the caller then creates the run in
+ *   the same transaction.
  * - Otherwise it is rejected, recording the owner. The caller must commit the
  *   transaction and then throw {@link startHookConflict}.
  */
@@ -152,11 +157,11 @@ export async function decideStartHookAdmission(
     .from(Schema.runs)
     .where(eq(Schema.runs.runId, runId))
     .limit(1);
-  if (run) return { decision: 'unreserved' };
+  if (run) return { decision: 'ordinary' };
 
   await deleteExpiredDecisions(tx);
-  // A claim whose run ended and whose retention passed no longer holds the
-  // token, and would block the placeholder's unique claim.
+  // A Hook whose run ended and whose retention passed no longer holds the
+  // token, and would block the start Hook's unique claim.
   const released = await tx
     .delete(hooks)
     .where(
@@ -175,13 +180,13 @@ export async function decideStartHookAdmission(
   }
 
   const owner = await findActiveTokenOwner(tx, startHook.token, runId);
-  const [placeholder] = owner
+  const [startHookRow] = owner
     ? []
     : await tx
         .insert(hooks)
         .values({
           runId,
-          hookId: startReservationHookId(runId),
+          hookId: startHookId(runId),
           token: startHook.token,
           ownerId: '',
           projectId: '',
@@ -192,14 +197,12 @@ export async function decideStartHookAdmission(
           isWebhook: false,
           isSystem: false,
           claimsToken: true,
-          isStartReservation: true,
         })
-        .onConflictDoNothing({
-          target: hooks.token,
-          where: sql`${hooks.claimsToken}`,
-        })
+        // Untargeted: the other copy of this candidate inserts the same
+        // `hook_id` as well as the same claim.
+        .onConflictDoNothing()
         .returning({ hookId: hooks.hookId });
-  if (!placeholder) {
+  if (!startHookRow) {
     // Another claim committed first (the unique insert waited for it): the
     // other copy of this same candidate, whose decision is now visible, or
     // another run.
@@ -232,12 +235,12 @@ export async function decideStartHookAdmission(
 
 /**
  * Records the decision, unless the other copy of this candidate recorded one
- * first (both can decide a refusal concurrently: neither writes the
- * placeholder that would serialize them). That one wins, as it would for any
- * later attempt. An acceptance that loses to a refusal must not commit: its
- * placeholder, already written in this transaction, would hold the token for
- * a run that is never created. It answers a retryable error instead, which
- * rolls the placeholder back, and the retry replays the refusal.
+ * first (both can decide a refusal concurrently: neither writes the Hook
+ * row that would serialize them). That one wins, as it would for any later
+ * attempt. An acceptance that loses to a refusal must not commit: its start
+ * Hook, already written in this transaction, would hold the token for a run
+ * that is never created. It answers a retryable error instead, which rolls
+ * the Hook back, and the retry replays the refusal.
  */
 async function recordDecision(
   tx: DrizzleTransaction,
@@ -330,95 +333,6 @@ export function startHookConflict(
   conflictingRunId: string
 ): HookConflictError {
   return new HookConflictError(startHook.token, conflictingRunId);
-}
-
-/** `greatest(column, until)`, treating a null column as `until`. */
-function extendedRetention(until: string) {
-  return sql`greatest(coalesce(${hooks.tokenRetentionUntil}, ${until}::timestamptz), ${until}::timestamptz)`;
-}
-
-/**
- * Moves the reservation `fromRunId` holds on `token` to `toRunId`. Used by a
- * forced `createHook()` that takes the reservation's materialized Hook: the
- * reservation follows the Hook, so the claimer owns the token until it ends.
- * The claimer's Hook retention extends it as an adoption's does, so it
- * outlives that Hook's disposal. Returns whether there was one to move.
- */
-export async function transferStartReservation(
-  tx: DrizzleTransaction,
-  token: string,
-  fromRunId: string,
-  toRunId: string,
-  hookRetentionUntil: Date | undefined
-): Promise<boolean> {
-  const until = hookRetentionUntil?.toISOString();
-  const moved = await tx
-    .update(hooks)
-    .set({
-      runId: toRunId,
-      // The start's metadata stays with the start's run, not the claimer.
-      metadata: null,
-      ...(until ? { tokenRetentionUntil: extendedRetention(until) } : {}),
-    })
-    .where(
-      and(
-        eq(hooks.token, token),
-        eq(hooks.isStartReservation, true),
-        eq(hooks.runId, fromRunId)
-      )
-    )
-    .returning({ hookId: hooks.hookId });
-  if (moved.length > 0) {
-    startHookLog('moved a reservation to a force claimer', {
-      runId: fromRunId,
-      toRunId,
-    });
-  }
-  return moved.length > 0;
-}
-
-/**
- * The run's own `createHook()` adopting its reservation of `token`: marks it
- * adopted (so lookups stop answering `HookReservedError`), extends its
- * retention to at least the Hook's (the extension must outlive the Hook's
- * disposal), and returns the reservation's metadata for a Hook that brings
- * none. Returns `undefined` when the run holds no reservation of the token.
- */
-export async function adoptStartReservation(
-  tx: DrizzleTransaction,
-  token: string,
-  runId: string,
-  hookRetentionUntil: Date | undefined
-): Promise<{ metadata: SerializedData | undefined } | undefined> {
-  const until = hookRetentionUntil?.toISOString();
-  const [row] = await tx
-    .update(hooks)
-    .set({
-      adoptedAt: sql`coalesce(${hooks.adoptedAt}, now())`,
-      ...(until ? { tokenRetentionUntil: extendedRetention(until) } : {}),
-    })
-    .where(
-      and(
-        eq(hooks.token, token),
-        eq(hooks.isStartReservation, true),
-        eq(hooks.runId, runId)
-      )
-    )
-    .returning({ metadata: hooks.metadata });
-  if (row) startHookLog("a Hook adopted its run's reservation", { runId });
-  return row
-    ? { metadata: (row.metadata ?? undefined) as SerializedData | undefined }
-    : undefined;
-}
-
-/** Logs the release of `runId`'s start reservation, if `deleted` holds it. */
-export function logStartReservationReleased(
-  runId: string,
-  deleted: { isStartReservation: boolean }[]
-): void {
-  if (deleted.some((row) => row.isStartReservation)) {
-    startHookLog('released a reservation as its run ended', { runId });
-  }
 }
 
 /**
