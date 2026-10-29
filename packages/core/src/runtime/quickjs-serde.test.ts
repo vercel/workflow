@@ -19,11 +19,7 @@
 
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import {
-  HookReservedError,
-  StreamError,
-  WorkflowStartError,
-} from '@workflow/errors';
+import { StreamError, WorkflowStartError } from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { serialize as nodeEngineSerialize } from '../serialization/workflow.js';
@@ -196,17 +192,6 @@ describe('wire parity: guest serialize matches the reference codec', () => {
           url: 'https://workflow.example/stream',
         });
         error.stack = 'stream-stack';
-        return error;
-      },
-    ],
-    [
-      'HookReservedError',
-      '(() => { const e = new Error(\'Hook token is reserved by workflow run "wrun_owner", which has not registered its hook yet. It stays reserved until that run registers its hook or ends.\'); e.name = "HookReservedError"; e.stack = "reserved-stack"; e.token = "order:1"; e.runId = "wrun_owner"; e.retryAfter = 1; return e; })()',
-      () => {
-        const error = new HookReservedError('order:1', 'wrun_owner', {
-          retryAfter: 1,
-        });
-        error.stack = 'reserved-stack';
         return error;
       },
     ],

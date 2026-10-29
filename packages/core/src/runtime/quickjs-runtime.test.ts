@@ -1335,7 +1335,6 @@ describe('hook_conflict on a forced hook', () => {
 
   it.each([
     'victim-spec-version',
-    'start-reservation',
   ] as const)('stays an ordinary HookConflictError when the World declined on purpose (%s)', async (forceRefusedReason) => {
     // The run holding the token predates involuntary disposal, so the World
     // would not take it: the caller gets

@@ -259,7 +259,6 @@ const SYMBOL_NAMES = [
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
   '@workflow/errors//HookForceClaimedError',
-  '@workflow/errors//HookReservedError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
@@ -1179,25 +1178,6 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
-    HookReservedError: (value) => {
-      if (!isHandle(value) || !value.isError) return false;
-      if (chainedString(value, 'name') !== 'HookReservedError') return false;
-      const shape = reduceErrorShape(value) as Record<string, unknown>;
-      const reduced: Record<string, unknown> = {
-        message: shape.message,
-        stack: shape.stack,
-        token: own(value, 'token'),
-        runId: own(value, 'runId'),
-      };
-      const retryAfter = own(value, 'retryAfter');
-      if (retryAfter && !retryAfter.isUndefined) {
-        reduced.retryAfter = retryAfter;
-      } else {
-        retryAfter?.dispose();
-      }
-      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
-      return reduced;
-    },
     WorkflowStartError: (value) => {
       if (!isHandle(value) || !value.isError) return false;
       if (chainedString(value, 'name') !== 'WorkflowStartError') return false;
@@ -1919,36 +1899,6 @@ export function createQuickJSSerde(
       } else {
         error = buildError(i.Error, value, { name: 'HookForceClaimedError' });
         for (const field of ['token', 'claimedByRunId', 'claimedByHookId']) {
-          const handle = own(value, field);
-          if (handle && !handle.isUndefined) define(error, field, handle);
-          handle?.dispose();
-        }
-      }
-      return error;
-    },
-    HookReservedError: (value: JSValueHandle) => {
-      const cls = registeredErrorClass('@workflow/errors//HookReservedError');
-      let error: JSValueHandle;
-      if (cls) {
-        const token = own(value, 'token') ?? vm.undefined;
-        const runId = own(value, 'runId') ?? vm.undefined;
-        error = vm.construct(cls, token, runId);
-        if (token !== vm.undefined) token.dispose();
-        if (runId !== vm.undefined) runId.dispose();
-        cls.dispose();
-        for (const field of ['retryAfter', 'stack']) {
-          const handle = own(value, field);
-          if (handle && !handle.isUndefined) define(error, field, handle);
-          handle?.dispose();
-        }
-        if (guestHasOwn(value, 'cause')) {
-          const cause = own(value, 'cause') ?? vm.undefined;
-          define(error, 'cause', cause);
-          if (cause !== vm.undefined) cause.dispose();
-        }
-      } else {
-        error = buildError(i.Error, value, { name: 'HookReservedError' });
-        for (const field of ['token', 'runId', 'retryAfter']) {
           const handle = own(value, field);
           if (handle && !handle.isUndefined) define(error, field, handle);
           handle?.dispose();

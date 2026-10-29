@@ -171,25 +171,6 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
-    // HookReservedError: mirror the host-side common.ts reducer.
-    HookReservedError: (value) => {
-      if (!(value instanceof Error) || value.name !== 'HookReservedError')
-        return false;
-      const reduced: SerializableSpecial['HookReservedError'] = {
-        message: value.message,
-        stack: value.stack,
-        token: (value as any).token,
-        runId: (value as any).runId,
-      };
-      if ((value as any).retryAfter !== undefined) {
-        reduced.retryAfter = (value as any).retryAfter;
-      }
-      // WorkflowError always defines `cause`; only a real one is carried.
-      if ((value as any).cause !== undefined) {
-        reduced.cause = (value as any).cause;
-      }
-      return reduced;
-    },
     // WorkflowStartError: mirror the host-side common.ts reducer.
     WorkflowStartError: (value) => {
       if (!(value instanceof Error) || value.name !== 'WorkflowStartError')
@@ -500,32 +481,6 @@ export function getCommonRevivers(): Partial<Revivers> {
         (error as any).claimedByRunId = value.claimedByRunId;
         if (value.claimedByHookId !== undefined) {
           (error as any).claimedByHookId = value.claimedByHookId;
-        }
-      }
-      if (value.stack !== undefined) error.stack = value.stack;
-      if ('cause' in value) (error as any).cause = (value as any).cause;
-      return error;
-    },
-    HookReservedError: (value) => {
-      const Cls = (globalThis as any)[
-        Symbol.for('@workflow/errors//HookReservedError')
-      ];
-      let error: Error;
-      if (typeof Cls === 'function') {
-        error = new Cls(
-          value.token,
-          value.runId,
-          value.retryAfter !== undefined
-            ? { retryAfter: value.retryAfter }
-            : undefined
-        );
-      } else {
-        error = new Error(value.message);
-        error.name = 'HookReservedError';
-        (error as any).token = value.token;
-        (error as any).runId = value.runId;
-        if (value.retryAfter !== undefined) {
-          (error as any).retryAfter = value.retryAfter;
         }
       }
       if (value.stack !== undefined) error.stack = value.stack;

@@ -215,6 +215,18 @@ export const WorkflowParkedEventType = SemanticConvention<string>(
   'workflow.events.parked.event_type'
 );
 
+/**
+ * Payloads resumed into the run's start Hook (`start(workflow, args, { hook
+ * })`) that the workflow had not opened with `createHook` when the replay
+ * stopped. Counted apart from {@link WorkflowParkedEventsCount}: the workflow
+ * may claim them later, or never (a start token used only as an idempotency
+ * key), and neither is a fault. Includes a takeover of the unopened Hook by
+ * another run (`hook_disposed` with `forceClaimedBy`).
+ */
+export const WorkflowParkedStartHookEventsCount = SemanticConvention<number>(
+  'workflow.events.parked.start_hook_count'
+);
+
 /** Number of arguments passed to the workflow */
 export const WorkflowArgumentsCount = SemanticConvention<number>(
   'workflow.arguments.count'
@@ -647,33 +659,11 @@ export const HookResilientResume = SemanticConvention<boolean>(
 /**
  * What the `hook.resume` span's last by-token lookup found: `found`,
  * `redirected` (the token's new owner, after a takeover while the resume was
- * in flight), `reserved` (`HookReservedError`: a `start({ hook })` run owns
- * the token and has not registered its Hook yet) or `not_found`.
+ * in flight) or `not_found`.
  */
 export const HookLookupResult = SemanticConvention<
-  'found' | 'redirected' | 'reserved' | 'not_found'
+  'found' | 'redirected' | 'not_found'
 >('workflow.hook.lookup_result');
-
-/** The run that reserved the token, on a `reserved` lookup. */
-export const HookReservedByRunId = SemanticConvention<string>(
-  'workflow.hook.reserved_by_run_id'
-);
-
-/** The `retryAfter` (seconds) a `reserved` lookup answered with. */
-export const HookReservedRetryAfter = SemanticConvention<number>(
-  'workflow.hook.reserved_retry_after'
-);
-
-/**
- * How many times a lookup inside a step waited for a reserved token's owner
- * to register its Hook, and for how long in total (ms).
- */
-export const HookReservedWaits = SemanticConvention<number>(
-  'workflow.hook.reserved_waits'
-);
-export const HookReservedWaitMs = SemanticConvention<number>(
-  'workflow.hook.reserved_wait_ms'
-);
 
 /**
  * Producer-side signal (on the `hook.resume` span) that the durable

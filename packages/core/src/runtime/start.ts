@@ -360,11 +360,25 @@ async function probeCrossDeployment(
   return { probe, cached: false };
 }
 
+/**
+ * `start(workflow, args, { hook })`: the run's start Hook. The World creates
+ * this Hook in the same step that admits the run, so at most one run holds
+ * the token, and the Hook can be looked up (`getHookByToken()`) and resumed
+ * (`resumeHook()`) as soon as `start()` returns, before the run has started.
+ * Payloads resumed before the workflow opens the Hook wait for it and are
+ * delivered in order.
+ *
+ * Inside the run, `createHook({ token })` with the same token opens this
+ * Hook; it writes nothing. The Hook then follows the ordinary Hook lifecycle,
+ * exactly like one the run created with
+ * `createHook({ token, experimental_minRetention })`: disposing it releases
+ * the token, and without a retention the run's end releases it too.
+ */
 export interface StartHookOptions {
   /**
-   * The Hook token to reserve for the run. Non-empty. Another run that owns
-   * the token, whether through its own `start({ hook })` or a `createHook()`,
-   * makes this start throw `HookConflictError` naming it.
+   * The Hook token for the run. Non-empty. Another run that holds the token,
+   * whether through its own `start({ hook })` or a `createHook()`, makes this
+   * start throw `HookConflictError` naming it.
    */
   token: string;
 
@@ -372,37 +386,23 @@ export interface StartHookOptions {
    * **Experimental.** Keep the token unavailable for at least this long, even
    * after the run ends. Accepts the same duration string, millisecond number,
    * or absolute `Date` as `sleep()` and `createHook({ experimental_minRetention })`.
-   * A duration starts when `start()` is called.
-   *
-   * The run owns the token until it ends even if this time passes first. A
-   * `createHook()` in the run with the same token can extend it, never
-   * shorten it.
+   * A duration starts when `start()` is called. Without it, the token is
+   * released when the run ends. Disposing the Hook releases the token
+   * either way.
    */
   experimental_minRetention?: StringValue | Date | number;
 
   /**
    * Data stored with the Hook, with the same semantics and serialization as
-   * `createHook({ metadata })`. The World keeps it with the reservation; when
-   * the workflow's `createHook({ token })` adopts the reservation without
-   * metadata of its own, the Hook carries this one, so `getHookByToken()`
-   * returns it.
+   * `createHook({ metadata })`, so `getHookByToken()` returns it.
    */
   metadata?: unknown;
 }
 
 /**
- * How long a start Hook keeps its token by default, counted from `start()`:
- * the token is unavailable until the run ends or this passes, whichever is
- * later. Applies only on a World (and, cross-deployment, a target) that
- * supports Hook retention; elsewhere the default is skipped rather than
- * refusing the start. `experimental_minRetention: 0` opts out.
- */
-export const DEFAULT_START_HOOK_RETENTION_MS = 24 * 60 * 60 * 1000;
-
-/**
  * Validates and resolves `start({ hook })` before anything is written. The
- * default retention and the metadata are applied later, once the World and
- * the run's key are known. Exported for tests.
+ * metadata is applied later, once the run's key is known. Exported for
+ * tests.
  */
 export function normalizeStartHook(options: StartHookOptions): StartHook {
   if (typeof options?.token !== 'string' || options.token.length === 0) {
@@ -544,15 +544,17 @@ function isPermanentWorldError(error: unknown): error is WorkflowWorldError {
 
 export interface StartOptionsBase {
   /**
-   * Reserve a Hook token atomically with the run's admission, making the
-   * start idempotent on that token. If another run owns the token, `start()`
-   * throws `HookConflictError` with `conflictingRunId`, and the duplicate
-   * never becomes a run: no run is created and none of its code executes.
+   * Create a Hook with this token atomically with the run's admission,
+   * making the start idempotent on that token. If another run holds the
+   * token, `start()` throws `HookConflictError` with `conflictingRunId`, and
+   * the duplicate never becomes a run: no run is created and none of its
+   * code executes.
    *
-   * The workflow can `createHook({ token })` with the same token to receive
-   * payloads through it. When `start()` cannot confirm whether the candidate
-   * was queued or admitted it throws `WorkflowStartError`; retrying with the
-   * same token can never admit a second owner.
+   * The Hook exists as soon as `start()` returns: `resumeHook(token)` reaches
+   * the run at once, and the payloads wait until the workflow opens the Hook
+   * with `createHook({ token })`. When `start()` cannot confirm whether the
+   * candidate was queued or admitted it throws `WorkflowStartError`; retrying
+   * with the same token can never admit a second owner.
    *
    * Requires a World that supports atomic start Hooks (and, with a
    * retention, Hook retention). Not supported for dynamic workflows.
@@ -1033,10 +1035,6 @@ export async function start<TArgs extends unknown[], TResult>(
       // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
       let targetSpecVersion: number;
       let specVersionSource: SpecVersionSource;
-      // Whether the deployment that executes the run keeps Hook retention,
-      // for the start Hook's default retention. Same deployment: the caller's
-      // World, checked below.
-      let targetSupportsHookRetention = true;
       if (!crossDeployment) {
         framedByteStreams = true;
         framedAbortStreams = true;
@@ -1081,8 +1079,6 @@ export async function start<TArgs extends unknown[], TResult>(
         });
         if (startHook) {
           assertTargetAdmitsStartHook(startHook, deploymentId, probe);
-          targetSupportsHookRetention =
-            probe?.capabilities?.hookRetention?.active === true;
         }
         probedRunPublicKey = probe?.encryptionPublicKey;
         const capabilities = getRunCapabilities(
@@ -1161,20 +1157,6 @@ export async function start<TArgs extends unknown[], TResult>(
       ) {
         throw startHookContractError(
           `start({ hook }) requires spec version ${SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT} or later, but this run would be stamped ${specVersion}.`
-        );
-      }
-      // The default retention: absolute from now, like an explicit
-      // `experimental_minRetention`. Skipped, not refused, where the World or
-      // the target cannot keep it; an explicit retention there still fails
-      // closed above.
-      if (
-        startHook &&
-        opts.hook?.experimental_minRetention === undefined &&
-        world.capabilities?.hookRetention?.active === true &&
-        targetSupportsHookRetention
-      ) {
-        startHook.tokenRetentionUntil = new Date(
-          Date.now() + DEFAULT_START_HOOK_RETENTION_MS
         );
       }
       if (startHook) {
@@ -1404,8 +1386,8 @@ export async function start<TArgs extends unknown[], TResult>(
         streamStartGate?.promise
       );
       // The start Hook's metadata, serialized and encrypted exactly as
-      // `createHook({ metadata })`'s is, so the adopted Hook's lookups
-      // hydrate it the same way.
+      // `createHook({ metadata })`'s is, so the start Hook's lookups hydrate
+      // it the same way.
       if (startHook && opts.hook?.metadata !== undefined) {
         startHook.metadata = (await dehydrateStepArguments(
           opts.hook.metadata,

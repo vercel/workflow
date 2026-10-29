@@ -1768,7 +1768,6 @@ describe('createWebhook', () => {
 
     it.each([
       'victim-spec-version',
-      'start-reservation',
     ] as const)('keeps a hook_conflict the World marked as declined on purpose (%s) an ordinary HookConflictError', async (forceRefusedReason) => {
       // `forceRefusedReason` says the World implements forcing but would not
       // take this token: the run holding it predates involuntary disposal.

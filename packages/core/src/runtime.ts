@@ -123,6 +123,7 @@ import {
   resumeTrackingFromMessage,
 } from './runtime/resume-latency.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
+import { resolveRunStartHook } from './runtime/start-hook-binding.js';
 import {
   ackRefusedStartHookCandidate,
   admitsTurboStart,
@@ -3523,6 +3524,14 @@ export function workflowEntrypoint(
                           // events before the terminal `awaitRunReady()` below.
                           runReadyBarrier,
                           worldCapabilities: world.capabilities,
+                          // `start({ hook })` runs: the body's createHook
+                          // with the start token binds to the Hook the
+                          // admission created. Undefined for every other run.
+                          startHook: resolveRunStartHook({
+                            events: eventLog.events,
+                            workflowRun,
+                            runInput,
+                          }),
                         });
                       }
                       await payloadPrewarm;

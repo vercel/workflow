@@ -19,7 +19,6 @@ import { contextStorage } from '../step/context-storage.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import {
-  DEFAULT_START_HOOK_RETENTION_MS,
   normalizeStartHook,
   START_HOOK_CONFIRM_DELAYS_MS,
   start,
@@ -148,24 +147,21 @@ describe('start({ hook })', () => {
     expect(payload.runInput.startHook).toEqual(event.eventData.startHook);
   });
 
-  describe('default retention', () => {
-    it('keeps the token for 24 hours from start() by default', async () => {
+  describe('retention', () => {
+    it('sets none by default: the token is released when the run ends', async () => {
       admittingWorld();
-      const before = Date.now();
 
       await start(workflow, [], { hook: { token: TOKEN } });
 
-      const { tokenRetentionUntil } =
-        eventsCreate.mock.calls[0][1].eventData.startHook;
-      expect(tokenRetentionUntil.getTime()).toBeGreaterThanOrEqual(
-        before + DEFAULT_START_HOOK_RETENTION_MS
-      );
-      expect(tokenRetentionUntil.getTime()).toBeLessThanOrEqual(
-        Date.now() + DEFAULT_START_HOOK_RETENTION_MS
-      );
+      expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
+        token: TOKEN,
+      });
+      expect(queue.mock.calls[0][1].runInput.startHook).toEqual({
+        token: TOKEN,
+      });
     });
 
-    it('opts out with experimental_minRetention: 0', async () => {
+    it('treats experimental_minRetention: 0 as omitted', async () => {
       admittingWorld();
 
       await start(workflow, [], {
@@ -177,7 +173,7 @@ describe('start({ hook })', () => {
       });
     });
 
-    it('is skipped, not refused, on a World without Hook retention', async () => {
+    it('sets none on a World without Hook retention either', async () => {
       admittingWorld({ capabilities: { atomicStartHook: { active: true } } });
 
       await start(workflow, [], { hook: { token: TOKEN } });
