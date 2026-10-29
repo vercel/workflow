@@ -1,10 +1,11 @@
 import { runInNewContext } from 'node:vm';
 import { FatalError } from '@workflow/errors';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   formatErrorCauseChain,
   getErrorMessage,
   isAbortError,
+  normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from './types.js';
 
@@ -211,5 +212,89 @@ describe('formatErrorCauseChain', () => {
     expect(
       formatErrorCauseChain(new Error('boom', { cause: 'a string' }))
     ).toBe('a string');
+  });
+});
+
+describe('normalizeUnknownError', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('describes a rejected promise by its reason', async () => {
+    const thrown = Promise.reject(new Error('quota exceeded'));
+    await expect(normalizeUnknownError(thrown)).resolves.toMatchObject({
+      name: 'Error',
+      message: 'Promise rejection: quota exceeded',
+    });
+  });
+
+  it('describes a promise that resolves to a promise by the final value', async () => {
+    const thrown = Promise.resolve(Promise.resolve('late value'));
+    await expect(normalizeUnknownError(thrown)).resolves.toMatchObject({
+      message: 'Promise rejection: late value',
+    });
+  });
+
+  it('settles for a thenable that never calls back', async () => {
+    vi.useFakeTimers();
+    const normalized = normalizeUnknownError({
+      // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+      then() {},
+    });
+    await vi.runAllTimersAsync();
+    await expect(normalized).resolves.toMatchObject({
+      message: expect.stringMatching(/did not settle/),
+    });
+  });
+
+  it('settles for a thenable that keeps resolving to a thenable', async () => {
+    const chain = {
+      // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+      then(resolve: (value: unknown) => void) {
+        resolve(chain);
+      },
+    };
+    await expect(normalizeUnknownError(chain)).resolves.toMatchObject({
+      message: expect.stringMatching(/kept resolving/),
+    });
+  });
+
+  it('treats a then that throws as a rejection', async () => {
+    const thrown = {
+      // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+      then() {
+        throw new Error('then exploded');
+      },
+    };
+    await expect(normalizeUnknownError(thrown)).resolves.toMatchObject({
+      message: 'Promise rejection: then exploded',
+    });
+  });
+
+  it('describes a value whose then getter throws', async () => {
+    const thrown = {
+      // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+      get then() {
+        throw new Error('getter exploded');
+      },
+    };
+    await expect(normalizeUnknownError(thrown)).resolves.toMatchObject({
+      name: 'Error',
+    });
+  });
+
+  it('describes a value that refuses every conversion', async () => {
+    const thrown = {
+      toJSON() {
+        throw new Error('no json');
+      },
+      toString() {
+        throw new Error('no string');
+      },
+    };
+    await expect(normalizeUnknownError(thrown)).resolves.toMatchObject({
+      name: 'Error',
+      message: expect.any(String),
+    });
   });
 });

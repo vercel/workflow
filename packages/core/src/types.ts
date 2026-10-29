@@ -139,13 +139,54 @@ export interface NormalizedUnknownError {
   stack: string;
 }
 
-function isThenable(value: unknown): value is Promise<unknown> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'then' in value &&
-    typeof (value as { then?: unknown }).then === 'function'
-  );
+const THENABLE_DEADLINE_MS = 1000;
+const THENABLE_MAX_DEPTH = 8;
+
+type Then = (
+  onFulfilled: (value: unknown) => void,
+  onRejected: (reason: unknown) => void
+) => unknown;
+
+function getThen(value: unknown): Then | undefined {
+  if (
+    (typeof value !== 'object' || value === null) &&
+    typeof value !== 'function'
+  ) {
+    return undefined;
+  }
+  try {
+    const then = (value as { then?: unknown }).then;
+    return typeof then === 'function' ? (then as Then) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// settlements are boxed so a thenable never reaches native promise adoption
+function settle(value: unknown, then: Then): Promise<{ value: unknown }> {
+  return new Promise((resolve) => {
+    try {
+      then.call(
+        value,
+        (fulfilled) => resolve({ value: fulfilled }),
+        (rejected) => resolve({ value: rejected })
+      );
+    } catch (error) {
+      resolve({ value: error });
+    }
+  });
+}
+
+function describeValue(v: unknown): string {
+  try {
+    return JSON.stringify(v) ?? String(v);
+  } catch {
+    try {
+      return String(v);
+    } catch {
+      return typeof v;
+    }
+  }
 }
 
 function normalizeSyncError(v: unknown): NormalizedUnknownError {
@@ -157,27 +198,15 @@ function normalizeSyncError(v: unknown): NormalizedUnknownError {
     };
   }
 
-  if (typeof v === 'string') {
-    return {
-      name: 'Error',
-      message: v,
-      stack: '',
-    };
-  }
+  return {
+    name: 'Error',
+    message: typeof v === 'string' ? v : describeValue(v),
+    stack: '',
+  };
+}
 
-  try {
-    return {
-      name: 'Error',
-      message: JSON.stringify(v),
-      stack: '',
-    };
-  } catch {
-    return {
-      name: 'Error',
-      message: String(v),
-      stack: '',
-    };
-  }
+function promiseRejection(message: string): NormalizedUnknownError {
+  return { name: 'Error', message: `Promise rejection: ${message}`, stack: '' };
 }
 
 /**
@@ -188,22 +217,37 @@ function normalizeSyncError(v: unknown): NormalizedUnknownError {
 export async function normalizeUnknownError(
   value: unknown
 ): Promise<NormalizedUnknownError> {
-  if (isThenable(value)) {
-    try {
-      const resolved = await value;
-      const normalized = await normalizeUnknownError(resolved);
-      return {
-        ...normalized,
-        message: `Promise rejection: ${normalized.message}`,
-      };
-    } catch (rejection) {
-      const normalized = await normalizeUnknownError(rejection);
-      return {
-        ...normalized,
-        message: `Promise rejection: ${normalized.message}`,
-      };
-    }
-  }
+  let then = getThen(value);
+  if (!then) return normalizeSyncError(value);
 
-  return normalizeSyncError(value);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), THENABLE_DEADLINE_MS);
+  });
+
+  try {
+    let current = value;
+    for (let depth = 0; then && depth < THENABLE_MAX_DEPTH; depth++) {
+      const settled = await Promise.race([settle(current, then), deadline]);
+      if (!settled) {
+        return promiseRejection(
+          `thrown thenable did not settle within ${THENABLE_DEADLINE_MS}ms`
+        );
+      }
+      current = settled.value;
+      then = getThen(current);
+    }
+    if (then) {
+      return promiseRejection(
+        `thrown thenable kept resolving to another thenable after ${THENABLE_MAX_DEPTH} steps`
+      );
+    }
+    const normalized = normalizeSyncError(current);
+    return {
+      ...normalized,
+      message: `Promise rejection: ${normalized.message}`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }

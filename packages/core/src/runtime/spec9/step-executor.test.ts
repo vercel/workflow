@@ -907,7 +907,10 @@ describe('executeStep — thrown errors with a read-only stack', () => {
     return error;
   }
 
-  async function runThrowingStep(makeError: () => Error) {
+  async function runThrowingStep(
+    makeError: () => unknown,
+    maxRetries = MAX_RETRIES
+  ) {
     const world = makeLocalWorld();
     const stepName = uniqueStepName();
     registerStepFunction(
@@ -916,7 +919,7 @@ describe('executeStep — thrown errors with a read-only stack', () => {
         async () => {
           throw makeError();
         },
-        { maxRetries: MAX_RETRIES }
+        { maxRetries }
       )
     );
     const { runId, stepId, params } = await setupStep(world, stepName);
@@ -963,6 +966,79 @@ describe('executeStep — thrown errors with a read-only stack', () => {
     );
     const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
     expect(hydrated.message).toBe('constraint violated');
+  });
+
+  it('records a retry when the step throws a thenable that never settles', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() => ({
+      // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+      then() {},
+    }));
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toMatch(/did not settle/);
+  });
+
+  it('records a retry when the step throws a thenable that resolves to itself', async () => {
+    const chain = {
+      // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+      then(resolve: (value: unknown) => void) {
+        resolve(chain);
+      },
+    };
+    const { world, runId, stepId, result } = await runThrowingStep(() => chain);
+
+    expect(result.type).toBe('retry');
+    await hydratedErrorOf(world, runId, stepId, 'step_retrying');
+  });
+
+  class ApiResponse {
+    status = 503;
+  }
+
+  it('records a retry with the original message when the cause cannot be serialized', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(
+      () => new Error('upstream returned 503', { cause: new ApiResponse() })
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toBe('upstream returned 503');
+  });
+
+  it('records a fatal failure when the cause cannot be serialized', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      Object.assign(new FatalError('rejected by upstream'), {
+        cause: new ApiResponse(),
+      })
+    );
+
+    expect(result.type).toBe('failed');
+    const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('rejected by upstream');
+  });
+
+  it('records the final failure when the last attempt throws an unserializable cause', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(
+      () => new Error('upstream returned 503', { cause: new ApiResponse() }),
+      0
+    );
+
+    expect(result.type).toBe('failed');
+    const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toMatch(/upstream returned 503$/);
   });
 });
 
