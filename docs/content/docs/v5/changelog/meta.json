@@ -2,9 +2,7 @@
   "title": "Changelog",
   "pages": [
     "index",
-    "single-orchestrator",
-    "single-orchestrator-review",
-    "single-orchestrator-diagrams",
+    "spec-9",
     "lazy-hook-resume",
     "eager-processing",
     "resilient-resume",

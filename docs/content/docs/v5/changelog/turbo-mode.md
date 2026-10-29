@@ -5,7 +5,7 @@ description: Fast-path the first delivery of a run by backgrounding run_started,
 
 # Turbo mode
 
-Turbo mode changes only the first delivery of a run's first orchestrator message; every other delivery takes the normal path. Both orchestrators have it, and each implements it its own way: spec 8 runs, the default for new runs, take the path in [Spec 8 runs](#spec-8-runs), and runs on the opt-in [single orchestrator](/docs/changelog/single-orchestrator) model (spec version 9, `WORKFLOW_SPEC_VERSION=9`) the one in [Spec 9 runs](#spec-9-runs). `WORKFLOW_TURBO=0` turns both off.
+Turbo mode changes only the first delivery of a run's first orchestrator message; every other delivery takes the normal path. Both orchestrators have it, and each implements it its own way: spec 8 runs, the default for new runs, take the path in [Spec 8 runs](#spec-8-runs), and runs on the opt-in [single orchestrator](/docs/changelog/spec-9) model (spec version 9, `WORKFLOW_SPEC_VERSION=9`) the one in [Spec 9 runs](#spec-9-runs). `WORKFLOW_TURBO=0` turns both off.
 
 ## Motivation
 
@@ -149,7 +149,7 @@ Turbo mode is purely client-side and builds on the lazy/optimistic inline start 
 
 ### Considered: running ahead of durable writes (not implemented on spec 8)
 
-Spec 9 runs do run ahead, within bounds that address the two reasons below (see [Run-ahead](/docs/changelog/single-orchestrator#run-ahead) on the single orchestrator page). On spec 8 runs the reasoning stands:
+Spec 9 runs do run ahead, within bounds that address the two reasons below (see [Run-ahead](/docs/changelog/spec-9#run-ahead) on the spec 9 page). On spec 8 runs the reasoning stands:
 
 Turbo overlaps the *start* round-trips with a step's body, but it still **awaits each `step_completed` before advancing** to the next step. We explored going further with "run-ahead": within a single invocation, execute the workflow forward across a sequential chain *without* awaiting each step's event writes, draining `step_started`/`step_completed` through a background FIFO queue and only blocking on a full drain before acking. A run of three sub-millisecond steps would then fire all the bodies back-to-back while the six event posts caught up in the background, turning per-step latency into `max(Σ body, Σ post)` instead of `Σ(body + post)`.
 
