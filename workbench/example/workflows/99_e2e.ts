@@ -1008,9 +1008,9 @@ export async function startHookLateClaimWorkflow(
 
 /**
  * A `start({ hook })` run that reads one payload from its start Hook and
- * disposes it (the run keeps the token, its idempotency key), waits on a gate
- * token, then calls `createHook()` with the same token again: an ordinary new
- * Hook on the token the run still holds.
+ * disposes it (which frees the token), waits on a gate token, then calls
+ * `createHook()` with the same token again: an ordinary new Hook, which
+ * conflicts if another run took the token in between.
  */
 export async function startHookReclaimWorkflow(
   token: string,
@@ -1053,14 +1053,13 @@ export async function startHookClaimUnreadWorkflow(
 }
 
 /**
- * Reads one payload from its start Hook and ends without disposing it: the
- * run's end is what releases the token, or a retention set on
- * `start({ hook })` keeps it past then.
+ * Reads one payload from its start Hook and ends without disposing it, so a
+ * retention set on `start({ hook })` keeps the token past the run's end.
  */
 export async function startHookRetainedOwnerWorkflow(token: string) {
   'use workflow';
 
-  // Not `using`: the run's end, not a disposal, ends this Hook.
+  // Deliberately not `using`: disposing would free the token at scope exit.
   const hook = createHook<{ message: string }>({ token });
   const payload = await hook;
   return { message: payload.message };

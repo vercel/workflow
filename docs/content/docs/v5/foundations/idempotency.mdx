@@ -88,7 +88,7 @@ export async function POST(request: Request) {
 A duplicate request often carries data the owner should receive, such as a follow-up message in a chat. Since the start Hook exists from the moment the run is admitted, you can resume it right away on a conflict, even before the owner starts executing:
 
 ```typescript title="app/api/orders/route.ts" lineNumbers
-import { getRun, resumeHook, start } from "workflow/api";
+import { resumeHook, start } from "workflow/api";
 import { HookConflictError, HookNotFoundError } from "workflow/errors";
 import { processOrder } from "./workflows/process-order";
 
@@ -110,14 +110,9 @@ export async function POST(request: Request) {
       const hook = await resumeHook(token, { note }); // [!code highlight]
       return Response.json({ runId: hook.runId, started: false });
     } catch (error) {
+      // The owner ended, or disposed its start Hook, between the conflict
+      // and the resume: the token is free again, so start again.
       if (!HookNotFoundError.is(error)) throw error; // [!code highlight]
-      // Not found: either the owner ended in the meantime (start again), or
-      // it is still running but disposed its start Hook, so it keeps the
-      // token and accepts nothing more.
-      const status = owner ? await getRun(owner).status : undefined;
-      if (status === "pending" || status === "running") {
-        throw new Error(`Run ${owner} owns ${token} but no longer accepts payloads`);
-      }
     }
   }
 
@@ -126,10 +121,7 @@ export async function POST(request: Request) {
 }
 ```
 
-Every caller either starts the run, delivers its payload to the owner, or learns which run owns the token. While the owner's start Hook is open, the loop needs at most two calls. A `HookNotFoundError` after a conflict means one of two things:
-
-- The owner ended in the meantime, so the next `start()` is admitted as the new owner.
-- The owner is still running but has [disposed its start Hook](#keep-the-token-after-the-run-ends). It keeps the token until it ends, so neither a new start nor a resume can succeed until then. The example reports that run rather than retrying.
+Every caller either starts the run, delivers its payload to the owner, or learns which run holds the token. While the owner's start Hook is open, the loop needs at most two calls. A `HookNotFoundError` after a conflict means the owner released the token in the meantime, by ending or by [disposing its start Hook](#take-care-with-the-start-hooks-lifecycle), so the next `start()` is admitted as the new owner.
 
 If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps refusing new starts until the retention passes, and its Hook can no longer be resumed, so the loop above gives up after its attempts and names that run. Use `getRun(owner)` to tell the caller what the finished run returned.
 
@@ -189,9 +181,43 @@ The run owns the token until it ends, even if the retention passes first. After 
 
 There is no default retention.
 
-Disposing the start Hook, with `hook.dispose()` or when a `using` declaration goes out of scope, ends the Hook but not the run's hold on the token. Until the run ends, `resumeHook()` throws `HookNotFoundError`, while a duplicate `start()` and another run's `createHook({ token })` are still refused naming the run. The run itself can call `createHook({ token })` again to get a new Hook on the token. When the run ends, any `experimental_minRetention` applies as above.
-
 Cancelling the owner ends the run, so it releases the token too, once any retention has passed.
+
+### Take care with the start Hook's lifecycle
+
+<Callout type="warn">
+The run holds its token only while its start Hook does. Disposing the start Hook, with `hook.dispose()` or when a `using` declaration in an inner scope ends, releases the token at once, as it does for any Hook. A later `start()` with the token is then admitted as a new run, even while this one is still running, and `experimental_minRetention` no longer applies: it only holds the token after a run that ends without disposing the Hook.
+</Callout>
+
+Open the start Hook with `const`, as in the examples above, and let the run's end release it. After disposing it, the run can call `createHook({ token })` again for a new Hook, but only if no other run has taken the token in the meantime; otherwise `getConflict()` names that run.
+
+### Dispose the start Hook with `using`
+
+`using` disposes a Hook when its scope ends, which reads well when the workflow only needs the payloads for part of its work:
+
+```typescript title="workflows/process-order.ts" lineNumbers
+import { createHook } from "workflow";
+
+type OrderUpdate = { note: string; done?: boolean };
+declare function recordNote(orderId: string, note: string): Promise<void>; // @setup
+declare function shipOrder(orderId: string): Promise<void>; // @setup
+
+export async function processOrder(orderId: string, note: string) {
+  "use workflow";
+
+  {
+    using updates = createHook<OrderUpdate>({ token: `order:${orderId}` }); // [!code highlight]
+    for await (const update of updates) {
+      await recordNote(orderId, update.note);
+      if (update.done) break;
+    }
+  } // The start Hook is disposed here, and the token is released.
+
+  await shipOrder(orderId);
+}
+```
+
+Disposing the start Hook ends the run's idempotency: from the end of that block, another `start()` with the token is admitted while this run ships the order. Use it when that is what you want. To keep duplicates out for the whole run, use `const`. A `using` at the top level of the workflow function disposes the Hook only as the run returns, but with a retention it releases the token then instead of holding it.
 
 ### When `start()` can't confirm the outcome
 

@@ -78,7 +78,6 @@ import {
   exists,
   gt,
   inArray,
-  isNotNull,
   isNull,
   lt,
   lte,
@@ -660,8 +659,7 @@ async function createHookResume(
       .where(
         and(
           eq(Schema.hooks.hookId, data.correlationId),
-          eq(Schema.hooks.runId, runId),
-          isNull(Schema.hooks.disposedAt)
+          eq(Schema.hooks.runId, runId)
         )
       )
       .for('update')
@@ -1310,8 +1308,6 @@ function createUnfencedEventsStorage(
     .select({
       hookId: Schema.hooks.hookId,
       runId: Schema.hooks.runId,
-      disposedAt: Schema.hooks.disposedAt,
-      tokenRetentionUntil: Schema.hooks.tokenRetentionUntil,
     })
     .from(Schema.hooks)
     .where(
@@ -1822,12 +1818,7 @@ function createUnfencedEventsStorage(
         const [existingHook] = await drizzle
           .select({ hookId: Schema.hooks.hookId })
           .from(Schema.hooks)
-          .where(
-            and(
-              eq(Schema.hooks.hookId, data.correlationId),
-              isNull(Schema.hooks.disposedAt)
-            )
-          )
+          .where(eq(Schema.hooks.hookId, data.correlationId))
           .limit(1);
 
         if (!existingHook) {
@@ -2603,27 +2594,10 @@ function createUnfencedEventsStorage(
           );
         }
 
-        // Check for duplicate token using prepared statement. A disposed
-        // row this run keeps for its start Hook token is the run's own: a
-        // new Hook of the run replaces it (see `insertFreshHook`).
-        const [tokenHolder] = await getHookByToken.execute({
+        // Check for duplicate token using prepared statement
+        const [existingHook] = await getHookByToken.execute({
           token: eventData.token,
         });
-        const keptStartKey =
-          tokenHolder?.disposedAt && tokenHolder.runId === effectiveRunId
-            ? tokenHolder
-            : undefined;
-        const existingHook = keptStartKey ? undefined : tokenHolder;
-        // The new Hook takes over the kept key, and with it the start Hook's
-        // retention (carried onto the kept row at its disposal): the later
-        // of the two applies once the run ends.
-        const keptRetention = keptStartKey?.tokenRetentionUntil;
-        const hookRetentionUntil =
-          keptRetention &&
-          (!eventData.tokenRetentionUntil ||
-            new Date(eventData.tokenRetentionUntil) < keptRetention)
-            ? keptRetention
-            : eventData.tokenRetentionUntil;
         // Set when the create ends in a `hook_conflict`: `null` for the plain
         // conflict of an unforced create, a reason when a forced create was
         // declined on purpose. Left `undefined` when the hook was created.
@@ -2669,19 +2643,15 @@ function createUnfencedEventsStorage(
         const insertFreshHook = async (): Promise<boolean> => {
           const created = await journaledHookCreated(() =>
             drizzle.transaction(async (tx) => {
-              await tx.delete(Schema.hooks).where(
-                and(
-                  eq(Schema.hooks.token, eventData.token),
-                  or(
-                    and(exists(ownerRunIsTerminal), hookRetentionEnded),
-                    // This run's own kept start Hook token.
-                    and(
-                      eq(Schema.hooks.runId, effectiveRunId),
-                      isNotNull(Schema.hooks.disposedAt)
-                    )
+              await tx
+                .delete(Schema.hooks)
+                .where(
+                  and(
+                    eq(Schema.hooks.token, eventData.token),
+                    exists(ownerRunIsTerminal),
+                    hookRetentionEnded
                   )
-                )
-              );
+                );
 
               const [hookValue] = await tx
                 .insert(Schema.hooks)
@@ -2693,7 +2663,7 @@ function createUnfencedEventsStorage(
                   ownerId: '', // TODO: get from context
                   projectId: '', // TODO: get from context
                   environment: '', // TODO: get from context
-                  tokenRetentionUntil: hookRetentionUntil,
+                  tokenRetentionUntil: eventData.tokenRetentionUntil,
                   // Propagate specVersion from the event to the hook entity
                   specVersion: effectiveSpecVersion,
                   isWebhook: eventData.isWebhook,
@@ -2933,9 +2903,7 @@ function createUnfencedEventsStorage(
                     conflictingRunId: victim.runId,
                   };
                 }
-                // A victim that disposed this Hook itself and only keeps the
-                // token for its start Hook has nothing left to be told.
-                if (victimRunning && victim.disposedAt === null) {
+                if (victimRunning) {
                   const disposed = await insertEventRow(tx, {
                     runId: victim.runId,
                     eventId: await allocateEventId(tx, victim.runId),
@@ -3107,45 +3075,10 @@ function createUnfencedEventsStorage(
       if (data.eventType === 'hook_disposed' && data.correlationId) {
         const disposedHookId = data.correlationId;
         value = await drizzle.transaction(async (tx) => {
-          // A run started with `start({ hook })` keeps its token (its
-          // idempotency key) until it ends: disposing the Hook of that run
-          // that holds it keeps the row and its claim, marked disposed, and
-          // carries the start Hook's retention onto it for after the run's
-          // end. Every other disposal deletes the row.
-          const [owner] = await tx
-            .select({
-              status: Schema.runs.status,
-              startHook: Schema.runs.startHook,
-            })
-            .from(Schema.runs)
-            .where(eq(Schema.runs.runId, effectiveRunId))
-            .limit(1);
-          const startKey =
-            owner?.startHook && !isTerminalWorkflowRunStatus(owner.status)
-              ? owner.startHook
-              : undefined;
-          const live = and(
-            eq(Schema.hooks.hookId, disposedHookId),
-            isNull(Schema.hooks.disposedAt)
-          );
-          const [kept] = startKey
-            ? await tx
-                .update(Schema.hooks)
-                .set({
-                  disposedAt: sql`now()`,
-                  tokenRetentionUntil: startKey.tokenRetentionUntil
-                    ? sql`greatest(${Schema.hooks.tokenRetentionUntil}, ${new Date(startKey.tokenRetentionUntil).toISOString()}::timestamptz)`
-                    : Schema.hooks.tokenRetentionUntil,
-                })
-                .where(and(live, eq(Schema.hooks.token, startKey.token)))
-                .returning({ hookId: Schema.hooks.hookId })
-            : [];
-          const [deleted] = kept
-            ? [kept]
-            : await tx
-                .delete(Schema.hooks)
-                .where(live)
-                .returning({ hookId: Schema.hooks.hookId });
+          const [deleted] = await tx
+            .delete(Schema.hooks)
+            .where(eq(Schema.hooks.hookId, disposedHookId))
+            .returning({ hookId: Schema.hooks.hookId });
           if (!deleted) {
             throw new EntityConflictError(
               `Hook "${disposedHookId}" already disposed`
@@ -3223,12 +3156,7 @@ function createUnfencedEventsStorage(
             const [liveHook] = await tx
               .select({ hookId: Schema.hooks.hookId })
               .from(Schema.hooks)
-              .where(
-                and(
-                  eq(Schema.hooks.hookId, data.correlationId),
-                  isNull(Schema.hooks.disposedAt)
-                )
-              )
+              .where(eq(Schema.hooks.hookId, data.correlationId))
               .for('update')
               .limit(1);
             if (!liveHook) {
@@ -3791,10 +3719,9 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         inArray(runs.status, TERMINAL_WORKFLOW_RUN_STATUSES)
       )
     );
-  // A disposed row that only keeps a start Hook run's token is no Hook.
-  const available = and(
-    isNull(hooks.disposedAt),
-    or(gt(hooks.tokenRetentionUntil, sql`now()`), notExists(ownerRunIsTerminal))
+  const available = or(
+    gt(hooks.tokenRetentionUntil, sql`now()`),
+    notExists(ownerRunIsTerminal)
   );
   const getByToken = drizzle
     .select()

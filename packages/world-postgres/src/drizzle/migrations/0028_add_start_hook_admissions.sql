@@ -37,8 +37,4 @@ ALTER TABLE "workflow"."workflow_runs" ADD COLUMN IF NOT EXISTS "start_hook_cbor
 -- existing data.
 ALTER TABLE "workflow"."workflow_hooks" ADD COLUMN IF NOT EXISTS "claims_token" boolean DEFAULT false NOT NULL;
 --> statement-breakpoint
--- A disposed Hook whose run keeps its token: a run started with a start Hook
--- holds that token until it ends, so the row (and its claim) stays.
-ALTER TABLE "workflow"."workflow_hooks" ADD COLUMN IF NOT EXISTS "disposed_at" timestamp with time zone;
---> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "workflow_hooks_token_claim_unique" ON "workflow"."workflow_hooks" USING btree ("token") WHERE "claims_token";
