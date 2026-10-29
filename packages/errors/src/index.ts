@@ -275,9 +275,12 @@ export type WorkflowStartStage = 'queue' | 'admission';
  * Safe to retry while the token is held: if the first candidate was admitted
  * and still holds the token, the retry throws `HookConflictError` naming it;
  * if it was not admitted, the retry's candidate becomes the owner. The token
- * is held until the owner ends, then for any `experimental_minRetention`; a
- * retry after that is admitted as a new run, so set a retention that covers
- * the retry window when a repeat must never run. Inside a workflow, the
+ * is held until the owner ends, then for any `experimental_minRetention`,
+ * unless the owner disposes its start Hook first, which releases it at once
+ * (see "Take care with the start Hook's lifecycle" in the `start()` docs). A
+ * retry after the token is released is admitted as a new run, so set a
+ * retention that covers the retry window, and keep the start Hook open, when
+ * a repeat must never run. Inside a workflow, the
  * `start()` step retries it like any other transient failure.
  *
  * Use the static `WorkflowStartError.is()` method for type-safe checking in
