@@ -35,7 +35,6 @@ import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
 import { spec8Orchestrator } from './runtime/spec8/delivery.js';
-import { spec9Orchestrator } from './runtime/spec9/delivery.js';
 
 import { getWorld } from './runtime/world.js';
 
@@ -55,11 +54,29 @@ import {
 
 export type { Event, WorkflowRun };
 
-/** The orchestrator that drives a run of `specVersion` (see `runtime/delivery.ts`). */
-function orchestratorForSpecVersion(specVersion: number): Orchestrator {
-  return specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
-    ? spec9Orchestrator
-    : spec8Orchestrator;
+// per-copy-ok: caches this copy's own dynamic import of its spec 9 module,
+// which is per-copy as well.
+let spec9OrchestratorModule: Promise<Orchestrator> | undefined;
+
+/**
+ * The orchestrator that drives a run of `specVersion` (see
+ * `runtime/delivery.ts`). The spec 9 one is loaded on the first spec 9
+ * delivery: spec 9 runs are opt-in, so a process that only drives spec 8 runs
+ * never evaluates it.
+ */
+async function orchestratorForSpecVersion(
+  specVersion: number
+): Promise<Orchestrator> {
+  if (specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR) return spec8Orchestrator;
+  spec9OrchestratorModule ??= import('./runtime/spec9/delivery.js').then(
+    (module) => module.spec9Orchestrator,
+    (error) => {
+      // A failed load is not cached, so the next delivery tries again.
+      spec9OrchestratorModule = undefined;
+      throw error;
+    }
+  );
+  return spec9OrchestratorModule;
 }
 
 export { WorkflowSuspension } from './global.js';
@@ -352,7 +369,9 @@ export function workflowEntrypoint(
         // The orchestrator of the run's spec version: a run keeps the one it
         // was created with (see `runtime/delivery.ts`).
         const runSpec = await resolveRunSpec(message);
-        const orchestrator = orchestratorForSpecVersion(runSpec.specVersion);
+        const orchestrator = await orchestratorForSpecVersion(
+          runSpec.specVersion
+        );
 
         const maxQueueDeliveries = getMaxQueueDeliveries();
         if (
