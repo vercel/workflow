@@ -37,7 +37,11 @@ import * as fsModule from '../fs.js';
 import { writeExclusive } from '../fs.js';
 import { createWorld } from '../index.js';
 import { createStorage } from '../storage.js';
-import { hookTokenClaimPath, START_HOOK_ORPHAN_GRACE_MS } from './helpers.js';
+import {
+  hookDisposeLockPath,
+  hookTokenClaimPath,
+  START_HOOK_ORPHAN_GRACE_MS,
+} from './helpers.js';
 import { writeHookByRunMarker } from './hook-index.js';
 
 const SPEC = SPEC_VERSION_CURRENT;
@@ -488,6 +492,54 @@ describe('atomic start Hook (world-local)', () => {
     const listed = await storage.runs.list({});
     expect(listed.data.map((r) => r.runId)).not.toContain(stalled);
     expect(listed.data.map((r) => r.runId)).toHaveLength(1);
+  });
+
+  it("hands an ordinary Hook's retention to nothing when its run re-creates the token mid-disposal", async () => {
+    const plain = `wrun_${ulid()}`;
+    await create(plain, {
+      eventType: 'run_created',
+      specVersion: SPEC,
+      eventData: {
+        deploymentId: 'dpl_local',
+        workflowName: 'wf',
+        input: new Uint8Array([1]),
+      },
+    } as AnyEventRequest);
+    await create(plain, {
+      eventType: 'run_started',
+      specVersion: SPEC,
+    } as AnyEventRequest);
+    const token = 'order:ordinary-overlap';
+    const first = `hook_${ulid()}`;
+    await create(plain, {
+      eventType: 'hook_created',
+      correlationId: first,
+      specVersion: SPEC,
+      eventData: {
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 3_600_000),
+      },
+    } as AnyEventRequest);
+    // Its disposal committed (the dispose lock) but has not released the
+    // claim yet: the run's next Hook on the token takes it over.
+    const lock = hookDisposeLockPath(testDir, first);
+    await fs.mkdir(path.dirname(lock), { recursive: true });
+    await writeExclusive(lock, '');
+    const second = `hook_${ulid()}`;
+    const created = await create(plain, {
+      eventType: 'hook_created',
+      correlationId: second,
+      specVersion: SPEC,
+      eventData: { token },
+    } as AnyEventRequest);
+    expect(created.event?.eventType).toBe('hook_created');
+    expect(
+      (created.event?.eventData as { tokenRetentionUntil?: unknown })
+        ?.tokenRetentionUntil
+    ).toBeUndefined();
+    expect((await storage.hooks.getByToken(token)).tokenRetentionUntil).toBe(
+      undefined
+    );
   });
 
   it('makes a forced createHook retry while a stalled writer may still publish its run, then takes the token from it', async () => {

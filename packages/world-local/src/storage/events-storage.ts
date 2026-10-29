@@ -3445,8 +3445,22 @@ export function createEventsStorage(
               }
 
               // This run's own kept key (see `isDisposedStartKeyReleasable`):
-              // the new Hook carries its retention on.
-              if (existingClaim.runId === effectiveRunId && !claimedFrom) {
+              // the new Hook carries its retention on. Only a start Hook
+              // token is kept; an ordinary Hook's claim left behind by a
+              // disposal still finishing hands nothing on.
+              if (
+                existingClaim.runId === effectiveRunId &&
+                !claimedFrom &&
+                (
+                  await readJSONWithFallback(
+                    basedir,
+                    'runs',
+                    effectiveRunId,
+                    RunRecordSchema,
+                    tag
+                  )
+                )?.startHook?.token === hookData.token
+              ) {
                 keptRetentionUntil = existingClaim.tokenRetentionUntil;
               }
               // The previous owner committed its release but did not finish
