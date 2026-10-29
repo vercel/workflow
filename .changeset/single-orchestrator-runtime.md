@@ -6,6 +6,7 @@
 "@workflow/world-local": minor
 "@workflow/world-postgres": minor
 "@workflow/world-testing": patch
+"@workflow/vitest": patch
 ---
 
 Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
