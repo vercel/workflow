@@ -42,6 +42,8 @@ async function deliver(opts: {
   runStarted: (data: any) => Promise<unknown>;
   startHook?: { token: string } | undefined;
   encryptionPublicKey?: string;
+  /** Answer run_started like a World that ignores `startHook`. */
+  dropEcho?: boolean;
   /** Receives every write, for a delivery that throws. */
   sink?: any[];
 }) {
@@ -57,7 +59,10 @@ async function deliver(opts: {
     updatedAt: new Date(),
     startedAt: new Date(),
     deploymentId: 'test-deployment',
-  };
+    ...(opts.startHook && !opts.dropEcho
+      ? { startHook: { ...opts.startHook, hookId: 'hook_x' } }
+      : {}),
+  } as WorkflowRun;
   const created: any[] = [];
   const params: any[] = [];
   const eventsCreate = vi.fn(async (_runId: string, data: any, p?: any) => {
@@ -286,5 +291,19 @@ describe('queued copy of a start Hook candidate', () => {
       runStarted: async () => {},
     });
     expect(completed(created)).toBe(true);
+  });
+
+  it('fails a candidate whose run_started does not echo its token, without running its code', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
+    const { created } = await deliver({
+      startHook,
+      dropEcho: true,
+      runStarted: async () => {},
+    });
+    expect(completed(created)).toBe(false);
+    const failed = created.find((e) => e.eventType === 'run_failed');
+    expect(failed?.eventData).toMatchObject({
+      errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+    });
   });
 });

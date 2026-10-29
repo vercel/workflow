@@ -1,10 +1,11 @@
 import type { Span } from '@opentelemetry/api';
 import {
   HookConflictError,
+  RUN_ERROR_CODES,
   START_HOOK_ADMISSION_REJECTED,
   WorkflowWorldError,
 } from '@workflow/errors';
-import type { RunInput } from '@workflow/world';
+import type { RunInput, WorkflowRun } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 
@@ -79,12 +80,32 @@ export function ackRefusedStartHookCandidate(
  * World accepted, on the invocation span: the candidate owns the token,
  * whether this write admitted it or replayed the admission its `run_created`
  * won.
+ *
+ * Acceptance means the run the World returned echoes the requested token in
+ * `run.startHook`, not merely that the write succeeded: a World that ignores
+ * `startHook` (a backend that predates it) creates an ordinary run, and
+ * running that run's code would make the start non-idempotent. That answer
+ * throws a World contract error before any workflow code runs, which fails
+ * the run.
  */
 export function recordAcceptedStartHookCandidate(
   runInput: RunInput | undefined,
+  run: Pick<WorkflowRun, 'runId'> & { startHook?: { token?: string } },
   span?: Span
 ): void {
   if (runInput?.startHook === undefined) return;
+  if (run.startHook?.token !== runInput.startHook.token) {
+    span?.setAttributes({
+      ...queuedCopyAttributes('failed'),
+      ...Attribute.WorkflowStartHookErrorCode(
+        RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
+      ),
+    });
+    throw new WorkflowWorldError(
+      `Workflow run "${run.runId}" was started, but the World did not confirm reserving its start Hook token, so the start would not be idempotent. Its code was not run.`,
+      { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
+    );
+  }
   span?.setAttributes(queuedCopyAttributes('accepted'));
 }
 

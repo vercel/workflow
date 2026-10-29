@@ -2662,7 +2662,11 @@ export function workflowEntrypoint(
                           throw setupError;
                         }
                         const result = await replayLoad;
-                        recordAcceptedStartHookCandidate(runInput, span);
+                        recordAcceptedStartHookCandidate(
+                          runInput,
+                          result.run,
+                          span
+                        );
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS, see the declaration above.

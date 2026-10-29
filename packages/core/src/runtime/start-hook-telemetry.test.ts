@@ -268,13 +268,42 @@ describe('the invocation span of a queued copy', () => {
   });
 
   it('records the write that admits, and nothing for an ordinary run', () => {
-    recordAcceptedStartHookCandidate(undefined, fakeSpan());
+    recordAcceptedStartHookCandidate(
+      undefined,
+      { runId: 'wrun_x' },
+      fakeSpan()
+    );
     expect(spanAttributes).toEqual({});
-    recordAcceptedStartHookCandidate(runInput, fakeSpan());
+    recordAcceptedStartHookCandidate(
+      runInput,
+      { runId: 'wrun_x', startHook: { token: runInput.startHook!.token } },
+      fakeSpan()
+    );
     expect(spanAttributes).toEqual({
       'workflow.start_hook': true,
       'workflow.start_hook.outcome': 'accepted',
       'workflow.start_hook.trigger': 'run_started',
+    });
+  });
+
+  it('refuses a run_started whose run does not echo the start Hook token', () => {
+    const thrown = (() => {
+      try {
+        recordAcceptedStartHookCandidate(
+          runInput,
+          { runId: 'wrun_x' },
+          fakeSpan()
+        );
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(WorkflowWorldError.is(thrown)).toBe(true);
+    expect(thrown).toMatchObject({
+      code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+    });
+    expect(spanAttributes).toMatchObject({
+      'workflow.start_hook.outcome': 'failed',
     });
   });
 });
