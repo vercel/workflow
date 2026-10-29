@@ -57,6 +57,8 @@ export function createWorkflowEntrypointOptionsCode(options?: {
   basePath?: string;
   /** Raw code identifier/expression emitted into generated route files, not data. */
   routeModuleBodyStartedAt?: string;
+  /** Raw code identifier of the prebuilt QuickJS baseline constant, not data. */
+  quickjsBaseline?: string;
 }) {
   const namespace = resolveQueueNamespace(options?.namespace);
   const fields: string[] = [];
@@ -75,6 +77,10 @@ export function createWorkflowEntrypointOptionsCode(options?: {
     fields.push(
       `routeModuleBodyStartedAt: ${options.routeModuleBodyStartedAt}`
     );
+  }
+
+  if (options?.quickjsBaseline) {
+    fields.push(`quickjsBaseline: ${options.quickjsBaseline}`);
   }
 
   if (fields.length === 0) {
