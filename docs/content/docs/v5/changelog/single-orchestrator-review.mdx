@@ -810,7 +810,7 @@ One knob, `WORKFLOW_SPEC_VERSION`, gates minting only: the version a World stamp
 7. **world-testing conformance.** The in-band fence tests skip again for a World that does not declare `capabilities.inBandFence`, as on `main`, so a custom World following the earlier guide passes `createTestSuite()`. The embedded suite runs once at the default and once with `WORKFLOW_SPEC_VERSION=9`.
 8. **Rollback floor and fleet rule**, documented next to the env var in [runtime tuning](/docs/configuration/runtime-tuning#workflow_spec_version) and on the [single orchestrator](/docs/changelog/single-orchestrator) page: every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release before anyone sets `WORKFLOW_SPEC_VERSION=9`. An older process fails a spec 9 run's deliveries and calls with `RunNotSupportedError`; the run stalls without corruption and recovers once the process is upgraded again.
 9. **Wording.** The changesets and docs describe spec 9 as opt-in (`runtime-tuning.mdx`, `building-a-world.mdx`, which restores the spec 8 contract as the default and moves the spec 9 contract to "Supporting spec 9 runs", `upgrading-to-v5.mdx`, `single-orchestrator.mdx`, `worlds/v5/vercel.mdx`, `event-sourcing.mdx`, `errors-and-retries.mdx`, `turbo-mode.md`, `get-run.mdx`, `precondition-failed-error.mdx`, the World migration skill).
-10. **A dedicated spec 9 e2e lane (1b)**, prepared as a workflow patch because a `.github/workflows` change needs a token with the `workflow` scope: a job `e2e-vercel-spec9` (nextjs-turbopack), cloned from `e2e-vercel-ws-transport`, with `WORKFLOW_SPEC_VERSION=9` in the deploy env **and** in the "Run E2E Tests" step env (the test runner's own World caps a cross-deployment start at `min(target, caller)`, so with only the deploy env set the lane would silently test spec 8), an assertion that a run in the lane has `specVersion === 9`, and the job added to `summary.needs` and `e2e-required-check.needs`. With the flip, the default Vercel lanes run spec 8 again.
+10. **A dedicated spec 9 e2e lane (1b)**: a required job `e2e-vercel-spec9` (nextjs-turbopack, both VMs), cloned from `e2e-vercel-ws-transport`, with `WORKFLOW_SPEC_VERSION=9` in the deploy env **and** in the "Run E2E Tests" step env (the test runner's own World caps a cross-deployment start at `min(target, caller)`, so with only the deploy env set the lane would silently test spec 8), an assertion that a run in the lane has `specVersion === 9`, and the job added to `summary.needs` and `e2e-required-check.needs`. With the flip, the default Vercel lanes run spec 8 again.
 
 ### Runs already created as spec 9 when the flag is turned off
 
@@ -829,7 +829,7 @@ What the flip does not change: it reduces exposure, not correctness. The livenes
 
 ## 11. Before merge
 
-- Spec 9 is opt-in (section 10, done). Land the `e2e-vercel-spec9` workflow patch with a token that has the `workflow` scope.
+- Spec 9 is opt-in (section 10, done), with the required `e2e-vercel-spec9` lane.
 - Keep the Vercel e2e lanes green on the final head. CI on `c9446d4c09` passed every check, including E2E Required Check and the nest lanes, which `d617404712` fixed by pinning the nest workbench to Node 24.
 - Re-verify handoffs on Vercel now that they are signalled with `{ timeoutSeconds: 0 }`, and re-run the benchmarks, including durabench's fan-out after the fan-out latency fixes (section 7).
 - Move the Vercel dashboard's wake-up action to a `@workflow/core` release with this change (section 7).
@@ -853,7 +853,7 @@ Decided and implemented: any non-first orchestrator delivery re-sends unstarted 
 
 ### 2. Per-run events API routing and the opt-in flip (done in this PR, not to file)
 
-Section 10's plan: capability-gated minting under `WORKFLOW_SPEC_VERSION`, `SPEC_VERSION_CURRENT` back to 8, the `specVersionForRunWrite` cap at `SPEC_VERSION_MAX_SUPPORTED`, the `start()` error wording, the rollback floor, world-vercel routing each run's events by its spec version (v4 below spec 9), and the dedicated spec 9 e2e lane with the variable in both the deploy and the test-runner env and a `specVersion === 9` assertion. Implemented in this PR (section 10); only the e2e lane's workflow patch still needs a token with the `workflow` scope. [4365355530](https://github.com/vercel/workflow/pull/4661#discussion_r4365355530), [4365355532](https://github.com/vercel/workflow/pull/4661#discussion_r4365355532), [4365355548](https://github.com/vercel/workflow/pull/4661#discussion_r4365355548).
+Section 10's plan: capability-gated minting under `WORKFLOW_SPEC_VERSION`, `SPEC_VERSION_CURRENT` back to 8, the `specVersionForRunWrite` cap at `SPEC_VERSION_MAX_SUPPORTED`, the `start()` error wording, the rollback floor, world-vercel routing each run's events by its spec version (v4 below spec 9), and the dedicated spec 9 e2e lane with the variable in both the deploy and the test-runner env and a `specVersion === 9` assertion. Implemented in this PR (section 10), the e2e lane included. [4365355530](https://github.com/vercel/workflow/pull/4661#discussion_r4365355530), [4365355532](https://github.com/vercel/workflow/pull/4661#discussion_r4365355532), [4365355548](https://github.com/vercel/workflow/pull/4661#discussion_r4365355548).
 
 ### 3. Durable `run.wakeUp()` on spec 9
 
