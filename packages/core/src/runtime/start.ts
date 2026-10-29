@@ -375,10 +375,11 @@ async function probeCrossDeployment(
  * delivered in order.
  *
  * Inside the run, `createHook({ token })` with the same token opens this
- * Hook; it writes nothing. The token is the run's idempotency key: the run
- * holds it until it ends, then for `experimental_minRetention` if set.
- * Disposing the Hook ends its deliveries but keeps the token held; a later
- * `createHook({ token })` in the run gets a new Hook on it.
+ * Hook; it writes nothing. The Hook then follows the ordinary Hook lifecycle,
+ * exactly like one the run created with
+ * `createHook({ token, experimental_minRetention })`: disposing it releases
+ * the token at once (so open it with `const` to keep the token for the whole
+ * run), and without a retention the run's end releases it too.
  */
 export interface StartHookOptions {
   /**
@@ -393,8 +394,8 @@ export interface StartHookOptions {
    * after the run ends. Accepts the same duration string, millisecond number,
    * or absolute `Date` as `sleep()` and `createHook({ experimental_minRetention })`.
    * A duration starts when `start()` is called. Without it, the token is
-   * released when the run ends. Disposing the Hook doesn't release it
-   * earlier: the run holds its token until it ends either way.
+   * released when the run ends. Disposing the Hook releases the token at
+   * once either way.
    */
   experimental_minRetention?: StringValue | Date | number;
 

@@ -231,7 +231,7 @@ describe('atomic start Hook (world-postgres)', () => {
   }
   async function hookRows(token: string) {
     const { rows } = await pool.query(
-      `SELECT hook_id, run_id, claims_token, token_retention_until, disposed_at
+      `SELECT hook_id, run_id, claims_token, token_retention_until
          FROM workflow.workflow_hooks WHERE token = $1 ORDER BY hook_id`,
       [token]
     );
@@ -240,7 +240,6 @@ describe('atomic start Hook (world-postgres)', () => {
       run_id: string;
       claims_token: boolean;
       token_retention_until: Date | null;
-      disposed_at: Date | null;
     }[];
   }
   async function eventsOf(runId: string) {
@@ -270,7 +269,6 @@ describe('atomic start Hook (world-postgres)', () => {
         hook_id: hookId,
         run_id: owner,
         claims_token: true,
-        disposed_at: null,
         token_retention_until: tokenRetentionUntil,
       },
     ]);
@@ -361,93 +359,23 @@ describe('atomic start Hook (world-postgres)', () => {
     expect(await hookRows(token)).toHaveLength(1);
   });
 
-  test('disposing the start Hook keeps its token until the run ends, while nothing resolves it', async () => {
+  test('disposing the start Hook frees its token at once, even with a retention', async () => {
     const token = `dispose-${ulid()}`;
-    const owner = await admittedOwner({ token }, { started: true });
-    const hookId = startHookId(owner);
-    await events.create(owner, hookDisposed(hookId));
-
-    // Gone as a Hook: no lookup resolves it and nothing lands in it.
-    await expect(hooks.getByToken(token)).rejects.toMatchObject({
-      name: 'HookNotFoundError',
-    });
-    await expect(hooks.get(hookId)).rejects.toMatchObject({
-      name: 'HookNotFoundError',
-    });
-    expect((await hooks.list({ runId: owner })).data).toEqual([]);
-    await expect(
-      events.create(owner, hookReceived(hookId, token))
-    ).rejects.toMatchObject({ name: 'HookNotFoundError' });
-    await expect(
-      events.create(owner, hookDisposed(hookId))
-    ).rejects.toMatchObject({ name: 'HookNotFoundError' });
-
-    // Still the run's idempotency key: a duplicate start and another run's
-    // createHook are both refused, naming the owner.
-    expect(await hookRows(token)).toMatchObject([
-      { hook_id: hookId, run_id: owner, claims_token: true },
-    ]);
-    const refused = await events
-      .create(`wrun_${ulid()}`, runCreated({ token }))
-      .catch((e: unknown) => e);
-    expect(refused).toMatchObject({
-      name: 'HookConflictError',
-      conflictingRunId: owner,
-    });
-    const conflict = await events.create(
-      await runningRun(),
-      hookCreated(token)
-    );
-    expect(conflict.event).toMatchObject({
-      eventType: 'hook_conflict',
-      eventData: { conflictingRunId: owner },
-    });
-
-    // The run's end frees it.
-    await events.create(owner, runCompleted());
-    expect(await admits(token)).toBe(true);
-  });
-
-  test("a disposed start Hook's retention applies once the run ends", async () => {
-    const token = `dispose-retained-${ulid()}`;
     const owner = await admittedOwner(
       { token, tokenRetentionUntil: new Date(Date.now() + 3_600_000) },
       { started: true }
     );
-    await events.create(owner, hookDisposed(startHookId(owner)));
-    await events.create(owner, runCompleted());
+    const hookId = startHookId(owner);
+    await events.create(owner, hookDisposed(hookId));
+
+    expect(await hookRows(token)).toEqual([]);
     await expect(hooks.getByToken(token)).rejects.toMatchObject({
       name: 'HookNotFoundError',
     });
-    const refused = await events
-      .create(`wrun_${ulid()}`, runCreated({ token }))
-      .catch((e: unknown) => e);
-    expect(refused).toMatchObject({ conflictingRunId: owner });
-  });
-
-  test("a forced createHook takes a disposed start Hook's kept token without telling the owner again", async () => {
-    const token = `dispose-force-${ulid()}`;
-    const owner = await admittedOwner({ token }, { started: true });
-    await events.create(owner, hookDisposed(startHookId(owner)));
-    const claimer = await runningRun();
-    const claimerHookId = `hook_${ulid()}`;
-    const result = await events.create(
-      claimer,
-      hookCreated(token, { correlationId: claimerHookId, force: true })
-    );
-    expect(result.event?.eventType).toBe('hook_created');
-    expect(await hookRows(token)).toMatchObject([
-      { hook_id: claimerHookId, run_id: claimer, disposed_at: null },
-    ]);
-    // The owner's only hook_disposed is its own.
-    const disposals = (await eventsOf(owner)).filter(
-      (e) => e.eventType === 'hook_disposed'
-    );
-    expect(disposals).toHaveLength(1);
-    expect(
-      (disposals[0].eventData as { forceClaimedBy?: unknown } | undefined)
-        ?.forceClaimedBy
-    ).toBeUndefined();
+    await expect(
+      events.create(owner, hookReceived(hookId, token))
+    ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+    expect(await admits(token)).toBe(true);
   });
 
   test('the run ending without a retention frees the token', async () => {
@@ -518,7 +446,7 @@ describe('atomic start Hook (world-postgres)', () => {
     expect(refused).toMatchObject({ conflictingRunId: owner });
   });
 
-  test("the owner's second createHook of the start token conflicts with its own run while the start Hook is live, and after disposal takes the kept token with a new Hook that keeps it too", async () => {
+  test("the owner's second createHook of the start token conflicts with its own run while the start Hook is live, and claims the token afresh after disposal", async () => {
     const token = `again-${ulid()}`;
     const owner = await admittedOwner({ token }, { started: true });
     const live = await events.create(owner, hookCreated(token));
@@ -535,20 +463,9 @@ describe('atomic start Hook (world-postgres)', () => {
     );
     expect(fresh.event?.eventType).toBe('hook_created');
     expect(await hookRows(token)).toMatchObject([
-      {
-        hook_id: freshId,
-        run_id: owner,
-        claims_token: true,
-        disposed_at: null,
-      },
+      { hook_id: freshId, run_id: owner, claims_token: true },
     ]);
     expect((await hooks.getByToken(token)).hookId).toBe(freshId);
-
-    // The new Hook carries the run's key: disposing it keeps the token too.
-    await events.create(owner, hookDisposed(freshId));
-    expect(await admits(token)).toBe(false);
-    await events.create(owner, runCompleted());
-    expect(await admits(token)).toBe(true);
   });
 
   test("another run's createHook conflicts, naming the owner", async () => {

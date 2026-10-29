@@ -357,18 +357,9 @@ export const hooks = schema.table(
      * written before it do not, so the index cannot fail on existing data.
      */
     claimsToken: boolean('claims_token').notNull().default(false),
-    /**
-     * Set when the Hook was disposed but its row stays: a run started with
-     * `start({ hook })` keeps that token (its idempotency key) until it ends,
-     * so disposing a Hook of the run that holds it keeps the row, and its
-     * claim, rather than deleting it. Such a row is no Hook to readers and
-     * receives nothing; the run's end, or its retention after that, frees it.
-     */
-    disposedAt: timestamptz('disposed_at'),
   } satisfies DrizzlishOfType<
     Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'> & {
       claimsToken?: boolean;
-      disposedAt?: Date;
     }
   >,
   (tb) => [

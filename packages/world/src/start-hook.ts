@@ -44,16 +44,11 @@ import { SerializedDataSchema } from './serialization.js';
  *   start Hook.
  * - **Lifecycle.** From then on the start Hook is an ordinary Hook, exactly as
  *   if the run had called `createHook({ token, experimental_minRetention })`
- *   with the same retention, except that the token is the run's idempotency
- *   key and the run holds it until it ends. Other runs' `createHook()` and
- *   `start({ hook })` with the token conflict naming the owner. A
- *   `hook_disposed` for any Hook of the run on that token ends the Hook (it
- *   is no longer found and refuses deliveries) but keeps the token claimed by
- *   the run; a later `createHook({ token })` in the run is an ordinary
- *   `hook_created` that takes it back, carrying the start Hook's retention.
- *   The run's end frees the token unless `tokenRetentionUntil` is still in
- *   the future; then an undisposed Hook stays readable, refuses deliveries,
- *   and holds the token until then. A forced
+ *   with the same retention: other runs' `createHook()` with the token
+ *   conflict naming the owner, `hook_disposed` frees the token at once (even
+ *   with a retention set), and the run's end frees it unless
+ *   `tokenRetentionUntil` is still in the future, in which case the Hook stays
+ *   readable, refuses deliveries, and holds the token until then. A forced
  *   `createHook({ experimental_force })` takes it like any Hook, even before
  *   the workflow first opens it: the owner's log gets `hook_disposed` with
  *   `forceClaimedBy` for `startHookId(runId)`.
@@ -104,10 +99,9 @@ export const StartHookSchema = z.object({
   hookId: z.string().optional(),
   /**
    * The start Hook's minimum retention, like `createHook()`'s
-   * `tokenRetentionUntil`: once the run has ended, the token stays held
-   * until this time has passed, whether or not the Hook was disposed (the
-   * run holds its start Hook token until it ends). Requires
-   * `capabilities.hookRetention`.
+   * `tokenRetentionUntil`: once the run has ended, the Hook keeps its token
+   * until this time has passed. Disposing the Hook frees the token earlier.
+   * Requires `capabilities.hookRetention`.
    */
   tokenRetentionUntil: z.coerce.date().optional(),
   /**

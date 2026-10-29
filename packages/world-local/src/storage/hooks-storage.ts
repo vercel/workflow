@@ -426,9 +426,6 @@ export function createHooksStorage(
 /**
  * Cleans up a terminal run's Hooks while preserving active retention.
  */
-const readRunRecord = (filePath: string) =>
-  readJSON(filePath, RunRecordSchema).catch(() => null);
-
 export async function deleteAllHooksForRun(
   basedir: string,
   runId: string
@@ -437,7 +434,6 @@ export async function deleteAllHooksForRun(
   // instead of reading every live hook entity in the world.
   await ensureHookIndexes(basedir);
 
-  let startRun: Awaited<ReturnType<typeof readRunRecord>> | undefined;
   for (const marker of await listHookByRunMarkers(basedir, runId)) {
     if (marker.hookId) {
       let hook: Hook | null = null;
@@ -468,18 +464,6 @@ export async function deleteAllHooksForRun(
           hook.tokenRetentionUntil &&
           hook.tokenRetentionUntil.getTime() > Date.now()
         ) {
-          continue;
-        }
-        // A Hook the run made on its start Hook token (after disposing the
-        // start Hook) keeps the token for the start Hook's retention too.
-        startRun ??= await readRunRecord(
-          taggedPath(basedir, 'runs', runId, marker.tag)
-        );
-        const startRetention =
-          startRun?.startHook?.token === hook.token
-            ? startRun.startHook.tokenRetentionUntil
-            : undefined;
-        if (startRetention && startRetention.getTime() > Date.now()) {
           continue;
         }
         // Release the claim only if it still points at this hook, since a

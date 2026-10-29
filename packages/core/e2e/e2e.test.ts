@@ -3266,19 +3266,20 @@ describe.concurrent('e2e', () => {
     );
 
     testJsOnly(
-      'disposing the start Hook keeps the token until the run ends, then its retention applies',
+      'disposing the start Hook frees the token even with a retention',
       { timeout: 120_000 },
       async (ctx) => {
         await skipUnlessStartHookSupported(ctx);
         await skipUnlessHookRetentionSupported(ctx);
         const token = randomToken('start-hook-disposed');
-        const workflow = await e2e('startHookOwnerWorkflow');
 
         // The owner opens its start Hook with `using`: it is disposed when
-        // the body returns, and the run ends right after.
-        const owner = await startHooked(workflow, [token, 1], {
-          hook: { token, experimental_minRetention: '1h' },
-        });
+        // the body returns.
+        const owner = await startHooked(
+          await e2e('startHookOwnerWorkflow'),
+          [token, 1],
+          { hook: { token, experimental_minRetention: '1h' } }
+        );
         await resumeHook(token, { message: 'done' });
         expect(await owner.returnValue).toEqual({
           conflictRunId: null,
@@ -3287,15 +3288,12 @@ describe.concurrent('e2e', () => {
 
         await waitForHookDisposed(owner.runId, startHookId(owner.runId));
         await waitForHookNotFound(token);
-        await expectRefusedNaming(
-          startHooked(workflow, [token, 1], { hook: { token } }),
-          owner.runId
-        );
+        await expectAdmittedAgain(token, owner.runId);
       }
     );
 
     testJsOnly(
-      'disposing the start Hook mid-run keeps the token: a duplicate start is refused naming the run',
+      'dispose frees the token: a duplicate start is admitted, and the re-created Hook conflicts naming it',
       { timeout: 120_000 },
       async (ctx) => {
         await skipUnlessStartHookSupported(ctx);
@@ -3314,32 +3312,41 @@ describe.concurrent('e2e', () => {
         await waitForHookDisposed(owner.runId, hookId);
         await waitForHookNotFound(token);
 
-        // The Hook is gone but the run still holds its idempotency key.
-        await expectRefusedNaming(
-          startHooked(await e2e('startHookOwnerWorkflow'), [token, 1], {
-            hook: { token },
-          }),
-          owner.runId
+        const duplicate = await startHooked(
+          await e2e('startHookOwnerWorkflow'),
+          [token, 1],
+          { hook: { token } }
         );
+        expect(duplicate.runId).not.toBe(owner.runId);
 
         await resumeHook(gate, { release: true });
-        const second = await waitForHook(token, {
-          runId: owner.runId,
-          excludeHookId: hookId,
-        });
-        await resumeHook(second, { message: 'second' });
         expect(await owner.returnValue).toEqual({
-          messages: ['first', 'second'],
-          conflictRunId: null,
+          messages: ['first'],
+          conflictRunId: duplicate.runId,
         });
-        // The run's end frees the key.
-        await waitForHookNotFound(token);
-        await expectAdmittedAgain(token, owner.runId);
+        const hook = await resumeHook(token, { message: 'dup' });
+        expect(hook.runId).toBe(duplicate.runId);
+        expect(await duplicate.returnValue).toEqual({
+          conflictRunId: null,
+          messages: ['dup'],
+        });
+
+        expect(await hookEventCounts(owner.runId, hookId)).toEqual({
+          created: 0,
+          received: 1,
+          disposed: 1,
+          conflict: 0,
+        });
+        // The re-create's hook_conflict; a concurrent invocation may write
+        // that answer twice, and replay keeps the first.
+        expect(
+          (await hookEventCounts(owner.runId)).conflict
+        ).toBeGreaterThanOrEqual(1);
       }
     );
 
     testJsOnly(
-      'after disposing the start Hook, createHook() takes the kept token again with a new Hook',
+      'dispose frees the token: with no other claimant, createHook() claims it again with a new Hook',
       { timeout: 120_000 },
       async (ctx) => {
         await skipUnlessStartHookSupported(ctx);
