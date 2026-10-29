@@ -1,24 +1,24 @@
 {
-  "lastUpdated": "2026-10-28T23:39:09.041Z",
-  "commit": "6829c261c56aafcd16f26cf9b4c766f52e91e660",
+  "lastUpdated": "2026-10-29T19:48:26.625Z",
+  "commit": "62c8a231711d2ff4470ecd91d0c70a7c91442abf",
   "branch": "main",
   "type": "e2e",
   "worlds": {
     "local": {
       "status": "passing",
-      "total": 10800,
-      "passed": 9686,
+      "total": 10080,
+      "passed": 9063,
       "failed": 0,
-      "skipped": 1114,
+      "skipped": 1017,
       "frameworks": {},
       "progress": 90
     },
     "postgres": {
       "status": "passing",
-      "total": 5220,
-      "passed": 4669,
+      "total": 4680,
+      "passed": 4188,
       "failed": 0,
-      "skipped": 551,
+      "skipped": 492,
       "frameworks": {},
       "progress": 89
     },
