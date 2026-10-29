@@ -4,12 +4,11 @@ import { definePlugin } from 'nitro';
 // Needed since we test this in CI
 export default definePlugin(async () => {
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    import('workflow/runtime').then(async ({ getWorld }) => {
-      const world = await getWorld();
-      if (world.start) {
-        console.log('Starting World workers...');
-        await world.start();
-      }
-    });
+    // Dev lanes need this; production builds also get it from
+    // `workflow/nitro`'s own start plugin, and ensureWorldStarted() runs the
+    // World's start() once for both.
+    import('workflow/runtime').then(({ ensureWorldStarted }) =>
+      ensureWorldStarted()
+    );
   }
 });

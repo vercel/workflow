@@ -18,6 +18,12 @@ To explicitly use the Local World in any environment, set this environment varia
 WORKFLOW_TARGET_WORLD=local
 ```
 
+## Recovering runs after a restart
+
+The Local World's queue lives in memory, so a restart drops the timers and deliveries of runs that were in flight. When the World starts, it re-enqueues the runs it finds `pending` or `running` in the data directory, and they resume from their event log. A sleep whose deadline has not passed yet keeps waiting.
+
+The World starts when the server calls [`ensureWorldStarted()`](/docs/api-reference/workflow-runtime/ensure-world-started) at boot. `workflow/nitro` does this for production builds (see [`startWorld`](/docs/configuration/framework-options#workflowstartworld)); for other frameworks, add the call to a server-startup hook as shown for the [Postgres World](/worlds/postgres#server-startup). Without it, in-flight runs stay `running` after a restart. Set [`WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`](#workflow_local_recover_active_runs) to `0` to start without recovering.
+
 ## Observability
 
 The Workflow CLI uses the Local World by default. Run these commands inside your workflow project to view your local development workflows:
@@ -155,7 +161,7 @@ A directory that mixes both layouts, or holds `.json` files in `events/` or `ste
 
 The Local World is designed for development, not production:
 
-- **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
+- **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts. Runs that were in flight resume only when the World starts; see [Recovering runs after a restart](#recovering-runs-after-a-restart).
 - **Filesystem storage**: Data is stored in local JSON files.
 - **Single instance**: The Local World cannot handle distributed deployments.
 - **No authentication**: The Local World is suitable only for local development.

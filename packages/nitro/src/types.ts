@@ -52,6 +52,25 @@ export interface ModuleOptions {
    * @default nitro.options.dev
    */
   dashboard?: boolean | { enabled?: boolean; path?: string };
+
+  /**
+   * Start the World when the server boots, through a Nitro server plugin that
+   * calls `ensureWorldStarted()` from `workflow/runtime`. A self-hosted World
+   * (local, Postgres) re-enqueues the runs that were in flight when the server
+   * last stopped, so sleeping, hook-waiting and mid-step runs resume after a
+   * restart without waiting for the next workflow operation.
+   *
+   * Defaults to **on in production builds, off in dev**: a dev server's
+   * in-flight runs usually belong to code that has since been edited, and
+   * replaying them against the new code fails with a replay divergence. Never
+   * registered for Vercel deploys, where the queue redelivers instead.
+   *
+   * Set to `false` to start the World yourself, for example from one instance
+   * of a multi-instance deployment.
+   *
+   * @default !nitro.options.dev
+   */
+  startWorld?: boolean;
 }
 
 declare module 'nitro/types' {
