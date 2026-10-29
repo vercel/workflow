@@ -160,6 +160,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       ctx.generateUlid();
       correlationId = startHook.hookId;
       startHook.bound = true;
+      ctx.eventsConsumer.startHookOpened();
     } else {
       correlationId = mintHookCorrelationId(ctx.generateUlid, startHook);
     }

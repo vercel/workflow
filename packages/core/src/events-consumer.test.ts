@@ -1568,3 +1568,52 @@ describe('sealed-log noop events (specVersion 7)', () => {
     expect(onUnconsumedEvent).not.toHaveBeenCalled();
   });
 });
+
+describe('EventsConsumer start Hook parking', () => {
+  const START = 'hook_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const received = (n: number): Event =>
+    ({
+      eventId: `evnt_${n}`,
+      runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      eventType: 'hook_received',
+      correlationId: START,
+      createdAt: new Date(),
+      eventData: { token: 't', payload: n },
+    }) as unknown as Event;
+  const other = (n: number): Event =>
+    ({
+      eventId: `evnt_${n}`,
+      runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      eventType: 'step_created',
+      correlationId: `step_${n}`,
+      createdAt: new Date(),
+      eventData: {},
+    }) as unknown as Event;
+
+  it('offers parked start Hook deliveries only once the body opens the Hook', async () => {
+    const consumer = new EventsConsumer(
+      [received(1), received(2), other(3), other(4)],
+      { ...defaultOptions, eagerParkCorrelationId: START }
+    );
+    const offered: string[] = [];
+    consumer.subscribe((event) => {
+      if (event?.correlationId === START) offered.push(event.eventId);
+      if (event?.eventType === 'step_created') {
+        return EventConsumerResult.Consumed;
+      }
+      return EventConsumerResult.NotConsumed;
+    });
+    await waitForNextTick();
+    // Seen once by the walk (and parked), never re-offered by the drain.
+    expect(offered).toEqual(['evnt_1', 'evnt_2']);
+
+    consumer.startHookOpened();
+    consumer.subscribe((event) =>
+      event?.correlationId === START
+        ? EventConsumerResult.Consumed
+        : EventConsumerResult.NotConsumed
+    );
+    await waitForNextTick();
+    expect(offered).toEqual(['evnt_1', 'evnt_2', 'evnt_1', 'evnt_2']);
+  });
+});

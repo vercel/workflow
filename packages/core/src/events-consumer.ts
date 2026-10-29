@@ -274,6 +274,12 @@ export class EventsConsumer {
   private getPromiseQueue: () => Promise<void>;
   private isDeliveryIdle: () => boolean;
   private readonly eagerParkCorrelationId: string | undefined;
+  /**
+   * Whether the body has opened the start Hook: until then nothing can claim
+   * its parked deliveries, so the drain does not offer them (see
+   * {@link startHookOpened}).
+   */
+  private startHookOpen = false;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
@@ -297,6 +303,16 @@ export class EventsConsumer {
     this.getPromiseQueue = options.getPromiseQueue;
     this.isDeliveryIdle = options.isDeliveryIdle;
     this.eagerParkCorrelationId = options.eagerParkCorrelationId;
+  }
+
+  /**
+   * The body opened the start Hook (its `createHook({ token })` bound to it).
+   * Its parked deliveries are offered from the next drain on; before this,
+   * offering each of them to every callback on every pass would cost the
+   * whole replay for a run that never opens the Hook.
+   */
+  startHookOpened(): void {
+    this.startHookOpen = true;
   }
 
   /**
@@ -570,6 +586,9 @@ export class EventsConsumer {
       this.dropParkedDuplicates();
       for (let i = 0; i < this.parked.length; i++) {
         const entry = this.parked[i];
+        if (!this.startHookOpen && this.isStartHookEvent(entry.event)) {
+          continue;
+        }
         const walkIndex = this.eventIndex;
         this.eventIndex = entry.index;
         let consumed: boolean;

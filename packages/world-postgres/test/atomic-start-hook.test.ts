@@ -569,6 +569,36 @@ describe('atomic start Hook (world-postgres)', () => {
     }
   });
 
+  test('two concurrent Hooks of one run on one token leave one Hook and a conflict naming the run', async () => {
+    const second = createEventsStorage(createClient(pool));
+    for (let round = 0; round < 50; round++) {
+      const runId = await runningRun();
+      const token = `same-run-${ulid()}`;
+      const results = await Promise.allSettled([
+        events.create(runId, hookCreated(token)),
+        second.create(runId, hookCreated(token)),
+      ]);
+      for (const r of results) {
+        // Never a duplicate: they are different Hooks.
+        expect(r.status, String((r as { reason?: unknown }).reason)).toBe(
+          'fulfilled'
+        );
+      }
+      const types = results
+        .map((r) => (r.status === 'fulfilled' ? r.value.event?.eventType : ''))
+        .sort();
+      expect(types).toEqual(['hook_conflict', 'hook_created']);
+      const conflict = results.find(
+        (r) =>
+          r.status === 'fulfilled' &&
+          r.value.event?.eventType === 'hook_conflict'
+      ) as PromiseFulfilledResult<Awaited<ReturnType<typeof events.create>>>;
+      expect(conflict.value.event?.eventData).toMatchObject({
+        conflictingRunId: runId,
+      });
+    }
+  });
+
   test('two concurrent admissions of one token leave one owner', async () => {
     for (let round = 0; round < 4; round++) {
       const token = `admit-race-${ulid()}`;

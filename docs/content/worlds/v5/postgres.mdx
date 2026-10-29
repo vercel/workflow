@@ -330,7 +330,7 @@ Stop workers running a previous version before you turn it on. The queue does no
 
 For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while start Hooks are live.
 
-Migration `0028_add_start_hook_admissions` is required even with this variable unset, because every Hook insert writes its `claims_token` column. It takes table locks on `workflow_runs` and `workflow_hooks`, and gives up after 10 seconds (unless the session sets its own `lock_timeout`), leaving the migration to retry, rather than stall traffic. Apply it with the rest of the migrations before deploying this version.
+Migration `0028_add_start_hook_admissions` is required even with this variable unset, because every Hook insert writes its `claims_token` column. It takes table locks on `workflow_hooks` and then `workflow_runs` (building the new unique index scans `workflow_hooks` first), and gives up after 10 seconds (unless the session sets its own `lock_timeout`), leaving the migration to retry, rather than stall traffic. Apply it with the rest of the migrations before deploying this version.
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
 

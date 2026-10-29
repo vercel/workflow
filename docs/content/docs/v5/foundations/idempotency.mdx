@@ -116,7 +116,8 @@ export async function POST(request: Request) {
     }
   }
 
-  // Still refused: a finished owner holds the token for its retention.
+  // Still refused: a finished owner holds the token for its retention, or
+  // the owner is a candidate that was admitted but never became a run.
   throw new Error(`Run ${owner} holds ${token}; it can't be started or resumed`);
 }
 ```
@@ -230,7 +231,7 @@ If `start({ hook })` can't confirm whether its candidate run was queued or admit
 | World | Support |
 | --- | --- |
 | [Local World](/worlds/local) | Supported. |
-| [Postgres World](/worlds/postgres) | Opt in with [`WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1`](/worlds/postgres#workflow_postgres_experimental_start_hook). Stop workers running a previous version first. |
+| [Postgres World](/worlds/postgres) | Opt in with [`WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1`](/worlds/postgres#workflow_postgres_experimental_start_hook), after applying migration `0028_add_start_hook_admissions` (required for every Postgres World on this version, with or without the flag). Stop workers running a previous version first. |
 | [Vercel World](/worlds/vercel) | Opt in with [`WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1`](/worlds/vercel#workflow_vercel_experimental_start_hook), which needs a backend that supports start Hooks. |
 
 See [`start()`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) for the full option reference.
