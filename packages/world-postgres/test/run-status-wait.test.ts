@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { WorkflowRunNotFoundError } from '@workflow/errors';
+import { RunExpiredError, WorkflowRunNotFoundError } from '@workflow/errors';
 import type { WorkflowRun } from '@workflow/world';
 import {
   afterAll,
@@ -114,6 +114,56 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
     if (!wait) throw new Error('world-postgres should implement the long poll');
     return wait;
   };
+
+  it('a run_started racing the run ending does not move it back to running', async () => {
+    const created = await events.create(null, {
+      eventType: 'run_created',
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'test-workflow',
+        input: new Uint8Array([1]),
+      },
+    } as never);
+    const runId = created.run!.runId;
+
+    // Another writer ends the run and holds its row lock, so the run_started
+    // passes validation against `pending` and then waits on the row.
+    const ender = await pool.connect();
+    try {
+      await ender.query('BEGIN');
+      await ender.query(
+        `UPDATE workflow.workflow_runs
+           SET status = 'cancelled', completed_at = now()
+         WHERE id = $1`,
+        [runId]
+      );
+      const started = events
+        .create(runId, { eventType: 'run_started' } as never)
+        .then(
+          () => 'started',
+          (error: unknown) => error
+        );
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const { rows } = await pool.query(
+          'SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted'
+        );
+        if (rows[0].n > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await ender.query('COMMIT');
+
+      const outcome = await started;
+      expect(RunExpiredError.is(outcome)).toBe(true);
+    } finally {
+      ender.release();
+    }
+
+    const run = await runs.get(runId);
+    expect(run.status).toBe('cancelled');
+    const { data } = await events.list({ runId, resolveData: 'none' } as never);
+    expect(data.map((event) => event.eventType)).not.toContain('run_started');
+  });
 
   it('returns an already-terminal run immediately', async () => {
     const run = await startRun();
