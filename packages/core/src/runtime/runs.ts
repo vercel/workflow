@@ -17,6 +17,7 @@ import { hydrateWorkflowArguments } from '../serialization.js';
 import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
+import { isSingleOwnerRun } from './single-owner.js';
 import { start } from './start.js';
 
 export interface RecreateRunOptions {
@@ -172,6 +173,14 @@ export async function cancelRun(
 ): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
+    if (world.capabilities?.invoke && world.invoke && isSingleOwnerRun(run)) {
+      await world.invoke(runId, {
+        type: 'run_cancel',
+        version: 1,
+        cancelReason: options?.cancelReason,
+      });
+      return;
+    }
     const specVersion = specVersionForRunWrite(
       run.specVersion,
       SPEC_VERSION_LEGACY
@@ -233,7 +242,7 @@ export async function cancelRuns(
   }
 
   // Fast path: a single batch operation when the world supports it.
-  if (world.runs.cancelMany) {
+  if (world.runs.cancelMany && !(world.capabilities?.invoke && world.invoke)) {
     return world.runs.cancelMany({
       runIds,
       ...(options?.cancelReason !== undefined

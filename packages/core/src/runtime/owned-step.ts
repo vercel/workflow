@@ -1,0 +1,526 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
+import { WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
+import {
+  type CreateEventRequest,
+  CreateEventSchema,
+  type Event,
+  type EventResult,
+  parseQueueName,
+  StepSchema,
+  type WorkflowInvokePayload,
+  WorkflowInvokePayloadSchema,
+  type World,
+} from '@workflow/world';
+import { z } from 'zod/v4';
+import { withTraceContext } from '../telemetry.js';
+import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { retryOwnerDelivery } from './owner-delivery.js';
+import { executeStep } from './step-executor.js';
+import { safeWaitUntil } from './wait-until.js';
+import { withScopedWorld } from './world.js';
+
+export const OwnedStepExecutionSchema = z.compile(
+  z.object({
+    type: z.literal('step_execute'),
+    version: z.literal(1),
+    executionId: z.string().min(1),
+    attempt: z.number().int().positive(),
+    deadline: z.number().finite(),
+    workflowName: z.string(),
+    workflowStartedAt: z.number(),
+    parentSpanId: z.string().optional(),
+    executionMode: z.enum(['queued', 'remote']).optional(),
+    step: StepSchema,
+  })
+);
+export type OwnedStepExecution = z.infer<typeof OwnedStepExecutionSchema>;
+
+export type StepOutcome = Extract<
+  CreateEventRequest,
+  { eventType: 'step_completed' | 'step_failed' | 'step_retrying' }
+>;
+
+export function isStepOutcome(event: {
+  eventType: string;
+}): event is StepOutcome {
+  return ['step_completed', 'step_failed', 'step_retrying'].includes(
+    event.eventType
+  );
+}
+
+export const OwnedStepResultSchema = z.compile(
+  z.object({
+    type: z.literal('step_result'),
+    version: z.literal(1),
+    stepId: z.string(),
+    executionId: z.string(),
+    attempt: z.number().int().positive(),
+    outcome: CreateEventSchema.refine(isStepOutcome),
+  })
+);
+export type OwnedStepResult = z.infer<typeof OwnedStepResultSchema>;
+
+export const OwnedStepStatusSchema = z.compile(
+  z.object({
+    type: z.literal('step_status'),
+    version: z.literal(1),
+    stepId: z.string(),
+    executionId: z.string(),
+    attempt: z.number().int().positive(),
+    /** A queue redelivery: an earlier delivery of this attempt ended without
+     * an acknowledgement, so its worker is gone. */
+    lost: z.boolean().optional(),
+  })
+);
+
+const ReceiptSchema = z.compile(
+  z.object({
+    status: z.enum(['accepted', 'superseded', 'pending']),
+    eventId: z.string().optional(),
+  })
+);
+
+/** Only canonical outcome data participates, not volatile delivery telemetry. */
+export function stepOutcomeDigest(event: StepOutcome | Event): string {
+  if (!isStepOutcome(event)) throw new Error('Not a step outcome');
+  const data = event.eventData;
+  const value = 'result' in data ? data.result : data.error;
+  if (!(value instanceof Uint8Array))
+    throw new WorkflowWorldError('Step outcome requires serialized bytes', {
+      status: 400,
+    });
+  return createHash('sha256')
+    .update(event.eventType)
+    .update(value)
+    .update(
+      'retryAfter' in data && data.retryAfter ? String(+data.retryAfter) : ''
+    )
+    .digest('hex');
+}
+
+export function isOwnedStepMessage(
+  message: unknown
+): message is WorkflowInvokePayload {
+  if (!message || typeof message !== 'object') return false;
+  const value = message as WorkflowInvokePayload;
+  return (
+    value.invoke !== true &&
+    typeof value.stepId === 'string' &&
+    !!value.input &&
+    typeof value.input === 'object' &&
+    'type' in value.input &&
+    value.input.type === 'step_execute'
+  );
+}
+
+type WorkerEntry = {
+  expiresAt: number;
+  fingerprint: string;
+  work?: Promise<unknown>;
+  outcome?: OwnedStepResult;
+  done?: boolean;
+};
+/** Step bodies one process runs at once; beyond this a delivery is refused
+ * (429) and redelivered, ideally to another instance. */
+const WORKER_CAPACITY = 256;
+/** Attempts remembered for duplicate deliveries (running or finished). When
+ * full, the oldest finished ones are forgotten first: a later duplicate of a
+ * forgotten attempt asks its owner, or re-runs and the owner discards it. */
+const RETAINED_ENTRIES = 4096;
+const workers = globalSingleton(
+  '@workflow/core//ownedStepWorkers',
+  1,
+  () => new WeakMap<World, Map<string, WorkerEntry>>()
+);
+const observations = channel('workflow.runner');
+
+/** Authenticated delivery has already happened; this never creates an owner. */
+export async function executeOwnedStep(
+  world: World,
+  message: unknown,
+  metadata: Parameters<Parameters<World['createQueueHandler']>[1]>[1]
+): Promise<unknown> {
+  // One line when a step message arrives and one when its handler returns or
+  // throws, so a stalled attempt shows whether its message ever reached a
+  // worker, and whether that worker finished.
+  const parsed = WorkflowInvokePayloadSchema.safeParse(message);
+  const execution = parsed.success
+    ? OwnedStepExecutionSchema.safeParse(parsed.data.input)
+    : undefined;
+  const fields = {
+    runId: parsed.success ? parsed.data.runId : undefined,
+    stepId: parsed.success ? parsed.data.stepId : undefined,
+    executionId: execution?.success ? execution.data.executionId : undefined,
+    attempt: execution?.success ? execution.data.attempt : undefined,
+    executionMode: execution?.success
+      ? (execution.data.executionMode ?? 'queued')
+      : undefined,
+    deliveryCount: metadata.attempt,
+    messageId: metadata.messageId,
+    requestId: metadata.requestId,
+  };
+  const log = (event: string, extra: Record<string, unknown> = {}) =>
+    console.info(
+      JSON.stringify({
+        component: 'workflow-step-worker',
+        event,
+        at: new Date().toISOString(),
+        processInstanceId: COMPUTE_INSTANCE_ID,
+        ...fields,
+        ...extra,
+      })
+    );
+  const startedAt = Date.now();
+  log('step_delivery_received');
+  try {
+    const result = await executeOwnedStepUnlogged(world, message, metadata);
+    const retryIn =
+      result && typeof result === 'object' && 'timeoutSeconds' in result
+        ? (result as { timeoutSeconds?: unknown }).timeoutSeconds
+        : undefined;
+    log('step_delivery_finished', {
+      outcome: retryIn === undefined ? 'acknowledged' : 'redeliver',
+      ...(retryIn === undefined ? {} : { timeoutSeconds: retryIn }),
+      elapsedMs: Date.now() - startedAt,
+    });
+    return result;
+  } catch (error) {
+    log('step_delivery_finished', {
+      outcome: 'threw',
+      elapsedMs: Date.now() - startedAt,
+      errorName: (error as { name?: unknown })?.name,
+      errorMessage: String(
+        (error as { message?: unknown })?.message ?? error
+      ).slice(0, 300),
+      httpStatus: (error as { status?: unknown })?.status,
+    });
+    throw error;
+  }
+}
+
+async function executeOwnedStepUnlogged(
+  world: World,
+  message: unknown,
+  metadata: Parameters<Parameters<World['createQueueHandler']>[1]>[1]
+): Promise<unknown> {
+  const envelope = WorkflowInvokePayloadSchema.parse(message);
+  const input = OwnedStepExecutionSchema.parse(envelope.input);
+  const step = input.step;
+  if (
+    !world.invoke ||
+    !world.capabilities?.invoke ||
+    !envelope.runContext ||
+    step.runId !== envelope.runId ||
+    step.stepId !== envelope.stepId ||
+    step.stepName !== envelope.stepName ||
+    step.status !== 'running' ||
+    !step.startedAt ||
+    step.attempt !== input.attempt ||
+    parseQueueName(metadata.queueName).id !== input.workflowName
+  ) {
+    throw new WorkflowWorldError('Invalid owner-managed step delivery', {
+      status: 400,
+    });
+  }
+  if (
+    world.capabilities?.deploymentAffinity &&
+    process.env.VERCEL_DEPLOYMENT_ID !== envelope.runContext.deploymentId
+  )
+    throw new WorkflowWorldError('Pinned step deployment mismatch', {
+      status: 409,
+    });
+  const target = {
+    deploymentId: envelope.runContext.deploymentId,
+    workflowName: input.workflowName,
+  };
+  const identity = {
+    stepId: step.stepId,
+    executionId: input.executionId,
+    attempt: input.attempt,
+  };
+  let cache = workers.get(world);
+  if (!cache) {
+    cache = new Map();
+    workers.set(world, cache);
+  }
+  // Only running bodies count against capacity: finished attempts are kept for
+  // duplicate deliveries, and counting them refused every new step on a busy
+  // instance until they expired.
+  let active = 0;
+  for (const [key, value] of cache)
+    if (value.work) active++;
+    else if (value.expiresAt < Date.now()) cache.delete(key);
+  const key = `${envelope.runId}:${input.executionId}`;
+  const fingerprint = createHash('sha256')
+    .update(
+      JSON.stringify({
+        ...identity,
+        target,
+        deadline: input.deadline,
+        stepName: step.stepName,
+      })
+    )
+    .update(
+      step.input instanceof Uint8Array ? step.input : JSON.stringify(step.input)
+    )
+    .digest('hex');
+  let entry = cache.get(key);
+  if (entry && entry.fingerprint !== fingerprint)
+    throw new WorkflowWorldError(
+      'Step execution identity reused with different input',
+      { status: 409 }
+    );
+  // A direct dispatch from the owner is acknowledged once its body has started
+  // (see below); a duplicate of one still running needs no second answer.
+  const direct = input.executionMode === 'remote';
+  const workerLog = (event: string, fields: Record<string, unknown> = {}) =>
+    console.info(
+      JSON.stringify({
+        component: 'workflow-step-worker',
+        event,
+        at: new Date().toISOString(),
+        processInstanceId: COMPUTE_INSTANCE_ID,
+        runId: envelope.runId,
+        stepId: step.stepId,
+        executionId: input.executionId,
+        attempt: input.attempt,
+        deliveryCount: metadata.attempt,
+        ...fields,
+      })
+    );
+  if (entry?.done) {
+    // Acknowledged without running: this process already finished the attempt.
+    workerLog('step_delivery_already_done');
+    return;
+  }
+  if (entry?.work) return direct ? undefined : entry.work;
+  const prior = !!entry;
+  if (!entry) {
+    if (active >= WORKER_CAPACITY)
+      throw new WorkflowWorldError('Step worker capacity exceeded', {
+        status: 429,
+      });
+    if (cache.size >= RETAINED_ENTRIES) forgetOldest(cache);
+    entry = { expiresAt: input.deadline + 60_000, fingerprint };
+    cache.set(key, entry);
+  }
+  const current = entry;
+  const deliver = async (payload: OwnedStepResult) => {
+    // The cached serialized payload survives a lost invoke response in this worker.
+    await retryOwnerDelivery(
+      input.deadline,
+      async (timeoutMs) => {
+        const receipt = ReceiptSchema.parse(
+          await world.invoke!(envelope.runId, payload, {
+            target,
+            idempotencyKey: `step-result:${input.executionId}`,
+            timeoutMs,
+          })
+        );
+        if (receipt.status === 'pending')
+          throw new WorkflowWorldError('Step outcome not committed', {
+            status: 503,
+          });
+        // The owner did not record this outcome; the message is acknowledged.
+        if (receipt.status === 'superseded')
+          workerLog('step_result_superseded', {
+            outcome: payload.outcome.eventType,
+          });
+      },
+      // Worker-side evidence of each failed delivery attempt (for example an
+      // affinity backoff 503), before the identical payload is resent.
+      ({ attempt, error, retryInMs }) =>
+        observations.publish({
+          version: 1,
+          runId: envelope.runId,
+          ownerId: `worker:${COMPUTE_INSTANCE_ID}`,
+          phase: 'result_delivery',
+          event: 'end',
+          spanId: randomUUID(),
+          at: Date.now(),
+          stepId: step.stepId,
+          executionId: input.executionId,
+          attempt: input.attempt,
+          deliveryAttempt: attempt,
+          status: 'error',
+          errorCode:
+            (error as { code?: unknown })?.code === undefined
+              ? undefined
+              : String((error as { code?: unknown }).code),
+          httpStatus:
+            (error as { responseStatus?: unknown })?.responseStatus ??
+            (error as { status?: unknown })?.status,
+          errorName: (error as { name?: unknown })?.name,
+          responseErrorCode: (error as { responseErrorCode?: unknown })
+            ?.responseErrorCode,
+          retryInMs: Math.round(retryInMs),
+          parentSpanId: input.parentSpanId,
+          executionMode: input.executionMode ?? 'queued',
+        })
+    );
+    current.done = true;
+    return {} as EventResult;
+  };
+  const run = async () => {
+    if (current.outcome) return deliver(current.outcome);
+    if (prior || metadata.attempt > 1 || Date.now() >= input.deadline) {
+      const receipt = ReceiptSchema.parse(
+        await world.invoke!(
+          envelope.runId,
+          {
+            type: 'step_status',
+            version: 1,
+            ...identity,
+            ...(metadata.attempt > 1 ? { lost: true } : {}),
+          },
+          {
+            target,
+            idempotencyKey: `step-status:${input.executionId}:${randomUUID()}`,
+          }
+        )
+      );
+      if (receipt.status !== 'pending') {
+        // Acknowledged without running: the owner settled the attempt.
+        workerLog('step_status_settled', {
+          receipt: receipt.status,
+          lost: metadata.attempt > 1,
+        });
+        current.done = true;
+        return;
+      }
+      // Throw for redelivery of this message: requeueing with timeoutSeconds would
+      // reset deliveryCount and incorrectly turn uncertainty into a first attempt.
+      throw new WorkflowWorldError('Step attempt is still pending', {
+        status: 503,
+      });
+    }
+    const scoped: World = {
+      ...world,
+      events: {
+        ...world.events,
+        createBatch: undefined,
+        createWriteSession: undefined,
+        create: (async (runId: string | null, event: CreateEventRequest) => {
+          if (
+            runId !== envelope.runId ||
+            !isStepOutcome(event) ||
+            event.correlationId !== step.stepId
+          )
+            throw new WorkflowWorldError(
+              'A remote step cannot write workflow events',
+              { status: 400 }
+            );
+          const outcome = CreateEventSchema.parse(event) as StepOutcome;
+          const payloadField =
+            outcome.eventType === 'step_completed' ? 'result' : 'error';
+          const payload = (outcome.eventData as Record<string, unknown>)[
+            payloadField
+          ];
+          if (payload instanceof Uint8Array)
+            (outcome.eventData as Record<string, unknown>)[payloadField] =
+              payload.slice();
+          // Freeze a default retry deadline before the first delivery so retries
+          // of this result and recovery from the canonical event compare equally.
+          if (
+            outcome.eventType === 'step_retrying' &&
+            !outcome.eventData.retryAfter
+          )
+            outcome.eventData.retryAfter = new Date(Date.now() + 1000);
+          current.outcome = OwnedStepResultSchema.parse({
+            type: 'step_result',
+            version: 1,
+            ...identity,
+            outcome,
+          });
+          return deliver(current.outcome);
+        }) as World['events']['create'],
+      },
+    };
+    const spanId = randomUUID();
+    const observe = (event: 'begin' | 'end', details = {}) =>
+      observations.publish({
+        version: 1,
+        runId: envelope.runId,
+        ownerId: `worker:${COMPUTE_INSTANCE_ID}`,
+        phase: 'step',
+        event,
+        spanId,
+        at: Date.now(),
+        stepId: step.stepId,
+        stepName: step.stepName,
+        parentSpanId: input.parentSpanId,
+        executionId: input.executionId,
+        attempt: input.attempt,
+        executionMode: input.executionMode ?? 'queued',
+        ...details,
+      });
+    observe('begin');
+    try {
+      const result = await withScopedWorld(scoped, () =>
+        executeStep({
+          world: scoped,
+          workflowRunId: envelope.runId,
+          workflowDeploymentId: target.deploymentId,
+          workflowName: input.workflowName,
+          workflowStartedAt: input.workflowStartedAt,
+          stepId: step.stepId,
+          stepName: step.stepName,
+          requestId: metadata.requestId,
+          runSpecVersion: envelope.runContext!.specVersion,
+          authoritativeAttempt: input.attempt,
+          suppressOptimisticStart: true,
+          preclaimedStart: {
+            owned: true,
+            step: { ...step, startedAt: step.startedAt! },
+          },
+        })
+      );
+      observe('end', {
+        status: result.type === 'failed' ? 'error' : 'completed',
+        outcome: result.type,
+      });
+    } catch (error) {
+      observe('end', { status: 'error' });
+      throw error;
+    }
+  };
+  const firstAttempt =
+    !prior && metadata.attempt <= 1 && Date.now() < input.deadline;
+  current.work = withTraceContext(envelope.traceCarrier, run);
+  // A direct dispatch's first admission answers once the body has started:
+  // the result returns separately through `invoke`, so holding the owner's
+  // request open for the body and its result delivery adds nothing. The body
+  // keeps running under waitUntil, bounded by this function's maxDuration.
+  if (direct && firstAttempt) {
+    const work = current.work;
+    safeWaitUntil(
+      work.finally(() => {
+        if (current.work === work) current.work = undefined;
+      }),
+      () => {
+        // Unknown outcome: the owner recovers the attempt when it expires.
+      }
+    );
+    return;
+  }
+  try {
+    return await current.work;
+  } finally {
+    current.work = undefined;
+  }
+}
+
+/** Make room for one entry: oldest finished attempts first, then any idle one.
+ * Running bodies are never forgotten. */
+function forgetOldest(cache: Map<string, WorkerEntry>) {
+  for (const idle of [
+    (entry: WorkerEntry) => !!entry.done,
+    (entry: WorkerEntry) => !entry.work,
+  ])
+    for (const [key, entry] of cache) {
+      if (cache.size < RETAINED_ENTRIES) return;
+      if (idle(entry)) cache.delete(key);
+    }
+}

@@ -144,6 +144,12 @@ export interface WorkflowOrchestratorContext {
    * into boundary N+1.
    */
   suspensionGeneration: number;
+  /**
+   * The generation a suspension signal is already waiting for idle under.
+   * Every unfinished step that reaches the end of the log signals the same
+   * suspension; one idle check per generation stands for all of them.
+   */
+  pendingSuspension?: { generation: number };
   eventsConsumer: EventsConsumer;
   /**
    * Map of pending invocations keyed by correlationId.
@@ -1043,7 +1049,15 @@ export function scheduleWorkflowSuspension(
   ctx: WorkflowOrchestratorContext
 ): void {
   const generation = ctx.suspensionGeneration;
+  // Same-generation signals are equivalent: only the first to fire is
+  // accepted (it advances the generation). Without this, a fan-out with
+  // hundreds of unfinished steps runs one idle-polling loop per step.
+  if (ctx.pendingSuspension && ctx.pendingSuspension.generation === generation)
+    return;
+  const pending = { generation };
+  ctx.pendingSuspension = pending;
   scheduleWhenIdle(ctx, () => {
+    if (ctx.pendingSuspension === pending) ctx.pendingSuspension = undefined;
     if (generation !== ctx.suspensionGeneration) return;
     const suspension = new WorkflowSuspension(
       ctx.invocationsQueue,

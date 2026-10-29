@@ -166,6 +166,28 @@ describe('createUseStep', () => {
     `);
   });
 
+  it('schedules one idle check for a suspension signalled by many unfinished steps', async () => {
+    const ctx = setupWorkflowContext([]);
+    ctx.suspensionGeneration = 0;
+    const suspensions: Error[] = [];
+    const suspended = withResolvers<void>();
+    ctx.onWorkflowError = (err) => {
+      suspensions.push(err);
+      suspended.resolve();
+    };
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const add = createUseStep(ctx)('add');
+    const count = 500;
+    for (let i = 0; i < count; i++) void add(i, i);
+    await suspended.promise;
+    // Every unfinished step reaches the end of the log and signals the same
+    // suspension; one idle check stands for all of them, not one per step.
+    expect(timers.mock.calls.length).toBeLessThan(10);
+    expect(suspensions).toHaveLength(1);
+    expect(suspensions[0]).toBeInstanceOf(WorkflowSuspension);
+    expect((suspensions[0] as WorkflowSuspension).items).toHaveLength(count);
+  });
+
   it('should invoke workflow error handler if step is not run (concurrent)', async () => {
     let workflowErrorReject: (err: Error) => void;
     const workflowErrorPromise = new Promise<Error>((_, reject) => {

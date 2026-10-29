@@ -1,3 +1,4 @@
+import { channel } from 'node:diagnostics_channel';
 import {
   EntityConflictError,
   PreconditionFailedError,
@@ -1139,7 +1140,18 @@ describe('workflowEntrypoint replay guards', () => {
     ).toEqual([]);
   });
 
-  it('retains when an attribute write beats a step that signals first', async () => {
+  it('retains when an attribute write beats a step that signals first', async ({
+    onTestFinished,
+  }) => {
+    const observedPasses: Record<string, unknown>[] = [];
+    const observations = channel('workflow.execution');
+    const receive = (message: unknown) => {
+      const event = message as Record<string, unknown>;
+      if (event.runId === 'wrun_attribute_step_race')
+        observedPasses.push(event);
+    };
+    observations.subscribe(receive);
+    onTestFinished(() => observations.unsubscribe(receive));
     using debug = vi
       .spyOn(runtimeLogger, 'debug')
       .mockImplementation(() => undefined);
@@ -1206,6 +1218,11 @@ describe('workflowEntrypoint replay guards', () => {
       .filter(([message]) => message === 'Starting workflow execution')
       .map(([, context]) => context?.executionMode);
     expect(executionModes).toEqual(['replay', 'retained']);
+    expect(
+      observedPasses
+        .filter((event) => event.event === 'end')
+        .map((event) => event.mode)
+    ).toEqual(['replay', 'retained']);
   });
 
   it('fails the run when the World rejects an attr_set event as invalid', async () => {

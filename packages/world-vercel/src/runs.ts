@@ -21,6 +21,7 @@ import {
 } from '@workflow/world';
 import { z } from 'zod';
 import { getRequestTimeoutMs } from './http-core.js';
+import { recordRunAffinity, singleOwnerMarker } from './run-affinity.js';
 import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
@@ -90,9 +91,10 @@ function filterRunData(
 // re-hydrates run errors through `hydrateRunError`, which decompresses
 // on its own, so it deliberately does not route through here.
 function filterRunData(
-  run: any,
+  wire: any,
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
+  const run = wire;
   if (resolveData === 'none') {
     // The code is dropped before normalizing, so it is never decompressed.
     const {
@@ -275,6 +277,13 @@ async function readRun(
       : WorkflowRunWireSchema) as any,
   });
 
+  recordRunAffinity(
+    (run as { runId: string }).runId,
+    singleOwnerMarker(
+      (run as { attributes?: Record<string, unknown> }).attributes
+    ),
+    (run as { deploymentId?: string }).deploymentId
+  );
   return filterRunData(run, resolveData);
 }
 

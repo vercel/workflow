@@ -31,7 +31,7 @@ const otel = globalSingleton('@workflow/world-vercel//telemetry', 1, () => ({
   tracerPromise: null as Promise<api.Tracer | null> | null,
 }));
 
-async function getOtelApi(): Promise<typeof api | null> {
+export async function getOtelApi(): Promise<typeof api | null> {
   if (!otel.apiPromise) {
     // Static specifier is intentional: esbuild-bundled targets (the CLI's
     // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained

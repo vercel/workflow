@@ -24,7 +24,7 @@ import {
   parseRetryAfter,
   validateHttpUrl,
 } from './http-core.js';
-
+import type { VercelInvokeConfig } from './invocation.js';
 import {
   ErrorType,
   getSpanKind,
@@ -100,6 +100,8 @@ const getTestLimitOverridesHeader = (): string =>
   process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
 
 export interface APIConfig {
+  /** Experimental direct invocation transport; absent by default. */
+  invoke?: VercelInvokeConfig;
   token?: string;
   headers?: RequestInit['headers'];
   /**
@@ -122,6 +124,16 @@ export interface APIConfig {
    * A custom dispatcher disables that SDK append retry loop.
    */
   dispatcher?: unknown;
+  /** @internal An owner-scoped writer must not silently lose its event channel. */
+  requireWsEvents?: boolean;
+  /** @internal Signal transmission without waiting for the durable response. */
+  onEventSent?: () => void;
+  /** @internal A single-writer prefix must fail rather than retry ambiguously. */
+  failStopEventWrites?: boolean;
+  /** @internal An immediately awaited write cannot wait for the batching timer. */
+  flushEvent?: boolean;
+  /** @internal Eventsync: refuse to send on any connection but this one. */
+  wsGeneration?: number;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;

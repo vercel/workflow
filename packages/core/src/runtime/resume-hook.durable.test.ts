@@ -221,7 +221,13 @@ describe('resumeHook durable resume', () => {
         token: hook.token,
         payload: PAYLOAD_BYTES,
       },
-      { idempotencyKey: expect.any(String) }
+      {
+        idempotencyKey: expect.any(String),
+        target: {
+          deploymentId: currentContext.deploymentId,
+          workflowName: currentContext.workflowName,
+        },
+      }
     );
     expect(createEvent).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();

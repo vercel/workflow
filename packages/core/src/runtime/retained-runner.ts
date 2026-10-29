@@ -1,0 +1,3116 @@
+import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
+import { createHash, randomUUID } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
+import {
+  EntityConflictError,
+  PreconditionFailedError,
+  RUN_ERROR_CODES,
+  WorkflowRunNotFoundError,
+  WorkflowRuntimeError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import { globalSingleton, withResolvers } from '@workflow/utils';
+import {
+  type CreateEventParams,
+  type CreateEventRequest,
+  type Event,
+  type EventResult,
+  type EventWriteSession,
+  getEventDataPayloadField,
+  HealthCheckPayloadSchema,
+  isTerminalWorkflowRunStatus,
+  type Queue,
+  type QueuePrefix,
+  type RunCreatedEventRequest,
+  type RunInput,
+  RunInputSchema,
+  requireEventSlot,
+  SPEC_VERSION_CURRENT,
+  type Step,
+  WorkflowInvokePayloadSchema,
+  type WorkflowRun,
+  type World,
+} from '@workflow/world';
+import { getStepFunction } from '../private.js';
+import { ReplayPayloadCache } from '../replay-payload-cache.js';
+import type { PayloadKey } from '../serialization/encryption.js';
+import { dehydrateRunError, dehydrateStepError } from '../serialization.js';
+import { serializeTraceCarrier } from '../telemetry.js';
+import {
+  replayWorkflow,
+  resumeWorkflow,
+  type WorkflowSession,
+} from '../workflow.js';
+import { observeWorkflowPass } from './execution-observation.js';
+import { resolveRunEncryptionKey } from './helpers.js';
+import { HookInvocationSchema, withRunInputs } from './invocations.js';
+import {
+  executeOwnedStep,
+  isOwnedStepMessage,
+  isStepOutcome,
+  OwnedStepResultSchema,
+  OwnedStepStatusSchema,
+  stepOutcomeDigest,
+} from './owned-step.js';
+import { isRetryableOwnerDelivery } from './owner-delivery.js';
+import { ownerLog, trackOwner } from './owner-diagnostics.js';
+import { reduceStep, runFromCreation } from './owner-state.js';
+import { watchOwnerTermination } from './owner-termination.js';
+import { isSingleOwnerRun } from './single-owner.js';
+import { type AdmittedStart, StepDispatcher } from './step-dispatcher.js';
+import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
+import { handleSuspension } from './suspension-handler.js';
+import { useQuickJSVm } from './vm-mode.js';
+import { withScopedWorld } from './world.js';
+
+type Handler = Parameters<Queue['createQueueHandler']>[1];
+type LegacyHandler = Parameters<ReturnType<typeof withRunInputs>>[0];
+type Metadata = Parameters<Handler>[1];
+const observations = channel('workflow.runner');
+
+class RunnerFault extends WorkflowRuntimeError {
+  readonly code = 'RETAINED_RUNNER_FAILED';
+  terminalPersisted?: boolean;
+  /** Another writer committed this run's next position. This owner stops,
+   * but the run is not failed: a later input re-initializes from the log. */
+  superseded = false;
+  constructor(
+    readonly kind: 'persistence' | 'conflict' | 'execution',
+    cause: unknown,
+    readonly conflictReason?: string
+  ) {
+    super(
+      `Retained runner ${kind} failure${conflictReason ? ` (${conflictReason})` : ''}`,
+      { cause }
+    );
+  }
+}
+class InputRejected extends WorkflowWorldError {}
+/** The monitor wake could not be enqueued. Retryable: the input is not
+ * acknowledged (and an activation input is not committed), so its sender
+ * redelivers it. Never a run failure. */
+class MonitorUnavailable extends InputRejected {}
+/** Near the deadline: retryable, the next delivery reaches a fresh owner. */
+class HandoffPending extends InputRejected {}
+
+const DISPATCH_STAGGER_MS = Number(
+  process.env.WORKFLOW_DISPATCH_STAGGER_MS ?? 0
+);
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) =>
+    DISPATCH_STAGGER_MS > 0
+      ? setTimeout(resolve, DISPATCH_STAGGER_MS)
+      : setImmediate(resolve)
+  );
+}
+
+/** An event's data as the owner compares it with its acknowledgement. */
+function comparableEventData(event: {
+  eventType: string;
+  eventData?: unknown;
+}) {
+  return event.eventData;
+}
+
+/** The top-level keys two event data objects disagree on (diagnostics). */
+function differingKeys(a: unknown, b: unknown): string {
+  const left = (a ?? {}) as Record<string, unknown>;
+  const right = (b ?? {}) as Record<string, unknown>;
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])]
+    .filter((key) => !equivalent(left[key], right[key]))
+    .slice(0, 8)
+    .join(',');
+}
+
+/** Persistence proved that another writer advanced the log past this owner. */
+function isOwnerSuperseded(cause: unknown): boolean {
+  for (let error = cause, depth = 0; error && depth < 5; depth++) {
+    const code = (error as { code?: unknown }).code;
+    if (
+      typeof code === 'string' &&
+      ['slot-conflict', 'OWNER_SUPERSEDED'].includes(code)
+    )
+      return true;
+    error = (error as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+function supersededError(cause: unknown) {
+  // Retryable for callers: the input was not processed by this owner, and the
+  // next delivery reaches an owner initialized from the committed log.
+  return new WorkflowWorldError('Run owner was superseded', {
+    status: 503,
+    code: 'OWNER_SUPERSEDED',
+    cause,
+  });
+}
+
+interface MailboxBatch {
+  /** Only adjacent inputs with the same policy may share a durability barrier. */
+  key: string;
+  /** Validate and stage, without advancing the workflow or acknowledging input. */
+  apply(): Promise<unknown>;
+  /** Run once after the entire prefix is durable. */
+  finish(): Promise<void>;
+}
+const MAX_MAILBOX_BATCH = 100;
+/** Steps of one run that may be running at once (local and dispatched). A
+ * sliding window: each committed outcome frees a slot for the next pending
+ * step on the owner's next pass.
+ *
+ * Kept low because every running step's result arrives at the owner as its
+ * own request, and they tend to arrive together. On Vercel, about 200
+ * requests arriving at once for one affinity ID get its instance retired by
+ * the platform's admission (seconds into a fan-out, with no error in the
+ * function), and the run stalls until that instance stops; about 100 at once
+ * is absorbed. Rejecting early in the owner cannot help, since admission
+ * happens before a request reaches it. Raise this only with fan-in that
+ * batches results before they reach the owner. */
+const MAX_RUNNING_STEPS = 64;
+
+/** Heartbeats name the running steps once this few remain. */
+const RUNNING_DETAIL_LIMIT = 3;
+/** Remote dispatches remembered for diagnostics, per owner. */
+const MAX_DISPATCH_RECORDS = 4096;
+
+/** Waits before re-sending an uncertain step enqueue (same idempotency key). */
+const DISPATCH_RETRY_MS = [250, 1000, 2000];
+
+/** Loggable fields of a dispatch or delivery error. */
+function describeError(error: unknown): Record<string, unknown> {
+  const e = error as {
+    name?: unknown;
+    message?: unknown;
+    status?: unknown;
+    code?: unknown;
+  };
+  return {
+    errorName: typeof e?.name === 'string' ? e.name : undefined,
+    errorMessage:
+      typeof e?.message === 'string' ? e.message.slice(0, 300) : String(error),
+    httpStatus: e?.status,
+    errorCode: e?.code,
+  };
+}
+/** Inputs an owner queues before refusing more with a fast 429 (the caller
+ * keeps its input and retries). Each queued input holds its request open
+ * until committed, so this bounds the owner's concurrent inbound requests. */
+const MAILBOX_CAPACITY = 64;
+/** A remote step runs under its queue delivery's lease: a lost worker is
+ * redelivered and reported (`step_status` with `lost`). This bound only
+ * recovers an attempt whose delivery itself never surfaces again. */
+const ABANDONED_ATTEMPT_MS = 15 * 60_000;
+/** Backstop wake for a step waiting to start (e.g. behind MAX_RUNNING_STEPS). */
+const PENDING_RECHECK_MS = 60_000;
+/** Phases logged on every owner start (see `owner-diagnostics.ts`). */
+const STARTUP_PHASES = new Set([
+  'initialize',
+  'create_run',
+  'catch_up',
+  'apply_history',
+  'load_run',
+  'load_events',
+  'load_steps',
+  'replay_prewarm',
+  'workflow_replay',
+]);
+/** Any other phase is logged only when it takes at least this long. */
+const SLOW_PHASE_MS = 1000;
+/** Slow occurrences of one phase logged individually per owner; later ones
+ * are only counted in the heartbeat (`slowPhases`). An owner's lines share
+ * the platform's per-request log budget (256 lines) with its heartbeats, so a
+ * fan-out with one slow line per step would silence the owner. */
+const SLOW_PHASE_LINES = 5;
+/** Durable step starts committed (then dispatched) per prefix. */
+const START_PREFIX_SIZE = 50;
+// Extend deliberately: shared-resource operations and failure/retry decisions
+// must retain their own turn boundaries.
+const BATCHABLE_INPUT_EVENTS: readonly string[] = ['step_completed'];
+
+interface MailboxItem {
+  id: string;
+  run(operation?: () => Promise<unknown>): Promise<unknown>;
+  batch?: MailboxBatch;
+  resolve(value: unknown): void;
+  reject(error: unknown): void;
+}
+
+function equivalent(actual: unknown, expected: unknown): boolean {
+  if (expected === undefined) return true;
+  if (actual === expected) return true;
+  if (expected instanceof Uint8Array)
+    return (
+      actual instanceof Uint8Array &&
+      Buffer.from(actual).equals(Buffer.from(expected))
+    );
+  if (expected instanceof Date)
+    return new Date(actual as string).getTime() === expected.getTime();
+  if (
+    expected &&
+    typeof expected === 'object' &&
+    actual &&
+    typeof actual === 'object'
+  ) {
+    return Object.entries(expected).every(
+      ([key, value]) =>
+        value === undefined ||
+        equivalent((actual as Record<string, unknown>)[key], value)
+    );
+  }
+  return false;
+}
+
+function isLazyPayload(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (value !== null &&
+      typeof value === 'object' &&
+      '_type' in value &&
+      value._type === 'RemoteRef' &&
+      '_ref' in value &&
+      typeof value._ref === 'string' &&
+      value._ref.length > 0)
+  );
+}
+
+/** A write acknowledgement may carry a reference rather than echoing payload bytes. */
+function materializeEventPayload(
+  actual: Event,
+  known: { eventType: string; eventData?: unknown }
+): Event {
+  const field = getEventDataPayloadField(known.eventType);
+  if (!field || !known.eventData || typeof known.eventData !== 'object')
+    return actual;
+  const payload = (known.eventData as Record<string, unknown>)[field];
+  if (
+    !(payload instanceof Uint8Array) ||
+    !isLazyPayload(
+      (actual.eventData as Record<string, unknown> | undefined)?.[field]
+    )
+  )
+    return actual;
+  return {
+    ...actual,
+    eventData: { ...actual.eventData, [field]: payload.slice() },
+  } as Event;
+}
+
+function materializeEntityPayloads<T extends object>(
+  entity: T,
+  known: Record<string, unknown>
+): T {
+  const materialized = { ...entity } as Record<string, unknown>;
+  for (const field of ['input', 'output', 'error', 'metadata']) {
+    const payload = known[field];
+    if (payload instanceof Uint8Array && isLazyPayload(materialized[field])) {
+      materialized[field] = payload.slice();
+      delete materialized[`${field}Ref`];
+    }
+  }
+  return materialized as T;
+}
+
+/** Sleeps that end within this many ms wake the owner from an in-process timer
+ * (WORKFLOW_RETAINED_LOCAL_TIMER_MS; 0 disables). */
+const DEFAULT_LOCAL_TIMER_MAX_MS = 30_000;
+const LOCAL_TIMER_DEADLINE_MARGIN_MS = 5_000;
+/** VQS caps a message's delay; longer waits chain wakes with the remainder. */
+const MAX_WAKE_DELAY_SECONDS = 82_800;
+/** While the owner has in-process work, a durable wake is kept armed this far
+ * ahead so a crashed owner is replaced (WORKFLOW_RETAINED_MONITOR_MS). */
+const DEFAULT_MONITOR_MS = 20_000;
+/** Before the function deadline the owner stops taking work and hands the
+ * run to a fresh owner invocation through an immediate queue wake. */
+const HANDOFF_MARGIN_MS = 10_000;
+
+function monitorMs(): number {
+  const value = Number(process.env.WORKFLOW_RETAINED_MONITOR_MS);
+  return Number.isFinite(value) && value >= 1000 ? value : DEFAULT_MONITOR_MS;
+}
+
+function localTimerMaxMs(): number {
+  const raw = process.env.WORKFLOW_RETAINED_LOCAL_TIMER_MS;
+  if (raw === undefined || raw === '') return DEFAULT_LOCAL_TIMER_MAX_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0
+    ? value
+    : DEFAULT_LOCAL_TIMER_MAX_MS;
+}
+
+/** One owner, one mailbox and one committed projection. Transport supplies exclusion. */
+export class RetainedRunner {
+  readonly id = randomUUID();
+  readonly facade: World;
+  readonly events: Event[] = [];
+  private runState?: WorkflowRun;
+  private steps = new Map<string, Step>();
+  private hooks = new Map<string, { token: string; active: boolean }>();
+  private processed = new Map<
+    string,
+    { hookId: string; token: string; digest: string }
+  >();
+  private session?: WorkflowSession;
+  /** Events the retained session has consumed; resuming requires more. */
+  private sessionEvents = 0;
+  private key?: PayloadKey;
+  private payloadCache?: ReplayPayloadCache;
+  private initialized = false;
+  /** The run's creation input, when this owner may have to create the run:
+   * an invoke-first start, or a delivery of that start's backup wake. */
+  private startInput?: RunInput;
+  /** An invoke-first start: create the run without waiting for catch-up. */
+  private freshStart = false;
+  /** Invoke-first start that waits for `run_created` before any step body. */
+  private durableCreate = false;
+  /** A durable creation's start: acknowledged once the run exists and its wake
+   * is armed, while the first advance continues behind it. */
+  private startAck?: ReturnType<typeof withResolvers<unknown>>;
+  /** A durable creation's barrier while it is in flight: no step body runs
+   * before the run exists. */
+  private creationDurable?: Promise<unknown>;
+  private startArm?: Promise<unknown>;
+  private eventWriter?: EventWriteSession;
+  private failureCommitted = false;
+  private loopIteration = 0;
+  private pending: MailboxItem[] = [];
+  private signal?: () => void;
+  private fault?: RunnerFault;
+  private failurePromise?: Promise<void>;
+  private commitTail: Promise<unknown> = Promise.resolve();
+  private inTurn = new AsyncLocalStorage<boolean>();
+  private workers = new Map<string, Promise<void>>();
+  private localWorkers = new Set<string>();
+  private timerWakeups = new Set<string>();
+  private localTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private lifetime?: Promise<void>;
+  /** The owner's writer has delivered its one catch-up and it is applied. */
+  private historyLoaded = false;
+  /** `step_created` events applied so far, and a waiter for the next one. */
+  private stepsCreated = 0;
+  private stepCreatedSignal?: () => void;
+  /** `step_created` commits queued and not yet applied, and their waiters. */
+  private creationsInFlight = 0;
+  private readonly creationWaiters: Array<() => void> = [];
+  /** An admission round is committing starts; creates wait for it. */
+  private admitting = false;
+  private readonly dispatcher = new StepDispatcher({
+    localSlotsFree: () => this.localStepSlots - this.localWorkers.size,
+    startLocal: (step, claimed) => this.startStep(step, claimed),
+    flush: () => this.flushWriter(),
+    durableStart: ({ step, claimed }) => {
+      // Flush may replace tentative entities with the native materialization.
+      const canonical = claimed ? this.steps.get(step.stepId) : undefined;
+      if (claimed && !canonical?.startedAt)
+        throw new RunnerFault(
+          'persistence',
+          new Error('Missing committed step start')
+        );
+      const admitted = canonical?.startedAt
+        ? { ...canonical, startedAt: canonical.startedAt }
+        : claimed;
+      if (!admitted)
+        throw new RunnerFault(
+          'persistence',
+          new Error('Missing queued step admission')
+        );
+      return admitted;
+    },
+    dispatchRemote: (steps, attemptTimeoutMs) =>
+      this.dispatchSteps(steps, attemptTimeoutMs),
+  });
+  private closing = false;
+  private deadline = Infinity;
+  private currentTurnId?: string;
+  private stepStarts = new Map<string, { event: Event; attempt: number }>();
+  private stepOutcomes = new Map<
+    string,
+    { event: Event; digest: string; attempt: number }
+  >();
+  private recoveryWakeAt = 0;
+  /** In-memory dedup of the monitor wake: one pending message per owner. */
+  private monitorDueAt = 0;
+  private monitorArm?: Promise<unknown>;
+  /** The current activation's arm; its input's first commit waits for it. */
+  private activationArm?: Promise<unknown>;
+  /** waitId -> the time its latest enqueued durable wake is due. */
+  private waitWakes = new Map<string, number>();
+  /** Executions whose remote delivery failed without evidence the body ran:
+   * supersede them at this time instead of waiting for the attempt timeout. */
+  private undelivered = new Map<string, number>();
+  /** Each remote step attempt's accepted enqueue, by execution ID: what a
+   * stalled attempt's queue message was (diagnostics only, bounded). */
+  private dispatched = new Map<
+    string,
+    { messageId: string | null; dispatchedAt: number; tries: number }
+  >();
+
+  /** Step placement for every single-owner run: up to three bodies
+   * (`localStepSlots`) run in this owner, the rest are launched through the
+   * queue (`executionMode: 'queued'`) so a lost worker is redelivered, and
+   * every result returns through invoke. Implied by the single-owner marker;
+   * there is no option. */
+  private get queuedSteps() {
+    return { mode: 'hybrid' as const, attemptTimeoutMs: this.attemptTimeoutMs };
+  }
+
+  private get run(): WorkflowRun {
+    if (!this.runState)
+      throw new WorkflowRuntimeError('Runner has no loaded snapshot');
+    return this.runState;
+  }
+
+  private get replayCache(): ReplayPayloadCache {
+    if (!this.payloadCache)
+      throw new WorkflowRuntimeError('Runner has no payload cache');
+    return this.payloadCache;
+  }
+
+  constructor(
+    private readonly backend: World,
+    readonly runId: string,
+    private readonly prefix: QueuePrefix,
+    private readonly workflowCode: string,
+    private readonly metadata: Metadata,
+    private readonly retire: () => void,
+    private readonly idleMs = 60_000,
+    /** How long a remote attempt may stay unresolved before recovery
+     * supersedes it; see ABANDONED_ATTEMPT_MS. */
+    private readonly attemptTimeoutMs = ABANDONED_ATTEMPT_MS,
+    /** Step bodies this owner runs itself; the rest are dispatched. */
+    private readonly localStepSlots = 3,
+    /** Inputs queued before refusing more; see MAILBOX_CAPACITY. */
+    private readonly mailboxCapacity = MAILBOX_CAPACITY,
+    /** Steps running at once; see MAX_RUNNING_STEPS. */
+    private readonly maxRunningSteps = MAX_RUNNING_STEPS
+  ) {
+    this.facade = {
+      ...backend,
+      runs: {
+        ...backend.runs,
+        get: (async (id: string, options?: unknown) =>
+          id === runId && this.runState
+            ? this.runState
+            : backend.runs.get(id, options as never)) as World['runs']['get'],
+      },
+      steps: {
+        ...backend.steps,
+        get: (async (id: string, stepId: string, options?: unknown) => {
+          if (id !== runId)
+            return backend.steps.get(id, stepId, options as never);
+          const step = this.steps.get(stepId);
+          if (!step)
+            throw new WorkflowRuntimeError(
+              'Step is absent from the owner snapshot'
+            );
+          return step;
+        }) as World['steps']['get'],
+      },
+      events: {
+        ...backend.events,
+        create: ((
+          id: string | null,
+          event: CreateEventRequest | RunCreatedEventRequest,
+          options?: CreateEventParams
+        ) => {
+          if (event.eventType === 'run_created')
+            return backend.events.create(id, event, options);
+          if (id === null)
+            throw new WorkflowRuntimeError(
+              'Only run creation accepts a null run ID'
+            );
+          if (id !== runId) {
+            return backend.events.create(id, event, options);
+          }
+          if (this.inTurn.getStore()) {
+            // A committed wait implies its durable wake is already enqueued.
+            if (event.eventType === 'wait_created')
+              return this.armWaitWake(
+                event.correlationId,
+                new Date(event.eventData.resumeAt)
+              ).then(() => this.commit(event, options));
+            // A suspension queues its creates a prefix at a time, so the
+            // admission rounds' step_started commits are not queued behind
+            // the whole fan-out.
+            if (event.eventType === 'step_created')
+              return this.creationGate(() => this.commit(event, options));
+            return this.commit(event, options);
+          }
+          // The owner's own background work (a local step body) writes as
+          // internal work; anything else is an input like any other.
+          const internal = this.inTurn.getStore() === false;
+          return this.enqueue(
+            `event:${event.eventType}`,
+            async () => {
+              if (
+                this.runState &&
+                isTerminalWorkflowRunStatus(this.runState.status)
+              )
+                throw new InputRejected('Workflow is terminal', {
+                  status: 410,
+                });
+              const result = await this.commit(event, options);
+              if (
+                event.eventType === 'step_completed' ||
+                event.eventType === 'step_failed'
+              ) {
+                // The outcome is committed; past the handoff point the next
+                // owner advances from it.
+                try {
+                  await this.advance();
+                } catch (error) {
+                  if (!(error instanceof HandoffPending)) throw error;
+                }
+              }
+              return result;
+            },
+            undefined,
+            { internal }
+          );
+        }) as World['events']['create'],
+        // Let suspension handling use its ordinary single-event path. It must
+        // not classify a partially accepted batch as a concurrency recovery.
+        createBatch: undefined,
+        createWriteSession: undefined,
+        list: async (params) =>
+          params.runId === runId
+            ? { data: [...this.events], hasMore: false, cursor: null }
+            : backend.events.list(params),
+        listByCorrelationId: async (params) =>
+          params.runId === runId
+            ? {
+                data: this.events.filter(
+                  (event) => event.correlationId === params.correlationId
+                ),
+                hasMore: false,
+                cursor: null,
+              }
+            : backend.events.listByCorrelationId(params),
+      },
+    };
+  }
+
+  private observe(
+    phase: string,
+    event: 'begin' | 'end',
+    spanId: string,
+    details: Record<string, unknown> = {}
+  ) {
+    if (observations.hasSubscribers)
+      observations.publish({
+        version: 1,
+        runId: this.runId,
+        ownerId: this.id,
+        phase,
+        event,
+        spanId,
+        parentSpanId: phase === 'turn' ? undefined : this.currentTurnId,
+        at: Date.now(),
+        ...details,
+      });
+  }
+
+  /**
+   * Queue an operation on the owner's serialized loop. The mailbox bound
+   * (`mailboxCapacity`) applies to inputs from outside the owner, whose
+   * callers retry a 429. `internal` work is the owner's own (its local step
+   * bodies' writes, their error and recovery handling): nothing retries it, so
+   * it is never refused for capacity and does not count against it.
+   */
+  enqueue(
+    id: string,
+    operation: () => Promise<unknown>,
+    batch?: MailboxBatch,
+    options?: { internal?: boolean }
+  ): Promise<unknown> {
+    if (this.fault)
+      return Promise.reject(
+        this.fault.superseded ? supersededError(this.fault) : this.fault
+      );
+    if (this.closing)
+      return Promise.reject(
+        // Retryable: the next delivery reaches a fresh owner.
+        new WorkflowWorldError('Runner is retiring', { status: 503 })
+      );
+    // Counts every accepted, unanswered input: queued, running, or taken
+    // into a batch. Each one holds its caller's request open.
+    const internal = options?.internal === true;
+    if (!internal && this.unanswered >= this.mailboxCapacity)
+      return Promise.reject(
+        new WorkflowWorldError('Runner mailbox is full', { status: 429 })
+      );
+    const completion = withResolvers<unknown>();
+    if (!internal) {
+      this.unanswered++;
+      const settle = () => {
+        this.unanswered--;
+      };
+      completion.promise.then(settle, settle);
+    }
+    this.pending.push({
+      id,
+      run: AsyncResource.bind((batchedOperation?: () => Promise<unknown>) =>
+        this.runOperation(id, batchedOperation ?? operation)
+      ),
+      batch: batch && {
+        ...batch,
+        apply: AsyncResource.bind(() =>
+          withScopedWorld(this.facade, () => this.inTurn.run(true, batch.apply))
+        ),
+      },
+      resolve: completion.resolve,
+      reject: completion.reject,
+    });
+    this.signal?.();
+    this.lifetime ??= this.runOwnerLoop();
+    return completion.promise;
+  }
+
+  /** Keep the instance alive for this runner's lifetime. Registered once per
+   * lifetime: work registered with waitUntil keeps its request in flight, so
+   * registering it on every input would hold every request the owner ever
+   * accepted open until the runner retires, exhausting the instance's
+   * request slots while the owner sits idle. */
+  async retain() {
+    const lifetime = this.lifetime;
+    if (!lifetime || this.retainedLifetime === lifetime) return;
+    this.retainedLifetime = lifetime;
+    const { waitUntil } = await import('@vercel/functions');
+    waitUntil(lifetime);
+  }
+  private retainedLifetime?: Promise<void>;
+  /** Accepted inputs not yet answered; bounded by mailboxCapacity. */
+  private unanswered = 0;
+
+  submit(message: unknown, metadata: Metadata) {
+    const parsed = WorkflowInvokePayloadSchema.parse(message);
+    // Invoke-first start (`run_start` version 2) carries the run's creation
+    // input; so does the start's backup wake (`runInput`), which creates the
+    // run only if it still does not exist.
+    const start =
+      parsed.invoke &&
+      parsed.input &&
+      typeof parsed.input === 'object' &&
+      'type' in parsed.input &&
+      parsed.input.type === 'run_start' &&
+      (parsed.input as { version?: unknown }).version === 2
+        ? RunInputSchema.safeParse(
+            (parsed.input as { runInput?: unknown }).runInput
+          )
+        : undefined;
+    if (start && !start.success)
+      return Promise.reject(
+        new InputRejected('Invalid start input', { status: 400 })
+      );
+    if (!this.initialized) {
+      if (start?.success) {
+        this.startInput ??= start.data;
+        this.freshStart = true;
+        this.durableCreate =
+          (parsed.input as { durableCreate?: unknown }).durableCreate === true;
+        if (this.durableCreate) this.startAck ??= withResolvers<unknown>();
+      } else if (!parsed.invoke && parsed.runInput)
+        this.startInput ??= parsed.runInput;
+    }
+    // Activation inputs (start, hook, step result) arm the monitor before they
+    // are acknowledged; it is overlapped with the input's processing.
+    const activates =
+      parsed.invoke &&
+      !(
+        parsed.input &&
+        typeof parsed.input === 'object' &&
+        'type' in parsed.input &&
+        parsed.input.type === 'run_cancel'
+      );
+    const operation = async (deferAdvance = false) => {
+      const armed = activates ? this.ensureMonitor() : undefined;
+      armed?.catch(() => {});
+      if (this.startAck) this.startArm = armed;
+      // A fresh start runs ahead of its wake: the wake is the run's backup and
+      // is awaited before the start is acknowledged, not before its writes.
+      this.activationArm =
+        this.freshStart && !this.initialized ? undefined : armed;
+      try {
+        const result = await handle(deferAdvance);
+        await armed;
+        // A delivered input (including a queue wake, whose message is only
+        // acknowledged after this) leaves a pending monitor behind whenever
+        // in-process work remains.
+        if (this.localWorkers.size > 0) await this.ensureMonitor();
+        return result;
+      } finally {
+        if (this.activationArm === armed) this.activationArm = undefined;
+      }
+    };
+    const handle = async (deferAdvance = false) => {
+      await this.initialize();
+      if (`${this.prefix}${this.run.workflowName}` !== metadata.queueName)
+        throw new InputRejected('Invocation target mismatch', { status: 409 });
+      if (parsed.invoke) {
+        if (
+          parsed.input &&
+          typeof parsed.input === 'object' &&
+          'type' in parsed.input &&
+          (parsed.input.type === 'step_result' ||
+            parsed.input.type === 'step_status')
+        ) {
+          return this.receiveStepInput(parsed.input, deferAdvance);
+        }
+        if (
+          parsed.input &&
+          typeof parsed.input === 'object' &&
+          'type' in parsed.input &&
+          parsed.input.type === 'run_start'
+        ) {
+          // Start delivered to this owner, which created the run during
+          // initialization. A repeated start only re-advances.
+          const version = (parsed.input as { version?: unknown }).version;
+          if (version !== 2)
+            throw new InputRejected('Invalid start input', { status: 400 });
+          // A retained session means the run already advanced to a
+          // suspension; re-advancing without new events is not a valid resume.
+          if (!this.session && !isTerminalWorkflowRunStatus(this.run.status))
+            await this.advance();
+          return { status: 'accepted' };
+        }
+        if (
+          parsed.input &&
+          typeof parsed.input === 'object' &&
+          'type' in parsed.input &&
+          parsed.input.type === 'run_cancel'
+        ) {
+          const cancel = parsed.input as {
+            version?: unknown;
+            cancelReason?: unknown;
+          };
+          if (
+            cancel.version !== 1 ||
+            (cancel.cancelReason !== undefined &&
+              (typeof cancel.cancelReason !== 'string' ||
+                cancel.cancelReason.length > 512))
+          )
+            throw new InputRejected('Invalid cancellation input', {
+              status: 400,
+            });
+          if (!isTerminalWorkflowRunStatus(this.run.status))
+            await this.commit({
+              eventType: 'run_cancelled',
+              specVersion: SPEC_VERSION_CURRENT,
+              ...(typeof cancel.cancelReason === 'string'
+                ? { eventData: { cancelReason: cancel.cancelReason } }
+                : {}),
+            });
+          return;
+        }
+        const input = HookInvocationSchema.safeParse(parsed.input);
+        if (!input.success || !parsed.requestId)
+          throw new InputRejected('Invalid hook input', { status: 400 });
+        if (this.run.status === 'failed' || this.run.status === 'cancelled')
+          throw new InputRejected('Workflow is terminal', { status: 410 });
+        if (!this.session && !isTerminalWorkflowRunStatus(this.run.status))
+          await this.advance();
+        const digest = createHash('sha256')
+          .update(input.data.payload)
+          .digest('hex');
+        const prior = this.processed.get(parsed.requestId);
+        if (prior) {
+          if (
+            prior.hookId !== input.data.hookId ||
+            prior.token !== input.data.token ||
+            prior.digest !== digest
+          )
+            throw new InputRejected(
+              'Input identity reused with different contents',
+              { status: 409 }
+            );
+          return { status: 'accepted' };
+        }
+        const hook = this.hooks.get(input.data.hookId);
+        if (
+          !hook?.active ||
+          hook.token !== input.data.token ||
+          isTerminalWorkflowRunStatus(this.run.status)
+        )
+          throw new InputRejected('Hook not found', { status: 404 });
+        await this.commit(
+          {
+            eventType: 'hook_received',
+            correlationId: input.data.hookId,
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { token: input.data.token, payload: input.data.payload },
+          },
+          { resumeId: parsed.requestId, resumePayloadDigest: digest }
+        );
+        await this.advance();
+        return { status: 'accepted' };
+      }
+      if (!isTerminalWorkflowRunStatus(this.run.status)) await this.advance();
+    };
+    const outcome = parsed.invoke
+      ? OwnedStepResultSchema.safeParse(parsed.input)
+      : undefined;
+    const batch =
+      outcome?.success &&
+      BATCHABLE_INPUT_EVENTS.includes(outcome.data.outcome.eventType)
+        ? {
+            key: 'event-input',
+            apply: () => operation(true),
+            finish: () => this.advance(),
+          }
+        : undefined;
+    const done = this.enqueue(
+      parsed.requestId ?? metadata.messageId,
+      () => operation(),
+      batch
+    );
+    // A durable creation answers its start once the run exists and its wake is
+    // armed; the rest of the first advance runs on behind it.
+    const ack = start?.success ? this.startAck : undefined;
+    return ack ? Promise.race([ack.promise, done]) : done;
+  }
+
+  /** Start-up phases always; anything else only when slow, and only its
+   * first SLOW_PHASE_LINES slow occurrences (the rest are counted). */
+  private logPhase(
+    phase: string,
+    status: string,
+    elapsedMs: number,
+    details: Record<string, unknown>
+  ) {
+    if (!STARTUP_PHASES.has(phase)) {
+      if (elapsedMs < SLOW_PHASE_MS) return;
+      const slow = this.slowPhases.get(phase) ?? { count: 0, maxMs: 0 };
+      slow.count++;
+      slow.maxMs = Math.max(slow.maxMs, Math.round(elapsedMs));
+      this.slowPhases.set(phase, slow);
+      if (slow.count > SLOW_PHASE_LINES) return;
+    }
+    const { parentSpanId: _parent, ...fields } = details;
+    ownerLog('phase', {
+      runId: this.runId,
+      ownerId: this.id,
+      phase,
+      status,
+      elapsedMs: Math.round(elapsedMs),
+      ...fields,
+    });
+  }
+
+  diagnostics() {
+    let running = 0;
+    let pendingSteps = 0;
+    for (const step of this.steps.values()) {
+      if (step.status === 'running') running++;
+      else if (step.status === 'pending') pendingSteps++;
+    }
+    return {
+      runId: this.runId,
+      ownerId: this.id,
+      initialized: this.initialized,
+      closing: this.closing,
+      fault: this.fault?.kind,
+      inputs: this.pending.length,
+      unanswered: this.unanswered,
+      dispatches: this.workers.size,
+      localBodies: this.localWorkers.size,
+      runningSteps: running,
+      pendingSteps,
+      events: this.events.length,
+      heads: this.eventWriter?.heads,
+      deadlineInMs: Number.isFinite(this.deadline)
+        ? this.deadline - Date.now()
+        : null,
+      ...(this.slowPhases.size
+        ? { slowPhases: Object.fromEntries(this.slowPhases) }
+        : {}),
+      // The last few running steps, named, so a stalled tail attempt can be
+      // traced to its queue message.
+      ...(running > 0 && running <= RUNNING_DETAIL_LIMIT
+        ? { runningDetail: this.runningDetail() }
+        : {}),
+    };
+  }
+
+  private runningDetail() {
+    const detail: Record<string, unknown>[] = [];
+    for (const step of this.steps.values()) {
+      if (step.status !== 'running') continue;
+      const start = this.stepStarts.get(step.stepId);
+      const executionId = start?.event.eventId;
+      const dispatch = executionId
+        ? this.dispatched.get(executionId)
+        : undefined;
+      detail.push({
+        stepId: step.stepId,
+        stepName: step.stepName,
+        attempt: start?.attempt,
+        executionId,
+        startedAt: start
+          ? new Date(start.event.createdAt).toISOString()
+          : undefined,
+        placement: this.localWorkers.has(step.stepId)
+          ? 'local'
+          : this.workers.has(step.stepId)
+            ? 'dispatching'
+            : 'remote',
+        ...(dispatch
+          ? {
+              messageId: dispatch.messageId,
+              dispatchedAt: new Date(dispatch.dispatchedAt).toISOString(),
+              dispatchTries: dispatch.tries,
+            }
+          : {}),
+      });
+    }
+    return detail;
+  }
+  private slowPhases = new Map<string, { count: number; maxMs: number }>();
+
+  private async observed<T>(
+    phase: string,
+    operation: () => Promise<T>,
+    details: Record<string, unknown> = {},
+    spanId = randomUUID()
+  ): Promise<T> {
+    const started = performance.now();
+    this.observe(phase, 'begin', spanId, details);
+    try {
+      const result = await operation();
+      const elapsedMs = performance.now() - started;
+      this.observe(phase, 'end', spanId, {
+        ...details,
+        status: 'completed',
+        elapsedMs,
+      });
+      this.logPhase(phase, 'completed', elapsedMs, details);
+      return result;
+    } catch (error) {
+      this.logPhase(phase, 'error', performance.now() - started, {
+        ...details,
+        // Start-up phases are infrastructure: never user step or workflow code.
+        ...(STARTUP_PHASES.has(phase)
+          ? {
+              errorName: error instanceof Error ? error.name : typeof error,
+              errorMessage: String((error as Error)?.message ?? error).slice(
+                0,
+                300
+              ),
+              errorStatus: (error as { status?: unknown })?.status,
+            }
+          : {}),
+      });
+      this.observe(phase, 'end', spanId, {
+        ...details,
+        status: 'error',
+        elapsedMs: performance.now() - started,
+        errorName: error instanceof Error ? error.name : typeof error,
+        // Infrastructure calls only: never user step or workflow errors.
+        ...(phase === 'durable_wake'
+          ? {
+              errorMessage: String((error as Error)?.message ?? error).slice(
+                0,
+                256
+              ),
+            }
+          : {}),
+      });
+      throw error;
+    }
+  }
+
+  private async initialize() {
+    if (this.initialized) return;
+    const spanId = randomUUID();
+    return this.observed(
+      'initialize',
+      () => this.initializeSnapshot(spanId),
+      {},
+      spanId
+    );
+  }
+
+  private async initializeSnapshot(parentSpanId: string) {
+    this.eventWriter ??= this.backend.events.createWriteSession?.(this.runId);
+    if (Boolean(this.eventWriter?.stage) !== Boolean(this.eventWriter?.flush))
+      throw new RunnerFault(
+        'persistence',
+        new Error('Buffered writer requires both stage and flush')
+      );
+    const catchUp = this.eventWriter?.catchUp?.bind(this.eventWriter);
+    if (catchUp && this.historyLoaded) {
+      // A previous attempt loaded the history over this writer and failed
+      // later (a retryable rejection): the writer's catch-up happens once, and
+      // nothing was written since, so only validation runs again.
+      await this.observed('load_run', () => this.validateRun(), {
+        parentSpanId,
+      });
+    } else if (
+      catchUp &&
+      this.freshStart &&
+      this.startInput &&
+      this.eventWriter?.startFresh
+    ) {
+      // Invoke-first start: the log is known to be empty, so create the run
+      // as the session's first event without waiting for the connection. A
+      // run that already exists supersedes this owner (see `startFresh`).
+      this.eventWriter.startFresh();
+      const startInput = this.startInput;
+      await this.observed('create_run', () => this.createRun(startInput), {
+        parentSpanId,
+      });
+      if (this.durableCreate) {
+        // Durable creation: the barrier covers run_created alone; it starts
+        // synchronously so run_started, staged next, is not part of it.
+        // Validation, the first workflow pass and its writes proceed
+        // meanwhile; no step body runs before the run exists.
+        const flushing = this.eventWriter!.flush!();
+        flushing.catch(() => {});
+        const durable = this.observed(
+          'create_run_durable',
+          () => this.flushOnce(flushing),
+          { parentSpanId }
+        );
+        durable.catch(() => {});
+        this.flushChain = durable.catch(() => {});
+        await this.markStarted();
+        // Later writes stream behind the barrier on the ordered single-writer
+        // session; only a step body waits for the run to exist.
+        this.creationDurable = durable;
+        void durable.then(
+          () => {
+            if (this.creationDurable === durable)
+              this.creationDurable = undefined;
+          },
+          () => {}
+        );
+        const ack = this.startAck;
+        if (ack)
+          Promise.all([durable, this.startArm]).then(
+            () => ack.resolve({ status: 'accepted' }),
+            ack.reject
+          );
+      }
+      this.historyLoaded = true;
+      await this.observed('load_run', () => this.validateRun(), {
+        parentSpanId,
+      });
+    } else if (catchUp) {
+      // The owner's transport streams its whole committed history; run, Step
+      // and Hook state is derived from those events alone.
+      const loaded = await this.observed('catch_up', async () => catchUp(), {
+        parentSpanId,
+      });
+      await this.observed(
+        'apply_history',
+        async () => {
+          for (const event of loaded.events) {
+            if (requireEventSlot(event.eventId) !== this.events.length + 1)
+              throw new RunnerFault(
+                'conflict',
+                new Error('Initial event history is not contiguous')
+              );
+            if (!this.runState) this.runState = runFromCreation(event);
+            else this.runState.updatedAt = event.createdAt;
+            this.apply(event);
+            reduceStep(this.steps, event);
+          }
+          // A start's backup wake found no run: its owner died before
+          // creating it, so create it here.
+          if (!this.runState && loaded.head === 0 && this.startInput)
+            await this.createRun(this.startInput);
+          if (!this.runState)
+            throw new InputRejected('Run not found', { status: 404 });
+          if (loaded.expiredAt) this.runState.expiredAt = loaded.expiredAt;
+        },
+        {
+          parentSpanId,
+          eventCount: loaded.events.length,
+          head: loaded.head,
+        }
+      );
+      this.historyLoaded = true;
+      await this.observed('load_run', () => this.validateRun(), {
+        parentSpanId,
+      });
+    } else {
+      const history: Event[] = [];
+      const steps: Step[] = [];
+      const eventReads = { parentSpanId, pageCount: 0, eventCount: 0 };
+      const stepReads = { parentSpanId, pageCount: 0, stepCount: 0 };
+      // Run bootstrap reads in parallel after any session channel is ready.
+      // Each task owns its partial results until all snapshot reads have succeeded.
+      const snapshot = await Promise.allSettled([
+        this.observed(
+          'load_run',
+          async () => {
+            this.runState = await this.backend.runs.get(this.runId);
+            await this.validateRun();
+          },
+          { parentSpanId }
+        ),
+        this.observed(
+          'load_events',
+          async () => {
+            let cursor: string | null = null;
+            do {
+              const page = await this.backend.events.list({
+                runId: this.runId,
+                resolveData: 'all',
+                pagination: {
+                  limit: 100,
+                  sortOrder: 'asc',
+                  ...(cursor ? { cursor } : {}),
+                },
+              });
+              history.push(...page.data);
+              eventReads.pageCount++;
+              eventReads.eventCount = history.length;
+              cursor = page.hasMore ? page.cursor : null;
+            } while (cursor);
+          },
+          eventReads
+        ),
+        this.observed(
+          'load_steps',
+          async () => {
+            let cursor: string | null = null;
+            do {
+              const page: {
+                data: Step[];
+                hasMore: boolean;
+                cursor: string | null;
+              } = await this.backend.steps.list({
+                runId: this.runId,
+                resolveData: 'all',
+                pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
+              });
+              steps.push(...page.data);
+              stepReads.pageCount++;
+              stepReads.stepCount = steps.length;
+              cursor = page.hasMore ? page.cursor : null;
+            } while (cursor);
+          },
+          stepReads
+        ),
+      ]);
+      const failed = snapshot.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      await this.observed(
+        'apply_history',
+        async () => {
+          for (const event of history) {
+            if (requireEventSlot(event.eventId) !== this.events.length + 1)
+              throw new RunnerFault(
+                'conflict',
+                new Error('Initial event history is not contiguous')
+              );
+            this.apply(event);
+          }
+          for (const step of steps) this.steps.set(step.stepId, step);
+        },
+        { parentSpanId, eventCount: history.length, stepCount: steps.length }
+      );
+    }
+    this.initialized = true;
+    await this.markStarted();
+  }
+
+  private async markStarted() {
+    if (!isTerminalWorkflowRunStatus(this.run.status) && !this.run.startedAt)
+      await this.commit({
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+  }
+
+  /** Commit `run_created` as the session's first event and adopt its run. */
+  private async createRun(input: RunInput) {
+    const result = await this.commit({
+      eventType: 'run_created',
+      specVersion: input.specVersion,
+      eventData: {
+        deploymentId: input.deploymentId,
+        workflowName: input.workflowName,
+        input: input.input,
+        ...(input.executionContext
+          ? { executionContext: input.executionContext }
+          : {}),
+        ...(input.encryptionPublicKey
+          ? { encryptionPublicKey: input.encryptionPublicKey }
+          : {}),
+        ...(input.attributes ? { attributes: input.attributes } : {}),
+        ...(input.allowReservedAttributes
+          ? { allowReservedAttributes: true as const }
+          : {}),
+      },
+    } as unknown as CreateEventRequest);
+    if (!result.event)
+      throw new RunnerFault('persistence', new Error('Missing run_created'));
+    this.runState = runFromCreation(result.event);
+  }
+
+  private async validateRun() {
+    if (!this.runState)
+      throw new InputRejected('Run not found', { status: 404 });
+    if (!isSingleOwnerRun(this.runState))
+      throw new InputRejected('Run is not a single-owner run', {
+        status: 409,
+      });
+    if (useQuickJSVm(this.runState!))
+      throw new RunnerFault(
+        'execution',
+        new Error('Retained runner requires the Node VM')
+      );
+    if (this.runState!.expiredAt)
+      throw new InputRejected('Workflow has expired', { status: 410 });
+    if (
+      `${this.prefix}${this.runState!.workflowName}` !== this.metadata.queueName
+    )
+      throw new InputRejected('Invocation target mismatch', {
+        status: 409,
+      });
+    if (
+      this.backend.capabilities?.deploymentAffinity &&
+      process.env.VERCEL_DEPLOYMENT_ID &&
+      this.runState!.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID
+    )
+      throw new InputRejected('Pinned deployment mismatch', {
+        status: 409,
+      });
+    const reported = await this.backend.getRuntimeDeadline?.();
+    this.deadline = reported?.getTime() ?? Infinity;
+    ownerLog('deadline', {
+      runId: this.runId,
+      ownerId: this.id,
+      supported: Boolean(this.backend.getRuntimeDeadline),
+      deadlineAt: reported ? reported.toISOString() : null,
+      remainingMs: reported ? reported.getTime() - Date.now() : null,
+    });
+    this.key = await resolveRunEncryptionKey(this.backend, this.runState!);
+    this.payloadCache = new ReplayPayloadCache(this.key);
+  }
+
+  private apply(event: Event) {
+    this.events.push(event);
+    if (event.eventType === 'step_created') {
+      this.stepsCreated++;
+      this.stepCreatedSignal?.();
+    }
+    if (event.eventType === 'step_started') {
+      this.stepStarts.set(event.correlationId, {
+        event,
+        attempt: (this.stepStarts.get(event.correlationId)?.attempt ?? 0) + 1,
+      });
+    } else if (this.queuedSteps && isStepOutcome(event)) {
+      const start = this.stepStarts.get(event.correlationId!);
+      if (start)
+        this.stepOutcomes.set(start.event.eventId, {
+          event,
+          digest: stepOutcomeDigest(event),
+          attempt: start.attempt,
+        });
+    }
+    if (this.runState) {
+      if (event.eventType === 'run_started')
+        Object.assign(this.runState, {
+          status: 'running',
+          startedAt: this.runState.startedAt ?? event.createdAt,
+        });
+      if (event.eventType === 'run_completed')
+        Object.assign(this.runState, {
+          status: 'completed',
+          completedAt: event.createdAt,
+          output: event.eventData.output,
+        });
+      if (event.eventType === 'run_failed')
+        Object.assign(this.runState, {
+          status: 'failed',
+          completedAt: event.createdAt,
+          error: event.eventData.error,
+        });
+      if (event.eventType === 'run_cancelled')
+        Object.assign(this.runState, {
+          status: 'cancelled',
+          completedAt: event.createdAt,
+        });
+    }
+    if (event.eventType === 'hook_created')
+      this.hooks.set(event.correlationId, {
+        token: event.eventData.token,
+        active: true,
+      });
+    if (event.eventType === 'hook_disposed') {
+      const hook = this.hooks.get(event.correlationId);
+      if (hook) hook.active = false;
+    }
+    if (
+      event.eventType === 'hook_received' &&
+      event.resumeId &&
+      event.eventData.payload instanceof Uint8Array
+    ) {
+      const token =
+        event.eventData.token ?? this.hooks.get(event.correlationId)?.token;
+      if (token)
+        this.processed.set(event.resumeId, {
+          hookId: event.correlationId,
+          token,
+          digest: createHash('sha256')
+            .update(event.eventData.payload)
+            .digest('hex'),
+        });
+    }
+  }
+
+  private validateStepTransition(event: CreateEventRequest) {
+    if (
+      ![
+        'step_created',
+        'step_started',
+        'step_completed',
+        'step_failed',
+        'step_retrying',
+      ].includes(event.eventType)
+    )
+      return;
+    const invalid = (reason: string): never => {
+      this.fault ??= new RunnerFault(
+        'conflict',
+        new Error('Invalid owner step transition'),
+        reason
+      );
+      throw this.fault;
+    };
+    if (!event.correlationId) invalid('missing_step_id');
+    const step = this.steps.get(event.correlationId!);
+    if (event.eventType === 'step_created') {
+      if (step) invalid('duplicate_step');
+      return;
+    }
+    if (!step || ['completed', 'failed', 'cancelled'].includes(step.status))
+      invalid('terminal_or_missing_step');
+    if (event.eventType === 'step_started') {
+      if (step!.retryAfter && +step!.retryAfter > Date.now())
+        invalid('retry_not_due');
+      const name = event.eventData?.stepName;
+      if (typeof name === 'string' && name !== step!.stepName)
+        invalid('step_name');
+    }
+  }
+
+  private commit(
+    event: CreateEventRequest,
+    options?: CreateEventParams
+  ): Promise<EventResult> {
+    const work = this.commitTail.then(async () => {
+      if (this.fault) throw this.fault;
+      // An activation input commits only once its monitor wake is durable, so
+      // a crash can never strand a committed input without a pending wake.
+      const arm = this.activationArm;
+      if (arm) {
+        this.activationArm = undefined;
+        await arm;
+      }
+      this.validateStepTransition(event);
+      const field = getEventDataPayloadField(event.eventType);
+      const payload = field
+        ? (event.eventData as Record<string, unknown> | undefined)?.[field]
+        : undefined;
+      // Keep the bytes submitted by this turn stable across the asynchronous write.
+      const submitted =
+        field && payload instanceof Uint8Array
+          ? ({
+              ...event,
+              eventData: { ...event.eventData, [field]: payload.slice() },
+            } as CreateEventRequest)
+          : event;
+      const wire =
+        field && payload instanceof Uint8Array
+          ? ({
+              ...submitted,
+              eventData: { ...submitted.eventData, [field]: payload.slice() },
+            } as CreateEventRequest)
+          : submitted;
+      const spanId = randomUUID();
+      const phase = this.eventWriter?.stage ? 'stage' : 'persist';
+      this.observe(phase, 'begin', spanId, { eventType: event.eventType });
+      try {
+        const params: CreateEventParams = {
+          ...options,
+          resolveData: 'none',
+          eventCount: this.events.length,
+          skipPreload: true,
+        };
+        const result = await (this.eventWriter
+          ? (this.eventWriter.stage ?? this.eventWriter.create).call(
+              this.eventWriter,
+              wire,
+              params
+            )
+          : this.backend.events.create(this.runId, wire, params));
+        const conflict = (reason: string): never => {
+          throw new RunnerFault(
+            'conflict',
+            new Error('Persistence returned an unexpected event transition'),
+            reason
+          );
+        };
+        const acknowledged = result.event;
+        if (!acknowledged) return conflict('missing_event');
+        if (acknowledged.runId !== this.runId) conflict('run_id');
+        if (acknowledged.eventType !== event.eventType) conflict('event_type');
+        if (
+          options?.resumeId !== undefined &&
+          acknowledged.resumeId !== options.resumeId
+        )
+          conflict('resume_id');
+        if (!equivalent(acknowledged.correlationId, event.correlationId))
+          conflict('correlation_id');
+        let slot: number;
+        try {
+          slot = requireEventSlot(acknowledged.eventId);
+        } catch {
+          return conflict('invalid_slot');
+        }
+        if (slot !== this.events.length + 1) conflict('event_slot');
+        if (
+          result.events?.some(
+            (reported) =>
+              reported.eventId !== acknowledged.eventId &&
+              !this.events.some(
+                (known) =>
+                  known.eventId === reported.eventId &&
+                  equivalent(materializeEventPayload(reported, known), known)
+              )
+          )
+        )
+          conflict('reported_events');
+        const committed = materializeEventPayload(acknowledged, submitted);
+        if (
+          !equivalent(
+            comparableEventData(committed),
+            comparableEventData(submitted)
+          )
+        ) {
+          throw new RunnerFault(
+            'conflict',
+            new Error('Persistence returned conflicting event data'),
+            'event_data'
+          );
+        }
+        const eventData = (committed.eventData ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const materialized: EventResult = { ...result, event: committed };
+        if (result.run) {
+          const known = { ...this.runState } as Record<string, unknown>;
+          if (committed.eventType === 'run_completed')
+            known.output = eventData.output;
+          if (committed.eventType === 'run_failed')
+            known.error = eventData.error;
+          materialized.run = materializeEntityPayloads(result.run, known);
+        }
+        if (result.step) {
+          const known = { ...this.steps.get(result.step.stepId) } as Record<
+            string,
+            unknown
+          >;
+          if (
+            committed.eventType === 'step_created' ||
+            committed.eventType === 'step_started'
+          ) {
+            if (eventData.input instanceof Uint8Array)
+              known.input = eventData.input;
+          }
+          if (committed.eventType === 'step_completed')
+            known.output = eventData.result;
+          if (
+            committed.eventType === 'step_failed' ||
+            committed.eventType === 'step_retrying'
+          )
+            known.error = eventData.error;
+          materialized.step = materializeEntityPayloads(result.step, known);
+        }
+        if (result.hook && committed.eventType === 'hook_created')
+          materialized.hook = materializeEntityPayloads(result.hook, {
+            metadata: eventData.metadata,
+          });
+        this.apply(committed);
+        if (materialized.run) this.runState = materialized.run;
+        if (materialized.step)
+          this.steps.set(materialized.step.stepId, materialized.step);
+        this.observe(phase, 'end', spanId, {
+          eventType: event.eventType,
+          status: 'completed',
+          payloadSource: committed === result.event ? 'response' : 'submitted',
+        });
+        return materialized;
+      } catch (cause) {
+        this.fault =
+          cause instanceof RunnerFault
+            ? cause
+            : new RunnerFault(
+                EntityConflictError.is(cause) ||
+                  PreconditionFailedError.is(cause)
+                  ? 'conflict'
+                  : 'persistence',
+                cause,
+                isOwnerSuperseded(cause) ? 'owner_superseded' : undefined
+              );
+        if (isOwnerSuperseded(cause)) this.fault.superseded = true;
+        this.observe(phase, 'end', spanId, {
+          eventType: event.eventType,
+          status: 'error',
+          errorCode: this.fault.kind,
+          conflictReason: this.fault.conflictReason,
+        });
+        throw this.fault;
+      }
+    });
+    this.commitTail = work.catch(() => {});
+    return work;
+  }
+
+  private async advance() {
+    if (!this.runState || isTerminalWorkflowRunStatus(this.runState.status))
+      return;
+    await this.expireQueuedSteps();
+    for (;;) {
+      if (this.fault) throw this.fault;
+      // Near the function deadline, or when the instance is stopping: take no
+      // more work. The input is rejected retryably (committed events stay)
+      // and a fresh owner continues.
+      if (this.handoffDue())
+        throw new HandoffPending(
+          this.terminating === undefined
+            ? 'Owner is handing off at its deadline'
+            : 'Owner is handing off: its instance is stopping',
+          { status: 503 }
+        );
+      await this.completeDueWaits();
+      const before = this.events.length;
+      // A retained VM advances only on new events. Wakes that bring none (for
+      // example a step-recovery timer whose steps already finished) keep the
+      // current suspension and go straight to step admission below.
+      if (!this.session || this.events.length > this.sessionEvents) {
+        if (!this.session)
+          await this.observed(
+            'replay_prewarm',
+            () => this.replayCache.prewarm(this.runState!, this.events),
+            { eventCount: this.events.length }
+          );
+        else await this.replayCache.prewarm(this.runState, this.events);
+        const mode = this.session ? 'retained' : 'replay';
+        const passStarted = performance.now();
+        const passEvents = this.events.length;
+        const result = await observeWorkflowPass(
+          {
+            runId: this.runId,
+            loopIteration: ++this.loopIteration,
+            mode,
+            parentSpanId: this.currentTurnId,
+            ownerId: this.id,
+          },
+          async () => {
+            this.sessionEvents = this.events.length;
+            return this.session
+              ? resumeWorkflow(this.session, this.events)
+              : replayWorkflow({
+                  workflowCode: this.workflowCode,
+                  workflowRun: this.run,
+                  events: this.events,
+                  encryptionKey: this.key,
+                  replayPayloadCache: this.replayCache,
+                  worldCapabilities: this.facade.capabilities,
+                });
+          }
+        );
+        this.logPhase(
+          `workflow_${mode}`,
+          result.type,
+          performance.now() - passStarted,
+          mode === 'replay' ? { eventCount: passEvents } : {}
+        );
+        if (result.type === 'replay')
+          throw new RunnerFault(
+            'execution',
+            new Error('Retained VM could not resume')
+          );
+        if (result.type === 'completed') {
+          await this.commit({
+            eventType: 'run_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { output: result.output },
+          });
+          this.session = undefined;
+          return;
+        }
+        this.session = result.session;
+        const handling = handleSuspension({
+          suspension: result.suspension,
+          world: this.facade,
+          run: this.runState,
+          requestId: this.metadata.requestId,
+          deferInlineSteps: false,
+        }).then(async (handled) => {
+          await handled.deferredBatchWork;
+          return handled;
+        });
+        // Start steps as their own step_created commits, while the rest of a
+        // wide suspension is still being persisted.
+        await this.admitWhilePersisting(handling);
+        const handled = await handling;
+        if (this.fault) throw this.fault;
+        if (handled.waitTimeout) {
+          // The durable wake was enqueued before wait_created committed; a
+          // short sleep also gets an in-process timer.
+          const wakeKey = handled.waitTimeout.correlationId;
+          if (!this.timerWakeups.has(wakeKey)) {
+            this.timerWakeups.add(wakeKey);
+            this.armLocalTimer(wakeKey);
+          }
+        }
+      }
+      await this.admitSteps();
+      if (this.events.length === before) return;
+    }
+  }
+
+  /** Admit at most one start prefix of step_created commits at a time, and
+   * none while an admission round is committing starts. */
+  private async creationGate<T>(commit: () => Promise<T>): Promise<T> {
+    while (this.admitting || this.creationsInFlight >= START_PREFIX_SIZE)
+      await new Promise<void>((resolve) => this.creationWaiters.push(resolve));
+    this.creationsInFlight++;
+    try {
+      return await commit();
+    } finally {
+      this.creationsInFlight--;
+      this.creationWaiters.shift()?.();
+    }
+  }
+
+  /**
+   * Admission rounds while a suspension's writes are still in flight: each
+   * time new step_created events have been applied, start what the window
+   * allows. The final round runs once the suspension is fully persisted.
+   */
+  private async admitWhilePersisting(handling: Promise<unknown>) {
+    let settled = false;
+    handling
+      .then(
+        () => {},
+        () => {}
+      )
+      .then(() => {
+        settled = true;
+        this.stepCreatedSignal?.();
+      });
+    let seen = this.stepsCreated;
+    while (!settled && !this.fault) {
+      if (this.stepsCreated === seen)
+        await new Promise<void>((resolve) => {
+          this.stepCreatedSignal = resolve;
+          if (settled || this.stepsCreated !== seen) resolve();
+        });
+      this.stepCreatedSignal = undefined;
+      if (settled || this.fault) return;
+      seen = this.stepsCreated;
+      this.admitting = true;
+      try {
+        await this.admitSteps();
+      } finally {
+        this.admitting = false;
+        // Release every waiting create; the gate re-applies its prefix bound.
+        for (const wake of this.creationWaiters.splice(0)) wake();
+      }
+    }
+  }
+
+  /** Commit `step_started` for pending steps up to the running-step window, in
+   * prefixes, handing each prefix to the dispatcher. */
+  private async admitSteps() {
+    const policy = this.queuedSteps;
+    await this.armStepRecovery();
+    let starts: AdmittedStart[] = [];
+    const launch = () => {
+      const chunk = starts;
+      starts = [];
+      return this.dispatcher.launch(chunk, policy.attemptTimeoutMs);
+    };
+    let available =
+      this.maxRunningSteps -
+      [...this.steps.values()].filter((step) => step.status === 'running')
+        .length;
+    for (const step of this.steps.values()) {
+      if (
+        'retryAfter' in step &&
+        step.retryAfter &&
+        +step.retryAfter > Date.now()
+      )
+        continue;
+      if (
+        (step.status === 'pending' || step.status === 'running') &&
+        !this.workers.has(step.stepId)
+      ) {
+        if (step.status === 'running' || available-- <= 0) continue;
+        const result = await this.commit({
+          eventType: 'step_started',
+          correlationId: step.stepId,
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { stepName: step.stepName },
+        });
+        if (!result.step?.startedAt)
+          throw new RunnerFault(
+            'persistence',
+            new Error('Step start did not return its started state')
+          );
+        starts.push({
+          step,
+          claimed: { ...result.step, startedAt: result.step.startedAt },
+        });
+        if (starts.length >= START_PREFIX_SIZE) await launch();
+      }
+    }
+    await launch();
+  }
+
+  private flushChain: Promise<unknown> = Promise.resolve();
+
+  /** Barriers never overlap: each drains the outbox after the previous one. */
+  private flushWriter(): Promise<void> {
+    const flush = this.flushChain.then(() => this.flushOnce());
+    this.flushChain = flush.catch(() => {});
+    return flush;
+  }
+
+  private async flushOnce(started?: Promise<void | readonly EventResult[]>) {
+    if (!this.eventWriter?.flush) return;
+    const spanId = randomUUID();
+    this.observe('flush', 'begin', spanId, { eventCount: this.events.length });
+    try {
+      const acknowledgements = await (started ?? this.eventWriter.flush());
+      if (acknowledgements) this.confirmStaged(acknowledgements);
+      this.failureCommitted = this.runState?.status === 'failed';
+      this.observe('flush', 'end', spanId, {
+        status: 'completed',
+        eventCount: this.events.length,
+        ...(acknowledgements
+          ? {
+              committedEventCount: acknowledgements.length,
+              committedEventTypes: acknowledgements
+                .map((result) => result.event?.eventType)
+                .join(','),
+            }
+          : {}),
+      });
+    } catch (cause) {
+      this.fault ??=
+        cause instanceof RunnerFault
+          ? cause
+          : new RunnerFault(
+              'persistence',
+              cause,
+              isOwnerSuperseded(cause) ? 'owner_superseded' : undefined
+            );
+      if (isOwnerSuperseded(cause)) this.fault.superseded = true;
+      this.observe('flush', 'end', spanId, {
+        status: 'error',
+        errorCode: 'persistence',
+      });
+      throw this.fault;
+    }
+  }
+
+  /** Confirm private VM progress against native persistence responses before it
+   * can authorize a user step or become an acknowledged input. */
+  private confirmStaged(results: readonly EventResult[]) {
+    const conflict = (reason: string): never => {
+      throw new RunnerFault(
+        'conflict',
+        new Error('Buffered persistence changed a tentative transition'),
+        reason
+      );
+    };
+    for (const result of results) {
+      if (!result.event) conflict('missing_event');
+      const event = result.event!;
+      const slot = requireEventSlot(event.eventId);
+      const tentative = this.events[slot - 1];
+      if (
+        !tentative ||
+        event.runId !== this.runId ||
+        event.eventType !== tentative.eventType ||
+        event.resumeId !== tentative.resumeId ||
+        !equivalent(event.correlationId, tentative.correlationId)
+      )
+        conflict('event_identity');
+      const committed = materializeEventPayload(event, tentative);
+      if (+committed.createdAt !== +tentative.createdAt)
+        conflict('event_clock');
+      if (
+        !equivalent(
+          comparableEventData(committed),
+          comparableEventData(tentative)
+        )
+      )
+        conflict(
+          `event_data:${differingKeys(
+            comparableEventData(committed),
+            comparableEventData(tentative)
+          )}`
+        );
+      if (
+        result.events?.some(
+          (extra) =>
+            extra.eventId !== event.eventId &&
+            !this.events.some(
+              (known) =>
+                known.eventId === extra.eventId &&
+                equivalent(materializeEventPayload(extra, known), known)
+            )
+        )
+      )
+        conflict('reported_events');
+      this.events[slot - 1] = committed;
+      const later = this.events.slice(slot);
+      if (
+        result.step &&
+        !later.some(
+          (next) =>
+            next.correlationId === result.step!.stepId &&
+            next.eventType.startsWith('step_')
+        )
+      ) {
+        const known = this.steps.get(result.step.stepId);
+        if (
+          !known ||
+          result.step.status !== known.status ||
+          result.step.attempt !== known.attempt
+        )
+          conflict('step_state');
+        this.steps.set(
+          result.step.stepId,
+          materializeEntityPayloads(result.step, { ...known })
+        );
+      }
+      if (
+        result.run &&
+        !later.some((next) => next.eventType.startsWith('run_'))
+      )
+        this.runState = materializeEntityPayloads(result.run, {
+          ...this.runState,
+        });
+    }
+  }
+
+  /** Wake this owner in-process for a short sleep instead of waiting for the
+   * queue. Only used when the wait ends well before the function deadline;
+   * the queued wake remains the durable backstop. */
+  /** Enqueue the durable wake for a wait (a plain run wake at resumeAt, or the
+   * longest hop toward it). Deduplicated per wait in memory and by key. */
+  private async armWaitWake(waitId: string, resumeAt: Date) {
+    const now = Date.now();
+    const delaySeconds = Math.min(
+      Math.max(1, Math.ceil((+resumeAt - now) / 1000)),
+      MAX_WAKE_DELAY_SECONDS
+    );
+    const dueAt = now + delaySeconds * 1000;
+    if ((this.waitWakes.get(waitId) ?? 0) > now) return;
+    const final = dueAt >= +resumeAt;
+    await this.observed(
+      'durable_wake',
+      () =>
+        this.backend.queue(
+          this.metadata.queueName,
+          { runId: this.runId },
+          {
+            ...(this.runState
+              ? { deploymentId: this.runState.deploymentId }
+              : {}),
+            delaySeconds,
+            idempotencyKey: final
+              ? `retained-wait:${this.runId}:${waitId}`
+              : `retained-wait:${this.runId}:${waitId}:${Math.floor(dueAt / 1000)}`,
+          }
+        ),
+      { waitId, delaySeconds }
+    );
+    this.waitWakes.set(waitId, dueAt);
+  }
+
+  /** Keep one durable monitor wake pending while this owner may hold
+   * in-process work. A wake is an ordinary run wake: whichever owner receives
+   * it replays if needed and decides again. */
+  private ensureMonitor(): Promise<unknown> | undefined {
+    if (this.runState && isTerminalWorkflowRunStatus(this.runState.status))
+      return undefined;
+    if (this.monitorArm && this.monitorDueAt > Date.now())
+      return this.monitorArm;
+    const delayMs = monitorMs();
+    const dueAt = Date.now() + delayMs;
+    const delaySeconds = Math.ceil(delayMs / 1000);
+    this.monitorDueAt = dueAt;
+    const armed = this.observed(
+      'monitor_arm',
+      () =>
+        this.backend.queue(
+          this.metadata.queueName,
+          {
+            runId: this.runId,
+            // Until the run is known to exist, the wake doubles as the start's
+            // backup: it carries the creation input, so a delivery recreates a
+            // run whose owner died before creating it.
+            ...(this.startInput && !this.runState
+              ? { runInput: this.startInput }
+              : {}),
+          },
+          {
+            ...(this.runState
+              ? { deploymentId: this.runState.deploymentId }
+              : this.startInput
+                ? { deploymentId: this.startInput.deploymentId }
+                : {}),
+            delaySeconds,
+            idempotencyKey: `retained-monitor:${this.runId}:${Math.floor(dueAt / delayMs)}`,
+          }
+        ),
+      { delaySeconds }
+    ).catch((error) => {
+      if (this.monitorArm === armed) {
+        this.monitorArm = undefined;
+        this.monitorDueAt = 0;
+      }
+      throw new MonitorUnavailable('Owner monitor wake could not be armed', {
+        status: 503,
+        cause: error,
+      });
+    });
+    this.monitorArm = armed;
+    return armed;
+  }
+
+  private handoffDue() {
+    return (
+      this.terminating !== undefined ||
+      Date.now() >= this.deadline - HANDOFF_MARGIN_MS
+    );
+  }
+
+  /** Why this owner is ending early: its instance is stopping. */
+  private terminating?: string;
+
+  /**
+   * End cleanly now, as at the deadline: take no new work, finish the current
+   * input, hand the run to the next owner and stop. Called when this process's
+   * instance is stopping (see `owner-termination.ts`).
+   */
+  terminate(reason: string) {
+    if (this.terminating !== undefined || this.closing) return;
+    this.terminating = reason;
+    ownerLog('owner_terminating', { ...this.diagnostics(), reason });
+    this.signal?.();
+  }
+
+  /** Hand the run to the next owner invocation: an immediate durable wake.
+   * Cut-off inline steps restart there as their next attempt. */
+  private async handOff() {
+    if (!this.runState || isTerminalWorkflowRunStatus(this.runState.status))
+      return;
+    try {
+      await this.observed('handoff', () =>
+        this.backend.queue(
+          this.metadata.queueName,
+          { runId: this.runId },
+          {
+            deploymentId: this.runState!.deploymentId,
+            idempotencyKey: `retained-handoff:${this.runId}:${this.id}`,
+          }
+        )
+      );
+    } catch (error) {
+      // The pending monitor (armed while work was in flight) still recovers
+      // the run, later.
+      console.error('[workflow] Owner handoff wake failed', {
+        runId: this.runId,
+        ownerId: this.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private waitResumeAt(waitId: string): Date | undefined {
+    let resumeAt: Date | undefined;
+    for (const event of this.events)
+      if (event.eventType === 'wait_created' && event.correlationId === waitId)
+        resumeAt = new Date(event.eventData.resumeAt);
+    return resumeAt;
+  }
+
+  private armLocalTimer(waitId: string): { delayMs: number } | undefined {
+    const maxMs = localTimerMaxMs();
+    if (maxMs <= 0 || this.localTimers.has(waitId)) return undefined;
+    const resumeAt = this.waitResumeAt(waitId);
+    if (!resumeAt) return undefined;
+    const delayMs = Math.max(0, +resumeAt - Date.now());
+    // A pending local timer keeps the owner loop alive past its idle window.
+    if (
+      delayMs > maxMs ||
+      Date.now() + delayMs >= this.deadline - LOCAL_TIMER_DEADLINE_MARGIN_MS
+    )
+      return undefined;
+    const timer = setTimeout(() => {
+      this.localTimers.delete(waitId);
+      this.observe('local_timer', 'end', randomUUID(), {
+        waitId,
+        status: 'completed',
+        delayMs,
+      });
+      // Same mailbox as every other input. If the owner is retiring or full,
+      // the queued backstop delivers the wake instead.
+      this.enqueue(
+        `local-timer:${waitId}`,
+        async () => {
+          if (
+            this.runState &&
+            !isTerminalWorkflowRunStatus(this.runState.status)
+          )
+            await this.advance();
+        },
+        undefined,
+        { internal: true }
+      ).catch((error) =>
+        this.logInternalRejection(`local-timer:${waitId}`, error)
+      );
+      // Timers may fire marginally before the wall clock reaches resumeAt.
+    }, delayMs + 5);
+    this.localTimers.set(waitId, timer);
+    this.observe('local_timer', 'begin', randomUUID(), { waitId, delayMs });
+    return { delayMs };
+  }
+
+  private async completeDueWaits() {
+    const pending = new Map<string, Date>();
+    for (const event of this.events) {
+      if (event.eventType === 'wait_created')
+        pending.set(event.correlationId, event.eventData.resumeAt);
+      if (event.eventType === 'wait_completed')
+        pending.delete(event.correlationId);
+    }
+    for (const [id, at] of pending) {
+      if (+at > Date.now()) {
+        // An early durable wake (or any other input) may arrive once the wait
+        // is within local-timer range: time the remainder in-process.
+        // Otherwise keep a durable wake pending (a long wait chains hops; a
+        // new owner re-arms one, deduplicated by key).
+        if (!this.armLocalTimer(id) && !this.localTimers.has(id))
+          await this.armWaitWake(id, new Date(at));
+        continue;
+      }
+      await this.commit({
+        eventType: 'wait_completed',
+        correlationId: id,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      const timer = this.localTimers.get(id);
+      if (timer) {
+        clearTimeout(timer);
+        this.localTimers.delete(id);
+      }
+    }
+  }
+
+  private async receiveStepInput(value: unknown, deferAdvance = false) {
+    const result = OwnedStepResultSchema.safeParse(value);
+    const status = OwnedStepStatusSchema.safeParse(value);
+    if (!result.success && !status.success)
+      throw new InputRejected('Invalid step input', { status: 400 });
+    const input = result.success ? result.data : status.data!;
+    const superseded = (reason: string) => {
+      ownerLog('step_input_superseded', {
+        runId: this.runId,
+        ownerId: this.id,
+        stepId: input.stepId,
+        executionId: input.executionId,
+        attempt: input.attempt,
+        input: result.success ? 'result' : 'status',
+        reason,
+        stepStatus: this.steps.get(input.stepId)?.status,
+        currentExecutionId: this.stepStarts.get(input.stepId)?.event.eventId,
+        currentAttempt: this.stepStarts.get(input.stepId)?.attempt,
+      });
+      return { status: 'superseded' as const };
+    };
+    let digest: string | undefined;
+    try {
+      if (result.success) digest = stepOutcomeDigest(result.data.outcome);
+    } catch {
+      throw new InputRejected('Invalid serialized step outcome', {
+        status: 400,
+      });
+    }
+    const prior = this.stepOutcomes.get(input.executionId);
+    if (prior) {
+      if (
+        prior.event.correlationId !== input.stepId ||
+        prior.attempt !== input.attempt
+      )
+        throw new InputRejected('Step outcome identity mismatch', {
+          status: 400,
+        });
+      if (result.success && prior.digest !== digest) {
+        // The owner may have timed out and superseded this execution. Its
+        // eventual worker outcome must not fault the newer attempt/run.
+        if (
+          prior.event.eventType !== 'step_completed' ||
+          this.stepStarts.get(input.stepId)?.event.eventId !== input.executionId
+        )
+          return superseded('outcome_of_replaced_attempt');
+        throw new RunnerFault(
+          'conflict',
+          new Error('Step result identity reused'),
+          'step_result_payload'
+        );
+      }
+      return { status: 'accepted', eventId: prior.event.eventId };
+    }
+    const start = this.stepStarts.get(input.stepId);
+    if (isTerminalWorkflowRunStatus(this.run.status))
+      return superseded('run_terminal');
+    if (!start)
+      throw new InputRejected(
+        'Step execution is absent from the owner snapshot',
+        {
+          status: 409,
+          code: 'UNKNOWN_STEP_EXECUTION',
+        }
+      );
+    if (
+      start.event.eventId !== input.executionId ||
+      start.attempt !== input.attempt
+    ) {
+      if (input.attempt < start.attempt) return superseded('older_attempt');
+      throw new InputRejected(
+        'Step execution does not match the owner snapshot',
+        {
+          status: 409,
+          code: 'UNKNOWN_STEP_EXECUTION',
+        }
+      );
+    }
+    const step = this.steps.get(input.stepId);
+    if (step?.status !== 'running') return superseded('step_not_running');
+    if (!result.success) {
+      // A queue redelivery of a remote step means the earlier delivery's
+      // lease ended without an acknowledgement: that worker is gone, so the
+      // attempt is superseded now and the step retried as a new attempt.
+      // Otherwise a redelivery cannot rerun an uncertain body, and recovery
+      // alone decides whether to supersede it.
+      if (status.data?.lost && !this.localWorkers.has(input.stepId))
+        await this.supersedeAttempt(step, start, 'lost');
+      await this.advance();
+      const outcome = this.stepOutcomes.get(input.executionId);
+      return outcome
+        ? { status: 'accepted', eventId: outcome.event.eventId }
+        : { status: 'pending' };
+    }
+    const event = result.data.outcome;
+    if (
+      !isStepOutcome(event) ||
+      event.correlationId !== input.stepId ||
+      event.eventData.stepName !== step.stepName ||
+      event.specVersion !== SPEC_VERSION_CURRENT
+    )
+      throw new InputRejected('Step result does not match its admission', {
+        status: 400,
+      });
+    if (
+      event.eventType === 'step_completed' &&
+      event.eventData.workflowName !== this.run.workflowName
+    )
+      throw new InputRejected('Step result workflow mismatch', { status: 400 });
+    if (event.eventType === 'step_retrying') {
+      const maxRetries =
+        getStepFunction(step.stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+      if (input.attempt >= maxRetries + 1)
+        throw new RunnerFault(
+          'conflict',
+          new Error('Step retry budget exceeded'),
+          'step_retry_budget'
+        );
+      const retryAt = event.eventData.retryAfter;
+      if (!retryAt)
+        throw new InputRejected('Missing retry deadline', { status: 400 });
+      await this.armStepRecovery(+retryAt);
+    }
+    const committed = await this.commit(event);
+    // The incoming outcome is applied before a cold owner's replay/dispatch,
+    // otherwise recovery could re-run the very step that just completed.
+    if (!deferAdvance) await this.advance();
+    return { status: 'accepted', eventId: committed.event?.eventId };
+  }
+
+  private async armStepRecovery(explicitAt?: number) {
+    const policy = this.queuedSteps;
+    const now = Date.now();
+    const due = [...this.steps.values()].flatMap((step) => {
+      if (step.status === 'running') {
+        const start = this.stepStarts.get(step.stepId);
+        return start ? [+start.event.createdAt + policy.attemptTimeoutMs] : [];
+      }
+      if (step.status === 'pending')
+        return [
+          step.retryAfter
+            ? +step.retryAfter
+            : now + Math.min(policy.attemptTimeoutMs, PENDING_RECHECK_MS),
+        ];
+      return [];
+    });
+    if (explicitAt !== undefined) due.push(explicitAt);
+    if (!due.length) return;
+    const at = Math.max(now + 1000, Math.min(...due));
+    if (this.recoveryWakeAt > now && this.recoveryWakeAt <= at) return;
+    await this.backend.queue(
+      this.metadata.queueName,
+      { runId: this.runId },
+      {
+        deploymentId: this.run.deploymentId,
+        delaySeconds: Math.max(1, Math.ceil((at - now) / 1000)),
+        idempotencyKey: `step-recovery:${this.runId}:${randomUUID()}`,
+      }
+    );
+    this.recoveryWakeAt = at;
+  }
+
+  private async expireQueuedSteps() {
+    const policy = this.queuedSteps!;
+    for (const step of this.steps.values()) {
+      const start = this.stepStarts.get(step.stepId);
+      const undeliveredAt = start
+        ? this.undelivered.get(start.event.eventId)
+        : undefined;
+      if (
+        step.status !== 'running' ||
+        !start ||
+        // A step running in this owner is alive; only lost attempts expire.
+        this.localWorkers.has(step.stepId) ||
+        (+start.event.createdAt + policy.attemptTimeoutMs > Date.now() &&
+          !(undeliveredAt !== undefined && undeliveredAt <= Date.now()))
+      )
+        continue;
+      await this.supersedeAttempt(step, start, 'timed out');
+    }
+  }
+
+  /**
+   * An ending owner's in-process step bodies cannot report to the next owner,
+   * which would otherwise see their attempts running until the abandoned-
+   * attempt bound. End them durably now so the next owner retries them
+   * promptly. A body may still finish here; steps are retried at least once.
+   */
+  private async interruptLocalAttempts() {
+    for (const stepId of [...this.localWorkers]) {
+      const step = this.steps.get(stepId);
+      const start = this.stepStarts.get(stepId);
+      if (step?.status !== 'running' || !start) continue;
+      try {
+        await this.supersedeAttempt(step, start, 'interrupted');
+      } catch (error) {
+        // The attempt bound still recovers it, later.
+        console.error('[workflow] Could not end an interrupted step attempt', {
+          runId: this.runId,
+          ownerId: this.id,
+          stepId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+    }
+  }
+
+  /** End an attempt that will never report (timed out, its worker lost, or
+   * its owner ending): retry the step, or fail it once its retry budget is
+   * spent. */
+  private async supersedeAttempt(
+    step: Step,
+    start: { event: Event; attempt: number },
+    reason: 'timed out' | 'lost' | 'interrupted'
+  ) {
+    this.undelivered.delete(start.event.eventId);
+    const maxRetries =
+      getStepFunction(step.stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+    const exhausted = start.attempt >= maxRetries + 1;
+    const retryAfter = new Date(Date.now() + 1000);
+    if (!exhausted) await this.armStepRecovery(+retryAfter);
+    const error = await dehydrateStepError(
+      new Error(`Step attempt ${start.attempt} ${reason}`),
+      this.runId,
+      this.key,
+      [],
+      globalThis,
+      (this.run.specVersion ?? 1) >= 5
+    );
+    await this.commit({
+      eventType: exhausted ? 'step_failed' : 'step_retrying',
+      correlationId: step.stepId,
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        stepName: step.stepName,
+        error,
+        ...(!exhausted ? { retryAfter } : {}),
+      },
+    });
+  }
+
+  private async dispatchSteps(
+    steps: Array<Step & { startedAt: Date }>,
+    timeoutMs: number
+  ) {
+    const traceCarrier = await serializeTraceCarrier();
+    const messages = steps.map((step) => {
+      const start = this.stepStarts.get(step.stepId);
+      if (!start)
+        throw new RunnerFault(
+          'conflict',
+          new Error('Step start missing'),
+          'step_dispatch'
+        );
+      return {
+        message: {
+          runId: this.runId,
+          stepId: step.stepId,
+          stepName: step.stepName,
+          traceCarrier,
+          runContext: {
+            deploymentId: this.run.deploymentId,
+            specVersion: this.run.specVersion ?? 1,
+            startedAt: +(this.run.startedAt ?? this.run.createdAt),
+          },
+          input: {
+            type: 'step_execute',
+            version: 1,
+            executionId: start.event.eventId,
+            attempt: start.attempt,
+            deadline: +start.event.createdAt + timeoutMs,
+            workflowName: this.run.workflowName,
+            workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
+            parentSpanId: this.currentTurnId,
+            executionMode: 'queued' as const,
+            step,
+          },
+        },
+        opts: {
+          deploymentId: this.run.deploymentId,
+          specVersion: this.run.specVersion,
+          idempotencyKey: `step-execute:${this.runId}:${start.event.eventId}`,
+        },
+      };
+    });
+    // Direct execution can wait for a result invoke. Never await it inside the
+    // serialized owner turn: that would deadlock its own result admission.
+    const parentSpanId = this.currentTurnId;
+    // Yield between request starts: a synchronous burst of HTTP requests
+    // is throttled by the platform. Each start waits for the previous one
+    // plus a macrotask, without awaiting any request's completion.
+    let started: Promise<void> = Promise.resolve();
+    for (const { message, opts } of messages) {
+      const gate = started.then(yieldToEventLoop);
+      started = gate;
+      const work = this.inTurn.run(false, async () => {
+        await gate;
+        try {
+          await this.observed(
+            'step_dispatch',
+            async () => {
+              // An uncertain enqueue is retried with the same options, so the
+              // queue dedupes on the unchanged idempotency key: a retry can
+              // never create a second message, and turns "maybe enqueued"
+              // into "enqueued" instead of waiting for the attempt bound.
+              for (let attempt = 1; ; attempt++) {
+                try {
+                  const result = await this.backend.queue(
+                    this.metadata.queueName,
+                    message,
+                    opts
+                  );
+                  if ('error' in result && result.error)
+                    throw new WorkflowWorldError(
+                      'Remote step delivery failed',
+                      {
+                        status:
+                          'retryable' in result && result.retryable === true
+                            ? 503
+                            : 400,
+                      }
+                    );
+                  if (this.dispatched.size >= MAX_DISPATCH_RECORDS) {
+                    const oldest = this.dispatched.keys().next().value;
+                    if (oldest !== undefined) this.dispatched.delete(oldest);
+                  }
+                  this.dispatched.set(message.input.executionId, {
+                    messageId:
+                      'messageId' in result && result.messageId
+                        ? String(result.messageId)
+                        : null,
+                    dispatchedAt: Date.now(),
+                    tries: attempt,
+                  });
+                  return;
+                } catch (error) {
+                  const retryInMs = DISPATCH_RETRY_MS[attempt - 1];
+                  const retry =
+                    retryInMs !== undefined &&
+                    isRetryableOwnerDelivery(error) &&
+                    !this.closing &&
+                    !this.fault;
+                  ownerLog('step_dispatch_error', {
+                    runId: this.runId,
+                    ownerId: this.id,
+                    stepId: message.stepId,
+                    executionId: message.input.executionId,
+                    attempt: message.input.attempt,
+                    dispatchAttempt: attempt,
+                    ...describeError(error),
+                    ...(retry ? { retryInMs } : {}),
+                  });
+                  if (!retry) throw error;
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, retryInMs)
+                  );
+                }
+              }
+            },
+            { parentSpanId, stepId: message.stepId, executionMode: 'queued' }
+          );
+        } catch (cause) {
+          await this.enqueue(
+            'step.delivery_failed',
+            async () => {
+              // A lost HTTP reply after a committed callback is not a lost step.
+              if (
+                !this.stepOutcomes.has(message.input.executionId) &&
+                !isTerminalWorkflowRunStatus(this.run.status)
+              ) {
+                // Only a definite rejection of the delivery itself is a bug.
+                // Anything else (platform/transport failure, a worker whose
+                // result reached a superseded owner) leaves the body's
+                // outcome unknown.
+                if (
+                  !isRetryableOwnerDelivery(cause) &&
+                  WorkflowWorldError.is(cause) &&
+                  [400, 401, 403].includes(cause.status ?? 0)
+                ) {
+                  ownerLog('step_dispatch_failed', {
+                    runId: this.runId,
+                    ownerId: this.id,
+                    stepId: message.stepId,
+                    executionId: message.input.executionId,
+                    attempt: message.input.attempt,
+                    ...describeError(cause),
+                    handling: 'fault',
+                  });
+                  throw cause;
+                }
+                // No outcome is not evidence of a failed body. Keep the
+                // admitted attempt running until recovery supersedes it. A
+                // platform refusal before any worker received the invocation
+                // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED, or a 508 the proxy's
+                // loop detection returns) retries soon as a new attempt; other
+                // unknown outcomes wait for the timeout. A late result from the
+                // superseded attempt is ignored.
+                const status = (cause as { status?: unknown })?.status;
+                const refused =
+                  status === 500 || status === 502 || status === 508;
+                const retryAt = refused
+                  ? Date.now() + 1000
+                  : message.input.deadline;
+                if (refused)
+                  this.undelivered.set(message.input.executionId, retryAt);
+                ownerLog('step_dispatch_failed', {
+                  runId: this.runId,
+                  ownerId: this.id,
+                  stepId: message.stepId,
+                  executionId: message.input.executionId,
+                  attempt: message.input.attempt,
+                  ...describeError(cause),
+                  handling: refused ? 'retry_soon' : 'await_attempt_timeout',
+                  recoveryAt: new Date(retryAt).toISOString(),
+                });
+                this.observe('step_delivery', 'end', randomUUID(), {
+                  parentSpanId,
+                  stepId: message.stepId,
+                  executionId: message.input.executionId,
+                  outcome: 'uncertain',
+                  status: 'error',
+                  errorCode: (cause as { code?: unknown })?.code,
+                  httpStatus: status,
+                  recoveryAt: retryAt,
+                });
+                await this.armStepRecovery(retryAt);
+              }
+            },
+            undefined,
+            { internal: true }
+          ).catch((error) =>
+            this.logInternalRejection(
+              'step.delivery_failed',
+              error,
+              message.stepId
+            )
+          );
+        } finally {
+          this.workers.delete(message.stepId);
+          this.signal?.();
+        }
+      });
+      this.workers.set(message.stepId, work);
+    }
+  }
+
+  private startStep(step: Step, claimed?: Step & { startedAt: Date }) {
+    this.localWorkers.add(step.stepId);
+    // The attempt this body runs: its start is staged before the body starts.
+    const startedFor = this.stepStarts.get(step.stepId);
+    const stepSpanId = randomUUID();
+    const parentSpanId = this.currentTurnId;
+    const work = Promise.resolve().then(() =>
+      this.inTurn.run(false, () =>
+        withScopedWorld(this.facade, async () => {
+          // Durable creation: the step's events are already streaming behind
+          // run_created; its body waits for the run to exist.
+          if (this.creationDurable) await this.creationDurable;
+          this.observe('step', 'begin', stepSpanId, {
+            parentSpanId,
+            stepId: step.stepId,
+            stepName: step.stepName,
+          });
+          try {
+            const result = await executeStep({
+              world: this.facade,
+              workflowRunId: this.runId,
+              workflowDeploymentId: this.run.deploymentId,
+              workflowName: this.run.workflowName,
+              workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
+              stepId: step.stepId,
+              stepName: step.stepName,
+              encryptionKey: this.key,
+              runSpecVersion: this.run.specVersion,
+              suppressOptimisticStart: true,
+              authoritativeAttempt: (step.attempt ?? 0) + 1,
+              ...(claimed
+                ? { preclaimedStart: { owned: true as const, step: claimed } }
+                : {}),
+            });
+            this.observe('step', 'end', stepSpanId, {
+              parentSpanId,
+              stepId: step.stepId,
+              stepName: step.stepName,
+              status: result.type === 'failed' ? 'error' : 'completed',
+              outcome: result.type,
+            });
+            if (result.type === 'retry' || result.type === 'throttled')
+              await this.backend.queue(
+                this.metadata.queueName,
+                { runId: this.runId },
+                {
+                  deploymentId: this.run.deploymentId,
+                  delaySeconds: result.timeoutSeconds,
+                }
+              );
+            else if (result.type !== 'completed' && result.type !== 'failed')
+              await this.endedWithoutOutcome(step, startedFor, result.type);
+          } catch (cause) {
+            this.observe('step', 'end', stepSpanId, {
+              parentSpanId,
+              stepId: step.stepId,
+              stepName: step.stepName,
+              status: 'error',
+            });
+            if (
+              !this.runState ||
+              !isTerminalWorkflowRunStatus(this.runState.status)
+            ) {
+              let reported = false;
+              await this.enqueue(
+                'step.error',
+                async () => {
+                  reported = true;
+                  throw cause;
+                },
+                undefined,
+                { internal: true }
+              ).catch((error) => {
+                // Run in the loop, the error faults the run. Refused before it
+                // ran, nothing would report this attempt: end it as lost.
+                if (!reported) {
+                  this.logInternalRejection('step.error', error, step.stepId);
+                  return this.endedWithoutOutcome(step, startedFor, 'threw');
+                }
+              });
+            }
+          } finally {
+            this.localWorkers.delete(step.stepId);
+            this.workers.delete(step.stepId);
+            this.signal?.();
+          }
+        })
+      )
+    );
+    this.workers.set(step.stepId, work);
+  }
+
+  /**
+   * A local body returned without recording an outcome (the executor's
+   * `skipped` or `gone`). Nothing else will report this attempt, so if it is
+   * still the step's current running attempt, end it as lost now: it is
+   * retried after the usual delay instead of after the attempt bound.
+   */
+  private async endedWithoutOutcome(
+    step: Step,
+    startedFor: { event: Event; attempt: number } | undefined,
+    resultType: string
+  ) {
+    ownerLog('local_step_ended_without_outcome', {
+      runId: this.runId,
+      ownerId: this.id,
+      stepId: step.stepId,
+      stepName: step.stepName,
+      executionId: startedFor?.event.eventId,
+      attempt: startedFor?.attempt,
+      resultType,
+    });
+    if (!startedFor) return;
+    await this.enqueue(
+      'step.no_outcome',
+      async () => {
+        const current = this.stepStarts.get(step.stepId);
+        const live = this.steps.get(step.stepId);
+        if (
+          isTerminalWorkflowRunStatus(this.run.status) ||
+          live?.status !== 'running' ||
+          current?.event.eventId !== startedFor.event.eventId ||
+          this.stepOutcomes.has(startedFor.event.eventId)
+        )
+          return;
+        await this.supersedeAttempt(live, current, 'lost');
+        await this.advance();
+      },
+      undefined,
+      { internal: true }
+    ).catch((error) =>
+      this.logInternalRejection('step.no_outcome', error, step.stepId)
+    );
+  }
+
+  /** The owner's own work refused by its loop (faulted or retiring). */
+  private logInternalRejection(
+    operation: string,
+    error: unknown,
+    stepId?: string
+  ) {
+    ownerLog('internal_operation_refused', {
+      runId: this.runId,
+      ownerId: this.id,
+      operation,
+      ...(stepId ? { stepId } : {}),
+      ...describeError(error),
+      closing: this.closing,
+      fault: this.fault?.kind,
+    });
+  }
+
+  /** One serialized, contiguous mailbox prefix; never skip an intervening input. */
+  private async runBatch(first: MailboxItem) {
+    const taken: MailboxItem[] = [];
+    const results: Array<
+      { ok: true; value: unknown } | { ok: false; error: unknown }
+    > = [];
+    try {
+      await first.run(async () => {
+        let item: MailboxItem | undefined = first;
+        while (item) {
+          taken.push(item);
+          try {
+            results.push({ ok: true, value: await item.batch!.apply() });
+          } catch (error) {
+            // Invalid input is local to its caller. Persistence/conflict faults
+            // fail the whole unfinished prefix, including duplicates in it.
+            if (!(error instanceof InputRejected)) throw error;
+            results.push({ ok: false, error });
+          }
+          item =
+            taken.length < MAX_MAILBOX_BATCH &&
+            this.pending[0]?.batch?.key === first.batch!.key
+              ? this.pending.shift()
+              : undefined;
+        }
+        await this.flushWriter();
+        await first.batch!.finish();
+      });
+      for (const [i, item] of taken.entries()) {
+        const result = results[i];
+        if (result.ok) item.resolve(result.value);
+        else item.reject(result.error);
+      }
+    } catch (error) {
+      for (const item of taken) item.reject(error);
+    }
+  }
+
+  private async runOwnerLoop() {
+    const untrack = trackOwner(this);
+    const unwatch = watchOwnerTermination(this.backend, this);
+    ownerLog('owner_start', { runId: this.runId, ownerId: this.id });
+    try {
+      await this.runOwnerLoopBody();
+    } finally {
+      unwatch();
+      untrack();
+      ownerLog('owner_end', {
+        runId: this.runId,
+        ownerId: this.id,
+        fault: this.fault?.kind,
+        terminated: this.terminating,
+      });
+    }
+  }
+
+  private async runOwnerLoopBody() {
+    while (!this.closing && !this.fault) {
+      if (this.handoffDue()) break;
+      const item = this.pending.shift();
+      if (!item) {
+        if (this.runState && isTerminalWorkflowRunStatus(this.runState.status))
+          break;
+        const waitMs = Math.min(
+          this.idleMs,
+          this.deadline - HANDOFF_MARGIN_MS - Date.now()
+        );
+        if (waitMs <= 0) break;
+        const woke = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => {
+            this.signal = undefined;
+            resolve(false);
+          }, waitMs);
+          this.signal = () => {
+            clearTimeout(timer);
+            this.signal = undefined;
+            resolve(true);
+          };
+        });
+        if (!woke && this.workers.size === 0 && this.localTimers.size === 0)
+          break;
+        continue;
+      }
+      if (item.batch && this.initialized && this.eventWriter?.stage)
+        await this.runBatch(item);
+      else await item.run.call(undefined).then(item.resolve, item.reject);
+    }
+    this.closing = true;
+    const pendingTimers = this.localTimers.size > 0;
+    for (const timer of this.localTimers.values()) clearTimeout(timer);
+    this.localTimers.clear();
+    // Ending with unfinished work (the deadline) is a handoff, not a failure.
+    if (!this.fault && this.localWorkers.size > 0)
+      await this.interruptLocalAttempts();
+    if (!this.fault && (this.workers.size > 0 || pendingTimers))
+      await this.handOff();
+    const error = this.fault?.superseded
+      ? supersededError(this.fault)
+      : (this.fault ??
+        new WorkflowWorldError('Runner lifetime ended', { status: 503 }));
+    for (const item of this.pending.splice(0)) item.reject(error);
+    this.session = undefined;
+    try {
+      await this.eventWriter?.dispose();
+    } catch {
+      console.error('[workflow] Could not release owner event writer', {
+        runId: this.runId,
+        ownerId: this.id,
+      });
+    }
+    this.eventWriter = undefined;
+    if (
+      !this.fault ||
+      this.fault.superseded ||
+      this.runState?.status === 'failed'
+    )
+      this.retire();
+  }
+
+  private fail(cause: unknown): Promise<void> {
+    this.fault ??=
+      cause instanceof RunnerFault
+        ? cause
+        : isOwnerSuperseded(cause)
+          ? Object.assign(
+              new RunnerFault('persistence', cause, 'owner_superseded'),
+              { superseded: true }
+            )
+          : new RunnerFault('execution', cause);
+    const fault = this.fault;
+    if (!this.failurePromise) {
+      const cause = fault.cause as
+        | { name?: unknown; message?: unknown; stack?: unknown }
+        | undefined;
+      ownerLog('fault', {
+        runId: this.runId,
+        ownerId: this.id,
+        kind: fault.kind,
+        conflictReason: fault.conflictReason,
+        superseded: fault.superseded,
+        causeName: cause?.name === undefined ? undefined : String(cause.name),
+        causeMessage:
+          cause?.message === undefined
+            ? undefined
+            : String(cause.message).slice(0, 500),
+        causeStack:
+          typeof cause?.stack === 'string'
+            ? cause.stack.split('\n').slice(0, 8).join('\n')
+            : undefined,
+      });
+    }
+    if (!this.failurePromise)
+      this.failurePromise = (async () => {
+        const spanId = randomUUID();
+        this.observe('failure', 'begin', spanId, { errorCode: fault.kind });
+        let durable =
+          this.runState?.status === 'failed' &&
+          (!this.eventWriter?.stage || this.failureCommitted);
+        if (fault.superseded) {
+          // Never write a terminal failure over another writer's progress.
+          try {
+            await this.eventWriter?.dispose();
+          } catch {}
+          this.eventWriter = undefined;
+          this.observe('failure', 'end', spanId, {
+            status: 'error',
+            errorCode: fault.kind,
+            conflictReason: fault.conflictReason,
+            terminalPersisted: false,
+          });
+          const error = supersededError(fault);
+          for (const item of this.pending.splice(0)) item.reject(error);
+          this.signal?.();
+          return;
+        }
+        // A single-owner run on a backend with write sessions is written only
+        // by its owner's writer. A backend without them has no other writer
+        // to avoid, so its terminal failure takes the ordinary write.
+        const ownerJournal =
+          isSingleOwnerRun(this.runState) &&
+          this.backend.events.createWriteSession !== undefined;
+        // Preserve the legacy terminal-write path for older runs. Journal owners
+        // instead use their existing writer, which rejects permanently if its
+        // sequence or persistence outcome is uncertain.
+        if (!ownerJournal) {
+          try {
+            await this.eventWriter?.dispose();
+          } catch {
+            // The legacy path can still attempt its native terminal write.
+          }
+          this.eventWriter = undefined;
+        }
+        if (!durable) {
+          try {
+            const terminal: CreateEventRequest = {
+              eventType: 'run_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              eventData: {
+                error: await dehydrateRunError(
+                  this.fault,
+                  this.runId,
+                  this.key
+                ),
+                errorCode:
+                  fault.kind === 'conflict'
+                    ? RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
+                    : RUN_ERROR_CODES.RUNTIME_ERROR,
+              },
+            };
+            // Never start a second writer after an uncertain owner prefix. A
+            // healthy channel can append failure after its prefix; a failed
+            // channel rejects it and exposes terminalPersisted=false below.
+            const result = ownerJournal
+              ? await this.eventWriter?.create(terminal, {
+                  eventCount:
+                    this.eventWriter.heads?.queued ?? this.events.length,
+                })
+              : await this.backend.events.create(this.runId, terminal);
+            durable = result?.event?.eventType === 'run_failed';
+            if (result?.event?.eventType === 'run_failed' && this.runState)
+              Object.assign(this.runState, {
+                status: 'failed',
+                completedAt: result.event.createdAt,
+              });
+          } catch {
+            durable = false;
+          }
+        }
+        if (ownerJournal) {
+          try {
+            await this.eventWriter?.dispose();
+          } catch {
+            // Durability is determined by the canonical acknowledgement above.
+          }
+          this.eventWriter = undefined;
+        }
+        this.observe('failure', 'end', spanId, {
+          status: 'error',
+          errorCode: fault.kind,
+          conflictReason: fault.conflictReason,
+          terminalPersisted: durable,
+        });
+        fault.terminalPersisted = durable;
+        if (!durable)
+          console.error(
+            '[workflow] Retained runner could not persist terminal failure',
+            { runId: this.runId, ownerId: this.id }
+          );
+        for (const item of this.pending.splice(0)) item.reject(this.fault);
+        this.signal?.();
+      })();
+    return this.failurePromise;
+  }
+
+  runOperation(inputId: string, operation: () => Promise<unknown>) {
+    return withScopedWorld(this.facade, () =>
+      this.inTurn.run(true, async () => {
+        const spanId = randomUUID();
+        this.currentTurnId = spanId;
+        this.observe('turn', 'begin', spanId, { inputId });
+        try {
+          const result = await operation();
+          await this.flushWriter();
+          // In-process steps keep the monitor chain alive; when none remain the
+          // chain ends after its pending wake. Internal turns (step events,
+          // local timers) acknowledge nobody, so this is best-effort; a failed
+          // arm is retried by the next turn.
+          if (this.localWorkers.size > 0) this.ensureMonitor()?.catch(() => {});
+          this.observe('turn', 'end', spanId, { inputId, status: 'completed' });
+          return result;
+        } catch (cause) {
+          if (!(cause instanceof InputRejected)) await this.fail(cause);
+          this.observe('turn', 'end', spanId, {
+            inputId,
+            status: 'error',
+            errorCode: this.fault?.kind ?? 'input_rejected',
+          });
+          if (this.fault?.superseded) throw supersededError(this.fault);
+          throw this.fault ?? cause;
+        } finally {
+          this.currentTurnId = undefined;
+        }
+      })
+    );
+  }
+}
+
+export function withRetainedRunner(
+  world: World,
+  prefix: QueuePrefix,
+  workflowCode: string
+) {
+  return (legacy: LegacyHandler): Handler => {
+    // Single-owner runs need a World that can invoke their owner; without
+    // one, every run executes as before.
+    if (!world.capabilities?.invoke || !world.invoke) {
+      const fallback = withRunInputs(world)(legacy);
+      return (message, metadata) =>
+        isOwnedStepMessage(message)
+          ? executeOwnedStep(world, message, metadata)
+          : fallback(message, metadata);
+    }
+    const registries = globalSingleton(
+      '@workflow/core//retainedRunners',
+      1,
+      () => new WeakMap<World, Map<string, RetainedRunner>>()
+    );
+    let owners = registries.get(world);
+    if (!owners) {
+      owners = new Map();
+      registries.set(world, owners);
+    }
+    const registry = owners;
+    // This deployment hosts single-owner runs; every other run keeps the
+    // existing handler (`single-owner.ts`).
+    const fallback = withRunInputs(world)(legacy);
+    const unowned = globalSingleton(
+      '@workflow/core//notSingleOwner',
+      1,
+      () => new Map<string, true>()
+    );
+    const singleOwner = async (input: {
+      runId: string;
+      invoke?: unknown;
+      input?: unknown;
+      runInput?: { attributes?: Record<string, unknown> };
+    }) => {
+      if (registry.has(input.runId)) return true;
+      if (unowned.has(input.runId)) return false;
+      // A start carries the run's attributes; anything else reads the run.
+      const startInput =
+        input.invoke &&
+        input.input &&
+        typeof input.input === 'object' &&
+        (input.input as { type?: unknown }).type === 'run_start'
+          ? (input.input as { runInput?: { attributes?: unknown } }).runInput
+          : input.runInput;
+      let marked: boolean;
+      if (startInput)
+        marked = isSingleOwnerRun(
+          startInput as { attributes?: Record<string, unknown> }
+        );
+      else {
+        const run = await world.runs
+          .get(input.runId, { resolveData: 'none' })
+          .catch((error: unknown) => {
+            // A run that does not exist yet is its owner's to create.
+            if (
+              WorkflowRunNotFoundError.is(error) ||
+              (WorkflowWorldError.is(error) && error.status === 404)
+            )
+              return undefined;
+            throw error;
+          });
+        marked = !run || isSingleOwnerRun(run);
+      }
+      if (!marked) {
+        unowned.set(input.runId, true);
+        if (unowned.size > 10_000)
+          unowned.delete(unowned.keys().next().value as string);
+      }
+      return marked;
+    };
+    return async (message, metadata) => {
+      if (isOwnedStepMessage(message))
+        return executeOwnedStep(world, message, metadata);
+      if (HealthCheckPayloadSchema.safeParse(message).success)
+        return legacy(message, metadata);
+      const input = WorkflowInvokePayloadSchema.parse(message);
+      // Any other run's input, queued or invoked, takes the existing path:
+      // invoked inputs (such as a hook resume on an invoke-capable World) are
+      // handled there as they are on a deployment without this runner.
+      if (!(await singleOwner(input))) return fallback(message, metadata);
+      let owner = registry.get(input.runId);
+      if (!owner) {
+        if (registry.size >= 64)
+          throw new WorkflowWorldError('Runner capacity exceeded', {
+            status: 429,
+          });
+        owner = new RetainedRunner(
+          world,
+          input.runId,
+          prefix,
+          workflowCode,
+          metadata,
+          () => registry.delete(input.runId)
+        );
+        registry.set(input.runId, owner);
+      }
+      const result = owner.submit(input, metadata);
+      await owner.retain();
+      return result;
+    };
+  };
+}

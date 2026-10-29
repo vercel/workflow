@@ -66,6 +66,7 @@ import {
   healthCheck,
 } from './helpers.js';
 import { Run } from './run.js';
+import { isSingleOwnerRun, SINGLE_OWNER_ATTRIBUTE } from './single-owner.js';
 import {
   getSnapshotThresholdForStart,
   getWorkflowVmFromEnv,
@@ -420,6 +421,13 @@ export interface StartOptionsBase {
    * recognize the value keeps the data.
    */
   experimental_retention?: RunRetention;
+
+  /**
+   * For a single-owner run, wait for `run_created` to be durable before
+   * the first step runs, and resolve `start()` as soon as the run exists.
+   * Defaults to `WORKFLOW_DURABLE_RUN_CREATED=1`.
+   */
+  experimental_durableRunCreated?: boolean;
 
   /**
    * Set to `false` to store the run's arguments uncompressed.
@@ -936,9 +944,28 @@ export async function start<TArgs extends unknown[], TResult>(
         specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
           ? resolveLineageAttributes()
           : undefined;
+      // Single-owner is the default wherever this deployment can host the
+      // run's owner: a World that can invoke it, this deployment's own
+      // workflows, and attribute support for the marker. Without a caller
+      // affinity the run is routed by its own ID (`{}`); a caller's marker
+      // (for example `{"vercelAffinity":"cell-0"}`) is kept as given.
+      const defaultSingleOwner =
+        !isSingleOwnerRun({ attributes }) &&
+        world.capabilities?.invoke === true &&
+        !!world.invoke &&
+        deploymentId === currentDeploymentId &&
+        !dynamicWorkflow &&
+        specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
+          ? { [SINGLE_OWNER_ATTRIBUTE]: '{}' }
+          : undefined;
       const runAttributes =
-        lineage || retentionAttribute
-          ? { ...lineage, ...attributes, ...retentionAttribute }
+        lineage || retentionAttribute || defaultSingleOwner
+          ? {
+              ...lineage,
+              ...defaultSingleOwner,
+              ...attributes,
+              ...retentionAttribute,
+            }
           : attributes;
 
       // Shared by the run_created event and the resilient-start queue input.
@@ -947,7 +974,8 @@ export async function start<TArgs extends unknown[], TResult>(
             attributes: runAttributes,
             ...(allowReservedAttributes ||
             lineage != null ||
-            retentionAttribute != null
+            retentionAttribute != null ||
+            defaultSingleOwner != null
               ? { allowReservedAttributes: true as const }
               : {}),
           }
@@ -1025,6 +1053,27 @@ export async function start<TArgs extends unknown[], TResult>(
       // vm-mode.ts.
       const workflowVm = getWorkflowVmFromEnv();
       const snapshotThreshold = getSnapshotThresholdForStart(workflowVm);
+      // A single-owner run (`single-owner.ts`) needs this deployment and a
+      // World that can invoke its owner: the run is stored for its owner
+      // alone, so it must never be written another way. The default only
+      // applies where that holds; an explicit marker that cannot be hosted
+      // is an error.
+      const singleOwner = isSingleOwnerRun({ attributes: runAttributes });
+      if (
+        singleOwner &&
+        (!world.capabilities?.invoke ||
+          !world.invoke ||
+          deploymentId !== currentDeploymentId)
+      )
+        throw new WorkflowRuntimeError(
+          'A single-owner run requires a local-target deployment and an invoke-capable World'
+        );
+      // The single-owner runner executes this deployment's compiled bundle, so
+      // a dynamic run (which carries its own code) cannot be single-owner.
+      if (singleOwner && dynamicWorkflow)
+        throw new WorkflowRuntimeError(
+          'Dynamic workflows cannot be started as single-owner runs ($experimentalSingleOwner)'
+        );
       // The queue namespace the run's messages travel on, recorded so a World
       // that re-enqueues active runs on restart (world-local, world-postgres)
       // sends this run back to its own namespace's consumer.
@@ -1155,6 +1204,59 @@ export async function start<TArgs extends unknown[], TResult>(
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
+      // A single-owner run is started by its owner: the start invocation
+      // carries everything `run_created` needs, and the owner commits it as
+      // the first event of its own session, enqueues a delayed wake carrying
+      // the same input as a backup, and resolves once the run and its first
+      // transitions are durable. This is the only way such a run is created:
+      // a failed invocation fails start(), since writing the run from here
+      // would bypass its single writer.
+      if (singleOwner) {
+        if (!world.invoke)
+          throw new WorkflowRuntimeError('World invoke is unavailable');
+        await world.invoke(
+          runId,
+          {
+            type: 'run_start',
+            version: 2,
+            ...((opts.experimental_durableRunCreated ??
+            process.env.WORKFLOW_DURABLE_RUN_CREATED === '1')
+              ? { durableCreate: true }
+              : {}),
+            runInput: {
+              input: workflowArguments,
+              deploymentId,
+              workflowName,
+              specVersion,
+              executionContext,
+              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+              ...(creatorEnvironment !== undefined
+                ? { environment: creatorEnvironment }
+                : {}),
+              ...attributeSeed,
+            },
+          },
+          {
+            idempotencyKey: `run-start:${runId}`,
+            target: { deploymentId, workflowName },
+          }
+        );
+        safeWaitUntil(Promise.all(ops), (err) => {
+          runtimeLogger.warn(
+            'Background flush of workflow argument streams failed',
+            {
+              workflowRunId: runId,
+              error: err instanceof Error ? err.message : String(err),
+            }
+          );
+        });
+        span?.setAttributes({
+          ...Attribute.WorkflowRunId(runId),
+          ...Attribute.DeploymentId(deploymentId),
+        });
+        return new Run<TResult>(runId, { resilientStart: false });
+      }
+
       const runCreated = world.events.create(
         runId,
         {
@@ -1205,8 +1307,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // run, the create has already succeeded above).
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
-      const [runCreatedResult, queueResult] = await Promise.allSettled([
-        runCreated,
+      const enqueue = () =>
         world.queue(
           queueName,
           {
@@ -1239,7 +1340,10 @@ export async function start<TArgs extends unknown[], TResult>(
             // this field.
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
-        ),
+        );
+      const [runCreatedResult, queueResult] = await Promise.allSettled([
+        runCreated,
+        enqueue(),
       ]);
 
       // Queue failure is always fatal: the run was not enqueued

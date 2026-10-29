@@ -73,6 +73,8 @@ import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
 export interface SuspensionHandlerParams {
+  /** Persist step creation before handing work to a serialized owner's workers. */
+  deferInlineSteps?: boolean;
   suspension: WorkflowSuspension;
   world: World;
   run: WorkflowRun;
@@ -520,6 +522,7 @@ export async function handleSuspension({
   stepDispatch,
   ownerMessageId,
   allowDeferredBatchWork,
+  deferInlineSteps = true,
   forceClaimVictimWakes,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
@@ -1221,10 +1224,12 @@ export async function handleSuspension({
     (item) => item.hasConflictAwaiter === true
   );
   const lazyInlineCorrelationIds = new Set<string>(
-    stepItems
-      .filter((item) => stepsNeedingCreation.has(item.correlationId))
-      .slice(0, getMaxInlineSteps())
-      .map((item) => item.correlationId)
+    deferInlineSteps
+      ? stepItems
+          .filter((item) => stepsNeedingCreation.has(item.correlationId))
+          .slice(0, getMaxInlineSteps())
+          .map((item) => item.correlationId)
+      : []
   );
   // Collected by correlationId because the per-step ops below run concurrently
   // and settle out of order. We rebuild the array in deterministic
