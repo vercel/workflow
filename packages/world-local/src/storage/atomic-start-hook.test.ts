@@ -113,7 +113,9 @@ atomicStartHookConformance({
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     vi.setSystemTime(target);
   },
-  stageOrphan: async (runId, token) => {
+  // Hook retention is compared against `Date.now()`.
+  retentionReadsAdvanceClock: true,
+  stageUnacknowledgedClaim: async (runId, token) => {
     const dir = currentDir;
     if (!dir) throw new Error('no storage set up');
     await stageOrphanClaim(dir, runId, token, Date.now());

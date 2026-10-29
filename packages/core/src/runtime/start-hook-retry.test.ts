@@ -14,6 +14,7 @@ import {
   WorkflowStartError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { contextStorage } from '../step/context-storage.js';
@@ -114,6 +115,38 @@ describe('a step retrying start({ hook })', () => {
     const runs = await local.runs.list({});
     expect(runs.data.map((run) => run.runId)).toEqual([candidate]);
     expect(queue).toHaveBeenCalledTimes(2);
+  });
+
+  it('admits the retry as a new run once the unconfirmed owner ended without a retention', async () => {
+    const { local } = lossyWorld(4);
+
+    const first = await stepAttempt(1, () =>
+      start(workflow, ['a'], { hook: { token: TOKEN } })
+    ).catch((e: unknown) => e);
+    expect(WorkflowStartError.is(first)).toBe(true);
+    const candidate = (first as WorkflowStartError).runId;
+
+    // The admitted candidate runs to completion before the retry: with no
+    // retention its token is released, so the retry is admitted as a second
+    // run, as documented. A retention covering the retry window prevents it.
+    await local.events.create(candidate, {
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_CURRENT,
+    } as never);
+    await local.events.create(candidate, {
+      eventType: 'run_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { output: new Uint8Array([1]) },
+    } as never);
+
+    const second = await stepAttempt(2, () =>
+      start(workflow, ['a'], { hook: { token: TOKEN } })
+    );
+    expect(second.runId).not.toBe(candidate);
+    const runs = await local.runs.list({});
+    expect(runs.data.map((run) => run.runId).sort()).toEqual(
+      [candidate, second.runId].sort()
+    );
   });
 
   it('decides the candidate after an uncertain publish, and publishes it again', async () => {

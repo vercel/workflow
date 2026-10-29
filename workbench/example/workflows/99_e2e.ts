@@ -934,18 +934,21 @@ export async function startHookOwnerWorkflow(token: string, expected: number) {
 }
 
 /**
- * A `start({ hook })` run that sleeps before it opens its start Hook, so
- * payloads resumed right after `start()` land in its log first. It then reads
- * `expected` payloads in log order.
+ * A `start({ hook })` run that waits on a separate gate token before it opens
+ * its start Hook, then reads `expected` payloads from it: payloads resumed
+ * before the gate opens are already in the log when `createHook()` runs.
  */
-export async function startHookSleepThenClaimWorkflow(
+export async function startHookGateThenClaimWorkflow(
   token: string,
-  delayMs: number,
+  gateToken: string,
   expected: number
 ) {
   'use workflow';
 
-  await sleep(delayMs);
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
   using hook = createHook<{ message: string }>({ token });
   const messages: string[] = [];
   for await (const payload of hook) {

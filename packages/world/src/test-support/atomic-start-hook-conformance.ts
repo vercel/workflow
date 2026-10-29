@@ -88,20 +88,40 @@ export interface AtomicStartHookConformanceOptions {
    */
   advanceClock?: (ms: number) => void;
   /**
-   * Leaves the state a writer that died mid-admission leaves behind: the
-   * candidate accepted (its token claimed) but its run never created. Omit
-   * for a World where that state cannot exist (one that claims the token
-   * and creates the run in a single transaction).
+   * Whether the World compares Hook retention against the clock
+   * `advanceClock` moves (its `Date.now()`), so the retention tests cross a
+   * retention in virtual time instead of waiting for it. Omit for a World
+   * that compares it elsewhere (in SQL); those tests then use a few seconds
+   * of real time.
    */
-  stageOrphan?: (runId: string, token: string) => Promise<void>;
+  retentionReadsAdvanceClock?: boolean;
   /**
-   * How long a staged orphan keeps its token before a contender may take it:
-   * the 24h bound for a World that records an acceptance before the run
-   * (the Vercel backend), or a shorter grace for one whose acceptance is the
-   * run itself (world-local holds for its claim lock's lease plus margin, in
-   * case the writer is stalled rather than dead). Defaults to 24h.
+   * Leaves the state a writer that died after claiming the token but before
+   * the candidate was admitted leaves behind: the claim, and no run. No
+   * caller was told it was admitted, so its start Hook is not a Hook yet:
+   * lookups answer not found and deliveries are refused. For a World whose
+   * acceptance is the run itself (world-local writes the claim immediately
+   * before the run). Omit where that state cannot exist (a World that claims
+   * the token and creates the run in one transaction).
+   */
+  stageUnacknowledgedClaim?: (runId: string, token: string) => Promise<void>;
+  /**
+   * How long a staged unacknowledged claim keeps its token before a contender
+   * may take it: world-local holds for its claim lock's lease plus margin, in
+   * case the writer is stalled rather than dead. Defaults to 24h.
    */
   orphanHoldMs?: number;
+  /**
+   * Leaves an accepted candidate whose run is not stored yet, for a World
+   * that admits in more than one write (the Vercel backend across regions):
+   * its start Hook exists and resolves by token, a delivery to it gets a
+   * retryable answer (`retryAfter`) rather than not found while the run can
+   * still appear, and it holds its token until the 24h bound or a fence.
+   */
+  stageAcceptedRowlessCandidate?: (
+    runId: string,
+    token: string
+  ) => Promise<void>;
 }
 
 const SPEC = SPEC_VERSION_CURRENT;
@@ -217,10 +237,29 @@ export function atomicStartHookConformance(
     expect(error).toMatchObject({ token, conflictingRunId });
   }
 
+  // Retention windows: in virtual time where the World reads the clock the
+  // suite moves (long, crossed at once), otherwise a few real seconds.
+  const virtualRetention =
+    options.retentionReadsAdvanceClock === true &&
+    options.advanceClock !== undefined;
+  const RETENTION_MS = virtualRetention ? 3_600_000 : 5_000;
+  /** Waits (or moves the clock) until `until` has passed. */
+  async function passRetention(until: number): Promise<void> {
+    if (virtualRetention) {
+      options.advanceClock?.(until - Date.now() + 1_000);
+      return;
+    }
+    await sleep(Math.max(0, until - Date.now()) + 250);
+  }
+
+  /** Whether the run exists; only the World's not-found answer means no. */
   async function runExists(runId: string): Promise<boolean> {
     return runs.get(runId).then(
       () => true,
-      () => false
+      (error: unknown) => {
+        if (errorNamed(error, 'WorkflowRunNotFoundError')) return false;
+        throw error;
+      }
     );
   }
 
@@ -276,6 +315,11 @@ export function atomicStartHookConformance(
   const newHookId = () => `hook_${randomUUID().replaceAll('-', '')}`;
 
   describe(`atomic start Hook conformance (${options.name})`, () => {
+    // A retention test may have moved the clock; put it back.
+    afterEach(() => {
+      if (virtualRetention) options.advanceClock?.(0);
+    });
+
     test('declares the atomic start Hook capability', () => {
       expect(options.capabilities()?.atomicStartHook?.active).toBe(true);
     });
@@ -428,7 +472,7 @@ export function atomicStartHookConformance(
         await create(first, owner, runStarted({ token }));
         const candidate = options.newRunId();
 
-        const [, admission] = await Promise.allSettled([
+        const [finished, admission] = await Promise.allSettled([
           finish(first, owner),
           create(
             round % 2 === 0 ? second : first,
@@ -436,6 +480,11 @@ export function atomicStartHookConformance(
             runCreated({ token })
           ),
         ]);
+        // The race is against a real end: the owner did finish.
+        expect(finished.status === 'rejected' ? finished.reason : 'ok').toBe(
+          'ok'
+        );
+        expect((await runs.get(owner)).status).toBe('completed');
 
         if (admission.status === 'rejected') {
           // Decided while the owner still ran: refused naming it, and the
@@ -462,11 +511,15 @@ export function atomicStartHookConformance(
       await create(first, owner, runStarted({ token }));
       const candidate = options.newRunId();
 
-      const [, admission] = await Promise.allSettled([
+      const [finished, admission] = await Promise.allSettled([
         finish(first, owner),
         create(second, candidate, runCreated({ token })),
       ]);
 
+      expect(finished.status === 'rejected' ? finished.reason : 'ok').toBe(
+        'ok'
+      );
+      expect((await runs.get(owner)).status).toBe('completed');
       expect(admission.status).toBe('rejected');
       if (admission.status === 'rejected') {
         expect(admission.reason).toMatchObject({ conflictingRunId: owner });
@@ -507,15 +560,15 @@ export function atomicStartHookConformance(
     test('holds the token past the owner end until the retention passes', async () => {
       const events = setup();
       const token = newToken();
-      const retentionMs = 2_000;
+      const until = Date.now() + RETENTION_MS;
       const owner = await admit(events, {
         token,
-        tokenRetentionUntil: new Date(Date.now() + retentionMs),
+        tokenRetentionUntil: new Date(until),
       });
       await finish(events, owner);
 
       await expectRefused(admit(events, { token }), token, owner);
-      await sleep(retentionMs + 250);
+      await passRetention(until);
       await admit(events, { token });
     });
 
@@ -677,7 +730,7 @@ export function atomicStartHookConformance(
     test("a disposed start Hook's retention applies once the run ends", async () => {
       const events = setup();
       const token = newToken();
-      const until = Date.now() + 3_000;
+      const until = Date.now() + RETENTION_MS;
       const owner = await admit(events, {
         token,
         tokenRetentionUntil: new Date(until),
@@ -687,14 +740,14 @@ export function atomicStartHookConformance(
       await finish(events, owner);
 
       await expectRefused(admit(events, { token }), token, owner);
-      await sleep(Math.max(0, until - Date.now()) + 250);
+      await passRetention(until);
       await admit(events, { token });
     });
 
     test("a Hook the owner makes on its kept token carries the start Hook's retention past the run's end", async () => {
       const events = setup();
       const token = newToken();
-      const until = Date.now() + 3_000;
+      const until = Date.now() + RETENTION_MS;
       const owner = await admit(events, {
         token,
         tokenRetentionUntil: new Date(until),
@@ -706,16 +759,17 @@ export function atomicStartHookConformance(
       await finish(events, owner);
 
       await expectRefused(admit(events, { token }), token, owner);
-      await sleep(Math.max(0, until - Date.now()) + 250);
+      await passRetention(until);
       await admit(events, { token });
     });
 
     test('the latest retention survives repeated dispose and re-create on the kept token', async () => {
       const events = setup();
       const token = newToken();
+      const startUntil = Date.now() + 1_000;
       const owner = await admit(events, {
         token,
-        tokenRetentionUntil: new Date(Date.now() + 1_000),
+        tokenRetentionUntil: new Date(startUntil),
       });
       await create(events, owner, runStarted({ token }));
       await create(events, owner, hookDisposed(token, startHookId(owner)));
@@ -724,7 +778,12 @@ export function atomicStartHookConformance(
       await create(
         events,
         owner,
-        hookCreated(token, second, false, new Date(Date.now() + 3_600_000))
+        hookCreated(
+          token,
+          second,
+          false,
+          new Date(Date.now() + 10 * RETENTION_MS)
+        )
       );
       await create(events, owner, hookDisposed(token, second));
       const third = newHookId();
@@ -733,7 +792,7 @@ export function atomicStartHookConformance(
 
       // Past the start Hook's own retention, the intermediate one holds:
       // the undisposed Hook stays readable and the token stays the owner's.
-      await sleep(1_250);
+      await passRetention(startUntil);
       expect((await lookup(token)).hook).toMatchObject({
         hookId: third,
         runId: owner,
@@ -784,7 +843,7 @@ export function atomicStartHookConformance(
     test('with a retention, the ended owner keeps a readable Hook that takes no deliveries', async () => {
       const events = setup();
       const token = newToken();
-      const until = Date.now() + 3_000;
+      const until = Date.now() + RETENTION_MS;
       const owner = await admit(events, {
         token,
         tokenRetentionUntil: new Date(until),
@@ -809,7 +868,7 @@ export function atomicStartHookConformance(
         conflictingRunId: owner,
       });
 
-      await sleep(Math.max(0, until - Date.now()) + 250);
+      await passRetention(until);
       await admit(events, { token });
     });
 
@@ -889,7 +948,52 @@ export function atomicStartHookConformance(
       afterEach(() => advance?.(0));
       const orphanTest = advance ? test : test.skip;
       const stagedOrphanTest =
-        advance && options.stageOrphan ? test : test.skip;
+        advance && options.stageUnacknowledgedClaim ? test : test.skip;
+      const acceptedRowlessTest =
+        advance && options.stageAcceptedRowlessCandidate ? test : test.skip;
+
+      acceptedRowlessTest(
+        'an accepted candidate with no run yet resolves, holds its token, and answers deliveries with a retry',
+        async () => {
+          const events = setup();
+          const token = newToken();
+          const candidate = options.newRunId();
+          await options.stageAcceptedRowlessCandidate?.(candidate, token);
+
+          expect((await lookup(token)).hook).toMatchObject({
+            hookId: startHookId(candidate),
+            runId: candidate,
+          });
+          const delivery = await refusal(
+            create(
+              events,
+              candidate,
+              hookReceived(token, startHookId(candidate), 1)
+            )
+          );
+          expect(errorNamed(delivery, 'HookNotFoundError')).toBe(false);
+          expect(
+            (delivery as { retryAfter?: unknown }).retryAfter
+          ).toBeDefined();
+          // Within the bound it keeps its token.
+          advance?.(DAY_MS - 60_000);
+          await expectRefused(admit(events, { token }), token, candidate);
+          // Fenced by a cancel: it can never be created, and the token is free.
+          const cancelled = await refusal(
+            create(events, candidate, {
+              eventType: 'run_cancelled',
+              specVersion: SPEC,
+            } as AnyEventRequest)
+          );
+          expect((cancelled as { code?: unknown }).code).toBe(
+            START_HOOK_CANDIDATE_CANCELLED_CODE
+          );
+          await refusal(create(events, candidate, runStarted({ token })));
+          const next = await admit(events, { token });
+          expect(await runExists(next)).toBe(true);
+          expect(await runExists(candidate)).toBe(false);
+        }
+      );
 
       orphanTest(
         'refuses a candidate past the bound that never got a run, through either copy',
@@ -950,7 +1054,7 @@ export function atomicStartHookConformance(
           const token = newToken();
           const orphan = options.newRunId();
           const holdMs = options.orphanHoldMs ?? DAY_MS;
-          await options.stageOrphan?.(orphan, token);
+          await options.stageUnacknowledgedClaim?.(orphan, token);
 
           // Just inside the hold: refused, naming the orphan.
           advance?.(holdMs - 5_000);
@@ -982,7 +1086,7 @@ export function atomicStartHookConformance(
           const token = newToken();
           const orphan = options.newRunId();
           const holdMs = options.orphanHoldMs ?? DAY_MS;
-          await options.stageOrphan?.(orphan, token);
+          await options.stageUnacknowledgedClaim?.(orphan, token);
           const resume = () =>
             refusal(
               create(
@@ -1013,7 +1117,7 @@ export function atomicStartHookConformance(
           const events = setup();
           const token = newToken();
           const orphan = options.newRunId();
-          await options.stageOrphan?.(orphan, token);
+          await options.stageUnacknowledgedClaim?.(orphan, token);
 
           const cancelled = await refusal(
             create(events, orphan, {
@@ -1021,13 +1125,10 @@ export function atomicStartHookConformance(
               specVersion: SPEC,
             } as AnyEventRequest)
           );
-          // Fenced as admitted-but-uncreated, or not found where the World
-          // records no decision for it; either way it can never be created.
-          expect(
-            (cancelled as { code?: unknown }).code ===
-              START_HOOK_CANDIDATE_CANCELLED_CODE ||
-              errorNamed(cancelled, 'WorkflowRunNotFoundError')
-          ).toBe(true);
+          // Fenced: it can never be created.
+          expect((cancelled as { code?: unknown }).code).toBe(
+            START_HOOK_CANDIDATE_CANCELLED_CODE
+          );
           await refusal(create(events, orphan, runStarted({ token })));
           await refusal(create(events, orphan, runCreated({ token })));
           expect(await runExists(orphan)).toBe(false);
@@ -1040,7 +1141,7 @@ export function atomicStartHookConformance(
           const events = setup();
           const token = newToken();
           const orphan = options.newRunId();
-          await options.stageOrphan?.(orphan, token);
+          await options.stageUnacknowledgedClaim?.(orphan, token);
           advance?.(DAY_MS + 60_000);
 
           const error = await refusal(

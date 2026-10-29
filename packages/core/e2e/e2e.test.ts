@@ -9,6 +9,7 @@ import {
   RunExpiredError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
+  WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { createWorkflowUrl } from '@workflow/utils';
@@ -2833,8 +2834,8 @@ describe.concurrent('e2e', () => {
 
         try {
           const owner = await startHooked(
-            await e2e('startHookSleepThenClaimWorkflow'),
-            [token, 5_000, 1],
+            await e2e('startHookGateThenClaimWorkflow'),
+            [token, `${token}-gate`, 1],
             {
               world: queue.world,
               hook: { token, metadata: { sessionId: 'session-1' } },
@@ -2857,6 +2858,8 @@ describe.concurrent('e2e', () => {
           expect(resumed.hookId).toBe(hookId);
 
           await queue.release();
+          await waitForHook(`${token}-gate`, { runId: owner.runId });
+          await resumeHook(`${token}-gate`, { release: true });
           expect(await owner.returnValue).toEqual({ messages: ['p1'] });
           // `run_created` stands for the start Hook's creation: no
           // hook_created is ever written for it.
@@ -2865,7 +2868,8 @@ describe.concurrent('e2e', () => {
             received: 1,
             conflict: 0,
           });
-          expect((await hookEventCounts(owner.runId)).created).toBe(0);
+          // The one hook_created in the log is the gate's.
+          expect((await hookEventCounts(owner.runId)).created).toBe(1);
         } finally {
           await queue.release();
         }
@@ -2880,10 +2884,12 @@ describe.concurrent('e2e', () => {
         const token = randomToken('start-hook-early');
         const messages = ['p1', 'p2', 'p3'];
 
-        // The body sleeps 5 s before it opens the start Hook.
+        // The body waits on a gate before it opens the start Hook, and the
+        // gate opens only after every payload is in.
+        const gate = `${token}-gate`;
         const owner = await startHooked(
-          await e2e('startHookSleepThenClaimWorkflow'),
-          [token, 5_000, messages.length],
+          await e2e('startHookGateThenClaimWorkflow'),
+          [token, gate, messages.length],
           { hook: { token } }
         );
         const hookId = startHookId(owner.runId);
@@ -2891,11 +2897,13 @@ describe.concurrent('e2e', () => {
           const hook = await resumeHook(token, { message });
           expect(hook.hookId).toBe(hookId);
         }
+        const gateHook = await waitForHook(gate, { runId: owner.runId });
+        await resumeHook(gate, { release: true });
 
         expect(await owner.returnValue).toEqual({ messages });
         expect(await owner.status).toBe('completed');
 
-        // All three were in the log before the sleep ended, so before
+        // All three were in the log before the gate opened, so before
         // createHook() was called.
         const events = await allRunEvents(owner.runId);
         const received = events.flatMap((e, i) =>
@@ -2903,10 +2911,14 @@ describe.concurrent('e2e', () => {
             ? [i]
             : []
         );
-        const woke = events.findIndex((e) => e.eventType === 'wait_completed');
+        const opened = events.findIndex(
+          (e) =>
+            e.eventType === 'hook_received' &&
+            e.correlationId === gateHook.hookId
+        );
         expect(received).toHaveLength(messages.length);
-        expect(woke).toBeGreaterThan(-1);
-        expect(Math.max(...received)).toBeLessThan(woke);
+        expect(opened).toBeGreaterThan(-1);
+        expect(Math.max(...received)).toBeLessThan(opened);
       }
     );
 
@@ -3063,18 +3075,27 @@ describe.concurrent('e2e', () => {
         // Its queued copy was published before the refusal. Give it time to
         // be consumed: absence is what is checked, so a sleep is the point.
         await sleep(5_000);
+        // Only the World's not-found answer counts as absence.
         const exists = await world.runs
           .get(candidate, { resolveData: 'none' })
           .then(
             () => true,
-            () => false
+            (error: unknown) => {
+              if (WorkflowRunNotFoundError.is(error)) return false;
+              throw error;
+            }
           );
         expect(exists, 'no run should exist for the refused candidate').toBe(
           false
         );
         const { data: candidateEvents } = await world.events
           .list({ runId: candidate, resolveData: 'none' })
-          .catch(() => ({ data: [] as WorkflowEvent[] }));
+          .catch((error: unknown) => {
+            if (WorkflowRunNotFoundError.is(error)) {
+              return { data: [] as WorkflowEvent[] };
+            }
+            throw error;
+          });
         expect(candidateEvents).toEqual([]);
 
         await resumeHook(token, { message: 'done' });
@@ -3098,7 +3119,12 @@ describe.concurrent('e2e', () => {
         // `run_started` reaches the World first and admits the candidate on
         // its own (the resilient start, with no log yet). The late direct
         // write must then replay that decision.
-        const LATE_MS = 10_000;
+        // Released once the queued copy's admission is observed (or the test
+        // gives up), never on a timer.
+        let releaseDirect!: () => void;
+        const directHeld = new Promise<void>((resolve) => {
+          releaseDirect = resolve;
+        });
         let candidateRunId: string | undefined;
         const late = {
           ...world,
@@ -3112,7 +3138,7 @@ describe.concurrent('e2e', () => {
               if (
                 (args[1] as { eventType: string }).eventType === 'run_created'
               ) {
-                await sleep(LATE_MS);
+                await directHeld;
               }
               return world.events.create(...args);
             }) as World['events']['create'],
@@ -3123,39 +3149,46 @@ describe.concurrent('e2e', () => {
           world: late,
           hook: { token },
         });
-        // The run exists before the direct write is sent: the queued copy
-        // created it.
-        const deadline = Date.now() + LATE_MS - 1_000;
-        let admittedByQueuedCopy = false;
-        while (Date.now() < deadline) {
-          if (candidateRunId) {
-            const found = await world.runs
-              .get(candidateRunId, { resolveData: 'none' })
-              .then(
-                () => true,
-                () => false
-              );
-            if (found) {
-              admittedByQueuedCopy = true;
-              break;
+        let refusal: unknown;
+        try {
+          // The run exists while the direct write is still held: the queued
+          // copy created it.
+          const deadline = Date.now() + 90_000;
+          let admittedByQueuedCopy = false;
+          while (Date.now() < deadline) {
+            if (candidateRunId) {
+              const found = await world.runs
+                .get(candidateRunId, { resolveData: 'none' })
+                .then(
+                  () => true,
+                  (error: unknown) => {
+                    if (WorkflowRunNotFoundError.is(error)) return false;
+                    throw error;
+                  }
+                );
+              if (found) {
+                admittedByQueuedCopy = true;
+                break;
+              }
             }
+            await sleep(250);
           }
-          await sleep(250);
+          expect(
+            admittedByQueuedCopy,
+            'the queued copy should admit the candidate while run_created is held back'
+          ).toBe(true);
+          // A duplicate is refused naming the candidate the queued copy
+          // admitted, while the direct write is still held.
+          refusal = await startHooked(workflow, [token, 1], {
+            hook: { token },
+          }).then(
+            () => undefined,
+            (e: unknown) => e
+          );
+        } finally {
+          releaseDirect();
         }
-        expect(
-          admittedByQueuedCopy,
-          'the queued copy should admit the candidate while run_created is held back'
-        ).toBe(true);
-        // A duplicate is refused naming the candidate the queued copy admitted.
-        // Settled at once: it is refused while the direct write is still held.
-        const duplicate = startHooked(workflow, [token, 1], {
-          hook: { token },
-        }).then(
-          () => undefined,
-          (e: unknown) => e
-        );
         const owner = await pending;
-        const refusal = await duplicate;
         expect(HookConflictError.is(refusal), String(refusal)).toBe(true);
         expect(refusal).toMatchObject({ conflictingRunId: owner.runId });
 

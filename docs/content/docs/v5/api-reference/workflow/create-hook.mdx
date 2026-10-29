@@ -188,7 +188,7 @@ Custom hook tokens are the recommended way to coordinate active workflow runs. U
 
 ### Open the run's start Hook
 
-A run started with [`start(workflow, args, { hook: { token } })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) already owns its token through its start Hook. Calling `createHook({ token })` with that token in the run returns a handle bound to the start Hook instead of registering a new one: it adds no step, `await hook.getConflict()` resolves `null`, and payloads resumed before the call are delivered in order. Set `metadata`, `experimental_minRetention`, `isWebhook` and `experimental_force` on `start({ hook })`; passing them to this `createHook()` throws. Disposing the handle ends the Hook, but the run keeps the token until it ends; a later `createHook({ token })` in the run gets a new Hook on it. See [Receive the payloads in the workflow](/docs/foundations/idempotency#receive-the-payloads-in-the-workflow).
+A run started with [`start(workflow, args, { hook: { token } })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) already owns its token through its start Hook. Calling `createHook({ token })` with that token in the run returns a handle bound to the start Hook instead of registering a new one: it adds no step, `await hook.getConflict()` resolves `null`, and payloads resumed before the call are delivered in order. Set `metadata` and `experimental_minRetention` on `start({ hook })`; a start Hook can't be a webhook or force-claim its token. Passing any of `metadata`, `experimental_minRetention`, `isWebhook` or `experimental_force` to this `createHook()` throws. Disposing the handle ends the Hook, but the run keeps the token until it ends; a later `createHook({ token })` in the run gets a new Hook on it. See [Receive the payloads in the workflow](/docs/foundations/idempotency#receive-the-payloads-in-the-workflow).
 
 ### Keep a token unavailable after the run ends
 
@@ -329,7 +329,7 @@ export async function handoffWorkflow(channelId: string) {
 }
 ```
 
-After calling `dispose()`, the hook will no longer receive events and its token becomes available for other workflows to use.
+After calling `dispose()`, the hook will no longer receive events and its token becomes available for other workflows to use. The exception is the token of a run's [start Hook](#open-the-runs-start-hook): the run keeps it until it ends.
 
 ### Automatic disposal with `using`
 
@@ -350,7 +350,8 @@ export async function scopedHookWorkflow(channelId: string) {
     console.log("Received:", payload.message);
   } // hook is automatically disposed here // [!code highlight]
 
-  // Token is now available for other workflows to use
+  // Token is now available for other workflows to use (unless it is this
+  // run's start Hook token, which the run keeps until it ends)
   console.log("Hook disposed, continuing with other work...");
 }
 ```
