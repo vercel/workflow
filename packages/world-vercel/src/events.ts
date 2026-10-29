@@ -1014,6 +1014,11 @@ function reconstructRunFromReplayEvents(events: Event[]) {
       input: runCreated.eventData.input,
       attributes,
       encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+      // The start Hook echo (`start({ hook })`): the backend keeps it on
+      // `run_created`, without its metadata.
+      ...(runCreated.eventData.startHook
+        ? { startHook: runCreated.eventData.startHook }
+        : {}),
       startedAt: runStarted.createdAt,
       createdAt: runCreated.createdAt,
       updatedAt,
