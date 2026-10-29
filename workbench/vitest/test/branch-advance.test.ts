@@ -12,6 +12,7 @@ import {
   parallelChainsWorkflow,
   raceLoserThenThrowWorkflow,
   raceLoserWorkflow,
+  retryBesideSleepWorkflow,
   retryBesideSlowWorkflow,
   sleepTimeoutWorkflow,
 } from '../workflows/branch-advance.js';
@@ -255,6 +256,57 @@ describe('parallel branches advance independently (#4457)', () => {
       expect(Date.now() - resumedAt).toBeLessThan(5_000);
     }, 60_000);
   }
+
+  it.skipIf(lockstepEngine)(
+    "keeps a running sibling's retry backoff when a stale write re-invokes the run",
+    async () => {
+      // The early pass that reaches the sleep has its `wait_created` refused
+      // as stale once, with no in-process restart left, so the delivery
+      // re-invokes while the sibling's first attempt is still running. That
+      // attempt fails with a plain error, whose 1s backoff only the delayed
+      // retry message enforces.
+      process.env.WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS = '0';
+      process.env.WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS = '0';
+      const world = await getWorld();
+      const originalCreate = world.events.create;
+      let refused = 0;
+      world.events.create = (async (
+        ...args: Parameters<typeof originalCreate>
+      ) => {
+        if (args[1].eventType === 'wait_created' && refused === 0) {
+          refused++;
+          const err = new Error('stale snapshot (injected)');
+          err.name = 'PreconditionFailedError';
+          throw err;
+        }
+        return originalCreate.apply(world.events, args);
+      }) as typeof originalCreate;
+      try {
+        const markerPath = await markerFile();
+        const run = await start(retryBesideSleepWorkflow, [
+          FAST_MS,
+          FAST_MS * 3,
+          markerPath,
+        ]);
+        await expect(run.returnValue).resolves.toEqual(['slept', 2]);
+        expect(refused).toBe(1);
+
+        const attempts = (await readFile(markerPath, 'utf8'))
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        expect(attempts.map((a) => a.attempt)).toEqual([1, 2]);
+        // The default backoff after a plain error is 1s; allow for timer
+        // and clock slack, well above an immediate re-dispatch.
+        expect(attempts[1].start - attempts[0].end).toBeGreaterThan(800);
+      } finally {
+        world.events.create = originalCreate;
+        delete process.env.WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS;
+        delete process.env.WORKFLOW_PRECONDITION_REINVOKE_DELAY_SECONDS;
+      }
+    },
+    60_000
+  );
 
   it('completes a leaf fan-out wider than the inline limit', async () => {
     const markerPath = await markerFile();

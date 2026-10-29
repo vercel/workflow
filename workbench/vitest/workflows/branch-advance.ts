@@ -147,3 +147,34 @@ export async function hookVsStepWorkflow(token: string, stepMs: number) {
   const hook = createHook<{ v: string }>({ token });
   return await Promise.race([waitStep(stepMs), hook.then(({ v }) => v)]);
 }
+
+/** Throws a plain error on its first attempt; records each attempt's span. */
+async function failOnceStep(ms: number, markerPath: string) {
+  'use step';
+  const { attempt } = getStepMetadata();
+  const start = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  await appendFile(
+    markerPath,
+    `${JSON.stringify({ attempt, start, end: Date.now() })}\n`
+  );
+  if (attempt === 1) throw new Error('first attempt');
+  return attempt;
+}
+
+/** One branch reaches a sleep while its sibling's step is about to retry. */
+export async function retryBesideSleepWorkflow(
+  fastMs: number,
+  flakyMs: number,
+  markerPath: string
+) {
+  'use workflow';
+  return await Promise.all([
+    (async () => {
+      await timedStep('fast', fastMs, `${markerPath}.fast`);
+      await sleep('1s');
+      return 'slept';
+    })(),
+    failOnceStep(flakyMs, markerPath),
+  ]);
+}

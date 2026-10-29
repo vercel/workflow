@@ -1536,6 +1536,68 @@ export function workflowEntrypoint(
                     }
                   };
 
+                  /**
+                   * Publish the delayed retry message of each inline step
+                   * that returned `retry`, keyed on its dispatch key.
+                   */
+                  const publishInlineRetries = async (
+                    retries: readonly {
+                      step: InlineStepRef;
+                      delaySeconds: number;
+                    }[]
+                  ): Promise<void> => {
+                    if (retries.length === 0) return;
+                    const run = workflowRun;
+                    assert(run, 'Inline steps ran before the run was loaded');
+                    const retryTraceCarrier = await nextTraceCarrier();
+                    await Promise.all(
+                      retries.map(({ step, delaySeconds }) =>
+                        queueMessage(
+                          world,
+                          getWorkflowQueueName(workflowName, namespace),
+                          {
+                            runId,
+                            stepId: step.correlationId,
+                            stepName: step.stepName,
+                            traceCarrier: retryTraceCarrier,
+                            requestedAt: new Date(),
+                            runContext: runDispatchContext(run),
+                          },
+                          {
+                            delaySeconds,
+                            // Key the delayed retry on the step's
+                            // dispatch key so it dedupes against the
+                            // keyed re-dispatch the suspension handler
+                            // performs on replay (it uses the same
+                            // stepDispatchIdempotencyKey).
+                            //
+                            // Without this, a mixed batch where one step
+                            // `completed` with unflushed background ops
+                            // (`anyPendingOps`) and another step is
+                            // retrying would double-dispatch the retry:
+                            // the batch's `anyPendingOps` branch queues an
+                            // immediate plain continuation, whose replay
+                            // sees the still-`retrying` step as pending
+                            // and re-dispatches it *immediately* and
+                            // *with* a key. Since this delayed retry had
+                            // no key, the two messages wouldn't dedupe:
+                            // the step would run twice, the configured
+                            // retry backoff would be ignored (plain
+                            // `Error` retries persist no `retryAfter`, so
+                            // the world has no `TooEarly` guard), and the
+                            // retry body could run early/concurrently.
+                            // Sharing the key lets the earlier delayed
+                            // message win, honoring the backoff.
+                            idempotencyKey: stepDispatchIdempotencyKey(
+                              step.correlationId,
+                              step.stepName
+                            ),
+                          }
+                        )
+                      )
+                    );
+                  };
+
                   // A plain orchestrator-replay message. Omits `runInput` (it
                   // re-engages turbo on the next delivery and wedges the run,
                   // see `reinvoke` below) and `replayDivergence` /
@@ -1560,10 +1622,26 @@ export function workflowEntrypoint(
                     extraPayload?: Partial<WorkflowInvokePayload>
                   ): Promise<{ timeoutSeconds: number } | undefined> => {
                     // Inline steps still running from an earlier pass settle
-                    // before this ack path. Their outcomes are not acted on:
-                    // the continuation's replay re-derives the work they
-                    // leave pending.
-                    await inlineStepsInFlight.settleAll();
+                    // before this ack path. A retry they returned is published
+                    // here, delayed, ahead of the continuation: that replay
+                    // re-dispatches the retrying step at once under the same
+                    // key, and the earlier delayed message wins, so the
+                    // backoff holds. Every other outcome is re-derived by the
+                    // continuation's replay.
+                    const settled = await inlineStepsInFlight.settleAll();
+                    await publishInlineRetries(
+                      settled.flatMap(({ step, outcome }) =>
+                        outcome.status === 'fulfilled' &&
+                        outcome.value.type === 'retry'
+                          ? [
+                              {
+                                step,
+                                delaySeconds: outcome.value.timeoutSeconds,
+                              },
+                            ]
+                          : []
+                      )
+                    );
                     assertNoInFlightOwnedSteps('reinvoke');
                     if (!turbo) return { timeoutSeconds: delaySeconds };
                     await queueMessage(
@@ -3079,8 +3157,6 @@ export function workflowEntrypoint(
                       }
                     | { done: false }
                   > => {
-                    const run = workflowRun;
-                    assert(run, 'Inline steps ran before the run was loaded');
                     // Aggregate the batch results. `retry` steps (which
                     // already exist, since their `step_started` succeeded) are
                     // re-queued per-step as background steps with their own
@@ -3163,55 +3239,7 @@ export function workflowEntrypoint(
                       };
                     }
 
-                    if (toRetry.length > 0) {
-                      const retryTraceCarrier = await nextTraceCarrier();
-                      await Promise.all(
-                        toRetry.map(({ step, delaySeconds }) =>
-                          queueMessage(
-                            world,
-                            getWorkflowQueueName(workflowName, namespace),
-                            {
-                              runId,
-                              stepId: step.correlationId,
-                              stepName: step.stepName,
-                              traceCarrier: retryTraceCarrier,
-                              requestedAt: new Date(),
-                              runContext: runDispatchContext(run),
-                            },
-                            {
-                              delaySeconds,
-                              // Key the delayed retry on the step's
-                              // dispatch key so it dedupes against the
-                              // keyed re-dispatch the suspension handler
-                              // performs on replay (it uses the same
-                              // stepDispatchIdempotencyKey).
-                              //
-                              // Without this, a mixed batch where one step
-                              // `completed` with unflushed background ops
-                              // (`anyPendingOps`) and another step is
-                              // retrying would double-dispatch the retry:
-                              // the `anyPendingOps` branch below queues an
-                              // immediate plain continuation, whose replay
-                              // sees the still-`retrying` step as pending
-                              // and re-dispatches it *immediately* and
-                              // *with* a key. Since this delayed retry had
-                              // no key, the two messages wouldn't dedupe:
-                              // the step would run twice, the configured
-                              // retry backoff would be ignored (plain
-                              // `Error` retries persist no `retryAfter`, so
-                              // the world has no `TooEarly` guard), and the
-                              // retry body could run early/concurrently.
-                              // Sharing the key lets the earlier delayed
-                              // message win, honoring the backoff.
-                              idempotencyKey: stepDispatchIdempotencyKey(
-                                step.correlationId,
-                                step.stepName
-                              ),
-                            }
-                          )
-                        )
-                      );
-                    }
+                    await publishInlineRetries(toRetry);
 
                     // Let pending background operations flush before the next
                     // replay reads their results.
