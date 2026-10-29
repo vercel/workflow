@@ -143,14 +143,23 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
           () => 'started',
           (error: unknown) => error
         );
-      const deadline = Date.now() + 10_000;
-      while (Date.now() < deadline) {
-        const { rows } = await pool.query(
-          'SELECT count(*)::int AS n FROM pg_locks WHERE NOT granted'
-        );
-        if (rows[0].n > 0) break;
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+      // Commit only once the run_started UPDATE is parked on the row lock.
+      // Committing earlier would let the validation read see the ended run,
+      // and that refusal passes without the guard under test.
+      const {
+        rows: [{ pid: enderPid }],
+      } = await ender.query('SELECT pg_backend_pid() AS pid');
+      await expect
+        .poll(async () => {
+          const { rows } = await pool.query(
+            `SELECT count(*)::int AS count FROM pg_stat_activity
+               WHERE pid <> $1 AND wait_event_type = 'Lock'
+               AND query ILIKE '%update%workflow_runs%'`,
+            [enderPid]
+          );
+          return rows[0].count;
+        })
+        .toBe(1);
       await ender.query('COMMIT');
 
       const outcome = await started;
