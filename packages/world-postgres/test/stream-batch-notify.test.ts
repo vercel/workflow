@@ -89,4 +89,35 @@ describe('Postgres stream batch notifications', () => {
     expect(notifies()).toBe(2);
     expect(chunkReads()).toBe(2);
   });
+
+  test('a batch still names every chunk for readers that read one chunkId per notification', async () => {
+    const listener = await pool.connect();
+    const payloads: { streamId: string; chunkId: string }[] = [];
+    listener.on('notification', (msg) => {
+      if (msg.payload) payloads.push(JSON.parse(msg.payload));
+    });
+    await listener.query('LISTEN workflow_event_chunk');
+
+    const runId = `run_${randomUUID()}`;
+    const name = `stream_${randomUUID()}`;
+    await streamer.streams.writeMulti(
+      runId,
+      name,
+      Array.from({ length: 50 }, (_, i) => `chunk ${i};`)
+    );
+    const { rows } = await pool.query<{ id: string }>(
+      'SELECT id FROM workflow.workflow_stream_chunks WHERE stream_id = $1 ORDER BY id',
+      [name]
+    );
+
+    await expect
+      .poll(() =>
+        payloads
+          .filter((payload) => payload.streamId === name)
+          .map((payload) => payload.chunkId)
+      )
+      .toEqual(rows.map((row) => row.id));
+    await listener.query('UNLISTEN workflow_event_chunk');
+    listener.release();
+  });
 });

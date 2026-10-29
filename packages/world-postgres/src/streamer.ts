@@ -17,6 +17,7 @@ const StreamPublishMessage = z.compile(
     streamId: z.string(),
     chunkId: z.templateLiteral(['chnk_', z.string()]),
     firstChunkId: z.templateLiteral(['chnk_', z.string()]).optional(),
+    rangeFollows: z.literal(true).optional(),
   })
 );
 
@@ -234,7 +235,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
       const key = `strm:${parsed.streamId}` as const;
-      if (!events.listenerCount(key)) {
+      if (parsed.rangeFollows || !events.listenerCount(key)) {
         return;
       }
 
@@ -303,8 +304,11 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     }
   };
 
-  const notifyStream = async (payload: string) => {
-    await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
+  const notifyStream = async (...payloads: string[]) => {
+    await pool.query(
+      'SELECT pg_notify($1, t.payload) FROM unnest($2::text[]) WITH ORDINALITY AS t(payload, i) ORDER BY t.i',
+      [STREAM_TOPIC, payloads]
+    );
   };
 
   const loadPersistedChunks = (name: string): Promise<StreamChunkEvent[]> =>
@@ -390,13 +394,17 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           }))
         );
 
+        // older readers read exactly one chunkId per notification
+        const lastIndex = chunkIds.length - 1;
         await notifyStream(
-          JSON.stringify(
-            StreamPublishMessage.encode({
-              firstChunkId: chunkIds[0],
-              chunkId: chunkIds[chunkIds.length - 1],
-              streamId: name,
-            })
+          ...chunkIds.map((chunkId, i) =>
+            JSON.stringify(
+              StreamPublishMessage.encode(
+                i === lastIndex
+                  ? { chunkId, firstChunkId: chunkIds[0], streamId: name }
+                  : { chunkId, rangeFollows: true, streamId: name }
+              )
+            )
           )
         );
       },
