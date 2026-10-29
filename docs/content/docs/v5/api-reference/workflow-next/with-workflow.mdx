@@ -62,7 +62,8 @@ As Next.js compiles, the transform reports each workflow ID it stamps into your
 code. When the build finishes, `withWorkflow()` compares those against the
 workflows the flow route registered and fails the build on anything the first
 set has and the second does not, naming the workflow and the module that
-declared it. Set
+declared it. The other framework integrations run the same check at the end of
+their own builds. Set
 [`WORKFLOW_REGISTRATION_CHECK`](/docs/configuration/build-and-diagnostics#workflow_registration_check)
 to `warn` to report it without failing, or to `off` to skip the check.
 

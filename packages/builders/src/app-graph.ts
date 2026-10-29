@@ -37,6 +37,24 @@ import type { WorkflowManifest } from './apply-swc-transform.js';
 const APP_GRAPH_ENTRY_SUFFIX = '.json';
 
 /**
+ * Where the app-code transform records what it stamped in, and the manifest to
+ * compare those records against.
+ *
+ * Both travel through the environment rather than through plugin options,
+ * because the two halves are produced in places that cannot hand values to
+ * each other: the transform runs inside the host bundler — for SvelteKit in
+ * worker threads that re-evaluate the config from scratch — and the manifest is
+ * written by whichever builder the integration happens to run, at a point that
+ * differs per framework. Worker threads and child processes inherit
+ * `process.env`, which is the channel the SWC plugin cache already uses.
+ *
+ * An unset directory means no production build armed the check, so nothing is
+ * recorded and the comparison has nothing to say.
+ */
+export const APP_GRAPH_DIR_ENV = 'WORKFLOW_PRIVATE_APP_GRAPH_DIR';
+export const APP_GRAPH_MANIFEST_ENV = 'WORKFLOW_PRIVATE_APP_GRAPH_MANIFEST';
+
+/**
  * Matches the manifest the SWC plugin appends to every module it transforms.
  * A fixed sentinel in the transform's own output, read back by the same
  * process that produced it — parsing a known format, not searching code.
@@ -257,5 +275,209 @@ export function formatUnregisteredWorkflows(
       ? `\n  …and ${remaining} more ${remaining === 1 ? 'workflow' : 'workflows'}.\n`
       : '') +
     '\nStarting one of these fails at runtime with WorkflowNotRegisteredError.'
+  );
+}
+
+/**
+ * Thrown when a build registered fewer workflows than the app can start.
+ *
+ * Not `WorkflowBuildError` from `@workflow/errors`, because `@workflow/next`
+ * consumes this too and that package is CommonJS while `@workflow/errors` is
+ * ESM-only. One error class is not worth the dynamic-import dance
+ * `builder-eager.ts` does for the rest of this package.
+ */
+export class WorkflowRegistrationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkflowRegistrationError';
+  }
+}
+
+export type RegistrationCheckMode = 'error' | 'warn' | 'off';
+
+/**
+ * What a production build does about a workflow the app can start but this
+ * build did not register.
+ *
+ * Defaults to failing. The configuration it reports already fails every run of
+ * that workflow, and a warning inside a build that reports success is exactly
+ * how such a configuration ships unnoticed.
+ */
+export function resolveRegistrationCheckMode(
+  env: NodeJS.ProcessEnv = process.env
+): RegistrationCheckMode {
+  switch (env.WORKFLOW_REGISTRATION_CHECK?.toLowerCase()) {
+    case 'off':
+    case '0':
+    case 'false':
+      return 'off';
+    case 'warn':
+      return 'warn';
+    case 'error':
+    case '1':
+    case 'true':
+      return 'error';
+    default:
+      // Dependency discovery is opt-out, and opting out means deliberately
+      // leaving a dependency's workflows unregistered while the host bundler
+      // still compiles them. Failing the build over the consequence of a flag
+      // the app set would be the check arguing with its own configuration, so
+      // it reports and lets the build through.
+      return isNodeModulesDiscoveryDisabled(env) ? 'warn' : 'error';
+  }
+}
+
+function isNodeModulesDiscoveryDisabled(env: NodeJS.ProcessEnv): boolean {
+  const value = env.WORKFLOW_DISCOVER_NODE_MODULES?.toLowerCase();
+  return value === '0' || value === 'false';
+}
+
+/** Guidance appended to a failure, naming the usual cause and the way out. */
+export const REGISTRATION_FAILURE_GUIDANCE =
+  'Workflow discovery walks the import graph from your app entrypoints and only follows literal\n' +
+  'string specifiers, so this usually means it could not reach the file: check that every import on\n' +
+  'the way to the workflow is a literal specifier, and look for earlier warnings about imports that\n' +
+  'could not be resolved.\n' +
+  'Set WORKFLOW_REGISTRATION_CHECK=warn to report this without failing the build.';
+
+/**
+ * The default place to record an app graph: beside the other build caches the
+ * integrations keep, under the app being built.
+ *
+ * Frameworks that own a single build-output directory can pass their own path
+ * instead — `@workflow/next` records inside `distDir` so the records are
+ * cleaned with the build. The Rollup-based integrations have no one equivalent
+ * (Nitro's `buildDir`, Astro's `outDir`, SvelteKit's `.svelte-kit`), so they
+ * share this one.
+ */
+export function resolveAppGraphDir(workingDir = process.cwd()): string {
+  return join(workingDir, 'node_modules/.cache/workflow/app-graph');
+}
+
+/**
+ * Begin recording the app graph for a production build, discarding whatever an
+ * earlier build left behind.
+ *
+ * Idempotent per process and per directory, so the several compiler passes a
+ * framework runs — and the worker threads SvelteKit spawns, which inherit the
+ * armed environment — add to one set of records instead of wiping each other's.
+ * Development builds arm nothing: there is no compile to check, and an import
+ * written before the file it points at is a normal editing state there.
+ */
+export async function armWorkflowAppGraph({
+  appGraphDir,
+  isDevelopment = process.env.NODE_ENV === 'development',
+}: {
+  appGraphDir: string;
+  isDevelopment?: boolean;
+}): Promise<void> {
+  if (isDevelopment || process.env[APP_GRAPH_DIR_ENV] === appGraphDir) {
+    return;
+  }
+
+  await resetWorkflowAppGraph(appGraphDir);
+  process.env[APP_GRAPH_DIR_ENV] = appGraphDir;
+}
+
+/**
+ * Record what one module's transform produced, into whatever directory the
+ * build armed. A no-op when nothing armed one.
+ */
+export async function recordTransformedWorkflows({
+  file,
+  code,
+}: {
+  file: string;
+  code: string;
+}): Promise<void> {
+  const appGraphDir = process.env[APP_GRAPH_DIR_ENV];
+  if (!appGraphDir) {
+    return;
+  }
+
+  const manifest = extractWorkflowManifestComment(code);
+  if (!manifest.workflows) {
+    return;
+  }
+
+  await recordWorkflowAppGraphEntry({ appGraphDir, file, manifest });
+}
+
+/**
+ * Compare what the app can start against what the build registered, and report
+ * the difference.
+ *
+ * Safe to call more than once in a build, and at any point after the host
+ * bundler has compiled: a partial app graph can only yield a subset of the
+ * findings a complete one would, never a finding a complete one would not. So
+ * an integration whose framework compiles in several passes may run this at
+ * the end of each, and the last one sees the whole picture.
+ */
+export async function assertWorkflowsAreRegistered({
+  workingDir,
+  manifestPath = process.env[APP_GRAPH_MANIFEST_ENV],
+  reportedWorkflowIds,
+}: {
+  /** Root that reported module paths are made relative to. */
+  workingDir?: string;
+  /** Defaults to the manifest the build published. */
+  manifestPath?: string;
+  /**
+   * Workflow IDs already reported in this process, so a framework that calls
+   * this once per compiler pass does not repeat itself. Mutated in place.
+   */
+  reportedWorkflowIds?: Set<string>;
+} = {}): Promise<void> {
+  const mode = resolveRegistrationCheckMode();
+  const appGraphDir = process.env[APP_GRAPH_DIR_ENV];
+  if (mode === 'off' || !appGraphDir || !manifestPath) {
+    return;
+  }
+
+  // Nothing recorded means no module reported a workflow this build — a
+  // bundler that served everything from its caches looks the same as an app
+  // with no workflows, and neither is something to fail over.
+  const appGraph = await readWorkflowAppGraph(appGraphDir);
+  if (appGraph.size === 0) {
+    return;
+  }
+
+  // An unreadable manifest is not an empty one: comparing against it would
+  // report every workflow in the app. A manifest that could not be written
+  // already fails the build where it is created.
+  let manifest: WorkflowManifest;
+  try {
+    manifest = JSON.parse(
+      await readFile(manifestPath, 'utf-8')
+    ) as WorkflowManifest;
+  } catch {
+    return;
+  }
+
+  let unregistered = findUnregisteredWorkflows({
+    appGraph,
+    manifest,
+    workingDir,
+  });
+  if (reportedWorkflowIds) {
+    unregistered = unregistered.filter(
+      ({ workflowId }) => !reportedWorkflowIds.has(workflowId)
+    );
+    for (const { workflowId } of unregistered) {
+      reportedWorkflowIds.add(workflowId);
+    }
+  }
+  if (unregistered.length === 0) {
+    return;
+  }
+
+  const message = formatUnregisteredWorkflows(unregistered);
+  if (mode === 'warn') {
+    console.warn(`\n⚠ Warning: ${message}\n`);
+    return;
+  }
+
+  throw new WorkflowRegistrationError(
+    `${message}\n\n${REGISTRATION_FAILURE_GUIDANCE}`
   );
 }

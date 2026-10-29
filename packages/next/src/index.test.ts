@@ -519,7 +519,8 @@ describe('withWorkflow builder config', () => {
       warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       delete process.env.WORKFLOW_REGISTRATION_CHECK;
       delete process.env.WORKFLOW_DISCOVER_NODE_MODULES;
-      delete process.env.WORKFLOW_NEXT_PRIVATE_APP_GRAPH_DIR;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_DIR;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_MANIFEST;
       writeFile(
         join(projectDir, 'app/.well-known/workflow/v1/manifest.json'),
         JSON.stringify({
@@ -542,7 +543,8 @@ describe('withWorkflow builder config', () => {
       warnSpy.mockRestore();
       delete process.env.WORKFLOW_REGISTRATION_CHECK;
       delete process.env.WORKFLOW_DISCOVER_NODE_MODULES;
-      delete process.env.WORKFLOW_NEXT_PRIVATE_APP_GRAPH_DIR;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_DIR;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_MANIFEST;
       process.chdir(originalCwd);
       rmSync(projectDir, { recursive: true, force: true });
     });
@@ -564,6 +566,12 @@ describe('withWorkflow builder config', () => {
           : undefined,
       })('phase-production-build', { defaultConfig: {} });
 
+      // The builder is mocked, so publish the manifest path a real build
+      // would have.
+      process.env.WORKFLOW_PRIVATE_APP_GRAPH_MANIFEST = join(
+        projectDir,
+        'app/.well-known/workflow/v1/manifest.json'
+      );
       await recordDeclaredWorkflows(declares);
 
       return (

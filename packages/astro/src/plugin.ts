@@ -1,6 +1,10 @@
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { type AstroConfig, createBuildQueue } from '@workflow/builders';
+import {
+  type AstroConfig,
+  assertWorkflowsAreRegistered,
+  createBuildQueue,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
@@ -69,6 +73,13 @@ export function workflowPlugin(
           const vercelBuilder = new VercelBuilder(builderOptions);
           await vercelBuilder.build();
         }
+        // On Vercel the manifest only exists once the builder above has run,
+        // which is after the Vite passes the transform plugin closed out — so
+        // its own check saw no manifest and said nothing. Running it here
+        // covers both paths, and repeating it is harmless.
+        await assertWorkflowsAreRegistered({
+          workingDir: builderOptions.workingDir,
+        });
       },
     },
   };

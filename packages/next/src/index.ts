@@ -2,23 +2,15 @@ import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
-  findUnregisteredWorkflows,
-  formatUnregisteredWorkflows,
-  readWorkflowAppGraph,
-  resetWorkflowAppGraph,
+  armWorkflowAppGraph,
+  assertWorkflowsAreRegistered,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
-  type WorkflowManifest,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
-import {
-  REGISTRATION_FAILURE_GUIDANCE,
-  resolveRegistrationCheckMode,
-  WorkflowRegistrationError,
-} from './registration-check.js';
 
 const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
 const QUEUE_PACKAGE = '@vercel/queue';
@@ -395,104 +387,14 @@ function resolveDistDir({
 
 /**
  * Where the loader records the workflow IDs it stamps into application code.
- * Inside `distDir` so it is cleaned with the rest of the build output.
- *
- * Written to the environment by `buildConfig` and read back from there by
- * both the loader and the check, so all three agree on one directory by
- * construction rather than by recomputing it from arguments that only
- * usually match.
+ * Inside `distDir`, so the records are cleaned with the rest of the build
+ * output rather than outliving it.
  */
-const APP_GRAPH_DIR_ENV = 'WORKFLOW_NEXT_PRIVATE_APP_GRAPH_DIR';
-
-function resolveAppGraphDir(metadata: {
+function resolveNextAppGraphDir(metadata: {
   projectDir: string;
   distDir: string;
 }): string {
   return join(resolveDistDir(metadata), 'workflow-app-graph');
-}
-
-/**
- * Fail the production build when the compiled app can start a workflow this
- * build did not register.
- *
- * Both sides are reported by the compiler rather than inferred from its
- * output: the app graph is what the `"use workflow"` transform told us it
- * stamped into each module for `start()` to use, and the manifest is what the
- * flow bundle registered. A workflow in the first and not the second is a run
- * that would fail with `WorkflowNotRegisteredError` — one the build already
- * knew about, and used to ship anyway.
- */
-async function assertWorkflowsAreRegistered(metadata: {
-  projectDir: string;
-  distDir: string;
-}): Promise<void> {
-  const mode = resolveRegistrationCheckMode();
-  const appGraphDir = process.env[APP_GRAPH_DIR_ENV];
-  // Unset means no production build armed the check for this process.
-  if (mode === 'off' || !appGraphDir) {
-    return;
-  }
-
-  // No manifest means no workflow build ran for this app, which is not this
-  // check's business to report.
-  const paths = getWorkflowManifestCopyPaths(metadata);
-  if (!paths) {
-    return;
-  }
-
-  // Nothing recorded means no module reported a workflow this build — a
-  // bundler that served everything from its loader cache looks the same as an
-  // app with no workflows, and neither is something to fail over.
-  const appGraph = await readWorkflowAppGraph(appGraphDir);
-  if (appGraph.size === 0) {
-    return;
-  }
-
-  // An unreadable manifest is not an empty one: comparing against it would
-  // report every workflow in the app. Skip instead; a manifest that could not
-  // be written already fails the build where it is created.
-  const manifest = await readWorkflowManifest(paths.manifestPath);
-  if (!manifest) {
-    return;
-  }
-
-  const unregistered = findUnregisteredWorkflows({
-    appGraph,
-    manifest,
-    workingDir: metadata.projectDir,
-  });
-  if (unregistered.length === 0) {
-    return;
-  }
-
-  const message = formatUnregisteredWorkflows(unregistered);
-  if (mode === 'warn') {
-    console.warn(`\n⚠ Warning: ${message}\n`);
-    return;
-  }
-
-  throw new WorkflowRegistrationError(
-    `${message}\n\n${REGISTRATION_FAILURE_GUIDANCE}`
-  );
-}
-
-/**
- * The manifest the workflow build wrote, or `undefined` when it cannot be
- * read back. A manifest that could not be written already fails the build
- * where it is created, so there is nothing to add by failing again here — and
- * treating an unreadable one as "registered nothing" would report every
- * workflow in the app.
- */
-async function readWorkflowManifest(
-  manifestPath: string
-): Promise<WorkflowManifest | undefined> {
-  try {
-    return JSON.parse(
-      await readFile(manifestPath, 'utf-8')
-    ) as WorkflowManifest;
-  } catch {
-    return undefined;
-  }
 }
 
 async function copyWorkflowDiagnosticsManifest(metadata: {
@@ -716,12 +618,12 @@ export function withWorkflow(
     // `next dev` has no compile to check, and its env reloads can drop a
     // variable set here (see the WORKFLOW_NEXT_PRIVATE_BUILT note above).
     if (phase === 'phase-production-build') {
-      const appGraphDir = resolveAppGraphDir({
-        projectDir: workingDir,
-        distDir,
+      await armWorkflowAppGraph({
+        appGraphDir: resolveNextAppGraphDir({
+          projectDir: workingDir,
+          distDir,
+        }),
       });
-      await resetWorkflowAppGraph(appGraphDir);
-      process.env[APP_GRAPH_DIR_ENV] = appGraphDir;
     }
 
     nextConfig.compiler = {
@@ -734,7 +636,9 @@ export function withWorkflow(
         registerWorkflowDiagnosticsManifestCopy(metadata);
         // Last, so the diagnostics manifest describing the build is in place
         // even when the build is about to fail over what it says.
-        await assertWorkflowsAreRegistered(metadata);
+        await assertWorkflowsAreRegistered({
+          workingDir: metadata.projectDir,
+        });
       },
     };
 

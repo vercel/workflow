@@ -44,15 +44,19 @@ Accepted values:
 
 ### `WORKFLOW_REGISTRATION_CHECK`
 
-- Next.js only
+- Next.js, Nitro, Nuxt, Vite, Astro and SvelteKit (including the Nitro-based Hono, Express, Fastify and TanStack Start setups)
 - Default: `error`, or `warn` when [`WORKFLOW_DISCOVER_NODE_MODULES`](#workflow_discover_node_modules) is off
 - Controls what a production build does when your application can start a workflow the build did not register.
 
-As `next build` compiles, the `"use workflow"` transform reports the workflow ID it stamps into each module - the ID [`start()`](/docs/api-reference/workflow-api/start) uses. When the build finishes, Workflow compares those against the workflows the generated flow route registered. A workflow in the first set and not the second is a run that would fail at runtime with [`workflow-not-registered`](/docs/errors/workflow-not-registered), so the build fails instead and names the workflow and the modules that declared it.
+As your framework compiles, the `"use workflow"` transform reports the workflow ID it stamps into each module - the ID [`start()`](/docs/api-reference/workflow-api/start) uses. When the build finishes, Workflow compares those against the workflows the generated flow route registered. A workflow in the first set and not the second is a run that would fail at runtime with [`workflow-not-registered`](/docs/errors/workflow-not-registered), so the build fails instead and names the workflow and the modules that declared it.
 
-The usual cause is a workflow discovery could not reach: it walks the import graph from your Next.js entrypoints and only follows literal string specifiers, so a workflow imported through a computed `import()` is compiled into your app without being registered. Look for warnings earlier in the build about imports that could not be resolved.
+The usual cause is a workflow discovery could not reach: it walks the import graph from your app's entrypoints and only follows literal string specifiers, so a workflow imported through a computed `import()` is compiled into your app without being registered. Look for warnings earlier in the build about imports that could not be resolved.
 
-Both sides of the comparison come from the compiler, so a workflow ID written in a comment, a string, or a code-generation template is never mistaken for a reference to a workflow. Entries are recorded fresh each build, so a bundler that serves a module from its loader cache simply contributes nothing - the check can miss a workflow, never invent one.
+Both sides of the comparison come from the compiler, so a workflow ID written in a comment, a string, or a code-generation template is never mistaken for a reference to a workflow. Entries are recorded fresh each build, so a bundler that serves a module from its loader cache simply contributes nothing - the check can miss a workflow, never invent one. For the same reason the check only ever covers the workflows your app actually compiles, which is normally a subset of everything the build registered.
+
+<Callout type="info">
+  NestJS and the standalone `workflow build` CLI are not covered. Nest compiles your application through its own SWC pipeline, configured by a generated `.swcrc`, and a hand-wired integration supplies its own transform - in both cases Workflow is not in the loop that would report what it stamped in.
+</Callout>
 
 Accepted values:
 

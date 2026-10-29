@@ -137,47 +137,21 @@ async function getModuleSpecifier(
   return resolveModuleSpecifier(filePath, projectRoot).moduleSpecifier;
 }
 
-/**
- * Record the workflow IDs this transform stamped into `filename`, so the build
- * can compare what the application can start against what it registered.
- *
- * The directory is passed through the environment rather than loader options
- * because the loader runs in worker threads and child processes that inherit
- * `process.env` (the same channel the SWC plugin cache already relies on), and
- * because both bundlers have to reach it. An unset variable means no
- * production build asked for this, so nothing is recorded and the comparison
- * simply has nothing to say — see `resetWorkflowAppGraph` for why a missing
- * entry is always the safe failure.
- */
-async function recordWorkflowAppGraph(
-  filename: string,
-  transformedCode: string
-): Promise<void> {
-  const appGraphDir = process.env.WORKFLOW_NEXT_PRIVATE_APP_GRAPH_DIR;
-  if (!appGraphDir) {
-    return;
-  }
-
-  const { extractWorkflowManifestComment, recordWorkflowAppGraphEntry } =
-    await getBuildersModule();
-  const manifest = extractWorkflowManifestComment(transformedCode);
-  if (!manifest.workflows) {
-    return;
-  }
-
-  await recordWorkflowAppGraphEntry({
-    appGraphDir,
-    file: filename,
-    manifest,
-  });
-}
-
 async function resolveWorkflowAliasPath(
   filePath: string,
   workingDir: string
 ): Promise<string | undefined> {
   const { resolveWorkflowAliasRelativePath } = await getBuildersModule();
   return resolveWorkflowAliasRelativePath(filePath, workingDir);
+}
+
+/** Record what this transform stamped in, for the build's registration check. */
+async function recordWorkflowAppGraph(
+  filename: string,
+  transformedCode: string
+): Promise<void> {
+  const { recordTransformedWorkflows } = await getBuildersModule();
+  await recordTransformedWorkflows({ file: filename, code: transformedCode });
 }
 
 async function getRelativeFilenameForSwc(
