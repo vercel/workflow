@@ -3267,7 +3267,16 @@ export function workflowEntrypoint(
                       }
                     | { done: false }
                   > => {
-                    const settled = await inlineStepsInFlight.settleAll();
+                    // Step bodies are not replay time, here as in the batch.
+                    replayBudget.pause();
+                    let settled: Awaited<
+                      ReturnType<typeof inlineStepsInFlight.settleAll>
+                    >;
+                    try {
+                      settled = await inlineStepsInFlight.settleAll();
+                    } finally {
+                      replayBudget.resume();
+                    }
                     const results: InlineStepResult[] = [];
                     for (const { outcome } of settled) {
                       if (outcome.status === 'fulfilled') {
@@ -3325,15 +3334,7 @@ export function workflowEntrypoint(
                         Date.now() - invocationStartTime >=
                           noInlineReplayAfterMs)
                     ) {
-                      replayBudget.pause();
-                      let inlineAction: Awaited<
-                        ReturnType<typeof settleInlineStepsInFlight>
-                      >;
-                      try {
-                        inlineAction = await settleInlineStepsInFlight();
-                      } finally {
-                        replayBudget.resume();
-                      }
+                      const inlineAction = await settleInlineStepsInFlight();
                       if (inlineAction.done) return inlineAction.value;
                     }
 
@@ -3834,7 +3835,10 @@ export function workflowEntrypoint(
                       // the workflow stopped awaiting): the catch settles them
                       // and replays again. Steps that already settled cleanly
                       // have written their terminal events and hold nothing
-                      // back.
+                      // back. This only covers this delivery: a hook or wait
+                      // wake in another delivery can still end the run over
+                      // a body running here, as when a hook and inline steps
+                      // are created in the same pass.
                       if (
                         inlineStepsInFlight.size > 0 &&
                         !inlineStepsInFlight.takeIfAllSettled(
@@ -4060,6 +4064,19 @@ export function workflowEntrypoint(
                           // same write and the same rejection, so fail the
                           // run with the error instead of wedging the
                           // message in redelivery.
+                          //
+                          // Inline steps from an earlier pass may still run.
+                          // Settle them first, so the run is not failed over
+                          // a step body this delivery is still executing.
+                          // Their outcomes need no action on a failing run.
+                          if (inlineStepsInFlight.size > 0) {
+                            replayBudget.pause();
+                            try {
+                              await inlineStepsInFlight.settleAll();
+                            } finally {
+                              replayBudget.resume();
+                            }
+                          }
                           const errorCode = classifyRunError(suspensionError);
                           runtimeLogger.error(
                             'Non-retryable error while committing workflow suspension; failing run',

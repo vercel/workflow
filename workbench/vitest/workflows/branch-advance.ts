@@ -1,5 +1,5 @@
 import { appendFile } from 'node:fs/promises';
-import { createHook, getStepMetadata, RetryableError } from 'workflow';
+import { createHook, getStepMetadata, RetryableError, sleep } from 'workflow';
 
 interface Span {
   name: string;
@@ -26,6 +26,12 @@ async function retryOnceStep(name: string, ms: number, markerPath: string) {
     throw new RetryableError('first attempt', { retryAfter: 100 });
   }
   return { name, start, end: Date.now() } satisfies Span;
+}
+
+async function waitStep(ms: number) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return 'step';
 }
 
 async function chain(
@@ -124,4 +130,20 @@ export async function leafFanOutWorkflow(widths: number[], markerPath: string) {
   return await Promise.all(
     widths.map((ms, i) => timedStep(`leaf${i}`, ms, markerPath))
   );
+}
+
+/** The timeout pattern: a long step raced against a sleep. */
+export async function sleepTimeoutWorkflow(stepMs: number) {
+  'use workflow';
+  return await Promise.race([
+    waitStep(stepMs),
+    sleep('1s').then(() => 'timeout'),
+  ]);
+}
+
+/** A hook raced against a long step. */
+export async function hookVsStepWorkflow(token: string, stepMs: number) {
+  'use workflow';
+  const hook = createHook<{ v: string }>({ token });
+  return await Promise.race([waitStep(stepMs), hook.then(({ v }) => v)]);
 }
