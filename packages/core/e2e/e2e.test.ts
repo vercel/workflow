@@ -2623,7 +2623,14 @@ describe.concurrent('e2e', () => {
      */
     const skipUnlessStartHookSupported = async (ctx: TestContext) => {
       const world = await getWorld();
-      if (world.capabilities?.atomicStartHook?.active !== true) ctx.skip();
+      if (world.capabilities?.atomicStartHook?.active === true) return;
+      // A lane meant to run this block fails rather than skipping silently.
+      if (process.env.WORKFLOW_E2E_EXPECT_START_HOOK === '1') {
+        throw new Error(
+          'WORKFLOW_E2E_EXPECT_START_HOOK=1, but the World does not declare atomicStartHook'
+        );
+      }
+      ctx.skip();
     };
 
     /** A start that sets `experimental_minRetention` needs Hook retention. */
