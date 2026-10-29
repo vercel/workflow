@@ -414,6 +414,15 @@ export abstract class BaseBuilder {
     this.manifestTransformCache.clear();
   }
 
+  private pendingDiscoveries = 0;
+  private lastDiscoveredEntries: DiscoveredEntries | undefined;
+
+  public getSettledDiscoveredEntries(): DiscoveredEntries | undefined {
+    return this.pendingDiscoveries === 0
+      ? this.lastDiscoveredEntries
+      : undefined;
+  }
+
   /**
    * Pseudo-packages that should not be checked for workflow patterns.
    */
@@ -559,14 +568,20 @@ export abstract class BaseBuilder {
     const effectiveTsconfigPath =
       tsconfigPath ?? (await this.findTsConfigPath());
 
-    await fastDiscoverEntries({
-      entryPoints,
-      state,
-      defaultTsconfigPath: effectiveTsconfigPath,
-      workingDir: this.config.workingDir,
-      discoverWorkflowsInNodeModules:
-        this.resolveDiscoverWorkflowsInNodeModules(),
-    });
+    this.pendingDiscoveries++;
+    try {
+      await fastDiscoverEntries({
+        entryPoints,
+        state,
+        defaultTsconfigPath: effectiveTsconfigPath,
+        workingDir: this.config.workingDir,
+        discoverWorkflowsInNodeModules:
+          this.resolveDiscoverWorkflowsInNodeModules(),
+      });
+      this.lastDiscoveredEntries = state;
+    } finally {
+      this.pendingDiscoveries--;
+    }
 
     this.logBaseBuilderInfo(
       `Discovering workflow directives`,

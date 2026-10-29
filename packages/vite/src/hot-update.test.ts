@@ -5,10 +5,15 @@ import { workflowHotUpdatePlugin } from './hot-update.js';
 
 const WORKFLOW_SOURCE = `export async function flow() {\n  'use workflow';\n}\n`;
 
-function setup() {
+type DiscoveredEntries = ReturnType<BaseBuilder['getSettledDiscoveredEntries']>;
+
+function setup(discovered?: DiscoveredEntries) {
   const build = vi.fn(async () => {});
   const plugin = workflowHotUpdatePlugin({
-    builder: { build } as unknown as BaseBuilder,
+    builder: {
+      build,
+      getSettledDiscoveredEntries: () => discovered,
+    } as unknown as BaseBuilder,
   });
   const hotUpdate = plugin.hotUpdate as (
     ctx: HotUpdateOptions
@@ -22,7 +27,30 @@ function setup() {
       read: async () => WORKFLOW_SOURCE,
       server: {},
     }) as unknown as HotUpdateOptions;
-  return { build, hotUpdate, change };
+  const deletion = (file: string, timestamp: number) =>
+    ({
+      type: 'delete',
+      file,
+      timestamp,
+      modules: [],
+      read: async () => {
+        throw Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
+      },
+      server: {},
+    }) as unknown as HotUpdateOptions;
+  return { build, hotUpdate, change, deletion };
+}
+
+function discovery({
+  workflows = [] as string[],
+  steps = [] as string[],
+  serde = [] as string[],
+}): DiscoveredEntries {
+  return {
+    discoveredWorkflows: new Set(workflows),
+    discoveredSteps: new Set(steps),
+    discoveredSerdeFiles: new Set(serde),
+  };
 }
 
 describe('workflowHotUpdatePlugin', () => {
@@ -80,5 +108,37 @@ describe('workflowHotUpdatePlugin', () => {
     await hotUpdate(change('/app/workflows/b.ts', 1_000));
 
     expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not rebuild when deleted files were not found by the last discovery', async () => {
+    const { build, hotUpdate, deletion } = setup(
+      discovery({ workflows: ['/app/workflows/flow.ts'] })
+    );
+
+    for (let index = 0; index < 30; index++) {
+      await hotUpdate(deletion(`/app/src/lib/plain${index}.ts`, 1_000 + index));
+    }
+
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['workflow', discovery({ workflows: ['/app/workflows/deleted.ts'] })],
+    ['step', discovery({ steps: ['/app/workflows/deleted.ts'] })],
+    ['serde', discovery({ serde: ['/app/workflows/deleted.ts'] })],
+  ])('rebuilds when a deleted file was a discovered %s file', async (_, entries) => {
+    const { build, hotUpdate, deletion } = setup(entries);
+
+    await hotUpdate(deletion('/app/workflows/deleted.ts', 1_000));
+
+    expect(build).toHaveBeenCalledOnce();
+  });
+
+  it('rebuilds for a deleted file while no discovery has settled', async () => {
+    const { build, hotUpdate, deletion } = setup(undefined);
+
+    await hotUpdate(deletion('/app/src/lib/plain.ts', 1_000));
+
+    expect(build).toHaveBeenCalledOnce();
   });
 });
