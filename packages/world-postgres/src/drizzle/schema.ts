@@ -2,6 +2,7 @@ import {
   type Event,
   type Hook,
   type SerializedData,
+  type StartHook,
   type Step,
   StepStatusSchema,
   type Wait,
@@ -86,6 +87,9 @@ type DrizzlishOfType<T extends object> = {
  */
 export type SerializedContent = any[];
 
+/** The start Hook a run row keeps: `run.startHook`, without its metadata. */
+export type RunStartHook = Omit<StartHook, 'metadata'> & { hookId: string };
+
 export const runs = schema.table(
   'workflow_runs',
   {
@@ -148,6 +152,13 @@ export const runs = schema.table(
      * started on. Null on every static run.
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
+    /**
+     * The start Hook this run was admitted with through `start({ hook })`,
+     * without its metadata (which lives on the start Hook's own row in
+     * `workflow_hooks`). Echo only: the Hook row is what holds the token.
+     * Null on every other run.
+     */
+    startHook: Cbor<RunStartHook>()('start_hook_cbor'),
     createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     updatedAt: timestamptz('updated_at')
       .default(sql`now()`)
@@ -241,6 +252,32 @@ export const eventSlots = schema.table('workflow_event_slots', {
   seqInBand: integer('seq_in_band').notNull().default(1),
 });
 
+/**
+ * One immutable `start({ hook })` admission decision per candidate run (see
+ * `start-hook.ts` in @workflow/world, and `../start-hook.ts` here).
+ *
+ * - `accepted` rows are written in the same transaction as the run they
+ *   admit and its start Hook (an ordinary row in `workflow_hooks`).
+ * - `rejected` rows record the owner the candidate lost to, so a later
+ *   attempt for the same candidate answers the same `conflicting_run_id`
+ *   even after the owner has released the token.
+ *
+ * A decision only matters inside its candidate's 24h window: past it, every
+ * attempt for the candidate is refused regardless. Admissions delete rows
+ * older than that as they go (`created_at` index).
+ */
+export const startHookAdmissions = schema.table(
+  'workflow_start_hook_admissions',
+  {
+    runId: varchar('run_id').primaryKey(),
+    token: varchar('token').notNull(),
+    decision: varchar('decision').$type<'accepted' | 'rejected'>().notNull(),
+    conflictingRunId: varchar('conflicting_run_id'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+  },
+  (tb) => [index().on(tb.createdAt)]
+);
+
 export const steps = schema.table(
   'workflow_steps',
   {
@@ -311,10 +348,36 @@ export const hooks = schema.table(
     claimedFrom: Cbor<NonNullable<Hook['claimedFrom']>>()('claimed_from'),
     // `resumeCapabilities` is deliberately response-only (attested fresh on
     // each by-token lookup, never persisted), so it must not become a column.
+    /**
+     * This row's claim on `token` is unique: at most one row per token has
+     * it (`workflow_hooks_token_claim_unique`), so two `start({ hook })`
+     * admissions racing for a token conflict on the insert instead of both
+     * winning, and an admission racing another run's `createHook` leaves
+     * one owner. Every Hook written since migration 0028 sets it; rows
+     * written before it do not, so the index cannot fail on existing data.
+     */
+    claimsToken: boolean('claims_token').notNull().default(false),
+    /**
+     * Set when the Hook was disposed but its row stays: a run started with
+     * `start({ hook })` keeps that token (its idempotency key) until it ends,
+     * so disposing a Hook of the run that holds it keeps the row, and its
+     * claim, rather than deleting it. Such a row is no Hook to readers and
+     * receives nothing; the run's end, or its retention after that, frees it.
+     */
+    disposedAt: timestamptz('disposed_at'),
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'> & {
+      claimsToken?: boolean;
+      disposedAt?: Date;
+    }
   >,
-  (tb) => [index().on(tb.runId), index().on(tb.token)]
+  (tb) => [
+    index().on(tb.runId),
+    index().on(tb.token),
+    uniqueIndex('workflow_hooks_token_claim_unique')
+      .on(tb.token)
+      .where(sql`${tb.claimsToken}`),
+  ]
 );
 
 export const waits = schema.table(

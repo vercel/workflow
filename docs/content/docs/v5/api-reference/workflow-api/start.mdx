@@ -57,7 +57,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * In v5, you can also call `start()` directly from a workflow function to spawn a child run or continue work in a new run. See [Workflow Composition](/cookbook/common-patterns/workflow-composition) and [Versioning](/docs/foundations/versioning).
 * This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
 * The function returns immediately after enqueuing the workflow. It doesn't wait for the workflow to complete.
-* Each call to `start()` creates a new workflow run. If retried requests must route to one active workflow, have the workflow create a deterministic hook token and use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) to reuse an already-registered active hook. The lookup is not atomic with `start()`, so concurrent callers can still create extra runs before the hook is registered. Handle that race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work. On a conflict, it resolves with the run that owns the token, so the duplicate can return the active owner to the caller. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Idempotency](/docs/foundations/idempotency#run-idempotency).
+* Each call to `start()` creates a new workflow run, unless you pass `hook`. With a deterministic `hook.token`, at most one run can own the token, and a duplicate start throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) naming the owner instead of creating a run. See [Prevent duplicate starts](#prevent-duplicate-starts) and [Idempotency](/docs/foundations/idempotency#run-idempotency).
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When you provide `deploymentId`, the argument types and return type become `unknown` because the workflow function's types may differ across deployments.
 * When `deploymentId` names a deployment other than the caller's, the run is stamped with the spec version the *target* deployment reports on its capability probe (capped at the caller's own), since the target is what executes it. `start()` waits up to 10 seconds for the first probe to a deployment and returns as soon as the target answers; later starts to the same deployment reuse the answer. If the target does not answer in time, the run is stamped with spec version 6, the lowest version a v5 runtime executes; a target on an older major version (such as `stable`) cannot execute such a run, so it logs a warning. In either case, the `attributes` and `experimental_retention` checks below apply to the stamped version, and fail naming the target deployment.
@@ -71,6 +71,60 @@ If `start()` throws `'start' received an invalid workflow function. Ensure the W
 </Callout>
 
 ## Examples
+
+### Prevent duplicate starts
+
+Pass a `hook` with a token from your domain to make the start idempotent. The World admits the run and creates its start Hook in one atomic step, before any workflow code runs:
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { HookConflictError, WorkflowStartError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+
+  try {
+    const run = await start(processOrder, [orderId], {
+      hook: { // [!code highlight]
+        token: `order:${orderId}`, // [!code highlight]
+        experimental_minRetention: "30 days", // [!code highlight]
+        metadata: { orderId }, // [!code highlight]
+      }, // [!code highlight]
+    });
+    return Response.json({ runId: run.runId, duplicate: false });
+  } catch (error) {
+    if (HookConflictError.is(error)) {
+      return Response.json({ runId: error.conflictingRunId, duplicate: true });
+    }
+    if (WorkflowStartError.is(error)) {
+      // Unknown outcome: retrying with the same token is safe.
+      console.error(`Could not confirm start of ${error.runId} (${error.stage})`);
+    }
+    throw error;
+  }
+}
+```
+
+`hook` takes:
+
+| Option | Description |
+| --- | --- |
+| `token` | Required. A non-empty Hook token. Exactly one run owns it. |
+| `metadata` | Optional. Stored on the start Hook, with the same serialization as [`createHook({ metadata })`](/docs/api-reference/workflow/create-hook). [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) returns it. |
+| `experimental_minRetention` | Optional. Keeps the token unavailable until at least this time, even after the run ends. Accepts the same duration string, milliseconds, or `Date` as [`createHook({ experimental_minRetention })`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends); a duration counts from `start()`. No default: without it, the token is released when the run ends. |
+
+* Exactly one run owns the token. A duplicate throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with the owner's `conflictingRunId`. The duplicate never becomes a run, and none of its code runs.
+* The start Hook exists from the moment the run is admitted, so [`resumeHook(token, payload)`](/docs/api-reference/workflow-api/resume-hook) works right away, even before the run starts executing. Payloads resumed before the workflow opens the Hook are kept and delivered in order once it does.
+* In the workflow, `createHook({ token })` with the same token returns a handle bound to the start Hook. It doesn't register a new Hook, so it adds no step, and `getConflict()` resolves `null`. Pass `metadata`, `experimental_minRetention`, `isWebhook` and `experimental_force` to `start({ hook })`, not to that `createHook()`: passing them there throws. If the workflow never opens the Hook, the token is only an idempotency key: the run completes normally and unread payloads are left unread.
+* The token is released when the run ends, or once `experimental_minRetention` has passed if that is later. Disposing the start Hook (`dispose()`, or leaving the scope of a `using` declaration) ends the Hook, so nothing can be resumed into it, but the run keeps the token until it ends: a duplicate is still refused, and the run can call `createHook({ token })` again for a new Hook. On a World without Hook retention, `experimental_minRetention` makes `start()` throw.
+* If `start()` cannot confirm whether the run was queued or admitted, it asks the World again a few times with the same candidate, then throws [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error) with the candidate's `runId` and the `stage` that failed. Retrying with the same token is safe: the retry either becomes the owner or throws `HookConflictError` naming it. Inside a workflow, the `start()` step retries it automatically, while a `HookConflictError` (or a permanent rejection) reaches the workflow on the first attempt.
+* If the run named by a `HookConflictError` is still `pending` more than a minute after it was created (its first queue message was most likely lost, so nothing will start it), the refused `start()` re-publishes that run's orchestrator message in the background, at most once a minute per run, and throws without waiting for it. The run then starts; the refusal itself is unchanged.
+* Rarely, a `HookConflictError` names a candidate that was admitted but never became a run, because the writer that admitted it died. `getRun()` doesn't find it. While the World can still create the run, resuming the token waits and may throw a retryable error with `retryAfter`; once it can't, the World releases the token and resuming throws `HookNotFoundError`. Start again with the same token then.
+* Stream arguments (for example a webhook's `request.body`) are read only once the run is admitted, so a refused duplicate leaves them untouched. Because `start()` confirms an uncertain admission before giving up, an admitted run usually still gets its input. If it throws `WorkflowStartError` anyway, the run may have been admitted and be waiting on input that will never arrive. Cancel it with [`getRun(error.runId).cancel()`](/docs/api-reference/workflow-api/get-run), which also works when the run doesn't exist yet (see [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error)).
+* The World must support atomic start Hooks (and Hook retention, when you set one). The Local World does; on the Postgres World it is behind [`WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK`](/worlds/postgres#workflow_postgres_experimental_start_hook) and on the Vercel World behind [`WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK`](/worlds/vercel#workflow_vercel_experimental_start_hook). Otherwise `start()` throws before it enqueues anything. For a cross-deployment start, the target deployment must support it too. `hook` is not supported for [dynamic workflows](/docs/advanced/dynamic-workflows).
+
+To route a duplicate's payload to the run that owns the token, resume the owner's start Hook on a conflict. See [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner).
 
 ### With arguments
 

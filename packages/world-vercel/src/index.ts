@@ -39,6 +39,18 @@ export type { APIConfig } from './utils.js';
  */
 export { openWsChannel as openEventsChannel } from './ws-transport.js';
 
+/**
+ * Opt-in switch for `start({ hook })` on Vercel, until the backend half ships
+ * everywhere. Any value other than `1` or `true` leaves it off.
+ */
+export const EXPERIMENTAL_START_HOOK_ENV =
+  'WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK';
+
+function isExperimentalStartHookEnabled(): boolean {
+  const value = process.env[EXPERIMENTAL_START_HOOK_ENV];
+  return value === '1' || value === 'true';
+}
+
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
@@ -62,6 +74,14 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
+      // `start({ hook })` admission. Opt-in until the backend that admits it
+      // is deployed: a server that predates it drops the `startHook` meta key
+      // silently and would start a run without its start Hook. Read per World, so a
+      // process can flip it without a rebuild. See `start-hook.ts` in
+      // @workflow/world for the contract the server implements.
+      ...(isExperimentalStartHookEnabled()
+        ? { atomicStartHook: { active: true } }
+        : {}),
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).

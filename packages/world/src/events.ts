@@ -10,6 +10,7 @@ import type {
   PaginationOptions,
   ResolveData,
 } from './shared.js';
+import { StartHookSchema } from './start-hook.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
@@ -455,7 +456,8 @@ const HookConflictEventSchema = BaseEventSchema.extend({
      * understand the involuntary disposal — the forced hook gets the
      * ordinary `HookConflictError` it opted out of instead of stranding
      * that run. Absent on a conflict answered by a World that does not
-     * implement forcing at all.
+     * implement forcing at all. (A run's `start({ hook })` Hook is taken like
+     * any other Hook, so it is never a reason to refuse.)
      */
     forceRefusedReason: z.literal('victim-spec-version').optional(),
   }),
@@ -559,6 +561,17 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
        * symmetric key. Not secret. See `WorkflowRunBaseSchema`.
        */
       encryptionPublicKey: z.string().optional(),
+      /**
+       * Create the run's start Hook (id `startHookId(runId)`) for this token
+       * atomically with the run's creation. Only sent to Worlds that declare
+       * `capabilities.atomicStartHook`; see `start-hook.ts` for the admission
+       * contract. A stored `run_created` keeps it, with `hookId`, as the
+       * record of the start Hook's creation: no `hook_created` is written for
+       * that Hook, so `run_created` stands for one with `{ token, metadata,
+       * tokenRetentionUntil, isWebhook: false }`. A World may strip
+       * `metadata` from the stored copy.
+       */
+      startHook: StartHookSchema.optional(),
     })
     .refine(
       (value) =>
@@ -601,6 +614,12 @@ const RunStartedEventSchema = BaseEventSchema.extend({
       /** Dynamic code carried for resilient run creation. */
       dynamicWorkflowCode: SerializedDataSchema.optional(),
       dynamicWorkflowCodeRef: z.string().optional(),
+      /**
+       * Mirrors `run_created.eventData.startHook` for the queued copy of an
+       * atomic start. Either write may admit the candidate, and both must
+       * reach the same decision; see `start-hook.ts`.
+       */
+      startHook: StartHookSchema.optional(),
     })
     .refine(
       (value) =>

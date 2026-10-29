@@ -16,7 +16,11 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { entityEventClass } from '@workflow/world/event-metadata';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
 import { monotonicFactory } from 'ulid';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import {
+  EventConsumerResult,
+  EventsConsumer,
+  type ParkedSummary,
+} from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
@@ -26,6 +30,7 @@ import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
+import type { RunStartHook } from './runtime/start-hook-binding.js';
 import { handleSuspension } from './runtime/suspension-handler.js';
 import { getWorld } from './runtime/world.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
@@ -122,6 +127,11 @@ interface WorkflowSessionOptions {
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
   readonly runReadyBarrier?: Promise<unknown>;
   readonly worldCapabilities?: WorldCapabilities;
+  /**
+   * The run's start Hook, from `resolveRunStartHook`. `undefined` for a run
+   * started without one, which then replays exactly as before.
+   */
+  readonly startHook?: RunStartHook;
 }
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
@@ -217,11 +227,7 @@ export type WorkflowResult =
        * Ordinary on a suspension, and only actionable across a run's
        * suspensions, so it is reported for telemetry rather than acted on here.
        */
-      readonly parked?: {
-        readonly count: number;
-        readonly eventId: string;
-        readonly eventType: string;
-      };
+      readonly parked?: Readonly<ParkedSummary>;
     };
 
 /**
@@ -312,11 +318,22 @@ function recordResult(
     // not ordinary (the same event still held pass after pass) is a shape
     // across these spans, which is why the eventId is on each one and no pass
     // tries to rule on it alone.
-    if (result.parked) {
+    if (result.parked?.eventId !== undefined) {
       span.setAttributes({
         ...Attribute.WorkflowParkedEventsCount(result.parked.count),
         ...Attribute.WorkflowParkedEventId(result.parked.eventId),
-        ...Attribute.WorkflowParkedEventType(result.parked.eventType),
+        ...(result.parked.eventType !== undefined
+          ? Attribute.WorkflowParkedEventType(result.parked.eventType)
+          : {}),
+      });
+    }
+    // Payloads resumed into the start Hook that the body has not opened (yet,
+    // or ever: the token may be only an idempotency key). Not a stuck bet.
+    if (result.parked?.unclaimedStartHook !== undefined) {
+      span.setAttributes({
+        ...Attribute.WorkflowParkedStartHookEventsCount(
+          result.parked.unclaimedStartHook
+        ),
       });
     }
   }
@@ -351,7 +368,9 @@ export async function runWorkflow(
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
    */
-  worldCapabilities?: WorldCapabilities
+  worldCapabilities?: WorldCapabilities,
+  /** The run's start Hook, if it was started with one. */
+  startHook?: RunStartHook
 ): Promise<Uint8Array | unknown> {
   const result = await replayWorkflow({
     workflowCode,
@@ -361,6 +380,7 @@ export async function runWorkflow(
     replayPayloadCache,
     runReadyBarrier,
     worldCapabilities,
+    ...(startHook ? { startHook } : {}),
   });
   if (result.type === 'suspended') throw result.suspension;
   return result.output;
@@ -384,6 +404,7 @@ async function createWorkflowSessionInner(
     compiledWorkflowScripts,
     runReadyBarrier,
     worldCapabilities,
+    startHook,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
 ): Promise<{
@@ -574,12 +595,26 @@ async function createWorkflowSessionInner(
     },
     getPromiseQueue: () => promiseQueueHolder.current,
     isDeliveryIdle: () => deliveryIdleHolder.current(),
+    // Payloads resumed into the start Hook before the body calls
+    // `createHook` (from the run's admission on, even before `run_started`)
+    // park at once rather than after the deferred check.
+    ...(startHook ? { eagerParkCorrelationId: startHook.hookId } : {}),
   });
 
   const workflowContext: WorkflowOrchestratorContext = {
     runId: workflowRun.runId,
     encryptionKey,
     worldCapabilities,
+    ...(startHook
+      ? {
+          startHook: {
+            token: startHook.token,
+            hookId: startHook.hookId,
+            tokenRetentionUntil: startHook.tokenRetentionUntil,
+            bound: false,
+          },
+        }
+      : {}),
     globalThis: vmGlobalThis,
     onWorkflowError,
     eventsConsumer,

@@ -1,0 +1,58 @@
+---
+title: WorkflowStartError
+description: Thrown when start with a hook cannot confirm whether its run was queued or admitted.
+type: reference
+summary: Catch WorkflowStartError to identify a start({ hook }) candidate whose outcome is unknown, then retry with the same token.
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/idempotency
+---
+
+`WorkflowStartError` is thrown when [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) cannot confirm whether its candidate run was queued or admitted, for example because the World timed out. The outcome is unknown, not failed: the candidate may still become the run that owns the token.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { WorkflowStartError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+declare const orderId: string; // @setup
+
+async function startOrder() {
+  try {
+    return await start(processOrder, [orderId], {
+      hook: { token: `order:${orderId}` },
+    });
+  } catch (error) {
+    if (WorkflowStartError.is(error)) { // [!code highlight]
+      console.warn(`Unconfirmed start ${error.runId} (${error.stage}); retrying`);
+      return await start(processOrder, [orderId], {
+        hook: { token: `order:${orderId}` },
+      });
+    }
+    throw error;
+  }
+}
+```
+
+`WorkflowStartError` is only thrown by a start that passes `hook`, and retrying it with the same token is safe: it can never admit a second owner. If the first candidate was admitted, the retry throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with `conflictingRunId` set to it; otherwise the retry's run becomes the owner. Either way, a payload you meant for the run can go to [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) after a conflict, as in [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner). Inside a workflow, the `start()` step retries it on its own. It extends `WorkflowError`, not `WorkflowWorldError`: it is not a World response, so World error checks never classify it as permanent.
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+import { WorkflowStartError } from "workflow/errors";
+export default WorkflowStartError;`}
+/>
+
+`start()` re-confirms an uncertain admission a few times with the same candidate before it throws, so a candidate that was in fact admitted is usually found. It also throws this error when the World answered that admission is switched off without recording a decision, since another copy of the candidate may still be admitted once it is back on.
+
+A start with stream arguments pipes its streams only to a confirmed run. If it throws this error, the candidate may be admitted and waiting on input that nothing will send: cancel it with `getRun(error.runId).cancel()`. That ends the candidate as it would any run, so its token is released (once any `experimental_minRetention` has passed). `cancel()` works even if the run doesn't exist yet: a candidate that was admitted but never created can no longer be created once cancelled. If `cancel()` throws `WorkflowRunNotFoundError`, the World had not decided the candidate at all, and its queued copy can still create the run later. To learn who owns the token in that case, start again with the same token: you either become the owner or get a `HookConflictError` naming it.
+
+`stage` is `"queue"` when the SDK could not confirm that the run was queued, and `"admission"` when it was queued but the SDK could not confirm the World's admission decision. `runId` is the candidate's run ID, for inspection.
+
+### Static Methods
+
+#### `WorkflowStartError.is(value)`
+
+Type-safe check for `WorkflowStartError` instances across module boundaries and VM contexts.

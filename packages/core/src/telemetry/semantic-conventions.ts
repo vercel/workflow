@@ -88,6 +88,78 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
  */
 export const WorkflowDynamic = SemanticConvention<boolean>('workflow.dynamic');
 
+/** Set on a `start()` that reserves a Hook token (`start({ hook })`). */
+export const WorkflowStartHook = SemanticConvention<boolean>(
+  'workflow.start_hook'
+);
+
+/** The absolute retention a `start({ hook })` asked for, ISO 8601. */
+export const WorkflowStartHookRetentionUntil = SemanticConvention<string>(
+  'workflow.start_hook.retention_until'
+);
+
+/**
+ * How a `start({ hook })` ended: `accepted` (the candidate is the token's
+ * owner), `rejected` (another run owns it; no run was created), `uncertain`
+ * (queueing or admission could not be confirmed: `WorkflowStartError`), or
+ * `failed` (a deterministic World answer or contract error).
+ */
+export const WorkflowStartHookOutcome = SemanticConvention<
+  'accepted' | 'rejected' | 'uncertain' | 'failed'
+>('workflow.start_hook.outcome');
+
+/** The run that owns the token, on a `rejected` `start({ hook })`. */
+export const WorkflowStartHookConflictingRunId = SemanticConvention<string>(
+  'workflow.start_hook.conflicting_run_id'
+);
+
+/**
+ * Why the World refused a `start({ hook })` request it will never admit
+ * (`WorkflowWorldError.reason`): `invalid`, `expired`, `token_mismatch`,
+ * `ordinary_run` or `disabled`. `disabled` also marks an answer given while
+ * admission was switched off.
+ */
+export const WorkflowStartHookRejectionReason = SemanticConvention<string>(
+  'workflow.start_hook.rejection_reason'
+);
+
+/**
+ * The error code (or, without one, the error name) a `failed` or `uncertain`
+ * `start({ hook })` ended on. `WORLD_CONTRACT_ERROR` marks a World answer
+ * that broke the admission contract, such as a refusal naming no owner;
+ * `WorkflowStartError:queue` and `WorkflowStartError:admission` mark the
+ * stage an `uncertain` start could not confirm.
+ */
+export const WorkflowStartHookErrorCode = SemanticConvention<string>(
+  'workflow.start_hook.error_code'
+);
+
+/**
+ * How many times `start({ hook })` re-posted its candidate's `run_created`
+ * to confirm an uncertain admission in place. `0` when the first answer
+ * settled it.
+ */
+export const WorkflowStartHookConfirmAttempts = SemanticConvention<number>(
+  'workflow.start_hook.confirm_attempts'
+);
+
+/**
+ * Set when publishing a `start({ hook })` candidate's queue message failed
+ * without a permanent answer. An `accepted` outcome alongside it means the
+ * message was published again after admission.
+ */
+export const WorkflowStartHookEnqueueFailed = SemanticConvention<boolean>(
+  'workflow.start_hook.enqueue_failed'
+);
+
+/**
+ * Which write decided a start Hook candidate on this span: `run_started`, on
+ * the invocation span of its queued copy.
+ */
+export const WorkflowStartHookTrigger = SemanticConvention<'run_started'>(
+  'workflow.start_hook.trigger'
+);
+
 /** SHA-256 of a dynamic run's source and step bindings. */
 export const WorkflowDynamicSourceHash = SemanticConvention<string>(
   'workflow.dynamic.source_hash'
@@ -141,6 +213,18 @@ export const WorkflowParkedEventId = SemanticConvention<string>(
 /** Type of the oldest event still held unclaimed when the replay stopped. */
 export const WorkflowParkedEventType = SemanticConvention<string>(
   'workflow.events.parked.event_type'
+);
+
+/**
+ * Payloads resumed into the run's start Hook (`start(workflow, args, { hook
+ * })`) that the workflow had not opened with `createHook` when the replay
+ * stopped. Counted apart from {@link WorkflowParkedEventsCount}: the workflow
+ * may claim them later, or never (a start token used only as an idempotency
+ * key), and neither is a fault. Includes a takeover of the unopened Hook by
+ * another run (`hook_disposed` with `forceClaimedBy`).
+ */
+export const WorkflowParkedStartHookEventsCount = SemanticConvention<number>(
+  'workflow.events.parked.start_hook_count'
 );
 
 /** Number of arguments passed to the workflow */
@@ -571,6 +655,15 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 export const HookResilientResume = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume'
 );
+
+/**
+ * What the `hook.resume` span's last by-token lookup found: `found`,
+ * `redirected` (the token's new owner, after a takeover while the resume was
+ * in flight) or `not_found`.
+ */
+export const HookLookupResult = SemanticConvention<
+  'found' | 'redirected' | 'not_found'
+>('workflow.hook.lookup_result');
 
 /**
  * Producer-side signal (on the `hook.resume` span) that the durable

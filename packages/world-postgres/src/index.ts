@@ -45,6 +45,19 @@ function getDefaultConnectionString(): string {
   );
 }
 
+/**
+ * Opts this World into `start({ hook })`. Every worker that serves the
+ * database must run a version with start Hook support first: an older one
+ * creates a candidate's run from its queued copy without its start Hook.
+ */
+export const EXPERIMENTAL_START_HOOK_ENV =
+  'WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK';
+
+function isExperimentalStartHookEnabled(): boolean {
+  const value = process.env[EXPERIMENTAL_START_HOOK_ENV];
+  return value === '1' || value === 'true';
+}
+
 export function createWorld(
   config: PostgresWorldConfig = {
     connectionString: getDefaultConnectionString(),
@@ -79,6 +92,13 @@ export function createWorld(
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
+      // `start({ hook })`: the decision, the start Hook and the run it
+      // admits commit in one transaction; see start-hook.ts. Opt-in while a
+      // database may still be served by workers that predate it (they would
+      // create a candidate's run without its start Hook).
+      ...(isExperimentalStartHookEnabled()
+        ? { atomicStartHook: { active: true } }
+        : {}),
       // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
       // upload path, so `start()` always sends the code inline.
       dynamicWorkflowCode: true,

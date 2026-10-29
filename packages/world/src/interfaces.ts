@@ -397,6 +397,14 @@ export interface Storage {
      * Create a run_created event to start a new workflow run.
      * The runId may be provided by the client or left as null for the server to generate.
      *
+     * A World declaring `capabilities.atomicStartHook` admits a
+     * `run_created` (or resilient `run_started`) carrying
+     * `eventData.startHook` under the contract in `start-hook.ts`: one
+     * immutable decision per candidate `runId`, `HookConflictError` with
+     * `conflictingRunId` for a refused candidate, `run.startHook` echoed for
+     * an accepted one, and `WorkflowWorldError` with code
+     * `START_HOOK_ADMISSION_REJECTED` for a request it will never admit.
+     *
      * @param runId - Client-generated runId, or null for server-generated
      * @param data - The run_created event data
      * @param params - Optional parameters for event creation
@@ -587,6 +595,26 @@ export interface WorldCapabilities {
    * the runtime rejects retained Hooks before registration.
    */
   hookRetention?: {
+    active: boolean;
+  };
+
+  /**
+   * Admits `start({ hook })`: `events.create` creates the start Hook
+   * `startHookId(runId)` for `eventData.startHook.token` atomically with
+   * creating the run on `run_created` and on a resilient `run_started`
+   * (resumable at once, even while the run is pending), makes one immutable
+   * accept-or-reject decision per candidate `runId`, and refuses a duplicate
+   * with `HookConflictError` naming the owner. The full contract is in
+   * `start-hook.ts`; `test-support/atomic-start-hook-conformance.ts` checks
+   * it. Missing or inactive means `start({ hook })` fails before it publishes
+   * anything. A start that also sets a retention requires `hookRetention`.
+   *
+   * Like every capability, this describes the complete World: a World whose
+   * backend may not implement admission (for example an adapter that talks to
+   * a remote service) must not declare it until the backend does, because a
+   * backend that drops `startHook` would admit duplicates silently.
+   */
+  atomicStartHook?: {
     active: boolean;
   };
 

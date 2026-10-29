@@ -123,6 +123,12 @@ import {
   resumeTrackingFromMessage,
 } from './runtime/resume-latency.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
+import { resolveRunStartHook } from './runtime/start-hook-binding.js';
+import {
+  ackRefusedStartHookCandidate,
+  admitsTurboStart,
+  recordAcceptedStartHookCandidate,
+} from './runtime/start-hook-delivery.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   executeStep,
@@ -218,12 +224,14 @@ export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,
+  type StartHookOptions,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,
   type StartOptionsWithoutDeploymentId,
   start,
 } from './runtime/start.js';
+
 export {
   createWorld,
   createWorldFromModule,
@@ -1414,6 +1422,7 @@ export function workflowEntrypoint(
                   const turbo =
                     isTurboEnabled() &&
                     runInput !== undefined &&
+                    admitsTurboStart(runInput) &&
                     metadata.attempt === 1 &&
                     incomingStepId === undefined &&
                     !replayDivergence;
@@ -2511,6 +2520,10 @@ export function workflowEntrypoint(
                               // Without the key, a run this event creates
                               // could never receive sealed writes.
                               encryptionPublicKey: runInput.encryptionPublicKey,
+                              // The queued copy of `start({ hook })`: this
+                              // write may be the one that admits or refuses
+                              // the candidate.
+                              startHook: runInput.startHook,
                             },
                           }
                         : {}),
@@ -2649,6 +2662,7 @@ export function workflowEntrypoint(
                           throw setupError;
                         }
                         const result = await replayLoad;
+                        recordAcceptedStartHookCandidate(runInput, span);
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS, see the declaration above.
@@ -2695,6 +2709,18 @@ export function workflowEntrypoint(
                         }
                         startWorkflowCompile(workflowRun);
                       } catch (err) {
+                        // The queued copy of a `start({ hook })` candidate the
+                        // World refused: nothing ran, ack the message.
+                        if (
+                          ackRefusedStartHookCandidate(
+                            err,
+                            runInput,
+                            runId,
+                            span
+                          )
+                        ) {
+                          return;
+                        }
                         // Run was concurrently completed/failed/canceled
                         if (
                           EntityConflictError.is(err) ||
@@ -3498,6 +3524,14 @@ export function workflowEntrypoint(
                           // events before the terminal `awaitRunReady()` below.
                           runReadyBarrier,
                           worldCapabilities: world.capabilities,
+                          // `start({ hook })` runs: the body's createHook
+                          // with the start token binds to the Hook the
+                          // admission created. Undefined for every other run.
+                          startHook: resolveRunStartHook({
+                            events: eventLog.events,
+                            workflowRun,
+                            runInput,
+                          }),
                         });
                       }
                       await payloadPrewarm;
