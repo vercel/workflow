@@ -5,7 +5,7 @@ import type {
   Streamer,
   StreamInfoResponse,
 } from '@workflow/world';
-import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, asc, between, eq, gt, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -16,6 +16,7 @@ const StreamPublishMessage = z.compile(
   z.object({
     streamId: z.string(),
     chunkId: z.templateLiteral(['chnk_', z.string()]),
+    firstChunkId: z.templateLiteral(['chnk_', z.string()]).optional(),
   })
 );
 
@@ -239,19 +240,27 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
       const resource = getMutex(key);
       await resource.mutex.andThen(async () => {
-        const [value] = await drizzle
-          .select({ eof: streams.eof, data: streams.chunkData })
+        const chunks = await drizzle
+          .select({
+            id: streams.chunkId,
+            eof: streams.eof,
+            data: streams.chunkData,
+          })
           .from(streams)
           .where(
             and(
               eq(streams.streamId, parsed.streamId),
-              eq(streams.chunkId, parsed.chunkId)
+              between(
+                streams.chunkId,
+                parsed.firstChunkId ?? parsed.chunkId,
+                parsed.chunkId
+              )
             )
           )
-          .limit(1);
-        if (!value) return;
-        const { data, eof } = value;
-        events.emit(key, { id: parsed.chunkId, data, eof });
+          .orderBy(streams.chunkId);
+        for (const chunk of chunks) {
+          events.emit(key, chunk);
+        }
       });
     },
     { onReconnect: () => replayActiveStreams() }
@@ -381,17 +390,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           }))
         );
 
-        // Notify for each chunk (could be batched in future if needed)
-        for (const chunkId of chunkIds) {
-          await notifyStream(
-            JSON.stringify(
-              StreamPublishMessage.encode({
-                chunkId,
-                streamId: name,
-              })
-            )
-          );
-        }
+        await notifyStream(
+          JSON.stringify(
+            StreamPublishMessage.encode({
+              firstChunkId: chunkIds[0],
+              chunkId: chunkIds[chunkIds.length - 1],
+              streamId: name,
+            })
+          )
+        );
       },
 
       async close(
