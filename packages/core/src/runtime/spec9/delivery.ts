@@ -851,7 +851,9 @@ async function runDelivery(
    */
   const fullLoad = async (): Promise<LoadedEventLog> => {
     const loaded = await writer.exclusive(async () => {
-      const read = await loadWorkflowRunEvents(runId);
+      const read = await loadWorkflowRunEvents(runId, undefined, {
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      });
       // Throws a World contract error for a log without a
       // snapshot, except a resilient start's empty one.
       writer.adoptSnapshot(requireLoadSnapshot(runId, read));
@@ -882,7 +884,11 @@ async function runDelivery(
     if (!log || log.cursor === null) return fullLoad();
     const cursor = log.cursor;
     const page = await readWithDeadline(
-      (signal) => loadWorkflowRunEvents(runId, cursor, { signal }),
+      (signal) =>
+        loadWorkflowRunEvents(runId, cursor, {
+          signal,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        }),
       {
         timeoutMs: getOrchestratorReadTimeoutMs(),
         label: 'Incremental event log read',
@@ -1145,6 +1151,7 @@ async function runDelivery(
       runId,
       pagination: { sortOrder: 'desc', limit: 1 },
       resolveData: 'none',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
     const tailId = tail.data[0]?.eventId;
     const tailSlot =
@@ -2798,10 +2805,11 @@ async function runDelivery(
               await writer.idle();
               flushPending();
             }
-            const settled = await settleEventSlotGap(runId, {
-              events: log.events,
-              cursor: log.cursor,
-            });
+            const settled = await settleEventSlotGap(
+              runId,
+              { events: log.events, cursor: log.cursor },
+              { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
+            );
             if (settled.log.events !== log.events) {
               session = null;
             }
@@ -4045,6 +4053,7 @@ async function runDelivery(
       }
       const created = await world.events.get(runId, createdEventId, {
         resolveData: 'all',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       });
       const input =
         created.eventType === 'step_created' ||
@@ -4543,7 +4552,9 @@ export const spec9Orchestrator: Orchestrator = {
     // The orchestrator's own terminal write, so in-band: load the log for the
     // fence count first. A step message never reaches here (it is exempt
     // from the cap).
-    const loaded = await loadWorkflowRunEvents(runId);
+    const loaded = await loadWorkflowRunEvents(runId, undefined, {
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
     const writer = new InBandWriter(world, runId);
     writer.adoptSnapshot(requireLoadSnapshot(runId, loaded));
     try {

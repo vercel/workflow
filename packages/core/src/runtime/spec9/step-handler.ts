@@ -4,6 +4,7 @@ import {
   type Event,
   type SerializedData,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type WorkflowInvokePayload,
   type WorkflowRun,
   type World,
@@ -318,7 +319,11 @@ async function readDeliveryDecision(
       decision: firstDeliveryDecision(payload.stepAttempt),
     };
   }
-  const log = (await loadWorkflowRunEvents(runId)).events;
+  const log = (
+    await loadWorkflowRunEvents(runId, undefined, {
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    })
+  ).events;
   const nowMs = Date.now();
   const decision = decideStepDelivery({
     events: log,
@@ -507,7 +512,13 @@ async function resolveStepInput(
   if (ctx.payload.stepInput) return ctx.payload.stepInput.input;
   let eventId = ctx.payload.stepCreatedEventId;
   if (eventId === undefined) {
-    const events = log ?? (await loadWorkflowRunEvents(ctx.runId)).events;
+    const events =
+      log ??
+      (
+        await loadWorkflowRunEvents(ctx.runId, undefined, {
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        })
+      ).events;
     eventId = events.find(
       (event) =>
         event.correlationId === ctx.payload.stepId &&
@@ -521,6 +532,7 @@ async function resolveStepInput(
   }
   const created = await ctx.world.events.get(ctx.runId, eventId, {
     resolveData: 'all',
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   });
   // An inline step's creation may be its first `step_started`, which then
   // carries the input.

@@ -41,6 +41,7 @@ import {
   getEventDataPayloadField,
   HookSchema,
   type PaginationOptions,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   StructuredErrorSchema,
   WaitSchema,
   WorkflowRunSchema,
@@ -215,24 +216,38 @@ async function fetchV4(
 const EVENT_ID_HEADER = 'x-wf-event-id';
 
 /**
- * API version of the run-scoped event routes (create, batch, list, get).
+ * API version of the run-scoped event routes (create, batch, list, get) for a
+ * run of `specVersion`: v5 for a single-orchestrator run (spec >= 9), v4 for
+ * every other run.
  *
  * v5 serves every spec version: runs below the single-orchestrator version get
- * exactly the v4 behavior, and a single-orchestrator run can only be written
- * through v5. The wire format is the v4 one (CBOR meta frame plus opaque
- * body), so everything in this module that says "v4" describes the framing,
- * not the route.
+ * exactly the v4 behavior, a single-orchestrator run can only be written
+ * through v5, and a v5 list carries the log-load `snapshot` the spec 9
+ * orchestrator fences its writes with. Every other run stays on v4, the route
+ * earlier releases use, so a run that is not spec 9 sees no wire change. The
+ * wire format is the v4 one on both (CBOR meta frame plus opaque body), so
+ * everything in this module that says "v4" describes the framing, not the
+ * route.
  *
- * The by-correlation-id read stays on v4: it is a read, which every version
- * serves for every run.
+ * The route follows the run, never the `WORKFLOW_SPEC_VERSION` setting:
+ * - a write passes the version it stamps on its event, which is the run's
+ *   (`run_created` carries the version the run is created with, and
+ *   `run_started` may also attest a spec 9 executor);
+ * - a read passes the run's version when the caller knows it
+ *   (`ListEventsParams.specVersion`), and otherwise reads v4, which serves
+ *   every run.
  *
- * Planned before merge (spec 9 opt-in): the route follows each run's spec
- * version, never the `WORKFLOW_SPEC_VERSION` flag. Writes for runs at spec 9
- * or above use v5 and every other run's writes use v4; reads use v4 unless
- * the spec 9 orchestrator asks for the v5 snapshot. Default users' event
- * traffic then stays on the routes earlier releases use.
+ * The by-correlation-id read stays on v4 for every run.
  */
-export const EVENTS_API_VERSION = 'v5';
+export function eventsApiVersion(
+  specVersion: number | undefined,
+  executorSpecVersion?: number
+): 'v4' | 'v5' {
+  return (specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR ||
+    (executorSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ? 'v5'
+    : 'v4';
+}
 const MAX_EVENTS_HEADER = 'x-wf-max-events';
 
 /**
@@ -246,10 +261,18 @@ const MAX_EVENTS_HEADER = 'x-wf-max-events';
  */
 function eventsV4Url(
   baseUrl: string,
-  runId: string,
-  eventType: string
+  input: {
+    runId: string;
+    eventType: string;
+    specVersion?: number;
+    executorSpecVersion?: number;
+  }
 ): string {
-  return `${baseUrl}/${EVENTS_API_VERSION}/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventType)}`;
+  const apiVersion = eventsApiVersion(
+    input.specVersion,
+    input.executorSpecVersion
+  );
+  return `${baseUrl}/${apiVersion}/runs/${encodeURIComponent(input.runId)}/events/${encodeURIComponent(input.eventType)}`;
 }
 
 /**
@@ -1099,7 +1122,7 @@ async function postWorkflowRunEventV4(
     input.payload ?? new Uint8Array(0)
   );
 
-  const url = eventsV4Url(baseUrl, input.runId, input.eventType);
+  const url = eventsV4Url(baseUrl, input);
   return fetchV4(
     url,
     { method: 'POST', headers, body: frame },
@@ -1465,7 +1488,16 @@ export async function createWorkflowRunEventsBatchV4(
     offset += frame.byteLength;
   }
 
-  const url = `${baseUrl}/${EVENTS_API_VERSION}/runs/${encodeURIComponent(input.runId)}/events/batch`;
+  // Every event of a batch belongs to one run and carries its version. A
+  // single spec 9 frame routes the batch to v5, where the backend refuses
+  // any frame that does not match the run.
+  const apiVersion = input.events.some(
+    (event) =>
+      eventsApiVersion(event.specVersion, event.executorSpecVersion) === 'v5'
+  )
+    ? 'v5'
+    : 'v4';
+  const url = `${baseUrl}/${apiVersion}/runs/${encodeURIComponent(input.runId)}/events/batch`;
   // The run's socket carries the batch when it carries the run's single
   // writes; with no socket for the run, the batch goes over HTTP.
   const overWs = isWsEventsTransportPossible()
@@ -1805,11 +1837,7 @@ async function postEventFrameOverWs(
   // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
   // returned null for the proxy World, so this is always the direct
   // workflow-server origin the socket itself points at.
-  const restUrl = eventsV4Url(
-    getHttpUrl(config).baseUrl,
-    runId,
-    input.eventType
-  );
+  const restUrl = eventsV4Url(getHttpUrl(config).baseUrl, input);
 
   return withHttpClientSpan(
     {
@@ -2028,12 +2056,14 @@ export async function getEventV4(
   runId: string,
   eventId: string,
   remoteRefBehavior: 'resolve' | 'lazy',
-  config?: APIConfig
+  config?: APIConfig,
+  /** The run's spec version, when the caller knows it; see `eventsApiVersion`. */
+  specVersion?: number
 ): Promise<Event> {
   const { baseUrl, headers } = await getHttpConfig(config);
 
   const url =
-    `${baseUrl}/${EVENTS_API_VERSION}/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
+    `${baseUrl}/${eventsApiVersion(specVersion)}/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}` +
     `?remoteRefBehavior=${remoteRefBehavior}`;
   const response = await fetchV4(
     url,
@@ -2090,6 +2120,12 @@ export interface ListEventsV4Params extends PaginationOptions {
   remoteRefBehavior?: EventsRemoteRefBehavior;
   /** Stops the read: the request is aborted and the call rejects. */
   signal?: AbortSignal;
+  /**
+   * The run's spec version, when the caller knows it. Picks the route (see
+   * `eventsApiVersion`): a spec 9 run's list is read from v5, which carries
+   * the log-load `snapshot`.
+   */
+  specVersion?: number;
 }
 
 export interface ListEventsV4Result {
@@ -2272,7 +2308,11 @@ async function consumeReplayLogResponse(
   {
     runId,
     eventsRemoteRefBehavior,
-  }: Pick<CreateEventV4InputBase, 'runId' | 'eventsRemoteRefBehavior'>,
+    specVersion,
+  }: Pick<
+    CreateEventV4InputBase,
+    'runId' | 'eventsRemoteRefBehavior' | 'specVersion'
+  >,
   config?: APIConfig,
   replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
@@ -2306,6 +2346,8 @@ async function consumeReplayLogResponse(
           eventsRemoteRefBehavior === 'skip-step-inputs'
             ? 'skip-step-inputs'
             : 'resolve',
+        // On the route the write itself took.
+        specVersion,
       },
       config,
       replayEventObserver
@@ -2519,7 +2561,7 @@ export async function getWorkflowRunEventsV4(
         baseUrl,
         params.remoteRefBehavior,
         (remoteRefBehavior) =>
-          `${baseUrl}/${EVENTS_API_VERSION}/runs/${encodeURIComponent(runId)}/events` +
+          `${baseUrl}/${eventsApiVersion(params.specVersion)}/runs/${encodeURIComponent(runId)}/events` +
           paginationToQuery({
             ...params,
             remoteRefBehavior,

@@ -1,4 +1,9 @@
-import { type Event, eventIdToSlot, type World } from '@workflow/world';
+import {
+  type Event,
+  eventIdToSlot,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type World,
+} from '@workflow/world';
 import { runtimeLogger } from '../../logger.js';
 import { REPLAY_RESOLVE_DATA } from '../helpers.js';
 import {
@@ -269,6 +274,7 @@ export class LiveLogFeed {
               runId: this.runId,
               pagination: { sortOrder: 'asc', cursor },
               resolveData: REPLAY_RESOLVE_DATA,
+              specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
               ...(signal ? { signal } : {}),
             }),
           {

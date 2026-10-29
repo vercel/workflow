@@ -21,10 +21,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createWorkflowRunEvent,
   createWorkflowRunEventBatch,
+  getEvent,
   getWorkflowRunEvents,
   splitEventDataForV4,
 } from './events.js';
-import { EVENTS_API_VERSION, throwForErrorResponse } from './events-v4.js';
+import { eventsApiVersion, throwForErrorResponse } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { createWorld } from './index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
@@ -32,6 +33,8 @@ import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 const CREATED_AT = new Date('2026-10-05T00:00:00.000Z');
 const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
+/** The route a spec 9 run's events take. */
+const EVENTS_API_VERSION = eventsApiVersion(SPEC);
 
 function mockAgent() {
   const agent = new MockAgent();
@@ -114,9 +117,203 @@ async function postAndCaptureMeta(
   return { meta: meta as Record<string, unknown>, result };
 }
 
-describe('v5 event routes', () => {
-  it('targets v5 for event writes', () => {
-    expect(EVENTS_API_VERSION).toBe('v5');
+describe('event routes by spec version', () => {
+  it('routes a single-orchestrator run to v5 and every other run to v4', () => {
+    expect(eventsApiVersion(SPEC)).toBe('v5');
+    expect(eventsApiVersion(SPEC + 1)).toBe('v5');
+    expect(eventsApiVersion(SPEC - 1)).toBe('v4');
+    expect(eventsApiVersion(undefined)).toBe('v4');
+    // A spec 9 executor's `run_started` on a run created below spec 9.
+    expect(eventsApiVersion(SPEC - 1, SPEC)).toBe('v5');
+  });
+
+  it('reads a run from v4 unless the caller names a spec 9 run', async () => {
+    for (const [specVersion, route] of [
+      [undefined, 'v4'],
+      [SPEC - 1, 'v4'],
+      [SPEC, 'v5'],
+    ] as const) {
+      const agent = mockAgent();
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/${route}/runs/wrun_1/events?returnAll=true&remoteRefBehavior=resolve`,
+          method: 'GET',
+        })
+        .reply(
+          200,
+          concat([
+            eventFrame('evnt_1', 'run_created'),
+            encodeFrame(
+              { _end: 1, next: 'eid:evnt_1', hasMore: false },
+              new Uint8Array()
+            ),
+          ]),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        );
+      await getWorkflowRunEvents(
+        { runId: 'wrun_1', ...(specVersion !== undefined && { specVersion }) },
+        config(agent)
+      );
+      agent.assertNoPendingInterceptors();
+    }
+  });
+});
+
+describe('every run-scoped event route follows the run', () => {
+  // The route is part of the backend contract: a run below spec 9 stays on
+  // the routes earlier releases use, and a spec 9 run is only writable on v5.
+  const cases = [
+    { specVersion: SPEC - 1, route: 'v4' },
+    { specVersion: SPEC, route: 'v5' },
+  ] as const;
+
+  function materialized(event: Record<string, unknown>) {
+    return encode({
+      event: {
+        ...event,
+        eventId: 'evnt_5',
+        runId: 'wrun_1',
+        createdAt: CREATED_AT,
+      },
+    });
+  }
+  const materializedHeaders = {
+    'content-type': 'application/cbor',
+    'x-wf-event-id': 'evnt_5',
+    'x-wf-run-id': 'wrun_1',
+    'x-wf-created-at': CREATED_AT.toISOString(),
+  };
+
+  it.each(cases)('single create at spec $specVersion goes to $route', async ({
+    specVersion,
+    route,
+  }) => {
+    const agent = mockAgent();
+    const event = {
+      eventType: 'step_completed',
+      correlationId: 'step_1',
+      specVersion,
+      eventData: { result: new Uint8Array([1]) },
+    } as AnyEventRequest;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${route}/runs/wrun_1/events/step_completed`,
+        method: 'POST',
+      })
+      .reply(200, materialized(event), { headers: materializedHeaders });
+    await createWorkflowRunEvent('wrun_1', event, undefined, config(agent));
+    agent.assertNoPendingInterceptors();
+  });
+
+  it.each(cases)('batch at spec $specVersion goes to $route', async ({
+    specVersion,
+    route,
+  }) => {
+    const agent = mockAgent();
+    const event = {
+      eventType: 'wait_created',
+      correlationId: 'wait_1',
+      specVersion,
+      eventData: { resumeAt: CREATED_AT },
+    } as AnyEventRequest;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${route}/runs/wrun_1/events/batch`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        encode({
+          results: [
+            {
+              status: 200,
+              event: {
+                ...event,
+                eventId: 'evnt_5',
+                runId: 'wrun_1',
+                createdAt: CREATED_AT,
+              },
+            },
+          ],
+        })
+      );
+    await createWorkflowRunEventBatch(
+      'wrun_1',
+      [{ event }] as Parameters<typeof createWorkflowRunEventBatch>[1],
+      undefined,
+      config(agent)
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
+  it.each(
+    cases
+  )('hook_received preload at spec $specVersion goes to $route', async ({
+    specVersion,
+    route,
+  }) => {
+    const agent = mockAgent();
+    const event = {
+      eventType: 'hook_received',
+      correlationId: 'hook_1',
+      specVersion,
+      eventData: { token: 'tok', payload: new Uint8Array([1]) },
+    } as AnyEventRequest;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${route}/runs/wrun_1/events/hook_received`,
+        method: 'POST',
+        headers: { accept: V4_FRAME_CONTENT_TYPE },
+      })
+      .reply(200, materialized(event), { headers: materializedHeaders });
+    await createWorkflowRunEvent(
+      'wrun_1',
+      event,
+      {
+        resumeId: 'resume_1',
+        resumePayloadDigest: 'e'.repeat(64),
+        preloadEvents: true,
+      },
+      config(agent)
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
+  it.each(cases)('get at spec $specVersion goes to $route', async ({
+    specVersion,
+    route,
+  }) => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${route}/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve`,
+        method: 'GET',
+      })
+      .reply(200, eventFrame('evnt_1', 'run_created'), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    await getEvent('wrun_1', 'evnt_1', { specVersion }, config(agent));
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('reads an event from v4 when the caller does not name the run version', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/evnt_1?remoteRefBehavior=resolve',
+        method: 'GET',
+      })
+      .reply(200, eventFrame('evnt_1', 'run_created'), {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    await getEvent('wrun_1', 'evnt_1', undefined, config(agent));
+    agent.assertNoPendingInterceptors();
   });
 });
 
@@ -528,7 +725,10 @@ describe('list snapshot', () => {
         ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
-    const page = await getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent));
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1', specVersion: SPEC },
+      config(agent)
+    );
     expect(page.data).toHaveLength(2);
     expect(page.snapshot).toEqual({ seq: 2, seqInBand: 2 });
     agent.assertNoPendingInterceptors();
@@ -553,7 +753,10 @@ describe('list snapshot', () => {
         ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
-    const page = await getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent));
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1', specVersion: SPEC },
+      config(agent)
+    );
     expect(page).not.toHaveProperty('snapshot');
   });
 
@@ -582,7 +785,10 @@ describe('list snapshot', () => {
           },
         }
       );
-    const page = await getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent));
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1', specVersion: SPEC },
+      config(agent)
+    );
     expect(page.snapshot).toEqual({ seq: 1, seqInBand: 1 });
   });
 
@@ -613,7 +819,10 @@ describe('list snapshot', () => {
         ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
-    const page = await getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent));
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1', specVersion: SPEC },
+      config(agent)
+    );
     expect(page.data).toHaveLength(1);
     expect(page.snapshot).toBeUndefined();
   });
@@ -657,7 +866,10 @@ describe('list snapshot', () => {
         ]),
         { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
       );
-    const page = await getWorkflowRunEvents({ runId: 'wrun_1' }, config(agent));
+    const page = await getWorkflowRunEvents(
+      { runId: 'wrun_1', specVersion: SPEC },
+      config(agent)
+    );
     expect(page.data.map((event) => event.eventId)).toEqual([
       'evnt_1',
       'evnt_2',

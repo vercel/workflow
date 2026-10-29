@@ -5,6 +5,7 @@ import {
   PreconditionFailedError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -15,7 +16,7 @@ import {
 } from './events.js';
 import {
   createWorkflowRunEventV4,
-  EVENTS_API_VERSION,
+  eventsApiVersion,
   throwForErrorResponse,
 } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
@@ -320,7 +321,9 @@ describe('in-band writer fence counts (world-vercel)', () => {
       .get(origin)
       .intercept({
         path: (path) =>
-          path.startsWith(`/api/${EVENTS_API_VERSION}/runs/wrun_1/events`),
+          path.startsWith(
+            `/api/${eventsApiVersion(SPEC_VERSION_SINGLE_ORCHESTRATOR)}/runs/wrun_1/events`
+          ),
         method: 'GET',
       })
       .reply(
@@ -340,7 +343,7 @@ describe('in-band writer fence counts (world-vercel)', () => {
   it("passes on the snapshot a list response's end frame carries", async () => {
     const agent = listing({ snapshot: { seq: 1, seqInBand: 1 } });
     const page = await getWorkflowRunEvents(
-      { runId: 'wrun_1' },
+      { runId: 'wrun_1', specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
       { token: 'test-token', dispatcher: agent }
     );
     expect(page.data).toHaveLength(1);
@@ -354,7 +357,7 @@ describe('in-band writer fence counts (world-vercel)', () => {
       { 'x-wf-snapshot-seq': '7', 'x-wf-snapshot-seq-in-band': '3' }
     );
     const page = await getWorkflowRunEvents(
-      { runId: 'wrun_1' },
+      { runId: 'wrun_1', specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
       { token: 'test-token', dispatcher: agent }
     );
     expect(page.snapshot).toEqual({ seq: 7, seqInBand: 3 });
@@ -388,7 +391,7 @@ describe('in-band writer fence counts (world-vercel)', () => {
       listing({ snapshot: { seq: '7', seqInBand: 3 } }),
     ]) {
       const page = await getWorkflowRunEvents(
-        { runId: 'wrun_1' },
+        { runId: 'wrun_1', specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
         { token: 'test-token', dispatcher: agent }
       );
       expect(page.data).toHaveLength(1);
@@ -402,7 +405,7 @@ describe('in-band writer fence counts (world-vercel)', () => {
       { 'x-wf-snapshot-seq': '7', 'x-wf-snapshot-seq-in-band': '3' }
     );
     const page = await getWorkflowRunEvents(
-      { runId: 'wrun_1' },
+      { runId: 'wrun_1', specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
       { token: 'test-token', dispatcher: agent }
     );
     expect(page.snapshot).toEqual({ seq: 7, seqInBand: 3 });
@@ -415,7 +418,7 @@ describe('in-band writer fence counts (world-vercel)', () => {
       agent
         .get(origin)
         .intercept({
-          path: `/api/${EVENTS_API_VERSION}/runs/wrun_1/events/step_completed`,
+          path: `/api/${eventsApiVersion(7)}/runs/wrun_1/events/step_completed`,
           method: 'POST',
         })
         .reply(

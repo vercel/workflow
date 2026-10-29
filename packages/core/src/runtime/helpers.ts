@@ -654,13 +654,17 @@ export function withReplayDelta(
  *   incremental loading.
  * @param options.signal - Abandons the load: handed to every page read, and
  *   checked between pages.
+ * @param options.specVersion - The run's spec version, handed to every page
+ *   read as `ListEventsParams.specVersion`. The spec 9 orchestrator passes it
+ *   so the World reads from where the fence `snapshot` is reported.
  */
 export async function loadWorkflowRunEvents(
   runId: string,
   afterCursor?: string,
-  options?: { signal?: AbortSignal }
+  options?: { signal?: AbortSignal; specVersion?: number }
 ): Promise<LoadedEventLog> {
   const signal = options?.signal;
+  const specVersion = options?.specVersion;
   const incremental = afterCursor !== undefined;
   return trace('workflow.replay.load', async (span) => {
     span?.setAttributes({
@@ -702,6 +706,7 @@ export async function loadWorkflowRunEvents(
           },
           resolveData: REPLAY_RESOLVE_DATA,
           ...(signal ? { signal } : {}),
+          ...(specVersion !== undefined ? { specVersion } : {}),
         });
       } catch (error) {
         signal?.throwIfAborted();
@@ -1075,7 +1080,8 @@ export const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
  */
 export async function settleEventSlotGap(
   runId: string,
-  loaded: LoadedEventLog
+  loaded: LoadedEventLog,
+  options?: { specVersion?: number }
 ): Promise<{ log: LoadedEventLog; gap: EventSlotGap | undefined }> {
   let log = loaded;
   let gap = findEventSlotGap(log.events);
@@ -1087,7 +1093,7 @@ export async function settleEventSlotGap(
     await new Promise((resolve) =>
       setTimeout(resolve, SLOT_GAP_RECHECK_BASE_DELAY_MS * 2 ** attempt)
     );
-    log = await loadWorkflowRunEvents(runId);
+    log = await loadWorkflowRunEvents(runId, undefined, options);
     mergeReportedEvents(log.events, loaded.events);
     gap = findEventSlotGap(log.events);
   }

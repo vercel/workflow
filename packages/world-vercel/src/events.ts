@@ -526,7 +526,8 @@ export async function getEvent(
     runId,
     eventId,
     params?.resolveData === 'none' ? 'lazy' : 'resolve',
-    config
+    config,
+    params?.specVersion
   );
 }
 
@@ -548,6 +549,11 @@ export async function getWorkflowRunEvents(
           ? 'skip-step-inputs'
           : 'resolve',
     ...(signal ? { signal } : {}),
+    // Picks the route: a spec 9 run's own reads take v5, whose list carries
+    // the snapshot the orchestrator fences with (see `eventsApiVersion`).
+    ...('specVersion' in params && params.specVersion !== undefined
+      ? { specVersion: params.specVersion }
+      : {}),
   };
 
   const result = await ('correlationId' in params

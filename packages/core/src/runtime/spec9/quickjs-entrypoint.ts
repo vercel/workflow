@@ -920,7 +920,12 @@ export async function runWorkflowWithQuickJS(params: {
     events = preloadedEvents ?? [];
     loadedCursor = preloadedCursor ?? null;
   } else {
-    const read = await listRunLogFrom(world, runId, snapshotCursor);
+    const read = await listRunLogFrom(
+      world,
+      runId,
+      snapshotCursor,
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
     eventsFetchedPages += read.pages;
     events = read.events;
     loadedCursor = read.cursor;
@@ -1256,7 +1261,12 @@ export async function runWorkflowWithQuickJS(params: {
     restoredEventCount = 0;
     // Refetch the FULL log (the earlier fetch started at the snapshot's
     // cursor), and tell the log view the VM is now fed all of it.
-    const read = await listRunLogFrom(world, runId, null);
+    const read = await listRunLogFrom(
+      world,
+      runId,
+      null,
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
     eventsFetchedPages += read.pages;
     events = read.events;
     logView.markFed(events);
@@ -1448,6 +1458,7 @@ export async function runWorkflowWithQuickJS(params: {
               limit: 1000,
             },
             resolveData: REPLAY_RESOLVE_DATA,
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
             ...(signal ? { signal } : {}),
           }),
         {
@@ -1584,6 +1595,7 @@ export async function runWorkflowWithQuickJS(params: {
     // A World may leave step inputs out of replay loads; read it back.
     const read = await world.events.get(runId, state.createdEventId, {
       resolveData: 'all',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     });
     const input =
       read.eventType === 'step_created' ||

@@ -187,7 +187,10 @@ export function __resetSnapshotLatchesForTests(): void {
 export async function listRunLogFrom(
   world: Awaited<ReturnType<typeof getWorld>>,
   runId: string,
-  cursor: string | null
+  cursor: string | null,
+  /** The run's spec version, handed to every page read as a World hint
+   *  (`ListEventsParams.specVersion`). */
+  specVersion?: number
 ): Promise<{
   events: Event[];
   cursor: string | null;
@@ -208,6 +211,7 @@ export async function listRunLogFrom(
         limit: 1000,
       },
       resolveData: REPLAY_RESOLVE_DATA,
+      ...(specVersion !== undefined ? { specVersion } : {}),
     });
     pages++;
     events.push(...response.data);

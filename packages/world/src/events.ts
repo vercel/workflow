@@ -1373,6 +1373,12 @@ export interface EventBatchResult {
 
 export interface GetEventParams {
   resolveData?: ResolveData;
+  /**
+   * The run's spec version, when the caller knows it. A hint a World may use
+   * to pick how it reads; it never changes which event is returned. See
+   * {@link ListEventsParams.specVersion}.
+   */
+  specVersion?: number;
 }
 
 /**
@@ -1438,6 +1444,16 @@ export interface ListEventsParams {
    * caller no longer uses the result.
    */
   signal?: AbortSignal;
+  /**
+   * The run's spec version, when the caller knows it. A hint a World may use
+   * to pick how it reads; it never changes which events are returned. The
+   * spec 9 orchestrator passes it on its own log loads, which need
+   * {@link EventListResponse.snapshot}: world-vercel reads a run stamped 9 or
+   * above from the route that reports it, and every other read from the route
+   * earlier releases use. A World that always returns `snapshot` can ignore
+   * it.
+   */
+  specVersion?: number;
 }
 
 export interface ListEventsByCorrelationIdParams {
