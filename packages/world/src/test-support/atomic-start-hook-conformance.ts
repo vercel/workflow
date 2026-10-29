@@ -734,6 +734,45 @@ export function atomicStartHookConformance(
       await expectRefused(admit(events, { token }), token, owner);
     });
 
+    // The start Hook's retention dies with it: a Hook the owner creates on
+    // the token afterwards holds it for its own retention only.
+    test("a Hook re-created after disposing the start Hook doesn't inherit its retention", async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, {
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 10 * RETENTION_MS),
+      });
+      await create(events, owner, runStarted({ token }));
+      await create(events, owner, hookDisposed(token, startHookId(owner)));
+      await create(events, owner, hookCreated(token, newHookId()));
+      await finish(events, owner);
+
+      await admit(events, { token });
+    });
+
+    test('a Hook re-created after disposing the start Hook holds the token for its own, shorter retention', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, {
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 10 * RETENTION_MS),
+      });
+      await create(events, owner, runStarted({ token }));
+      await create(events, owner, hookDisposed(token, startHookId(owner)));
+      const own = Date.now() + RETENTION_MS;
+      await create(
+        events,
+        owner,
+        hookCreated(token, newHookId(), false, new Date(own))
+      );
+      await finish(events, owner);
+
+      await expectRefused(admit(events, { token }), token, owner);
+      await passRetention(own);
+      await admit(events, { token });
+    });
+
     test('after disposing the start Hook, a re-create conflicts naming the run that took the token', async () => {
       const events = setup();
       const token = newToken();

@@ -110,8 +110,8 @@ export async function POST(request: Request) {
       const hook = await resumeHook(token, { note }); // [!code highlight]
       return Response.json({ runId: hook.runId, started: false });
     } catch (error) {
-      // The owner ended, or disposed its start Hook, between the conflict
-      // and the resume: the token is free again, so start again.
+      // The owner's Hook is no longer resumable (it ended, or disposed its
+      // start Hook): try to start again, which may take the token.
       if (!HookNotFoundError.is(error)) throw error; // [!code highlight]
     }
   }
@@ -121,7 +121,7 @@ export async function POST(request: Request) {
 }
 ```
 
-Every caller either starts the run, delivers its payload to the owner, or learns which run holds the token. While the owner's start Hook is open, the loop needs at most two calls. A `HookNotFoundError` after a conflict means the owner released the token in the meantime, by ending or by [disposing its start Hook](#take-care-with-the-start-hooks-lifecycle), so the next `start()` is admitted as the new owner.
+Every caller either starts the run, delivers its payload to the owner, or learns which run holds the token. While the owner's start Hook is open, the loop needs at most two calls. A `HookNotFoundError` after a conflict means the owner's Hook is no longer resumable: the owner ended, or [disposed its start Hook](#take-care-with-the-start-hooks-lifecycle). The next `start()` may then take the token, or be refused again: by a finished owner that still holds it for its retention, or by another caller that started first.
 
 If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps refusing new starts until the retention passes, and its Hook can no longer be resumed, so the loop above gives up after its attempts and names that run. Use `getRun(owner)` to tell the caller what the finished run returned.
 
