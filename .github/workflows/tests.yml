@@ -434,6 +434,8 @@ jobs:
           APP_NAME: ${{ matrix.app.name }}
           WORKFLOW_VM: ${{ matrix.vm }}
           WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
+          # DO NOT MERGE: pairing lane; the start({ hook }) block must run.
+          WORKFLOW_E2E_EXPECT_START_HOOK: '1'
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
@@ -530,6 +532,8 @@ jobs:
           VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
           APP_NAME: nextjs-turbopack
           WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
+          # DO NOT MERGE: pairing lane; the start({ hook }) block must run.
+          WORKFLOW_E2E_EXPECT_START_HOOK: '1'
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
           WORKFLOW_VERCEL_PROJECT: ${{ env.VERCEL_PROJECT_ID }}
@@ -628,6 +632,8 @@ jobs:
           VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
           WORKFLOW_VERCEL_ENV: "preview"
+          # DO NOT MERGE: pairing lane; the start({ hook }) block must run.
+          WORKFLOW_E2E_EXPECT_START_HOOK: '1'
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
@@ -739,6 +745,8 @@ jobs:
           VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
           WORKFLOW_VERCEL_ENV: "preview"
+          # DO NOT MERGE: pairing lane; the start({ hook }) block must run.
+          WORKFLOW_E2E_EXPECT_START_HOOK: '1'
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
