@@ -109,14 +109,6 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     'wrun_claimer',
     'hook_claimer',
   ],
-  HookReservedError: [
-    ['HookReservedError', 1],
-    { message: 2, token: 3, runId: 4, retryAfter: 5 },
-    'Hook token "order:1" is reserved by workflow run "wrun_owner", which has not registered its hook yet; retry shortly',
-    'order:1',
-    'wrun_owner',
-    1,
-  ],
   Instance: [
     ['Instance', 1],
     { classId: 2, data: 3 },

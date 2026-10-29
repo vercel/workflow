@@ -933,57 +933,6 @@ export class HookNotFoundError extends WorkflowError {
 }
 
 /**
- * Thrown by `resumeHook()` and `getHookByToken()` when the token is reserved
- * by a run started with `start({ hook })` that has not registered its Hook
- * (`createHook({ token })`) yet. The token has an owner, so this is not
- * `HookNotFoundError`: retry after `retryAfter` seconds (or shortly), and the
- * lookup resolves once the owner's Hook is registered. If the owner ends
- * without registering one, the lookup answers `HookNotFoundError` instead.
- *
- * Retryable. Inside a step, `resumeHook()` and `getHookByToken()` wait for
- * the owner for up to 30 seconds (honoring `retryAfter`) before throwing it,
- * and the step's retries cover a longer wait.
- *
- * @example
- * ```ts
- * import { HookReservedError } from "workflow/errors";
- *
- * for (;;) {
- *   try {
- *     return await resumeHook(token, payload);
- *   } catch (error) {
- *     if (!HookReservedError.is(error)) throw error;
- *     await sleep((error.retryAfter ?? 1) * 1000);
- *   }
- * }
- * ```
- */
-export class HookReservedError extends WorkflowError {
-  token: string;
-  /** The run that reserved the token and will own its Hook. */
-  runId: string;
-  /** Suggested delay before retrying, in seconds. */
-  retryAfter?: number;
-
-  constructor(token: string, runId: string, options?: { retryAfter?: number }) {
-    super(
-      `Hook token is reserved by workflow run "${runId}", which has not registered its hook yet. It stays reserved until that run registers its hook or ends.`,
-      {}
-    );
-    this.name = 'HookReservedError';
-    this.token = token;
-    this.runId = runId;
-    if (options?.retryAfter !== undefined) {
-      this.retryAfter = options.retryAfter;
-    }
-  }
-
-  static is(value: unknown): value is HookReservedError {
-    return isError(value) && value.name === 'HookReservedError';
-  }
-}
-
-/**
  * Thrown when an operation conflicts with the current state of an entity.
  * This includes attempts to modify an entity already in a terminal state,
  * create an entity that already exists, or any other 409-style conflict.
@@ -1393,9 +1342,6 @@ const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
 const WORKFLOW_START_ERROR_KEY = Symbol.for(
   '@workflow/errors//WorkflowStartError'
 );
-const HOOK_RESERVED_ERROR_KEY = Symbol.for(
-  '@workflow/errors//HookReservedError'
-);
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1441,14 +1387,6 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
     Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
       value: StreamError,
-      writable: false,
-      enumerable: false,
-      configurable: false,
-    });
-  }
-  if (!Object.hasOwn(globalThis, HOOK_RESERVED_ERROR_KEY)) {
-    Object.defineProperty(globalThis, HOOK_RESERVED_ERROR_KEY, {
-      value: HookReservedError,
       writable: false,
       enumerable: false,
       configurable: false,

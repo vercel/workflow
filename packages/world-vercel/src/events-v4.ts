@@ -304,7 +304,7 @@ interface CreateEventV4InputBase {
    *  resilient-start path). Validated server-side against the attribute
    *  key/value/count caps. */
   attributes?: Record<string, string>;
-  /** Atomic start Hook reservation (run_created / resilient run_started).
+  /** Atomic start Hook admission (run_created / resilient run_started).
    *  Rides the frame meta as `startHook: { token, tokenRetentionUntil? }`. */
   startHook?: StartHook;
   /** attr_set's attribute change list ({key, value|null} entries). */
@@ -829,9 +829,6 @@ function errorFromV4Response(
     if (statusCode === 409 && code === 'hook-force-claimed') {
       details = { claimedBy: record.claimedBy };
     }
-    if (statusCode === 425 && code === START_HOOK_WIRE_CODES.reserved) {
-      details = { runId: record.runId };
-    }
     if (
       statusCode === 400 &&
       code === START_HOOK_WIRE_CODES.admissionRejected
@@ -875,8 +872,6 @@ interface V4ErrorBody {
   /** 409 start-hook-conflict: the refused token and the run that owns it. */
   token?: unknown;
   conflictingRunId?: unknown;
-  /** 425 hook-reserved: the run that reserved the token. */
-  runId?: unknown;
   /** 400 start-hook-admission-rejected: `{ reason }`. */
   details?: unknown;
   events?: unknown;

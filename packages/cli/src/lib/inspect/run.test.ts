@@ -14,7 +14,7 @@ vi.mock('../config/log.js', () => ({
 
 describe('startRun', () => {
   it("never forwards the source run's start Hook", async () => {
-    // A re-run is a new run by intent; forwarding the reservation would make
+    // A re-run is a new run by intent; forwarding the start Hook would make
     // it a duplicate of the source and refuse it with HookConflictError.
     const { start } = await import('@workflow/core/runtime');
     const sourceRun = {

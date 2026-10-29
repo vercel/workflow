@@ -1,8 +1,4 @@
-import {
-  HookNotFoundError,
-  HookReservedError,
-  WorkflowWorldError,
-} from '@workflow/errors';
+import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import type {
   CreateHookRequest,
   GetHookParams,
@@ -121,11 +117,6 @@ export async function getHookByToken(
   } catch (error) {
     if (WorkflowWorldError.is(error) && error.status === 404) {
       throw new HookNotFoundError(token);
-    }
-    if (HookReservedError.is(error)) {
-      throw new HookReservedError(token, error.runId, {
-        retryAfter: error.retryAfter,
-      });
     }
     throw error;
   }

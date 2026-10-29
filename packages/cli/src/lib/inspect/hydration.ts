@@ -154,7 +154,6 @@ const ERROR_REVIVER_KEYS = [
   'FatalError',
   'HookConflictError',
   'HookForceClaimedError',
-  'HookReservedError',
   'RangeError',
   'ReferenceError',
   'RetryableError',

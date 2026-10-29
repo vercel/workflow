@@ -87,14 +87,6 @@ const getWorkflowServerUrlOverride = (): string =>
 const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
 
 /**
- * The `hook_conflict` `forceRefusedReason` values this client parses, beyond
- * `victim-spec-version`. The backend sends a newer reason only to a client
- * that lists it here: an older client's event schema rejects an unknown one.
- */
-export const HOOK_CONFLICT_REASONS_HEADER = 'x-workflow-hook-conflict-reasons';
-const HOOK_CONFLICT_REASONS = 'start-reservation';
-
-/**
  * Forward server-side limit overrides set via `WORKFLOW_TEST_LIMIT_OVERRIDES`.
  *
  * The value is a JSON object of server-constant name → value (e.g.
@@ -279,7 +271,6 @@ export const getHeaders = (
     'User-Agent',
     joinUserAgentProducts(getUserAgent(), headers.get('User-Agent'))
   );
-  headers.set(HOOK_CONFLICT_REASONS_HEADER, HOOK_CONFLICT_REASONS);
   const testLimitOverrides = getTestLimitOverridesHeader();
   if (testLimitOverrides) {
     headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
@@ -547,7 +538,6 @@ export async function makeRequest<T>({
             code?: string;
             error?: string;
             details?: unknown;
-            runId?: unknown;
           } = await parseResponseBody(response)
             .then(
               (r) =>
@@ -556,7 +546,6 @@ export async function makeRequest<T>({
                   code?: string;
                   error?: string;
                   details?: unknown;
-                  runId?: unknown;
                 }
             )
             .catch(() => ({}));
@@ -582,11 +571,7 @@ export async function makeRequest<T>({
             code: errorCode,
             retryAfter,
             mitigated: response.headers.get('x-vercel-mitigated'),
-            // `425 hook-reserved` names its run at the top level.
-            details:
-              errorCode === 'hook-reserved'
-                ? { runId: errorData.runId }
-                : errorData.details,
+            details: errorData.details,
           });
           span?.setAttributes({
             ...ErrorType(errorCode || `HTTP ${response.status}`),

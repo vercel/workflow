@@ -113,7 +113,7 @@ export const startRun = async (
   }
 
   // Never forward the source run's `startHook`: a re-run is a new run by
-  // intent, and the reservation would refuse it as a duplicate.
+  // intent, and its start Hook token would refuse it as a duplicate.
   const newRun = await start({ workflowId }, jsonArgs, {
     deploymentId,
     specVersion,

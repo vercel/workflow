@@ -11,7 +11,6 @@ import {
   getHeaders,
   getHttpConfig,
   getHttpUrl,
-  HOOK_CONFLICT_REASONS_HEADER,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
   resolveClientEnvironment,
@@ -79,11 +78,6 @@ describe('getHttpUrl', () => {
 });
 
 describe('getHeaders', () => {
-  it('lists the hook_conflict refusal reasons this client parses', () => {
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get(HOOK_CONFLICT_REASONS_HEADER)).toBe('start-reservation');
-  });
-
   const originalEnv = process.env;
 
   beforeEach(() => {

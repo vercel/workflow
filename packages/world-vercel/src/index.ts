@@ -76,7 +76,7 @@ export function createWorld(config?: APIConfig): World {
       hookRetention: { active: true },
       // `start({ hook })` admission. Opt-in until the backend that admits it
       // is deployed: a server that predates it drops the `startHook` meta key
-      // silently and would start an unreserved run. Read per World, so a
+      // silently and would start a run without its start Hook. Read per World, so a
       // process can flip it without a rebuild. See `start-hook.ts` in
       // @workflow/world for the contract the server implements.
       ...(isExperimentalStartHookEnabled()

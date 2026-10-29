@@ -2,7 +2,6 @@ import {
   EntityConflictError,
   HookConflictError,
   HookNotFoundError,
-  HookReservedError,
   START_HOOK_ADMISSION_DISABLED,
   START_HOOK_ADMISSION_REJECTED,
   START_HOOK_CANDIDATE_CANCELLED,
@@ -14,9 +13,12 @@ import { START_HOOK_WIRE_CODES } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  START_HOOK_RUN_PENDING_BUDGET_MS,
+  START_HOOK_RUN_PENDING_CODE,
+} from './event-retry.js';
 import { createWorkflowRunEvent, splitEventDataForV4 } from './events.js';
 import { throwForErrorResponse } from './events-v4.js';
-import { getHookByToken } from './hooks.js';
 import { errorForResponse } from './http-core.js';
 import { createWorld, EXPERIMENTAL_START_HOOK_ENV } from './index.js';
 
@@ -296,48 +298,23 @@ describe('atomic start Hook wire contract (world-vercel)', () => {
     expect(meta.startHook).toEqual({ token: 'order:1', metadata });
   });
 
-  it('maps a 425 hook-reserved to HookReservedError, never HookNotFoundError', () => {
+  it('maps a 425 to TooEarlyError whatever its code: there is no reserved answer', () => {
     const thrown = thrownBy(() =>
       throwForErrorResponse(
         425,
         { 'content-type': 'application/json', 'retry-after': '2' },
-        json({ error: START_HOOK_WIRE_CODES.reserved, runId: 'wrun_owner' }),
+        json({ error: 'hook-reserved', runId: 'wrun_owner' }),
         'createEvent',
         'http://x'
       )
     );
-    expect(HookReservedError.is(thrown)).toBe(true);
+    expect(TooEarlyError.is(thrown)).toBe(true);
     expect(HookNotFoundError.is(thrown)).toBe(false);
-    expect(thrown).toMatchObject({ runId: 'wrun_owner', retryAfter: 2 });
+    expect(thrown).not.toHaveProperty('runId');
   });
 
   it('keeps a plain 425 a TooEarlyError', () => {
     expect(TooEarlyError.is(errorForResponse(425, 'later'))).toBe(true);
-  });
-
-  it('getHookByToken surfaces a reserved token with the token it asked about', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(
-      async () =>
-        new Response(
-          JSON.stringify({
-            error: START_HOOK_WIRE_CODES.reserved,
-            runId: 'wrun_owner',
-          }),
-          {
-            status: 425,
-            headers: { 'content-type': 'application/json', 'retry-after': '1' },
-          }
-        )
-    );
-    const error = await getHookByToken('order:1', config).catch(
-      (e: unknown) => e
-    );
-    expect(HookReservedError.is(error)).toBe(true);
-    expect(error).toMatchObject({
-      token: 'order:1',
-      runId: 'wrun_owner',
-      retryAfter: 1,
-    });
   });
 
   it('keeps contention a retryable 429', () => {
@@ -352,5 +329,182 @@ describe('atomic start Hook wire contract (world-vercel)', () => {
     });
     vi.stubEnv(EXPERIMENTAL_START_HOOK_ENV, 'yes');
     expect(createWorld(config).capabilities?.atomicStartHook).toBeUndefined();
+  });
+});
+
+describe('start Hook run pending (world-vercel)', () => {
+  const runId = `wrun_${ulid()}`;
+  const hookReceived = {
+    eventType: 'hook_received',
+    specVersion: 8,
+    correlationId: `hook_${runId.slice('wrun_'.length)}`,
+    eventData: { payload: new Uint8Array([1]) },
+  } as const;
+
+  const pending = (retryAfter?: string) =>
+    new Response(
+      JSON.stringify({ error: START_HOOK_RUN_PENDING_CODE, runId }),
+      {
+        status: 503,
+        headers: {
+          'content-type': 'application/json',
+          ...(retryAfter !== undefined ? { 'retry-after': retryAfter } : {}),
+        },
+      }
+    );
+
+  const accepted = () =>
+    new Response(
+      encode({
+        event: {
+          eventId: `evnt_${ulid()}`,
+          runId,
+          eventType: 'hook_received',
+          correlationId: hookReceived.correlationId,
+          specVersion: 8,
+          createdAt: new Date(),
+          eventData: {},
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/cbor' } }
+    );
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('maps the 503 to a WorkflowWorldError carrying its code and Retry-After', () => {
+    const thrown = thrownBy(() =>
+      throwForErrorResponse(
+        503,
+        { 'content-type': 'application/json', 'retry-after': '1' },
+        json({ error: START_HOOK_RUN_PENDING_CODE, runId }),
+        'createEvent',
+        'http://x'
+      )
+    );
+    expect(WorkflowWorldError.is(thrown)).toBe(true);
+    expect(HookNotFoundError.is(thrown)).toBe(false);
+    expect(thrown).toMatchObject({
+      status: 503,
+      code: START_HOOK_RUN_PENDING_CODE,
+      retryAfter: 1,
+    });
+  });
+
+  it('re-sends a plain hook_received after each Retry-After until the run is stored', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(async () => pending('1'))
+      .mockImplementationOnce(async () => pending('2'))
+      .mockImplementation(async () => accepted());
+
+    const settled = createWorkflowRunEvent(
+      runId,
+      hookReceived as never,
+      undefined,
+      config
+    );
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2000);
+    const result = await settled;
+
+    // A plain hook_received is never re-sent for a transient failure; the
+    // 503 is a no-write, so it is.
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect((result as { event?: { eventType: string } }).event?.eventType).toBe(
+      'hook_received'
+    );
+  });
+
+  it('surfaces a retryable WorkflowWorldError with retryAfter once the budget is spent', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    // No Retry-After: waits default to 1s.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => pending());
+
+    const settled = createWorkflowRunEvent(
+      runId,
+      hookReceived as never,
+      undefined,
+      config
+    ).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(START_HOOK_RUN_PENDING_BUDGET_MS + 5000);
+    const error = await settled;
+
+    expect(fetchSpy).toHaveBeenCalledTimes(
+      START_HOOK_RUN_PENDING_BUDGET_MS / 1000 + 1
+    );
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect(HookNotFoundError.is(error)).toBe(false);
+    expect(error).toMatchObject({
+      status: 503,
+      code: START_HOOK_RUN_PENDING_CODE,
+      retryAfter: 1,
+    });
+  });
+
+  it('waits out a 429 contended on a forced hook_created within the throttle budget', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementationOnce(
+        async () =>
+          new Response(JSON.stringify({ error: 'contended' }), {
+            status: 429,
+            headers: { 'content-type': 'application/json', 'retry-after': '1' },
+          })
+      )
+      .mockImplementation(async () =>
+        Response.json(
+          { error: 'contended' },
+          { status: 429, headers: { 'retry-after': '40' } }
+        )
+      );
+
+    const settled = createWorkflowRunEvent(
+      runId,
+      {
+        eventType: 'hook_created',
+        specVersion: 8,
+        correlationId: `hook_${ulid()}`,
+        eventData: { token: 'order:1', force: true },
+      } as never,
+      undefined,
+      config
+    ).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(1000);
+    const error = await settled;
+
+    // The second wait (40s) does not fit the 30s budget, so the 429 surfaces
+    // as a retryable ThrottleError carrying the wait the backend named.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(ThrottleError.is(error)).toBe(true);
+    expect(error).toBeInstanceOf(WorkflowWorldError);
+    expect(error).toMatchObject({ retryAfter: 40 });
+  });
+
+  it('leaves an unrelated 503 on the transient policy', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ error: 'unavailable' }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' },
+        })
+    );
+    const error = await createWorkflowRunEvent(
+      runId,
+      hookReceived as never,
+      undefined,
+      config
+    ).catch((e: unknown) => e);
+    // A plain hook_received runs once on a transient failure, as before.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(error).toMatchObject({ status: 503, code: 'unavailable' });
   });
 });

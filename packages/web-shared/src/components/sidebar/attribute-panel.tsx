@@ -697,7 +697,7 @@ const attributeToDisplayFn: Record<
   // cross-run writers to seal payloads to this run. Not actionable for users
   // and not secret, so hidden rather than rendered as 44 opaque base64 chars.
   encryptionPublicKey: (_value: unknown) => null,
-  // The Hook token reserved by `start({ hook })`: the run's idempotency key.
+  // The token of the Hook `start({ hook })` created: the run's idempotency key.
   startHook: (value: unknown) => {
     const token = (value as { token?: unknown } | undefined)?.token;
     return typeof token === 'string' && token.length > 0 ? token : null;

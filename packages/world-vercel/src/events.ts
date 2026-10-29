@@ -175,7 +175,7 @@ interface SplitEventData {
      *  definitions too large to send inline. */
     dynamicWorkflowCodeRef?: string;
     /**
-     * Atomic start Hook reservation (run_created / resilient run_started).
+     * Atomic start Hook admission (run_created / resilient run_started).
      * Nested as `{ token, tokenRetentionUntil? }`; the retention is a Date
      * (CBOR tag 1). See `start-hook.ts` in @workflow/world for the contract.
      */
@@ -419,8 +419,8 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   // Atomic start Hook admission. The server drops meta keys it does not
   // know, so this adapter only advertises `atomicStartHook` once the backend
-  // admits it (see `index.ts`); otherwise the reservation would vanish here
-  // without an error and the run would start unreserved.
+  // admits it (see `index.ts`); otherwise the start Hook would vanish here
+  // without an error and the run would start without it.
   if (
     eventData.startHook !== undefined &&
     eventData.startHook !== null &&
