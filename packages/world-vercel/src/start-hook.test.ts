@@ -332,6 +332,47 @@ describe('atomic start Hook wire contract (world-vercel)', () => {
   });
 });
 
+describe('local candidate-age check (world-vercel)', () => {
+  const tooOld = () => `wrun_${ulid(Date.now() - 25 * 60 * 60 * 1000)}`;
+  const created = (startHook?: { token: string }) =>
+    ({
+      eventType: 'run_created',
+      specVersion: 2,
+      eventData: {
+        deploymentId: 'dpl_1',
+        workflowName: 'wf',
+        input: new Uint8Array([1]),
+        ...(startHook ? { startHook } : {}),
+      },
+    }) as never;
+
+  it('answers a start Hook candidate too old to admit as a permanent rejection', async () => {
+    const error = await createWorkflowRunEvent(
+      tooOld(),
+      created({ token: 'order:1' }),
+      undefined,
+      config
+    ).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      status: 400,
+      code: START_HOOK_ADMISSION_REJECTED,
+      reason: 'expired',
+    });
+  });
+
+  it('keeps the generic 400 for an ordinary run', async () => {
+    const error = await createWorkflowRunEvent(
+      tooOld(),
+      created(),
+      undefined,
+      config
+    ).catch((e: unknown) => e);
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect(error).toMatchObject({ status: 400 });
+    expect((error as { code?: unknown }).code).toBeUndefined();
+  });
+});
+
 describe('start Hook run pending (world-vercel)', () => {
   const runId = `wrun_${ulid()}`;
   const hookReceived = {

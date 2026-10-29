@@ -36,6 +36,7 @@ import {
   HookNotFoundError,
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
+  START_HOOK_ADMISSION_REJECTED,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -936,6 +937,17 @@ async function createWorkflowRunEventInner(
   if (data.eventType === 'run_created') {
     const validationError = validateWorkflowRunIdTimestamp(id);
     if (validationError) {
+      // A `start({ hook })` candidate gets the answer the backend gives it
+      // (a permanent admission rejection), so its queued copy stops retrying.
+      if ((data.eventData as { startHook?: unknown }).startHook) {
+        throw new WorkflowWorldError(validationError, {
+          status: 400,
+          code: START_HOOK_ADMISSION_REJECTED,
+          reason: validationError.includes('in the past')
+            ? 'expired'
+            : 'invalid',
+        });
+      }
       throw new WorkflowWorldError(validationError, { status: 400 });
     }
   }
