@@ -455,14 +455,11 @@ const HookConflictEventSchema = BaseEventSchema.extend({
      * `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`, so its runtime would not
      * understand the involuntary disposal — the forced hook gets the
      * ordinary `HookConflictError` it opted out of instead of stranding
-     * that run. `start-reservation`: the token is a `start({ hook })`
-     * reservation its run has not adopted yet, which cannot be force-claimed
-     * (there is no Hook to take over). Absent on a conflict answered by a
-     * World that does not implement forcing at all.
+     * that run. Absent on a conflict answered by a World that does not
+     * implement forcing at all. (A run's `start({ hook })` Hook is taken like
+     * any other Hook, so it is never a reason to refuse.)
      */
-    forceRefusedReason: z
-      .enum(['victim-spec-version', 'start-reservation'])
-      .optional(),
+    forceRefusedReason: z.literal('victim-spec-version').optional(),
   }),
 });
 
@@ -565,9 +562,14 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
        */
       encryptionPublicKey: z.string().optional(),
       /**
-       * Reserve this Hook token atomically with the run's creation. Only sent
-       * to Worlds that declare `capabilities.atomicStartHook`; see
-       * `start-hook.ts` for the admission contract.
+       * Create the run's start Hook (id `startHookId(runId)`) for this token
+       * atomically with the run's creation. Only sent to Worlds that declare
+       * `capabilities.atomicStartHook`; see `start-hook.ts` for the admission
+       * contract. A stored `run_created` keeps it, with `hookId`, as the
+       * record of the start Hook's creation: no `hook_created` is written for
+       * that Hook, so `run_created` stands for one with `{ token, metadata,
+       * tokenRetentionUntil, isWebhook: false }`. A World may strip
+       * `metadata` from the stored copy.
        */
       startHook: StartHookSchema.optional(),
     })

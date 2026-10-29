@@ -13,6 +13,7 @@ import {
   START_HOOK_CANDIDATE_CANCELLED_CODE,
   START_HOOK_CANDIDATE_MAX_AGE_MS,
   type StartHook,
+  startHookId,
 } from '../start-hook.js';
 
 /**
@@ -20,40 +21,41 @@ import {
  * `WorldCapabilities.atomicStartHook`).
  *
  * What every World that implements it must agree on, whatever it stores the
- * reservation in:
+ * start Hook in:
  *
  * - It declares `capabilities.atomicStartHook`.
- * - An accepted candidate's run is created with the reservation echoed on
- *   `run.startHook`, and re-posting either creating write for it returns
- *   that run.
+ * - An accepted candidate's run is created with the start Hook echoed on
+ *   `run.startHook` (with `hookId`, on `run_created`, `runs.get` and
+ *   `run_started`), and re-posting either creating write for it returns that
+ *   run.
  * - A refused candidate gets `HookConflictError` naming the owner, creates no
  *   run, and keeps getting the same owner on every later attempt, through
  *   either path, even after the token is free.
  * - Of concurrent candidates for one token, exactly one is accepted.
  * - The direct `run_created` and the queued `run_started` of one candidate,
  *   racing, create one run with one `run_created`.
- * - The token is held until the owner run ends, and after that until the
- *   retention passes.
- * - The owner's own `createHook()` with the token adopts the reservation; any
- *   other run's conflicts with the owner; disposing the adopted Hook does not
- *   release the token while the owner runs, and an adoption without its
- *   own retention keeps the start's, whether or not the run disposed it.
- * - A by-token lookup before adoption throws `HookReservedError` naming the
- *   owner, and answers not found once the owner ended without adopting, or
- *   after the adopted Hook was disposed.
- * - An adoption without metadata takes the reservation's; its own wins.
- * - A forced `createHook()` cannot take a reservation that has no Hook
- *   (answered `forceRefusedReason: 'start-reservation'`), and
- *   taking its adopted Hook moves the reservation to the claimer, extended
- *   by the claimer's Hook retention past that Hook's disposal.
+ * - The admission creates the Hook `startHookId(runId)`: resolvable by token
+ *   and by id, and resumable, as soon as `run_created` returns, while the run
+ *   is still pending; no `hook_created` is written for it, and a
+ *   `hook_created` with its id is refused (400).
+ * - It follows the ordinary Hook lifecycle: other runs' `createHook()`
+ *   conflict naming the owner (and so does the owner's own second one while
+ *   it is live); disposal frees the token at once, even with a retention;
+ *   the owner's end frees it, unless the retention is still running, in
+ *   which case the Hook stays readable, refuses deliveries and holds the
+ *   token until then; the owner may create a Hook on the token again after
+ *   disposing it.
+ * - A forced `createHook()` takes it like any Hook, even before the workflow
+ *   opens it: the owner's log gets `hook_disposed{forceClaimedBy}` for
+ *   `startHookId(owner)`.
  * - A retention beyond the World's limit is refused with
  *   `START_HOOK_ADMISSION_REJECTED`.
  * - Past the 24h orphan bound, a candidate with no run is refused with
  *   `START_HOOK_ADMISSION_REJECTED` through either copy, and a decided
  *   candidate's `run_created` is too. A staged orphan (an accepted candidate
  *   whose run was never created) holds its token for the World's hold and
- *   releases it after, and its own later copies are then refused naming the
- *   run that took the token.
+ *   releases it after, resolves as not found and takes no resumes, and its
+ *   own later copies are then refused naming the run that took the token.
  *
  * Import it from a World's own test file (by relative path, like the other
  * test-support modules) and call it at module level.
@@ -85,8 +87,8 @@ export interface AtomicStartHookConformanceOptions {
   advanceClock?: (ms: number) => void;
   /**
    * Leaves the state a writer that died mid-admission leaves behind: the
-   * candidate accepted (its token reserved) but its run never created. Omit
-   * for a World where that state cannot exist (one that reserves the token
+   * candidate accepted (its token claimed) but its run never created. Omit
+   * for a World where that state cannot exist (one that claims the token
    * and creates the run in a single transaction).
    */
   stageOrphan?: (runId: string, token: string) => Promise<void>;
@@ -98,6 +100,12 @@ export interface AtomicStartHookConformanceOptions {
    * case the writer is stalled rather than dead). Defaults to 24h.
    */
   orphanHoldMs?: number;
+  /**
+   * A known gap, stated in place of the test it skips: why an admission
+   * racing another run's concurrent `createHook()` for the same token can
+   * leave two owners in this World. Omit (the default) to run that test.
+   */
+  knownGapAdmissionVsConcurrentCreateHook?: string;
 }
 
 const SPEC = SPEC_VERSION_CURRENT;
@@ -251,6 +259,14 @@ export function atomicStartHookConformance(
       eventData: { token },
     }) as AnyEventRequest;
 
+  const hookReceived = (token: string, hookId: string, payload: number) =>
+    ({
+      eventType: 'hook_received',
+      correlationId: hookId,
+      specVersion: SPEC,
+      eventData: { token, payload: new Uint8Array([payload]) },
+    }) as AnyEventRequest;
+
   const newToken = () => `start-hook-conformance:${randomUUID()}`;
   const newHookId = () => `hook_${randomUUID().replaceAll('-', '')}`;
 
@@ -259,7 +275,7 @@ export function atomicStartHookConformance(
       expect(options.capabilities()?.atomicStartHook?.active).toBe(true);
     });
 
-    test('admits a candidate, echoes the reservation, and replays it for both paths', async () => {
+    test('admits a candidate, echoes the start Hook, and replays it for both paths', async () => {
       const events = setup();
       const token = newToken();
       const runId = options.newRunId();
@@ -274,7 +290,7 @@ export function atomicStartHookConformance(
       const started = await create(events, runId, runStarted({ token }));
       expect(started.run?.status).toBe('running');
 
-      // The reservation survives the run's status transitions: a late retry
+      // The echo survives the run's status transitions: a late retry
       // of the direct write still finds its own run.
       expect((await runs.get(runId)).startHook?.token).toBe(token);
       const late = await create(events, runId, runCreated({ token }));
@@ -357,78 +373,49 @@ export function atomicStartHookConformance(
       }
     });
 
-    test("another run's concurrent createHook and an admission leave one owner", async () => {
-      const first = setup();
-      const second = options.secondEvents?.(first) ?? first;
-      for (let round = 0; round < 4; round++) {
-        const token = newToken();
-        const other = await plainRun(first);
-        const candidate = options.newRunId();
-        const [admission, created] = await Promise.allSettled([
-          create(
-            round % 2 === 0 ? first : second,
-            candidate,
-            runCreated({ token })
-          ),
-          create(first, other, hookCreated(token, newHookId())),
-        ]);
-        expect(created.status).toBe('fulfilled');
-        const hookWon =
-          created.status === 'fulfilled' &&
-          created.value.event?.eventType === 'hook_created';
-        if (hookWon) {
-          // The Hook owns the token: the candidate was refused naming it.
-          expect(admission.status).toBe('rejected');
-          if (admission.status === 'rejected') {
-            expect(errorNamed(admission.reason, 'HookConflictError')).toBe(
-              true
-            );
-            expect(admission.reason).toMatchObject({ conflictingRunId: other });
+    (options.knownGapAdmissionVsConcurrentCreateHook ? test.skip : test)(
+      "another run's concurrent createHook and an admission leave one owner",
+      async () => {
+        const first = setup();
+        const second = options.secondEvents?.(first) ?? first;
+        for (let round = 0; round < 4; round++) {
+          const token = newToken();
+          const other = await plainRun(first);
+          const candidate = options.newRunId();
+          const [admission, created] = await Promise.allSettled([
+            create(
+              round % 2 === 0 ? first : second,
+              candidate,
+              runCreated({ token })
+            ),
+            create(first, other, hookCreated(token, newHookId())),
+          ]);
+          expect(created.status).toBe('fulfilled');
+          const hookWon =
+            created.status === 'fulfilled' &&
+            created.value.event?.eventType === 'hook_created';
+          if (hookWon) {
+            // The Hook owns the token: the candidate was refused naming it.
+            expect(admission.status).toBe('rejected');
+            if (admission.status === 'rejected') {
+              expect(errorNamed(admission.reason, 'HookConflictError')).toBe(
+                true
+              );
+              expect(admission.reason).toMatchObject({
+                conflictingRunId: other,
+              });
+            }
+            expect(await runExists(candidate)).toBe(false);
+          } else {
+            // The start Hook owns it: the Hook creation conflicted with it.
+            expect(admission.status).toBe('fulfilled');
+            expect(
+              created.status === 'fulfilled' && created.value.event?.eventData
+            ).toMatchObject({ conflictingRunId: candidate });
           }
-          expect(await runExists(candidate)).toBe(false);
-        } else {
-          // The reservation owns it: the Hook creation conflicted with it.
-          expect(admission.status).toBe('fulfilled');
-          expect(
-            created.status === 'fulfilled' && created.value.event?.eventData
-          ).toMatchObject({ conflictingRunId: candidate });
         }
       }
-    });
-
-    test("an adoption racing a disposal of the owner's earlier Hook keeps the token the owner's", async () => {
-      const first = setup();
-      const second = options.secondEvents?.(first) ?? first;
-      for (let round = 0; round < 4; round++) {
-        const token = newToken();
-        const owner = await admit(first, { token });
-        await create(first, owner, runStarted({ token }));
-        const earlier = newHookId();
-        await create(first, owner, hookCreated(token, earlier));
-
-        await Promise.allSettled([
-          create(first, owner, hookDisposed(token, earlier)),
-          create(
-            round % 2 === 0 ? second : first,
-            owner,
-            hookCreated(token, newHookId())
-          ),
-        ]);
-
-        // However the two interleaved, the reservation is the owner's.
-        await expectRefused(admit(first, { token }), token, owner);
-        const other = await plainRun(first);
-        const conflict = await create(
-          first,
-          other,
-          hookCreated(token, newHookId())
-        );
-        expect(conflict.event?.eventType).toBe('hook_conflict');
-        expect(conflict.event?.eventData).toMatchObject({
-          conflictingRunId: owner,
-        });
-      }
-    });
+    );
 
     test("an admission racing the owner's end leaves exactly one owner", async () => {
       const first = setup();
@@ -530,15 +517,110 @@ export function atomicStartHookConformance(
       await admit(events, { token });
     });
 
-    test("the owner's createHook adopts the reservation, and another run's conflicts", async () => {
+    test('the admission creates the start Hook: resolvable at once, before the run starts', async () => {
+      const events = setup();
+      const token = newToken();
+      const metadata = new Uint8Array([1, 2, 3]);
+      const owner = await admit(events, { token, metadata });
+      const hookId = startHookId(owner);
+
+      // Right after run_created returns, with the run still pending.
+      expect((await runs.get(owner)).status).toBe('pending');
+      const byToken = await lookup(token);
+      expect(byToken.error).toBeUndefined();
+      expect(byToken.hook).toMatchObject({
+        hookId,
+        runId: owner,
+        token,
+        isWebhook: false,
+      });
+      expect(byToken.hook?.metadata).toEqual(metadata);
+      const byId = await hooks.get(hookId);
+      expect(byId).toMatchObject({ hookId, runId: owner, token });
+
+      // No hook_created for it: run_created stands for its creation.
+      const log = await events.list({ runId: owner });
+      expect(
+        log.data.some(
+          (event) =>
+            event.eventType === 'hook_created' && event.correlationId === hookId
+        )
+      ).toBe(false);
+    });
+
+    test('run.startHook names the start Hook on run_created, runs.get and run_started', async () => {
+      const events = setup();
+      const token = newToken();
+      const runId = options.newRunId();
+      const hookId = startHookId(runId);
+
+      const created = await create(events, runId, runCreated({ token }));
+      expect(created.run?.startHook).toMatchObject({ token, hookId });
+      expect((await runs.get(runId)).startHook).toMatchObject({
+        token,
+        hookId,
+      });
+      const started = await create(events, runId, runStarted({ token }));
+      expect(started.run?.startHook).toMatchObject({ token, hookId });
+
+      // The stored run_created keeps the token and id, for replay.
+      const log = await events.list({ runId });
+      const first = log.data.find((event) => event.eventType === 'run_created');
+      expect(
+        (first?.eventData as { startHook?: unknown } | undefined)?.startHook
+      ).toMatchObject({ token, hookId });
+    });
+
+    test('a resume lands on the start Hook at once, while the run is pending and after it starts', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, { token });
+      const hookId = startHookId(owner);
+
+      const pending = await create(
+        events,
+        owner,
+        hookReceived(token, hookId, 1)
+      );
+      expect(pending.event?.eventType).toBe('hook_received');
+      await create(events, owner, runStarted({ token }));
+      const running = await create(
+        events,
+        owner,
+        hookReceived(token, hookId, 2)
+      );
+      expect(running.event?.eventType).toBe('hook_received');
+
+      const log = await events.list({ runId: owner });
+      expect(log.data[0]?.eventType).toBe('run_created');
+      expect(
+        log.data.filter(
+          (event) =>
+            event.eventType === 'hook_received' &&
+            event.correlationId === hookId
+        )
+      ).toHaveLength(2);
+    });
+
+    test('a hook_created with the start Hook id is refused as invalid', async () => {
       const events = setup();
       const token = newToken();
       const owner = await admit(events, { token });
       await create(events, owner, runStarted({ token }));
 
-      const hookId = newHookId();
-      const adopted = await create(events, owner, hookCreated(token, hookId));
-      expect(adopted.event?.eventType).toBe('hook_created');
+      const error = await refusal(
+        create(events, owner, hookCreated(token, startHookId(owner)))
+      );
+      expect((error as { status?: unknown }).status).toBe(400);
+      // The start Hook is untouched.
+      expect((await lookup(token)).hook?.hookId).toBe(startHookId(owner));
+    });
+
+    test("another run's createHook conflicts naming the owner, and so does the owner's own second one", async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, { token });
+      await create(events, owner, runStarted({ token }));
 
       const other = await plainRun(events);
       const conflict = await create(
@@ -551,217 +633,153 @@ export function atomicStartHookConformance(
         conflictingRunId: owner,
       });
 
-      // Disposing the adopted Hook does not release the reservation while
-      // the owner runs.
-      await create(events, owner, hookDisposed(token, hookId));
+      // While the start Hook is live, the same token is taken in its own run
+      // too, as for any Hook.
+      const own = await create(events, owner, hookCreated(token, newHookId()));
+      expect(own.event?.eventType).toBe('hook_conflict');
+      expect(own.event?.eventData).toMatchObject({ conflictingRunId: owner });
+    });
+
+    test('disposing the start Hook frees the token at once, even with a retention', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, {
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 3_600_000),
+      });
+      await create(events, owner, runStarted({ token }));
+
+      await create(events, owner, hookDisposed(token, startHookId(owner)));
+      expect(errorNamed((await lookup(token)).error, 'HookNotFoundError')).toBe(
+        true
+      );
+      // The owner still runs, and the token is free.
+      const next = await admit(events, { token });
+      expect((await lookup(token)).hook?.runId).toBe(next);
+    });
+
+    test('after disposing the start Hook, the owner may create a Hook on the token again', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, { token });
+      await create(events, owner, runStarted({ token }));
+      await create(events, owner, hookDisposed(token, startHookId(owner)));
+
+      const hookId = newHookId();
+      const again = await create(events, owner, hookCreated(token, hookId));
+      expect(again.event?.eventType).toBe('hook_created');
+      expect((await lookup(token)).hook).toMatchObject({
+        hookId,
+        runId: owner,
+      });
       await expectRefused(admit(events, { token }), token, owner);
-      const stillConflicts = await create(
+    });
+
+    test('after disposing the start Hook, a re-create conflicts naming the run that took the token', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, { token });
+      await create(events, owner, runStarted({ token }));
+      await create(events, owner, hookDisposed(token, startHookId(owner)));
+
+      const other = await plainRun(events);
+      const taken = await create(
         events,
         other,
         hookCreated(token, newHookId())
       );
-      expect(stillConflicts.event?.eventType).toBe('hook_conflict');
-
-      await finish(events, owner);
-      await admit(events, { token });
-    });
-
-    test('an adopted Hook retention extends the reservation past its disposal', async () => {
-      const events = setup();
-      const token = newToken();
-      // Six writes land before the check after the owner ends, so leave
-      // room for a slow filesystem.
-      const until = Date.now() + 5_000;
-      const owner = await admit(events, { token });
-      await create(events, owner, runStarted({ token }));
-
-      // Adopt with a retention, dispose, adopt again with none.
-      const first = newHookId();
-      await create(events, owner, {
-        ...hookCreated(token, first),
-        eventData: {
-          token,
-          tokenRetentionUntil: new Date(until),
-        },
-      } as AnyEventRequest);
-      await create(events, owner, hookDisposed(token, first));
-      const second = await create(
+      expect(taken.event?.eventType).toBe('hook_created');
+      const again = await create(
         events,
         owner,
         hookCreated(token, newHookId())
       );
-      expect(second.event?.eventType).toBe('hook_created');
+      expect(again.event?.eventType).toBe('hook_conflict');
+      expect(again.event?.eventData).toMatchObject({ conflictingRunId: other });
+    });
 
+    test("the owner's end frees the start Hook and its token", async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, { token });
       await finish(events, owner);
-      await expectRefused(admit(events, { token }), token, owner);
-      await sleep(Math.max(0, until - Date.now()) + 250);
+
+      expect(errorNamed((await lookup(token)).error, 'HookNotFoundError')).toBe(
+        true
+      );
+      await refusal(
+        create(events, owner, hookReceived(token, startHookId(owner), 1))
+      );
       await admit(events, { token });
     });
 
-    // The runtime omits `hook_disposed` at run termination for a Hook whose
-    // own `hook_created` carried no retention, so an adopted Hook's run can
-    // end with or without the disposal: neither may shorten the start's.
-    test.each([
-      ['ends with the adopted Hook still open', false],
-      ['disposed the adopted Hook early', true],
-    ])("an adoption without its own retention keeps the start's after the owner %s", async (_label, disposeEarly) => {
+    test('with a retention, the ended owner keeps a readable Hook that takes no deliveries', async () => {
       const events = setup();
       const token = newToken();
-      // Longer than its neighbours': five writes land before the check after
-      // the owner ends, so leave room for a slow filesystem.
-      const until = Date.now() + 5_000;
+      const until = Date.now() + 3_000;
       const owner = await admit(events, {
         token,
         tokenRetentionUntil: new Date(until),
       });
-      await create(events, owner, runStarted({ token }));
-      const hookId = newHookId();
-      await create(events, owner, hookCreated(token, hookId));
-      if (disposeEarly) {
-        await create(events, owner, hookDisposed(token, hookId));
-        await expectRefused(admit(events, { token }), token, owner);
-      }
-
       await finish(events, owner);
+
+      expect((await lookup(token)).hook).toMatchObject({
+        hookId: startHookId(owner),
+        runId: owner,
+      });
+      await refusal(
+        create(events, owner, hookReceived(token, startHookId(owner), 1))
+      );
       await expectRefused(admit(events, { token }), token, owner);
+      const other = await plainRun(events);
+      const conflict = await create(
+        events,
+        other,
+        hookCreated(token, newHookId())
+      );
+      expect(conflict.event?.eventData).toMatchObject({
+        conflictingRunId: owner,
+      });
+
       await sleep(Math.max(0, until - Date.now()) + 250);
       await admit(events, { token });
     });
 
-    test('a lookup before adoption is HookReservedError, and not found once the owner ends without adopting', async () => {
-      const events = setup();
-      const token = newToken();
-      const owner = await admit(events, { token });
-      await create(events, owner, runStarted({ token }));
-
-      const reserved = await lookup(token);
-      expect(errorNamed(reserved.error, 'HookReservedError')).toBe(true);
-      expect(errorNamed(reserved.error, 'HookNotFoundError')).toBe(false);
-      expect(reserved.error).toMatchObject({ token, runId: owner });
-
-      await finish(events, owner);
-      expect(errorNamed((await lookup(token)).error, 'HookNotFoundError')).toBe(
-        true
-      );
-    });
-
-    test('a lookup after adoption finds the Hook, and not found once it is disposed', async () => {
-      const events = setup();
-      const token = newToken();
-      const owner = await admit(events, { token });
-      await create(events, owner, runStarted({ token }));
-      const hookId = newHookId();
-      await create(events, owner, hookCreated(token, hookId));
-
-      expect((await lookup(token)).hook?.runId).toBe(owner);
-
-      await create(events, owner, hookDisposed(token, hookId));
-      expect(errorNamed((await lookup(token)).error, 'HookNotFoundError')).toBe(
-        true
-      );
-      // Still reserved for admission while the owner runs.
-      await expectRefused(admit(events, { token }), token, owner);
-    });
-
-    test("the reservation's metadata carries over to an adoption that brings none", async () => {
-      const events = setup();
-      const token = newToken();
-      const metadata = new Uint8Array([1, 2, 3]);
-      const owner = await admit(events, { token, metadata });
-      await create(events, owner, runStarted({ token }));
-      await create(events, owner, hookCreated(token, newHookId()));
-
-      const { hook } = await lookup(token);
-      expect(hook?.metadata).toEqual(metadata);
-    });
-
-    test("an adoption's own metadata wins over the reservation's", async () => {
-      const events = setup();
-      const token = newToken();
-      const owner = await admit(events, {
-        token,
-        metadata: new Uint8Array([1, 2, 3]),
-      });
-      await create(events, owner, runStarted({ token }));
-      const own = new Uint8Array([9, 9]);
-      await create(events, owner, {
-        ...hookCreated(token, newHookId()),
-        eventData: { token, metadata: own },
-      } as AnyEventRequest);
-
-      const { hook } = await lookup(token);
-      expect(hook?.metadata).toEqual(own);
-    });
-
-    test('a forced createHook cannot take a reservation with no Hook, and is told why', async () => {
+    test.each([
+      ['a running owner', true],
+      ['an owner that has not started', false],
+    ])('a forced createHook takes the start Hook of %s like any Hook', async (_label, started) => {
       if (!options.capabilities()?.hookForceClaim) return;
       const events = setup();
       const token = newToken();
       const owner = await admit(events, { token });
-      await create(events, owner, runStarted({ token }));
+      if (started) await create(events, owner, runStarted({ token }));
 
       const claimer = await plainRun(events);
-      const result = await create(
-        events,
-        claimer,
-        hookCreated(token, newHookId(), true)
-      );
-      expect(result.event?.eventType).toBe('hook_conflict');
-      // The reason makes it an ordinary conflict, not "cannot force-claim".
-      expect(result.event?.eventData).toMatchObject({
-        conflictingRunId: owner,
-        forceRefusedReason: 'start-reservation',
-      });
-    });
-
-    test('a forced createHook that takes the materialized Hook takes the reservation with it', async () => {
-      if (!options.capabilities()?.hookForceClaim) return;
-      const events = setup();
-      const token = newToken();
-      const source = await admit(events, { token });
-      await create(events, source, runStarted({ token }));
-      await create(events, source, hookCreated(token, newHookId()));
-
-      const successor = await plainRun(events);
-      const successorHookId = newHookId();
+      const claimerHookId = newHookId();
       const claimed = await create(
         events,
-        successor,
-        hookCreated(token, successorHookId, true)
+        claimer,
+        hookCreated(token, claimerHookId, true)
       );
       expect(claimed.event?.eventType).toBe('hook_created');
+      expect((await lookup(token)).hook).toMatchObject({
+        hookId: claimerHookId,
+        runId: claimer,
+      });
 
-      // The source stays parked (never ends). The successor now holds the
-      // reservation: disposing its Hook does not release the token...
-      await create(events, successor, hookDisposed(token, successorHookId));
-      await expectRefused(admit(events, { token }), token, successor);
-      // ...and ending it does, though the source is still running.
-      await finish(events, successor);
-      await admit(events, { token });
-    });
-
-    test("a forced createHook's own retention extends the reservation it takes past its disposal", async () => {
-      if (!options.capabilities()?.hookForceClaim) return;
-      const events = setup();
-      const token = newToken();
-      const source = await admit(events, { token });
-      await create(events, source, runStarted({ token }));
-      await create(events, source, hookCreated(token, newHookId()));
-
-      const successor = await plainRun(events);
-      const successorHookId = newHookId();
-      const until = Date.now() + 5_000;
-      const claimed = await create(events, successor, {
-        ...hookCreated(token, successorHookId, true),
-        eventData: { token, force: true, tokenRetentionUntil: new Date(until) },
-      } as AnyEventRequest);
-      expect(claimed.event?.eventType).toBe('hook_created');
-
-      await create(events, successor, hookDisposed(token, successorHookId));
-      await finish(events, successor);
-      await expectRefused(admit(events, { token }), token, successor);
-      await sleep(Math.max(0, until - Date.now()) + 250);
-      await admit(events, { token });
+      // The owner's log is told, against the start Hook's id.
+      const log = await events.list({ runId: owner });
+      expect(log.data[0]?.eventType).toBe('run_created');
+      const disposed = log.data.find(
+        (event) =>
+          event.eventType === 'hook_disposed' &&
+          event.correlationId === startHookId(owner)
+      );
+      expect(disposed?.eventData).toMatchObject({
+        forceClaimedBy: { runId: claimer, hookId: claimerHookId },
+      });
+      await expectRefused(admit(events, { token }), token, claimer);
     });
 
     describe('orphan bound', () => {
@@ -791,7 +809,7 @@ export function atomicStartHookConformance(
             });
           }
           expect(await runExists(late)).toBe(false);
-          // The refusal reserved nothing.
+          // The refusal claimed nothing.
           await admit(events, { token });
         }
       );
@@ -857,29 +875,34 @@ export function atomicStartHookConformance(
       );
 
       stagedOrphanTest(
-        'a lookup of an orphan is reserved during its hold, and stays not found once it answers so',
+        'an orphan resolves as not found and takes no resumes, during its hold and after',
         async () => {
           const events = setup();
           const token = newToken();
           const orphan = options.newRunId();
           const holdMs = options.orphanHoldMs ?? DAY_MS;
           await options.stageOrphan?.(orphan, token);
+          const resume = () =>
+            refusal(
+              create(
+                events,
+                orphan,
+                hookReceived(token, startHookId(orphan), 1)
+              )
+            );
 
           advance?.(holdMs - 5_000);
-          const reserved = await lookup(token);
-          expect(errorNamed(reserved.error, 'HookReservedError')).toBe(true);
-          expect(reserved.error).toMatchObject({ runId: orphan });
+          expect(
+            errorNamed((await lookup(token)).error, 'HookNotFoundError')
+          ).toBe(true);
+          await resume();
 
           advance?.(10_000);
           expect(
             errorNamed((await lookup(token)).error, 'HookNotFoundError')
           ).toBe(true);
-          // The orphan's late copy can no longer make the token live.
-          await refusal(create(events, orphan, runStarted({ token })));
+          await resume();
           expect(await runExists(orphan)).toBe(false);
-          expect(
-            errorNamed((await lookup(token)).error, 'HookNotFoundError')
-          ).toBe(true);
         }
       );
 

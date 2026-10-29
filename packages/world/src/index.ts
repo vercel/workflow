@@ -192,11 +192,12 @@ export {
 } from './spec-version.js';
 export type * from './start-hook.js';
 export {
-  HOOK_RESERVED_RETRY_AFTER_SECONDS,
+  isStartHookId,
   START_HOOK_ADMISSION_REJECTED_CODE,
   START_HOOK_CANDIDATE_MAX_AGE_MS,
   START_HOOK_WIRE_CODES,
   StartHookSchema,
+  startHookId,
 } from './start-hook.js';
 export type * from './steps.js';
 export {

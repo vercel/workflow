@@ -182,7 +182,7 @@ export const RunInputSchema = z.compile(
        */
       encryptionPublicKey: z.string().optional(),
       /**
-       * The atomic start Hook reservation, mirrored from `run_created` so the
+       * The atomic start Hook request, mirrored from `run_created` so the
        * queued copy of the candidate can admit (or be refused) on its own.
        * See `start-hook.ts`.
        */

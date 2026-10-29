@@ -124,10 +124,11 @@ export const WorkflowRunBaseSchema = z.compile(
      */
     encryptionPublicKey: z.string().optional(),
     /**
-     * The Hook token this run reserved through `start({ hook })`, echoed by a
-     * World that admitted it (see `start-hook.ts`). Required on the
-     * `run_created` response; a World may also return it on later reads.
-     * Never forwarded when a run is re-run: a re-run is a new run by intent.
+     * The start Hook this run was admitted with through `start({ hook })`,
+     * echoed by a World that admitted it (see `start-hook.ts`), with its
+     * `hookId` (`startHookId(runId)`). Required on the `run_created` response,
+     * on `runs.get` and on the `run_started` response. Never forwarded when a
+     * run is re-run: a re-run is a new run by intent.
      */
     startHook: StartHookSchema.optional(),
     expiredAt: z.coerce.date().optional(),

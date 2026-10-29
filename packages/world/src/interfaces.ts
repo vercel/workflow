@@ -599,9 +599,10 @@ export interface WorldCapabilities {
   };
 
   /**
-   * Admits `start({ hook })`: `events.create` reserves
-   * `eventData.startHook.token` atomically with creating the run on
-   * `run_created` and on a resilient `run_started`, makes one immutable
+   * Admits `start({ hook })`: `events.create` creates the start Hook
+   * `startHookId(runId)` for `eventData.startHook.token` atomically with
+   * creating the run on `run_created` and on a resilient `run_started`
+   * (resumable at once, even while the run is pending), makes one immutable
    * accept-or-reject decision per candidate `runId`, and refuses a duplicate
    * with `HookConflictError` naming the owner. The full contract is in
    * `start-hook.ts`; `test-support/atomic-start-hook-conformance.ts` checks

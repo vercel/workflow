@@ -13,7 +13,7 @@ describe('start Hook schemas', () => {
     expect(StartHookSchema.safeParse({ token: 'order:1' }).success).toBe(true);
   });
 
-  it('parses the reservation on run_created, with an absolute retention', () => {
+  it('parses the start Hook on run_created, with an absolute retention', () => {
     const parsed = CreateEventSchema.parse({
       eventType: 'run_created',
       specVersion: 8,
@@ -33,7 +33,7 @@ describe('start Hook schemas', () => {
     });
   });
 
-  it('parses the reservation on a resilient run_started', () => {
+  it('parses the start Hook on a resilient run_started', () => {
     const parsed = CreateEventSchema.parse({
       eventType: 'run_started',
       specVersion: 8,
@@ -49,7 +49,7 @@ describe('start Hook schemas', () => {
     ).toEqual({ token: 'order:1' });
   });
 
-  it('keeps the reservation and the public key on the queued run input', () => {
+  it('keeps the start Hook and the public key on the queued run input', () => {
     const parsed = RunInputSchema.parse({
       input: new Uint8Array(),
       deploymentId: 'dpl_1',
