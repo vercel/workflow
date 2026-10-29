@@ -369,11 +369,38 @@ export function workflowEntrypoint(
         // The orchestrator of the run's spec version: a run keeps the one it
         // was created with (see `runtime/delivery.ts`).
         const runSpec = await resolveRunSpec(message);
-        const orchestrator = await orchestratorForSpecVersion(
-          runSpec.specVersion
-        );
-
         const maxQueueDeliveries = getMaxQueueDeliveries();
+        let orchestrator: Orchestrator;
+        try {
+          orchestrator = await orchestratorForSpecVersion(runSpec.specVersion);
+        } catch (err) {
+          // The spec 9 orchestrator is loaded on demand, so a bundle whose
+          // spec 9 chunk cannot load fails here on every delivery, before the
+          // max-deliveries check below (which needs the orchestrator to write
+          // the run's failure). Each failure is logged, and the delivery cap
+          // still bounds it: past the cap the message is acknowledged, leaving
+          // the run in its current state, instead of redelivering until the
+          // queue's retention expires.
+          const pastCap = metadata.attempt > maxQueueDeliveries;
+          runLogger.error(
+            pastCap
+              ? `Failed to load the orchestrator for spec version ${runSpec.specVersion} after ${metadata.attempt} delivery attempts. ` +
+                  'The message is being acknowledged, and the run will remain in its current state until manually resolved. ' +
+                  'This points to a broken deployment bundle.'
+              : `Failed to load the orchestrator for spec version ${runSpec.specVersion}; retrying via queue redelivery ` +
+                  `(${metadata.attempt}/${maxQueueDeliveries})`,
+            {
+              attempt: metadata.attempt,
+              specVersion: runSpec.specVersion,
+              errorName: err instanceof Error ? err.name : 'UnknownError',
+              errorMessage: err instanceof Error ? err.message : String(err),
+              errorStack: err instanceof Error ? err.stack : undefined,
+            }
+          );
+          if (pastCap) return;
+          throw err;
+        }
+
         if (
           metadata.attempt > maxQueueDeliveries &&
           orchestrator.countsTowardMaxDeliveries(message)
