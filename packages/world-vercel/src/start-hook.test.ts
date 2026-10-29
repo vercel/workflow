@@ -422,7 +422,7 @@ describe('start Hook run pending (world-vercel)', () => {
   });
 
   it('surfaces a retryable WorkflowWorldError with retryAfter once the budget is spent', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
     // No Retry-After: waits default to 1s.
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
@@ -447,6 +447,43 @@ describe('start Hook run pending (world-vercel)', () => {
       code: START_HOOK_RUN_PENDING_CODE,
       retryAfter: 1,
     });
+  });
+
+  it('counts the time each attempt spends at the backend against the budget', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    // The backend polls for the run for ~1.5s before each 503.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(
+        () =>
+          new Promise<Response>((resolve) =>
+            setTimeout(() => resolve(pending('1')), 1500)
+          )
+      );
+
+    const startedAt = Date.now();
+    const settled = createWorkflowRunEvent(
+      runId,
+      hookReceived as never,
+      undefined,
+      config
+    ).catch((error: unknown) => {
+      settledAt = Date.now();
+      return error;
+    });
+    let settledAt = 0;
+    await vi.advanceTimersByTimeAsync(START_HOOK_RUN_PENDING_BUDGET_MS * 3);
+    const error = await settled;
+
+    expect(error).toMatchObject({
+      status: 503,
+      code: START_HOOK_RUN_PENDING_CODE,
+    });
+    // ~2.5s per attempt: 12 attempts fit, not the 31 the sleeps alone allow.
+    expect(fetchSpy.mock.calls.length).toBeLessThanOrEqual(13);
+    expect(settledAt - startedAt).toBeLessThanOrEqual(
+      START_HOOK_RUN_PENDING_BUDGET_MS + 1500
+    );
   });
 
   it('waits out a 429 contended on a forced hook_created within the throttle budget', async () => {

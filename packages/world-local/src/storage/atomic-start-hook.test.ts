@@ -12,6 +12,7 @@ import {
   HookConflictError,
   HookNotFoundError,
   START_HOOK_ADMISSION_REJECTED,
+  START_HOOK_CANDIDATE_CANCELLED,
 } from '@workflow/errors';
 import {
   type AnyEventRequest,
@@ -561,9 +562,13 @@ describe('atomic start Hook (world-local)', () => {
     const young = `wrun_${ulid()}`;
     await stageOrphanClaim(testDir, young, token, Date.now());
     expect(await cancel(young)).toMatchObject({
-      name: 'WorkflowRunNotFoundError',
+      code: START_HOOK_CANDIDATE_CANCELLED,
     });
     expect(await runFile(young)).toBe(true);
+    // Cancelling it again finds the fence: still cancelled.
+    expect(await cancel(young)).toMatchObject({
+      code: START_HOOK_CANDIDATE_CANCELLED,
+    });
     expect(
       (await storage.runs.list({})).data.some((r) => r.runId === young)
     ).toBe(false);

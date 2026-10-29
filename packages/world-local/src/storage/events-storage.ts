@@ -10,6 +10,7 @@ import {
   RunExpiredError,
   RunNotSupportedError,
   START_HOOK_ADMISSION_REJECTED,
+  START_HOOK_CANDIDATE_CANCELLED,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
@@ -1920,35 +1921,40 @@ export function createEventsStorage(
             cancelledCandidateTime &&
             Date.now() - cancelledCandidateTime.getTime() <=
               START_HOOK_CANDIDATE_MAX_AGE_MS &&
-            (await isAdmittedStartHookCandidate(effectiveRunId)) &&
-            !(await fenceStartHookCandidate(
+            (await isAdmittedStartHookCandidate(effectiveRunId))
+          ) {
+            const fenced = await fenceStartHookCandidate(
               basedir,
               effectiveRunId,
               tag,
               {}
-            ).then((fenced) => {
-              if (fenced) {
-                startHookLog('fenced a cancelled candidate with no run', {
-                  runId: effectiveRunId,
-                });
-              }
-              return fenced;
-            }))
-          ) {
-            const raced = await readJSONWithFallback(
-              basedir,
-              'runs',
-              effectiveRunId,
-              RunRecordSchema,
-              tag
             );
-            if (raced) {
-              // Created since the read above: the retry cancels it.
-              throw new WorkflowWorldError(
-                `Workflow run "${effectiveRunId}" was created while being cancelled; retry`,
-                { status: 503 }
+            if (fenced) {
+              startHookLog('fenced a cancelled candidate with no run', {
+                runId: effectiveRunId,
+              });
+            } else {
+              const raced = await readJSONWithFallback(
+                basedir,
+                'runs',
+                effectiveRunId,
+                RunRecordSchema,
+                tag
               );
+              if (raced) {
+                // Created since the read above: the retry cancels it.
+                throw new WorkflowWorldError(
+                  `Workflow run "${effectiveRunId}" was created while being cancelled; retry`,
+                  { status: 503 }
+                );
+              }
+              // Fenced already, by an earlier cancel or an orphan release.
             }
+            // The candidate can never become a run: it is cancelled.
+            throw new WorkflowWorldError(
+              `Workflow run "${effectiveRunId}" was a start Hook candidate with no run; it is now fenced and can never be created`,
+              { status: 409, code: START_HOOK_CANDIDATE_CANCELLED }
+            );
           }
           throw new WorkflowRunNotFoundError(effectiveRunId);
         }

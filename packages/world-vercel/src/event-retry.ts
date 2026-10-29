@@ -248,9 +248,11 @@ export const EVENT_RETRY_ELIGIBILITY = {
  */
 export const START_HOOK_RUN_PENDING_CODE = 'start-hook-run-pending';
 /**
- * Cumulative in-process wait for `503 start-hook-run-pending` retries of one
- * POST. Admission's second write normally lands within a second or two; this
- * covers a slow one without holding a `resumeHook()` caller for long.
+ * In-process budget for `503 start-hook-run-pending` retries of one POST,
+ * measured from its first attempt, so it counts the time the backend spends
+ * polling for the run before each 503 as well as the waits between them.
+ * Admission's second write normally lands within a second or two; this covers
+ * a slow one without holding a `resumeHook()` caller for long.
  */
 export const START_HOOK_RUN_PENDING_BUDGET_MS = 30_000;
 /** Backoff when a `start-hook-run-pending` 503 carries no usable Retry-After. */
@@ -617,7 +619,9 @@ export function createThrottleWaiter(
  * redelivery) waits as long as the backend asked.
  */
 export function createStartHookRunPendingWaiter(
-  target: string
+  target: string,
+  /** When the POST's first attempt was sent. */
+  startedAtMs: number = Date.now()
 ): (err: WorkflowWorldError) => Promise<void> {
   let waitedMs = 0;
   let deadline: { ms: number | undefined } | undefined;
@@ -629,7 +633,7 @@ export function createStartHookRunPendingWaiter(
       deadline.ms !== undefined &&
       Date.now() + waitMs > deadline.ms - THROTTLE_DEADLINE_RESERVE_MS;
     if (
-      waitedMs + waitMs > START_HOOK_RUN_PENDING_BUDGET_MS ||
+      Date.now() + waitMs - startedAtMs > START_HOOK_RUN_PENDING_BUDGET_MS ||
       outlastsInvocation
     ) {
       logRetry('start Hook run still pending; surfacing as retryable', {
@@ -693,6 +697,7 @@ function createNoWriteWaiter(
   options?: EventPostRetryOptions
 ): (err: unknown) => Promise<boolean> {
   const target = `writing ${eventType} event`;
+  const startedAtMs = Date.now();
   const waitOutThrottle = createThrottleWaiter(
     target,
     throttleBudgetFor(eventType, options)
@@ -707,7 +712,10 @@ function createNoWriteWaiter(
       return true;
     }
     if (isStartHookRunPendingError(err)) {
-      waitOutRunPending ??= createStartHookRunPendingWaiter(target);
+      waitOutRunPending ??= createStartHookRunPendingWaiter(
+        target,
+        startedAtMs
+      );
       await waitOutRunPending(err);
       return true;
     }
