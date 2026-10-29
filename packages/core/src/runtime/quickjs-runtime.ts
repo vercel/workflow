@@ -406,6 +406,11 @@ globalThis.__workflowError = undefined;
 // Keyed by correlationId → array of payloads (preserves delivery order).
 // This mirrors the event-replay runtime's payloadsQueue in hook.ts.
 globalThis.__hookPayloadBuffer = {};
+// A buffered payload that failed to decrypt or deserialize: the failure is
+// held at the payload's place in the buffer and only rejects the await that
+// takes it, so a payload nothing reads (a start Hook the workflow never opens)
+// cannot fail the run. Mirrors the node:vm engine's buffered outcome.
+globalThis.__HydrationFailure = function(error) { this.error = error; };
 
 // Buffer for step/wait/attr terminal outcomes that arrive before this VM
 // has constructed the corresponding awaiting promise. In fresh-VM replay
@@ -927,7 +932,10 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     // heap. Drain it immediately (matching event-replay payloadsQueue).
     var buf = globalThis.__hookPayloadBuffer[correlationId];
     if (buf && buf.length > 0) {
-      return Promise.resolve(buf.shift());
+      var next = buf.shift();
+      return next instanceof globalThis.__HydrationFailure
+        ? Promise.reject(next.error)
+        : Promise.resolve(next);
     }
     if (hookState.forceClaimed) {
       return Promise.reject(hookState.forceClaimed);
@@ -2945,20 +2953,44 @@ async function processEvents(
               ? Object.keys(rawPayload)
               : undefined,
         });
-        if (hasResolver) {
-          if (rawPayload instanceof Uint8Array) {
+        // A payload that cannot be decrypted or deserialized becomes an
+        // error in the VM (`globalThis.__tmp_err`) for the await that takes
+        // it, never an exception out of replay.
+        const setHydrationError = (error: unknown) => {
+          const name = error instanceof Error ? error.name : 'Error';
+          const message =
+            error instanceof Error ? error.message : String(error);
+          vm.evalCode(
+            `globalThis.__tmp_err = new Error(${JSON.stringify(message)});` +
+              `globalThis.__tmp_err.name = ${JSON.stringify(name)};`
+          ).dispose();
+        };
+        const hydrateIntoTmp = async (bytes: Uint8Array): Promise<boolean> => {
+          try {
             // Decrypt if encrypted: the VM only understands 'devl' format
             const decryptedPayload = await prepareBytesForVM(
-              rawPayload,
+              bytes,
               encryptionKey
             );
             const payloadHandle = serde.deserialize(decryptedPayload);
             vm.setProp(vm.global, '__tmp_result', payloadHandle);
             payloadHandle.dispose();
+            return true;
+          } catch (error) {
+            setHydrationError(error);
+            return false;
+          }
+        };
+        if (hasResolver) {
+          if (rawPayload instanceof Uint8Array) {
+            const hydrated = await hydrateIntoTmp(rawPayload);
             vm.evalCode(
-              `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);` +
+              (hydrated
+                ? `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);`
+                : `globalThis.__resolvers[${cidJs}].reject(globalThis.__tmp_err);`) +
                 `delete globalThis.__resolvers[${cidJs}];` +
-                `delete globalThis.__tmp_result;`
+                `delete globalThis.__tmp_result;` +
+                `delete globalThis.__tmp_err;`
             ).dispose();
           } else {
             const serialized =
@@ -2998,22 +3030,16 @@ async function processEvents(
               ? `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${eventIdJs}] = true;`
               : '');
           if (rawPayload instanceof Uint8Array) {
-            // Decrypt if encrypted: the VM only understands 'devl' format
-            const decryptedPayload = await prepareBytesForVM(
-              rawPayload,
-              encryptionKey
-            );
-            const payloadHandle = serde.deserialize(decryptedPayload);
-            vm.setProp(vm.global, '__tmp_result', payloadHandle);
-            payloadHandle.dispose();
+            const hydrated = await hydrateIntoTmp(rawPayload);
             // NOTE: replacement is a function so `$`-sequences in the
             // substituted JS never get interpreted as String.replace
             // special replacement patterns.
             vm.evalCode(
-              bufferAndTrack.replace(
-                '%PAYLOAD%',
-                () => 'globalThis.__tmp_result'
-              ) + 'delete globalThis.__tmp_result;'
+              bufferAndTrack.replace('%PAYLOAD%', () =>
+                hydrated
+                  ? 'globalThis.__tmp_result'
+                  : 'new globalThis.__HydrationFailure(globalThis.__tmp_err)'
+              ) + 'delete globalThis.__tmp_result;delete globalThis.__tmp_err;'
             ).dispose();
           } else {
             const serialized =

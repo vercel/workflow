@@ -213,6 +213,30 @@ describe('createHook with the start token (QuickJS)', () => {
     expect(output(await replay(`return "done";`, terminal))).toBe('done');
   });
 
+  it('does not fail a run that never opens the start Hook on a payload it cannot read', async () => {
+    // Bytes no codec accepts: hydrating them throws.
+    const unreadable = new Uint8Array([0xff, 0x00, 0x13, 0x37]);
+    const events = [runCreated(), received(unreadable), runStarted()];
+    expect(output(await replay(`return "done";`, events))).toBe('done');
+  });
+
+  it('rejects only the await that takes an unreadable payload', async () => {
+    const unreadable = new Uint8Array([0xff, 0x00, 0x13, 0x37]);
+    const result = await replay(
+      `var hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+       var first;
+       try {
+         first = await hook;
+       } catch (error) {
+         first = "rejected";
+       }
+       var second = await hook;
+       return [first, second];`,
+      [runCreated(), received(unreadable), runStarted(), received('p2')]
+    );
+    expect(output(result)).toEqual(['rejected', 'p2']);
+  });
+
   it('throws on options only a write could apply, naming start({ hook })', async () => {
     for (const option of [
       `metadata: { a: 1 }`,
