@@ -59,30 +59,29 @@ See [Step Idempotency](/docs/foundations/idempotency#step-idempotency) for why `
 
 ## Run idempotency
 
-For duplicate workflow-start requests, derive a hook token from your domain key. You can avoid obvious duplicate starts by checking whether an active hook already owns that token before calling `start()`:
+For duplicate workflow-start requests, derive a hook token from your domain key and pass it to `start()`. Exactly one run owns the token, and a duplicate start throws `HookConflictError` naming the owner instead of creating a run:
 
 ```typescript
-import { getHookByToken, start } from "workflow/api";
-import { HookNotFoundError } from "workflow/errors";
+import { start } from "workflow/api";
+import { HookConflictError } from "workflow/errors";
 import { processOrder } from "./workflows/process-order";
 
 export async function POST(request: Request) {
   const { orderId } = await request.json();
-  const token = `order:${orderId}`;
 
   try {
-    const hook = await getHookByToken(token); // [!code highlight]
-    return Response.json({ runId: hook.runId, reused: true });
+    const run = await start(processOrder, [orderId], {
+      hook: { token: `order:${orderId}` }, // [!code highlight]
+    });
+    return Response.json({ runId: run.runId, reused: false });
   } catch (error) {
-    if (!HookNotFoundError.is(error)) throw error;
+    if (!HookConflictError.is(error)) throw error;
+    return Response.json({ runId: error.conflictingRunId, reused: true }); // [!code highlight]
   }
-
-  const run = await start(processOrder, [orderId]); // [!code highlight]
-  return Response.json({ runId: run.runId, reused: false });
 }
 ```
 
-The workflow should create the deterministic hook and check `await hook.getConflict()` before duplicate-sensitive work: awaiting `getConflict()` suspends the workflow to commit the hook registration and resolves with the conflicting run when another active run already owns the token (or `null` once the hook is registered). See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how to steer an active run with `resumeHook()` and how to handle the current race between `start()` and hook registration.
+The run's start Hook can be resumed as soon as `start()` returns, so a duplicate request that carries data can `resumeHook()` the owner on a conflict, and the workflow reads it with `createHook({ token })`. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, retention, and World support, and for coordinating inside the workflow with `hook.getConflict()` on Worlds without atomic start Hooks.
 
 ## Key APIs
 
@@ -92,4 +91,4 @@ The workflow should create the deterministic hook and check `await hook.getConfl
 - [`createHook()`](/docs/api-reference/workflow/create-hook): Creates a hook with an optional deterministic token.
 - [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Finds the hook that owns a token.
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resumes the active hook when the duplicate request carries data.
-- [`start()`](/docs/api-reference/workflow-api/start): Starts a new workflow run.
+- [`start()`](/docs/api-reference/workflow-api/start): Starts a new workflow run, at most once per `hook.token`.

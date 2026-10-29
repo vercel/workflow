@@ -119,6 +119,7 @@ export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,
+  type StartHookOptions,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,

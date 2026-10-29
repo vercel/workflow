@@ -332,6 +332,18 @@ To turn it on, set `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` (or `jobLockSta
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.
 
+### `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK`
+
+Set to `1` (or `true`) to enable [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) on the Postgres World. Off by default; without it, `start({ hook })` throws before it enqueues anything.
+
+Every process that uses the database must run a version with start Hook support before you turn it on: queue workers, and every process that reads Hooks, such as resume and webhook handlers, the CLI and the dashboard.
+- **Queue workers.** The queue does not route by deployment. An older worker that picks up a candidate's queued message would create its run without the start Hook, and the start would no longer be idempotent (`start()` reports that the World did not confirm the start Hook). An older runtime replaying a start Hook run can't bind the workflow's `createHook({ token })` to the start Hook either.
+- **Readers.** A run keeps its start Hook token after the Hook is disposed, as a row marked `disposed_at` in `workflow_hooks`. An older version's token lookup returns that row as a live Hook, and a resume through it lands a payload behind the Hook's disposal.
+
+For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while start Hooks are live.
+
+Migration `0028_add_start_hook_admissions` is required even with this variable unset, because every Hook insert writes its `claims_token` column. It takes table locks on `workflow_runs` and `workflow_hooks`, and gives up after 10 seconds (unless the session sets its own `lock_timeout`), leaving the migration to retry, rather than stall traffic. Apply it with the rest of the migrations before deploying this version.
+
 ### `WORKFLOW_QUEUE_NAMESPACE`
 
 Queue topic namespace shared by build output and the Postgres World. Default: unset.

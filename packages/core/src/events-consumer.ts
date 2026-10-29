@@ -213,6 +213,39 @@ export interface EventsConsumerOptions {
    * timing, and say so at the call site.
    */
   isDeliveryIdle: () => boolean;
+  /**
+   * The run's start Hook id (`startHookId(runId)`), for a run started with
+   * `start(workflow, args, { hook })`. That Hook exists from the run's
+   * admission, so payloads can be resumed into it before the body calls
+   * `createHook` (even before `run_started`), and another run can force-claim
+   * it before then too.
+   *
+   * An unclaimed `hook_received` for this id, or a `hook_disposed` carrying
+   * `forceClaimedBy` for it, is parked at once at its log index instead of
+   * after the deferred check: the same index and the same later drain the
+   * timer would reach, without blocking the walk for the window on every
+   * replay. The workflow may also never claim the Hook (the token used only
+   * as an idempotency key), so these parked events never fail a run:
+   * {@link EventsConsumer.strandedEvent} and the end-of-log check skip them,
+   * and {@link EventsConsumer.parkedSummary} counts them separately.
+   *
+   * `undefined` for every other run, which behaves exactly as before.
+   */
+  eagerParkCorrelationId?: string;
+}
+
+/**
+ * See {@link EventsConsumer.parkedSummary}. `count`, `eventId` and `eventType`
+ * describe the parked events other than unclaimed start Hook deliveries
+ * (`eventId`/`eventType` are absent when there are none), which are counted
+ * in `unclaimedStartHook` instead (absent when zero, and always absent for a
+ * run without a start Hook).
+ */
+export interface ParkedSummary {
+  count: number;
+  eventId?: string;
+  eventType?: Event['eventType'];
+  unclaimedStartHook?: number;
 }
 
 /** See {@link EventsConsumer.describe}. */
@@ -272,6 +305,7 @@ export class EventsConsumer {
   ) => void;
   private getPromiseQueue: () => Promise<void>;
   private isDeliveryIdle: () => boolean;
+  private readonly eagerParkCorrelationId: string | undefined;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
@@ -294,6 +328,35 @@ export class EventsConsumer {
     this.onDuplicateEvent = options.onDuplicateEvent;
     this.getPromiseQueue = options.getPromiseQueue;
     this.isDeliveryIdle = options.isDeliveryIdle;
+    this.eagerParkCorrelationId = options.eagerParkCorrelationId;
+  }
+
+  /**
+   * Whether `event` is a delivery for the run's start Hook that may wait,
+   * parked, for a `createHook` the body has not reached, or never reaches.
+   * See {@link EventsConsumerOptions.eagerParkCorrelationId}.
+   */
+  private isStartHookEvent(event: Event): boolean {
+    if (
+      this.eagerParkCorrelationId === undefined ||
+      event.correlationId !== this.eagerParkCorrelationId
+    ) {
+      return false;
+    }
+    if (event.eventType === 'hook_received') return true;
+    return (
+      event.eventType === 'hook_disposed' &&
+      event.eventData?.forceClaimedBy !== undefined
+    );
+  }
+
+  /** The oldest parked event that is not an unclaimed start Hook delivery. */
+  private oldestStrandable(): Event | undefined {
+    if (this.eagerParkCorrelationId === undefined) {
+      return this.parked[0]?.event;
+    }
+    return this.parked.find((entry) => !this.isStartHookEvent(entry.event))
+      ?.event;
   }
 
   /**
@@ -303,7 +366,9 @@ export class EventsConsumer {
    * the definitive one), this answers which event the bet lost on.
    */
   get strandedEvent(): Event | undefined {
-    return this.parked[0]?.event;
+    // A start Hook delivery nobody claimed is not a lost bet: the workflow may
+    // use the start token only as an idempotency key and never open the Hook.
+    return this.oldestStrandable();
   }
 
   /**
@@ -317,17 +382,39 @@ export class EventsConsumer {
    * parking made is not going to pay off, and that shape is only visible across
    * replays.
    */
-  get parkedSummary():
-    | { count: number; eventId: string; eventType: Event['eventType'] }
-    | undefined {
-    const oldest = this.parked[0]?.event;
-    if (!oldest) {
+  get parkedSummary(): ParkedSummary | undefined {
+    if (this.eagerParkCorrelationId === undefined) {
+      const oldest = this.parked[0]?.event;
+      if (!oldest) {
+        return undefined;
+      }
+      return {
+        count: this.parked.length,
+        eventId: oldest.eventId,
+        eventType: oldest.eventType,
+      };
+    }
+    // Start Hook deliveries the body has not claimed (yet, or ever) are
+    // reported apart from the rest, so telemetry does not read them as the
+    // bet parking makes on everything else.
+    let unclaimedStartHook = 0;
+    let oldest: Event | undefined;
+    for (const { event } of this.parked) {
+      if (this.isStartHookEvent(event)) {
+        unclaimedStartHook++;
+      } else {
+        oldest ??= event;
+      }
+    }
+    if (!oldest && unclaimedStartHook === 0) {
       return undefined;
     }
     return {
-      count: this.parked.length,
-      eventId: oldest.eventId,
-      eventType: oldest.eventType,
+      count: this.parked.length - unclaimedStartHook,
+      ...(oldest
+        ? { eventId: oldest.eventId, eventType: oldest.eventType }
+        : {}),
+      ...(unclaimedStartHook > 0 ? { unclaimedStartHook } : {}),
     };
   }
 
@@ -474,6 +561,10 @@ export class EventsConsumer {
         const firstType = this.firstEventTypeOfClass(currentEvent);
         if (firstType !== undefined) {
           this.skipDuplicateEvent(currentEvent, firstType);
+          continue;
+        }
+        if (this.isStartHookEvent(currentEvent)) {
+          this.parkStartHookEvent(currentEvent);
           continue;
         }
         this.scheduleUnconsumedCheck(currentEvent, true);
@@ -670,6 +761,25 @@ export class EventsConsumer {
   }
 
   /**
+   * Park a start Hook delivery at once, at its log index, without waiting out
+   * the deferred check: no consumer can be on its way for it, since the only
+   * one is the body's `createHook` with the start token, which may come much
+   * later. Covers `hook_disposed{forceClaimedBy}` too, which {@link park}
+   * refuses for every other id. See
+   * {@link EventsConsumerOptions.eagerParkCorrelationId}.
+   */
+  private parkStartHookEvent(event: Event): void {
+    this.parked.push({ event, index: this.eventIndex });
+    this.eventIndex++;
+    eventsLogger.debug('Parked a start Hook delivery for later claim', {
+      eventId: event.eventId,
+      eventType: event.eventType,
+      correlationId: event.correlationId,
+      parked: this.parked.length,
+    });
+  }
+
+  /**
    * The key `event`'s class is tracked under, or `undefined` for the events
    * that belong to no class and are therefore never skipped: the types with no
    * entry at all (`hook_received`, `hook_conflict`, `run_created`), and a
@@ -816,6 +926,11 @@ export class EventsConsumer {
     if (this.parked.length === 0) {
       return;
     }
+    // Unclaimed start Hook deliveries can wait forever without fault.
+    const strandable = this.oldestStrandable();
+    if (!strandable) {
+      return;
+    }
     const last = this.events.at(-1);
     if (!last || !TERMINAL_EVENT_TYPES.has(last.eventType)) {
       // A later replay is still expected, so nothing here is decidable and
@@ -832,7 +947,7 @@ export class EventsConsumer {
       });
       return;
     }
-    this.scheduleUnconsumedCheck(this.parked[0].event, false);
+    this.scheduleUnconsumedCheck(strandable, false);
   }
 
   private scheduleUnconsumedCheck(currentEvent: Event, mayPark: boolean) {

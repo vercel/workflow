@@ -1,8 +1,8 @@
 ---
 title: Idempotency
-description: Make step retries safe and coordinate duplicate workflow starts with hook tokens.
+description: Make step retries safe, and start a workflow run at most once per key with start({ hook }).
 type: conceptual
-summary: Use step IDs for retry-safe external calls, and route duplicate workflow-start requests through deterministic hook tokens.
+summary: Use step IDs for retry-safe external calls, and pass a deterministic hook token to start() so a duplicate request is refused or routed to the run that owns it.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -13,7 +13,7 @@ related:
 
 Idempotency is a property of an operation that ensures repeated attempts have the same effect as a single attempt.
 
-In Workflow, idempotency shows up in two related places: step idempotency makes external calls safe when a step retries, and run idempotency coordinates duplicate requests that try to start the same workflow.
+In Workflow, idempotency shows up in two related places: step idempotency makes external calls safe when a step retries, and run idempotency makes duplicate requests start the same workflow run only once.
 
 ## Step idempotency
 
@@ -57,11 +57,151 @@ Why this works:
 
 Step idempotency protects side effects **inside** a workflow run. Run idempotency answers a different question: if the same API request is sent twice, should it create one workflow run or two?
 
-Because [hooks](/docs/foundations/hooks) already ensure globally unique active tokens, Workflow can use the same mechanism to coordinate duplicate requests while a run is active.
+Workflow uses a [Hook](/docs/foundations/hooks) token as the idempotency key. Pick a token from your domain, such as an order ID, invoice ID, import ID, or request ID, and pass it to `start()`.
 
-Use a hook token as the idempotency key for an active workflow run. Hook tokens are globally unique while they are active: if another run tries to create a hook with the same token, the runtime records a conflict, `hook.getConflict()` resolves with a `Run` handle for the run that owns the token, and the hook rejects with [`HookConflictError`](/docs/errors/hook-conflict) when the workflow awaits or iterates its payload.
+### Start a run once per key
 
-The token should come from your domain, such as an order ID, invoice ID, import ID, or request ID. Create the hook near the beginning of the workflow and check `await hook.getConflict()` before doing duplicate-sensitive work that depends on owning the active token. Calling `createHook()` alone does not register the hook; awaiting `getConflict()` suspends the workflow to commit the registration. Check it before calling any step: steps the workflow calls before it suspends are started alongside the hook's registration, so a duplicate run that only learns of the conflict later (for example, by awaiting the hook and letting `HookConflictError` end the run) may already have started them. See [Registering a hook before a step uses it](/docs/api-reference/workflow/create-hook#registering-a-hook-before-a-step-uses-it).
+```typescript title="app/api/orders/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { HookConflictError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+
+  try {
+    const run = await start(processOrder, [orderId], {
+      hook: { token: `order:${orderId}` }, // [!code highlight]
+    });
+    return Response.json({ runId: run.runId, duplicate: false });
+  } catch (error) {
+    if (!HookConflictError.is(error)) throw error;
+    return Response.json({ runId: error.conflictingRunId, duplicate: true }); // [!code highlight]
+  }
+}
+```
+
+`start({ hook })` admits the run and creates its **start Hook** in one atomic step. Exactly one run owns the token. A duplicate `start()` with the same token throws [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) with the owner's `conflictingRunId`. The duplicate never becomes a run, and none of its code runs.
+
+### Start or route to the owner
+
+A duplicate request often carries data the owner should receive, such as a follow-up message in a chat. Since the start Hook exists from the moment the run is admitted, you can resume it right away on a conflict, even before the owner starts executing:
+
+```typescript title="app/api/orders/route.ts" lineNumbers
+import { resumeHook, start } from "workflow/api";
+import { HookConflictError, HookNotFoundError } from "workflow/errors";
+import { processOrder } from "./workflows/process-order";
+
+export async function POST(request: Request) {
+  const { orderId, note } = await request.json();
+  const token = `order:${orderId}`;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const run = await start(processOrder, [orderId, note], { hook: { token } });
+      return Response.json({ runId: run.runId, started: true });
+    } catch (error) {
+      if (!HookConflictError.is(error)) throw error;
+    }
+
+    try {
+      const hook = await resumeHook(token, { note }); // [!code highlight]
+      return Response.json({ runId: hook.runId, started: false });
+    } catch (error) {
+      // The owner ended between the conflict and the resume: start again.
+      if (!HookNotFoundError.is(error)) throw error; // [!code highlight]
+    }
+  }
+
+  throw new Error(`Could not start or resume ${token}`);
+}
+```
+
+Every caller either starts the run or delivers its payload to the owner. While the owner is live, the loop needs at most two calls. A `HookNotFoundError` after a conflict means the owner ended in the meantime, so the next `start()` is admitted as the new owner.
+
+If the token has a [retention](#keep-the-token-after-the-run-ends), a finished owner keeps refusing new starts until the retention passes, and its Hook can no longer be resumed, so the loop above gives up after its attempts. Use `getRun(error.conflictingRunId)` to tell the caller what the finished run returned.
+
+### Receive the payloads in the workflow
+
+To read the payloads, call `createHook()` in the workflow with the same token:
+
+```typescript title="workflows/process-order.ts" lineNumbers
+import { createHook } from "workflow";
+
+type OrderUpdate = { note: string; done?: boolean };
+declare function recordNote(orderId: string, note: string): Promise<void>; // @setup
+
+export async function processOrder(orderId: string, note: string) {
+  "use workflow";
+
+  await recordNote(orderId, note);
+
+  const updates = createHook<OrderUpdate>({ token: `order:${orderId}` }); // [!code highlight]
+  for await (const update of updates) {
+    await recordNote(orderId, update.note);
+    if (update.done) break;
+  }
+}
+```
+
+- `createHook({ token })` with the run's start token returns a handle bound to the start Hook. It doesn't register a new Hook, so it adds no step, and `await hook.getConflict()` resolves `null`.
+- Payloads resumed before the workflow opens the Hook are kept, and are delivered in order once it does.
+- If the workflow never opens it, the token was only an idempotency key. The run completes normally, and unread payloads are simply left unread.
+- `metadata`, `experimental_minRetention`, `isWebhook` and `experimental_force` belong on `start({ hook })`, not on this `createHook()`. Passing them there throws.
+
+### Keep the token after the run ends
+
+The start Hook follows the ordinary Hook lifecycle, like a `createHook()` in the run. Without a retention, the token is released when the run ends, and a later `start()` with the token is admitted as a new run.
+
+To refuse late duplicates too, set `experimental_minRetention`. It accepts the same duration string, milliseconds, or `Date` as [`createHook({ experimental_minRetention })`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends), and a duration counts from `start()`:
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { processOrder } from "./workflows/process-order";
+declare const orderId: string; // @setup
+
+const run = await start(processOrder, [orderId, ""], {
+  hook: {
+    token: `order:${orderId}`,
+    experimental_minRetention: "30 days", // [!code highlight]
+    metadata: { orderId },
+  },
+});
+```
+
+The run owns the token until it ends, even if the retention passes first. After the run ends, and until the retention passes:
+
+- a duplicate `start()` throws `HookConflictError` naming the finished owner;
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) still returns the Hook, with the `start()` metadata;
+- `resumeHook()` throws `HookNotFoundError`, because a finished run can't receive payloads.
+
+There is no default retention.
+
+Disposing the start Hook, with `hook.dispose()` or when a `using` declaration goes out of scope, ends the Hook but not the run's hold on the token. Until the run ends, `resumeHook()` throws `HookNotFoundError`, while a duplicate `start()` and another run's `createHook({ token })` are still refused naming the run. The run itself can call `createHook({ token })` again to get a new Hook on the token. When the run ends, any `experimental_minRetention` applies as above.
+
+Cancelling the owner ends the run, so it releases the token too, once any retention has passed.
+
+### When `start()` can't confirm the outcome
+
+If `start({ hook })` can't confirm whether its candidate run was queued or admitted, for example because the World timed out, it throws [`WorkflowStartError`](/docs/api-reference/workflow-errors/workflow-start-error) with the candidate's `runId`. The outcome is unknown, not failed. Retrying with the same token is safe: the retry either becomes the owner, or is refused with a `HookConflictError` naming the owner. Inside a workflow, the `start()` step retries it on its own.
+
+### World support
+
+`start({ hook })` requires a World that supports atomic start Hooks (`capabilities.atomicStartHook`), and Hook retention when you set `experimental_minRetention`. Otherwise `start()` throws before it enqueues anything.
+
+| World | Support |
+| --- | --- |
+| [Local World](/worlds/local) | Supported. |
+| [Postgres World](/worlds/postgres) | Opt in with [`WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1`](/worlds/postgres#workflow_postgres_experimental_start_hook). Stop workers running a previous version first. |
+| [Vercel World](/worlds/vercel) | Opt in with [`WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1`](/worlds/vercel#workflow_vercel_experimental_start_hook), which needs a backend that supports start Hooks. |
+
+See [`start()`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) for the full option reference.
+
+### Coordinate inside the workflow
+
+On a World without atomic start Hooks, or when a run should decide for itself how to treat a duplicate, coordinate with `createHook()` and `getConflict()` in the workflow instead. Hook tokens are unique while active: if another run already owns the token, `await hook.getConflict()` resolves with a `Run` handle for the owner, and awaiting the hook rejects with [`HookConflictError`](/docs/errors/hook-conflict).
+
+Create the hook near the beginning of the workflow, and check `await hook.getConflict()` before calling any step. Awaiting it suspends the workflow to commit the registration; steps called before that suspension start alongside it, so a duplicate run that learns of the conflict later may already have started them. See [Registering a hook before a step uses it](/docs/api-reference/workflow/create-hook#registering-a-hook-before-a-step-uses-it).
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -96,62 +236,15 @@ export async function processOrder(orderId: string): Promise<OrderResult> {
 }
 ```
 
-The runtime creates the hook atomically. At most one hook can own `order:${orderId}`, so duplicate workflow runs converge on one owner. A duplicate run observes `getConflict()` resolving with the owner's `Run` and returns before it reaches `chargeOrder()`. The conflicting run's accessors (`status`, `returnValue`, `cancel()`, …) are durable steps, so the duplicate run can do more than report the owner. See [conflict-handling strategies](#conflict-handling-strategies) below.
-
-Outside the workflow, try to resume the hook first. If the hook is not registered yet, start the workflow and retry the resume until the new run creates the hook:
-
-```typescript lineNumbers
-import { resumeHook, start } from "workflow/api";
-import { HookNotFoundError } from "workflow/errors";
-import { processOrder } from "./workflows/process-order";
-
-type OrderRequest = { confirmed: boolean };
-
-async function resumeOrder(token: string, payload: OrderRequest) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    try {
-      return await resumeHook(token, payload); // [!code highlight]
-    } catch (error) {
-      if (!HookNotFoundError.is(error)) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-
-  throw new Error("Order workflow did not register its hook in time");
-}
-
-export async function POST(request: Request) {
-  const { orderId, confirmed } = await request.json();
-  const token = `order:${orderId}`;
-  const payload = { confirmed };
-
-  try {
-    const hook = await resumeHook(token, payload); // [!code highlight]
-    return Response.json({ runId: hook.runId, reused: true });
-  } catch (error) {
-    if (!HookNotFoundError.is(error)) throw error;
-  }
-
-  const run = await start(processOrder, [orderId]); // [!code highlight]
-  const resumed = await resumeOrder(token, payload);
-
-  // A concurrent request's run may have won the race between `start()` // [!code highlight]
-  // and hook registration. The resume always reaches the actual active // [!code highlight]
-  // owner, so compare run IDs instead of waiting for this run to finish. // [!code highlight]
-  return Response.json({ // [!code highlight]
-    runId: resumed.runId, // [!code highlight]
-    reused: resumed.runId !== run.runId, // [!code highlight]
-  }); // [!code highlight]
-}
-```
+Outside the workflow, try `resumeHook()` first, and on `HookNotFoundError` call `start()` and retry the resume until the new run registers its hook.
 
 <Callout type="warn">
-This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work, and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
+Unlike `start({ hook })`, this doesn't stop a duplicate from becoming a run. Two concurrent requests can both see "no hook yet" and each call `start()`. The losing run is still created, queued, and started, and returns once `getConflict()` resolves with the owner. The route can detect it by comparing the resumed hook's `runId` with the run it started.
 </Callout>
 
-This coordinates active runs by default: the token becomes available when its workflow ends. Set `experimental_minRetention` to keep it unavailable to late duplicates. After the workflow ends, the Hook can still be found with `getHookByToken()` until retention ends, but it cannot be resumed. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) for examples and supported values.
+The token becomes available when its workflow ends, unless you set `experimental_minRetention` on `createHook()`. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends).
 
-### Conflict-handling strategies
+#### Conflict-handling strategies
 
 Some workflow systems resolve duplicate IDs with a fixed, pre-declared policy, typically a static choice between rejecting the new execution, deferring to the existing one, or terminating it. Workflow has no policy enum. `hook.getConflict()` hands the duplicate run the conflicting `Run` itself, and the policy is ordinary code, including policies that inspect state before deciding, which static configuration can't express.
 
@@ -302,9 +395,7 @@ export async function processOrderNewestWins(orderId: string) {
 
 A run started at a Workflow spec version below 8, including runs started by older SDK releases, can't be taken from. In that case the forced Hook rejects with `HookConflictError`, as it would without `experimental_force`.
 
-If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.
-
-Because this pattern uses hooks for idempotency, duplicate requests can also inject additional data and steer the existing run. The route example above uses `resumeHook()` for that: if the hook already exists, the duplicate request resumes the active workflow; if the hook is not registered yet, the route starts the workflow and retries `resumeHook()` so the payload is not dropped.
+[`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) before `start()` is only an advisory pre-check in this pattern: the lookup and `start()` are not atomic, so the workflow should still check `hook.getConflict()`.
 
 ## Related docs
 

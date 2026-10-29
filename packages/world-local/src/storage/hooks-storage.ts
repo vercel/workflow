@@ -11,8 +11,8 @@ import type {
 } from '@workflow/world';
 import {
   HookSchema,
+  isStartHookId,
   isTerminalWorkflowRunStatus,
-  WorkflowRunSchema,
 } from '@workflow/world';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
@@ -33,6 +33,7 @@ import {
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
+  RunRecordSchema,
   readHookDisposeLock,
   readHookTokenClaim,
   releaseHookTokenClaimIfOwnedBy,
@@ -44,6 +45,7 @@ import {
   listHookByRunMarkers,
   writeHookByRunMarker,
 } from './hook-index.js';
+import { runIdOfStartHookId, startHookRecord } from './start-hook.js';
 
 function getHookCreatedToken(event: Event): string | undefined {
   if (event.eventType !== 'hook_created') return undefined;
@@ -99,7 +101,7 @@ async function isTerminalRunCache(
     basedir,
     'runs',
     runId,
-    WorkflowRunSchema,
+    RunRecordSchema,
     tag
   );
   return run ? isTerminalWorkflowRunStatus(run.status) : false;
@@ -240,6 +242,46 @@ export function createHooksStorage(
     return lock.committed && lock.forceClaimedBy !== undefined;
   }
 
+  /**
+   * The start Hook of `runId` rebuilt from its run record, for the window in
+   * which an admission has written the run but not the Hook entity (or a
+   * crash left it unwritten). Written back so the next read takes the fast
+   * path. Null unless the run exists, was admitted with a start Hook that
+   * is still available (not disposed, run live or in retention), and its
+   * claim still names it.
+   */
+  async function readStartHookFromRun(
+    runId: string | null
+  ): Promise<Hook | null> {
+    if (!runId) return null;
+    let run: Awaited<ReturnType<typeof readRun>>;
+    try {
+      run = await readRun(runId);
+    } catch (error) {
+      if (UnsafeEntityIdError.is(error)) return null;
+      throw error;
+    }
+    const hook = run && startHookRecord(run);
+    if (!hook || !(await isHookAvailable(hook))) return null;
+    const claim = await readHookTokenClaim(
+      hookTokenClaimPath(basedir, hook.token)
+    );
+    if (claim?.runId !== hook.runId || claim.hookId !== hook.hookId) {
+      return null;
+    }
+    // Marker before entity (see hook-index.ts crash-ordering invariant).
+    await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
+    await writeExclusive(
+      taggedPath(basedir, 'hooks', hook.hookId, tag),
+      JSON.stringify(hook, jsonReplacer, 2)
+    );
+    return hook;
+  }
+
+  function readRun(runId: string) {
+    return readJSONWithFallback(basedir, 'runs', runId, RunRecordSchema, tag);
+  }
+
   async function findHookByToken(token: string): Promise<Hook | null> {
     // Fast path: the token claim file points at the owning hookId.
     const claim = await readHookTokenClaim(hookTokenClaimPath(basedir, token));
@@ -263,6 +305,12 @@ export function createHooksStorage(
           // an instant. Resolve to whoever holds the token now (below).
         } else if (hook) {
           return null;
+        } else if (isStartHookId(claim.runId, claim.hookId)) {
+          // A start Hook whose admission wrote the claim and the run but not
+          // yet (or, after a crash, never) the entity: the run record holds
+          // it.
+          const recovered = await readStartHookFromRun(claim.runId);
+          if (recovered?.token === token) return recovered;
         }
       } catch (error) {
         if (!UnsafeEntityIdError.is(error)) {
@@ -313,7 +361,9 @@ export function createHooksStorage(
       throw new HookNotFoundError(hookId);
     }
     const hook =
-      stored ?? (await rebuildLiveHookByIdFromEventLog(basedir, hookId, tag));
+      stored ??
+      (await rebuildLiveHookByIdFromEventLog(basedir, hookId, tag)) ??
+      (await readStartHookFromRun(runIdOfStartHookId(hookId)));
     if (!hook) {
       throw new HookNotFoundError(hookId);
     }
@@ -376,6 +426,9 @@ export function createHooksStorage(
 /**
  * Cleans up a terminal run's Hooks while preserving active retention.
  */
+const readRunRecord = (filePath: string) =>
+  readJSON(filePath, RunRecordSchema).catch(() => null);
+
 export async function deleteAllHooksForRun(
   basedir: string,
   runId: string
@@ -384,6 +437,7 @@ export async function deleteAllHooksForRun(
   // instead of reading every live hook entity in the world.
   await ensureHookIndexes(basedir);
 
+  let startRun: Awaited<ReturnType<typeof readRunRecord>> | undefined;
   for (const marker of await listHookByRunMarkers(basedir, runId)) {
     if (marker.hookId) {
       let hook: Hook | null = null;
@@ -399,11 +453,33 @@ export async function deleteAllHooksForRun(
           throw error;
         }
       }
+      if (!hook && hookPath && isStartHookId(runId, marker.hookId)) {
+        // The run's start Hook, admitted but with its entity never written
+        // (a crash between the run record and the entity): the run record
+        // holds it, and its claim is released the same way.
+        const run = await readJSON(
+          taggedPath(basedir, 'runs', runId, marker.tag),
+          RunRecordSchema
+        ).catch(() => null);
+        hook = run ? startHookRecord(run) : null;
+      }
       if (hook && hookPath && hook.runId === runId) {
         if (
           hook.tokenRetentionUntil &&
           hook.tokenRetentionUntil.getTime() > Date.now()
         ) {
+          continue;
+        }
+        // A Hook the run made on its start Hook token (after disposing the
+        // start Hook) keeps the token for the start Hook's retention too.
+        startRun ??= await readRunRecord(
+          taggedPath(basedir, 'runs', runId, marker.tag)
+        );
+        const startRetention =
+          startRun?.startHook?.token === hook.token
+            ? startRun.startHook.tokenRetentionUntil
+            : undefined;
+        if (startRetention && startRetention.getTime() > Date.now()) {
           continue;
         }
         // Release the claim only if it still points at this hook, since a

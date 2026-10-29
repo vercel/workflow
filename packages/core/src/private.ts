@@ -135,6 +135,20 @@ export interface WorkflowOrchestratorContext {
   runId: string;
   encryptionKey: PayloadKey | undefined;
   worldCapabilities?: WorldCapabilities;
+  /**
+   * The run's start Hook (`start(workflow, args, { hook })`), fixed when the
+   * session is created; `undefined` for a run started without one. The first
+   * `createHook({ token })` with this token binds to `hookId` (setting
+   * `bound`) instead of minting an id and writing `hook_created`: the
+   * admission that created the run created this Hook.
+   */
+  startHook?: {
+    token: string;
+    hookId: string;
+    /** `start({ hook })`'s retention deadline, when one was set. */
+    tokenRetentionUntil?: Date;
+    bound: boolean;
+  };
   globalThis: typeof globalThis;
   /**
    * Increments when a suspension is accepted and on every retained-session

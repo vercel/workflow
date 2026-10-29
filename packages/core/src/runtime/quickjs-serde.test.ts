@@ -19,7 +19,11 @@
 
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { StreamError } from '@workflow/errors';
+import {
+  HookConflictError,
+  StreamError,
+  WorkflowStartError,
+} from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { serialize as nodeEngineSerialize } from '../serialization/workflow.js';
@@ -192,6 +196,28 @@ describe('wire parity: guest serialize matches the reference codec', () => {
           url: 'https://workflow.example/stream',
         });
         error.stack = 'stream-stack';
+        return error;
+      },
+    ],
+    [
+      'WorkflowStartError',
+      '(() => { const cause = new Error("gateway timed out"); cause.stack = "cause-stack"; const e = new Error(\'Could not confirm whether workflow run "wrun_c" was admitted: gateway timed out. Retrying with the same hook token is safe: it never admits a second run.\', { cause }); e.name = "WorkflowStartError"; e.stack = "start-stack"; e.runId = "wrun_c"; e.stage = "admission"; return e; })()',
+      () => {
+        const cause = new Error('gateway timed out');
+        cause.stack = 'cause-stack';
+        const error = new WorkflowStartError('wrun_c', 'admission', cause);
+        error.stack = 'start-stack';
+        return error;
+      },
+    ],
+    [
+      'HookConflictError of a refused start',
+      '(() => { const e = new Error(\'No run was created: workflow run "wrun_owner" already owns this hook token\\n\u2570\u25b6 docs: https://workflow-sdk.dev/err/hook-conflict\', { cause: undefined }); e.name = "HookConflictError"; e.stack = "conflict-stack"; e.token = "order:1"; e.conflictingRunId = "wrun_owner"; e.kind = "start"; return e; })()',
+      () => {
+        const error = new HookConflictError('order:1', 'wrun_owner', {
+          kind: 'start',
+        });
+        error.stack = 'conflict-stack';
         return error;
       },
     ],

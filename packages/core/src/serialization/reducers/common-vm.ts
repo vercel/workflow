@@ -151,6 +151,7 @@ export function getCommonReducers(): Partial<Reducers> {
       if ((value as any).conflictingRunId !== undefined) {
         reduced.conflictingRunId = (value as any).conflictingRunId;
       }
+      if ((value as any).kind === 'start') reduced.kind = 'start';
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
@@ -168,6 +169,19 @@ export function getCommonReducers(): Partial<Reducers> {
       if ((value as any).claimedByHookId !== undefined) {
         reduced.claimedByHookId = (value as any).claimedByHookId;
       }
+      if ('cause' in value) reduced.cause = (value as any).cause;
+      return reduced;
+    },
+    // WorkflowStartError: mirror the host-side common.ts reducer.
+    WorkflowStartError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'WorkflowStartError')
+        return false;
+      const reduced: SerializableSpecial['WorkflowStartError'] = {
+        message: value.message,
+        stack: value.stack,
+        runId: (value as any).runId,
+        stage: (value as any).stage,
+      };
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
@@ -437,7 +451,11 @@ export function getCommonRevivers(): Partial<Revivers> {
       ];
       let error: Error;
       if (typeof Cls === 'function') {
-        error = new Cls(value.token, value.conflictingRunId);
+        error = new Cls(
+          value.token,
+          value.conflictingRunId,
+          value.kind === 'start' ? { kind: 'start' } : undefined
+        );
       } else {
         error = new Error(value.message);
         error.name = 'HookConflictError';
@@ -445,6 +463,7 @@ export function getCommonRevivers(): Partial<Revivers> {
         if (value.conflictingRunId !== undefined) {
           (error as any).conflictingRunId = value.conflictingRunId;
         }
+        if (value.kind === 'start') (error as any).kind = 'start';
       }
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) (error as any).cause = (value as any).cause;
@@ -472,6 +491,24 @@ export function getCommonRevivers(): Partial<Revivers> {
       }
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) (error as any).cause = (value as any).cause;
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//WorkflowStartError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.runId, value.stage, value.cause);
+      } else {
+        error = new Error(value.message);
+        error.name = 'WorkflowStartError';
+        (error as any).runId = value.runId;
+        (error as any).stage = value.stage;
+        if ('cause' in value) (error as any).cause = (value as any).cause;
+      }
+      error.message = value.message;
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     RangeError: makeNamedErrorSubclassReviver('RangeError'),
