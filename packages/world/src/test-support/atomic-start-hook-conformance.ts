@@ -239,12 +239,21 @@ export function atomicStartHookConformance(
     } as AnyEventRequest);
   }
 
-  const hookCreated = (token: string, hookId: string, force?: boolean) =>
+  const hookCreated = (
+    token: string,
+    hookId: string,
+    force?: boolean,
+    tokenRetentionUntil?: Date
+  ) =>
     ({
       eventType: 'hook_created',
       correlationId: hookId,
       specVersion: SPEC,
-      eventData: { token, ...(force ? { force: true } : {}) },
+      eventData: {
+        token,
+        ...(force ? { force: true } : {}),
+        ...(tokenRetentionUntil ? { tokenRetentionUntil } : {}),
+      },
     }) as AnyEventRequest;
 
   const hookDisposed = (token: string, hookId: string) =>
@@ -699,6 +708,37 @@ export function atomicStartHookConformance(
       await expectRefused(admit(events, { token }), token, owner);
       await sleep(Math.max(0, until - Date.now()) + 250);
       await admit(events, { token });
+    });
+
+    test('the latest retention survives repeated dispose and re-create on the kept token', async () => {
+      const events = setup();
+      const token = newToken();
+      const owner = await admit(events, {
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 1_000),
+      });
+      await create(events, owner, runStarted({ token }));
+      await create(events, owner, hookDisposed(token, startHookId(owner)));
+      // A longer retention on an intermediate Hook, then one with none.
+      const second = newHookId();
+      await create(
+        events,
+        owner,
+        hookCreated(token, second, false, new Date(Date.now() + 3_600_000))
+      );
+      await create(events, owner, hookDisposed(token, second));
+      const third = newHookId();
+      await create(events, owner, hookCreated(token, third));
+      await finish(events, owner);
+
+      // Past the start Hook's own retention, the intermediate one holds:
+      // the undisposed Hook stays readable and the token stays the owner's.
+      await sleep(1_250);
+      expect((await lookup(token)).hook).toMatchObject({
+        hookId: third,
+        runId: owner,
+      });
+      await expectRefused(admit(events, { token }), token, owner);
     });
 
     test('after disposing the start Hook, the owner takes the token again with a new Hook, which keeps it in turn', async () => {

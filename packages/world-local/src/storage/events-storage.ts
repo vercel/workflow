@@ -3200,13 +3200,25 @@ export function createEventsStorage(
           let claimedFrom:
             | NonNullable<HookTokenClaim['claimedFrom']>
             | undefined;
+          // Set when this Hook takes over the token its own run kept after
+          // disposing the Hook that held it (the run's `start({ hook })`
+          // key): the kept claim's retention, which this Hook carries on
+          // when it is later than its own (see `effectiveRetentionUntil`).
+          let keptRetentionUntil: Date | undefined;
+          const effectiveRetentionUntil = (): Date | undefined => {
+            const own = hookData.tokenRetentionUntil
+              ? new Date(hookData.tokenRetentionUntil)
+              : undefined;
+            if (!keptRetentionUntil) return own;
+            return own && own > keptRetentionUntil ? own : keptRetentionUntil;
+          };
           const claimContent = () =>
             JSON.stringify({
               token: hookData.token,
               hookId: data.correlationId,
               runId: effectiveRunId,
               eventId,
-              tokenRetentionUntil: hookData.tokenRetentionUntil,
+              tokenRetentionUntil: effectiveRetentionUntil(),
               ...(claimedFrom && { claimedFrom }),
             });
 
@@ -3432,6 +3444,11 @@ export function createEventsStorage(
                 // Fall through to the release below with the victim told.
               }
 
+              // This run's own kept key (see `isDisposedStartKeyReleasable`):
+              // the new Hook carries its retention on.
+              if (existingClaim.runId === effectiveRunId && !claimedFrom) {
+                keptRetentionUntil = existingClaim.tokenRetentionUntil;
+              }
               // The previous owner committed its release but did not finish
               // cleanup. Remove that lifetime before admitting a successor.
               // A takeover re-points the claim in place (one atomic rename)
@@ -3519,6 +3536,16 @@ export function createEventsStorage(
                 )
               : await claimToken();
             if (claimResult.status !== 'victim-changed') break;
+          }
+          if (claimResult.status === 'claimed' && keptRetentionUntil) {
+            // Journal and entity carry the same retention as the claim.
+            event = {
+              ...event,
+              eventData: {
+                ...(event.eventData as Record<string, unknown>),
+                tokenRetentionUntil: effectiveRetentionUntil(),
+              },
+            } as Event;
           }
           if (claimResult.status === 'owned' && claimResult.claim.claimedFrom) {
             // A retry adopting a forced claim still names the victim, so the
