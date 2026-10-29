@@ -37,7 +37,7 @@ These steps take an existing workflow app (see [Getting Started](/docs/getting-s
 Any PostgreSQL database works, self-hosted or managed. For local development, this container matches the World's default connection string, `postgres://world:world@localhost:5432/world`:
 
 ```bash
-docker run -d --name workflow-postgres -p 5432:5432 \
+docker run -d --name workflow-postgres -p 127.0.0.1:5432:5432 \
   -e POSTGRES_USER=world -e POSTGRES_PASSWORD=world -e POSTGRES_DB=world \
   postgres:18-alpine
 ```
@@ -189,10 +189,14 @@ the whole runtime on the cold-start path.
 
 ### Run a workflow
 
-Start your dev server and trigger a workflow as usual. Then check that the run landed in PostgreSQL:
+Start your dev server and trigger a workflow as usual. Then check that the run landed in PostgreSQL, from the terminal or in the web UI:
 
 ```bash
+# List workflow runs
 npx workflow inspect runs --backend @workflow/world-postgres
+
+# Launch the web UI
+npx workflow web --backend @workflow/world-postgres
 ```
 
 </Step>
@@ -211,35 +215,13 @@ The Postgres World needs a long-lived process to run its worker, so it does not 
 Before you go live, make sure that:
 
 - The app can reach your PostgreSQL database, and `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL` are set in its runtime environment
-- `bootstrap` runs on every deploy, for example as a post-deployment lifecycle script
+- `bootstrap` runs on every deploy, for example as a post-deployment lifecycle script (see [Upgrading](#upgrading))
 - `start()` is called on server initialization
 - `/.well-known/workflow/v1/flow` is restricted so untrusted clients cannot reach it (see [Security](#security))
-- If more than one process shares the database, you have set [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) so another process picks up the jobs of one that dies
+- If more than one process shares the database, you have set [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) to the same value on every process, so another process picks up the jobs of one that dies
 
 <Callout type="info">
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
-</Callout>
-
-### Upgrading
-
-Run `bootstrap` again whenever you upgrade `@workflow/world-postgres`: a release can add migrations that the upgraded World needs before it handles workflows. Upgrade `workflow` alongside it so both stay on the same release cycle.
-
-<Callout type="warn">
-Migration 0027 converts every timestamp column to `timestamp with time zone`.
-On a server whose time zone is UTC (the default on most hosted providers) it
-only changes the catalog and rebuilds one small index, and the upgrade order
-does not matter. On a server in another time zone it also rewrites each
-`created_at` value from local time to the instant it recorded, about one
-rewrite of each table, holding the tables' locks until it finishes. There, stop
-the previous version's workers, run `bootstrap`, then start the upgraded app:
-older versions read the converted columns shifted by the server's UTC offset,
-so you cannot roll back past this migration either. If your app's connection
-pool set a session time zone other than the server's, pass it to the migration
-with `?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the
-connection string, or with `ALTER DATABASE ... SET workflow.legacy_timezone =
-'Europe/Berlin'` where your pooler drops startup `options`. The migration waits
-at most 10 seconds for its locks; if a long transaction holds them,
-`bootstrap` fails and can be run again.
 </Callout>
 
 ## Security
@@ -255,7 +237,7 @@ The other routes under `/.well-known/workflow/v1/` differ:
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
 - `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
 
-A queue consumer that registered its own route with `registerRoute()` receives deliveries the same way, so protect that route like the flow route.
+A queue consumer that registered its own route with [`registerRoute()`](#queue-consumers-other-than-the-workflow-sdk) receives deliveries the same way, so protect that route like the flow route.
 
 ### Bringing your own auth
 
@@ -293,7 +275,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The defaults work for a single process on a local database, so most apps set only `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL`. You can set every option through environment variables or programmatically through `createWorld()`.
+The defaults work for a single process on a local database, so most apps set only `WORKFLOW_TARGET_WORLD` and `WORKFLOW_POSTGRES_URL`. You can set every option through environment variables, or programmatically through `createWorld()` (see [Programmatic configuration](#programmatic-configuration)).
 
 | Variable | Default | Controls |
 | --- | --- | --- |
@@ -311,7 +293,6 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_QUEUE_NAMESPACE`](#workflow_queue_namespace) | unset | Queue topic namespace |
 | [`WORKFLOW_STREAM_FLUSH_INTERVAL_MS`](#workflow_stream_flush_interval_ms) | `0` ms | Stream write batching |
 | [`WORKFLOW_POSTGRES_INVOKE`](#experimental-invocation-delivery) | off | Experimental: hook resumes only |
-
 
 ### `WORKFLOW_POSTGRES_URL`
 
@@ -387,6 +368,32 @@ For example, `custom` changes the queue topic prefix from `__wkf_workflow_` to `
 
 Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group, trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
 
+## Upgrading
+
+Run `bootstrap` again whenever you upgrade `@workflow/world-postgres`: a release can add migrations that the upgraded World needs before it handles workflows. Upgrade `workflow` alongside it so both stay on the same release cycle.
+
+<Callout type="warn">
+Migration 0027 converts every timestamp column to `timestamp with time zone`.
+On a server whose time zone is UTC (the default on most hosted providers) it
+only changes the catalog and rebuilds one small index, and the upgrade order
+does not matter. On a server in another time zone it also rewrites each
+`created_at` value from local time to the instant it recorded, about one
+rewrite of each table, holding the tables' locks until it finishes. There, stop
+the previous version's workers, run `bootstrap`, then start the upgraded app:
+older versions read the converted columns shifted by the server's UTC offset,
+so you cannot roll back past this migration either. If your app's connection
+pool set a session time zone other than the server's, pass it to the migration
+with `?options=-c%20workflow.legacy_timezone%3DEurope%2FBerlin` in the
+connection string, or with `ALTER DATABASE ... SET workflow.legacy_timezone =
+'Europe/Berlin'` where your pooler drops startup `options`. The migration waits
+at most 10 seconds for its locks; if a long transaction holds them,
+`bootstrap` fails and can be run again.
+</Callout>
+
+## Advanced
+
+Most apps don't need anything in this section. It covers building your own World module, sharing the queue with other consumers, coordinating shutdown yourself, and an experimental delivery mode.
+
 ### Programmatic configuration
 
 {/*@skip-typecheck: incomplete code sample*/}
@@ -444,6 +451,28 @@ Graphile Worker responds automatically when the application is asked to shut dow
 
 Closing the world stops new queue claims and waits for active jobs. After Graphile Worker's grace period, a pending workflow HTTP request is aborted. Graphile Worker unlocks that same row through its normal failure handling. The already-claimed delivery consumes a Graphile attempt and is retried only if its attempt budget remains; a one-attempt or final-attempt job is not retried. The shutdown handler does not insert a successor row. Because a client abort does not prove the server handler stopped, workflow and step handlers must tolerate at-least-once execution.
 
+### Experimental invocation delivery
+
+Invocation delivery is off by default, and you don't need it to run the Postgres World.
+
+Normally [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) writes the hook's event itself and then enqueues the run to wake up. With invocation delivery on, `resumeHook()` instead sends the payload to the run's executor and resolves once the executor has validated the input and persisted the hook event. It covers hook resumes only for now.
+
+To turn it on, set `WORKFLOW_POSTGRES_INVOKE=1` or pass `enableInvoke: true` to `createWorld()`. Apply the migrations and upgrade producers and workers together before enabling it.
+
+Workflow user code can consume the event later. The World stores inputs and responses in `workflow.workflow_invocations`. Inserting an input and enqueueing a workflow execution job share one transaction. Retries also enqueue an execution job, including when a retained response already exists, so committed events can be replayed after a runner failure.
+
+With the default job prefix, Graphile uses `workflow_flows_executor` for workflow execution and `workflow_flows` for step jobs and health checks. Execution jobs use a named queue per run, `workflow_flows:<runId>:executor`. Graphile permits one active job on each named queue across workers. Other runs, steps, and health checks can run concurrently. `queueConcurrency` limits total active jobs per worker process and defaults to 50. A custom job prefix replaces `workflow_` in these names.
+
+The HTTP receiver checks each execution request against its active Graphile job before processing pending inputs. Updated workers and receivers move legacy orchestration requests to the run's named queue. Before acknowledging an execution job, the World finishes any input already being processed and replays newly committed events. These entry checks do not stop an old handler from writing after its job is reclaimed.
+
+The caller receives a stored return value or a restored Workflow error. Terminal errors are retained as outcomes; transient or unrecognized failures leave inputs pending for Graphile to retry. Migration 0022 preserves the meaning of responses stored by earlier previews. Failure to store or read a response leaves the processing outcome unknown. Durable resume identities deduplicate the hook event when response storage must be retried.
+
+A shared `LISTEN/NOTIFY` connection signals changes to pending inputs and responses. Notifications contain identifiers, and readers fetch data from the table. Use a session-capable connection for `LISTEN`. Readers fall back to polling at 1s intervals if notifications fail, and connection retries use a 1s backoff. Notification failure and recovery are logged once per transition without payloads or connection details.
+
+The response-wait timeout defaults to 30s and can be set with `timeoutMs`. Encoded inputs and outcomes are limited to 1 MiB each. A timeout does not cancel processing. `$retention: 0` purges invocation data and prevents late writes from restoring it. Callers whose result has expired receive a 410 error with code `INVOCATION_DATA_EXPIRED`, even if the hook event committed earlier.
+
+Automatic cleanup of other results, stopping writes from reclaimed handlers, and routing requests across incompatible worker versions remain unimplemented.
+
 ## How it works
 
 The Postgres World uses PostgreSQL as a durable backend:
@@ -454,62 +483,6 @@ The Postgres World uses PostgreSQL as a durable backend:
 - **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution. If the database drops the `LISTEN` connection, the World reconnects every second and re-reads persisted chunks for open stream readers, so readers don't miss chunks written during the outage.
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
-
-## Experimental invocation delivery
-
-Invocation delivery is off by default, and you don't need it to run the Postgres World.
-
-Normally [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) writes the hook's event itself and then enqueues the run to wake up. With invocation delivery on, `resumeHook()` instead sends the payload to the run's executor and resolves once the executor has validated the input and persisted the hook event. It covers hook resumes only for now.
-
-Set `WORKFLOW_POSTGRES_INVOKE=1`, or pass `enableInvoke: true` to the Postgres
-World's factory, to send hook inputs to the run's executor and wait for its
-response. Apply the migrations and upgrade
-producers and workers together before enabling it.
-
-The executor validates the hook input and writes its event before responding.
-Workflow user code can consume the event later. The World stores inputs and
-responses in `workflow.workflow_invocations`. Inserting an input and enqueueing
-a workflow execution job share one transaction. Retries also enqueue an execution
-job, including when a retained response already exists, so committed events can
-be replayed after a runner failure.
-
-With the default job prefix, Graphile uses `workflow_flows_executor` for workflow
-execution and `workflow_flows` for step jobs and health checks. Execution jobs
-use a named queue per run, `workflow_flows:<runId>:executor`. Graphile permits
-one active job on each named queue across workers. Other runs, steps, and health
-checks can run concurrently. `queueConcurrency` limits total active jobs per
-worker process and defaults to 50. A custom job prefix replaces `workflow_` in
-these names.
-
-The HTTP receiver checks each execution request against its active Graphile job
-before processing pending inputs. Updated workers and receivers move legacy
-orchestration requests to the run's named queue. Before acknowledging an execution
-job, the World finishes any input already being processed and replays newly
-committed events. These entry checks do not stop an old handler from writing
-after its job is reclaimed.
-
-The caller receives a stored return value or a restored Workflow error. Terminal
-errors are retained as outcomes; transient or unrecognized failures leave inputs
-pending for Graphile to retry. Migration 0022 preserves the meaning of responses
-stored by earlier previews. Failure to store or read a response leaves the
-processing outcome unknown. Durable resume identities deduplicate the hook event
-when response storage must be retried.
-
-A shared `LISTEN/NOTIFY` connection signals changes to pending inputs and
-responses. Notifications contain identifiers, and readers fetch data from the
-table. Use a session-capable connection for `LISTEN`. Readers fall back to polling
-at 1s intervals if notifications fail, and connection retries use a 1s backoff.
-Notification failure and recovery are logged once per transition without
-payloads or connection details.
-
-The response-wait timeout defaults to 30s and can be set with `timeoutMs`. Encoded
-inputs and outcomes are limited to 1 MiB each. A timeout does not cancel
-processing. `$retention: 0` purges invocation data and prevents late writes from
-restoring it. Callers whose result has expired receive a 410 error with code
-`INVOCATION_DATA_EXPIRED`, even if the hook event committed earlier.
-
-Automatic cleanup of other results, stopping writes from reclaimed handlers, and
-routing requests across incompatible worker versions remain unimplemented.
 
 ## Testing & compatibility
 
