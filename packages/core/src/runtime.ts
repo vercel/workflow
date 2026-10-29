@@ -3255,7 +3255,16 @@ export function workflowEntrypoint(
                       }
                     | { done: false }
                   > => {
-                    const settled = await inlineStepsInFlight.settleAll();
+                    // Step bodies are not replay time, here as in the batch.
+                    replayBudget.pause();
+                    let settled: Awaited<
+                      ReturnType<typeof inlineStepsInFlight.settleAll>
+                    >;
+                    try {
+                      settled = await inlineStepsInFlight.settleAll();
+                    } finally {
+                      replayBudget.resume();
+                    }
                     const results: InlineStepResult[] = [];
                     for (const { outcome } of settled) {
                       if (outcome.status === 'fulfilled') {
@@ -3313,15 +3322,7 @@ export function workflowEntrypoint(
                         Date.now() - invocationStartTime >=
                           noInlineReplayAfterMs)
                     ) {
-                      replayBudget.pause();
-                      let inlineAction: Awaited<
-                        ReturnType<typeof settleInlineStepsInFlight>
-                      >;
-                      try {
-                        inlineAction = await settleInlineStepsInFlight();
-                      } finally {
-                        replayBudget.resume();
-                      }
+                      const inlineAction = await settleInlineStepsInFlight();
                       if (inlineAction.done) return inlineAction.value;
                     }
 

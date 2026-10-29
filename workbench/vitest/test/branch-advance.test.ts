@@ -7,19 +7,23 @@ import { resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import {
   chainIntoHookWorkflow,
+  hookVsStepWorkflow,
   leafFanOutWorkflow,
   parallelChainsWorkflow,
   raceLoserThenThrowWorkflow,
   raceLoserWorkflow,
   retryBesideSlowWorkflow,
+  sleepTimeoutWorkflow,
 } from '../workflows/branch-advance.js';
 
 const FAST_MS = 200;
 const SLOW_MS = 2000;
 
-// Early advance is implemented by the Node.js VM engine's inline loop only;
-// QuickJS keeps waiting for the whole inline batch.
-const itNodeVm = process.env.WORKFLOW_VM === 'quickjs' ? it.skip : it;
+/**
+ * The QuickJS engine has its own inline loop, which still waits for the
+ * whole batch, so the early-advance timing assertions only hold on node:vm.
+ */
+const lockstepEngine = process.env.WORKFLOW_VM === 'quickjs';
 
 async function markerFile() {
   const dir = await mkdtemp(join(tmpdir(), 'wf-4457-'));
@@ -69,10 +73,12 @@ async function stepsCompletedBeforeTerminal(
 
 afterEach(() => {
   delete process.env.WORKFLOW_INLINE_EARLY_ADVANCE;
+  delete process.env.WORKFLOW_REPLAY_TIMEOUT_MS;
+  delete process.env.WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES;
 });
 
 describe('parallel branches advance independently (#4457)', () => {
-  itNodeVm(
+  it.skipIf(lockstepEngine)(
     'a fast chain finishes while its slow sibling is still on its first step',
     async () => {
       const markerPath = await markerFile();
@@ -95,7 +101,7 @@ describe('parallel branches advance independently (#4457)', () => {
     60_000
   );
 
-  itNodeVm(
+  it.skipIf(lockstepEngine)(
     'advances three chains (the default inline limit) independently',
     async () => {
       const markerPath = await markerFile();
@@ -131,7 +137,7 @@ describe('parallel branches advance independently (#4457)', () => {
     expect(fast[1].start).toBeGreaterThanOrEqual(slow[0].end);
   }, 60_000);
 
-  itNodeVm(
+  it.skipIf(lockstepEngine)(
     'completes a race without waiting for the loser, which still runs once',
     async () => {
       const markerPath = await markerFile();
@@ -154,7 +160,7 @@ describe('parallel branches advance independently (#4457)', () => {
     60_000
   );
 
-  itNodeVm(
+  it.skipIf(lockstepEngine)(
     'fails a run without waiting for the loser, which still runs once',
     async () => {
       const markerPath = await markerFile();
@@ -176,33 +182,29 @@ describe('parallel branches advance independently (#4457)', () => {
     60_000
   );
 
-  itNodeVm(
-    'registers a hook in one branch while the other branch is still running a step',
-    async () => {
-      const markerPath = await markerFile();
-      const token = `branch-advance-${Math.random().toString(36).slice(2)}`;
-      const run = await start(chainIntoHookWorkflow, [
-        token,
-        FAST_MS,
-        SLOW_MS,
-        markerPath,
-      ]);
-      await waitForHook(run, { token });
-      const resumedAt = Date.now();
-      await resumeHook(token, { n: 7 });
-      const result = await run.returnValue;
+  it('registers a hook in one branch while the other branch is still running a step', async () => {
+    const markerPath = await markerFile();
+    const token = `branch-advance-${Math.random().toString(36).slice(2)}`;
+    const run = await start(chainIntoHookWorkflow, [
+      token,
+      FAST_MS,
+      SLOW_MS,
+      markerPath,
+    ]);
+    await waitForHook(run, { token });
+    const resumedAt = Date.now();
+    await resumeHook(token, { n: 7 });
+    const result = await run.returnValue;
 
-      expect(result.n).toBe(7);
-      // The hook was reachable before the slow step ended.
-      expect(resumedAt).toBeLessThan(result.slow.end);
-      expect(await bodyEntries(markerPath)).toEqual({
-        fast1: 1,
-        fast2: 1,
-        slow: 1,
-      });
-    },
-    60_000
-  );
+    expect(result.n).toBe(7);
+    // The hook was reachable before the slow step ended.
+    if (!lockstepEngine) expect(resumedAt).toBeLessThan(result.slow.end);
+    expect(await bodyEntries(markerPath)).toEqual({
+      fast1: 1,
+      fast2: 1,
+      slow: 1,
+    });
+  }, 60_000);
 
   it('retries a step beside a slow sibling and runs every body the expected number of times', async () => {
     const markerPath = await markerFile();
@@ -221,6 +223,38 @@ describe('parallel branches advance independently (#4457)', () => {
       slow: 1,
     });
   }, 60_000);
+
+  it('does not charge a race loser to the replay budget', async () => {
+    // The smallest budget the runtime accepts, and no retry to hide behind:
+    // a loser that outlives it must not fail the run.
+    process.env.WORKFLOW_REPLAY_TIMEOUT_MS = '30000';
+    process.env.WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES = '0';
+    const markerPath = await markerFile();
+    const run = await start(raceLoserWorkflow, [FAST_MS, 33_000, markerPath]);
+    await expect(run.returnValue).resolves.toBe('fast');
+    expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
+  }, 90_000);
+
+  for (const earlyAdvance of ['1', '0']) {
+    it(`ends a race won by a sleep without waiting for the losing step (early advance ${earlyAdvance})`, async () => {
+      process.env.WORKFLOW_INLINE_EARLY_ADVANCE = earlyAdvance;
+      const startedAt = Date.now();
+      const run = await start(sleepTimeoutWorkflow, [8_000]);
+      await expect(run.returnValue).resolves.toBe('timeout');
+      expect(Date.now() - startedAt).toBeLessThan(6_000);
+    }, 60_000);
+
+    it(`ends a race won by a hook without waiting for the losing step (early advance ${earlyAdvance})`, async () => {
+      process.env.WORKFLOW_INLINE_EARLY_ADVANCE = earlyAdvance;
+      const token = `branch-advance-${Math.random().toString(36).slice(2)}`;
+      const run = await start(hookVsStepWorkflow, [token, 8_000]);
+      await waitForHook(run, { token });
+      const resumedAt = Date.now();
+      await resumeHook(token, { v: 'hook' });
+      await expect(run.returnValue).resolves.toBe('hook');
+      expect(Date.now() - resumedAt).toBeLessThan(5_000);
+    }, 60_000);
+  }
 
   it('completes a leaf fan-out wider than the inline limit', async () => {
     const markerPath = await markerFile();
