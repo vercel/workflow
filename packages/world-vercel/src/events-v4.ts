@@ -1461,9 +1461,11 @@ const BatchItemFailureSchema = z.compile(
  * retry-convergent; see `createWorkflowRunEventBatch`) or surfaces the error
  * for queue redelivery, whose replay re-derives an idempotent batch.
  *
- * HTTP-only by design: the WS event transport streams one frame per message
- * and has no batch framing, so a WS-configured deployment still sends
- * batches over HTTP (single-event writes keep their configured transport).
+ * Transport: a single-orchestrator (spec >= 9) run's batch goes over the
+ * run's socket as one `event_batch` frame when the WS event transport is on
+ * and a socket is resolvable, and over HTTP otherwise. Every other run's
+ * batch goes over HTTP, as on earlier releases, whatever the transport
+ * setting (its single-event writes keep their configured transport).
  */
 export async function createWorkflowRunEventsBatchV4(
   input: CreateEventBatchV4Input,
@@ -1498,11 +1500,12 @@ export async function createWorkflowRunEventsBatchV4(
     ? 'v5'
     : 'v4';
   const url = `${baseUrl}/${apiVersion}/runs/${encodeURIComponent(input.runId)}/events/batch`;
-  // The run's socket carries the batch when it carries the run's single
+  // A spec 9 run's socket carries its batches when it carries its single
   // writes; with no socket for the run, the batch goes over HTTP.
-  const overWs = isWsEventsTransportPossible()
-    ? await postEventBatchOverWs(input.runId, body, url, config)
-    : undefined;
+  const overWs =
+    apiVersion === 'v5' && isWsEventsTransportPossible()
+      ? await postEventBatchOverWs(input.runId, body, url, config)
+      : undefined;
   // Batch identity attributes (size, per-type shape) live on the
   // world.events.createBatch span (see instrumentObject); this transport
   // span carries only wire-level facts. workflow.event.type is deliberately

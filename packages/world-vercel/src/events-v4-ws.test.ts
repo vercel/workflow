@@ -16,6 +16,7 @@ import {
   ThrottleError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -181,7 +182,7 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     // Not in the strict set on purpose: after vercel/workflow#3732 a write
     // issued before the socket finishes connecting takes HTTP by design, and
     // on a cold instance that can be the first step_started of a run.
-    const agent = httpReply('/api/v5/runs/wrun_1/events/step_started');
+    const agent = httpReply('/api/v4/runs/wrun_1/events/step_started');
 
     // The claim is only that strict mode did not block the fallback, so this
     // asserts on that and on the request having been made. Decoding the reply
@@ -204,7 +205,7 @@ describe('strict fallback (WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT)', () => {
     // leaks into every later test, since clearAllMocks resets calls, not
     // implementations.
     resolveWsTransportMock.mockReturnValueOnce(null);
-    const agent = httpReply('/api/v5/runs/wrun_1/events/step_completed');
+    const agent = httpReply('/api/v4/runs/wrun_1/events/step_completed');
 
     const result = await createWorkflowRunEventV4(input, {
       token: 'test-token',
@@ -225,7 +226,7 @@ describe('per-workflow override (WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS
     agent
       .get(origin)
       .intercept({
-        path: '/api/v5/runs/wrun_1/events/step_completed',
+        path: '/api/v4/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
@@ -286,7 +287,7 @@ describe('transport gate', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v5/runs/wrun_1/events/step_completed',
+        path: '/api/v4/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
@@ -340,7 +341,7 @@ describe('createWorkflowRunEventV4 over ws', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v5/runs/wrun_1/events/step_completed',
+        path: '/api/v4/runs/wrun_1/events/step_completed',
         method: 'POST',
       })
       .reply(200, materializedBody(), {
@@ -420,7 +421,13 @@ describe('createWorkflowRunEventV4 over ws', () => {
  * the shared policy needs.
  */
 describe('createWorkflowRunEventsBatchV4 over ws', () => {
-  it('sends the batch as one event_batch frame and decodes the reply as HTTP would', async () => {
+  /** A write to a single-orchestrator run, whose batches may use the socket. */
+  const spec9Input = {
+    ...input,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  };
+
+  it('sends a spec 9 batch as one event_batch frame and decodes the reply as HTTP would', async () => {
     const [{ event }] = [decode(materializedBody()) as { event: unknown }];
     requestMock.mockResolvedValueOnce(
       ack(
@@ -436,7 +443,7 @@ describe('createWorkflowRunEventsBatchV4 over ws', () => {
         runId: 'wrun_1',
         events: [
           {
-            ...input,
+            ...spec9Input,
             occurredAt: new Date(CREATED_AT),
             payload: new Uint8Array([1, 2]),
           },
@@ -469,10 +476,24 @@ describe('createWorkflowRunEventsBatchV4 over ws', () => {
     );
     await expect(
       createWorkflowRunEventsBatchV4(
+        {
+          runId: 'wrun_1',
+          events: [{ ...spec9Input, payload: new Uint8Array() }],
+        },
+        { token: 'test-token' }
+      )
+    ).rejects.toThrow();
+    expect(requestMock).not.toHaveBeenCalled();
+  });
+
+  it('sends the batch of a run below spec 9 over HTTP even with a socket', async () => {
+    await expect(
+      createWorkflowRunEventsBatchV4(
         { runId: 'wrun_1', events: [{ ...input, payload: new Uint8Array() }] },
         { token: 'test-token' }
       )
     ).rejects.toThrow();
+    expect(resolveWsTransportMock).not.toHaveBeenCalled();
     expect(requestMock).not.toHaveBeenCalled();
   });
 });
