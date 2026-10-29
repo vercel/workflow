@@ -1,7 +1,7 @@
 /**
- * `start({ hook })` admission in the Local World: the reservation rides on
- * the token claim file and the run is created under its lock, and a refusal
- * is recorded per candidate.
+ * `start({ hook })` admission in the Local World: the start Hook's token
+ * claim, the run and the Hook entity are written under the claim lock, and a
+ * refusal is recorded per candidate.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -11,10 +11,15 @@ import path from 'node:path';
 import {
   HookConflictError,
   HookNotFoundError,
-  HookReservedError,
   START_HOOK_ADMISSION_REJECTED,
 } from '@workflow/errors';
-import { type AnyEventRequest, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  type AnyEventRequest,
+  FIRST_EVENT_SLOT,
+  SPEC_VERSION_CURRENT,
+  slotToEventId,
+  startHookId,
+} from '@workflow/world';
 import { monotonicFactory, ulid } from 'ulid';
 import {
   afterAll,
@@ -31,8 +36,39 @@ import { writeExclusive } from '../fs.js';
 import { createWorld } from '../index.js';
 import { createStorage } from '../storage.js';
 import { hookTokenClaimPath, START_HOOK_ORPHAN_GRACE_MS } from './helpers.js';
+import { writeHookByRunMarker } from './hook-index.js';
 
 const SPEC = SPEC_VERSION_CURRENT;
+
+/**
+ * The state a process killed between its start Hook claim and its run write
+ * leaves: the by-run marker and the claim, and no run.
+ */
+async function stageOrphanClaim(
+  dir: string,
+  runId: string,
+  token: string,
+  reservedAt?: number
+) {
+  await writeHookByRunMarker(dir, runId, startHookId(runId));
+  const claimPath = hookTokenClaimPath(dir, token);
+  await fs.mkdir(path.dirname(claimPath), { recursive: true });
+  await writeExclusive(
+    claimPath,
+    JSON.stringify(orphanClaim(runId, token, reservedAt))
+  );
+}
+
+/** The token claim an admission writes before its run record. */
+function orphanClaim(runId: string, token: string, reservedAt?: number) {
+  return {
+    token,
+    runId,
+    hookId: startHookId(runId),
+    eventId: slotToEventId(FIRST_EVENT_SLOT),
+    ...(reservedAt !== undefined ? { reservedAt } : {}),
+  };
+}
 const conformanceDirs: string[] = [];
 const storageDirs = new WeakMap<object, string>();
 /** The data directory of the storage the current conformance test uses. */
@@ -75,17 +111,10 @@ atomicStartHookConformance({
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     vi.setSystemTime(target);
   },
-  // The state a process killed between its token claim and its run write
-  // leaves: the claim, and no run.
   stageOrphan: async (runId, token) => {
     const dir = currentDir;
     if (!dir) throw new Error('no storage set up');
-    const claimPath = hookTokenClaimPath(dir, token);
-    await fs.mkdir(path.dirname(claimPath), { recursive: true });
-    await writeExclusive(
-      claimPath,
-      JSON.stringify({ runId, reservation: { reservedAt: Date.now() } })
-    );
+    await stageOrphanClaim(dir, runId, token, Date.now());
   },
   // Accepted means the run record exists, so a claim whose run was never
   // written was never reported admitted; it holds only for the lock grace.
@@ -125,23 +154,17 @@ describe('atomic start Hook (world-local)', () => {
       },
     }) as AnyEventRequest;
 
-  it('releases a reservation whose writer died before creating its run', async () => {
+  it('releases a start Hook claim whose writer died before creating its run', async () => {
     // The writer claimed the token and died before writing the run record:
     // no caller was ever told the candidate was admitted.
     const token = 'order:orphan';
     const orphan = `wrun_${ulid()}`;
-    await fs.mkdir(path.dirname(hookTokenClaimPath(testDir, token)), {
-      recursive: true,
-    });
-    await writeExclusive(
-      hookTokenClaimPath(testDir, token),
-      // Claimed long enough ago that the orphan grace has passed.
-      JSON.stringify({
-        runId: orphan,
-        reservation: {
-          reservedAt: Date.now() - START_HOOK_ORPHAN_GRACE_MS - 1,
-        },
-      })
+    // Claimed long enough ago that the orphan grace has passed.
+    await stageOrphanClaim(
+      testDir,
+      orphan,
+      token,
+      Date.now() - START_HOOK_ORPHAN_GRACE_MS - 1
     );
 
     const next = `wrun_${ulid()}`;
@@ -156,92 +179,159 @@ describe('atomic start Hook (world-local)', () => {
     expect(error).toMatchObject({ conflictingRunId: next });
   });
 
-  it('re-admits its own reservation when the writer retries after dying mid-create', async () => {
+  it('re-admits its own claim when the writer retries after dying mid-create', async () => {
     const token = 'order:retry';
     const runId = `wrun_${ulid()}`;
-    await fs.mkdir(path.dirname(hookTokenClaimPath(testDir, token)), {
-      recursive: true,
-    });
-    await writeExclusive(
-      hookTokenClaimPath(testDir, token),
-      JSON.stringify({ runId, reservation: {} })
-    );
+    await stageOrphanClaim(testDir, runId, token);
 
     const result = await create(runId, creating('run_created', token));
     expect(result.run?.runId).toBe(runId);
-    expect(result.run?.startHook).toEqual({ token });
+    expect(result.run?.startHook).toEqual({
+      token,
+      hookId: startHookId(runId),
+    });
+    expect(await storage.hooks.getByToken(token)).toMatchObject({
+      hookId: startHookId(runId),
+      runId,
+    });
   });
 
-  /** A reserved, started run, and its claim rewritten as if mid-adoption. */
-  async function midAdoption(token: string, metadata?: Uint8Array) {
+  it('writes the start Hook entity, the claim and the indexes at admission', async () => {
+    const token = 'order:written';
     const runId = `wrun_${ulid()}`;
-    await create(runId, {
-      ...creating('run_created', token),
-      eventData: {
-        ...(creating('run_created', token) as any).eventData,
-        startHook: { token, ...(metadata ? { metadata } : {}) },
-      },
-    } as AnyEventRequest);
-    await create(runId, { eventType: 'run_started', specVersion: SPEC } as any);
-    // The adopting createHook wrote the claim and died before publishing.
-    const hookId = `hook_${ulid()}`;
-    await fs.writeFile(
-      hookTokenClaimPath(testDir, token),
-      JSON.stringify({ runId, hookId, eventId: 'evnt_x', reservation: {} })
+    await create(runId, creating('run_created', token));
+    const hookId = startHookId(runId);
+
+    const entity = JSON.parse(
+      await fs.readFile(path.join(testDir, 'hooks', `${hookId}.json`), 'utf8')
     );
-    return { runId, hookId };
-  }
-
-  it('answers HookReservedError, not not-found, while an adoption is in flight', async () => {
-    const token = 'order:mid-adoption';
-    const { runId } = await midAdoption(token);
-
-    const error = await storage.hooks
-      .getByToken(token)
-      .catch((e: unknown) => e);
-    expect(HookReservedError.is(error)).toBe(true);
-    expect(error).toMatchObject({ runId });
+    expect(entity).toMatchObject({
+      runId,
+      hookId,
+      token,
+      isWebhook: false,
+    });
+    expect(
+      JSON.parse(await fs.readFile(hookTokenClaimPath(testDir, token), 'utf8'))
+    ).toMatchObject({
+      runId,
+      hookId,
+      eventId: slotToEventId(FIRST_EVENT_SLOT),
+    });
   });
 
-  it('recovers an adoption that published hook_created but died before its entity write', async () => {
-    const token = 'order:published-adoption';
+  it('rebuilds the start Hook from its run when its entity write was lost', async () => {
+    const token = 'order:lost-entity';
+    const owner = `wrun_${ulid()}`;
+    await create(owner, creating('run_created', token));
+    const hookId = startHookId(owner);
+    const entityPath = path.join(testDir, 'hooks', `${hookId}.json`);
+    // Lose the entity, as a crash between the run record and its write would.
+    await fs.rm(entityPath);
+
+    expect(await storage.hooks.getByToken(token)).toMatchObject({
+      hookId,
+      runId: owner,
+      isWebhook: false,
+    });
+    await fs.rm(entityPath);
+    expect(await storage.hooks.get(hookId)).toMatchObject({ hookId });
+    await fs.rm(entityPath, { force: true });
+    // A resume to the pending run still lands.
+    const received = await create(owner, {
+      eventType: 'hook_received',
+      correlationId: hookId,
+      specVersion: SPEC,
+      eventData: { token, payload: new Uint8Array([1]) },
+    } as AnyEventRequest);
+    expect(received.event?.eventType).toBe('hook_received');
+
+    // The run's end releases it like any Hook.
+    await fs.rm(entityPath, { force: true });
+    await create(owner, { eventType: 'run_started', specVersion: SPEC } as any);
+    await create(owner, {
+      eventType: 'run_completed',
+      specVersion: SPEC,
+      eventData: { output: new Uint8Array([2]) },
+    } as AnyEventRequest);
+    const next = `wrun_${ulid()}`;
+    expect(
+      (await create(next, creating('run_created', token))).run?.runId
+    ).toBe(next);
+  });
+
+  it('answers the admission, not EntityConflictError, when a resume restored its run_created first', async () => {
+    const token = 'order:early-resume';
+    const owner = `wrun_${ulid()}`;
+    const hookId = startHookId(owner);
+    const other = createStorage(testDir);
+    const realWriteExclusive = fsModule.writeExclusive;
+    let resumed = false;
+    const spy = vi
+      .spyOn(fsModule, 'writeExclusive')
+      .mockImplementation(async (filePath, data) => {
+        if (
+          !resumed &&
+          filePath.includes(`${path.sep}events${path.sep}`) &&
+          filePath.includes(owner) &&
+          data.includes('"run_created"')
+        ) {
+          // Between the admission and the publish of its run_created, a
+          // resume lands on the start Hook (and restores the run_created).
+          resumed = true;
+          await (
+            other.events.create as (
+              runId: string,
+              data: AnyEventRequest
+            ) => Promise<unknown>
+          )(owner, {
+            eventType: 'hook_received',
+            correlationId: hookId,
+            specVersion: SPEC,
+            eventData: { token, payload: new Uint8Array([1]) },
+          } as AnyEventRequest);
+        }
+        return realWriteExclusive(filePath, data);
+      });
+    try {
+      const result = await create(owner, creating('run_created', token));
+      expect(resumed).toBe(true);
+      expect(result.run?.startHook).toMatchObject({ token, hookId });
+      expect(result.event?.eventType).toBe('run_created');
+    } finally {
+      spy.mockRestore();
+    }
+    const log = await storage.events.list({ runId: owner });
+    expect(log.data.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'hook_received',
+    ]);
+  });
+
+  it('restores the start Hook from its run_created when the claim and entity are lost', async () => {
+    const token = 'order:lost-claim';
     const owner = `wrun_${ulid()}`;
     await create(owner, creating('run_created', token));
     await create(owner, { eventType: 'run_started', specVersion: SPEC } as any);
-    const hookId = `hook_${ulid()}`;
-    await create(owner, {
-      eventType: 'hook_created',
-      correlationId: hookId,
-      specVersion: SPEC,
-      eventData: { token },
-    } as AnyEventRequest);
-    // Lose the entity, as a crash between the publish and its write would.
-    await fs.rm(path.join(testDir, 'hooks', `${hookId}.json`));
+    await fs.rm(hookTokenClaimPath(testDir, token));
+    await fs.rm(path.join(testDir, 'hooks', `${startHookId(owner)}.json`));
 
-    const hook = await storage.hooks.getByToken(token);
-    expect(hook).toMatchObject({ hookId, runId: owner });
-  });
-
-  it('keeps the start Hook metadata when an interrupted adoption is retried', async () => {
-    const token = 'order:retried-adoption';
-    const metadata = new Uint8Array([4, 5, 6]);
-    const { runId, hookId } = await midAdoption(token, metadata);
-
-    const retried = await create(runId, {
-      eventType: 'hook_created',
-      correlationId: hookId,
-      specVersion: SPEC,
-      eventData: { token },
-    } as AnyEventRequest);
-    expect(retried.event?.eventType).toBe('hook_created');
-
-    const hook = await storage.hooks.getByToken(token);
-    expect(hook.metadata).toEqual(metadata);
+    // The token index points at the run_created that stands for the Hook.
+    expect(await storage.hooks.getByToken(token)).toMatchObject({
+      hookId: startHookId(owner),
+      runId: owner,
+      isWebhook: false,
+    });
+    const refused = await create(
+      `wrun_${ulid()}`,
+      creating('run_created', token)
+    ).catch((e: unknown) => e);
+    expect(refused).toMatchObject({ conflictingRunId: owner });
   });
 
   it('recovers from a crash between the token claim and the run write', async () => {
     // Kill the admission at the one point world-local leaves an orphan: the
-    // reservation is claimed, the run record never written.
+    // token is claimed, the run record never written.
     const token = 'order:crash';
     const orphan = `wrun_${ulid()}`;
     const realWriteExclusive = fsModule.writeExclusive;
@@ -260,7 +350,13 @@ describe('atomic start Hook (world-local)', () => {
     expect((died as Error).message).toBe('process killed');
     expect(
       JSON.parse(await fs.readFile(hookTokenClaimPath(testDir, token), 'utf8'))
-    ).toMatchObject({ runId: orphan, reservation: {} });
+    ).toMatchObject({ runId: orphan, hookId: startHookId(orphan) });
+    // Not a Hook: nobody was told it was admitted.
+    expect(
+      HookNotFoundError.is(
+        await storage.hooks.getByToken(token).catch((e: unknown) => e)
+      )
+    ).toBe(true);
     expect(
       await storage.runs.get(orphan).then(
         () => true,
@@ -390,45 +486,44 @@ describe('atomic start Hook (world-local)', () => {
     expect(listed.data.map((r) => r.runId)).toHaveLength(1);
   });
 
-  it('fences an orphan before a lookup past the grace answers not found, so the answer stays', async () => {
+  it('answers not found for an orphan while it holds its token, and after', async () => {
     const token = 'order:looked-up';
     const orphan = `wrun_${ulid()}`;
     // A writer claimed the token and died before writing the run; its queued
     // copy has not been delivered yet.
-    const claimPath = hookTokenClaimPath(testDir, token);
-    await fs.mkdir(path.dirname(claimPath), { recursive: true });
-    await writeExclusive(
-      claimPath,
-      JSON.stringify({ runId: orphan, reservation: { reservedAt: Date.now() } })
-    );
+    await stageOrphanClaim(testDir, orphan, token, Date.now());
     const lookup = () =>
       storage.hooks.getByToken(token).catch((e: unknown) => e);
 
-    expect(HookReservedError.is(await lookup())).toBe(true);
+    expect(HookNotFoundError.is(await lookup())).toBe(true);
+    const early = await create(
+      `wrun_${ulid()}`,
+      creating('run_created', token)
+    ).catch((e: unknown) => e);
+    expect(early).toMatchObject({ conflictingRunId: orphan });
 
     vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
     try {
       vi.setSystemTime(Date.now() + START_HOOK_ORPHAN_GRACE_MS + 5_000);
       expect(HookNotFoundError.is(await lookup())).toBe(true);
 
-      // The late queued copy can no longer create the run.
-      const queued = await create(orphan, creating('run_started', token)).catch(
-        (e: unknown) => e
-      );
-      expect(queued).toMatchObject({ code: START_HOOK_ADMISSION_REJECTED });
-      expect(HookNotFoundError.is(await lookup())).toBe(true);
-
-      // The token is free for a new owner.
+      // The token is free for a new owner, and the orphan's late queued copy
+      // can no longer create its run.
       const next = `wrun_${ulid()}`;
       expect(
         (await create(next, creating('run_created', token))).run?.runId
       ).toBe(next);
+      const queued = await create(orphan, creating('run_started', token)).catch(
+        (e: unknown) => e
+      );
+      expect(queued).toMatchObject({ conflictingRunId: next });
+      expect((await storage.hooks.getByToken(token)).runId).toBe(next);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('fences a cancelled run id only while it could still be created', async () => {
+  it('fences a cancelled missing run only when it is an admitted start Hook candidate', async () => {
     const cancel = (runId: string) =>
       create(runId, {
         eventType: 'run_cancelled',
@@ -440,24 +535,56 @@ describe('atomic start Hook (world-local)', () => {
         .then((names) => names.some((n) => n.startsWith(runId)))
         .catch(() => false);
 
-    const old = `wrun_${ulid(Date.now() - 2 * 24 * 3600_000)}`;
-    expect(await cancel(old)).toMatchObject({
+    // An ordinary run id that does not exist yet: not found, nothing left
+    // behind, and it can still be created.
+    const ordinary = `wrun_${ulid()}`;
+    expect(await cancel(ordinary)).toMatchObject({
       name: 'WorkflowRunNotFoundError',
     });
-    expect(await runFile(old)).toBe(false);
+    expect(await runFile(ordinary)).toBe(false);
+    const created = await create(ordinary, {
+      eventType: 'run_created',
+      specVersion: SPEC,
+      eventData: {
+        deploymentId: 'dpl_local',
+        workflowName: 'wf',
+        input: new Uint8Array([1]),
+      },
+    } as AnyEventRequest);
+    expect(created.run?.runId).toBe(ordinary);
     expect(await cancel('wrun_not-a-ulid')).toMatchObject({
       name: 'WorkflowRunNotFoundError',
     });
 
+    // An admitted candidate whose writer died before its run: fenced.
+    const token = 'order:cancelled';
     const young = `wrun_${ulid()}`;
+    await stageOrphanClaim(testDir, young, token, Date.now());
     expect(await cancel(young)).toMatchObject({
       name: 'WorkflowRunNotFoundError',
     });
     expect(await runFile(young)).toBe(true);
-    // Never listed as a run.
     expect(
       (await storage.runs.list({})).data.some((r) => r.runId === young)
     ).toBe(false);
+    expect(
+      await create(young, creating('run_started', token)).catch(
+        (e: unknown) => e
+      )
+    ).toMatchObject({ code: START_HOOK_ADMISSION_REJECTED });
+    // The fence frees its token at once.
+    const next = `wrun_${ulid()}`;
+    expect(
+      (await create(next, creating('run_created', token))).run?.runId
+    ).toBe(next);
+
+    // Past the orphan bound an id can never become a run: left alone.
+    const old = `wrun_${ulid(Date.now() - 2 * 24 * 3600_000)}`;
+    await stageOrphanClaim(testDir, old, 'order:old', Date.now());
+    expect(await cancel(old)).toMatchObject({
+      name: 'WorkflowRunNotFoundError',
+    });
+    expect(await runFile(old)).toBe(false);
   });
 
   it('refuses a queued candidate older than the orphan bound with a permanent code', async () => {
@@ -499,7 +626,7 @@ describe('atomic start Hook (world-local)', () => {
     });
   });
 
-  it('logs decisions and releases under DEBUG, naming runs but never the token', async () => {
+  it('logs decisions under DEBUG, naming runs but never the token', async () => {
     vi.stubEnv('DEBUG', 'workflow:*');
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
     try {
@@ -523,10 +650,6 @@ describe('atomic start Hook (world-local)', () => {
         );
       said('accepted a candidate', { runId: owner });
       said('refused a candidate', { runId: refused, conflictingRunId: owner });
-      said("released an ended owner's token to a candidate", {
-        runId: next,
-        previousRunId: owner,
-      });
       said('accepted a candidate', { runId: next });
       expect(lines.some((line) => line.includes(token))).toBe(false);
     } finally {

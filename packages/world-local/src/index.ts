@@ -147,8 +147,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
-      // `start({ hook })`: the reservation rides on the token claim file and
-      // the run is created under its lock; a refusal is recorded per
+      // `start({ hook })`: the start Hook's token claim, the run and the Hook
+      // entity are written under the claim lock; a refusal is recorded per
       // candidate. See `admitStartHook` in storage/events-storage.ts.
       atomicStartHook: { active: true },
       // Stored whole on the run record; no upload path, so `start()` always

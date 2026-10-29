@@ -6,6 +6,7 @@ import {
   RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   type Streamer,
+  startHookId,
 } from '@workflow/world';
 import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -158,11 +159,8 @@ describe('run retention (world-local)', () => {
       expect(persisted.expiredAt).toBeInstanceOf(Date);
     });
 
-    it.each([
-      ['unadopted', false],
-      ['adopted', true],
-    ])("drops an %s start Hook's metadata, keeping its token and retention", async (_label, adopt) => {
-      const token = `order:purge-${adopt}`;
+    it("drops a start Hook's metadata, keeping its token and retention", async () => {
+      const token = 'order:purge';
       const tokenRetentionUntil = new Date(Date.now() + 60_000);
       const run = await startRun(
         { [RETENTION_ATTRIBUTE]: '0' },
@@ -170,10 +168,7 @@ describe('run retention (world-local)', () => {
           startHook: { token, tokenRetentionUntil, metadata: HOOK_METADATA },
         }
       );
-      if (adopt) {
-        // No metadata of its own: the reservation's carries over.
-        await createHook(storage, run.runId, { hookId: 'hook_start', token });
-      }
+      const hookId = startHookId(run.runId);
       await complete(run.runId);
 
       const onDisk = JSON.parse(
@@ -184,12 +179,18 @@ describe('run retention (world-local)', () => {
       );
       expect(onDisk.startHook).toEqual({
         token,
+        hookId,
         tokenRetentionUntil: tokenRetentionUntil.toISOString(),
       });
       expect((await storage.runs.get(run.runId)).startHook).toEqual({
         token,
+        hookId,
         tokenRetentionUntil,
       });
+      // The retained start Hook stays readable, without its metadata.
+      const retained = await storage.hooks.getByToken(token);
+      expect(retained).toMatchObject({ hookId, runId: run.runId });
+      expect(retained.metadata).toBeUndefined();
       expect(await eventPayloads(run.runId)).toEqual([]);
       // Nor on the creation events, which carry the start Hook too.
       const { data: events } = await storage.events.list({

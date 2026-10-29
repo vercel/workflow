@@ -415,20 +415,11 @@ export const HookTokenClaimSchema = z.compile(
     // canonical hook_created event before concurrent retries publish it.
     eventId: z.string().optional(),
     tokenRetentionUntil: z.coerce.date().optional(),
-    // Set when the claim holds a `start({ hook })` reservation for `runId`
-    // (see `start-hook.ts` in @workflow/world). A reservation outlives the
-    // claim's Hook: it holds the token until `runId` ends and its retention
-    // passes, and the run's own `createHook()` adopts it by filling in
-    // `hookId`/`eventId`. A forced creation that takes the Hook carries it to
-    // the claimer.
-    reservation: z
-      .object({
-        tokenRetentionUntil: z.coerce.date().optional(),
-        // When the reservation was claimed (ms since the epoch), for the
-        // orphan grace (`START_HOOK_ORPHAN_GRACE_MS`).
-        reservedAt: z.number().optional(),
-      })
-      .optional(),
+    // When an admission wrote this claim for its run's `start({ hook })` Hook
+    // (ms since the epoch), for the orphan grace
+    // (`START_HOOK_ORPHAN_GRACE_MS`). Only read while the claim's run record
+    // is missing.
+    reservedAt: z.number().optional(),
     // Set when this claim took the token from another run
     // (`experimental_force`), so a retry that adopts the claim can still
     // report — and wake — the run it came from.
@@ -447,12 +438,12 @@ export const HookTokenClaimSchema = z.compile(
 export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
 
 /**
- * Whether a run-less start reservation is still inside its orphan grace
- * (see `START_HOOK_ORPHAN_GRACE_MS`). A reservation without `reservedAt`
- * predates the grace and is not.
+ * Whether a start Hook claim whose run record is missing is still inside its
+ * orphan grace (see `START_HOOK_ORPHAN_GRACE_MS`). A claim without
+ * `reservedAt` is not.
  */
 export function isWithinStartHookOrphanGrace(claim: HookTokenClaim): boolean {
-  const reservedAt = claim.reservation?.reservedAt;
+  const reservedAt = claim.reservedAt;
   return (
     reservedAt !== undefined &&
     Date.now() - reservedAt <= START_HOOK_ORPHAN_GRACE_MS
@@ -479,7 +470,7 @@ export async function readHookTokenClaim(
 export const HOOK_TOKEN_CLAIM_LOCK_STALE_MS = 30_000;
 
 /**
- * How long a start reservation whose run record was never written keeps its
+ * How long a start Hook claim whose run record was never written keeps its
  * token. Its writer may only be stalled past the lock's lease, not dead, and
  * could still write the run when it resumes, so the claim holds for the
  * lease plus as long again before a contender may take the token. A
@@ -490,14 +481,13 @@ export const HOOK_TOKEN_CLAIM_LOCK_STALE_MS = 30_000;
 export const START_HOOK_ORPHAN_GRACE_MS = 2 * HOOK_TOKEN_CLAIM_LOCK_STALE_MS;
 
 /**
- * What is written on a run-less reservation's run record path once its orphan
- * grace has passed, before anything treats the token as free: the stalled
- * writer's exclusive publication of that run then fails, so the orphan can
- * never become a run. A contender's fence names the run the token went to,
- * which every later attempt for the orphan answers as its owner. A lookup's
- * fence (written before answering not found) and a cancellation's (a
- * `run_cancelled` for a run that was never created) name none, and later
- * attempts are refused permanently.
+ * What is written on a run-less start Hook claim's run record path once its
+ * orphan grace has passed, before anything treats the token as free: the
+ * stalled writer's exclusive publication of that run then fails, so the
+ * orphan can never become a run. A contender's fence names the run the token
+ * went to, which every later attempt for the orphan answers as its owner. A
+ * cancellation's fence (a `run_cancelled` for an admitted candidate that was
+ * never created) names none, and later attempts are refused permanently.
  */
 export const StartHookFenceSchema = z.compile(
   z.object({
@@ -536,7 +526,7 @@ export async function readStartHookFence(
 }
 
 /**
- * Fences a run-less reservation's run record path (see
+ * Fences a run-less start Hook claim's run record path (see
  * {@link StartHookFenceSchema}). False if the path already holds a record:
  * the run was published after all, or another contender fenced it first.
  */
@@ -614,7 +604,7 @@ export async function withHookTokenClaimLock<T>(
 /**
  * Path of the record of a refused `start({ hook })` candidate. Only refusals
  * are recorded: an accepted candidate's decision is its run record, which is
- * written under the token claim lock right after the reservation.
+ * written under the token claim lock right after the start Hook's claim.
  */
 export function startHookRejectionPath(
   basedir: string,
@@ -674,12 +664,7 @@ export function hookResumeClaimPath(
   return path.join(basedir, 'hooks', 'resumes', `${key}.json`);
 }
 
-/**
- * Deletes a claim only while it still belongs to this Hook. A claim that also
- * carries a start reservation is left in place: the reservation outlives its
- * Hook, and the next claimant releases it once its run has ended and its
- * retention has passed (see `isHookTokenClaimReleasable`).
- */
+/** Deletes a claim only while it still belongs to this Hook. */
 export async function releaseHookTokenClaimIfOwnedBy(
   basedir: string,
   token: string,
@@ -689,7 +674,7 @@ export async function releaseHookTokenClaimIfOwnedBy(
   await withHookTokenClaimLock(basedir, token, async (signal) => {
     const claimPath = hookTokenClaimPath(basedir, token);
     const claim = await readHookTokenClaim(claimPath);
-    if (!claim || claim.reservation) return;
+    if (!claim) return;
     if (claim.runId === runId && claim.hookId === hookId) {
       signal.throwIfAborted();
       await deleteJSON(claimPath);
