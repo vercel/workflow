@@ -201,7 +201,7 @@ describe('wire parity: guest serialize matches the reference codec', () => {
     ],
     [
       'WorkflowStartError',
-      '(() => { const cause = new Error("gateway timed out"); cause.stack = "cause-stack"; const e = new Error(\'Could not confirm whether workflow run "wrun_c" was admitted: gateway timed out. Retrying with the same hook token is safe: it never admits a second run.\', { cause }); e.name = "WorkflowStartError"; e.stack = "start-stack"; e.runId = "wrun_c"; e.stage = "admission"; return e; })()',
+      '(() => { const cause = new Error("gateway timed out"); cause.stack = "cause-stack"; const e = new Error(\'Could not confirm whether workflow run "wrun_c" was admitted: gateway timed out. Retrying with the same hook token is safe while the token is held: it never admits a second run while the first one holds it.\', { cause }); e.name = "WorkflowStartError"; e.stack = "start-stack"; e.runId = "wrun_c"; e.stage = "admission"; return e; })()',
       () => {
         const cause = new Error('gateway timed out');
         cause.stack = 'cause-stack';
