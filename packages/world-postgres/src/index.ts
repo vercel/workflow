@@ -1,9 +1,14 @@
 import type { Queue, Storage, World } from '@workflow/world';
-import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
+import {
+  getLockWaitlistPolicy,
+  mintedSpecVersion,
+  reenqueueActiveRuns,
+} from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
+import { createLocksStorage } from './locks.js';
 import { createQueue } from './queue.js';
 import {
   createRunStatusListener,
@@ -27,6 +32,7 @@ function createStorage(
     events: createEventsStorage(drizzle),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
+    locks: createLocksStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
   };
 }
@@ -90,6 +96,10 @@ export function createWorld(
       hookForceClaim: true,
       // The events storage fences in-band writes; see storage.ts.
       inBandFence: true,
+      // A per-key counter row and one holder row per slot, kept equal in
+      // every transaction that touches either; see locks.ts.
+      // The FIFO waitlist, unless WORKFLOW_LOCKS_FIFO=0.
+      locks: { concurrency: true, fifo: getLockWaitlistPolicy().fifo },
     },
     ...storage,
     ...streamer,

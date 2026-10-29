@@ -1,5 +1,5 @@
 import type { World } from '@workflow/world';
-import { mintedSpecVersion } from '@workflow/world';
+import { envFlag, mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
@@ -38,6 +38,21 @@ export type { APIConfig } from './utils.js';
  * open socket keeps the process alive.
  */
 export { openWsChannel as openEventsChannel } from './ws-transport.js';
+
+/**
+ * Opts this adapter into declaring the `locks` capability, so
+ * `experimental_lock()` writes lock events to the backend instead of throwing
+ * `LockUnsupportedError`. Read per `createWorld()` call.
+ */
+export const EXPERIMENTAL_LOCKS_ENV_VAR = 'WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS';
+
+/**
+ * With {@link EXPERIMENTAL_LOCKS_ENV_VAR}, also declares `locks.fifo`: the
+ * backend queues refused acquisitions and hands freed slots to the head of the
+ * queue. Only for a backend that implements the waitlist.
+ */
+export const EXPERIMENTAL_LOCKS_FIFO_ENV_VAR =
+  'WORKFLOW_VERCEL_EXPERIMENTAL_LOCKS_FIFO';
 
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
@@ -92,6 +107,26 @@ export function createWorld(config?: APIConfig): World {
       // for large definitions). The server refuses a dynamic `run_created`
       // for a project outside its rollout, so `start()` fails at the write.
       dynamicWorkflowCode: true,
+      // `experimental_lock()`, opt-in until every backend this adapter talks
+      // to implements locks (workflow-server docs/locks.md). Static once
+      // declared, like `hookForceClaim`: a server with locks switched off for
+      // the project, or one that predates them, refuses the write, and the
+      // adapter maps that to `LockUnsupportedError`, so a lock still fails
+      // closed rather than running unbounded.
+      // `fifo` (the waitlist with direct handoff) has its own opt-in: a
+      // backend without the waitlist knows nothing of the wake target the
+      // runtime sends a FIFO World, and without `fifo` the runtime sends none
+      // and polls.
+      ...(envFlag(EXPERIMENTAL_LOCKS_ENV_VAR, false)
+        ? {
+            locks: {
+              concurrency: true,
+              ...(envFlag(EXPERIMENTAL_LOCKS_FIFO_ENV_VAR, false) && {
+                fifo: true,
+              }),
+            },
+          }
+        : {}),
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by

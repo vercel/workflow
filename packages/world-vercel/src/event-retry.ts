@@ -230,6 +230,32 @@ export const EVENT_RETRY_ELIGIBILITY = {
     retryable: false,
     reason: 'server-originated; never POSTed by the SDK',
   },
+  // A lock_created re-POST appends nothing for a scope that already has an
+  // event: the server returns the committed one (lock_acquired, or the
+  // pending lock_created with a fresh retryAt), and a scope with none is
+  // granted or refused once, so a retry of one that landed converges.
+  lock_created: {
+    retryable: true,
+    reason:
+      'per-scope idempotent: a re-POST returns the committed event and appends nothing',
+  },
+  lock_acquired: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
+  lock_failed: {
+    retryable: false,
+    reason: 'server-originated; never POSTed by the SDK',
+  },
+  // A second release of one scope is a 409, which the runtime swallows.
+  lock_released: {
+    retryable: true,
+    reason: 'a retry of a committed release is a 409 the caller handles',
+  },
+  lock_waiter_queued: {
+    retryable: false,
+    reason: 'refused before the wire (no lock waitlist yet)',
+  },
 } satisfies Record<WorkflowEventType, EventRetryPolicy>;
 
 /** Up to this many retries after the initial attempt (3 attempts total). */

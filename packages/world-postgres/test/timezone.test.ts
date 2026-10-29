@@ -53,6 +53,15 @@ const TABLES = [
   'workflow_stream_chunks',
 ] as const;
 
+/**
+ * Tables created after migration 0027, born `timestamp with time zone`, so
+ * they have nothing to convert and are not among {@link TABLES}.
+ */
+const LATER_TABLES_WITH_CREATED_AT = ['workflow_locks'] as const;
+
+/** Indexes later migrations add to {@link TABLES}: new, not rebuilt. */
+const LATER_INDEXES = ['workflow_events_lock_unique'] as const;
+
 function defined<T>(value: T | null | undefined): T {
   expect(value).toBeDefined();
   expect(value).not.toBeNull();
@@ -308,7 +317,11 @@ if (process.platform === 'win32') {
           .filter((c) => c.column_name === 'created_at')
           .map((c) => `${c.table_name} ${c.column_default}`)
           .sort()
-      ).toEqual(TABLES.map((table) => `${table} now()`).sort());
+      ).toEqual(
+        [...TABLES, ...LATER_TABLES_WITH_CREATED_AT]
+          .map((table) => `${table} now()`)
+          .sort()
+      );
     }, 60_000);
 
     describe('upgrading a database written by 5.0.x', () => {
@@ -532,6 +545,7 @@ if (process.platform === 'win32') {
         // Only the partial index whose predicate reads `responded_at` is
         // rebuilt; tables and every other index keep their storage.
         const after = await storageFiles(pool);
+        for (const index of LATER_INDEXES) delete after[index];
         expect(Object.keys(after)).toEqual(Object.keys(before));
         expect(
           Object.keys(after).filter((name) => after[name] !== before[name])

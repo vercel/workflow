@@ -113,6 +113,8 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   HOOK_FORCE_CLAIMED: 'hook-force-claimed',
+  LOCK_UNSUPPORTED: 'lock-unsupported',
+  LOCK_WAITLIST_FULL: 'lock-waitlist-full',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
@@ -830,6 +832,63 @@ export class HookForceClaimedError extends WorkflowError {
 
   static is(value: unknown): value is HookForceClaimedError {
     return isError(value) && value.name === 'HookForceClaimedError';
+  }
+}
+
+/**
+ * Thrown from `experimental_lock()` when the configured World does not declare the `locks`
+ * capability (`WorldCapabilities.locks.concurrency`).
+ *
+ * Fails closed on purpose: a World that cannot enforce the limit would let
+ * every caller through, so the workflow fails instead of silently running
+ * unbounded.
+ *
+ * Use the static `LockUnsupportedError.is()` method for type-safe checking in
+ * catch blocks.
+ */
+export class LockUnsupportedError extends WorkflowError {
+  key: string;
+
+  constructor(key: string) {
+    super(
+      `experimental_lock("${key}") requires a World that supports concurrency locks, and the configured World does not declare the \`locks\` capability`,
+      { slug: ERROR_SLUGS.LOCK_UNSUPPORTED }
+    );
+    this.name = 'LockUnsupportedError';
+    this.key = key;
+  }
+
+  static is(value: unknown): value is LockUnsupportedError {
+    return isError(value) && value.name === 'LockUnsupportedError';
+  }
+}
+
+/**
+ * Thrown from `experimental_lock()` when the key's waitlist is at the World's
+ * cap, so the acquisition was refused rather than queued. The refusal is
+ * journaled (`lock_failed`), so catching it is deterministic across replays.
+ *
+ * Use the static `LockWaitlistFullError.is()` method for type-safe checking in
+ * catch blocks.
+ */
+export class LockWaitlistFullError extends WorkflowError {
+  key: string;
+  waitlistCap?: number;
+
+  constructor(key: string, waitlistCap?: number) {
+    super(
+      `experimental_lock("${key}") was refused: the key's waitlist is full${
+        waitlistCap === undefined ? '' : ` (${waitlistCap} waiters)`
+      }`,
+      { slug: ERROR_SLUGS.LOCK_WAITLIST_FULL }
+    );
+    this.name = 'LockWaitlistFullError';
+    this.key = key;
+    this.waitlistCap = waitlistCap;
+  }
+
+  static is(value: unknown): value is LockWaitlistFullError {
+    return isError(value) && value.name === 'LockWaitlistFullError';
   }
 }
 
