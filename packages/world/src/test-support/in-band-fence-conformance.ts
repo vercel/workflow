@@ -10,10 +10,10 @@ import { eventIdToSlot } from '../slot-identity.js';
 import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '../spec-version.js';
 
 /**
- * Conformance for the in-band writer fence every World implements (see
- * `Storage['events']` and `CreateEventParams.inBand`).
+ * Conformance for the in-band writer fence a World that creates spec 9 runs
+ * implements (see `Storage['events']` and `CreateEventParams.inBand`).
  *
- * What every World must agree on, whatever it stores the count in:
+ * What every such World must agree on, whatever it stores the count in:
  *
  * - It declares `capabilities.inBandFence`, without which the runtime refuses
  *   it.

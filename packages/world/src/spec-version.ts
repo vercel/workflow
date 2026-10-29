@@ -107,8 +107,8 @@ export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
  *   `snapshot` its log load returned. The World refuses an in-band write
  *   whose count is stale with
  *   `InBandSupersededError`, which makes at most one orchestrator a writer
- *   even when two invocations of it run at once. Every World implements
- *   this fence (`WorldCapabilities.inBandFence`).
+ *   even when two invocations of it run at once. A World that creates
+ *   spec 9 runs implements this fence (`WorldCapabilities.inBandFence`).
  * - `step_created` records how the step executes (`eventData.inline`) and
  *   which queue message's invocation created it (`creatorMessageId`). Step
  *   events carry `stepName`, and `step_started` carries `attempt`.

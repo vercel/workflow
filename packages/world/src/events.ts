@@ -848,9 +848,10 @@ export interface CreateEventParams {
    * `setAttributes()` outside the workflow body. Classification is by writer,
    * not by event type.
    *
-   * Every World implements the in-band fence (`WorldCapabilities.inBandFence`):
-   * it counts the positions it allocates to in-band writes, and accepts an
-   * in-band write only when {@link expectedSeqInBand} equals that count.
+   * A World that creates spec 9 runs implements the in-band fence
+   * (`WorldCapabilities.inBandFence`): it counts the positions it allocates to
+   * in-band writes, and accepts an in-band write only when
+   * {@link expectedSeqInBand} equals that count.
    */
   inBand?: boolean;
   /**

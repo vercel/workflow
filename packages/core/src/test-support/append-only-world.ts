@@ -102,7 +102,8 @@ export interface RecordedCreate {
  * `stepName` checks. Run state is checked the way the World contract still
  * asks (writes that start work on a terminal run are refused).
  *
- * It implements the in-band writer fence every World must: it counts in-band
+ * It implements the in-band writer fence a World that creates spec 9 runs
+ * must: it counts in-band
  * positions, returns `snapshot` from `list`, refuses a stale in-band write
  * with `InBandSupersededError`, and refuses an in-band write without an
  * expected count with a 400. It stores an in-band write at its `occurredAt`,

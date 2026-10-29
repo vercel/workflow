@@ -921,9 +921,14 @@ export interface QueueOptions {
    * lose the wakeup. A wait's timer is the exception. Each hop of it carries
    * `wait:<correlationId>:<resumeAt>:<hopAt>`, the wait, its deadline and the
    * hop's own deadline (epoch ms; hops are anchored on the wait's deadline),
-   * so the timers every delivery that may owe one sends for the same hop are
-   * one message; a re-arm after a timer that came before its wait was due
-   * appends `:a<attempt>`. A near-due re-arm, the timer a delivery that may
+   * so the timers that a message's first delivery and every sender of an
+   * intermediate hop send for the same hop are one message; a re-arm after a
+   * timer that came before its wait was due appends `:a<attempt>`. A
+   * delivery that may hold a coalesced timer (any but its message's first)
+   * keys a wait's last hop by its second instead (the near-due key below),
+   * so a redelivery of a delivery that sent a wait's last hop and then failed
+   * can add one duplicate timer. The duplicate finds its wait completed, or
+   * re-arms it. A near-due re-arm, the timer a delivery that may
    * hold a coalesced timer sends for an open wait due within a few seconds,
    * whatever its chain, carries `wait:<correlationId>:<resumeAt>:s<second>`,
    * the sender's second in place of the hop's deadline. Deduplicate these as

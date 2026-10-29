@@ -100,8 +100,8 @@ export function requireLoadSnapshot(
   if (loaded.events.length === 0) return RESILIENT_START_SNAPSHOT;
   throw new WorkflowWorldError(
     `The World returned no in-band fence snapshot (\`snapshot: { seq, seqInBand }\`) ` +
-      `with the event log of run "${runId}". Every World must return it on ` +
-      'single-orchestrator runs; see `WorldCapabilities.inBandFence`.',
+      `with the event log of run "${runId}". A World that drives spec 9 runs must ` +
+      'return it on their logs; see `WorldCapabilities.inBandFence`.',
     { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
   );
 }
@@ -153,8 +153,9 @@ export const RESILIENT_START_SNAPSHOT: EventLogSnapshot = Object.freeze({
  *   A write made outside it would move the World's count without this one
  *   knowing, and the next write here would be refused.
  *
- * Every World implements the fence (`WorldCapabilities.inBandFence`), so the
- * writer always sends an expected count. A write before any snapshot was
+ * The runtime drives a spec 9 run only on a World that implements the fence
+ * (`WorldCapabilities.inBandFence`), so the writer always sends an expected
+ * count. A write before any snapshot was
  * adopted is a runtime bug, and fails without reaching the World.
  */
 export class InBandWriter {
