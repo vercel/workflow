@@ -14,7 +14,11 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
-import { classifyRunError, isRetryableWorldError } from './classify-error.js';
+import {
+  classifyRunError,
+  isRetryableWorldError,
+  isRunIdTimestampRejection,
+} from './classify-error.js';
 
 describe('classifyRunError', () => {
   it('classifies CorruptedEventLogError as CORRUPTED_EVENT_LOG', () => {
@@ -284,5 +288,39 @@ describe('isRetryableWorldError', () => {
     expect(isRetryableWorldError('string')).toBe(false);
     expect(isRetryableWorldError(null)).toBe(false);
     expect(isRetryableWorldError(undefined)).toBe(false);
+  });
+});
+
+describe('isRunIdTimestampRejection', () => {
+  it('matches the 400 world-vercel raises for a run ID outside the window', () => {
+    expect(
+      isRunIdTimestampRejection(
+        new WorkflowWorldError('Invalid runId timestamp', {
+          status: 400,
+          code: 'invalid-run-id-timestamp',
+        })
+      )
+    ).toBe(true);
+  });
+
+  it('does not match other 400s, other statuses, or other errors', () => {
+    expect(
+      isRunIdTimestampRejection(
+        new WorkflowWorldError('bad request', {
+          status: 400,
+          code: 'validation-error',
+        })
+      )
+    ).toBe(false);
+    expect(
+      isRunIdTimestampRejection(
+        new WorkflowWorldError('Invalid runId timestamp', {
+          status: 500,
+          code: 'invalid-run-id-timestamp',
+        })
+      )
+    ).toBe(false);
+    expect(isRunIdTimestampRejection(new Error('boom'))).toBe(false);
+    expect(isRunIdTimestampRejection(undefined)).toBe(false);
   });
 });
