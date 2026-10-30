@@ -3,12 +3,16 @@ import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
- * The optional in-band writer fence (`WorldCapabilities.inBandFence`), which
- * keeps a run to one orchestrator writer when two orchestrator deliveries
- * overlap. A World can run every workflow in this suite without the fence
- * ever refusing anything, so the fence is checked directly here. Skipped for
- * a World that does not declare it. See the in-band writer fence section of
- * the building-a-world guide.
+ * The in-band writer fence (`WorldCapabilities.inBandFence`), which spec 9
+ * runs need: the runtime refuses to create or drive a spec 9 run on a World
+ * that does not declare it, and relies on it to keep a run to one writer when
+ * two orchestrator deliveries overlap. A World can run every workflow in this
+ * suite without the fence ever refusing anything, because the queue rarely
+ * lets two deliveries of a run overlap, so the fence is checked directly here.
+ *
+ * Skipped for a World that does not declare the fence. Such a World creates
+ * spec 8 runs (`mintedSpecVersion()` never returns 9 for it), which need no
+ * fence. See the single-writer section of the building-a-world guide.
  */
 export function inBandFence(world: string) {
   test(
@@ -25,22 +29,31 @@ export function inBandFence(world: string) {
         'addition',
         [1, 2]
       );
+      // Settled once `run_completed` is in the log. The run's status alone is
+      // not enough: a World may show the terminal status before the terminal
+      // event is listable.
       await vi.waitFor(
         async () => {
-          expect((await server.getRun(result.runId)).status).toBe('completed');
+          const listed = await server.getEvents(result.runId);
+          expect(listed.map((event) => event.eventType)).toContain(
+            'run_completed'
+          );
         },
         { interval: 200, timeout: 25_000 }
       );
 
-      // A full listing covers every position up to the counters' `seq`, and a
-      // settled run's log holds them all. `run_created` and the orchestrator's
-      // own writes are in-band, so the count is at least 1 and at most `seq`.
+      // Read the counters first: a late step completion may still append an
+      // event after the run becomes terminal. The later full listing must
+      // cover every position up to the counters' `seq`. `run_created` and the
+      // orchestrator's own writes are in-band, so the count is at least 1 and at most `seq`.
       // The counters come from the list snapshot, or from a refusal where the
       // World lists none.
-      const events = await server.getEvents(result.runId);
       const counters = await server.getFenceCounters(result.runId);
+      const events = await server.getEvents(result.runId);
       expect(counters).not.toBeNull();
-      expect(counters?.seq).toBe(eventIdToSlot(events.at(-1)?.eventId ?? ''));
+      expect(events.map((event) => eventIdToSlot(event.eventId))).toContain(
+        counters?.seq
+      );
       expect(counters?.seqInBand).toBeGreaterThanOrEqual(1);
       expect(counters?.seqInBand).toBeLessThanOrEqual(counters?.seq ?? 0);
     }

@@ -13,6 +13,7 @@ import {
   RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   resolveQueueNamespace,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -71,7 +72,10 @@ import {
   getWorkflowVmFromEnv,
 } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
-import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
+import {
+  assertWorldSupportsInBandFence,
+  assertWorldSupportsRuntimeProtocol,
+} from './world-compatibility.js';
 
 /**
  * Timeout for the first cross-deployment capability probe to a deployment.
@@ -143,9 +147,11 @@ export type SpecVersionSource =
  * its event log, and for a cross-deployment start that is the target, not
  * this caller. The capability probe runs inside the target and reports the
  * version the target itself mints (which already honours the target's own
- * `WORKFLOW_SEALED_LOG` switch), so that is the answer, capped at what this
- * caller's World mints: the caller writes `run_created` and the arguments,
- * and must never stamp a version it could not have written itself.
+ * `WORKFLOW_SPEC_VERSION` and `WORKFLOW_SEALED_LOG` settings), so that is the
+ * answer, capped at what this caller's World mints: the caller writes
+ * `run_created` and the arguments, and must never stamp a version it could
+ * not have written itself. A spec 9 run therefore needs
+ * `WORKFLOW_SPEC_VERSION=9` on both the caller and the target.
  *
  * When the target does not report a usable version:
  *
@@ -645,6 +651,14 @@ export async function start<TArgs extends unknown[], TResult>(
 
       const world = opts.world ?? (await getWorldLazy());
       assertWorldSupportsRuntimeProtocol(world);
+      // A World that mints single-orchestrator runs must provide their fence,
+      // so a misconfigured one fails before anything is read or written.
+      // `mintedSpecVersion()` returns 9 only to a World that passes
+      // `inBandFence: true`, so this is reached only by a World that declares
+      // spec 9 some other way (a literal, or the wrong capability).
+      if (world.specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        assertWorldSupportsInBandFence(world);
+      }
       // `undefined` when this process is not itself a deployment and the
       // caller named a concrete target; see below.
       let currentDeploymentId: string | undefined;
@@ -746,6 +760,7 @@ export async function start<TArgs extends unknown[], TResult>(
       }
 
       let framedByteStreams: boolean;
+      let framedAbortStreams: boolean;
       let targetCompression: CompressionMode;
       // Node.js version of the runtime that will execute this run, stamped
       // onto it so later cross-deployment writers (hook resumes) know whether
@@ -769,6 +784,7 @@ export async function start<TArgs extends unknown[], TResult>(
       let specVersionSource: SpecVersionSource;
       if (!crossDeployment) {
         framedByteStreams = true;
+        framedAbortStreams = true;
         targetCompression = true;
         targetNodeVersion = getCurrentNodeVersion();
         // Same deployment: this process is the consumer, so its own constant
@@ -778,6 +794,7 @@ export async function start<TArgs extends unknown[], TResult>(
         specVersionSource = 'same-deployment';
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
+        framedAbortStreams = false;
         targetCompression = false;
         targetNodeVersion = undefined;
         // No probe channel to the target, so we cannot attest the consumer
@@ -806,6 +823,7 @@ export async function start<TArgs extends unknown[], TResult>(
           probe?.nodeVersion
         );
         framedByteStreams = capabilities.framedByteStreams;
+        framedAbortStreams = capabilities.framedAbortStreams;
         targetCompression = getCompressionMode(capabilities);
         targetNodeVersion = probe?.nodeVersion;
         // The responder runs inside the target deployment, so its
@@ -855,6 +873,12 @@ export async function start<TArgs extends unknown[], TResult>(
       // explicit `specVersion` still wins.
       const specVersion = opts.specVersion ?? targetSpecVersion;
       if (opts.specVersion !== undefined) specVersionSource = 'explicit';
+      // A single-orchestrator run is kept to one writer by the World's
+      // in-band fence; an older run's orchestrator needs none. Also covers an
+      // explicit `specVersion` above what the World declares.
+      if (specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        assertWorldSupportsInBandFence(world);
+      }
       span?.setAttributes({
         ...Attribute.WorkflowRunSpecVersion(specVersion),
         ...Attribute.WorkflowRunSpecVersionSource(specVersionSource),
@@ -1075,7 +1099,9 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat,
         framedByteStreams,
-        argumentCompression
+        argumentCompression,
+        ops,
+        framedAbortStreams
       );
 
       // Dynamic workflow code goes through the same serialization pipeline as
@@ -1164,7 +1190,7 @@ export async function start<TArgs extends unknown[], TResult>(
             ...dynamicWorkflowSeed,
           },
         },
-        { v1Compat }
+        { v1Compat, inBand: false }
       );
 
       // A dynamic run publishes only once the backend has confirmed it stored

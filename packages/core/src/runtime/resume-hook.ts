@@ -12,9 +12,10 @@ import {
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
-  type WorkflowRun,
+  type WorkflowRunWithoutData,
   type Hook as WorldHook,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -129,11 +130,14 @@ interface HookLookup {
 interface HookResumeInfo {
   resumeContext: HookResumeContext;
   source: 'hook' | 'run_fallback';
-  run?: WorkflowRun;
+  run?: WorkflowRunWithoutData;
 }
 
-/** Derive a resume context from a full run (fallback for pre-`resumeContext` hooks). */
-function resumeContextFromRun(run: WorkflowRun): HookResumeContext {
+/**
+ * Derive a resume context from a run's metadata (fallback for
+ * pre-`resumeContext` hooks). Nothing here reads the run's payloads.
+ */
+function resumeContextFromRun(run: WorkflowRunWithoutData): HookResumeContext {
   const coreVersion = run.executionContext?.workflowCoreVersion;
   const traceCarrier = run.executionContext?.traceCarrier;
   const hookResumeInputVersion = run.executionContext?.hookResumeInputVersion;
@@ -172,7 +176,12 @@ async function resolveHookResumeInfo(
   if (hook.resumeContext) {
     return { resumeContext: hook.resumeContext, source: 'hook' };
   }
-  const run = await (await getWorldLazy()).runs.get(hook.runId);
+  // Metadata only: the resume context, the terminal-status check, and the key
+  // lookup need none of the run's input or output, and the default
+  // `resolveData` ('all') would make the World resolve both (#4645).
+  const run = await (await getWorldLazy()).runs.get(hook.runId, {
+    resolveData: 'none',
+  });
   return {
     resumeContext: resumeContextFromRun(run),
     source: 'run_fallback',
@@ -184,19 +193,18 @@ async function resolveHookResumeInfo(
  * Resolve the run's symmetric key for a payload WRITE, as a bare `CryptoKey`
  * (`importKey`): the `encr` write fallback used when the run published no
  * public key to seal to. Writing needs only the AES key, not the read-side
- * keypair. On the fast path this needs only `runId` + `deploymentId` (no run
- * entity); on the fallback path the already fetched run is reused.
+ * keypair. Both paths resolve it by `runId` + the resume context's
+ * `deploymentId`; on the fallback path that context came from the run's
+ * metadata, so no payload is ever read for the key.
  */
 async function resolveHookEncryptionKey(
   hook: ResumableHook,
   info: HookResumeInfo
 ): Promise<Awaited<ReturnType<typeof importKey>> | undefined> {
   const world = await getWorldLazy();
-  const rawKey = info.run
-    ? await world.getEncryptionKeyForRun?.(info.run)
-    : await world.getEncryptionKeyForRun?.(hook.runId, {
-        deploymentId: info.resumeContext.deploymentId,
-      });
+  const rawKey = await world.getEncryptionKeyForRun?.(hook.runId, {
+    deploymentId: info.resumeContext.deploymentId,
+  });
   return rawKey ? await importKey(rawKey) : undefined;
 }
 
@@ -230,13 +238,11 @@ function withLazyMetadata(raw: WorldHook): HookLookup {
   const hydrate = async (): Promise<unknown> => {
     const world = await getWorldLazy();
     const info = await resolveHookResumeInfo(raw);
-    // On the fast path this resolves the key by runId + deploymentId (no run
-    // read); on the fallback path it reuses the already-fetched run.
-    const rawKey = info.run
-      ? await world.getEncryptionKeyForRun?.(info.run)
-      : await world.getEncryptionKeyForRun?.(raw.runId, {
-          deploymentId: info.resumeContext.deploymentId,
-        });
+    // Resolved by runId + deploymentId on both paths: the fast path reads no
+    // run, and the fallback path read only the run's metadata.
+    const rawKey = await world.getEncryptionKeyForRun?.(raw.runId, {
+      deploymentId: info.resumeContext.deploymentId,
+    });
     encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
     return await hydrateStepArguments(
       serialized as any,
@@ -767,7 +773,11 @@ async function resumeHookAttempt<T = any>(
       capabilities.framedByteStreams,
       compression,
       undefined,
-      readbackOps
+      readbackOps,
+      // resumeContext.workflowCoreVersion describes the run's starting client,
+      // which may differ from its pinned deployment. Keep abort packets raw
+      // until the resume context can attest the receiving runtime separately.
+      false
     );
     // A hook_received event is not durable while its payload still points
     // at stream uploads in flight. Finish those before committing the
@@ -847,6 +857,10 @@ async function resumeHookAttempt<T = any>(
     }
 
     const queueName = getWorkflowQueueName(resumeContext.workflowName);
+    // `specVersion` picks the queue transport, so an unknown version takes
+    // the legacy one every deployment reads. The routing hint on the payload
+    // is left off instead: a guessed version would route the wake to the
+    // wrong orchestrator, and without one the runtime reads the run.
     const queueOptions = {
       deploymentId: resumeContext.deploymentId,
       specVersion: resumeContext.runSpecVersion ?? SPEC_VERSION_LEGACY,
@@ -929,6 +943,7 @@ async function resumeHookAttempt<T = any>(
         },
         {
           v1Compat,
+          inBand: false,
           ...(resumeId && payloadDigest
             ? { resumeId, resumePayloadDigest: payloadDigest }
             : {}),
@@ -961,6 +976,9 @@ async function resumeHookAttempt<T = any>(
           queueName,
           {
             runId: hook.runId,
+            ...(resumeContext.runSpecVersion !== undefined && {
+              runSpecVersion: resumeContext.runSpecVersion,
+            }),
             traceCarrier: resumeContext.traceCarrier ?? undefined,
             hookResumeTiming: {
               resumeRequestedAtMs,
@@ -970,13 +988,17 @@ async function resumeHookAttempt<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             ...queueOptions,
-            // Dedup retried publishes whose response was lost: a
-            // duplicate wake is harmless for correctness (deterministic
-            // replay) but costs a full replay of the run, and the queue
-            // accepts a repeated idempotency key by delivering only one
-            // of the messages. Claim-less writes have no resumeId and
-            // keep the previous behavior.
-            ...(resumeId ? { idempotencyKey: `hook-${resumeId}` } : {}),
+            // A spec 9 wake carries no idempotency key: a key could be
+            // absorbed by an orchestrator delivery that is already exiting
+            // and lose the wakeup, and a duplicate wake from a retried
+            // publish only costs a cheap delivery. An older run replays in
+            // full on every delivery, so its retried publishes whose
+            // response was lost dedupe on the resume (claim-less writes have
+            // no resumeId and keep the previous behavior).
+            ...(resumeId &&
+              queueOptions.specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR && {
+                idempotencyKey: `hook-${resumeId}`,
+              }),
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)

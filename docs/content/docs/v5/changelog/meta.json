@@ -2,6 +2,7 @@
   "title": "Changelog",
   "pages": [
     "index",
+    "spec-9",
     "lazy-hook-resume",
     "eager-processing",
     "resilient-resume",

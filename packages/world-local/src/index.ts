@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { QueuePrefix, World } from '@workflow/world';
+import type { QueuePrefix, World, WorldCapabilities } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
@@ -18,6 +18,10 @@ import {
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
+import {
+  createReleasePipeline,
+  releaseOrphanedSteps,
+} from './orphaned-steps.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
@@ -48,6 +52,21 @@ export type LocalWorld = World & {
   registerRoute(prefix: QueuePrefix, path: string): void;
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
+  /**
+   * Hand a run's steps that were running inline in a previous process back to
+   * the queue, so the next delivery dispatches them at once instead of
+   * waiting out the inline-ownership lease. `start()` does this for every run
+   * it recovers; call it yourself before re-enqueueing a run when recovering
+   * with `recoverActiveRuns: false`. A run that has already finished is left
+   * alone.
+   *
+   * Steps started since world-local loaded in this process or worker thread
+   * are never released, so calling it late, or while this process runs the
+   * run, is safe. Steps started earlier are treated as abandoned: call it only
+   * when no other live process or worker thread runs workflows on this data
+   * directory and tag, or a step still running there would run twice.
+   */
+  releaseOrphanedSteps(runId: string): Promise<void>;
 };
 
 /**
@@ -124,27 +143,38 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     tag
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
+  const capabilities = {
+    hookRetention: { active: true },
+    // Stored whole on the run record; no upload path, so `start()` always
+    // sends the code inline.
+    dynamicWorkflowCode: true,
+    // world-local deduplicates concurrent `hook_received` writes sharing a
+    // `(runId, resumeId)` via a filesystem sidecar claim (see
+    // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
+    // path converges on one event in dev exactly as it does on Vercel.
+    hookResumeDedup: true,
+    // The token claim lock serializes the takeover behind
+    // `createHook({ experimental_force: true })`; see the hook_created
+    // branch of storage/events-storage.ts.
+    hookForceClaim: true,
+    // The queue delivers a single-orchestrator run's orchestrator messages
+    // one at a time (an in-process per-run gate, see queue.ts): with the
+    // fence, the two halves of the single-writer guarantee. An in-band
+    // write is stored at its `occurredAt` (events-storage.ts), as the
+    // spec-9 contract requires.
+    maxConcurrency: true,
+    // A per-run in-band count on disk, under a lock file, so every process
+    // on the data directory shares it; see the in-band writer fence in
+    // storage/events-storage.ts.
+    inBandFence: true,
+  } satisfies WorldCapabilities;
   return {
-    specVersion: mintedSpecVersion(),
-    capabilities: {
-      hookRetention: { active: true },
-      // Stored whole on the run record; no upload path, so `start()` always
-      // sends the code inline.
-      dynamicWorkflowCode: true,
-      // world-local deduplicates concurrent `hook_received` writes sharing a
-      // `(runId, resumeId)` via a filesystem sidecar claim (see
-      // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
-      // path converges on one event in dev exactly as it does on Vercel.
-      hookResumeDedup: true,
-      // The token claim lock serializes the takeover behind
-      // `createHook({ experimental_force: true })`; see the hook_created
-      // branch of storage/events-storage.ts.
-      hookForceClaim: true,
-      // A per-run in-band count on disk, under a lock file, so every process
-      // on the data directory shares it; see the in-band writer fence in
-      // storage/events-storage.ts.
-      inBandFence: true,
-    },
+    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
+    // the in-band fence declared above; spec 8 otherwise.
+    specVersion: mintedSpecVersion(process.env, {
+      inBandFence: capabilities.inBandFence,
+    }),
+    capabilities,
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
@@ -168,15 +198,52 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       const fileIdFilter = tag
         ? (fileId: string) => hasTag(fileId, tag)
         : isUntagged;
+      // Recovery assumes this is the only live process on this data directory
+      // and tag, as re-enqueueing already does: a concurrent process's
+      // in-flight queue-owned steps are dispatched again by the replays
+      // below. Under that assumption the previous process's queue is gone, so
+      // release the steps its messages owned before the run is re-enqueued.
+      // Runs re-enqueued earlier in this loop can already wake later ones;
+      // steps those deliveries start are newer than this realm's boot, so
+      // releaseOrphanedSteps leaves them alone.
+      //
+      // Releasing reads a run's steps (and its events when a step is
+      // running), so each listed page of runs starts releasing in the
+      // background, several runs at a time, while runs are still enqueued in
+      // order and each only once its own release has settled.
+      const releases = createReleasePipeline(storage);
       const recoveryRuns = {
         ...storage.runs,
-        list: ((params) =>
-          storage.runs.list({
+        list: (async (params) => {
+          const page = await storage.runs.list({
             ...params,
             fileIdFilter,
-          })) as typeof storage.runs.list,
+          });
+          releases.prefetch(page.data.map((run) => run.runId));
+          return page;
+        }) as typeof storage.runs.list,
       };
-      await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
+      const releaseThenEnqueue: typeof queue.queue = async (
+        queueName,
+        message,
+        opts
+      ) => {
+        await releases.settle((message as { runId: string }).runId);
+        return queue.queue(queueName, message, opts);
+      };
+      // The queue is in memory: the run's step messages and wait timers
+      // died with the previous process, so the recovery delivery sends them
+      // again.
+      await reenqueueActiveRuns(
+        recoveryRuns,
+        releaseThenEnqueue,
+        'world-local',
+        undefined,
+        { queueLost: true }
+      );
+    },
+    releaseOrphanedSteps(runId) {
+      return releaseOrphanedSteps(storage, runId);
     },
     async close() {
       clearStorageCache();

@@ -26,6 +26,7 @@ import {
   listStreamsByRunId,
   showEvent,
   showStep,
+  showStream,
 } from './output.js';
 
 const makeRun = (overrides: Partial<WorkflowRun> = {}): WorkflowRun =>
@@ -1603,5 +1604,91 @@ describe('showStep', () => {
     expect(log.mock.calls.flat().join('\n')).toContain(
       `To view details for a step, use \`workflow inspect step <step-id> --runId=${RUN}\``
     );
+  });
+});
+
+describe('--decrypt key lookup', () => {
+  // The key lookup needs only the run's deploymentId, which survives
+  // `resolveData: 'none'`; the default ('all') would make the World resolve
+  // the run's whole input and output just to supply that field (#4645).
+  const makeWorld = (
+    getEncryptionKeyForRun: World['getEncryptionKeyForRun'] = vi
+      .fn()
+      .mockResolvedValue(undefined)
+  ) =>
+    ({
+      runs: { get: vi.fn().mockResolvedValue(makeRun()) },
+      steps: {
+        get: vi.fn().mockResolvedValue({
+          runId: 'run-1',
+          stepId: 'step-1',
+          stepName: 'step',
+          status: 'completed',
+          input: undefined,
+          output: undefined,
+          attempt: 1,
+          createdAt: new Date('2025-01-01'),
+          updatedAt: new Date('2025-01-01'),
+        }),
+      },
+      streams: {
+        get: vi
+          .fn()
+          .mockResolvedValue(new ReadableStream({ start: (c) => c.close() })),
+      },
+      getEncryptionKeyForRun,
+    }) as unknown as World;
+
+  it('reads the run metadata only when resolving a resource key', async () => {
+    const world = makeWorld();
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    await showStep(world, 'step-1', {
+      runId: 'run-1',
+      decrypt: true,
+      json: true,
+    });
+
+    expect(world.runs.get).toHaveBeenCalledWith('run-1', {
+      resolveData: 'none',
+    });
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledWith('run-1', {
+      deploymentId: 'dep-1',
+    });
+  });
+
+  it('reads the run metadata only when resolving a stream key', async () => {
+    const world = makeWorld();
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+    await showStream(world, 'default', {
+      runId: 'run-1',
+      decrypt: true,
+      json: true,
+    });
+
+    expect(world.runs.get).toHaveBeenCalledWith('run-1', {
+      resolveData: 'none',
+    });
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledWith('run-1', {
+      deploymentId: 'dep-1',
+    });
+  });
+
+  it('reads no run for a stream when the World cannot encrypt', async () => {
+    const world = makeWorld();
+    delete (world as { getEncryptionKeyForRun?: unknown })
+      .getEncryptionKeyForRun;
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+    await showStream(world, 'default', {
+      runId: 'run-1',
+      decrypt: true,
+      json: true,
+    });
+
+    expect(world.runs.get).not.toHaveBeenCalled();
   });
 });

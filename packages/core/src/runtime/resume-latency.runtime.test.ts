@@ -23,13 +23,13 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import { EntityConflictError } from '@workflow/errors';
+import { ThrottleError } from '@workflow/errors';
 import {
   type CreateEventParams,
   type CreateEventRequest,
   type Event,
   type HookResumeTiming,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
   type WorkflowInvokePayload,
   type WorkflowRun,
@@ -53,6 +53,8 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
+import { AppendOnlyWorld } from '../test-support/append-only-world.js';
+import { acceptingFenceSnapshot } from '../test-support/fence-snapshot.js';
 import { createContext } from '../vm/index.js';
 import { setWorld } from './world.js';
 
@@ -284,11 +286,10 @@ interface ScenarioOptions {
    */
   pendingStepOwner?: string;
   /**
-   * Reject the first lazy `step_started` claim with `EntityConflictError`,
-   * modelling a concurrent invocation winning the atomic create-claim for the
-   * batch's first step while its sibling proceeds.
+   * Throttle the batch's first inline step's creation-bearing `step_started`,
+   * so that step never reaches user code while its sibling proceeds.
    */
-  failFirstLazyClaim?: boolean;
+  throttleFirstCreation?: boolean;
 }
 
 const WORKFLOW_SOURCES = {
@@ -299,6 +300,9 @@ const WORKFLOW_SOURCES = {
 } as const;
 
 async function runScenario(options: ScenarioOptions = {}) {
+  // The World below stamps events on its own fake clock rather than at the
+  // in-band `occurredAt`, so run-ahead (which needs the latter) stays off.
+  vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '0');
   // Monotonic fake clock: every reading is distinct and increasing, so the
   // TTR boundary set is always well-ordered but never a fixed schedule.
   const clockStart = options.clockStart ?? CLOCK_BASE_MS;
@@ -337,18 +341,27 @@ async function runScenario(options: ScenarioOptions = {}) {
     status: 'running',
     input: workflowArgs,
     deploymentId,
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
     startedAt,
     createdAt: startedAt,
     updatedAt: startedAt,
+    attributes: {},
   };
 
   let eventIndex = 0;
-  const event = (data: CreateEventRequest): Event => {
+  const event = (
+    data:
+      | CreateEventRequest
+      | {
+          eventType: 'run_created';
+          specVersion?: number;
+          eventData: Record<string, unknown>;
+        }
+  ): Event => {
     const t = +startedAt + ++eventIndex * 100;
     return {
       ...data,
-      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+      specVersion: data.specVersion ?? SPEC_VERSION_SINGLE_ORCHESTRATOR,
       runId,
       eventId: slotToEventId(eventIndex),
       createdAt: new Date(t),
@@ -364,13 +377,16 @@ async function runScenario(options: ScenarioOptions = {}) {
   const durableEvents: Event[] = [
     event({
       eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       eventData: { deploymentId, workflowName, input: workflowArgs },
     }),
-    event({ eventType: 'run_started', specVersion: SPEC_VERSION_CURRENT }),
+    event({
+      eventType: 'run_started',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    }),
     event({
       eventType: 'hook_created',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: hookCorrelationId,
       eventData: { token: hookToken },
     }),
@@ -391,7 +407,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     durableEvents.push(
       event({
         eventType: 'step_created',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: preCreated.correlationId,
         eventData: {
           stepName: preCreated.stepName,
@@ -413,7 +429,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     durableEvents.push(
       event({
         eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: pendingStepCorrelationId,
         eventData: { stepName: 'pendingStep' },
       } as CreateEventRequest)
@@ -426,7 +442,7 @@ async function runScenario(options: ScenarioOptions = {}) {
     durableEvents.push({
       ...event({
         eventType: 'step_started',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
         correlationId: pendingStepCorrelationId,
         eventData: {
           stepName: 'pendingStep',
@@ -441,7 +457,7 @@ async function runScenario(options: ScenarioOptions = {}) {
   durableEvents.push({
     ...event({
       eventType: 'hook_received',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       correlationId: hookCorrelationId,
       eventData: { token: hookToken, payload: payloadBytes },
     }),
@@ -449,12 +465,13 @@ async function runScenario(options: ScenarioOptions = {}) {
   } as Event);
 
   const createdEvents: CreateEventRequest[] = [];
-  let lazyClaimRejected = false;
+  let firstCreationThrottled = false;
 
   const listEvents = vi.fn(async () => ({
     data: [...durableEvents],
     hasMore: false,
     cursor: durableEvents.at(-1)?.eventId ?? null,
+    snapshot: acceptingFenceSnapshot(durableEvents),
   }));
 
   const buildStepEntity = (correlationId: string | undefined) => {
@@ -515,41 +532,21 @@ async function runScenario(options: ScenarioOptions = {}) {
         };
       }
 
-      // Lazy step start: synthesize the step_created the world would create.
-      const lazyStepStart =
+      // An inline step's creation: its first `step_started`, carrying the
+      // input.
+      const creationStart =
         request.eventType === 'step_started' &&
         !!request.eventData &&
         (request.eventData as { input?: unknown }).input !== undefined;
-      if (lazyStepStart && options.failFirstLazyClaim && !lazyClaimRejected) {
-        // A concurrent invocation won the atomic create-claim for this step.
-        // The real server answers the loser with a 409.
-        lazyClaimRejected = true;
-        throw new EntityConflictError('step already created');
+      if (
+        creationStart &&
+        options.throttleFirstCreation &&
+        !firstCreationThrottled
+      ) {
+        firstCreationThrottled = true;
+        throw new ThrottleError('throttled', { retryAfter: 1 });
       }
-      let effective = request;
-      if (lazyStepStart) {
-        const lazy = request.eventData as {
-          stepName?: string;
-          input?: unknown;
-        };
-        durableEvents.push(
-          event({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: request.correlationId,
-            eventData: {
-              stepName: lazy.stepName,
-              workflowName,
-              input: lazy.input,
-            },
-          } as CreateEventRequest)
-        );
-        const { input: _input, ...startData } = lazy;
-        effective = {
-          ...request,
-          eventData: startData,
-        } as CreateEventRequest;
-      }
+      const effective: CreateEventRequest = request;
 
       const created = event(effective);
       durableEvents.push(created);
@@ -558,7 +555,7 @@ async function runScenario(options: ScenarioOptions = {}) {
         return {
           event: created,
           step: buildStepEntity(effective.correlationId),
-          ...(lazyStepStart ? { stepCreated: true } : {}),
+          ...(creationStart ? { stepCreated: true } : {}),
         };
       }
       return { event: created };
@@ -574,8 +571,8 @@ async function runScenario(options: ScenarioOptions = {}) {
   const queue = vi.fn().mockResolvedValue({ messageId: 'msg_resume_ttr' });
 
   setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
-    capabilities: { deploymentAffinity: true },
+    specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    capabilities: { inBandFence: true, deploymentAffinity: true },
     getDeploymentId: vi.fn(
       async () => options.ambientDeploymentId ?? deploymentId
     ),
@@ -649,6 +646,7 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     setWorld(undefined);
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     spanExporter.reset();
   });
 
@@ -665,7 +663,7 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     expect(attrs['workflow.resume.step_execution']).toBe('inline');
     // The hoisted hook_received write returned a usable preload, so neither
     // run_started nor the initial events.list ran.
-    expect(attrs['workflow.resume.setup_source']).toBe('hook_preload');
+    expect(attrs['workflow.resume.setup_source']).toBe('event_load');
   });
 
   it('reports phases that sum to the total', async () => {
@@ -736,121 +734,6 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     }
   });
 
-  it('carries the boundaries onto a dispatched step message', async () => {
-    const { dispatchedStepMessages, pendingStepCorrelationId } =
-      await runScenario({
-        workflow: 'pendingStep',
-        timing: PRODUCER_TIMING,
-      });
-
-    expect(dispatchedStepMessages).toHaveLength(1);
-    const dispatched = dispatchedStepMessages[0];
-    expect(dispatched.stepId).toBe(pendingStepCorrelationId);
-    const forwarded = forwardedTiming(dispatched);
-    // Producer boundaries survive verbatim...
-    expect(forwarded.resumeRequestedAtMs).toBe(
-      PRODUCER_TIMING.resumeRequestedAtMs
-    );
-    expect(forwarded.queuePublishRequestedAtMs).toBe(
-      PRODUCER_TIMING.queuePublishRequestedAtMs
-    );
-    expect(forwarded.strategy).toBe('parallel');
-    // ...and this invocation's own boundaries ride along so the receiving
-    // invocation can finish the measurement.
-    expect(forwarded.consumerStartedAtMs).toBeTypeOf('number');
-    expect(forwarded.replayStartedAtMs).toBeGreaterThanOrEqual(
-      Number(forwarded.consumerStartedAtMs)
-    );
-    expect(forwarded.nextStepEncounteredAtMs).toBeGreaterThanOrEqual(
-      Number(forwarded.replayStartedAtMs)
-    );
-    expect(forwarded.setupSource).toBe('hook_preload');
-    // The invocation that handed the step off does not also report it.
-    expect(
-      stepSpans().filter((s) => s.attributes[TOTAL_KEY] !== undefined)
-    ).toHaveLength(0);
-  });
-
-  it('completes the measurement in the invocation that receives the step', async () => {
-    // Round 1: the resuming invocation dispatches the step with its timing.
-    const first = await runScenario({
-      workflow: 'pendingStep',
-      timing: PRODUCER_TIMING,
-    });
-    const forwarded = forwardedTiming(first.dispatchedStepMessages[0]);
-    spanExporter.reset();
-    setWorld(undefined);
-    vi.restoreAllMocks();
-
-    // Round 2: that step message is delivered to a fresh invocation, whose
-    // clock picks up where the dispatching one left off.
-    const arrivalMs = Number(forwarded.nextStepEncounteredAtMs) + 25;
-    await runScenario({
-      workflow: 'pendingStep',
-      timing: forwarded,
-      clockStart: arrivalMs,
-      stepDelivery: {
-        stepId: first.pendingStepCorrelationId,
-        stepName: 'pendingStep',
-      },
-    });
-
-    const attrs = stepAttributes('pendingStep');
-    expect(attrs[TOTAL_KEY]).toBeTypeOf('number');
-    expect(sumPhases(attrs)).toBe(attrs[TOTAL_KEY]);
-    expect(attrs['workflow.resume.step_execution']).toBe('dispatched');
-    expect(attrs['workflow.resume.strategy']).toBe('parallel');
-    expect(attrs['workflow.resume.setup_source']).toBe('hook_preload');
-    // The queue hop from the resuming invocation to this one falls inside the
-    // dispatch phase, so it covers at least that gap.
-    expect(
-      attrs['workflow.resume.phase.step_dispatch_ms']
-    ).toBeGreaterThanOrEqual(
-      arrivalMs - Number(forwarded.nextStepEncounteredAtMs)
-    );
-  });
-
-  it('does not re-report on a redelivery of the same step message', async () => {
-    const first = await runScenario({
-      workflow: 'pendingStep',
-      timing: PRODUCER_TIMING,
-    });
-    const forwarded = forwardedTiming(first.dispatchedStepMessages[0]);
-    spanExporter.reset();
-    setWorld(undefined);
-    vi.restoreAllMocks();
-
-    // Same message, second delivery, and the previous delivery already
-    // claimed the step — so this is attempt 2: a re-execution, not the
-    // resumption.
-    await runScenario({
-      workflow: 'pendingStep',
-      timing: forwarded,
-      clockStart: Number(forwarded.nextStepEncounteredAtMs) + 25,
-      stepDelivery: {
-        stepId: first.pendingStepCorrelationId,
-        stepName: 'pendingStep',
-      },
-      attempt: 2,
-      priorStepStarted: true,
-    });
-
-    for (const span of stepSpans()) {
-      expect(span.attributes[TOTAL_KEY]).toBeUndefined();
-    }
-  });
-
-  it('reports run_started as the setup source when the preload is unusable', async () => {
-    // Force the fallback by making the hoisted hook_received write return no
-    // preload, so the generic run_started setup runs.
-    await runScenarioWithoutPreload();
-
-    const attrs = stepAttributes('firstStep');
-    expect(attrs[TOTAL_KEY]).toBeTypeOf('number');
-    expect(attrs['workflow.resume.setup_source']).toBe('run_started');
-    expect(sumPhases(attrs)).toBe(attrs[TOTAL_KEY]);
-  });
-
   it('leaves a re-routed delivery inside queue_delivery', async () => {
     // Round 1: the message lands on the wrong deployment. The affinity guard
     // re-routes it, and the timing must ride along UNCHANGED — in particular
@@ -907,58 +790,6 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     expect(attrs[TOTAL_KEY]).toBe(t7 - PRODUCER_TIMING.resumeRequestedAtMs);
   });
 
-  it('keeps the measurement here when the first pending step is owned recovery', async () => {
-    // The first pending step is inline-owned by THIS message, so it
-    // re-executes in this invocation; the sibling is dispatched. The
-    // measurement must stay with the inline execution rather than being
-    // shipped off on the sibling's message.
-    const { dispatchedStepMessages, otherStepCorrelationId } =
-      await runScenario({
-        workflow: 'twoPendingSteps',
-        timing: PRODUCER_TIMING,
-        pendingStepOwner: MESSAGE_ID,
-        attempt: 2,
-      });
-
-    expect(dispatchedStepMessages.map((message) => message.stepId)).toContain(
-      otherStepCorrelationId
-    );
-    for (const message of dispatchedStepMessages) {
-      expect(message.hookResumeTiming).toBeUndefined();
-    }
-    // The recovered step is by definition a re-execution (its first attempt
-    // already started), so the attempt guard suppresses the sample. What
-    // matters here is that it was not misattributed to the sibling.
-    for (const span of stepSpans()) {
-      expect(span.attributes[TOTAL_KEY]).toBeUndefined();
-    }
-  });
-
-  it('does not hand the measurement to a delayed backstop wake', async () => {
-    // The first pending step is owned by ANOTHER live invocation, so this
-    // delivery only arms a backstop for it — not an attempt. The sibling it
-    // does dispatch is the first step this delivery actually causes to run,
-    // so the measurement goes there.
-    const { queuedMessages, dispatchedStepMessages, otherStepCorrelationId } =
-      await runScenario({
-        workflow: 'twoPendingSteps',
-        timing: PRODUCER_TIMING,
-        pendingStepOwner: 'msg_some_other_invocation',
-      });
-
-    const backstopWakes = queuedMessages.filter(
-      (payload) => payload?.stepId === undefined
-    );
-    expect(backstopWakes.length).toBeGreaterThan(0);
-    for (const wake of backstopWakes) {
-      expect(wake.hookResumeTiming).toBeUndefined();
-    }
-
-    expect(dispatchedStepMessages).toHaveLength(1);
-    expect(dispatchedStepMessages[0].stepId).toBe(otherStepCorrelationId);
-    expect(dispatchedStepMessages[0].hookResumeTiming).toBeDefined();
-  });
-
   it('drops the sample when every pending step becomes a backstop', async () => {
     // Nothing is attempted by this delivery, so there is no step to attribute
     // the resumption to. Reporting it against a wake would credit work this
@@ -976,15 +807,15 @@ describe('hook-resume TTR telemetry (runtime)', () => {
     expect(stepSpans()).toHaveLength(0);
   });
 
-  it('still reports when the batch’s first step loses its create-claim', async () => {
-    // A concurrent invocation wins the first inline step's atomic
-    // create-claim; that step never reaches user code. Its sibling does, and
-    // the shared one-shot latch lets it take the measurement instead of the
-    // sample being pinned to — and lost with — the first step.
+  it('still reports when the batch’s first step is refused its creation', async () => {
+    // The World throttles the first inline step's creation-bearing start;
+    // that step never reaches user code. Its sibling does, and the shared
+    // one-shot latch lets it take the measurement instead of the sample being
+    // pinned to — and lost with — the first step.
     await runScenario({
       workflow: 'parallelInline',
       timing: PRODUCER_TIMING,
-      failFirstLazyClaim: true,
+      throttleFirstCreation: true,
     });
 
     const reporting = stepSpans().filter(
@@ -1020,214 +851,166 @@ describe('hook-resume TTR telemetry (runtime)', () => {
 });
 
 /**
- * The lazy fast path's fallback: the hoisted `hook_received` write succeeds
- * but returns no usable preload, so the invocation initializes through
- * `run_started` instead. Same fake World as {@link runScenario} with the
- * preload response suppressed.
+ * The hand-off path against an append-only World: a resume whose next step
+ * runs from its own queue message carries the boundaries on that message,
+ * and the step's invocation closes the measurement.
  */
-async function runScenarioWithoutPreload() {
-  let clock = CLOCK_BASE_MS;
-  vi.spyOn(Date, 'now').mockImplementation(() => clock++);
+describe('hook-resume TTR telemetry across a dispatched step', () => {
+  const QUEUE = '__wkf_workflow_workflow';
+  const TOKEN = 'resume-ttr-dispatch-token';
 
-  const runId = 'wrun_resume_ttr_fallback';
-  const workflowName = 'workflow';
-  const deploymentId = 'dpl_resume_ttr';
-  const hookToken = 'resume-ttr-token';
-  const resumeId = 'resume-ttr-fallback';
-  const startedAt = new Date('2026-05-19T12:00:00.000Z');
-
-  const workflowArgs = await dehydrateWorkflowArguments(
-    [hookToken],
-    runId,
-    undefined
-  );
-  const { globalThis: vmGlobalThis } = createContext({
-    seed: `${runId}:${workflowName}:${deploymentId}`,
-    fixedTimestamp: +startedAt,
+  beforeEach(() => {
+    spanExporter.reset();
+    bodyEntryClock = undefined;
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '0');
   });
-  const vmUlid = monotonicFactory(() => vmGlobalThis.Math.random());
-  const hookCorrelationId = `hook_${vmUlid(+startedAt)}`;
 
-  const workflowRun: WorkflowRun = {
-    runId,
-    workflowName,
-    status: 'running',
-    input: workflowArgs,
-    deploymentId,
-    specVersion: SPEC_VERSION_CURRENT,
-    startedAt,
-    createdAt: startedAt,
-    updatedAt: startedAt,
-  };
+  afterEach(() => {
+    setWorld(undefined);
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    spanExporter.reset();
+  });
 
-  let eventIndex = 0;
-  const event = (data: CreateEventRequest): Event => {
-    const t = +startedAt + ++eventIndex * 100;
-    return {
-      ...data,
-      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+  /**
+   * Drives a run to its hook, resumes it the way `resumeHook()` does (an
+   * out-of-band hook_received, then a wake carrying producer timing), and
+   * delivers that wake. Returns the step message the wake dispatched.
+   */
+  async function resumeToDispatchedStep() {
+    const runId = `wrun_resume_ttr_dispatch_${Math.random().toString(36).slice(2)}`;
+    const world = new AppendOnlyWorld({});
+    world.seedRun({
       runId,
-      eventId: slotToEventId(eventIndex),
-      createdAt: new Date(t),
-    } as Event;
-  };
-
-  const payloadBytes = await dehydrateStepReturnValue(
-    { value: 'resumed' },
-    runId,
-    undefined
-  );
-  const durableEvents: Event[] = [
-    event({
-      eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      eventData: { deploymentId, workflowName, input: workflowArgs },
-    }),
-    event({ eventType: 'run_started', specVersion: SPEC_VERSION_CURRENT }),
-    event({
-      eventType: 'hook_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: hookCorrelationId,
-      eventData: { token: hookToken },
-    }),
-    {
-      ...event({
-        eventType: 'hook_received',
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: hookCorrelationId,
-        eventData: { token: hookToken, payload: payloadBytes },
-      }),
-      resumeId,
-    } as Event,
-  ];
-
-  const buildStepEntity = (correlationId: string | undefined) => {
-    const created = durableEvents.find(
-      (e) => e.eventType === 'step_created' && e.correlationId === correlationId
+      workflowName: 'workflow',
+      deploymentId: 'dpl_test',
+      status: 'pending',
+      input: await dehydrateWorkflowArguments([TOKEN], runId, undefined, []),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as unknown as WorkflowRun);
+    setWorld(world.asWorld());
+    await workflowEntrypoint(SEQUENTIAL_WORKFLOW)(
+      new Request('https://example.test')
     );
-    const data = created?.eventData as
-      | { stepName?: string; input?: unknown }
-      | undefined;
-    return {
-      runId,
-      stepId: correlationId,
-      stepName: data?.stepName,
-      status: 'running',
-      attempt: 1,
-      input: data?.input,
-      startedAt: new Date(+startedAt),
-      createdAt: new Date(+startedAt),
-      updatedAt: new Date(+startedAt),
+    await world.deliver(world.enqueue(QUEUE, { runId }));
+    const hookCreated = world.events.find(
+      (e) => e.eventType === 'hook_created'
+    );
+    expect(hookCreated).toBeDefined();
+    world.held.length = 0;
+
+    const now = Date.now();
+    const timing: HookResumeTiming = {
+      resumeRequestedAtMs: now - 120,
+      queuePublishRequestedAtMs: now - 80,
+      strategy: 'sequential',
     };
-  };
-
-  const createEvent = vi.fn(
-    async (_runId: string, request: CreateEventRequest) => {
-      if (request.eventType === 'run_started') {
-        return {
-          run: workflowRun,
-          events: [...durableEvents],
-          cursor: durableEvents.at(-1)?.eventId ?? null,
-          hasMore: false,
-          maxEvents: 25_000,
-        };
-      }
-      if (request.eventType === 'hook_received') {
-        // No preload in the response — an older server, or a World that
-        // ignored `preloadEvents`.
-        return {
-          event: durableEvents.find(
-            (e) => e.eventType === 'hook_received' && e.resumeId === resumeId
-          ),
-        };
-      }
-      const lazyStepStart =
-        request.eventType === 'step_started' &&
-        !!request.eventData &&
-        (request.eventData as { input?: unknown }).input !== undefined;
-      let effective = request;
-      if (lazyStepStart) {
-        const lazy = request.eventData as {
-          stepName?: string;
-          input?: unknown;
-        };
-        durableEvents.push(
-          event({
-            eventType: 'step_created',
-            specVersion: SPEC_VERSION_CURRENT,
-            correlationId: request.correlationId,
-            eventData: {
-              stepName: lazy.stepName,
-              workflowName,
-              input: lazy.input,
-            },
-          } as CreateEventRequest)
-        );
-        const { input: _input, ...startData } = lazy;
-        effective = {
-          ...request,
-          eventData: startData,
-        } as CreateEventRequest;
-      }
-      const created = event(effective);
-      durableEvents.push(created);
-      if (effective.eventType === 'step_started') {
-        return {
-          event: created,
-          step: buildStepEntity(effective.correlationId),
-          ...(lazyStepStart ? { stepCreated: true } : {}),
-        };
-      }
-      return { event: created };
-    }
-  );
-
-  let capturedHandler:
-    | ((
-        message: unknown,
-        metadata: { queueName: string; messageId: string; attempt: number }
-      ) => Promise<unknown>)
-    | undefined;
-  setWorld({
-    specVersion: SPEC_VERSION_CURRENT,
-    capabilities: { deploymentAffinity: true },
-    getDeploymentId: vi.fn(async () => deploymentId),
-    createQueueHandler: vi.fn((_prefix, handler) => {
-      capturedHandler = handler;
-      return vi.fn();
-    }),
-    events: {
-      list: vi.fn(async () => ({
-        data: [...durableEvents],
-        hasMore: false,
-        cursor: durableEvents.at(-1)?.eventId ?? null,
-      })),
-      create: createEvent,
-    },
-    runs: { get: vi.fn(async () => workflowRun) },
-    queue: vi.fn().mockResolvedValue({ messageId: 'msg_fallback' }),
-    getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
-  } as unknown as World);
-
-  const handler = workflowEntrypoint(SEQUENTIAL_WORKFLOW);
-  await handler(new Request('http://localhost', { method: 'POST' }));
-  await capturedHandler?.(
-    {
-      runId,
-      hookInput: {
-        hookId: hookCorrelationId,
-        resumeId,
-        token: hookToken,
-        payload: payloadBytes,
-        payloadDigest: 'e'.repeat(64),
-        deploymentId,
+    world.appendOutOfBand({
+      eventType: 'hook_received',
+      correlationId: hookCreated?.correlationId,
+      eventData: {
+        token: TOKEN,
+        payload: await dehydrateStepReturnValue(
+          { value: 'resumed' },
+          runId,
+          undefined
+        ),
       },
-      hookResumeTiming: PRODUCER_TIMING,
-    },
-    {
-      queueName: `__wkf_workflow_${workflowName}`,
-      messageId: 'msg_workflow_fallback',
-      attempt: 1,
+    } as Partial<Event>);
+    await world.deliver(
+      world.enqueue(QUEUE, { runId, hookResumeTiming: timing })
+    );
+    const stepMessage = world.held.find(
+      (h) => (h.message as WorkflowInvokePayload).stepId !== undefined
+    );
+    if (!stepMessage) throw new Error('expected a dispatched step message');
+    return { world, runId, timing, stepMessage };
+  }
+
+  it('carries the boundaries onto a dispatched step message', async () => {
+    const { timing, stepMessage, world } = await resumeToDispatchedStep();
+
+    const message = stepMessage.message as WorkflowInvokePayload;
+    expect(message.stepName).toBe('firstStep');
+    const forwarded = forwardedTiming(message);
+    // Producer boundaries survive verbatim...
+    expect(forwarded.resumeRequestedAtMs).toBe(timing.resumeRequestedAtMs);
+    expect(forwarded.queuePublishRequestedAtMs).toBe(
+      timing.queuePublishRequestedAtMs
+    );
+    expect(forwarded.strategy).toBe('sequential');
+    // ...and the resuming invocation's own boundaries ride along.
+    expect(forwarded.consumerStartedAtMs).toBeTypeOf('number');
+    expect(forwarded.replayStartedAtMs).toBeGreaterThanOrEqual(
+      Number(forwarded.consumerStartedAtMs)
+    );
+    expect(forwarded.nextStepEncounteredAtMs).toBeGreaterThanOrEqual(
+      Number(forwarded.replayStartedAtMs)
+    );
+    expect(forwarded.setupSource).toBe('event_load');
+    // The invocation that handed the step off does not also report it.
+    expect(
+      stepSpans().filter((s) => s.attributes[TOTAL_KEY] !== undefined)
+    ).toHaveLength(0);
+    // Wakes carry no timing.
+    for (const held of world.held) {
+      if ((held.message as WorkflowInvokePayload).stepId === undefined) {
+        expect(
+          (held.message as WorkflowInvokePayload).hookResumeTiming
+        ).toBeUndefined();
+      }
     }
-  );
-}
+  });
+
+  it('completes the measurement in the invocation that receives the step', async () => {
+    const { world, stepMessage } = await resumeToDispatchedStep();
+    const forwarded = forwardedTiming(
+      stepMessage.message as WorkflowInvokePayload
+    );
+
+    await world.deliver(stepMessage);
+
+    const attrs = stepAttributes('firstStep');
+    expect(attrs[TOTAL_KEY]).toBeTypeOf('number');
+    expect(sumPhases(attrs)).toBe(attrs[TOTAL_KEY]);
+    expect(attrs['workflow.resume.step_execution']).toBe('dispatched');
+    expect(attrs['workflow.resume.strategy']).toBe('sequential');
+    expect(attrs['workflow.resume.setup_source']).toBe('event_load');
+    expect(
+      attrs['workflow.resume.phase.step_dispatch_ms']
+    ).toBeGreaterThanOrEqual(0);
+    expect(attrs[TOTAL_KEY]).toBeGreaterThanOrEqual(
+      Number(forwarded.nextStepEncounteredAtMs) - forwarded.resumeRequestedAtMs
+    );
+    // Only the step that followed the resume reports it.
+    await world.runUntilIdle();
+    expect(stepSpan('secondStep')).toBeDefined();
+    expect(
+      stepSpans().filter((s) => s.attributes[TOTAL_KEY] !== undefined)
+    ).toHaveLength(1);
+  });
+
+  it('does not re-report on a redelivery of the same step message', async () => {
+    const { world, stepMessage } = await resumeToDispatchedStep();
+    const stepId = (stepMessage.message as WorkflowInvokePayload)
+      .stepId as string;
+    // The first delivery wrote step_started and died before the outcome.
+    world.appendOutOfBand({
+      eventType: 'step_started',
+      correlationId: stepId,
+      eventData: { stepName: 'firstStep', attempt: 1 },
+    } as Partial<Event>);
+
+    await world.deliver({ ...stepMessage, deliveryCount: 2 });
+
+    const started = world.events.filter(
+      (e) => e.eventType === 'step_started' && e.correlationId === stepId
+    );
+    expect(started).toHaveLength(2);
+    expect(stepSpan('firstStep')).toBeDefined();
+    for (const span of stepSpans()) {
+      expect(span.attributes[TOTAL_KEY]).toBeUndefined();
+    }
+  });
+});

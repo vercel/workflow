@@ -136,7 +136,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 
 | Member | What it buys |
 | --- | --- |
-| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, and `dynamicWorkflowCode`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
+| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, `maxConcurrency`, `inBandFence`, and `dynamicWorkflowCode`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
 | `events.createBatch` | Appends an ordered list of events in one durable write, with a per-event outcome for each. Implementing the method *is* the declaration: the runtime folds a suspension's `step_created` / `wait_created` writes into batches only when it exists, and otherwise takes the single-event path unchanged. Implement it with real atomicity per attempt, so a lost race leaves nothing behind, or leave it out. See [Batched event writes](/docs/changelog/batched-event-writes). |
 | `runs.waitForTerminalStatus` | Long-polls until a run reaches a terminal status. `await run.returnValue` uses it when present, instead of polling on an interval. |
 | `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |
@@ -145,6 +145,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 | `getRuntimeDeadline()` | The absolute time the current invocation will be terminated. The runtime derives its inline replay budget from this, so a host with a long function timeout gets more work per invocation. Without it, the budget is a flat two minutes. See [`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms). |
 | `getEnvironment()` | The environment your World's writes are attributed to. Must be synchronous, side-effect free, and match what the backend will actually apply. A wrong answer is worse than `undefined`, because callers use it to detect cross-environment mismatches. Worlds with a single tenant should omit it. |
 | `createRunId(options)` | Mints the bare run ID; the core adds the `wrun_` prefix. Return a valid ULID. You may embed World-specific metadata in it, as `@workflow/world-vercel` does with a region identifier. Read only the option keys you recognize and ignore the rest. |
+| `regionForRunId(runId)` | The region an existing run's data lives in, decoded from its ID. Lets replays keep the original run's region. Omit it if your World has no regional dimension. |
 | `describeRun(run)` | World-specific display fields for observability surfaces. |
 | `getEncryptionKeyForRun()` | Returns a ready-to-use 32-byte AES-256 key. Without it, data is stored unencrypted. Two overloads: pass the `WorkflowRun` when you have it, or a `runId` plus opaque World context when the entity is not available locally. |
 | `resolveLatestDeploymentId()` | Resolves `deploymentId: 'latest'`. Only meaningful for Worlds where deployment routing exists. |
@@ -181,3 +182,7 @@ The cases worth covering explicitly:
 `@workflow/world-testing` is the shared suite the first-party Worlds run, and it now covers event ID allocation directly: `numbers events by position` fails a World whose IDs do not decode to slots, whose run is not dense from 1, or whose IDs are not in canonical form. A World padding to a different width sorts its own log incorrectly past ten events. Run it against your World before the end-to-end cases above; it turns the failure that would otherwise appear on a first replay into one line of test output.
 
 The first-party implementations in `packages/world-local` and `packages/world-postgres` are the reference for everything else, and their test suites are the closest thing to full conformance while the compatibility tests are being rebuilt.
+
+## Spec 9 (experimental)
+
+A World does not need to implement anything for the experimental spec 9 runtime to migrate to v5: `mintedSpecVersion()` with no options keeps creating spec 8 runs. A World that opts in must tell its users to upgrade every deployment and process that shares it before they set `WORKFLOW_SPEC_VERSION=9`, and not to roll back below that release once spec 9 runs exist. See [Implementing spec 9 in a World](/docs/changelog/spec-9#implementing-spec-9-in-a-world) and [The rollback floor](/docs/changelog/spec-9#the-rollback-floor).

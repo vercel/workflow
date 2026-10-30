@@ -177,6 +177,16 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Set to `true` only when the application awaits `world.close()` before closing its workflow HTTP server and caller-owned pool.
 - Prevents Graphile Worker's default handler from terminating the process before the application's remaining cleanup finishes.
 
+### `jobLockStaleSeconds`
+
+- Environment variable: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
+- Default: `0` (off)
+- Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery. When set, a running delivery renews its lock, so this bounds how long the job of a process that died stays locked.
+- `30` is a good value when more than one process shares the database. Use the same value on every process, and keep it well above the longest a process can block its event loop.
+- `0` leaves recovery to Graphile Worker's fixed 4 hour reset and to restarts.
+- Off by default because of rolling upgrades. A process on an earlier version neither renews its locks nor fences its acknowledgement on the lock holder, so while it shares the database with a process that has this on, its deliveries that run longer than the window are redelivered, and finishing one can delete the redelivered job.
+- To turn it on, set the same value on every process that shares the database once all of them run a version that includes this option. See [Postgres World: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](/worlds/postgres#workflow_postgres_job_lock_stale_seconds).
+
 ### `maxPoolSize`
 
 - Environment variable: `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
@@ -208,6 +218,8 @@ The Vercel World is configured automatically inside Vercel deployments. The plat
 
 Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the Workflow CLI, the web user interface (UI), continuous integration (CI), or tests. The runtime warns if these variables are set in a deployed Vercel Function because they do not control runtime configuration there.
 
+The entries below are the individual knobs. For a walkthrough of authenticating a local script or a CI job with a Vercel auth token — which variables are needed together, and how to pass them to the World factory — see [Connecting from outside a deployment](/worlds/vercel#connecting-from-outside-a-deployment).
+
 Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself; keep [system environment variables](/worlds/vercel#system-environment-variables) enabled for the project so that Vercel provides them.
 
 ### `token`
@@ -216,13 +228,14 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: `--authToken`
 - Default: inferred when possible
 - Vercel API token for external tooling. Keep it secret.
+- Only meaningful alongside `projectConfig.projectId` and `projectConfig.teamId` — set all three together. Supplying both IDs but no token throws rather than failing later with a `401`.
 
 ### `projectConfig.environment`
 
 - Environment variable: `WORKFLOW_VERCEL_ENV`
 - CLI flag: `--env` or `-e`
 - Default: `production`
-- Vercel environment targeted by tooling. Accepts `production` or `preview`.
+- Vercel environment targeted by tooling. Accepts `production`, `preview`, or a custom environment's **slug** — configure the slug, not the environment's ID.
 
 ### `projectConfig.projectId`
 
@@ -251,6 +264,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: `https://api.vercel.com/v1/workflow`
 - Workflow API proxy URL for external tooling.
+- The Vercel World doesn't follow HTTP redirects, so the URL must answer directly. A `3xx` response fails the request.
 
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 

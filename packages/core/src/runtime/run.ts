@@ -25,8 +25,10 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
+  wakeRunAfterOutOfBandWrite,
   wakeUpRun,
 } from './runs.js';
 
@@ -249,8 +251,27 @@ export class Run<TResult> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
-        const runData = run ?? (await world.runs.get(this.runId));
-        const rawKey = await world.getEncryptionKeyForRun?.(runData);
+        // Checked before the read, not with `?.` around the call: a World
+        // without encryption has nothing to resolve, so it should not pay for
+        // a run it would discard.
+        if (!world.getEncryptionKeyForRun) return undefined;
+
+        let rawKey: Uint8Array | undefined;
+        if (run) {
+          rawKey = await world.getEncryptionKeyForRun(run);
+        } else {
+          // `getEncryptionKeyForRun` reads only the run's id and deployment,
+          // both of which survive `resolveData: 'none'`. The default ('all')
+          // maps to `remoteRefBehavior=resolve` on world-vercel, which makes
+          // the server resolve and return the run's whole input and output
+          // before a `getReadable()` caller can read its first chunk.
+          const { deploymentId } = await world.runs.get(this.runId, {
+            resolveData: 'none',
+          });
+          rawKey = await world.getEncryptionKeyForRun(this.runId, {
+            deploymentId,
+          });
+        }
         return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
@@ -273,6 +294,9 @@ export class Run<TResult> {
    * @param options - Optional settings to target specific sleep calls by correlation ID.
    *   If not provided, all pending sleep calls will be interrupted.
    * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
+   *   On a single-orchestrator run it is the number of sleep calls the run's
+   *   orchestrator was asked to complete, which is best-effort while an
+   *   orchestrator invocation of the run is live (see `wakeUpRun`).
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
     'use step';
@@ -291,13 +315,19 @@ export class Run<TResult> {
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
     const run = await world.runs.get(this.runId, { resolveData: 'none' });
-    await world.events.create(this.runId, {
-      eventType: 'run_cancelled',
+    const cancelled = {
+      eventType: 'run_cancelled' as const,
       specVersion: specVersionForRunWrite(run.specVersion),
       ...(options?.cancelReason !== undefined
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
-    });
+    };
+    if (isSingleOrchestratorRun(run)) {
+      await world.events.create(this.runId, cancelled, { inBand: false });
+    } else {
+      await world.events.create(this.runId, cancelled);
+    }
+    await wakeRunAfterOutOfBandWrite(world, run);
   }
 
   /**

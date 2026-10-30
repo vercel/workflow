@@ -1,5 +1,6 @@
 import {
   CorruptedEventLogError,
+  EncryptionKeyLookupError,
   MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
@@ -52,6 +53,7 @@ const RUNTIME_ERROR_CHECKS = [
   // `AESCipherJob.onDone`) are wrapped in `RuntimeDecryptionError` at
   // the encryption module boundary.
   RuntimeDecryptionError.is,
+  EncryptionKeyLookupError.is,
 ];
 
 /**

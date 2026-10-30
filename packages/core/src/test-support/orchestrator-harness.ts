@@ -1,0 +1,186 @@
+import type { Event, WorkflowRun } from '@workflow/world';
+import { FENCE_REFUSAL_REDELIVERY_SECONDS } from '../runtime/spec9/fence-refusals.js';
+import { setWorld } from '../runtime/world.js';
+import { workflowEntrypoint } from '../runtime.js';
+import {
+  dehydrateWorkflowArguments,
+  hydrateWorkflowReturnValue,
+} from '../serialization.js';
+import { AppendOnlyWorld, type HeldMessage } from './append-only-world.js';
+
+/** The orchestrator queue of a workflow named `workflow`. */
+export const ORCHESTRATOR_QUEUE = '__wkf_workflow_workflow';
+
+/** Registers `name` as the workflow of a test's workflow code. */
+export function registerWorkflow(name = 'workflow'): string {
+  return `;globalThis.__private_workflows = new Map([[${JSON.stringify(name)}, ${name}]]);`;
+}
+
+/**
+ * Seeds a run of `code` on a fresh {@link AppendOnlyWorld}, installs it as the
+ * World, registers the queue handler, and enqueues the run's start message
+ * (not delivered).
+ */
+export async function setupOrchestratorRun(
+  code: string,
+  args: unknown[],
+  options: ConstructorParameters<typeof AppendOnlyWorld>[0] = {},
+  engine: 'node' | 'quickjs' = 'node'
+) {
+  const runId = `wrun_so_${Math.random().toString(36).slice(2)}`;
+  const world = new AppendOnlyWorld(options);
+  world.seedRun({
+    runId,
+    workflowName: 'workflow',
+    deploymentId: 'dpl_test',
+    status: 'pending',
+    executionContext: { workflowVm: engine },
+    input: await dehydrateWorkflowArguments(args, runId, undefined, []),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as unknown as WorkflowRun);
+  setWorld(world.asWorld());
+  await workflowEntrypoint(code)(new Request('https://example.test'));
+  const start = world.enqueue(ORCHESTRATOR_QUEUE, {
+    runId,
+    requestedAt: new Date(),
+  });
+  return { world, runId, start };
+}
+
+export const eventsOf = (world: AppendOnlyWorld, type: string) =>
+  world.events.filter((event) => event.eventType === type);
+
+export const dataOf = (event: Event | undefined) =>
+  (event as { eventData?: Record<string, unknown> } | undefined)?.eventData;
+
+/**
+ * Each step's creation: a background step's `step_created`, or an inline
+ * step's creation-bearing first `step_started` (`inline: true`).
+ */
+export const creationsOf = (world: AppendOnlyWorld) =>
+  world.events.filter(
+    (event) =>
+      event.eventType === 'step_created' ||
+      (event.eventType === 'step_started' && dataOf(event)?.inline === true)
+  );
+
+/** The hydrated return value of the run's `run_completed`, if any. */
+export async function runResult(world: AppendOnlyWorld): Promise<unknown> {
+  const completed = eventsOf(world, 'run_completed')[0];
+  const output = dataOf(completed)?.output;
+  if (output === undefined) return undefined;
+  return hydrateWorkflowReturnValue(
+    output as Uint8Array,
+    completed!.runId,
+    undefined,
+    []
+  );
+}
+
+/** Queue calls that are step messages. */
+export const stepMessagesOf = (world: AppendOnlyWorld) =>
+  world.queueCalls.filter(
+    (call) => (call.message as { stepId?: string }).stepId !== undefined
+  );
+
+/** Queue calls that are orchestrator messages (wakes and timers). */
+export const orchestratorMessagesOf = (world: AppendOnlyWorld) =>
+  world.queueCalls.filter(
+    (call) => (call.message as { stepId?: string }).stepId === undefined
+  );
+
+/**
+ * Asserts that a delivery stood down by acknowledging its message: it
+ * returned nothing, the World no longer holds the message, and, after
+ * `orchestratorCallsBefore` (the count of orchestrator queue calls before it
+ * ran), it sent `wakes` plain orchestrator wakes (no timer, no message-only
+ * state) besides the step messages and timers its own writes owed.
+ */
+export function expectAcknowledged(
+  world: AppendOnlyWorld,
+  result: unknown,
+  message: { messageId: string },
+  orchestratorCallsBefore?: number,
+  wakes = 0
+): void {
+  if (result !== undefined) {
+    throw new Error(
+      `expected the delivery to acknowledge, got ${JSON.stringify(result)}`
+    );
+  }
+  if (world.held.some((h) => h.messageId === message.messageId)) {
+    throw new Error('expected the message to be acknowledged');
+  }
+  if (orchestratorCallsBefore === undefined) return;
+  const sent = orchestratorMessagesOf(world)
+    .slice(orchestratorCallsBefore)
+    .filter(
+      (call) =>
+        (call.message as { waitContinuation?: unknown }).waitContinuation ===
+        undefined
+    );
+  if (sent.length !== wakes) {
+    throw new Error(
+      `expected ${wakes} orchestrator wake(s), found ${JSON.stringify(sent.map((call) => call.message))}`
+    );
+  }
+  for (const call of sent) {
+    const extra = Object.keys(call.message as object).filter(
+      (key) =>
+        !['runId', 'traceCarrier', 'requestedAt', 'runSpecVersion'].includes(
+          key
+        )
+    );
+    if (extra.length > 0 || call.opts?.delaySeconds !== undefined) {
+      throw new Error(
+        `expected a plain orchestrator wake, found ${JSON.stringify(call)}`
+      );
+    }
+  }
+}
+
+/**
+ * Asserts that a delivery the in-band fence refused stood down the way every
+ * refused delivery does: it asked for a counted redelivery of its own
+ * message (`{ timeoutSeconds }`), the World holds that message with the next
+ * delivery count, and, after `orchestratorCallsBefore` (the count of
+ * orchestrator queue calls before it ran), it sent no plain orchestrator
+ * wake. Returns the held redelivery.
+ */
+export function expectRefusalRedelivery(
+  world: AppendOnlyWorld,
+  result: unknown,
+  message: { messageId: string; deliveryCount: number },
+  orchestratorCallsBefore?: number
+): HeldMessage {
+  if (
+    JSON.stringify(result) !==
+    JSON.stringify({ timeoutSeconds: FENCE_REFUSAL_REDELIVERY_SECONDS })
+  ) {
+    throw new Error(
+      `expected a fence-refusal redelivery, got ${JSON.stringify(result)}`
+    );
+  }
+  const held = world.held.find((h) => h.messageId === message.messageId);
+  if (!held || held.deliveryCount !== message.deliveryCount + 1) {
+    throw new Error(
+      `expected the message to be held for its next delivery, found ${JSON.stringify(held)}`
+    );
+  }
+  if (orchestratorCallsBefore !== undefined) {
+    const wakes = orchestratorMessagesOf(world)
+      .slice(orchestratorCallsBefore)
+      .filter(
+        (call) =>
+          (call.message as { waitContinuation?: unknown }).waitContinuation ===
+          undefined
+      );
+    if (wakes.length > 0) {
+      throw new Error(
+        `expected no orchestrator wake, found ${JSON.stringify(wakes.map((call) => call.message))}`
+      );
+    }
+  }
+  return held;
+}

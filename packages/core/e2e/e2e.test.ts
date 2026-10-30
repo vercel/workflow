@@ -13,6 +13,7 @@ import {
 import { createWorkflowUrl } from '@workflow/utils';
 import {
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   type World,
 } from '@workflow/world';
@@ -26,7 +27,7 @@ import {
   type test as vitestTest,
 } from 'vitest';
 import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
-import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
   getHookByToken,
@@ -404,12 +405,7 @@ async function startWorkflowViaHttp(
     url.searchParams.set('args', args.map(String).join(','));
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      ...(await getTrustedSourcesHeaders()),
-    },
-  });
+  const res = await fetchWithTrustedSources(url, { method: 'POST' });
   if (!res.ok) {
     throw new Error(
       `Failed to trigger workflow: ${res.url} ${
@@ -538,6 +534,29 @@ describe.concurrent('e2e', () => {
         input: [123],
         output: 133,
       });
+    }
+  );
+
+  // Spec 9 is opt-in: the spec 9 lane sets `WORKFLOW_SPEC_VERSION=9` on its
+  // deployment and on this runner (a cross-deployment start stamps the lower
+  // of the two), and every other lane runs the default. Fails loudly when the
+  // setting stops reaching either side, which would otherwise leave the
+  // spec 9 lane silently testing spec 8.
+  testJsOnly(
+    'stamps the spec version the lane opts in to',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('addTenWorkflow'), [123]);
+      expect(await run.returnValue).toBe(133);
+      const row = await (await getWorld()).runs.get(run.runId);
+      if (
+        process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+        String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+      ) {
+        expect(row.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+      } else {
+        expect(row.specVersion).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+      }
     }
   );
 
@@ -736,9 +755,8 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run.runId);
 
       // Attempt to resume via the public webhook endpoint — should get 404
-      const res = await fetch(workflowWebhookUrl(token), {
+      const res = await fetchWithTrustedSources(workflowWebhookUrl(token), {
         method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'should-be-rejected' }),
       });
       expect(res.status).toBe(404);
@@ -785,9 +803,8 @@ describe.concurrent('e2e', () => {
     const [token, token2, token3] = hooks.map((h) => h.token);
 
     // Webhook with default response
-    const res = await fetch(workflowWebhookUrl(token), {
+    const res = await fetchWithTrustedSources(workflowWebhookUrl(token), {
       method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({ message: 'one' }),
     });
     expect(res.status).toBe(202);
@@ -795,9 +812,8 @@ describe.concurrent('e2e', () => {
     expect(body).toBe('');
 
     // Webhook with static response
-    const res2 = await fetch(workflowWebhookUrl(token2), {
+    const res2 = await fetchWithTrustedSources(workflowWebhookUrl(token2), {
       method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({ message: 'two' }),
     });
     expect(res2.status).toBe(402);
@@ -805,9 +821,8 @@ describe.concurrent('e2e', () => {
     expect(body2).toBe('Hello from static response!');
 
     // Webhook with manual response
-    const res3 = await fetch(workflowWebhookUrl(token3), {
+    const res3 = await fetchWithTrustedSources(workflowWebhookUrl(token3), {
       method: 'POST',
-      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({ message: 'three' }),
     });
     expect(res3.status).toBe(200);
@@ -895,11 +910,10 @@ describe.concurrent('e2e', () => {
           continue;
         }
 
-        const res = await fetch(workflowWebhookUrl(unservedHook.token), {
-          method: 'POST',
-          headers: await getTrustedSourcesHeaders(),
-          body: `body-${unservedHook.token}`,
-        });
+        const res = await fetchWithTrustedSources(
+          workflowWebhookUrl(unservedHook.token),
+          { method: 'POST', body: `body-${unservedHook.token}` }
+        );
         expect(res.status).toBe(202);
         servedTokens.add(unservedHook.token);
       }
@@ -951,9 +965,8 @@ describe.concurrent('e2e', () => {
     'webhook route with invalid token',
     { timeout: 60_000 },
     async () => {
-      const res = await fetch(workflowWebhookUrl('invalid'), {
+      const res = await fetchWithTrustedSources(workflowWebhookUrl('invalid'), {
         method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({}),
       });
       expect(res.status).toBe(404);
@@ -1481,9 +1494,18 @@ describe.concurrent('e2e', () => {
               expect(result.stack).toContain('99_e2e.ts');
             }
 
-            // Verify step failed via CLI (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
+            // Verify step failed via CLI (--withData needed to resolve errorRef).
+            // Polled: on world-vercel a single-orchestrator run's step list
+            // is built from analytics rows that lag the run's events, so a
+            // step written moments ago can still be missing.
+            const steps = await cliInspectJsonUntil(
+              `steps --runId ${run.runId} --withData`,
+              (json) =>
+                json.some(
+                  (s: any) =>
+                    s.stepName.includes('errorStepFn') && s.status === 'failed'
+                ),
+              { timeoutMs: 45_000 }
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('errorStepFn')
@@ -1539,9 +1561,17 @@ describe.concurrent('e2e', () => {
               expect(result.stack).toContain('helpers.ts');
             }
 
-            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef)
-            const { json: steps } = await cliInspectJson(
-              `steps --runId ${run.runId} --withData`
+            // Verify step failed via CLI - same stack info available there too (--withData needed to resolve errorRef).
+            // Polled for the reason given in the previous test.
+            const steps = await cliInspectJsonUntil(
+              `steps --runId ${run.runId} --withData`,
+              (json) =>
+                json.some(
+                  (s: any) =>
+                    s.stepName.includes('stepThatThrowsFromHelper') &&
+                    s.status === 'failed'
+                ),
+              { timeoutMs: 45_000 }
             );
             const failedStep = steps.find((s: any) =>
               s.stepName.includes('stepThatThrowsFromHelper')
@@ -2017,12 +2047,9 @@ describe.concurrent('e2e', () => {
     async () => {
       // Call the API route that directly calls a step function (no workflow context)
       const url = new URL('/api/test-direct-step-call', deploymentUrl);
-      const res = await fetch(url, {
+      const res = await fetchWithTrustedSources(url, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(await getTrustedSourcesHeaders()),
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ x: 3, y: 5 }),
       });
 
@@ -2237,7 +2264,17 @@ describe.concurrent('e2e', () => {
 
       expect(events.some((e) => e.eventType === 'hook_created')).toBe(true);
       expect(events.some((e) => e.eventType === 'hook_received')).toBe(false);
-      expect(events.some((e) => e.eventType === 'step_created')).toBe(true);
+      // The step was created: by a `step_created`, or, for a step run inline,
+      // by its first `step_started` alone.
+      expect(
+        events.some(
+          (e) =>
+            e.eventType === 'step_created' ||
+            (e.eventType === 'step_started' &&
+              (e.eventData as { inline?: boolean } | undefined)?.inline ===
+                true)
+        )
+      ).toBe(true);
       expect(events.some((e) => e.eventType === 'step_completed')).toBe(true);
     }
   );
@@ -2708,7 +2745,6 @@ describe.concurrent('e2e', () => {
         expect(claimerEvents.map((e) => e.eventType)).toEqual([
           'hook_created',
           'hook_received',
-          'hook_disposed',
         ]);
         expect((claimerEvents[0] as any).eventData).toMatchObject({
           force: true,
@@ -2986,6 +3022,17 @@ describe.concurrent('e2e', () => {
       { timeout: 90_000 },
       async (ctx) => {
         await skipUnlessForceClaimSupported(ctx);
+        // The victim has to be a run below the force-claim spec version,
+        // executed by this deployment. The spec 9 lane skips it, since its
+        // point is the spec 9 runtime; the default lanes run it, and the
+        // refusal is also covered by the backend's tests.
+        if (
+          process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+          String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+        ) {
+          ctx.skip();
+          return;
+        }
         const token = `force-legacy-${Math.random().toString(36).slice(2)}`;
         // A run stamped one spec version below the one that understands
         // `hook_disposed{forceClaimedBy}`. Its runtime here is the current
@@ -3463,12 +3510,9 @@ describe.concurrent('e2e', () => {
       // bypasses protection by sending messages through the Queue infrastructure.
 
       // Test the flow endpoint health check (V2: combined handler for both workflow + step)
-      const flowRes = await fetch(
+      const flowRes = await fetchWithTrustedSources(
         createWorkflowUrl(deploymentUrl, { type: 'health' }),
-        {
-          method: 'POST',
-          headers: await getTrustedSourcesHeaders(),
-        }
+        { method: 'POST' }
       );
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
@@ -4195,14 +4239,11 @@ describe.concurrent('e2e', () => {
 
       await waitForHook(token, { runId: run.runId });
 
-      const res = await fetch(
+      const res = await fetchWithTrustedSources(
         new URL('/api/resume-plain-hook', deploymentUrl),
         {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(await getTrustedSourcesHeaders()),
-          },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             token,
             ok: true,

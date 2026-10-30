@@ -6,6 +6,7 @@ import {
   type CreateEventV4Input,
   createEventResponseSchema,
   createWorkflowRunEventV4,
+  eventsApiVersion,
   getCreateEventResponseSchema,
 } from './events-v4.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
@@ -69,7 +70,7 @@ async function postRaw(
   agent
     .get(origin)
     .intercept({
-      path: `/api/v4/runs/wrun_1/events/${eventType}`,
+      path: `/api/${eventsApiVersion(2)}/runs/wrun_1/events/${eventType}`,
       method: 'POST',
     })
     .reply(200, raw, {
@@ -241,7 +242,8 @@ describe('v4 create-event response schemas', () => {
       postEvent('step_completed', responseBody('run_completed', {}))
     ).rejects.toMatchObject({
       code: 'SCHEMA_VALIDATION',
-      message: 'v4 createEvent: invalid response body',
+      message:
+        'v4 createEvent: invalid response body (step_completed: event.eventType custom)',
     });
 
     try {

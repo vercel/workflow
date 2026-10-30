@@ -1,5 +1,13 @@
 # @workflow/errors
 
+## 5.0.5
+
+### Patch Changes
+
+- [#4870](https://github.com/vercel/workflow/pull/4870) [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add a QuickJS snapshotting hint and docs link to `MaxEventsExceededError`
+- Updated dependencies [[`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7)]:
+  - @workflow/world@5.0.5
+
 ## 5.0.4
 
 ### Patch Changes
