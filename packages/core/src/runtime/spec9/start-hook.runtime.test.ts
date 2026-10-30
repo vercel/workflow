@@ -9,6 +9,7 @@
 import {
   EntityConflictError,
   HookConflictError,
+  RUN_ERROR_CODES,
   START_HOOK_ADMISSION_DISABLED,
   START_HOOK_ADMISSION_REJECTED,
   ThrottleError,
@@ -80,7 +81,12 @@ async function candidate(
   failFirstRunStarted?: {
     when: 'before-commit' | 'after-commit';
     error: () => unknown;
-  }
+  },
+  /**
+   * `false`: a World that ignores `startHook`, which echoes it neither on
+   * `run_started` nor on `runs.get`.
+   */
+  echo = true
 ) {
   const runId = `wrun_${ulid()}`;
   const input = await dehydrateWorkflowArguments([1], runId, undefined, []);
@@ -123,12 +129,28 @@ async function candidate(
       status: 'pending',
       executionContext: { workflowVm: currentEngine },
       input,
+      ...(echo
+        ? { startHook: { token: TOKEN, hookId: startHookId(runId) } }
+        : {}),
       createdAt: new Date(),
       updatedAt: new Date(),
     } as any);
   }
   const asWorld = world.asWorld();
+  // The start Hook the World holds for the run once admitted, which
+  // `runs.get` echoes as the run's `startHook`.
+  let admitted: { token: string; hookId: string } | undefined =
+    decision === 'accept' && echo
+      ? { token: TOKEN, hookId: startHookId(runId) }
+      : undefined;
   {
+    const get = asWorld.runs.get.bind(asWorld.runs);
+    asWorld.runs.get = (async (...args: Parameters<typeof get>) => {
+      const run = await get(...args);
+      return admitted ? { ...run, startHook: admitted } : run;
+    }) as typeof get;
+  }
+  if (echo) {
     // An admitting World echoes the start Hook on the run it returns (this
     // fake keeps no start Hooks of its own).
     const create = asWorld.events.create.bind(asWorld.events);
@@ -138,6 +160,7 @@ async function candidate(
         args[1] as { eventData?: { startHook?: { token: string } } }
       ).eventData?.startHook;
       if (args[1].eventType === 'run_started' && startHook && result.run) {
+        admitted = { ...startHook, hookId: startHookId(runId) };
         return {
           ...result,
           run: {
@@ -306,6 +329,108 @@ describe.each([
     const types = world.events.map((e) => e.eventType);
     expect(types).toContain('run_completed');
     expect(types).not.toContain('run_failed');
+  });
+
+  it('fails a redelivery whose committed run_started never echoed the token, running no code', async () => {
+    // The admitting write committed, but its answer was lost: the redelivery
+    // finds run_started in the log and must check the echo on the loaded run.
+    const { world, start } = await candidate(
+      'accept',
+      0,
+      {
+        when: 'after-commit',
+        error: () =>
+          new WorkflowWorldError('in-band outcome unknown', {
+            status: 503,
+            code: 'in-band-outcome-unknown',
+            retryAfter: 1,
+          }),
+      },
+      false
+    );
+
+    // Redelivered, however the delivery reports it, and nothing ran yet.
+    await world.deliver(start).catch(() => undefined);
+    expect(world.events.map((e) => e.eventType)).toContain('run_started');
+    expect(bodies).toBe(0);
+
+    await world.runUntilIdle();
+
+    expect(bodies).toBe(0);
+    const types = world.events.map((e) => e.eventType);
+    expect(types).not.toContain('step_created');
+    expect(types).not.toContain('run_completed');
+    expect(
+      world.events.find((e) => e.eventType === 'run_failed')?.eventData
+    ).toMatchObject({ errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
+  });
+
+  it('fails an already-started run whose start Hook echoes another token, running no code', async () => {
+    const runId = `wrun_${ulid()}`;
+    const input = await dehydrateWorkflowArguments([1], runId, undefined, []);
+    const executionContext = { workflowVm: engine };
+    const at = new Date();
+    const world = new AppendOnlyWorld({ fence: true });
+    world.seedLog(
+      {
+        runId,
+        workflowName: 'workflow',
+        deploymentId: 'dpl_test',
+        status: 'running',
+        executionContext,
+        input,
+        startHook: { token: 'order:other', hookId: startHookId(runId) },
+        createdAt: at,
+        updatedAt: at,
+      } as any,
+      [
+        {
+          eventId: slotToEventId(1),
+          runId,
+          eventType: 'run_created',
+          createdAt: at,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          eventData: {
+            deploymentId: 'dpl_test',
+            workflowName: 'workflow',
+            input,
+            executionContext,
+          },
+        },
+        {
+          eventId: slotToEventId(2),
+          runId,
+          eventType: 'run_started',
+          createdAt: at,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+      ] as unknown as Event[]
+    );
+    setWorld(world.asWorld());
+    await workflowEntrypoint(oneStep)(new Request('https://example.test'));
+    const start = world.enqueue(QUEUE, {
+      runId,
+      requestedAt: new Date(),
+      runInput: {
+        input,
+        deploymentId: 'dpl_test',
+        workflowName: 'workflow',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        executionContext,
+        startHook: { token: TOKEN },
+      },
+    });
+
+    const result = await world.deliver(start);
+    await world.runUntilIdle();
+
+    expectAcknowledged(world, result, start);
+    expect(bodies).toBe(0);
+    const types = world.events.map((e) => e.eventType);
+    expect(types).not.toContain('step_created');
+    expect(
+      world.events.find((e) => e.eventType === 'run_failed')?.eventData
+    ).toMatchObject({ errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
   });
 
   // A World that continues a message on a new one (world-vercel near the

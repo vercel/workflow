@@ -1610,8 +1610,23 @@ async function runDelivery(
         // The log now holds the run's own start (and, after a
         // resilient start, its creation).
         await fullLoad();
-      } else if (resumeTracking) {
-        resumeTracking.setupSource = 'event_load';
+      } else {
+        // A redelivery of a candidate's first message whose
+        // `run_started` committed but whose answer was lost (a 503
+        // `in-band-outcome-unknown`, a crash): the loaded run must
+        // echo the token too before any code runs, through the same
+        // setup-failure path as a fresh start.
+        try {
+          recordAcceptedStartHookCandidate(runInput, run ?? { runId }, span);
+        } catch (err) {
+          if (!(await recordWorkflowSetupFailure(err))) {
+            throw err;
+          }
+          return undefined;
+        }
+        if (resumeTracking) {
+          resumeTracking.setupSource = 'event_load';
+        }
       }
     }
     assert(run, 'Workflow run must be loaded before replay');
