@@ -1215,10 +1215,15 @@ jobs:
       - name: Run start({ hook }) E2E at spec 9
         if: ${{ matrix.app.name == 'nextjs-turbopack' && !matrix.app.canary && !matrix.app.snapshotThreshold }}
         run: |
-          pkill -f "next start" || true
-          sleep 2
+          # Stop the spec 8 server by its port: Next.js renames its server
+          # process, so its command line no longer says `next start`.
+          listening() { lsof -ti tcp:3000 -sTCP:LISTEN; }
+          pids=$(listening || true)
+          if [ -n "$pids" ]; then echo "$pids" | xargs kill || true; fi
+          for _ in $(seq 1 30); do listening >/dev/null || break; sleep 1; done
+          if listening >/dev/null; then echo "port 3000 is still in use"; exit 1; fi
           (cd "$WORKBENCH_APP_PATH" && pnpm start > "$GITHUB_WORKSPACE/prod-server-postgres-spec9-${{ matrix.app.artifactSuffix }}.log" 2>&1) &
-          echo "starting tests in 10 seconds" && sleep 10
+          for _ in $(seq 1 60); do curl -s -o /dev/null http://localhost:3000/ && break; sleep 1; done
           pnpm vitest run packages/core/e2e/e2e.test.ts -t 'start\(\{ hook \}\)' --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-spec9-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
