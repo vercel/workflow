@@ -2619,9 +2619,16 @@ describe.concurrent('e2e', () => {
      * The World behind this lane admits start Hooks. The Vercel lanes run
      * against whichever workflow-server is deployed and opt in with
      * WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK, so they skip until both are in
-     * place; the local and Postgres lanes always run these.
+     * place; the local and Postgres lanes always run these. The spec 9 lane
+     * skips them too: `start({ hook })` refuses single-orchestrator runs.
      */
     const skipUnlessStartHookSupported = async (ctx: TestContext) => {
+      if (
+        process.env.WORKFLOW_SPEC_VERSION?.trim() ===
+        String(SPEC_VERSION_SINGLE_ORCHESTRATOR)
+      ) {
+        ctx.skip();
+      }
       const world = await getWorld();
       if (world.capabilities?.atomicStartHook?.active !== true) ctx.skip();
     };

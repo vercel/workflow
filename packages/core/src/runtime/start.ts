@@ -1181,6 +1181,15 @@ export async function start<TArgs extends unknown[], TResult>(
           `start({ hook }) requires spec version ${SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT} or later, but this run would be stamped ${specVersion}.`
         );
       }
+      // The single-orchestrator engine does not admit or bind start Hook
+      // candidates yet: its queued copy would create the run unkeyed even
+      // after a refusal. Checked on the effective version, so an explicit
+      // `specVersion` and a probed target are covered too.
+      if (startHook && specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+        throw startHookContractError(
+          `start({ hook }) is not supported on single-orchestrator runs yet (spec version ${SPEC_VERSION_SINGLE_ORCHESTRATOR} or later), and this run would be stamped ${specVersion}.`
+        );
+      }
       if (startHook) {
         span?.setAttributes(
           startHook.tokenRetentionUntil
