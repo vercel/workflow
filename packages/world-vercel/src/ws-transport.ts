@@ -237,6 +237,7 @@ class WsEventsTransport {
             `workflow-server events WS connection to ${this.wsUrl} ` +
               `abandoned after request ${reqId} timed out`
           );
+          this.close('request timed out');
         }, timeoutMs);
         deadline.unref?.();
         const onSent = (err?: Error) => {
@@ -525,8 +526,21 @@ class WsEventsTransport {
         const { ws } = conn;
         let opened = false;
 
+        const handshakeTimeoutMs = getRequestTimeoutMs();
+        const handshakeDeadline = setTimeout(() => {
+          const message =
+            `workflow-server events WS handshake to ${this.wsUrl} timed out ` +
+            `after ${handshakeTimeoutMs}ms`;
+          console.error(`world-vercel: ws events transport ${message}`);
+          reject(new WsTransportError(message));
+          ws.terminate();
+          this.close('handshake timed out');
+        }, handshakeTimeoutMs);
+        handshakeDeadline.unref?.();
+
         ws.on('open', () => {
           opened = true;
+          clearTimeout(handshakeDeadline);
           if (this.closed) {
             // Released while this handshake was in flight: `close()` could
             // only null out the connection it could see. Adopting this one now
@@ -564,6 +578,7 @@ class WsEventsTransport {
         });
 
         ws.on('close', (code: number) => {
+          clearTimeout(handshakeDeadline);
           const wasActive = this.connection === conn;
           if (wasActive) this.connection = null;
 
