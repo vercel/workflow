@@ -25,6 +25,9 @@ const FORMAT_PREFIX_SIZE = 4;
 const ENCRYPTED_PLACEHOLDER = '[Encrypted]';
 const POLL_INTERVAL_MS = 3000;
 
+/** Shared: this runs once per wire frame, and a decoder per frame is waste. */
+const prefixDecoder = new TextDecoder();
+
 /**
  * Whether a frame carries one continuation part of a write the producer split
  * across several chunks (see `serialization/split-frames.ts`). Such a frame is
@@ -33,7 +36,7 @@ const POLL_INTERVAL_MS = 3000;
  */
 function isSplitPart(frameData: Uint8Array): boolean {
   if (frameData.length < FORMAT_PREFIX_SIZE) return false;
-  const prefix = new TextDecoder().decode(
+  const prefix = prefixDecoder.decode(
     frameData.subarray(0, FORMAT_PREFIX_SIZE)
   );
   return prefix === SerializationFormat.SPLIT;
