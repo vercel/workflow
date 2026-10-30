@@ -310,14 +310,6 @@ Give each application that shares a database its own prefix. A World claims jobs
 
 Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. The CLI and the observability UI build their World from the environment, so a run they create, such as a re-run, is stamped with the prefix they see, and only a World with that prefix runs and recovers it.
 
-Runs created by earlier versions of the Postgres World have no prefix, and every World still recovers them on `start()`. To assign them to one application, or to keep active runs recoverable after renaming a prefix, set the prefix on them directly:
-
-```sql
-UPDATE workflow.workflow_runs
-SET job_prefix = 'myapp_'
-WHERE status IN ('pending', 'running')
-  AND job_prefix IS NULL; -- after a rename: job_prefix = 'old_prefix_'
-```
 
 ### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 
