@@ -474,7 +474,7 @@ The SDK also sends an internal `HealthCheckPayload` through the same workflow qu
 - Messages must be delivered at-least-once
 - Support configurable retry policies
 - Track attempt counts for observability
-- Implement idempotency using the `idempotencyKey` option when provided
+- Implement idempotency using the `idempotencyKey` option when provided. A duplicate publish with the key of a pending message must keep that message's delivery time, so an immediate duplicate of a delayed retry can't skip its backoff
 - Honor the `delaySeconds` option. Waits (`sleep()`) are delivered as ordinary delayed continuations on the workflow queue, so a World that ignores `delaySeconds` redelivers immediately and causes every sleeping run to enter a busy loop
 - Optionally honor the `region` option, a routing hint naming the region a message should be dispatched in; Worlds without a regional dimension ignore it
 
@@ -539,7 +539,7 @@ interface Streamer {
 ```
 
 Streams are identified by a combination of `runId` and `name`. Each workflow run can have multiple named streams.
-`writeMulti()` is an optional optimization for batching multiple writes.
+`writeMulti()` is an optional optimization for batching multiple writes. A reader from `get()` must receive each chunk once, in the order it was written, including the chunks of a `writeMulti()` group.
 
 `createWriteSession()` is optional. Implement it when your transport can do
 better by holding state across a writer's chunks, for example by keeping one
