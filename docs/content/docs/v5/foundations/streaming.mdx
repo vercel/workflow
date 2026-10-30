@@ -127,6 +127,28 @@ If the absolute value exceeds the total number of chunks, reading starts from th
 Because streams are live and continue receiving chunks, negative `startIndex` values resolve to different absolute positions on each call. Accurate pagination over a live stream requires cursor-based access, which is not yet supported. Keep this in mind when building clients that paginate over stream data.
 </Callout>
 
+### Tracking where a reader got to
+
+`run.getReadable()` reports the position it has reached as `readable.position`:
+the index of the last chunk the value you just read occupied. Pass
+`position + 1` as the next read's `startIndex` to resume exactly after it.
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript
+const readable = run.getReadable();
+for await (const chunk of readable) {
+  send(chunk, { cursor: readable.position }); // [!code highlight]
+}
+```
+
+Carry that as your cursor rather than a count of the values you have received.
+The two are not the same: a value too large for one chunk is stored across
+several, so it advances the position by more than one, and resuming from a
+count would land behind the value and replay everything after it. `position` is
+`-1` before the first value, and `undefined` for a negative (last-N)
+`startIndex`, which the server resolves and the client never learns the
+absolute position of.
+
 ### Writes larger than one chunk
 
 A stored stream chunk holds at most **10 MiB**. A single write larger than that

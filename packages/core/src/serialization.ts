@@ -481,12 +481,31 @@ export function getSerializeStream(
   return stream;
 }
 
+/** Observation hooks for an object-stream deserializer. */
+export interface DeserializeStreamOptions {
+  /**
+   * Called after each value is enqueued, with the number of wire frames this
+   * transform has consumed to produce it, counted from the first frame it
+   * saw. A caller that knows the absolute index of that first frame (the
+   * `startIndex` it read from) can turn this into the value's stored chunk
+   * position, which is what a resumable consumer needs as its cursor: a value
+   * the producer split across several chunks advances the position by more
+   * than one, so counting delivered values is not the same thing.
+   */
+  onFramesConsumed?: (frames: number) => void;
+}
+
 export function getDeserializeStream(
   revivers: Partial<Revivers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  options: DeserializeStreamOptions = {}
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
+  // Wire frames this transform has taken off the buffer, including the
+  // continuation frames of a split write and the frames of a group it had to
+  // drop. It is the reader's position in the stream, not its value count.
+  let framesConsumed = 0;
   // Resolve the key input once on first use and cache the result.
   const keyState = {
     resolved: false,
@@ -538,6 +557,7 @@ export function getDeserializeStream(
         FRAME_HEADER_SIZE + frameLength
       );
       buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
+      framesConsumed++;
 
       // The format-prefixed bytes this frame contributes. A continuation
       // frame replaces it with the reassembled group, which carries the
@@ -619,6 +639,7 @@ export function getDeserializeStream(
       if (format === SerializationFormat.DEVALUE_V1) {
         const text = decoder.decode(payload);
         controller.enqueue(parse(text, revivers));
+        options.onFramesConsumed?.(framesConsumed);
       }
     }
   }
@@ -3150,11 +3171,19 @@ export function getRunReadableStream<T>(
   runId: string,
   name: string,
   startIndex: number | undefined,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  /**
+   * Receives the number of wire frames consumed to produce each value, so the
+   * caller can track the stream position a resumable consumer should resume
+   * from. Applies to this stream only, never to a stream nested inside a
+   * value it carries.
+   */
+  onFramesConsumed?: (frames: number) => void
 ): ReadableStream<T> {
   return getLazyReadableStream((onReadableState) =>
     getExternalRevivers(global, ops, runId, cryptoKey, {
       onReadableState,
+      onFramesConsumed,
     }).ReadableStream!({ name, startIndex })
   );
 }
@@ -3218,6 +3247,13 @@ type ExternalReviverOptions = {
   liveAbortSignals?: boolean;
   /** Receives completion state when a wrapper owns the public readable. */
   onReadableState?: (state: ReturnType<typeof createFlushableState>) => void;
+  /**
+   * Receives the wire-frame count behind each value of the *top-level* object
+   * stream this reviver is built for. Deliberately not propagated into the
+   * revivers used for nested streams: those have their own positions, and a
+   * caller tracking a resume cursor only ever means the stream it opened.
+   */
+  onFramesConsumed?: (frames: number) => void;
 };
 
 /**
@@ -3285,7 +3321,8 @@ export function getExternalRevivers(
         lazyStreams: options?.lazyStreams,
         liveAbortSignals: options?.liveAbortSignals,
       }),
-      resolveKey
+      resolveKey,
+      { onFramesConsumed: options?.onFramesConsumed }
     );
     const state = createFlushableState();
     ops.push(state.promise);
