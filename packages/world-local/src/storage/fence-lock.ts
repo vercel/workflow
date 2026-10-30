@@ -138,6 +138,18 @@ function isAbandoned(lock: { owner: Owner | null; mtimeMs: number }) {
   );
 }
 
+export async function isFileStale(
+  filePath: string,
+  staleMs = 30_000
+): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return Date.now() - stat.mtimeMs > staleMs;
+  } catch {
+    return true;
+  }
+}
+
 async function enterGate(gate: string): Promise<boolean> {
   try {
     await fs.mkdir(gate);
