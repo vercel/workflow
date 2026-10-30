@@ -6,6 +6,7 @@ import {
   type WorkflowOrchestratorContext,
 } from '../private.js';
 import { replayPayloadEventKey } from '../replay-payload-cache.js';
+import { mintHookCorrelationId } from '../runtime/start-hook-binding.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
 import { getAbortStreamId } from '../util.js';
@@ -122,7 +123,11 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
 
       // Register an internal system hook in the invocations queue.
       // isSystem prevents token namespace conflicts with user hooks.
-      const correlationId = `hook_${ctx.generateUlid()}`;
+      // Never the run's start Hook id (see `mintHookCorrelationId`).
+      const correlationId = mintHookCorrelationId(
+        ctx.generateUlid,
+        ctx.startHook
+      );
       ctx.invocationsQueue.set(correlationId, {
         type: 'hook',
         correlationId,

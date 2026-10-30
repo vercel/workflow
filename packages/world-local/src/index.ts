@@ -145,6 +145,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   const capabilities = {
     hookRetention: { active: true },
+    // `start({ hook })`: the start Hook's token claim, the run and the Hook
+    // entity are written under the claim lock; a refusal is recorded per
+    // candidate. See `admitStartHook` in storage/events-storage.ts.
+    atomicStartHook: { active: true },
     // Stored whole on the run record; no upload path, so `start()` always
     // sends the code inline.
     dynamicWorkflowCode: true,
@@ -158,8 +162,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     // branch of storage/events-storage.ts.
     hookForceClaim: true,
     // The queue delivers a single-orchestrator run's orchestrator messages
-    // one at a time (an in-process per-run gate, see queue.ts): with the
-    // fence, the two halves of the single-writer guarantee. An in-band
+    // one at a time (a per-run gate where they are sent and one where they
+    // are handled, so a message another process on the data directory sent
+    // waits too; see queue.ts): with the fence, the two halves of the single-writer guarantee. An in-band
     // write is stored at its `occurredAt` (events-storage.ts), as the
     // spec-9 contract requires.
     maxConcurrency: true,
@@ -301,6 +306,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           ...runScopedDirs,
           'hooks',
           'hooks/by-run',
+          'hooks/admissions',
           'waits',
           'streams/runs',
         ];

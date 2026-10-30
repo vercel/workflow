@@ -101,6 +101,40 @@ const nextMessage = (child: ChildProcess) =>
     );
   });
 
+/** The `enter <pid>` / `exit <pid>` lines a `loop` child logs. */
+async function readHolderLog(logPath: string) {
+  return (await fs.readFile(logPath, 'utf8').catch(() => ''))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [what, pid] = line.split(' ');
+      return { what, pid: Number(pid) };
+    });
+}
+
+const enters = (lines: { what: string }[]) =>
+  lines.filter((l) => l.what === 'enter').length;
+
+/**
+ * A holder enters only when nobody holds the lock, or when its holder was
+ * killed while holding it.
+ */
+function expectOneHolderAtATime(
+  lines: { what: string; pid: number }[],
+  killed: Set<number>
+) {
+  let holder: number | undefined;
+  for (const { what, pid } of lines) {
+    if (what === 'enter') {
+      if (holder !== undefined) expect(killed.has(holder)).toBe(true);
+      holder = pid;
+    } else {
+      expect(holder).toBe(pid);
+      holder = undefined;
+    }
+  }
+}
+
 describe('fence file lock (world-local)', () => {
   it('holds the lock directory, naming its holder, only while fn runs', async () => {
     const result = await withFenceFileLock(lockDir, 'wrun_test', async () => {
@@ -215,6 +249,14 @@ describe('fence file lock (world-local)', () => {
   });
 
   it('keeps one holder at a time across processes that are SIGKILLed while holding it', async () => {
+    // The loop runs until enough has happened, not for a fixed time: on a
+    // loaded CI runner (Windows, next to storage.test.ts) a few seconds can
+    // see under 20 acquisitions. The deadline also leaves room for one 30 s
+    // stall: a holder killed between its mkdir and its owner write leaves a
+    // lock with no owner, which only goes stale.
+    const minEnters = 100;
+    const minKills = 12;
+    const deadline = Date.now() + 45_000;
     const logPath = path.join(testDir, 'holders.log');
     const killed = new Set<number>();
     const unexpectedExits: number[] = [];
@@ -227,12 +269,16 @@ describe('fence file lock (world-local)', () => {
       return child;
     };
     const running = await Promise.all([1, 2, 3, 4].map(start));
-    const until = Date.now() + 4_000;
-    while (Date.now() < until) {
+    let kills = 0;
+    while (
+      (kills < minKills || enters(await readHolderLog(logPath)) < minEnters) &&
+      Date.now() < deadline
+    ) {
       await sleep(100 + Math.random() * 100);
       const i = Math.floor(Math.random() * running.length);
       killed.add(running[i].pid as number);
       running[i].kill('SIGKILL');
+      kills++;
       running[i] = await start();
     }
     for (const child of running) {
@@ -241,25 +287,9 @@ describe('fence file lock (world-local)', () => {
     }
     expect(unexpectedExits).toEqual([]);
 
-    const lines = (await fs.readFile(logPath, 'utf8'))
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [what, pid] = line.split(' ');
-        return { what, pid: Number(pid) };
-      });
-    // A holder enters only when nobody holds the lock, or when its holder
-    // was killed while holding it.
-    let holder: number | undefined;
-    for (const { what, pid } of lines) {
-      if (what === 'enter') {
-        if (holder !== undefined) expect(killed.has(holder)).toBe(true);
-        holder = pid;
-      } else {
-        expect(holder).toBe(pid);
-        holder = undefined;
-      }
-    }
-    expect(lines.filter((l) => l.what === 'enter').length).toBeGreaterThan(100);
-  }, 30_000);
+    const lines = await readHolderLog(logPath);
+    expectOneHolderAtATime(lines, killed);
+    expect(kills).toBeGreaterThanOrEqual(minKills);
+    expect(enters(lines)).toBeGreaterThanOrEqual(minEnters);
+  }, 60_000);
 });

@@ -46,13 +46,24 @@ interface WorkflowWorldError {
   code?: string;
   /** The URL that was requested, if available. */
   url?: string;
-  /** Retry-After value in seconds, present on 429 and 425 responses. */
+  /**
+   * Retry-After value in seconds, present on 429 and 425 responses, and on a
+   * Vercel World 503 for a start Hook whose run is still being created.
+   */
   retryAfter?: number;
+  /**
+   * Why the World gave \`code\`, when it says. For a start Hook request
+   * refused with START_HOOK_ADMISSION_REJECTED: invalid, expired,
+   * token_mismatch, ordinary_run or disabled.
+   */
+  reason?: string;
   /** The error message. */
   message: string;
 }
 export default WorkflowWorldError;`}
 />
+
+`status`, `code` and `reason` are set where the error is thrown, in a step or outside a workflow. A `WorkflowWorldError` that reaches workflow code from a step arrives without them (`undefined`), with its name and message intact.
 
 ### Static methods
 

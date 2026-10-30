@@ -6,7 +6,9 @@ import {
   RETENTION_ATTRIBUTE,
   SPEC_VERSION_CURRENT,
   type Streamer,
+  startHookId,
 } from '@workflow/world';
+import { ulid } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from '../fs.js';
 import { createStorage } from '../storage.js';
@@ -155,6 +157,71 @@ describe('run retention (world-local)', () => {
       const persisted = await storage.runs.get(run.runId);
       expect(persisted.dynamicWorkflowCode).toBeUndefined();
       expect(persisted.expiredAt).toBeInstanceOf(Date);
+    });
+
+    it("drops a start Hook's metadata, keeping its token and retention", async () => {
+      const token = 'order:purge';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
+      const run = await startRun(
+        { [RETENTION_ATTRIBUTE]: '0' },
+        {
+          startHook: { token, tokenRetentionUntil, metadata: HOOK_METADATA },
+        }
+      );
+      const hookId = startHookId(run.runId);
+      await complete(run.runId);
+
+      const onDisk = JSON.parse(
+        await fs.readFile(
+          path.join(testDir, 'runs', `${run.runId}.json`),
+          'utf8'
+        )
+      );
+      expect(onDisk.startHook).toEqual({
+        token,
+        hookId,
+        tokenRetentionUntil: tokenRetentionUntil.toISOString(),
+      });
+      expect((await storage.runs.get(run.runId)).startHook).toEqual({
+        token,
+        hookId,
+        tokenRetentionUntil,
+      });
+      // The retained start Hook stays readable, without its metadata.
+      const retained = await storage.hooks.getByToken(token);
+      expect(retained).toMatchObject({ hookId, runId: run.runId });
+      expect(retained.metadata).toBeUndefined();
+      expect(await eventPayloads(run.runId)).toEqual([]);
+      // Nor on the creation events, which carry the start Hook too.
+      const { data: events } = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      const startHooks = events.flatMap((event) => {
+        const startHook = (
+          event as { eventData?: { startHook?: Record<string, unknown> } }
+        ).eventData?.startHook;
+        return startHook ? [startHook] : [];
+      });
+      expect(startHooks.length).toBeGreaterThan(0);
+      for (const startHook of startHooks) {
+        expect(startHook).not.toHaveProperty('metadata');
+        expect(startHook.token).toBe(token);
+      }
+      // The token is still held for its retention.
+      const contender = await storage.events
+        .create(`wrun_${ulid()}`, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'dpl_test',
+            workflowName: 'retention-workflow',
+            input: RUN_INPUT,
+            startHook: { token },
+          },
+        } as never)
+        .catch((e: unknown) => e);
+      expect(contender).toMatchObject({ conflictingRunId: run.runId });
     });
 
     it('keeps the run listable, with its metadata intact', async () => {

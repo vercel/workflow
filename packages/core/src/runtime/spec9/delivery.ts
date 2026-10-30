@@ -364,6 +364,19 @@ async function runDelivery(
     completeWaits,
     recovery,
   } = delivery.message;
+  // A `start({ hook })` candidate's queued copy, which this engine cannot
+  // admit yet: its `run_started` would create the run without the start
+  // Hook, even after the World refused it. `start()` refuses the combination
+  // up front, so only a message from another SDK version reaches here.
+  // Acknowledged before anything is written or run.
+  if (runInput?.startHook) {
+    runtimeLogger.error(
+      'Dropped a start({ hook }) candidate on a single-orchestrator run: this runtime does not support start Hooks on spec 9 runs. Nothing was written or run.',
+      { workflowRunId: runId, workflowName }
+    );
+    continuation.exit = 'start-hook-unsupported';
+    return undefined;
+  }
   // Waits a `run.wakeUp()` asked this delivery to complete now, whatever
   // their `resumeAt`. Spent on the first pass that sees them.
   const wakeUpWaits = new Set(completeWaits ?? []);
