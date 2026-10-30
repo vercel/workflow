@@ -1206,6 +1206,30 @@ jobs:
           echo "VM snapshot restores: $restores"
           test "$restores" -gt 0
 
+      # The only CI run of the start({ hook }) block on the single-orchestrator
+      # engine: the spec 9 Vercel lane skips it until world-vercel's start Hook
+      # flag is on there. Spec 9 is a runtime choice (WORKFLOW_SPEC_VERSION is
+      # read when the World is created), so the built app is restarted with it
+      # rather than rebuilt; the spec 8 server is stopped first so its
+      # in-process queue workers don't pick the spec 9 runs up.
+      - name: Run start({ hook }) E2E at spec 9
+        if: ${{ matrix.app.name == 'nextjs-turbopack' && !matrix.app.canary && !matrix.app.snapshotThreshold }}
+        run: |
+          pkill -f "next start" || true
+          sleep 2
+          (cd "$WORKBENCH_APP_PATH" && pnpm start > "$GITHUB_WORKSPACE/prod-server-postgres-spec9-${{ matrix.app.artifactSuffix }}.log" 2>&1) &
+          echo "starting tests in 10 seconds" && sleep 10
+          pnpm vitest run packages/core/e2e/e2e.test.ts -t 'start\(\{ hook \}\)' --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-spec9-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          WORKFLOW_SPEC_VERSION: '9'
+          # Every test of the block must run here, not skip.
+          WORKFLOW_E2E_EXPECT_START_HOOK: '1'
+
       - name: Generate E2E summary
         if: always()
         run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Postgres (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
@@ -1218,6 +1242,7 @@ jobs:
           path: |
             e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.flaky.json
+            e2e-local-postgres-spec9-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore

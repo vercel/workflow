@@ -2619,11 +2619,19 @@ describe.concurrent('e2e', () => {
      * The World behind this lane admits start Hooks. The Vercel lanes run
      * against whichever workflow-server is deployed and opt in with
      * WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK, so they skip until both are in
-     * place; the local and Postgres lanes always run these.
+     * place; the local and Postgres lanes always run these. A lane that sets
+     * WORKFLOW_E2E_EXPECT_START_HOOK=1 must run them, so there a World
+     * without the capability fails the test instead of skipping it.
      */
     const skipUnlessStartHookSupported = async (ctx: TestContext) => {
       const world = await getWorld();
-      if (world.capabilities?.atomicStartHook?.active !== true) ctx.skip();
+      if (world.capabilities?.atomicStartHook?.active === true) return;
+      if (process.env.WORKFLOW_E2E_EXPECT_START_HOOK === '1') {
+        throw new Error(
+          'WORKFLOW_E2E_EXPECT_START_HOOK=1, but the World does not declare atomicStartHook'
+        );
+      }
+      ctx.skip();
     };
 
     /** A start that sets `experimental_minRetention` needs Hook retention. */
