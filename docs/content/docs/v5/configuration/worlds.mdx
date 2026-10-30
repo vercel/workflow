@@ -80,7 +80,7 @@ The Local World is the default outside Vercel and is intended for development.
 
 - Factory option: none
 - Default: `1000`
-- Maximum number of concurrent local queue message handlers.
+- Maximum number of concurrent local queue message handlers. A message waiting out a delay or a retry backoff doesn't hold a slot.
 
 ### `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`
 

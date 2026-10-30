@@ -58,6 +58,8 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 Maximum number of concurrent queue message handlers. Default: `1000`
 
+A message holds a slot only while a handler is delivering it. A message waiting out a delay, a `timeoutSeconds` redelivery, or a retry backoff doesn't count toward the limit.
+
 ### `WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY`
 
 Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
@@ -88,7 +90,7 @@ Whether pending and running runs found in the data directory are re-enqueued whe
 
 Recovery also hands back to the queue any step that was running inline when the previous process exited. The step runs again right away instead of after the inline-ownership lease (about 14 minutes), and the interrupted attempt counts toward its retries. A step with `maxRetries: 0` that was interrupted mid-body therefore fails on restart with an "exceeded max retries" error instead of running again once the lease expires, as it already does after a crash on the Vercel World.
 
-If you turn recovery off and re-enqueue runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it.
+If you turn recovery off and re-enqueue runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it. If you re-enqueue with `reenqueueActiveRuns()` from `@workflow/world`, pass `{ queueLost: true }` as its options so that the delivery of a [spec 9](/docs/changelog/spec-9#first-party-worlds) run re-sends the step messages and sleep timers lost with the previous process.
 
 A step counts as abandoned only if it started before the Local World loaded in the current process or worker thread. Steps started since then are never released, so runs this process picks up during or after recovery are not affected, and calling `releaseOrphanedSteps()` late is safe. Recovery assumes that nothing else is running workflows on the same data directory and `tag`. That includes an earlier worker thread of the same process: some dev servers reload into a new worker thread, and until the old one stops, the new one may dispatch a step the old one is still running, so the step can run twice. If several processes or workers run workflows on one data directory, turn recovery off or give each one its own `tag`.
 
@@ -143,7 +145,7 @@ export async function registerAgentQueue(
 }
 ```
 
-`registerHandler()` takes precedence over `registerRoute()` for the same prefix. A prefix with neither still goes to the flow route, which answers `400` for a prefix it does not handle, and the Local World retries the message every five seconds, so a route registered later takes the next attempt. When the World restarts, `start()` re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`), so register the route or handler before calling `start()`.
+`registerHandler()` takes precedence over `registerRoute()` for the same prefix. A prefix with neither still goes to the flow route, which answers `400` for a prefix it does not handle, and the Local World retries the message every five seconds, so a route registered later takes the next attempt. After 32 failed attempts, the delay doubles on each retry up to one minute, as on Vercel Queues. When the World restarts, `start()` re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`), so register the route or handler before calling `start()`.
 
 ## Data directory layout
 
