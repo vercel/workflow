@@ -34,6 +34,10 @@ import type { RunStartHook } from './runtime/start-hook-binding.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
+  bindSharedHistory,
+  SharedHistoryContext,
+} from './serialization/shared-history.js';
+import {
   dehydrateWorkflowReturnValue,
   hydrateWorkflowArguments,
 } from './serialization.js';
@@ -470,6 +474,11 @@ async function createWorkflowSessionInner(
     seed: `${workflowRun.runId}:${workflowRun.workflowName}:${workflowRun.deploymentId}`,
     fixedTimestamp,
   });
+
+  replayPayloadCache.sharedHistory = new SharedHistoryContext();
+  bindSharedHistory(vmGlobalThis, replayPayloadCache.sharedHistory);
+  (vmGlobalThis as Record<string, any>).__workflowSharedHistoryEnabled =
+    process.env.WORKFLOW_SHARED_HISTORY === '1';
 
   const initialInterruption = withResolvers<never>();
   let state: WorkflowSessionState = {

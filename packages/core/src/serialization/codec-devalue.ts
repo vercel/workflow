@@ -25,6 +25,10 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './reducers/step-function.js';
+import {
+  SharedHistoryContext,
+  sharedHistoryForGlobal,
+} from './shared-history.js';
 import { type Reducers, type Revivers, SerializationFormat } from './types.js';
 
 const encoder = new TextEncoder();
@@ -139,6 +143,11 @@ export const devalueCodec: Codec = {
     // inside a workflow VM cannot execute sandbox code behind our back.
     // Where workflow code must run (getters, proxies, custom serializers),
     // the execution is recorded into `options.guestCodeStats`.
+    const history =
+      options?.sharedHistory ??
+      sharedHistoryForGlobal(options?.global ?? globalThis) ??
+      new SharedHistoryContext();
+    reducers.SharedHistoryV1 = (v) => history.reduce(v);
     const str = withGuestCodeStats(options?.guestCodeStats, () =>
       stringify(value, reducers, { operations: hardenedStringifyOperations })
     );
@@ -155,6 +164,11 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraRevivers
     );
+    revivers.SharedHistoryV1 = (
+      options?.sharedHistory ??
+      sharedHistoryForGlobal(options?.global ?? globalThis) ??
+      new SharedHistoryContext()
+    ).revive;
     const str = decoder.decode(data);
     return parse(str, revivers, parseOptions);
   },

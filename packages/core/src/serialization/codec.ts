@@ -42,6 +42,10 @@ export interface CodecOptions {
    * serializing/deserializing data that crosses VM boundaries.
    */
   global?: Record<string, any>;
+  recoverSharedHistory?: (
+    data: unknown
+  ) => Promise<import('./shared-history.js').SharedHistoryContext | undefined>;
+  sharedHistory?: import('./shared-history.js').SharedHistoryContext;
 
   /**
    * Additional reducers to merge into the mode's default reducers.

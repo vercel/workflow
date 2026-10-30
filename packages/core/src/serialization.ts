@@ -93,6 +93,13 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
+import {
+  bindSharedHistoryData,
+  type SharedHistoryContext,
+  sharedHistoryForData,
+  sharedHistoryForGlobal,
+} from './serialization/shared-history.js';
+import { recoverSharedHistory } from './serialization/shared-history-recovery.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,
@@ -4122,6 +4129,7 @@ export async function dehydrateStepArguments(
       compressionStats,
       guestCodeStats,
     });
+    bindSharedHistoryData(result, sharedHistoryForGlobal(global));
     await recordCompression(compressionStats, 'serialize');
     await recordGuestCodeExecutions(guestCodeStats);
     return result;
@@ -4145,11 +4153,14 @@ export async function hydrateStepArguments(
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string,
   streamStates?: FlushableStreamState[],
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  sharedHistory?: SharedHistoryContext
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
   const result = await stepModule.deserialize(value, key, {
     global,
+    sharedHistory: sharedHistory ?? sharedHistoryForData(value),
+    recoverSharedHistory: (data) => recoverSharedHistory(runId, key, data),
     extraRevivers: {
       ...getStreamAndRequestRevivers(
         getStepRevivers(
@@ -4203,7 +4214,8 @@ export async function dehydrateStepReturnValue(
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  sharedHistory?: SharedHistoryContext
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4225,6 +4237,7 @@ export async function dehydrateStepReturnValue(
     const compressionStats: CompressionStats = {};
     const result = await stepModule.serialize(value, key, {
       global,
+      sharedHistory,
       extraReducers: getStreamAndRequestReducers(
         getStepReducers(
           global,

@@ -86,3 +86,7 @@ scope open until the invocation's duration limit. Streams hydrated through
 Register in the workflow executor's host startup, never from workflow or step
 code. Framework-specific support, hot-reload behavior, and stream cleanup are
 documented in the [lifecycle hooks guide](https://workflow-sdk.dev/docs/observability/lifecycle-hooks).
+
+## Experimental shared history
+
+See [the protocol](../../docs/shared-conversation-history.md).

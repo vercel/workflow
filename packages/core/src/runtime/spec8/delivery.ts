@@ -4076,6 +4076,7 @@ export async function runSpec8Delivery(
               // from the existing step entity, and for
               // pre-claimed steps, whose pair already
               // carried it.
+              sharedHistory: replayPayloadCache?.sharedHistory,
               lazyStepInput: s.lazyStepInput,
               // Pre-claimed inline start: the suspension
               // batch settled this step's create + claim;

@@ -268,6 +268,8 @@ export const getHeaders = (
 ): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
+  if (process.env.WORKFLOW_SHARED_HISTORY === '1')
+    headers.set('x-workflow-shared-history', 'v1');
   headers.set(
     'User-Agent',
     joinUserAgentProducts(getUserAgent(), headers.get('User-Agent'))

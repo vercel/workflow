@@ -59,6 +59,10 @@ export async function deserialize(
     options?.compressionStats
   );
 
+  if (options?.recoverSharedHistory && !options.sharedHistory) {
+    options.sharedHistory = await options.recoverSharedHistory(decrypted);
+  }
+
   if (!(decrypted instanceof Uint8Array)) {
     if (devalueCodec.deserializeLegacy) {
       return devalueCodec.deserializeLegacy(decrypted, 'step', options);

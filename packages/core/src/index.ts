@@ -30,6 +30,11 @@ export {
   type SetAttributesOptions,
   setAttributes,
 } from './set-attributes.js';
+export {
+  type HistoryCursor,
+  type HistorySource,
+  SharedHistory,
+} from './shared-history.js';
 export { sleep } from './sleep.js';
 export {
   getStepMetadata,

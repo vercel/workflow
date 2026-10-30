@@ -25,12 +25,15 @@ import type {
   World,
 } from '@workflow/world';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
-
 import type { FlushableStreamState } from '../../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import type { PayloadKey } from '../../serialization/encryption.js';
 import { formatSerializationError } from '../../serialization/errors.js';
+import {
+  type SharedHistoryContext,
+  sharedHistoryForData,
+} from '../../serialization/shared-history.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -98,6 +101,7 @@ function extractInlineDelta(
 }
 
 export interface StepExecutorParams {
+  sharedHistory?: SharedHistoryContext;
   world: World;
   workflowRunId: string;
   /** Deployment that owns the workflow run, for forwarded writable streams. */
@@ -953,6 +957,8 @@ export async function executeStep(
       // Use the provided encryption key when available, otherwise resolve
       // through the memoized accessor declared at the top of this trace.
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
+      const sharedHistory =
+        params.sharedHistory ?? sharedHistoryForData(step.input);
       const hydratedInput = await trace(
         'step.hydrate',
         {},
@@ -969,9 +975,15 @@ export async function executeStep(
             streamStates,
             // A workflow-created writable passed into an optimistic step can
             // emit chunks before run_started lands, just like getWritable().
-            optimisticStart ? params.runReadyBarrier : undefined
+            optimisticStart ? params.runReadyBarrier : undefined,
+            sharedHistory
           );
           const durationMs = Date.now() - startTime;
+          if (sharedHistory) hydrateSpan?.setAttributes({
+            "workflow.shared_history.adopted_prefixes": sharedHistory.stats.adoptedPrefixes,
+            "workflow.shared_history.reconstructed_prefixes": sharedHistory.stats.reconstructedPrefixes,
+            "workflow.shared_history.recovery_fetches": sharedHistory.stats.recoveryFetches,
+          });
           hydrateSpan?.setAttributes({
             ...Attribute.StepArgumentsCount(hydrated.args.length),
             ...Attribute.QueueDeserializeTimeMs(durationMs),
@@ -1192,7 +1204,8 @@ export async function executeStep(
           // write on the run-ready barrier. Undefined on the await path.
           optimisticStart ? params.runReadyBarrier : undefined,
           ops,
-          true
+          true,
+          sharedHistory
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({

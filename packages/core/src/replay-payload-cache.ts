@@ -1,5 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import type { PayloadKey } from './serialization/encryption.js';
+import { SharedHistoryContext } from './serialization/shared-history.js';
 import {
   type PreparedReplayPayload,
   prepareReplayPayload,
@@ -42,6 +43,8 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * runs or queue deliveries.
  */
 export class ReplayPayloadCache {
+  sharedHistory = new SharedHistoryContext();
+
   private readonly preparedPayloads = new Map<
     string,
     Promise<PreparedReplayPayload>

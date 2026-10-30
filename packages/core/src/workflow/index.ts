@@ -37,3 +37,9 @@ export function resumeHook() {
     resumeHook
   );
 }
+
+export {
+  type HistoryCursor,
+  type HistorySource,
+  SharedHistory,
+} from '../shared-history.js';
