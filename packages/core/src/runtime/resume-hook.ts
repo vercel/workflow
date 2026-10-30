@@ -14,6 +14,7 @@ import {
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRunWithoutData,
@@ -875,6 +876,10 @@ async function resumeHookAttempt<T = any>(
     }
 
     const queueName = getWorkflowQueueName(resumeContext.workflowName);
+    // `specVersion` picks the queue transport, so an unknown version takes
+    // the legacy one every deployment reads. The routing hint on the payload
+    // is left off instead: a guessed version would route the wake to the
+    // wrong orchestrator, and without one the runtime reads the run.
     const queueOptions = {
       deploymentId: resumeContext.deploymentId,
       specVersion: resumeContext.runSpecVersion ?? SPEC_VERSION_LEGACY,
@@ -966,6 +971,7 @@ async function resumeHookAttempt<T = any>(
         },
         {
           v1Compat,
+          inBand: false,
           ...(claim && resumeId && payloadDigest
             ? { resumeId, resumePayloadDigest: payloadDigest }
             : {}),
@@ -977,6 +983,15 @@ async function resumeHookAttempt<T = any>(
     } catch (err) {
       // Only explicit pre-write refusals permit another delivery attempt.
       // Transport errors, timeouts, and lost responses may follow a commit.
+      // The adapter preserves retry history even when the final answer is a
+      // refusal: an earlier send may already have committed. Do not look up,
+      // redirect, or fall back to a claim-less write in that case.
+      if (
+        WorkflowWorldError.is(err) &&
+        err.code === 'HOOK_RESUME_RETRY_REFUSED'
+      ) {
+        throw err;
+      }
       const refusalStatus = HookNotFoundError.is(err)
         ? 404
         : WorkflowWorldError.is(err) &&
@@ -1051,7 +1066,13 @@ async function resumeHookAttempt<T = any>(
           (fresh.resumeCapabilities?.hookResumeDedupVersion ?? 0) >=
             HOOK_RESUME_DEDUP_VERSION ||
           world.capabilities?.hookResumeDedup === true;
-        await write(freshDedup, false);
+        try {
+          await write(freshDedup, false);
+        } catch (fallbackError) {
+          if (isHookGoneError(fallbackError))
+            throw new HookNotFoundError(hook.token);
+          throw fallbackError;
+        }
       } else {
         if (HookForceClaimedError.is(err)) throw err;
         if (isHookGoneError(err)) throw new HookNotFoundError(hook.token);
@@ -1076,6 +1097,9 @@ async function resumeHookAttempt<T = any>(
           queueName,
           {
             runId: hook.runId,
+            ...(resumeContext.runSpecVersion !== undefined && {
+              runSpecVersion: resumeContext.runSpecVersion,
+            }),
             traceCarrier: resumeContext.traceCarrier ?? undefined,
             hookResumeTiming: {
               resumeRequestedAtMs,
@@ -1085,13 +1109,17 @@ async function resumeHookAttempt<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             ...queueOptions,
-            // Dedup retried publishes whose response was lost: a
-            // duplicate wake is harmless for correctness (deterministic
-            // replay) but costs a full replay of the run, and the queue
-            // accepts a repeated idempotency key by delivering only one
-            // of the messages. Claim-less writes have no resumeId and
-            // keep the previous behavior.
-            ...(resumeId ? { idempotencyKey: `hook-${resumeId}` } : {}),
+            // A spec 9 wake carries no idempotency key: a key could be
+            // absorbed by an orchestrator delivery that is already exiting
+            // and lose the wakeup, and a duplicate wake from a retried
+            // publish only costs a cheap delivery. An older run replays in
+            // full on every delivery, so its retried publishes whose
+            // response was lost dedupe on the resume (claim-less writes have
+            // no resumeId and keep the previous behavior).
+            ...(resumeId &&
+              queueOptions.specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR && {
+                idempotencyKey: `hook-${resumeId}`,
+              }),
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)

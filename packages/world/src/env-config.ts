@@ -43,7 +43,8 @@ const globalStore = globalThis as typeof globalThis &
 // biome-ignore lint/suspicious/noAssignInExpressions: off-module state idiom
 const warnedEnvValues = (globalStore[WarnedEnvValuesKey] ??= new Set<string>());
 
-function warnOnce(key: string, message: string): void {
+/** Warns `[workflow] <message>` once per process for `key`. */
+export function warnOnce(key: string, message: string): void {
   if (warnedEnvValues.has(key)) return;
   warnedEnvValues.add(key);
   // `@workflow/world` has no logger dependency; match the package's existing

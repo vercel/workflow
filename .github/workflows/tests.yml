@@ -30,6 +30,7 @@ jobs:
       vercel-prod-matrix: ${{ steps.vercel-matrix.outputs.vercel-prod-matrix }}
       vercel-ws-transport-matrix: ${{ steps.vercel-matrix.outputs.vercel-ws-transport-matrix }}
       vercel-http-transport-matrix: ${{ steps.vercel-matrix.outputs.vercel-http-transport-matrix }}
+      vercel-spec9-matrix: ${{ steps.vercel-matrix.outputs.vercel-spec9-matrix }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -641,6 +642,97 @@ jobs:
           results-name: vercel-ws-transport-${{ matrix.app.name }}
           app: ${{ matrix.app.name }}
           summary-title: E2E Vercel WS Transport (${{ matrix.app.name }})
+          capture-runtime-logs: ${{ job.status == 'failure' }}
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          environment: preview
+          project-id: ${{ matrix.app.project-id }}
+          team-id: ${{ env.VERCEL_TEAM_ID }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          e2e-start-ms: ${{ steps.e2eStart.outputs.ms }}
+
+  e2e-vercel-spec9:
+    # Spec 9 runs (the single orchestrator) are opt-in with
+    # WORKFLOW_SPEC_VERSION=9, so every other Vercel lane runs the default,
+    # spec 8. This lane deploys its own preview with the variable set and runs
+    # the full suite against it on both VMs.
+    #
+    # The variable is set on the deployment AND on the test runner: a
+    # cross-deployment start() stamps the lower of the target's and the
+    # caller's version, so with only the deployment env set this lane would
+    # silently test spec 8. The e2e test "stamps the spec version the lane
+    # opts in to" fails if either side stops seeing it.
+    #
+    # Same dedicated-deployment pattern as e2e-vercel-ws-transport above.
+    name: E2E Vercel Spec 9 Test (${{ matrix.app.name }}, ${{ matrix.vm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    concurrency:
+      group: e2e-vercel-spec9-${{ matrix.app.name }}-${{ matrix.vm }}-${{ needs.ci-scope.outputs.e2e-vercel-slot }}
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.ci-scope.outputs.vercel-spec9-matrix) }}
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      - name: Deploy a dedicated spec 9 preview
+        id: deployment
+        uses: ./.github/actions/deploy-vercel-preview
+        with:
+          project-id: ${{ matrix.app.project-id }}
+          team-id: ${{ env.VERCEL_TEAM_ID }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          env: |
+            WORKFLOW_SPEC_VERSION=9
+
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
+      - name: Run E2E Tests
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-spec9-$APP_NAME-$WORKFLOW_VM.json"
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VM: ${{ matrix.vm }}
+          WORKFLOW_SPEC_VERSION: '9'
+          WORKFLOW_VERCEL_ENV: "preview"
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      - name: Report E2E results
+        if: always()
+        uses: ./.github/actions/report-vercel-e2e
+        with:
+          results-name: vercel-spec9-${{ matrix.app.name }}-${{ matrix.vm }}
+          app: ${{ matrix.app.name }}
+          summary-title: E2E Vercel Spec 9 (${{ matrix.app.name }}, ${{ matrix.vm }})
           capture-runtime-logs: ${{ job.status == 'failure' }}
           deployment-id: ${{ steps.deployment.outputs.deployment-id }}
           environment: preview
@@ -1461,7 +1553,7 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-multi-region, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
+    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-multi-region, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-vercel-spec9, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
     if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
@@ -1497,7 +1589,7 @@ jobs:
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-vercel-spec9, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -1509,6 +1601,7 @@ jobs:
           VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
           VERCEL_WS_STATUS: ${{ needs.e2e-vercel-ws-transport.result }}
           VERCEL_HTTP_STATUS: ${{ needs.e2e-vercel-http-transport.result }}
+          VERCEL_SPEC9_STATUS: ${{ needs.e2e-vercel-spec9.result }}
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
@@ -1554,6 +1647,7 @@ jobs:
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
             [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
             [[ "$VERCEL_HTTP_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-http-transport ($VERCEL_HTTP_STATUS)")
+            [[ "$VERCEL_SPEC9_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-spec9 ($VERCEL_SPEC9_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")

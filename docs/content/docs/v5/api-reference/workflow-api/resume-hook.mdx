@@ -105,8 +105,12 @@ the payload encryption key and the deployment that is woken, so authenticating
 only the IDs is insufficient. Trace carriers may contain private baggage; omit
 them before exposing a snapshot to a client. Schema validation is not authentication.
 
-The SDK handles definite refusals by looking up the token and falling back to
-ordinary delivery. Do not implement that fallback yourself.
+The SDK handles a definite refusal of the first send by looking up the token
+and falling back to ordinary delivery. It retries admission throttles and
+503 `run-spec-version-changed`, retaining the delivery identity. Other 503s
+are uncertain even with `Retry-After` and are never resent. A refusal after a
+retried send is also surfaced without fallback, because an earlier send may
+have committed. Do not implement fallback yourself.
 
 | Outcome | Meaning |
 | --- | --- |

@@ -2651,7 +2651,9 @@ describe('throttled (429) event-log reads', () => {
 });
 
 describe('resolved hook delivery endpoint', () => {
-  it('uses a distinct deduplicated endpoint and never falls back after refusal', async () => {
+  it.each([
+    8, 9,
+  ])('uses the spec %s deduplicated endpoint without falling back after refusal', async (specVersion) => {
     const agent = new MockAgent();
     agent.disableNetConnect();
     const origin =
@@ -2659,7 +2661,7 @@ describe('resolved hook delivery endpoint', () => {
     agent
       .get(origin)
       .intercept({
-        path: '/api/v4/runs/wrun_1/events/hook_received/resolved',
+        path: `/api/v${specVersion >= 9 ? 5 : 4}/runs/wrun_1/events/hook_received/resolved`,
         method: 'POST',
       })
       .reply(404, JSON.stringify({ error: { message: 'Not found' } }));
@@ -2669,7 +2671,7 @@ describe('resolved hook delivery endpoint', () => {
           {
             runId: 'wrun_1',
             eventType: 'hook_received',
-            specVersion: 8,
+            specVersion,
             correlationId: 'hook_1',
             payload: new Uint8Array([1, 2, 3]),
             requireHookResumeDedup: true,

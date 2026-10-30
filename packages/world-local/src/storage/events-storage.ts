@@ -53,6 +53,8 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
@@ -62,7 +64,6 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { lock as lockFile } from 'proper-lockfile';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
@@ -85,6 +86,7 @@ import {
   writeJSON,
 } from '../fs.js';
 import { withInProcessLock } from '../util.js';
+import { withFenceFileLock } from './fence-lock.js';
 import { stripEventDataRefs } from './filters.js';
 import {
   getObjectCreatedAt,
@@ -504,7 +506,6 @@ async function pinCanonicalEventIdForLegacyClaim(
   return existing?.eventId ?? null;
 }
 
-/**
 /**
  * Whether `error` is a refusal this World raises before it writes anything:
  * the conflict, not-found, expired and too-early errors of the event
@@ -1199,7 +1200,14 @@ export function createEventsStorage(
         // free to land somewhere else, and the claim is the fast path other
         // writers read first, so it is corrected once the append commits.
         let resumeClaimRecordedId: string | null = null;
-        const now = new Date();
+        // An in-band write's time is the one its orchestrator chose
+        // (`occurredAt`), as on world-vercel's slot-identity runs: an
+        // orchestrator that runs ahead of its writes has already handed the
+        // event to the workflow with that time, and replay must read the same.
+        const now =
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
         let effectiveRunId: string;
@@ -1422,7 +1430,7 @@ export function createEventsStorage(
           if (requiresNewerWorld(currentRun.specVersion)) {
             throw new RunNotSupportedError(
               currentRun.specVersion!,
-              SPEC_VERSION_CURRENT
+              SPEC_VERSION_MAX_SUPPORTED
             );
           }
 
@@ -1451,6 +1459,12 @@ export function createEventsStorage(
         const createsChildEntity = isChildEntityCreationEvent(data);
         const lazyStepStart =
           createsChildEntity && data.eventType === 'step_started';
+        // A single-orchestrator run (spec >= 9) records an inline step's
+        // creation on its `step_started` alone: no synthetic `step_created`,
+        // and the start keeps its input.
+        const creationOnStart = (): boolean =>
+          lazyStepStart &&
+          (currentRun?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR;
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
@@ -1841,6 +1855,7 @@ export function createEventsStorage(
         // check (packages/core/src/step.ts).
         if (
           lazyStepStart &&
+          !creationOnStart() &&
           event.eventType === 'step_started' &&
           event.eventData
         ) {
@@ -2372,7 +2387,7 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
-              await storeEvent(stepCreatedEvent);
+              if (!creationOnStart()) await storeEvent(stepCreatedEvent);
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }
@@ -3922,12 +3937,12 @@ export function createEventsStorage(
   // that follows could miss.
   //
   // The count lives in a file (`inBandCountPath`) and every check-and-advance
-  // runs under a lock file on it (proper-lockfile, like the hook token
-  // claim), after an in-process lock shared by every storage instance in the
-  // process: so two processes on one data directory fence each other, as two
-  // storage instances in one process do, and a restart keeps every count.
+  // runs under a lock directory next to it (`withFenceFileLock`), after an
+  // in-process lock shared by every storage instance in the process: so two
+  // processes on one data directory fence each other, as two storage
+  // instances in one process do, and a restart keeps every count.
   // Between its check and its publish an accepted write marks the count
-  // `pending`. A writer that died there (its lock goes stale) leaves the
+  // `pending`. A writer that died there (its lock is taken over) leaves the
   // mark, and the next writer through the lock counts that write as if it
   // landed: it may have, and counting a write that did not land only costs a
   // superseded redelivery, while missing one that did would let a stale
@@ -3990,45 +4005,7 @@ export function createEventsStorage(
     return withInProcessLock(fenceState.locks, fenceKey(runId), async () => {
       const countPath = inBandCountPath(basedir, runId, tag);
       await fs.mkdir(path.dirname(countPath), { recursive: true });
-      let compromised: Error | undefined;
-      let release: () => Promise<void>;
-      try {
-        release = await lockFile(countPath, {
-          realpath: false,
-          stale: 30_000,
-          update: 1_000,
-          retries: {
-            retries: 350,
-            factor: 1,
-            minTimeout: 100,
-            maxTimeout: 100,
-          },
-          onCompromised(error) {
-            compromised = error;
-          },
-        });
-      } catch (error) {
-        throw new WorkflowWorldError(
-          `Could not acquire the in-band fence lock of run ${runId}`,
-          { cause: error }
-        );
-      }
-      let result: T;
-      try {
-        result = await fn();
-      } finally {
-        if (!compromised) await release().catch(() => {});
-      }
-      // Held past its staleness (a stalled process): another writer may have
-      // taken the lock meanwhile, so this write's place in the count is not
-      // known. Not a 4xx, so a writer treats the outcome as unknown.
-      if (compromised) {
-        throw new WorkflowWorldError(
-          `The in-band fence lock of run ${runId} was lost while a write held it`,
-          { cause: compromised }
-        );
-      }
-      return result;
+      return withFenceFileLock(`${countPath}.lock`, runId, fn);
     });
   }
 

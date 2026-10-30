@@ -5,6 +5,7 @@ import {
   registerDeliveryBarrier,
   type WorkflowOrchestratorContext,
 } from '../private.js';
+import { replayPayloadEventKey } from '../replay-payload-cache.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
 import { getAbortStreamId } from '../util.js';
@@ -234,7 +235,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
                 try {
                   const prepared =
                     await ctx.replayPayloadCache.prepareEventPayload(
-                      event.eventId,
+                      replayPayloadEventKey(event),
                       'payload',
                       rawPayload
                     );

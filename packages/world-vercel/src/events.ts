@@ -34,6 +34,8 @@
 import {
   HookForceClaimedError,
   HookNotFoundError,
+  IN_BAND_SUPERSEDED_CODE,
+  InBandSupersededError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -55,6 +57,8 @@ import {
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -118,8 +122,26 @@ type EventDataField<E = AnyEventRequest> = E extends { eventData?: infer D }
 const eventsNeedingResolve = new Set<string>([
   'run_created', // runtime reads result.run.runId
   'run_started', // runtime reads result.run (checks startedAt, status)
-  'step_started', // runtime reads result.step (checks attempt, state)
 ]);
+
+/**
+ * Whether the POST response of `data` must come back with its entity's
+ * payloads resolved: the runtime reads them from it at once.
+ *
+ * A spec 8 `step_started` is answered with the step entity, whose `input`
+ * the spec 8 step executor hydrates and runs the body with; a lazy response
+ * carries a ref there instead, and the attempt fails. A single-orchestrator
+ * (spec >= 9) run keeps no step entity: its step executor takes the input
+ * from the step's message or its creation event, so its `step_started` stays
+ * lazy.
+ */
+function eventNeedsResolve(data: AnyEventRequest): boolean {
+  if (eventsNeedingResolve.has(data.eventType)) return true;
+  return (
+    data.eventType === 'step_started' &&
+    (data.specVersion ?? 0) < SPEC_VERSION_SINGLE_ORCHESTRATOR
+  );
+}
 
 // =============================================================================
 // Helpers
@@ -188,6 +210,11 @@ interface SplitEventData {
     finalSchedulingReplay?: number;
     /** Runtime optimizations active for the ttfs/stso measurement. */
     optimizations?: string[];
+    /** step_created: the step's execution mode (spec >= 9). */
+    inline?: boolean;
+    /** step_created / wait_created: the creating orchestrator delivery's
+     *  queue message id (spec >= 9). */
+    creatorMessageId?: string;
   };
 }
 
@@ -235,7 +262,9 @@ type MetaSourceField =
   | 'eventCount'
   | 'rsfs'
   | 'finalSchedulingReplay'
-  | 'optimizations';
+  | 'optimizations'
+  | 'inline'
+  | 'creatorMessageId';
 
 /**
  * Compile-time guard that the v4 `eventData` wire allowlist is exhaustive
@@ -443,6 +472,15 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   ) {
     meta.optimizations = eventData.optimizations as string[];
   }
+  // Single-orchestrator (spec >= 9) step and wait bookkeeping. The backend
+  // persists both into the stored eventData, so a log reader sees the
+  // step's execution mode and which delivery created it.
+  if (typeof eventData.inline === 'boolean') {
+    meta.inline = eventData.inline;
+  }
+  if (typeof eventData.creatorMessageId === 'string') {
+    meta.creatorMessageId = eventData.creatorMessageId;
+  }
 
   let payload: Uint8Array | undefined;
   if (payloadField && payloadField in eventData) {
@@ -488,7 +526,8 @@ export async function getEvent(
     runId,
     eventId,
     params?.resolveData === 'none' ? 'lazy' : 'resolve',
-    config
+    config,
+    params?.specVersion
   );
 }
 
@@ -497,6 +536,7 @@ export async function getWorkflowRunEvents(
   config?: APIConfig
 ): Promise<EventListResponse> {
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
+  const signal = 'signal' in params ? params.signal : undefined;
   // `resolveData: 'none'` leaves payload refs unresolved, so the backend can
   // skip reading and streaming their contents. The validated lazy descriptors
   // remain on the returned events.
@@ -508,6 +548,12 @@ export async function getWorkflowRunEvents(
         : resolveData === 'skip-step-inputs'
           ? 'skip-step-inputs'
           : 'resolve',
+    ...(signal ? { signal } : {}),
+    // Picks the route: a spec 9 run's own reads take v5, whose list carries
+    // the snapshot the orchestrator fences with (see `eventsApiVersion`).
+    ...('specVersion' in params && params.specVersion !== undefined
+      ? { specVersion: params.specVersion }
+      : {}),
   };
 
   const result = await ('correlationId' in params
@@ -550,12 +596,39 @@ export async function getWorkflowRunEvents(
  * own entity condition server-side, so a retry of a batch that (partially)
  * committed converges to per-event 409 results with nothing written twice.
  */
+/**
+ * The frame meta's `stepCreatedAt`: the creation time of the step a
+ * background step's first-attempt `step_started` starts, for a step start
+ * latency metric the backend reports. Sent only where the backend reads it
+ * (a bodyless `step_started` with `attempt: 1`), and only as a finite epoch
+ * ms value; anything else is left off rather than sent for the backend to
+ * discard.
+ */
+function stepCreatedAtMeta(
+  event: AnyEventRequest,
+  stepCreatedAt: number | undefined
+): { stepCreatedAt?: number } {
+  if (stepCreatedAt === undefined || !Number.isFinite(stepCreatedAt)) {
+    return {};
+  }
+  if (event.eventType !== 'step_started') return {};
+  const data = event.eventData as
+    | { attempt?: unknown; input?: unknown }
+    | undefined;
+  if (data?.attempt !== 1 || data.input !== undefined) return {};
+  return { stepCreatedAt };
+}
+
 export async function createWorkflowRunEventBatch(
   runId: string,
   events: BatchEventRequest[],
   params?: CreateEventBatchParams,
   config?: APIConfig
 ): Promise<EventBatchResult> {
+  // The backend allocates a fenced batch in one step from the first frame's
+  // `expectedSeqInBand` and `maxSlot`, and refuses a batch whose frames
+  // disagree on `inBand`, so every frame carries the same values.
+  const fence = params;
   if (events.length === 0) {
     throw new WorkflowWorldError(
       'world-vercel: createBatch requires at least one event',
@@ -576,41 +649,51 @@ export async function createWorkflowRunEventBatch(
       { status: 400 }
     );
   }
-  const inputs = events.map(({ event, occurredAt, computeInstanceId }) => {
-    const { payload, meta } = splitEventDataForV4(event);
-    return {
-      runId,
-      eventType: event.eventType,
-      specVersion: event.specVersion ?? 2,
-      ...(event.correlationId ? { correlationId: event.correlationId } : {}),
-      // Under slot identity this is the source of the durable createdAt, so
-      // the caller's logical time is what every replay observes.
-      occurredAt: occurredAt ?? new Date(),
-      // Per-event compute attribution (pre-claimed inline starts); rides the
-      // frame meta exactly like the single POST's CreateEventParams field.
-      ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
-      // Batch responses carry entities for bookkeeping, not payload reads, so
-      // default to lazy refs unless the caller explicitly asks for resolved
-      // data (the same `resolveData` mapping the read paths use).
-      remoteRefBehavior:
-        params?.resolveData === 'all'
-          ? ('resolve' as const)
-          : ('lazy' as const),
-      // Per-write request attribution, exactly like the single POST's
-      // `params.requestId` → `vercelId` threading, stamped per frame so
-      // batched usage facts carry the same attribution.
-      ...(params?.requestId ? { vercelId: params.requestId } : {}),
-      payload,
-      ...meta,
-      // The batch is one fenced allocation: the backend requires every frame
-      // to carry the same fence. Spread after `meta` so nothing derived from
-      // the event data can override it.
-      ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
-      ...(params?.expectedSeqInBand !== undefined
-        ? { expectedSeqInBand: params.expectedSeqInBand }
-        : {}),
-    };
-  });
+  const inputs = events.map(
+    ({ event, occurredAt, computeInstanceId, stepCreatedAt }) => {
+      const { payload, meta } = splitEventDataForV4(event);
+      return {
+        runId,
+        eventType: event.eventType,
+        specVersion: event.specVersion ?? 2,
+        ...(event.correlationId ? { correlationId: event.correlationId } : {}),
+        // Under slot identity this is the source of the durable createdAt, so
+        // the caller's logical time is what every replay observes.
+        occurredAt: occurredAt ?? new Date(),
+        // Per-event compute attribution (pre-claimed inline starts); rides the
+        // frame meta exactly like the single POST's CreateEventParams field.
+        ...(computeInstanceId !== undefined ? { computeInstanceId } : {}),
+        ...stepCreatedAtMeta(event, stepCreatedAt),
+        // Batch responses carry entities for bookkeeping, not payload reads, so
+        // default to lazy refs unless the caller explicitly asks for resolved
+        // data (the same `resolveData` mapping the read paths use).
+        remoteRefBehavior:
+          params?.resolveData === 'all'
+            ? ('resolve' as const)
+            : ('lazy' as const),
+        // Per-write request attribution, exactly like the single POST's
+        // `params.requestId` → `vercelId` threading, stamped per frame so
+        // batched usage facts carry the same attribution.
+        ...(params?.requestId ? { vercelId: params.requestId } : {}),
+        ...(fence?.inBand !== undefined ? { inBand: fence.inBand } : {}),
+        ...(fence?.expectedSeqInBand !== undefined
+          ? { expectedSeqInBand: fence.expectedSeqInBand }
+          : {}),
+        ...(fence?.eventCount !== undefined
+          ? { maxSlot: fence.eventCount }
+          : {}),
+        payload,
+        ...meta,
+        // The batch is one fenced allocation: the backend requires every frame
+        // to carry the same fence. Spread after `meta` so nothing derived from
+        // the event data can override it.
+        ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+        ...(params?.expectedSeqInBand !== undefined
+          ? { expectedSeqInBand: params.expectedSeqInBand }
+          : {}),
+      };
+    }
+  );
 
   // In-process transient retry is safe only when EVERY event in the batch
   // converges on a retry of a committed attempt AND the caller can act on the
@@ -642,7 +725,32 @@ export async function createWorkflowRunEventBatch(
     { batchIdempotent: retryConvergent, inBand: params?.inBand === true }
   );
 
+  // A fenced batch is allocated in one step, so a refusal refuses every event
+  // in it and allocates nothing. Surface it as the same error a single write
+  // gets rather than as per-event failures a caller could mistake for
+  // conflicts.
+  const superseded = wire.results.find(
+    (item) => item.error === IN_BAND_SUPERSEDED_CODE && item.status === 412
+  );
+  if (superseded?.error !== undefined) {
+    throw new InBandSupersededError(superseded.message);
+  }
+
+  // The skipped-slot report of an in-band batch, and the positions the
+  // backend allocated for it (`allocated` is not declared on
+  // `EventBatchResult`; it rides along under that name).
+  // The backend's `reportIncomplete` is the World contract's `hasMore`: the
+  // writer reloads before it consumes what the batch resolves.
+  const report = {
+    ...(wire.events !== undefined ? { events: wire.events } : {}),
+    ...(wire.reportIncomplete === true || wire.hasMore === true
+      ? { hasMore: true }
+      : {}),
+    ...(wire.allocated !== undefined ? { allocated: wire.allocated } : {}),
+  };
+
   return {
+    ...report,
     results: wire.results.map((item): BatchEventItemResult => {
       if (item.error !== undefined) {
         return {
@@ -708,12 +816,6 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
         { code: 'SCHEMA_VALIDATION' }
       );
     }
-    if (data.eventType === 'step_started' && !result.step?.startedAt) {
-      throw new WorkflowWorldError(
-        'step_started response is missing step.startedAt',
-        { code: 'SCHEMA_VALIDATION' }
-      );
-    }
     return result as EventResult<T['eventType']>;
   } catch (err) {
     if (err instanceof ReplayEventObserverError) throw err.error;
@@ -729,12 +831,17 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
         err.claimedByHookId
       );
     }
-    // 404 on hook_disposed / hook_received → already-disposed hook.
+    // 404 on hook_disposed / hook_received → already-disposed hook. Only a
+    // 404 the backend answered for the entity counts: it carries an error
+    // code. A 404 without one is a route the backend does not serve (an
+    // older backend, or a wrong base URL), and saying the hook does not
+    // exist would hide that.
     if (
       params?.requireHookResumeDedup !== true &&
       isHookEventRequiringExistence(data.eventType) &&
       WorkflowWorldError.is(err) &&
       err.status === 404 &&
+      err.code !== undefined &&
       data.correlationId
     ) {
       throw new HookNotFoundError(data.correlationId);
@@ -809,7 +916,7 @@ async function createWorkflowRunEventInner(
   }
 
   const remoteRefBehavior: 'resolve' | 'lazy' =
-    eventsNeedingResolve.has(data.eventType) ||
+    eventNeedsResolve(data) ||
     // Concurrent hook reconciliation consumes the committed event directly.
     // Honor its explicit request for replay-ready metadata; other mutation
     // responses keep their existing lightweight entity-only behavior.
@@ -824,7 +931,10 @@ async function createWorkflowRunEventInner(
     specVersion: data.specVersion ?? 2,
     ...(data.eventType === 'run_started'
       ? {
-          executorSpecVersion: config?.mintedSpecVersion ?? mintedSpecVersion(),
+          executorSpecVersion: executorSpecVersionFor(
+            data.specVersion,
+            config?.mintedSpecVersion ?? mintedSpecVersion()
+          ),
         }
       : {}),
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
@@ -832,10 +942,17 @@ async function createWorkflowRunEventInner(
     ...(params?.computeInstanceId
       ? { computeInstanceId: params.computeInstanceId }
       : {}),
+    ...stepCreatedAtMeta(data, params?.stepCreatedAt),
     // Slot-identity snapshot: how much of the log the writer held. Rides as
     // `maxSlot` because the v4 meta already has an unrelated telemetry
     // `eventCount`.
     ...(params?.eventCount !== undefined ? { maxSlot: params.eventCount } : {}),
+    // The in-band writer fence (spec >= 9). The backend requires `inBand` on
+    // every write to a single-orchestrator run and ignores both on older runs.
+    ...(params?.inBand !== undefined ? { inBand: params.inBand } : {}),
+    ...(params?.expectedSeqInBand !== undefined
+      ? { expectedSeqInBand: params.expectedSeqInBand }
+      : {}),
     replayDivergenceCount: params?.replayDivergenceCount,
     // In-band writer fence. The backend refuses a stale in-band write with
     // 412 `in-band-superseded` (InBandSupersededError).
@@ -873,7 +990,14 @@ async function createWorkflowRunEventInner(
     ...meta,
   };
 
-  if (data.eventType === 'run_started' && !params?.skipPreload) {
+  // A single-orchestrator (spec >= 9) write, which always declares `inBand`,
+  // is answered with a plain CBOR body: the runtime loads the log, and its
+  // fence snapshot, before writing `run_started`, so there is no preload.
+  if (
+    data.eventType === 'run_started' &&
+    !params?.skipPreload &&
+    params?.inBand === undefined
+  ) {
     const result = await createWorkflowRunStartedEventV4(
       input,
       config,
@@ -995,4 +1119,27 @@ function reconstructRunFromReplayEvents(events: Event[]) {
       updatedAt,
     },
   };
+}
+
+/**
+ * The spec version a `run_started` attests for its executor: the newest
+ * version the orchestrator writing it speaks, capped by what this World
+ * mints.
+ *
+ * The runtime picks the orchestrator from the run's version, and
+ * `run_started` carries that version: a run below
+ * `SPEC_VERSION_SINGLE_ORCHESTRATOR` is driven by the spec 8 orchestrator,
+ * which speaks up to `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`. Attesting the
+ * World's minted version there would let the backend raise a freshly
+ * created spec 8 run across the single-orchestrator version while the spec 8
+ * orchestrator keeps driving it. Raises across capability-only versions
+ * (for example 5 to 8) still happen as before.
+ */
+export function executorSpecVersionFor(
+  runStartedSpecVersion: number | undefined,
+  worldSpecVersion: number
+): number {
+  return (runStartedSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ? worldSpecVersion
+    : Math.min(worldSpecVersion, SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
 }

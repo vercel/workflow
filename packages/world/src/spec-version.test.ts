@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as specVersions from './spec-version.js';
 import {
   CAPABILITY_ONLY_SPEC_VERSIONS,
@@ -6,10 +6,11 @@ import {
   isLegacySpecVersion,
   mintedSpecVersion,
   requiresNewerWorld,
-  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
@@ -19,8 +20,10 @@ import {
 } from './spec-version.js';
 
 describe('spec version classification', () => {
-  const versionConstants = Object.entries(specVersions).filter(([name]) =>
-    name.startsWith('SPEC_VERSION_SUPPORTS_')
+  const versionConstants = Object.entries(specVersions).filter(
+    ([name]) =>
+      name.startsWith('SPEC_VERSION_SUPPORTS_') ||
+      name === 'SPEC_VERSION_SINGLE_ORCHESTRATOR'
   ) as [string, number][];
 
   it.each(
@@ -40,6 +43,18 @@ describe('spec version classification', () => {
     expect(crossesStructuralSpecVersion(5, 6)).toBe(true);
     expect(crossesStructuralSpecVersion(6, 7)).toBe(true);
     expect(crossesStructuralSpecVersion(3, 8)).toBe(true);
+  });
+
+  it('treats the single-orchestrator version as structural', () => {
+    expect(STRUCTURAL_SPEC_VERSIONS.has(SPEC_VERSION_SINGLE_ORCHESTRATOR)).toBe(
+      true
+    );
+    expect(
+      crossesStructuralSpecVersion(
+        SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      )
+    ).toBe(true);
   });
 
   it('lets capability-only versions be crossed', () => {
@@ -63,7 +78,11 @@ describe('spec version constants', () => {
     expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
     expect(SPEC_VERSION_SUPPORTS_SEALED_LOG).toBe(7);
     expect(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM).toBe(8);
+    expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBe(9);
     expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    expect(SPEC_VERSION_DEFAULT_MINTED).toBe(SPEC_VERSION_CURRENT);
+    // Spec 9 is opt-in: the default stays below the readable ceiling.
+    expect(SPEC_VERSION_CURRENT).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
   });
 
   describe('mintedSpecVersion', () => {
@@ -74,22 +93,132 @@ describe('spec version constants', () => {
       );
     });
 
-    it('falls back to slot identity when switched off', () => {
-      for (const off of ['0', 'false']) {
-        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: off })).toBe(
+    it('stamps the slot-identity version when WORKFLOW_SEALED_LOG opts out', () => {
+      for (const raw of ['0', 'false', 'FALSE']) {
+        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
           SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+        );
+      }
+      for (const raw of ['', '1', 'true']) {
+        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
+          SPEC_VERSION_CURRENT
         );
       }
     });
 
-    it('stays on by default for an unset or malformed value', () => {
-      // A flag is an escape hatch, not a hard requirement: a typo must not
-      // silently move a deployment onto the older identity scheme.
-      for (const raw of ['', '1', 'true', 'yes-please']) {
-        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: raw })).toBe(
+    it('stamps any supported version WORKFLOW_SPEC_VERSION names', () => {
+      const fenced = { inBandFence: true };
+      for (
+        let v = SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+        v <= SPEC_VERSION_MAX_SUPPORTED;
+        v++
+      ) {
+        expect(
+          mintedSpecVersion({ WORKFLOW_SPEC_VERSION: String(v) }, fenced)
+        ).toBe(v);
+        expect(
+          mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ` ${v}\n` }, fenced)
+        ).toBe(v);
+      }
+      expect(
+        mintedSpecVersion({
+          WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM),
+        })
+      ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+    });
+
+    it('ignores an unrecognised WORKFLOW_SPEC_VERSION, and warns once per value', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const unsupported = [
+          String(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY - 1),
+          String(SPEC_VERSION_MAX_SUPPORTED + 1),
+          'eight',
+          '8.5',
+          '-8',
+        ];
+        for (const raw of unsupported) {
+          expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw })).toBe(
+            SPEC_VERSION_CURRENT
+          );
+          expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw })).toBe(
+            SPEC_VERSION_CURRENT
+          );
+        }
+        expect(warn).toHaveBeenCalledTimes(unsupported.length);
+        expect(String(warn.mock.calls[0]?.[0])).toContain(
+          'Ignoring WORKFLOW_SPEC_VERSION'
+        );
+        // An ignored value falls through to the sealed-log switch.
+        expect(
+          mintedSpecVersion({
+            WORKFLOW_SPEC_VERSION: 'eight',
+            WORKFLOW_SEALED_LOG: '0',
+          })
+        ).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '' })).toBe(
           SPEC_VERSION_CURRENT
         );
+      } finally {
+        warn.mockRestore();
       }
+    });
+
+    it('prefers WORKFLOW_SPEC_VERSION over WORKFLOW_SEALED_LOG, and warns once', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const env = {
+          WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM),
+          WORKFLOW_SEALED_LOG: '0',
+        };
+        expect(mintedSpecVersion(env)).toBe(
+          SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+        );
+        expect(mintedSpecVersion(env)).toBe(
+          SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+        );
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toContain('both set');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('stamps the single-orchestrator version only for a fenced World', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const env = {
+          WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SINGLE_ORCHESTRATOR),
+        };
+        expect(mintedSpecVersion(env, { inBandFence: true })).toBe(
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
+        // A World written to the earlier guide passes no options: it keeps
+        // creating spec 8 runs, and the ignored setting warns once.
+        expect(mintedSpecVersion(env)).toBe(SPEC_VERSION_DEFAULT_MINTED);
+        expect(mintedSpecVersion(env, { inBandFence: false })).toBe(
+          SPEC_VERSION_DEFAULT_MINTED
+        );
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toContain(
+          'capabilities.inBandFence'
+        );
+        // The sealed-log switch still decides the fallback.
+        expect(mintedSpecVersion({ ...env, WORKFLOW_SEALED_LOG: '0' })).toBe(
+          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('never stamps the single-orchestrator version unless asked to', () => {
+      expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThan(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      );
+      expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: '1' })).toBeLessThan(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      );
     });
 
     it('never stamps a version this build cannot read back', () => {
@@ -103,9 +232,7 @@ describe('spec version constants', () => {
     // "What do we write?" and "what can we still read?" are separate dials,
     // and the ceiling must never sit below the default: an SDK that stamps a
     // version it cannot read back would reject its own runs.
-    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(
-      SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
-    );
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
     expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
       SPEC_VERSION_CURRENT
     );

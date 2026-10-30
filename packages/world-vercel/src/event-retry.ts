@@ -68,6 +68,7 @@
 import {
   EntityConflictError,
   HookForceClaimedError,
+  HookNotFoundError,
   RunExpiredError,
   StreamError,
   ThrottleError,
@@ -592,6 +593,7 @@ function isEligibleForTransientRetry(
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
 ): boolean {
+  if (options?.resolvedHookResume === true) return false;
   if (options?.inBand === true) return false;
   // A batch call always carries an explicit verdict derived from every event
   // it contains; the per-type matrix (keyed on the batch's FIRST event) must
@@ -625,19 +627,42 @@ export async function withEventPostRetry<T>(
     `writing ${eventType} event`,
     throttleBudgetFor(eventType, options)
   );
+  let retried = false;
   for (let attempt = 0; ; ) {
     try {
       return await fn();
     } catch (err) {
       if (err instanceof AfterCommitError) throw err;
       if (
+        options?.resolvedHookResume === true &&
+        retried &&
+        (HookNotFoundError.is(err) ||
+          HookForceClaimedError.is(err) ||
+          RunExpiredError.is(err) ||
+          (WorkflowWorldError.is(err) &&
+            (err.status === 400 || err.status === 404)))
+      ) {
+        // A refusal only proves THIS send wrote nothing. Never let it hide
+        // an earlier send and enable a lookup followed by a claim-less write.
+        throw new WorkflowWorldError(
+          'Resolved hook delivery was refused after an earlier send; its outcome may be uncertain',
+          {
+            code: 'HOOK_RESUME_RETRY_REFUSED',
+            status: WorkflowWorldError.is(err) ? err.status : undefined,
+            cause: err,
+          }
+        );
+      }
+      if (
         ThrottleError.is(err) ||
         (options?.resolvedHookResume === true &&
           WorkflowWorldError.is(err) &&
           err.status === 503 &&
+          err.code === 'run-spec-version-changed' &&
           err.retryAfter !== undefined)
       ) {
         await waitOutThrottle(err);
+        retried = true;
         continue;
       }
       if (!retryable || !isRetryableEventPostError(err)) {
@@ -668,6 +693,7 @@ export async function withEventPostRetry<T>(
         error: errorMarker(err),
       });
       await sleep(backoff);
+      retried = true;
     }
   }
 }

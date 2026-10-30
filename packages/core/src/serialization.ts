@@ -1,4 +1,5 @@
 import {
+  EncryptionKeyLookupError,
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
@@ -10,6 +11,7 @@ import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { isRetryableWorldError } from './classify-error.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -279,6 +281,24 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
   }
 }
 
+/**
+ * Whether a failed encryption key lookup is worth retrying: a retryable world
+ * error (transport, timeout, `429`, `5xx`), or any error carrying a numeric
+ * HTTP `status` of `429` or `>= 500`. Worlds that fetch keys over HTTP do not
+ * necessarily throw `WorkflowWorldError` for a non-2xx response (world-vercel
+ * throws a plain `Error` with `status`), so the status check covers those.
+ */
+function isTransientKeyLookupError(error: unknown): boolean {
+  if (isRetryableWorldError(error)) {
+    return true;
+  }
+  const status =
+    typeof error === 'object' && error !== null
+      ? (error as { status?: unknown }).status
+      : undefined;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -349,6 +369,21 @@ export function getSerializeStream(
         // SerializationError (USER_ERROR).
         if (RuntimeDecryptionError.is(error)) {
           controller.error(error);
+          return;
+        }
+        // A key lookup failure is not a SerializationError either: nothing
+        // was serialized yet. A transient failure passes through unwrapped so
+        // the step retries; anything else (e.g. a 404) becomes a fatal
+        // EncryptionKeyLookupError.
+        if (!keyState.resolved) {
+          controller.error(
+            isTransientKeyLookupError(error)
+              ? error
+              : new EncryptionKeyLookupError(
+                  `Failed to resolve the encryption key for stream writes (owner run key lookup failed: ${error instanceof Error ? error.message : String(error)})`,
+                  { cause: error }
+                )
+          );
           return;
         }
         const { message, hint } = formatSerializationError(
@@ -1302,8 +1337,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * optimistically (before `run_started` is durable), the first chunk write to
    * a brand-new stream would otherwise reach the World before the run exists
    * and be rejected as run-not-found. Awaiting this once before the first
-   * flush/close orders the write after the run's creation. `undefined` outside
-   * turbo and on the await path, where the run was already durable.
+   * flush/close orders the write after the run's creation. If it rejects,
+   * every write and the close fail with its error instead of reaching the
+   * World: a refused `run_started` can mean another orchestrator holds the
+   * run, and this body's chunks would land on a stream whose run never
+   * records the step that wrote them. `undefined` outside turbo and on the
+   * await path, where the run was already durable.
    */
   constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
     if (typeof runId !== 'string') {
@@ -1317,17 +1356,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     const worldPromise = getWorldLazy();
 
     // Hold the first server write until the run exists (turbo optimistic
-    // start). Awaited once, then cleared so later flushes pay nothing. The
-    // rejection is swallowed for ordering only: if `run_started` truly failed
-    // the run does not exist, so the write below surfaces the real error.
+    // start). Awaited once, then cleared so later flushes pay nothing. A
+    // rejection is kept, so every later write and the close fail with it.
     let pendingRunReady: Promise<unknown> | undefined = runReadyBarrier;
     const ensureRunReady = async (): Promise<void> => {
       if (pendingRunReady) {
-        try {
-          await pendingRunReady;
-        } catch {
-          // intentional: ordering barrier only, see above.
-        }
+        await pendingRunReady;
         pendingRunReady = undefined;
       }
     };
@@ -1335,15 +1369,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // One stable identity and sequence space per in-memory sink. Start session
     // construction as soon as the run-ready barrier permits, so transports may
     // negotiate eagerly without allowing a write to overtake run creation.
-    // This eager chain cannot strand a new rejection: ensureRunReady absorbs its
-    // ordering-only failure, and every path that can observe worldPromise also
-    // awaits this session promise before it writes, closes, or disposes.
+    // A rejection of this eager chain (a failed run start) is observed by the
+    // write, close and dispose paths, which all await it; the handler below
+    // only keeps it from surfacing as unhandled when none of them runs.
     const writerId = `wrtr_${defaultUlid()}` as const;
     const writeSessionPromise: Promise<StreamWriteSession | undefined> =
       ensureRunReady().then(async () => {
         const world = await worldPromise;
         return world.streams.createWriteSession?.(runId, name, { writerId });
       });
+    writeSessionPromise.catch(() => {});
     let nextChunkSeq = 0;
 
     // ------------------------------------------------------------------

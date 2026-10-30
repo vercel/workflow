@@ -5,7 +5,7 @@
  * from @workflow/world rather than using arbitrary numbers.
  */
 
-import { envFlag } from './env-config.js';
+import { envFlag, warnOnce } from './env-config.js';
 
 declare const SpecVersionBrand: unique symbol;
 
@@ -94,26 +94,51 @@ export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
 
 /**
+ * Runs at this spec version or later follow the single-orchestrator model:
+ * one orchestrator invocation per run makes every decision, step and wait
+ * events are plain appends to the log (a World keeps no step or wait state it
+ * checks writes against), and the orchestrator's own writes are fenced.
+ *
+ * What changes for a reader and a writer:
+ *
+ * - Every write request says whether the run's orchestrator made it
+ *   (`CreateEventParams.inBand`). An in-band write carries the orchestrator's
+ *   count of in-band positions (`expectedSeqInBand`), taken from the
+ *   `snapshot` its log load returned. The World refuses an in-band write
+ *   whose count is stale with
+ *   `InBandSupersededError`, which makes at most one orchestrator a writer
+ *   even when two invocations of it run at once. A World that creates
+ *   spec 9 runs implements this fence (`WorldCapabilities.inBandFence`).
+ * - `step_created` records how the step executes (`eventData.inline`) and
+ *   which queue message's invocation created it (`creatorMessageId`). Step
+ *   events carry `stepName`, and `step_started` carries `attempt`.
+ * - Replay treats any event for an entity after its terminal event as inert.
+ *
+ * Structural: positions are counted against an in-band head, and step state
+ * is folded from the log instead of read from a row, so a run can only be
+ * moved across this version before anything past `run_created` exists.
+ *
+ * It requires the sealed log: the fence counts positions the World's
+ * sequencer allocates, so it builds on {@link SPEC_VERSION_SUPPORTS_SEALED_LOG}.
+ */
+export const SPEC_VERSION_SINGLE_ORCHESTRATOR = 9 as SpecVersion;
+
+/**
  * Current spec version: event-sourced architecture with native attributes,
  * compressed payloads, slot-numbered event ids, sealed-log sequencing, and
  * involuntary hook disposal.
  *
- * This is both the version a World stamps on the runs it creates and the
- * *lowest* one this runtime accepts from a World (see
- * `assertWorldSupportsRuntimeProtocol`). Slot numbering is a requirement of
- * the World contract rather than a capability to opt into: a World declaring
- * anything below this allocates event ids the runtime cannot read positions
- * out of, so admitting it would only move the failure from startup to the
- * middle of a run.
+ * This is the version a World stamps on the runs it creates by default (see
+ * {@link mintedSpecVersion}). The single-orchestrator model,
+ * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, sits one version above it and is
+ * opt-in, so this stays below {@link SPEC_VERSION_MAX_SUPPORTED}: the runtime
+ * reads and drives runs of both. The lowest version this runtime accepts from
+ * a World is lower still: see `assertWorldSupportsRuntimeProtocol` in
+ * `@workflow/core`, which floors at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}.
  *
- * This is the FLOOR, not necessarily what gets stamped. Sealed-log runs sit
- * one version above it and are opt-in, so what a World actually stamps comes
- * from {@link mintedSpecVersion}; this is what that falls back to.
- *
- * A World therefore declares this constant rather than a literal, so a bump
- * moves the declaration and the floor together. Pinning a literal would leave
- * the adapter one version behind the next bump and get it rejected by the
- * runtime it ships alongside.
+ * A World declares `mintedSpecVersion()` rather than this constant or a
+ * literal, so a bump moves the declaration with the package. Pinning a
+ * literal would leave the adapter one version behind the next bump.
  *
  * Bumping this does not touch runs already created: their stamped version is
  * persisted, every version test in the runtime is `>=`, and a World resolves a
@@ -123,56 +148,116 @@ export const SPEC_VERSION_CURRENT =
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
 
 /**
- * Environment variable that opts new runs OUT of the sealed log.
+ * The spec version {@link mintedSpecVersion} returns when no setting changes
+ * it: {@link SPEC_VERSION_CURRENT}. Spec 9 runs are created only on request
+ * (`WORKFLOW_SPEC_VERSION=9`), and only by a World that declares the in-band
+ * fence.
+ */
+export const SPEC_VERSION_DEFAULT_MINTED = SPEC_VERSION_CURRENT as SpecVersion;
+
+/**
+ * Environment variable that selects the spec version new runs are created
+ * with; see {@link mintedSpecVersion}.
+ */
+export const SPEC_VERSION_ENV_VAR = 'WORKFLOW_SPEC_VERSION';
+
+/**
+ * Environment variable that opts new runs out of the sealed log: `0` or
+ * `false` creates runs at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}, as it
+ * did before {@link SPEC_VERSION_ENV_VAR} existed. Read only while
+ * {@link SPEC_VERSION_ENV_VAR} is unset.
  *
- * Read per `createWorld()` call rather than at module load, so a test or a
- * single process can create worlds in both modes.
+ * @deprecated Set {@link SPEC_VERSION_ENV_VAR} instead.
  */
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
+/** What a World can do that decides which spec versions it may mint. */
+export interface MintedSpecVersionOptions {
+  /**
+   * The World implements the in-band writer fence
+   * (`WorldCapabilities.inBandFence`). Spec 9 runs need it, so without it
+   * {@link mintedSpecVersion} never returns
+   * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}.
+   */
+  inBandFence?: boolean;
+}
+
 /**
- * The spec version a World should stamp on the runs it creates: the current
- * version (sealed log plus involuntary hook disposal) unless
- * {@link SEALED_LOG_ENV_VAR} switches the sealed log off, in which case the
- * slot-identity version it supersedes. Versions are linear, so switching the
- * sealed log off also drops below {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM}:
- * runs minted that way can force-claim, but cannot be force-claimed from.
+ * The spec version a World should stamp on the runs it creates.
  *
- * Same shape, and the same reasoning, as the flag slot identity itself shipped
- * behind before going unconditional: default on, with one env var to put a
- * deployment back on the previous scheme without a release.
+ * | `WORKFLOW_SPEC_VERSION` | `inBandFence` | returns |
+ * |---|---|---|
+ * | unset | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8), or {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} (6) with `WORKFLOW_SEALED_LOG=0` |
+ * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
+ * | `9` | not `true` | the default, with a warning once per process |
+ * | `6` to `8` | any | that version |
+ * | anything else | any | the default, with a warning once per process |
  *
- * What default-on rests on is the density requirement in
- * `Storage['events']`: a reader's log must be a PREFIX of the run's log, so
- * that the number of events it holds tells it whether it has the whole thing.
- * A sealed log satisfies that by repair rather than by construction — a
- * position is handed out before its write commits, so a read can land while
- * one is still empty — and it is only equivalent if a read that cannot see
- * past such a position waits for it to be filled or sealed instead of
- * reporting a log that ends there. It has to be the READ that waits, because
- * a shorter prefix is a legal log state and nothing downstream can tell the
- * two apart. The first rollout of this default shipped without that: the
- * backend's in-request poll budget was shorter than the age a position must
- * reach before it can be sealed, so the read always gave up and truncated,
- * and a replay took a step whose completion sat above the gap to be still
- * running — then sat on it for a full inline-ownership lease.
+ * Values are trimmed. When both variables are set, `WORKFLOW_SPEC_VERSION`
+ * wins and a warning is logged once.
  *
- * The fallback is a real fallback, not a formality. Turning this off has to
- * leave a World the runtime still admits, which is why
- * `assertWorldSupportsRuntimeProtocol` floors at the slot-identity version
- * rather than at {@link SPEC_VERSION_CURRENT} because a kill switch that made
- * the runtime reject its own World would be no kill switch at all.
+ * A call with no options never returns 9. A World written to an earlier
+ * "Building a World" guide, which declares `specVersion: mintedSpecVersion()`,
+ * keeps creating spec 8 runs whatever the environment says, and only a World
+ * that implements the fence and passes `{ inBandFence: true }` can create
+ * spec 9 runs.
  *
- * Every World reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever
- * this returns, so switching it off here does not make runs another process
- * created unreadable.
+ * The setting gates minting only. The runtime drives runs of every version
+ * from {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to
+ * {@link SPEC_VERSION_MAX_SUPPORTED}: spec 9 runs with the single
+ * orchestrator, kept to one writer by the World's in-band fence, and earlier
+ * runs with the spec 8 orchestrator, which needs no fence. Everything that
+ * reads, routes or writes to an existing run follows the version stamped on
+ * that run, so changing the setting only affects new runs. (A backend may
+ * raise a running run across {@link CAPABILITY_ONLY_SPEC_VERSIONS}, never
+ * across a structural version such as
+ * {@link SPEC_VERSION_SINGLE_ORCHESTRATOR}, so a run never changes
+ * orchestrator.)
+ *
+ * A function rather than a constant so a World reads the settings where it is
+ * created.
  */
 export function mintedSpecVersion(
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  options: MintedSpecVersionOptions = {}
 ): SpecVersion {
-  return envFlag(SEALED_LOG_ENV_VAR, true, env)
-    ? SPEC_VERSION_CURRENT
+  const sealedLogRaw = env[SEALED_LOG_ENV_VAR];
+  const sealedLogSet = sealedLogRaw !== undefined && sealedLogRaw !== '';
+  const fallback = envFlag(SEALED_LOG_ENV_VAR, true, env)
+    ? SPEC_VERSION_DEFAULT_MINTED
     : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+  const requested = env[SPEC_VERSION_ENV_VAR]?.trim();
+  if (requested !== undefined && requested !== '') {
+    const version = Number(requested);
+    if (
+      /^\d+$/.test(requested) &&
+      version >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
+      version <= SPEC_VERSION_MAX_SUPPORTED
+    ) {
+      if (sealedLogSet) {
+        warnOnce(
+          `${SEALED_LOG_ENV_VAR}+${SPEC_VERSION_ENV_VAR}`,
+          `${SPEC_VERSION_ENV_VAR} and ${SEALED_LOG_ENV_VAR} are both set; new runs use ${SPEC_VERSION_ENV_VAR}=${version} and ${SEALED_LOG_ENV_VAR} is ignored.`
+        );
+      }
+      if (
+        version >= SPEC_VERSION_SINGLE_ORCHESTRATOR &&
+        options.inBandFence !== true
+      ) {
+        warnOnce(
+          `${SPEC_VERSION_ENV_VAR}=${requested}:no-fence`,
+          `Ignoring ${SPEC_VERSION_ENV_VAR}=${version}: the World does not declare the in-band writer fence (capabilities.inBandFence) that spec ${SPEC_VERSION_SINGLE_ORCHESTRATOR} runs need, so new runs use spec ${fallback}.`
+        );
+        return fallback;
+      }
+      return version as SpecVersion;
+    }
+    warnOnce(
+      `${SPEC_VERSION_ENV_VAR}=${requested}`,
+      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}.`
+    );
+  }
+  return fallback;
 }
 
 /**
@@ -186,7 +271,7 @@ export function mintedSpecVersion(
  * everywhere.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
-  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
+  SPEC_VERSION_SINGLE_ORCHESTRATOR as SpecVersion;
 
 /**
  * Spec versions whose only effect is to switch on capabilities of a run's
@@ -214,6 +299,7 @@ export const STRUCTURAL_SPEC_VERSIONS: ReadonlySet<number> = new Set([
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
 ]);
 
 /**

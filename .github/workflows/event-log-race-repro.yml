@@ -100,8 +100,15 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/stable' }}
 
 jobs:
+  # Two cells on Vercel. `default` races the standard Git preview, whose new
+  # runs take the default spec version (8). `spec9` races a dedicated preview
+  # deployed with WORKFLOW_SPEC_VERSION=9, the single orchestrator, which is
+  # opt-in and so has no other race coverage. The variable is set on that
+  # deployment AND on the runner: a cross-deployment start() stamps the lower
+  # of the two versions, and the harness fails if a run comes back at another
+  # spec version. Both cells gate.
   event-log-race-repro:
-    name: Event Log Race Repro
+    name: Event Log Race Repro${{ matrix.spec == 'spec9' && ' (spec 9)' || '' }}
     runs-on: ubuntu-latest
     # Sized for the harness' default scale: its own test timeout is
     # `budget_ms + run_timeout_ms + 60s` (~17 min at the defaults), and the rest is
@@ -110,6 +117,10 @@ jobs:
     # the job before the summary is written.
     timeout-minutes: 25
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'event-log-race-repro') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        spec: [default, spec9]
     # No comment-writing scopes: the PR comment for every lane is written by
     # `event-log-race-repro-comment` below.
     permissions:
@@ -135,11 +146,47 @@ jobs:
         run: pnpm turbo run build --filter='@workflow/cli'
 
       - name: Resolve Vercel deployment
-        id: deployment
+        id: git-deployment
+        if: ${{ matrix.spec == 'default' }}
         uses: ./.github/actions/resolve-vercel-deployment
         with:
           project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           token: ${{ secrets.VERCEL_LABS_TOKEN }}
+
+      # Same dedicated-deployment pattern as `e2e-vercel-spec9` in tests.yml.
+      - name: Deploy a dedicated spec 9 preview
+        id: spec9-deployment
+        if: ${{ matrix.spec == 'spec9' }}
+        uses: ./.github/actions/deploy-vercel-preview
+        with:
+          project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+          team-id: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          env: |
+            WORKFLOW_SPEC_VERSION=9
+
+      - name: Select deployment
+        id: deployment
+        env:
+          GIT_URL: ${{ steps.git-deployment.outputs.deployment-url }}
+          GIT_ID: ${{ steps.git-deployment.outputs.deployment-id }}
+          GIT_ENVIRONMENT: ${{ steps.git-deployment.outputs.environment }}
+          SPEC9_URL: ${{ steps.spec9-deployment.outputs.deployment-url }}
+          SPEC9_ID: ${{ steps.spec9-deployment.outputs.deployment-id }}
+        run: |
+          if [ "${{ matrix.spec }}" = spec9 ]; then
+            {
+              echo "deployment-url=$SPEC9_URL"
+              echo "deployment-id=$SPEC9_ID"
+              echo "environment=preview"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "deployment-url=$GIT_URL"
+              echo "deployment-id=$GIT_ID"
+              echo "environment=$GIT_ENVIRONMENT"
+            } >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Run event log race repro
         id: repro
@@ -150,6 +197,7 @@ jobs:
           DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
           VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
           APP_NAME: nextjs-turbopack
+          WORKFLOW_SPEC_VERSION: ${{ matrix.spec == 'spec9' && '9' || '' }}
           WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
@@ -193,7 +241,7 @@ jobs:
         run: |
           node .github/scripts/render-event-log-race-repro-results.js \
             event-log-race-repro-results.json \
-            --label vercel \
+            --label "${{ matrix.spec == 'spec9' && 'vercel-spec9' || 'vercel' }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
@@ -203,7 +251,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: event-log-race-repro-results
+          name: event-log-race-repro-results${{ matrix.spec == 'spec9' && '-vercel-spec9' || '' }}
           path: |
             event-log-race-repro-results.json
             event-log-race-repro-summary.md
@@ -383,10 +431,11 @@ jobs:
             previous_comment_args=(--previous-comment event-log-race-repro-previous-comment.md)
           fi
 
-          # Lane order here is the row order in the comment: the gating lane
-          # first, then the two report-only worlds.
+          # Lane order here is the row order in the comment: the two gating
+          # Vercel lanes first, then the two report-only worlds.
           node .github/scripts/render-event-log-race-repro-results.js \
             --lane vercel=lane-results/event-log-race-repro-results/event-log-race-repro-results.json \
+            --lane vercel-spec9=lane-results/event-log-race-repro-results-vercel-spec9/event-log-race-repro-results.json \
             --lane local=lane-results/event-log-race-repro-results-world-local/event-log-race-repro-results.json \
             --lane postgres=lane-results/event-log-race-repro-results-world-postgres/event-log-race-repro-results.json \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \

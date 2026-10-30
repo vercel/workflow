@@ -225,7 +225,7 @@ Two properties have to hold, and both are about what a reader can conclude from 
 - **Uniqueness.** Two writers racing to append must not both take a position. Settle it where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, rather than reading the maximum and adding one in your own process.
 - **Density.** Positions run from 1 with no holes, which is what lets a reader tell a complete log from a truncated one by its length alone. A writer that loses a race must re-derive its position from the store and take the next free one. Incrementing a local number after a loss leaves a permanent hole, and the runtime treats a hole as a log it cannot safely replay across.
 
-Allocate the position **at the commit** in the same operation that appends the event. This makes a reader's log a *prefix* of the run's log rather than a prefix with a hole. Nothing can land behind a position that a reader has passed. Assigning a position earlier, such as in a request handler, and committing later breaks the property that every replay depends on. This is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
+Allocate the position **at the commit** in the same operation that appends the event. This makes a reader's log a *prefix* of the run's log rather than a prefix with a hole. Nothing can land behind a position that a reader has passed. Assigning a position earlier, such as in a request handler, and committing later breaks the property that every replay depends on, unless you seal abandoned positions as described below. This is the one case where you may need [a stale-write rejection](#optional-rejecting-a-stale-write) to compensate.
 
 #### Optional: pre-assigned positions and `noop` sealing
 
@@ -270,7 +270,7 @@ The runtime handles a rejection wherever it arrives. It restarts the replay in-p
 
 The in-band writer fence keeps a run to one orchestrator writer when two orchestrator invocations of the same run overlap, for example a delivery that outlives its queue lease while a redelivery of the run is already running. A write made by the run's orchestrator is **in-band** (`params.inBand: true`). Everything else is **out-of-band**: a background step's own events, `hook_received` from `resumeHook()` and webhooks, `run_cancelled` from `cancel()`, and `attr_set` from `setAttributes()` outside the workflow.
 
-The fence is optional, and the runtime does not send `inBand` yet, so a World without it stays fully supported. Declare `capabilities.inBandFence: true` when you implement all of the following:
+The fence is optional. The runtime sends `inBand` only on runs of the experimental spec 9 runtime, so a World without the fence stays fully supported and keeps creating spec 8 runs. Declare `capabilities.inBandFence: true` when you implement all of the following:
 
 - **Two counters per run.** Next to whatever allocates event positions, keep `seq`, the highest position allocated to any write, and `seqInBand`, the number of positions allocated to in-band writes. `run_created` counts as in-band and is never fenced itself, so a new run holds `seq = 1, seqInBand = 1` (`IN_BAND_SEQ_AT_RUN_CREATION` from `@workflow/world`).
 - **List snapshot, or counters on a refusal.** On every `events.list()` page of a slot-numbered run, return `snapshot: { seq, seqInBand }`, read before the listing. A full load, followed to `hasMore: false`, covers every position up to the first page's `seq`. A fenced writer takes its count from that first page, never from counting events, because a count cannot tell which positions were in-band. If your store cannot read the counters on a list, you may list no snapshot, as long as every refusal carries both counters, read together (see below).
@@ -680,3 +680,7 @@ Your World will then appear on the [Worlds ecosystem](/worlds) page with its com
   "docs": "https://github.com/you/your-world#readme"
 }
 ```
+
+## Supporting spec 9 runs (experimental)
+
+Everything above is the contract for spec 8 runs, which every World needs. A World may also let its users opt in to the experimental spec 9 runtime (`WORKFLOW_SPEC_VERSION=9`). To do so it implements the [in-band writer fence](#optional-the-in-band-writer-fence), serializes each spec 9 run's orchestrator deliveries, follows the spec 9 queue and deduplication rules, declares `capabilities.inBandFence: true`, and passes it on as `mintedSpecVersion(process.env, { inBandFence: true })`. `mintedSpecVersion()` called with no options never returns 9, so a World that does none of this keeps creating spec 8 runs. See [Implementing spec 9 in a World](/docs/changelog/spec-9#implementing-spec-9-in-a-world) and [World contract changes](/docs/changelog/spec-9#world-contract-changes).

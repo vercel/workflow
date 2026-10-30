@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
-import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type SpecVersion,
+  stripEventDataRefs,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fsModule from './fs.js';
@@ -914,10 +919,59 @@ describe('Storage', () => {
         expect(persisted.input).toEqual(new Uint8Array([7, 8, 9]));
       });
 
-      it('writes a synthetic step_created event so replay observes it', async () => {
+      it('records a single-orchestrator step created by its start alone, keeping the input on it', async () => {
+        const { runId: testRunId } = await createRun(
+          storage,
+          {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
         await storage.events.create(testRunId, {
           eventType: 'step_started',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          correlationId: 'lazy_step_2',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+            inline: true,
+          },
+        });
+
+        const events = await storage.events.listByCorrelationId({
+          correlationId: 'lazy_step_2',
+          runId: testRunId,
+          resolveData: 'all',
+        });
+        expect(events.data.map((e) => e.eventType)).toEqual(['step_started']);
+        expect(events.data[0]?.eventData).toMatchObject({
+          input: new Uint8Array([1]),
+          inline: true,
+        });
+        const step = await storage.steps.get(testRunId, 'lazy_step_2');
+        expect(step.input).toEqual(new Uint8Array([1]));
+      });
+
+      it('writes a synthetic step_created event on a run before the single orchestrator, so replay observes it', async () => {
+        const legacy = await storage.events.create(null, {
+          eventType: 'run_created',
+          specVersion: (SPEC_VERSION_SINGLE_ORCHESTRATOR - 1) as SpecVersion,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+        });
+        const legacyRunId = legacy.run!.runId;
+        await storage.events.create(legacyRunId, {
+          eventType: 'run_started',
+          specVersion: (SPEC_VERSION_SINGLE_ORCHESTRATOR - 1) as SpecVersion,
+        });
+        await storage.events.create(legacyRunId, {
+          eventType: 'step_started',
+          specVersion: (SPEC_VERSION_SINGLE_ORCHESTRATOR - 1) as SpecVersion,
           correlationId: 'lazy_step_2',
           eventData: {
             stepName: 'lazy-step',
@@ -927,7 +981,7 @@ describe('Storage', () => {
 
         const events = await storage.events.listByCorrelationId({
           correlationId: 'lazy_step_2',
-          runId: testRunId,
+          runId: legacyRunId,
         });
         const types = events.data.map((e) => e.eventType);
         // Both a step_created (synthetic) and a step_started must be present:
