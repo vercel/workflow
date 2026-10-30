@@ -151,6 +151,21 @@ describe('start({ hook })', () => {
     expect(payload.runInput.startHook).toEqual(event.eventData.startHook);
   });
 
+  it('admits a single-orchestrator run the same way', async () => {
+    admittingWorld({ specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR });
+
+    await start(workflow, ['a'], { hook: { token: TOKEN } });
+
+    expect(calls).toEqual(['queue', 'create']);
+    const [, event] = eventsCreate.mock.calls[0];
+    expect(event.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    expect(event.eventData.startHook.token).toBe(TOKEN);
+    expect(queue.mock.calls[0][1].runInput).toMatchObject({
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      startHook: { token: TOKEN },
+    });
+  });
+
   describe('retention', () => {
     it('sets none by default: the token is released when the run ends', async () => {
       admittingWorld();
@@ -311,37 +326,6 @@ describe('start({ hook })', () => {
 
     expect(WorkflowWorldError.is(error)).toBe(true);
     expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
-    expect(queue).not.toHaveBeenCalled();
-    expect(eventsCreate).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['an explicit specVersion', 'explicit'],
-    ["the World's own version", 'world'],
-  ] as const)('refuses a single-orchestrator run from %s before publishing or admitting anything', async (_label, source) => {
-    admittingWorld({
-      ...(source === 'world'
-        ? { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
-        : {}),
-      capabilities: {
-        inBandFence: true,
-        atomicStartHook: { active: true },
-        hookRetention: { active: true },
-      },
-    });
-
-    const error = await rejection(
-      start(workflow, [], {
-        hook: { token: TOKEN },
-        ...(source === 'explicit'
-          ? { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
-          : {}),
-      })
-    );
-
-    expect(WorkflowWorldError.is(error)).toBe(true);
-    expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
-    expect((error as Error).message).toMatch(/single-orchestrator/);
     expect(queue).not.toHaveBeenCalled();
     expect(eventsCreate).not.toHaveBeenCalled();
   });
