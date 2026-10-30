@@ -112,6 +112,9 @@ const HTTP_TRANSPORT_APPS = [
 // Both VMs, since each engine has its own spec 9 orchestrator.
 const SPEC9_APPS = ['nextjs-turbopack'];
 
+// DO NOT MERGE: the pairing run's prod lanes.
+const PAIRING_APPS = ['nextjs-turbopack', 'express', 'hono'];
+
 function project(name) {
   const found = PROJECTS.find((candidate) => candidate.name === name);
   if (!found) {
@@ -131,17 +134,18 @@ function buildMatrices() {
       PROJECTS.map((app) => [app.name, appEntry(app)])
     ),
     'vercel-prod-matrix': {
-      include: PROJECTS.flatMap((app) =>
+      // DO NOT MERGE: a few lanes, to keep the load on preview Redis down.
+      include: PAIRING_APPS.map(project).flatMap((app) =>
         (app.vms ?? VMS).map((vm) => ({ app: appEntry(app), vm }))
       ),
     },
     'vercel-ws-transport-matrix': {
-      include: WS_TRANSPORT_APPS.map((name) => ({
+      include: ['nextjs-turbopack'].map((name) => ({
         app: appEntry(project(name)),
       })),
     },
     'vercel-http-transport-matrix': {
-      include: HTTP_TRANSPORT_APPS.map((name) => ({
+      include: ['nextjs-turbopack'].map((name) => ({
         app: appEntry(project(name)),
       })),
     },
