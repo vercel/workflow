@@ -43,10 +43,13 @@ import { contextStorage } from '../../step/context-storage.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { recordStepExecutionDuration, trace } from '../../telemetry.js';
 import {
+  getErrorMessage,
   getErrorName,
   getErrorStack,
+  type NormalizedUnknownError,
   normalizeUnknownError,
   promoteAbortErrorToFatal,
+  toPlainError,
 } from '../../types.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
@@ -1305,6 +1308,36 @@ export async function executeStep(
       const normalizedStack =
         normalizedError.stack || getErrorStack(effectiveErr) || '';
 
+      const dehydrateFailure = async (
+        value: unknown,
+        { name, message, stack }: NormalizedUnknownError
+      ) => {
+        const key = await getEncryptionKey();
+        try {
+          return await dehydrateStepError(
+            value,
+            workflowRunId,
+            key,
+            [],
+            globalThis,
+            compression
+          );
+        } catch (error) {
+          stepLogger.warn(
+            'Step error could not be serialized, recording its name, message and stack only',
+            { workflowRunId, stepName, message: getErrorMessage(error) }
+          );
+          return dehydrateStepError(
+            toPlainError(value, { name, message, stack }),
+            workflowRunId,
+            key,
+            [],
+            globalThis,
+            compression
+          );
+        }
+      };
+
       if (effectiveErr instanceof Error) {
         span?.recordException?.(effectiveErr);
       }
@@ -1354,14 +1387,10 @@ export async function executeStep(
               correlationId: stepId,
               eventData: {
                 stepName,
-                error: await dehydrateStepError(
-                  effectiveErr,
-                  workflowRunId,
-                  await getEncryptionKey(),
-                  [],
-                  globalThis,
-                  compression
-                ),
+                error: await dehydrateFailure(effectiveErr, {
+                  ...normalizedError,
+                  stack: normalizedStack,
+                }),
                 ...latencyEventData,
               },
             },
@@ -1427,14 +1456,11 @@ export async function executeStep(
               correlationId: stepId,
               eventData: {
                 stepName,
-                error: await dehydrateStepError(
-                  wrappedError,
-                  workflowRunId,
-                  await getEncryptionKey(),
-                  [],
-                  globalThis,
-                  compression
-                ),
+                error: await dehydrateFailure(wrappedError, {
+                  name: wrappedError.name,
+                  message: errorMessage,
+                  stack: normalizedStack,
+                }),
                 ...latencyEventData,
               },
             },
@@ -1493,14 +1519,10 @@ export async function executeStep(
           correlationId: stepId,
           eventData: {
             stepName,
-            error: await dehydrateStepError(
-              err,
-              workflowRunId,
-              await getEncryptionKey(),
-              [],
-              globalThis,
-              compression
-            ),
+            error: await dehydrateFailure(err, {
+              ...normalizedError,
+              stack: normalizedStack,
+            }),
             ...(RetryableError.is(err) && { retryAfter: err.retryAfter }),
           },
         });
