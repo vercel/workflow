@@ -224,9 +224,21 @@ export async function getWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+  return readRunOrNotFound(id, { resolveData }, config);
+}
 
+/**
+ * The plain run read, with a `404` raised as `WorkflowRunNotFoundError`.
+ * `waitForWorkflowRunTerminalStatus` falls back to this with the caller's
+ * `signal`, which `GetWorkflowRunParams` has no field for.
+ */
+async function readRunOrNotFound(
+  id: string,
+  params: { resolveData: 'none' | 'all'; signal?: AbortSignal },
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
   try {
-    return await readRun(id, { resolveData }, config);
+    return await readRun(id, params, config);
   } catch (error) {
     if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
@@ -405,23 +417,17 @@ export async function waitForWorkflowRunTerminalStatus(
     )
   );
 
+  const signal = params?.signal ? { signal: params.signal } : {};
+
   const { baseUrl } = getHttpUrl(config);
   const unsupportedUntil = longPoll.unsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
 
   if (waitMs === 0 || Date.now() < unsupportedUntil) {
-    return getWorkflowRun(id, { resolveData }, config);
+    return readRunOrNotFound(id, { resolveData, ...signal }, config);
   }
 
   try {
-    return await readRun(
-      id,
-      {
-        resolveData,
-        waitMs,
-        ...(params?.signal ? { signal: params.signal } : {}),
-      },
-      config
-    );
+    return await readRun(id, { resolveData, waitMs, ...signal }, config);
   } catch (error) {
     // The caller cancelled on purpose. That is not a verdict on the route, so
     // it propagates rather than degrading; otherwise an ordinary abort would
@@ -436,7 +442,7 @@ export async function waitForWorkflowRunTerminalStatus(
     }
 
     // Throws WorkflowRunNotFoundError when the run is what was missing.
-    const run = await getWorkflowRun(id, { resolveData }, config);
+    const run = await readRunOrNotFound(id, { resolveData, ...signal }, config);
     longPoll.unsupportedUntilByBaseUrl.set(
       baseUrl,
       Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS

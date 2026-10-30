@@ -394,4 +394,107 @@ describe('waitForWorkflowRunTerminalStatus', () => {
 
     agent.assertNoPendingInterceptors();
   });
+
+  describe('honors the caller signal on the plain-read fallback', () => {
+    // The caller's signal times out long before the held reply lands, so the
+    // call rejects only if the plain read carries the signal. Without it the
+    // reply lands and the call resolves.
+    const HELD_READ_MS = 2_000;
+    const CALLER_TIMEOUT_MS = 50;
+
+    function interceptHeldPlainRead(agent: MockAgent) {
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}?remoteRefBehavior=resolve`,
+          method: 'GET',
+        })
+        .reply(200, runBody('running'))
+        .delay(HELD_READ_MS);
+    }
+
+    async function expectCallerTimeout(
+      promise: Promise<unknown>,
+      signal: AbortSignal
+    ) {
+      const error = await promise.then(
+        () => expect.fail('expected the caller timeout to reject the call'),
+        (error: unknown) => error
+      );
+      expect(error).toBeInstanceOf(WorkflowWorldError);
+      expect((error as WorkflowWorldError).cause).toBe(signal.reason);
+    }
+
+    it('when there is no budget to wait with', async () => {
+      const agent = mockAgent();
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
+      interceptHeldPlainRead(agent);
+
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { signal },
+          { token: 'test-token', dispatcher: agent }
+        ),
+        signal
+      );
+    });
+
+    it('when the status route is marked unsupported', async () => {
+      const agent = mockAgent();
+      const config = { token: 'test-token', dispatcher: agent };
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+          method: 'GET',
+        })
+        .reply(404, { error: 'not-found', message: 'No route matches GET …' });
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}?remoteRefBehavior=resolve`,
+          method: 'GET',
+        })
+        .reply(200, runBody('running'));
+      await waitForWorkflowRunTerminalStatus(
+        RUN_ID,
+        { timeoutMs: 25_000 },
+        config
+      );
+
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
+      interceptHeldPlainRead(agent);
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { timeoutMs: 25_000, signal },
+          config
+        ),
+        signal
+      );
+    });
+
+    it('when the long poll degrades after the route fails', async () => {
+      const agent = mockAgent();
+      agent
+        .get(ORIGIN)
+        .intercept({
+          path: `/api/v2/runs/${RUN_ID}/status?remoteRefBehavior=resolve&waitMs=25000`,
+          method: 'GET',
+        })
+        .reply(404, { error: 'not-found', message: 'No route matches GET …' });
+      const signal = AbortSignal.timeout(CALLER_TIMEOUT_MS);
+      interceptHeldPlainRead(agent);
+
+      await expectCallerTimeout(
+        waitForWorkflowRunTerminalStatus(
+          RUN_ID,
+          { timeoutMs: 25_000, signal },
+          { token: 'test-token', dispatcher: agent }
+        ),
+        signal
+      );
+    });
+  });
 });
