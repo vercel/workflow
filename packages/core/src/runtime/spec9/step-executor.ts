@@ -47,6 +47,7 @@ import {
   type NormalizedUnknownError,
   normalizeUnknownError,
   promoteAbortErrorToFatal,
+  toPlainError,
 } from '../../types.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
@@ -967,7 +968,7 @@ export async function executeStep(
             { workflowRunId, stepName, message: getErrorMessage(error) }
           );
           return dehydrateStepError(
-            Object.assign(new Error(message), { name, stack }),
+            toPlainError(value, { name, message, stack }),
             workflowRunId,
             key,
             [],

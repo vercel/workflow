@@ -1447,6 +1447,29 @@ describe('executeStep — thrown errors with a read-only stack', () => {
     expect(hydrated.message).toBe('rejected by upstream');
   });
 
+  it('records a retry with the members of an aggregate whose member cannot be serialized', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(
+      () =>
+        new AggregateError(
+          [new ApiResponse(), new Error('timeout')],
+          'all upstreams failed',
+          { cause: new ApiResponse() }
+        )
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = (await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    )) as AggregateError;
+    expect(hydrated).toBeInstanceOf(AggregateError);
+    expect(hydrated.message).toBe('all upstreams failed');
+    expect(hydrated.errors).toHaveLength(2);
+    expect(hydrated.errors[1].message).toBe('timeout');
+  });
+
   it('records the final failure when the last attempt throws an unserializable cause', async () => {
     const { world, runId, stepId, result } = await runThrowingStep(
       () => new Error('upstream returned 503', { cause: new ApiResponse() }),

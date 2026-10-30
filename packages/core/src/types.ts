@@ -205,6 +205,43 @@ function normalizeSyncError(v: unknown): NormalizedUnknownError {
   };
 }
 
+function readErrors(value: unknown): unknown[] {
+  if (typeof value !== 'object' || value === null) return [];
+  try {
+    const errors = (value as { errors?: unknown }).errors;
+    return Array.isArray(errors) ? errors : [];
+  } catch {
+    return [];
+  }
+}
+
+function isPrimitive(value: unknown): boolean {
+  return (
+    value === null ||
+    ['string', 'number', 'boolean', 'undefined'].includes(typeof value)
+  );
+}
+
+export function toPlainError(
+  value: unknown,
+  { name, message, stack }: NormalizedUnknownError,
+  seen = new WeakSet<object>()
+): Error {
+  const error = Object.assign(new Error(message), { name, stack });
+  if (name !== 'AggregateError') return error;
+
+  // the AggregateError reviver throws when errors is missing
+  if (typeof value === 'object' && value !== null) seen.add(value);
+  const errors = readErrors(value).map((member) => {
+    if (isPrimitive(member)) return member;
+    const normalized = normalizeSyncError(member);
+    return seen.has(member as object)
+      ? toPlainError(member, { ...normalized, name: 'Error' }, seen)
+      : toPlainError(member, normalized, seen);
+  });
+  return Object.assign(error, { errors });
+}
+
 function promiseRejection(message: string): NormalizedUnknownError {
   return { name: 'Error', message: `Promise rejection: ${message}`, stack: '' };
 }
