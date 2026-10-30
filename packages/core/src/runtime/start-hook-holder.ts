@@ -1,4 +1,5 @@
 import { WorkflowRunNotFoundError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
   getRunQueueNamespace,
@@ -20,30 +21,80 @@ export const START_HOOK_HOLDER_WAKE_AFTER_MS = 60_000;
 
 /**
  * Re-publishes from one holder at most once per this window, whatever the
- * number of duplicates refused in it: the re-publish's queue idempotency key
- * is bucketed by it. It is deliberately not the original start message's
- * key, whose deduplication (up to 24h on Vercel Queues) would swallow a wake
- * for the very message that was lost.
+ * number of duplicates refused in it. For a holder before spec 9 the
+ * re-publish's queue idempotency key is bucketed by it, which holds across
+ * processes. It is deliberately not the original start message's key, whose
+ * deduplication (up to 24h on Vercel Queues) would swallow a wake for the
+ * very message that was lost. A single-orchestrator holder's wake carries no
+ * key (see `wakePendingStartHookHolder`), so each process holds it to the
+ * window instead (`singleOrchestratorWakes`).
  */
 export const START_HOOK_HOLDER_WAKE_WINDOW_MS = 60_000;
 
+/** The window a wake at `nowMs` falls in. */
+function wakeWindow(nowMs: number): number {
+  return Math.floor(nowMs / START_HOOK_HOLDER_WAKE_WINDOW_MS);
+}
+
+/**
+ * The window of each single-orchestrator holder this process last woke. On
+ * `globalThis` (see `globalSingleton`): one process must hold a holder to one
+ * wake per window across every bundler layer that refuses a start.
+ */
+const singleOrchestratorWakes = globalSingleton(
+  '@workflow/core//startHookHolderWakes',
+  1,
+  () => ({ byRunId: new Map<string, number>() })
+);
+
+/** Entries kept before the windows that have passed are dropped. */
+const MAX_TRACKED_WAKES = 1_000;
+
+/**
+ * Claims this process's wake of a single-orchestrator holder for the window
+ * of `nowMs`: false when this process already woke it in that window.
+ */
+function claimSingleOrchestratorWake(runId: string, nowMs: number): boolean {
+  const { byRunId } = singleOrchestratorWakes;
+  const window = wakeWindow(nowMs);
+  if (byRunId.get(runId) === window) return false;
+  if (byRunId.size >= MAX_TRACKED_WAKES) {
+    for (const [id, woken] of byRunId) {
+      if (woken < window) byRunId.delete(id);
+    }
+  }
+  byRunId.set(runId, window);
+  return true;
+}
+
+/** Gives back a claim whose publish failed. */
+function releaseSingleOrchestratorWake(runId: string, nowMs: number): void {
+  const { byRunId } = singleOrchestratorWakes;
+  if (byRunId.get(runId) === wakeWindow(nowMs)) byRunId.delete(runId);
+}
+
+/** Forgets every claimed single-orchestrator wake. For tests. */
+export function resetStartHookHolderWakes(): void {
+  singleOrchestratorWakes.byRunId.clear();
+}
+
 /** The queue idempotency key for a holder's re-publish in this window. */
 export function startHookHolderWakeKey(runId: string, nowMs: number): string {
-  return `start-hook-wake-${runId}-${Math.floor(
-    nowMs / START_HOOK_HOLDER_WAKE_WINDOW_MS
-  )}`;
+  return `start-hook-wake-${runId}-${wakeWindow(nowMs)}`;
 }
 
 /**
  * What a holder wake did: `woken` (re-published), `not_pending` (the holder
  * is running or ended), `too_young` (still within a normal startup),
- * `not_found` (no such run: the refusal named an accepted candidate whose run
- * was never created) or `error` (the check or the publish failed).
+ * `throttled` (a single-orchestrator holder this process already woke in this
+ * window), `not_found` (no such run: the refusal named an accepted candidate
+ * whose run was never created) or `error` (the check or the publish failed).
  */
 export type StartHookHolderWakeResult =
   | 'woken'
   | 'not_pending'
   | 'too_young'
+  | 'throttled'
   | 'not_found'
   | 'error';
 
@@ -67,7 +118,9 @@ export async function wakePendingStartHookHolder(
   holderRunId: string,
   traceCarrier: Record<string, string>
 ): Promise<StartHookHolderWakeResult> {
-  const skipped = (reason: 'not_pending' | 'too_young' | 'not_found') => {
+  const skipped = (
+    reason: 'not_pending' | 'too_young' | 'throttled' | 'not_found'
+  ) => {
     runtimeLogger.debug('Start Hook holder not woken', {
       workflowRunId: holderRunId,
       reason,
@@ -86,12 +139,19 @@ export async function wakePendingStartHookHolder(
     }
     // A single-orchestrator run's orchestrator messages travel one at a time
     // on the run's own channel, which `runSpecVersion` routes to. A key would
-    // also move the wake off that channel, and it isn't needed there: a
-    // duplicate wake is one cheap delivery (see `wakeRunAfterOutOfBandWrite`).
+    // also move the wake off that channel, so the window is held in process
+    // instead: a holder whose deployment cannot boot would otherwise take a
+    // wake, and its redeliveries, from every refused duplicate.
     const singleOrchestrator =
       (holder.specVersion ?? SPEC_VERSION_LEGACY) >=
       SPEC_VERSION_SINGLE_ORCHESTRATOR;
-    await world.queue(
+    if (
+      singleOrchestrator &&
+      !claimSingleOrchestratorWake(holder.runId, nowMs)
+    ) {
+      return skipped('throttled');
+    }
+    const publish = world.queue(
       getWorkflowQueueName(
         holder.workflowName,
         getRunQueueNamespace(holder.executionContext)
@@ -113,6 +173,13 @@ export async function wakePendingStartHookHolder(
           : { idempotencyKey: startHookHolderWakeKey(holder.runId, nowMs) }),
       }
     );
+    // A failed publish gives the window back, so the next duplicate retries.
+    await publish.catch((error: unknown) => {
+      if (singleOrchestrator) {
+        releaseSingleOrchestratorWake(holder.runId, nowMs);
+      }
+      throw error;
+    });
     runtimeLogger.info(
       'Re-published the orchestrator message of a start Hook holder stuck pending',
       { workflowRunId: holder.runId, reason: 'woken' }

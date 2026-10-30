@@ -27,9 +27,11 @@ import {
   start,
 } from './start.js';
 import {
+  resetStartHookHolderWakes,
   START_HOOK_HOLDER_WAKE_AFTER_MS,
   START_HOOK_HOLDER_WAKE_WINDOW_MS,
   startHookHolderWakeKey,
+  wakePendingStartHookHolder,
 } from './start-hook-holder.js';
 import { setWorld } from './world.js';
 
@@ -90,6 +92,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setWorld(undefined);
+  resetStartHookHolderWakes();
   vi.clearAllMocks();
   vi.unstubAllEnvs();
 });
@@ -449,6 +452,61 @@ describe('start({ hook })', () => {
       expect(opts).toEqual({
         deploymentId: 'dpl_owner',
         specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      });
+    });
+
+    describe('a single-orchestrator holder, which its wake carries no key for', () => {
+      const pendingHolder = () =>
+        holderRun(
+          'pending',
+          START_HOOK_HOLDER_WAKE_AFTER_MS + 1_000,
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
+
+      it('is woken once per window in this process, however many duplicates are refused', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(10 * START_HOOK_HOLDER_WAKE_WINDOW_MS + 1_000);
+          const world = {
+            runs: { get: vi.fn().mockResolvedValue(pendingHolder()) },
+            queue,
+          } as any;
+
+          expect(
+            await wakePendingStartHookHolder(world, 'wrun_owner', {})
+          ).toBe('woken');
+          expect(
+            await wakePendingStartHookHolder(world, 'wrun_owner', {})
+          ).toBe('throttled');
+          expect(queue).toHaveBeenCalledTimes(1);
+
+          // The next window wakes it again.
+          vi.setSystemTime(11 * START_HOOK_HOLDER_WAKE_WINDOW_MS + 1_000);
+          expect(
+            await wakePendingStartHookHolder(world, 'wrun_owner', {})
+          ).toBe('woken');
+          expect(queue).toHaveBeenCalledTimes(2);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('gives the window back when the publish fails', async () => {
+        const world = {
+          runs: { get: vi.fn().mockResolvedValue(pendingHolder()) },
+          queue: vi
+            .fn()
+            .mockRejectedValueOnce(new Error('queue unavailable'))
+            .mockResolvedValue({ messageId: null }),
+        } as any;
+
+        expect(await wakePendingStartHookHolder(world, 'wrun_owner', {})).toBe(
+          'error'
+        );
+        expect(await wakePendingStartHookHolder(world, 'wrun_owner', {})).toBe(
+          'woken'
+        );
+        expect(world.queue).toHaveBeenCalledTimes(2);
       });
     });
 
