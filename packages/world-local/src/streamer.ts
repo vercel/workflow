@@ -640,9 +640,17 @@ export function createStreamer(
             // Buffer close event if it arrives during disk reading
             let pendingClose = false;
 
+            // Data chunks still to drop before startIndex, once the chunks
+            // listed by the first disk read run out.
+            let skipRemaining = 0;
+
             const deliver = (chunkId: string, chunkData: Uint8Array) => {
               if (streamClosed || deliveredChunkIds.has(chunkId)) return;
               deliveredChunkIds.add(chunkId);
+              if (skipRemaining > 0) {
+                skipRemaining--;
+                return;
+              }
               // Empty chunks are skipped, matching what a disk read delivers.
               if (chunkData.byteLength) {
                 // Create a copy to prevent ArrayBuffer detachment
@@ -767,13 +775,35 @@ export function createStreamer(
 
             // Chunks before startIndex are never delivered, not even as a
             // live copy that arrives during the read.
-            for (
-              let i = 0;
-              i < resolvedStartIndex && i < chunkFiles.length;
-              i++
-            ) {
+            const skippedFiles = Math.min(
+              resolvedStartIndex,
+              chunkFiles.length
+            );
+            // A startIndex past every listed file may also pass the end of
+            // the stream. EOF is always the last file, so check only that one:
+            // marking it delivered would leave the reader polling forever.
+            if (skippedFiles > 0 && skippedFiles === chunkFiles.length) {
+              const lastFile = chunkFiles[skippedFiles - 1];
+              const lastExt = fileExtMap.get(lastFile) ?? '.bin';
+              if (
+                isEofByte(
+                  await readFirstByte(
+                    path.join(chunksDir, `${lastFile}${lastExt}`)
+                  )
+                )
+              ) {
+                isReadingFromDisk = false;
+                bufferedEventChunks.clear();
+                closeStream();
+                return;
+              }
+            }
+            for (let i = 0; i < skippedFiles; i++) {
               deliveredChunkIds.add(chunkFiles[i]);
             }
+            // The rest of the skip lands on chunks written after the listing,
+            // which `deliver` drops as they arrive, in id order.
+            skipRemaining = resolvedStartIndex - skippedFiles;
 
             let isComplete = false;
             for (let i = resolvedStartIndex; i < chunkFiles.length; i++) {
