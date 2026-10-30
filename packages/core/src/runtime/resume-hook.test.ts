@@ -18,10 +18,23 @@ import {
   runPayloadKeys,
   SerializationFormat,
 } from '../serialization.js';
-import { resumeHook, resumeWebhook } from './resume-hook.js';
+import { trace } from '../telemetry.js';
+import { getHookByToken, resumeHook, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+
+/** Hands the next `hook.resume` span to the test, returning what it records. */
+function captureResumeSpan(): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {};
+  vi.mocked(trace).mockImplementationOnce(((_name: string, fn: any) =>
+    fn({
+      setAttributes: (attrs: Record<string, unknown>) =>
+        Object.assign(attributes, attrs),
+      addEvent: () => {},
+    })) as any);
+  return attributes;
+}
 vi.mock('../telemetry.js', async (importOriginal) => ({
   // Everything else real: the Request-body stream writes below go through
   // the ordinary span helpers.
@@ -543,8 +556,10 @@ describe('resumeHook', () => {
         getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
       } as unknown as World);
 
+      const span = captureResumeSpan();
       const resumed = await resumeHook('shared', { n: 1 });
       expect(resumed.runId).toBe('wrun_claimer');
+      expect(span['workflow.hook.lookup_result']).toBe('redirected');
       expect(getByToken).toHaveBeenCalledTimes(2);
       expect(createEvent).toHaveBeenCalledTimes(2);
       expect(createEvent.mock.calls[0][0]).toBe('wrun_victim');
@@ -1057,5 +1072,46 @@ describe('resumeHook', () => {
       expect(createEvent).toHaveBeenCalledTimes(4);
       expect(queue).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('a by-token lookup', () => {
+  afterEach(() => {
+    setWorld(undefined);
+  });
+
+  it('finds a start Hook at once, asking the World only once', async () => {
+    // A start({ hook }) run's Hook exists from its admission: the lookup is an
+    // ordinary one, with no waiting and no retry.
+    const hook = {
+      runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      hookId: 'hook_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      token: 'order:start',
+      ownerId: 'owner_1',
+      projectId: 'project_1',
+      environment: 'production',
+      createdAt: new Date(),
+    } satisfies Hook;
+    const getByToken = vi.fn().mockResolvedValue(hook);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: { getByToken },
+    } as unknown as World);
+
+    expect((await getHookByToken(hook.token)).hookId).toBe(hook.hookId);
+    expect(getByToken).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a lookup that found nothing as not_found', async () => {
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      hooks: {
+        getByToken: vi.fn().mockRejectedValue(new HookNotFoundError('t')),
+      },
+    } as unknown as World);
+
+    const span = captureResumeSpan();
+    await resumeHook('t', { n: 1 }).catch(() => undefined);
+    expect(span['workflow.hook.lookup_result']).toBe('not_found');
   });
 });

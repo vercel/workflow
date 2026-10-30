@@ -3,16 +3,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   EntityConflictError,
+  HookConflictError,
   HookForceClaimedError,
   HookNotFoundError,
   InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
+  START_HOOK_ADMISSION_REJECTED,
+  START_HOOK_CANDIDATE_CANCELLED,
+  ThrottleError,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { globalSingleton } from '@workflow/utils';
+import { debugLog, globalSingleton } from '@workflow/utils';
 import type {
   AnyEventRequest,
   CreateEventParams,
@@ -27,6 +31,8 @@ import type {
   PaginatedResponse,
   PaginationOptions,
   SerializedData,
+  StartHook,
+  StartHookRejectionReason,
   Step,
   Storage,
   Wait,
@@ -46,6 +52,7 @@ import {
   isHookLifecycleEventType,
   isLegacySpecVersion,
   isSlotEventId,
+  isStartHookId,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepStatus,
@@ -56,13 +63,14 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  START_HOOK_CANDIDATE_MAX_AGE_MS,
   StepSchema,
   slotToEventId,
+  startHookId,
   ulidToDate,
   validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
-  WorkflowRunSchema,
 } from '@workflow/world';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
@@ -89,6 +97,7 @@ import { withInProcessLock } from '../util.js';
 import { withFenceFileLock } from './fence-lock.js';
 import { stripEventDataRefs } from './filters.js';
 import {
+  fenceStartHookCandidate,
   getObjectCreatedAt,
   type HookTokenClaim,
   hookDisposeLockPath,
@@ -97,19 +106,26 @@ import {
   hookTokenClaimPath,
   isHookDisposalCommitted,
   isRunTerminalCommitted,
+  isWithinStartHookOrphanGrace,
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
+  RunRecordSchema,
   readHookDisposeLock,
   readHookTokenClaim,
+  readStartHookFence,
+  readStartHookRejection,
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
+  type StartHookRejection,
   scanRunEventIds,
+  startHookRejectionPath,
   withHookTokenClaimLock,
 } from './helpers.js';
 import {
   deleteHookByRunMarker,
+  hookByRunMarkerPath,
   writeHookByRunMarker,
   writeHookCreatedIndexEntries,
 } from './hook-index.js';
@@ -127,6 +143,7 @@ import {
 } from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { withRunFileLock } from './runs-storage.js';
+import { startHookRecord, withStartHookId } from './start-hook.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -286,15 +303,26 @@ async function findCommittedResumeEvent(
  *     lost to a crash between the lock write and the claim delete), or
  *   - the owning run is terminal and its minimum retention has ended, or
  *   - the owning run does not exist (a claim can only be written during a
- *     suspension of an existing run, so an ownerless claim is debris).
+ *     suspension of an existing run, so an ownerless claim is debris), except
+ *     for a run's `start({ hook })` Hook (below).
  *
  * A claim from a mid-creation writer is never releasable: its owning run
  * exists and is non-terminal, and its dispose lock does not exist.
+ *
+ * A start Hook's claim is written under the claim lock immediately before its
+ * run, so one whose run record is missing is an admission whose writer died
+ * (or stalled) before creating the run. No caller was told it was admitted,
+ * but a stalled writer could still write the run, so it holds for the orphan
+ * grace first, and is then fenced: the run record path gets a fence, so the
+ * writer's exclusive publication fails if it ever resumes. Once its run
+ * exists it is an ordinary Hook's claim.
  */
 async function isHookTokenClaimReleasable(
   basedir: string,
   claim: HookTokenClaim,
-  tag?: string
+  tag: string | undefined,
+  /** Who would take the token: named by the fence of a run-less start Hook. */
+  contender: { token: string; runId: string }
 ): Promise<boolean> {
   if (
     claim.hookId &&
@@ -306,11 +334,14 @@ async function isHookTokenClaimReleasable(
     basedir,
     'runs',
     claim.runId,
-    WorkflowRunSchema,
+    RunRecordSchema,
     tag
   );
   if (!owningRun) {
-    return true;
+    return claim.hookId !== undefined &&
+      isStartHookId(claim.runId, claim.hookId)
+      ? isStartHookOrphanReleasable(basedir, claim, tag, contender)
+      : true;
   }
   if (!isTerminalWorkflowRunStatus(owningRun.status)) {
     return false;
@@ -319,6 +350,333 @@ async function isHookTokenClaimReleasable(
     !claim.tokenRetentionUntil ||
     claim.tokenRetentionUntil.getTime() <= Date.now()
   );
+}
+
+/**
+ * Whether the claim of a start Hook whose run record is missing may be taken
+ * (see `isHookTokenClaimReleasable`): never inside the orphan grace, and past
+ * it only once the candidate's run record path is fenced.
+ */
+async function isStartHookOrphanReleasable(
+  basedir: string,
+  claim: HookTokenClaim,
+  tag: string | undefined,
+  contender: { token: string; runId: string }
+): Promise<boolean> {
+  // Already fenced (a cancellation, or an earlier contender): the candidate
+  // can never be created.
+  if (await readStartHookFence(basedir, claim.runId, tag)) return true;
+  if (isWithinStartHookOrphanGrace(claim)) return false;
+  if (
+    await fenceStartHookCandidate(basedir, claim.runId, tag, {
+      token: contender.token,
+      conflictingRunId: contender.runId,
+    })
+  ) {
+    startHookLog('fenced an orphaned candidate past its grace', {
+      runId: claim.runId,
+      conflictingRunId: contender.runId,
+    });
+    return true;
+  }
+  // The path holds a record after all: a fence, or the run, published since
+  // the read above. A run that now exists is decided by the ordinary rules.
+  const run = await readJSONWithFallback(
+    basedir,
+    'runs',
+    claim.runId,
+    RunRecordSchema,
+    tag
+  );
+  if (!run) return true;
+  if (!isTerminalWorkflowRunStatus(run.status)) return false;
+  return (
+    !claim.tokenRetentionUntil ||
+    claim.tokenRetentionUntil.getTime() <= Date.now()
+  );
+}
+
+/**
+ * The outcome of admitting a `start({ hook })` candidate: its run was created
+ * by this call, or already existed (an earlier attempt for the candidate, by
+ * either path, accepted it).
+ */
+type StartHookAdmission =
+  | { status: 'created' }
+  | { status: 'existing'; run: WorkflowRun };
+
+/**
+ * Admits a `start({ hook })` candidate (see `start-hook.ts` in
+ * @workflow/world). The decision per candidate is immutable:
+ *
+ * - **accepted** is the candidate's run record, which `writeRun` creates
+ *   under the token claim lock. Under that lock, in this order: the start
+ *   Hook's (`startHookId(runId)`) index entries and by-run marker, its token
+ *   claim (an ordinary claim, keyed to the run's first event slot, where its
+ *   `run_created` stands for the Hook's creation), the run record (the
+ *   decision), then the Hook entity. Reads that find the claim
+ *   and the run but not the entity rebuild it from the run record. A later
+ *   attempt finds the run and gets `existing`, which re-ensures the Hook.
+ * - **rejected** is a refusal record naming the owner, written under the same
+ *   lock before the refusal is answered, so later attempts answer the same
+ *   owner even once the token is free.
+ *
+ * A claim whose writer died before its run was never observed as admitted.
+ * Within the orphan grace a retry of that candidate decides again; past it, a
+ * contender fences the candidate's run record path and takes the token (see
+ * `isHookTokenClaimReleasable`), and every later attempt for the candidate,
+ * including its stalled writer's publication, is refused naming the
+ * contender.
+ */
+async function admitStartHook({
+  basedir,
+  tag,
+  runId,
+  startHook,
+  hook,
+  writeRun,
+}: {
+  basedir: string;
+  tag?: string;
+  runId: string;
+  startHook: StartHook;
+  /** The start Hook entity the admission writes (`startHookRecord`). */
+  hook: Hook;
+  /** Exclusively creates the candidate's run record; false if it exists. */
+  writeRun: () => Promise<boolean>;
+}): Promise<StartHookAdmission> {
+  const hookId = startHookId(runId);
+  // The start Hook's creation is its run's `run_created`, always at the
+  // first slot.
+  const createdEventId = slotToEventId(FIRST_EVENT_SLOT);
+
+  const decided = async (): Promise<StartHookAdmission | null> => {
+    const rejection = await readStartHookRejection(basedir, runId, tag);
+    if (rejection) {
+      if (rejection.token !== startHook.token) {
+        throw startHookRejected(
+          `Workflow run "${runId}" was already decided for a different start Hook token`,
+          'token_mismatch'
+        );
+      }
+      throw new HookConflictError(rejection.token, rejection.conflictingRunId);
+    }
+    // Fenced: the candidate's token went to another run after its writer
+    // stalled past the orphan grace, or it was cancelled before its run
+    // existed, so it can never be admitted.
+    const fence = await readStartHookFence(basedir, runId, tag);
+    if (fence) {
+      if (fence.conflictingRunId === undefined) {
+        throw startHookRejected(
+          `Workflow run "${runId}" was fenced as an orphan and can never be created`,
+          'expired'
+        );
+      }
+      throw new HookConflictError(startHook.token, fence.conflictingRunId);
+    }
+    const run = await readJSONWithFallback(
+      basedir,
+      'runs',
+      runId,
+      RunRecordSchema,
+      tag
+    );
+    if (!run) return null;
+    if (run.startHook?.token !== startHook.token) {
+      throw startHookRejected(
+        `Workflow run "${runId}" already exists without this start Hook`,
+        'ordinary_run'
+      );
+    }
+    return { status: 'existing', run };
+  };
+
+  /**
+   * Re-ensures an admitted run's start Hook after a crash between its run
+   * record and its entity. Only while the claim still names the Hook: once
+   * it was disposed, taken over or released at the run's end, there is
+   * nothing to restore.
+   */
+  const ensureHook = async (run: WorkflowRun) => {
+    const existingHook = startHookRecord(run);
+    if (!existingHook) return;
+    const claim = await readHookTokenClaim(
+      hookTokenClaimPath(basedir, startHook.token)
+    );
+    if (claim?.runId !== runId || claim.hookId !== hookId) return;
+    if (await isHookDisposalCommitted(basedir, hookId, tag)) return;
+    await writeHookCreatedIndexEntries(
+      basedir,
+      existingHook.token,
+      runId,
+      hookId,
+      createdEventId,
+      tag
+    );
+    await writeHookByRunMarker(basedir, runId, hookId, tag);
+    await writeExclusive(
+      taggedPath(basedir, 'hooks', hookId, tag),
+      JSON.stringify(existingHook, jsonReplacer, 2)
+    );
+  };
+
+  const replay = await decided();
+  if (replay?.status === 'existing') {
+    await ensureHook(replay.run);
+    return replay;
+  }
+
+  return withHookTokenClaimLock(basedir, startHook.token, async (signal) => {
+    const replay = await decided();
+    if (replay?.status === 'existing') {
+      await ensureHook(replay.run);
+      return replay;
+    }
+
+    // The run_created path already refuses ids past this age; the queued
+    // copy's run_started does not, so bound it here too.
+    const candidateTime = ulidToDate(runId.replace(/^wrun_/, ''));
+    if (
+      candidateTime &&
+      Date.now() - candidateTime.getTime() > START_HOOK_CANDIDATE_MAX_AGE_MS
+    ) {
+      throw startHookRejected(
+        `Workflow run "${runId}" is too old to be admitted with a start Hook`,
+        'expired'
+      );
+    }
+
+    const claimPath = hookTokenClaimPath(basedir, startHook.token);
+    let claim = await readHookTokenClaim(claimPath);
+    if (!claim) {
+      // Repair a missing or corrupt claim from the event log first: a live
+      // Hook whose claim file was lost still owns the token.
+      signal.throwIfAborted();
+      await deleteJSON(claimPath);
+      await rebuildLiveHookByTokenFromEventLog(basedir, startHook.token, tag);
+      claim = await readHookTokenClaim(claimPath);
+    }
+
+    // This candidate's own claim, left by an attempt that died before its
+    // run: it decides again.
+    const ownClaim = claim?.runId === runId && claim.hookId === hookId;
+    if (claim && !ownClaim) {
+      if (
+        !(await isHookTokenClaimReleasable(basedir, claim, tag, {
+          token: startHook.token,
+          runId,
+        }))
+      ) {
+        signal.throwIfAborted();
+        const rejection: StartHookRejection = {
+          runId,
+          token: startHook.token,
+          conflictingRunId: claim.runId,
+        };
+        const rejectionPath = startHookRejectionPath(basedir, runId, tag);
+        if (!(await writeExclusive(rejectionPath, JSON.stringify(rejection)))) {
+          // A concurrent attempt for this candidate recorded it first.
+          const stored = await readStartHookRejection(basedir, runId, tag);
+          throw new HookConflictError(
+            startHook.token,
+            stored?.conflictingRunId ?? claim.runId
+          );
+        }
+        startHookLog('refused a candidate', {
+          runId,
+          conflictingRunId: claim.runId,
+        });
+        throw new HookConflictError(startHook.token, claim.runId);
+      }
+      // The previous owner is done; clear its leftovers before taking over.
+      startHookLog("released an ended owner's token to a candidate", {
+        runId,
+        previousRunId: claim.runId,
+      });
+      signal.throwIfAborted();
+      await deleteJSON(claimPath);
+      if (claim.hookId) {
+        await deleteJSON(taggedPath(basedir, 'hooks', claim.hookId, tag));
+        await deleteJSON(
+          hookRecoveryMarkerPath(
+            basedir,
+            startHook.token,
+            claim.runId,
+            claim.hookId
+          )
+        );
+        await deleteHookByRunMarker(basedir, claim.runId, claim.hookId, tag);
+      }
+    }
+
+    // Index entries and by-run marker first, before the claim and the
+    // writes they index (see hook-index.ts): the run's end always finds its
+    // start Hook, and a cancellation of a candidate whose writer died
+    // anywhere past this point finds it to fence.
+    signal.throwIfAborted();
+    await writeHookCreatedIndexEntries(
+      basedir,
+      startHook.token,
+      runId,
+      hookId,
+      createdEventId,
+      tag
+    );
+    await writeHookByRunMarker(basedir, runId, hookId, tag);
+    signal.throwIfAborted();
+    const startHookClaim = {
+      token: startHook.token,
+      runId,
+      hookId,
+      eventId: createdEventId,
+      ...(startHook.tokenRetentionUntil
+        ? { tokenRetentionUntil: startHook.tokenRetentionUntil }
+        : {}),
+      reservedAt: Date.now(),
+    };
+    if (ownClaim) {
+      await write(claimPath, JSON.stringify(startHookClaim), {
+        overwrite: true,
+      });
+    } else {
+      assert(await writeExclusive(claimPath, JSON.stringify(startHookClaim)));
+    }
+    signal.throwIfAborted();
+    if (await writeRun()) {
+      await writeExclusive(
+        taggedPath(basedir, 'hooks', hookId, tag),
+        JSON.stringify(hook, jsonReplacer, 2)
+      );
+      startHookLog('accepted a candidate', { runId });
+      return { status: 'created' };
+    }
+    // Created concurrently by an attempt that did not take this lock, which
+    // only a run without this start Hook can be, or fenced since the read
+    // above.
+    const replayed = await decided();
+    assert(replayed);
+    return replayed;
+  });
+}
+
+/**
+ * A start Hook admission breadcrumb, under `DEBUG=workflow:*`. Names runs,
+ * never the token: a token is the caller's idempotency key and may carry
+ * user data.
+ */
+function startHookLog(message: string, detail: Record<string, string>): void {
+  debugLog(`[world-local] start Hook: ${message}`, detail);
+}
+
+function startHookRejected(
+  message: string,
+  reason: StartHookRejectionReason
+): WorkflowWorldError {
+  return new WorkflowWorldError(message, {
+    status: 400,
+    code: START_HOOK_ADMISSION_REJECTED,
+    reason,
+  });
 }
 
 async function readHookRecoveryMarker(
@@ -572,7 +930,7 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
   return withRunFileLock(runId, async () => {
     const fresh = await readJSON(
       taggedPath(basedir, 'runs', runId, tag),
-      WorkflowRunSchema
+      RunRecordSchema
     );
     const attributes = fresh?.attributes ?? proposed.attributes;
     let next: T = { ...proposed, attributes };
@@ -1071,6 +1429,7 @@ export function createEventsStorage(
         executionContext: run.executionContext,
         attributes: run.attributes,
         encryptionPublicKey: run.encryptionPublicKey,
+        ...(run.startHook ? { startHook: run.startHook } : {}),
       },
     };
     if (await publishRunCreatedAtFirstSlot(event)) {
@@ -1101,6 +1460,38 @@ export function createEventsStorage(
   const hookLockKey = (runId: string, hookId: string) =>
     tag ? `${runId}-${hookId}.hook.${tag}` : `${runId}-${hookId}.hook`;
 
+  /**
+   * Whether `runId` was admitted with a start Hook: its by-run marker, which
+   * the admission writes before the run record, exists.
+   */
+  /**
+   * `run`'s start Hook from its run record, while its token claim still names
+   * it (not disposed, taken over, or released at the run's end).
+   */
+  async function liveStartHookOf(run: WorkflowRun): Promise<Hook | null> {
+    const hook = startHookRecord(run);
+    if (!hook) return null;
+    const claim = await readHookTokenClaim(
+      hookTokenClaimPath(basedir, hook.token)
+    );
+    return claim?.runId === hook.runId && claim.hookId === hook.hookId
+      ? hook
+      : null;
+  }
+
+  async function isAdmittedStartHookCandidate(runId: string): Promise<boolean> {
+    if (!runId.startsWith('wrun_')) return false;
+    try {
+      await fs.stat(
+        hookByRunMarkerPath(basedir, runId, startHookId(runId), tag)
+      );
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  }
+
   const storage: LocalEventsStorage = {
     clearCache,
     async create(
@@ -1117,6 +1508,31 @@ export function createEventsStorage(
         throw new WorkflowWorldError(
           `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Local World.`,
           { status: 400 }
+        );
+      }
+      // A run's start Hook id is taken by its admission, which writes no
+      // `hook_created` for it (see `start-hook.ts` in @workflow/world).
+      if (
+        data.eventType === 'hook_created' &&
+        runId &&
+        isStartHookId(runId, data.correlationId)
+      ) {
+        throw new WorkflowWorldError(
+          `Hook id "${data.correlationId}" is the start Hook of workflow run "${runId}" and is created by its admission`,
+          { status: 400 }
+        );
+      }
+      const startHookRetention =
+        data.eventType === 'run_created' || data.eventType === 'run_started'
+          ? data.eventData?.startHook?.tokenRetentionUntil
+          : undefined;
+      if (
+        startHookRetention !== undefined &&
+        startHookRetention.getTime() > Date.now() + hookRetentionLimitMs
+      ) {
+        throw startHookRejected(
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Local World.`,
+          'invalid'
         );
       }
 
@@ -1226,7 +1642,17 @@ export function createEventsStorage(
             'wrun_'
           );
           if (validationError) {
-            throw new WorkflowWorldError(validationError);
+            // A start Hook candidate this old can never be created (the orphan
+            // bound), so its refusal is permanent for both of its copies.
+            throw new WorkflowWorldError(validationError, {
+              ...(data.eventData.startHook
+                ? {
+                    status: 400,
+                    code: START_HOOK_ADMISSION_REJECTED,
+                    reason: 'expired',
+                  }
+                : {}),
+            });
           }
         }
 
@@ -1248,7 +1674,7 @@ export function createEventsStorage(
             basedir,
             'runs',
             effectiveRunId,
-            WorkflowRunSchema,
+            RunRecordSchema,
             tag
           );
 
@@ -1270,6 +1696,7 @@ export function createEventsStorage(
               allowReservedAttributes?: true;
               encryptionPublicKey?: string;
               dynamicWorkflowCode?: SerializedData;
+              startHook?: StartHook;
             };
             if (
               runInputData.deploymentId &&
@@ -1309,14 +1736,39 @@ export function createEventsStorage(
                 // Same reasoning: a dynamic run recreated without its code
                 // would be created unable to replay.
                 dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
+                ...(runInputData.startHook
+                  ? {
+                      startHook: withStartHookId(
+                        runInputData.startHook,
+                        effectiveRunId
+                      ),
+                    }
+                  : {}),
                 createdAt: now,
                 updatedAt: now,
               };
               const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
-              const created = await writeExclusive(
-                runPath,
-                JSON.stringify(createdRun, jsonReplacer)
-              );
+              const writeRun = () =>
+                writeExclusive(
+                  runPath,
+                  JSON.stringify(createdRun, jsonReplacer)
+                );
+              // The queued copy of an atomic start: it may admit the
+              // candidate before the direct `run_created` does, and a refused
+              // candidate throws HookConflictError here, creating nothing.
+              const createdStartHook = startHookRecord(createdRun);
+              const created = createdStartHook
+                ? (
+                    await admitStartHook({
+                      basedir,
+                      tag,
+                      runId: effectiveRunId,
+                      startHook: runInputData.startHook as StartHook,
+                      hook: createdStartHook,
+                      writeRun,
+                    })
+                  ).status === 'created'
+                : await writeRun();
 
               if (created) {
                 // We created the run, so also write the run_created event.
@@ -1338,6 +1790,9 @@ export function createEventsStorage(
                     allowReservedAttributes:
                       runInputData.allowReservedAttributes,
                     encryptionPublicKey: runInputData.encryptionPublicKey,
+                    ...(createdRun.startHook
+                      ? { startHook: createdRun.startHook }
+                      : {}),
                   },
                 };
                 const published =
@@ -1348,7 +1803,7 @@ export function createEventsStorage(
                       basedir,
                       'runs',
                       effectiveRunId,
-                      WorkflowRunSchema,
+                      RunRecordSchema,
                       tag
                     );
                 createdByResilientStart = true;
@@ -1359,7 +1814,7 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   effectiveRunId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
               }
@@ -1379,7 +1834,12 @@ export function createEventsStorage(
           (data.eventType === 'run_started' ||
             data.eventType === 'attr_set' ||
             data.eventType === 'run_cancelled' ||
-            data.eventType === 'run_failed')
+            data.eventType === 'run_failed' ||
+            // A start Hook takes deliveries from its admission on, while the
+            // run is still pending, so one must never take slot 1 from the
+            // `run_created` that stands for the Hook's creation.
+            (data.eventType === 'hook_received' &&
+              isStartHookId(effectiveRunId, data.correlationId)))
         ) {
           if (
             data.eventType === 'run_cancelled' ||
@@ -1406,6 +1866,59 @@ export function createEventsStorage(
         // terminal state) return without publishing, and the position stays
         // available to the next writer.
         eventId = await mintEventId(effectiveRunId);
+
+        // Cancelling a run that was never created. If it is a
+        // `start({ hook })` candidate whose admission claimed its token but
+        // whose writer died before its run (its start Hook's by-run marker is
+        // written before the run), its queued copy could still create it:
+        // fence its run record path so no copy ever can. Any other missing
+        // run is answered not found and left alone, so it can still be
+        // created. Only an id young enough to still be created is fenced.
+        if (!currentRun && data.eventType === 'run_cancelled') {
+          const cancelledCandidateTime = ulidToDate(
+            effectiveRunId.replace(/^wrun_/, '')
+          );
+          if (
+            cancelledCandidateTime &&
+            Date.now() - cancelledCandidateTime.getTime() <=
+              START_HOOK_CANDIDATE_MAX_AGE_MS &&
+            (await isAdmittedStartHookCandidate(effectiveRunId))
+          ) {
+            const fenced = await fenceStartHookCandidate(
+              basedir,
+              effectiveRunId,
+              tag,
+              {}
+            );
+            if (fenced) {
+              startHookLog('fenced a cancelled candidate with no run', {
+                runId: effectiveRunId,
+              });
+            } else {
+              const raced = await readJSONWithFallback(
+                basedir,
+                'runs',
+                effectiveRunId,
+                RunRecordSchema,
+                tag
+              );
+              if (raced) {
+                // Created since the read above: the retry cancels it.
+                throw new WorkflowWorldError(
+                  `Workflow run "${effectiveRunId}" was created while being cancelled; retry`,
+                  { status: 503 }
+                );
+              }
+              // Fenced already, by an earlier cancel or an orphan release.
+            }
+            // The candidate can never become a run: it is cancelled.
+            throw new WorkflowWorldError(
+              `Workflow run "${effectiveRunId}" was a start Hook candidate with no run; it is now fenced and can never be created`,
+              { status: 409, code: START_HOOK_CANDIDATE_CANCELLED }
+            );
+          }
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
 
         // These events are rejected on a non-existent run to match the
         // postgres and vercel worlds, which both surface this as a
@@ -1659,13 +2172,19 @@ export function createEventsStorage(
               (data.eventData as { token?: unknown } | undefined)?.token
             );
           }
-          const existingHook = await readJSONWithFallback(
-            basedir,
-            'hooks',
-            data.correlationId,
-            HookSchema,
-            tag
-          );
+          const existingHook =
+            (await readJSONWithFallback(
+              basedir,
+              'hooks',
+              data.correlationId,
+              HookSchema,
+              tag
+            )) ??
+            // A start Hook whose admission has written the run but not yet
+            // (or, after a crash, never) the entity: the run record holds it.
+            (currentRun && isStartHookId(effectiveRunId, data.correlationId)
+              ? await liveStartHookOf(currentRun)
+              : null);
 
           if (!existingHook) {
             throw new HookNotFoundError(data.correlationId);
@@ -1847,6 +2366,14 @@ export function createEventsStorage(
             dynamicWorkflowCodeRef: _dynamicWorkflowCodeRef,
             ...eventData
           } = event.eventData;
+          // The stored start Hook names its id: the log's record of the
+          // Hook's creation (see `start-hook.ts` in @workflow/world).
+          if (eventData.startHook) {
+            eventData.startHook = withStartHookId(
+              eventData.startHook,
+              effectiveRunId
+            );
+          }
           event = { ...event, eventData };
         }
         // Strip only the step `input` from the lazy step_started event row:
@@ -1949,6 +2476,7 @@ export function createEventsStorage(
             allowReservedAttributes?: true;
             encryptionPublicKey?: string;
             dynamicWorkflowCode?: SerializedData;
+            startHook?: StartHook;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1981,6 +2509,11 @@ export function createEventsStorage(
             // it has no upload path to send one to — so the inline field is
             // the only shape to handle.
             dynamicWorkflowCode: runData.dynamicWorkflowCode,
+            ...(runData.startHook
+              ? {
+                  startHook: withStartHookId(runData.startHook, effectiveRunId),
+                }
+              : {}),
             createdAt: now,
             updatedAt: now,
           };
@@ -1989,11 +2522,52 @@ export function createEventsStorage(
           // start path (run_started on non-existent run) that could result in
           // duplicate run_created events in the event log.
           const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
-          const created = await writeExclusive(
-            runPath,
-            JSON.stringify(run, jsonReplacer, 2)
-          );
-          if (!created) {
+          const runRecord = run;
+          const writeRun = () =>
+            writeExclusive(runPath, JSON.stringify(runRecord, jsonReplacer, 2));
+          const createdStartHook = startHookRecord(runRecord);
+          if (runData.startHook && createdStartHook) {
+            // Atomic start: the start Hook and the run are decided together.
+            // A refused candidate throws HookConflictError here; one already
+            // accepted (by a retry of this write, or by its queued copy)
+            // answers with its run and the run_created at its first slot
+            // rather than EntityConflictError.
+            const admission = await admitStartHook({
+              basedir,
+              tag,
+              runId: effectiveRunId,
+              startHook: runData.startHook,
+              hook: createdStartHook,
+              writeRun,
+            });
+            if (admission.status === 'existing') {
+              const existing = admission.run;
+              if (existing.status === 'pending') {
+                await restoreMissingRunCreated(existing);
+              }
+              const created = await readJSONWithFallback(
+                basedir,
+                runEntityDir('events', effectiveRunId),
+                `${effectiveRunId}-${slotToEventId(FIRST_EVENT_SLOT)}`,
+                ReadEventSchema,
+                tag
+              );
+              if (created?.eventType !== 'run_created') {
+                throw missingRunCreatedError(
+                  effectiveRunId,
+                  'the admitted run has no run_created at its first slot'
+                );
+              }
+              return {
+                event: stripEventDataRefs(
+                  created,
+                  params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
+                ),
+                run: existing,
+                maxEvents: getMaxEventsForRun(existing),
+              };
+            }
+          } else if (!(await writeRun())) {
             throw new EntityConflictError(
               `Workflow run "${effectiveRunId}" already exists`
             );
@@ -2050,6 +2624,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2086,6 +2661,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2133,6 +2709,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2172,6 +2749,7 @@ export function createEventsStorage(
                 // changes status — and a dynamic run that loses its code can
                 // never be replayed.
                 dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -2185,7 +2763,7 @@ export function createEventsStorage(
           run = await withRunFileLock(effectiveRunId, async () => {
             const fresh = await readJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
-              WorkflowRunSchema
+              RunRecordSchema
             );
             if (!fresh) {
               throw new WorkflowRunNotFoundError(effectiveRunId);
@@ -2627,7 +3205,12 @@ export function createEventsStorage(
                 return { status: 'owned' as const, claim: existingClaim };
               }
               if (
-                !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
+                !(await isHookTokenClaimReleasable(
+                  basedir,
+                  existingClaim,
+                  tag,
+                  { token: hookData.token, runId: effectiveRunId }
+                ))
               ) {
                 if (hookData.force !== true || !existingClaim.hookId) {
                   return { status: 'conflict' as const, claim: existingClaim };
@@ -2666,9 +3249,23 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   existingClaim.runId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
+                // A start Hook whose run is not written yet (its admitting
+                // writer stalled or died, and the classifier above still
+                // holds it): it cannot be told, and its writer could still
+                // publish the run. Retry until the run exists, or until the
+                // classifier fences the candidate and releases the token.
+                if (
+                  victimRun === null &&
+                  isStartHookId(existingClaim.runId, existingClaim.hookId)
+                ) {
+                  throw new ThrottleError(
+                    `The start Hook holding this token belongs to a run that is still being created; retry`,
+                    { retryAfter: 1 }
+                  );
+                }
                 const victimRunning =
                   victimRun !== null &&
                   !isTerminalWorkflowRunStatus(victimRun.status);
@@ -2777,6 +3374,14 @@ export function createEventsStorage(
                 );
                 if (victimRunning) {
                   if (lockWritten) {
+                    // A start Hook can be taken while its run is still
+                    // pending: its `run_created` must hold slot 1 first.
+                    if (
+                      victimRun.status === 'pending' &&
+                      isStartHookId(existingClaim.runId, existingClaim.hookId)
+                    ) {
+                      await restoreMissingRunCreated(victimRun);
+                    }
                     // The victim's row. Its own id in its own log: the
                     // takeover is the one writer of another run's log.
                     const disposedEvent: Event = {
@@ -3409,7 +4014,7 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   effectiveRunId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
             if (
@@ -3498,6 +4103,20 @@ export function createEventsStorage(
               occupant?.eventType === 'run_created' &&
               occupant.runId === effectiveRunId
             ) {
+              // An admitted start Hook candidate answers with its decision,
+              // never EntityConflictError: a delivery to its start Hook can
+              // restore the run_created from the run record while this
+              // publisher is between its admission and this write.
+              if (run?.startHook) {
+                return {
+                  event: stripEventDataRefs(
+                    occupant,
+                    params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
+                  ),
+                  run,
+                  maxEvents: getMaxEventsForRun(run),
+                };
+              }
               break;
             }
             throw new WorkflowWorldError(
