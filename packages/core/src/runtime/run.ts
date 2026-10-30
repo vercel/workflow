@@ -8,6 +8,7 @@ import {
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
+import { getRunCapabilities } from '../capabilities.js';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -497,6 +498,8 @@ export class Run<TResult> {
           key: PayloadKey | undefined;
           deploymentId?: string;
           encryptionPublicKey?: string;
+          /** Whether the owner run reassembles split stream writes. */
+          splitStreamChunks: boolean;
         }>
       | undefined;
     let writable: WritableStream<W>;
@@ -511,6 +514,13 @@ export class Run<TResult> {
           ),
           deploymentId: run.deploymentId,
           encryptionPublicKey: run.encryptionPublicKey,
+          // The owner run's own deployment decodes what we write, so its
+          // `@workflow/core` version decides whether an oversized write may
+          // be carried as continuation frames.
+          splitStreamChunks: getRunCapabilities(
+            run.executionContext?.workflowCoreVersion as string | undefined,
+            run.executionContext?.nodeVersion as string | undefined
+          ).splitStreamChunks,
         };
         tagForwardedWritableTarget(writable, target);
         return target;
@@ -524,6 +534,8 @@ export class Run<TResult> {
       runId: this.runId,
       name,
       key: () => resolveTarget().then(({ key }) => key),
+      splitChunks: () =>
+        resolveTarget().then(({ splitStreamChunks }) => splitStreamChunks),
     });
     return writable;
   }

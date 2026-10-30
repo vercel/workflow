@@ -168,3 +168,26 @@ describe('framedAbortStreams compatibility', () => {
   ])('supports framed abort packets for core %s', (version) =>
     expect(getRunCapabilities(version).framedAbortStreams).toBe(true));
 });
+
+describe('splitStreamChunks compatibility', () => {
+  // A reader that predates `splt` ignores frames in a format it does not know,
+  // so writing split frames to one would silently drop the value. Failing the
+  // oversized write is the only safe behaviour there.
+  it.each([
+    undefined,
+    '',
+    'dev',
+    '4.2.0',
+    '5.0.0',
+    '5.2.3',
+    '5.3.0-beta.1',
+  ])('keeps oversized writes unsplit for unknown/older core %s', (version) =>
+    expect(getRunCapabilities(version).splitStreamChunks).toBe(false));
+
+  it.each([
+    '5.3.0',
+    '5.3.1',
+    '6.0.0',
+  ])('reassembles split writes for core %s', (version) =>
+    expect(getRunCapabilities(version).splitStreamChunks).toBe(true));
+});

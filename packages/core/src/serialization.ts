@@ -19,8 +19,10 @@ import {
   flushablePipe,
   getMaxBufferedBytes,
   getMaxBytesPerBatch,
+  getMaxChunkBytes,
   getMaxChunksPerBatch,
   getMaxInflightChunks,
+  isStreamChunkSplittingEnabled,
   pollReadableLock,
   pollWritableLock,
   trackFlushableWritable,
@@ -93,6 +95,11 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
+import {
+  createSplitReassembler,
+  SPLIT_PART_OVERHEAD_BYTES,
+  splitPayload,
+} from './serialization/split-frames.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,
@@ -185,6 +192,14 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
  * split across transport reads.
  */
 const FRAME_HEADER_SIZE = 4;
+
+/** Wraps one payload in the 4-byte big-endian length prefix framing uses. */
+function frameChunk(payload: Uint8Array): Uint8Array {
+  const frame = new Uint8Array(FRAME_HEADER_SIZE + payload.length);
+  new DataView(frame.buffer).setUint32(0, payload.length, false);
+  frame.set(payload, FRAME_HEADER_SIZE);
+  return frame;
+}
 
 /**
  * The mode-specific serializers (`./serialization/{client,step,workflow}.ts`)
@@ -299,11 +314,55 @@ function isTransientKeyLookupError(error: unknown): boolean {
   return typeof status === 'number' && (status === 429 || status >= 500);
 }
 
+/**
+ * How an object-stream serializer treats a write too large for one wire
+ * chunk.
+ */
+export interface SerializeStreamOptions {
+  /**
+   * Split a write whose encoded payload exceeds {@link maxChunkBytes} into
+   * several `splt` continuation frames instead of emitting one oversized
+   * frame the transport refuses. Only safe when the reader is known to
+   * reassemble them: gate it on the target run's
+   * `RunCapabilities.splitStreamChunks`.
+   *
+   * A function is resolved once, lazily, on the first write, alongside the
+   * encryption key. That is what lets a writable forwarded to *another* run
+   * gate on that run's real capability, which is only known after a metadata
+   * lookup this stream must not block construction on. A rejection is treated
+   * as "cannot split", which fails an oversized write rather than risking a
+   * reader that would drop it.
+   */
+  splitChunks?: boolean | (() => boolean | Promise<boolean>);
+  /**
+   * Per-chunk wire limit to split at. Defaults to
+   * {@link getMaxChunkBytes}, which matches the server's own cap.
+   */
+  maxChunkBytes?: number;
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  options: SerializeStreamOptions = {}
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
+  // Resolved once per stream rather than per chunk: a chunk must not be split
+  // differently from its neighbours, and the target's capability cannot change
+  // mid-stream.
+  const maxChunkBytes = options.maxChunkBytes ?? getMaxChunkBytes();
+  let splitChunks = false;
+  const resolveSplitChunks = async (): Promise<void> => {
+    if (!isStreamChunkSplittingEnabled()) return;
+    const requested = options.splitChunks;
+    if (typeof requested === 'function') {
+      // A failed capability lookup must not fail a write that fits anyway,
+      // so it degrades to "do not split" rather than propagating.
+      splitChunks = await Promise.resolve(requested()).catch(() => false);
+    } else {
+      splitChunks = requested === true;
+    }
+  };
   // Resolve the key input once on first use and cache the result.
   // Note: if resolving cryptoKey rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
@@ -319,6 +378,7 @@ export function getSerializeStream(
     async transform(chunk, controller) {
       try {
         if (!keyState.resolved) {
+          await resolveSplitChunks();
           keyState.key = await resolveEncryptionKey(cryptoKey);
           keyState.resolved = true;
           if (isSealTarget(keyState.key)) {
@@ -358,11 +418,33 @@ export function getSerializeStream(
           prefixed = (await encrypt(prefixed, keyState.key)) as Uint8Array;
         }
 
+        // A payload too large for one wire chunk goes out as several `splt`
+        // continuation frames, which the reader reassembles before decoding.
+        // The split is the last thing that happens to the bytes, so the
+        // continuation header stays readable without a key and one AEAD tag
+        // still covers the whole logical value. Each part is framed and
+        // written exactly like a whole chunk, so resume positions stay outer
+        // frame positions.
+        //
+        // Without the capability the oversized frame goes out whole, as it
+        // always has, and the transport refuses it: a reader that predates
+        // `splt` ignores frames whose format it does not know, so splitting
+        // for one would silently drop the value instead of failing the write.
+        if (
+          splitChunks &&
+          prefixed.length + FRAME_HEADER_SIZE > maxChunkBytes
+        ) {
+          for (const part of splitPayload(
+            prefixed,
+            Math.max(1, maxChunkBytes - SPLIT_PART_OVERHEAD_BYTES)
+          )) {
+            controller.enqueue(frameChunk(part));
+          }
+          return;
+        }
+
         // Write length-prefixed frame: [4-byte length][prefixed data]
-        const frame = new Uint8Array(FRAME_HEADER_SIZE + prefixed.length);
-        new DataView(frame.buffer).setUint32(0, prefixed.length, false);
-        frame.set(prefixed, FRAME_HEADER_SIZE);
-        controller.enqueue(frame);
+        controller.enqueue(frameChunk(prefixed));
       } catch (error) {
         // Encryption failures must keep their RuntimeDecryptionError
         // identity (RUNTIME_ERROR) rather than be reframed as a
@@ -414,6 +496,11 @@ export function getDeserializeStream(
   // the same ephemeral public key, so this turns an ECDH per frame into an
   // ECDH per writer.
   let openSession: ReturnType<typeof createOpenSession> | undefined;
+  // Reassembles writes the producer split across several wire chunks. It
+  // belongs to this transform rather than to any one connection, so a group
+  // interrupted by a reconnect completes from the parts the reopened
+  // connection delivers.
+  const reassembler = createSplitReassembler();
 
   function appendToBuffer(data: Uint8Array) {
     const newBuffer = new Uint8Array(buffer.length + data.length);
@@ -452,7 +539,27 @@ export function getDeserializeStream(
       );
       buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
 
-      let { format, payload } = decodeFormatPrefix(frameData);
+      // The format-prefixed bytes this frame contributes. A continuation
+      // frame replaces it with the reassembled group, which carries the
+      // format prefix of the value the producer actually encoded.
+      let encoded: Uint8Array = frameData;
+      let { format, payload } = decodeFormatPrefix(encoded);
+
+      // A write larger than one wire chunk arrives as several `splt`
+      // continuation frames. Reassembly happens here, above decryption and
+      // below framing, so the reader needs no key to recognise a fragment and
+      // the resume arithmetic upstream keeps counting whole outer frames.
+      if (format === SerializationFormat.SPLIT) {
+        const result = reassembler.accept(payload);
+        // Pending parts and parts that cannot form a group are both silently
+        // skipped: a read that began mid-group (any explicit `startIndex`,
+        // including the negative last-N form) legitimately sees continuations
+        // whose first part it will never receive, and erroring would make
+        // those reads unusable. The group resynchronises at the next part 0.
+        if (result.kind !== 'complete') continue;
+        encoded = result.payload;
+        ({ format, payload } = decodeFormatPrefix(encoded));
+      }
 
       // If the frame payload is encrypted or sealed, recover it first to
       // reveal the inner format-prefixed data (e.g., 'devl' + serialized
@@ -494,8 +601,8 @@ export function getDeserializeStream(
           // the shared envelope layer, keeping the two schemes in lockstep
           // with the one-shot path.
           decrypted = sealed
-            ? await openSession!.open(decodeFormatPrefix(frameData).payload)
-            : ((await decrypt(frameData, keyState.key)) as Uint8Array);
+            ? await openSession!.open(decodeFormatPrefix(encoded).payload)
+            : ((await decrypt(encoded, keyState.key)) as Uint8Array);
         } catch (error) {
           // The low-level crypto layer only sees the stripped payload, so it
           // cannot record the outer envelope prefix. We peeked it here, so
@@ -2069,7 +2176,11 @@ export function getExternalReducers(
   // deadlock. Defaults to `ops` for existing callers that flush everything in
   // the background.
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  // Whether the target run reassembles object-stream writes split across
+  // several wire chunks. Should match its `splitStreamChunks` capability;
+  // `false` keeps the pre-split wire format byte for byte.
+  splitStreamChunks = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2115,9 +2226,11 @@ export function getExternalReducers(
                   framedByteStreams,
                   runReadyBarrier,
                   readbackOps,
-                  framedAbortStreams
+                  framedAbortStreams,
+                  splitStreamChunks
                 ),
-                cryptoKey
+                cryptoKey,
+                { splitChunks: splitStreamChunks }
               )
             )
             .pipeTo(writable)
@@ -2405,7 +2518,8 @@ function getStepReducers(
   // orders after the run exists. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  splitStreamChunks = false
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2467,9 +2581,11 @@ function getStepReducers(
                     framedByteStreams,
                     runReadyBarrier,
                     readbackOps,
-                    framedAbortStreams
+                    framedAbortStreams,
+                    splitStreamChunks
                   ),
-                  cryptoKey
+                  cryptoKey,
+                  { splitChunks: splitStreamChunks }
                 )
               )
               .pipeTo(writable)
@@ -2956,6 +3072,7 @@ export function createForwardedWritable<W = any>({
   deploymentId,
   encryptionPublicKey,
   runReadyBarrier,
+  splitChunks,
 }: {
   global: Record<string, any>;
   ops: Promise<any>[];
@@ -2965,10 +3082,27 @@ export function createForwardedWritable<W = any>({
   deploymentId?: string;
   encryptionPublicKey?: string;
   runReadyBarrier?: Promise<unknown>;
+  /**
+   * Whether the owner run reassembles split writes. A resolver is awaited on
+   * the first write, so a caller that learns the target's `@workflow/core`
+   * version from run metadata can gate on it without blocking construction.
+   */
+  splitChunks?: boolean | (() => boolean | Promise<boolean>);
 }): WritableStream<W> {
   const serialize = getSerializeStream(
-    getExternalReducers(global, ops, runId, key),
-    key
+    getExternalReducers(
+      global,
+      ops,
+      runId,
+      key,
+      false,
+      undefined,
+      undefined,
+      false,
+      splitChunks === true
+    ),
+    key,
+    { splitChunks }
   );
   const serverWritable = new WorkflowServerWritableStream(
     runId,
@@ -3661,6 +3795,12 @@ function getStepRevivers(
       // belongs to another run: this barrier says nothing about its readiness.
       const targetRunReady =
         targetRunId === runId ? runReadyBarrier : undefined;
+      // Splitting is safe exactly when the reader is this run's own
+      // deployment. A writable forwarded from another run is read by that
+      // run's deployment, whose version this reviver cannot see, so an
+      // oversized write there keeps failing rather than risking a reader that
+      // would drop the continuation frames.
+      const splitTargetChunks = targetRunId === runId;
       const serialize = getSerializeStream(
         getStepReducers(
           global,
@@ -3668,9 +3808,13 @@ function getStepRevivers(
           targetRunId,
           targetKey,
           false,
-          targetRunReady
+          targetRunReady,
+          undefined,
+          false,
+          splitTargetChunks
         ),
-        targetKey
+        targetKey,
+        { splitChunks: splitTargetChunks }
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
@@ -3905,6 +4049,9 @@ export function deserializePreparedStepError(
  *   backwards compatibility with older runs.
  * @param framedAbortStreams - Whether the target deployment supports length-framed
  *   abort packets. Unknown/older targets must retain the unframed format.
+ * @param splitStreamChunks - Whether the target run reassembles object-stream
+ *   writes split across several wire chunks. Unknown/older targets must keep
+ *   receiving an oversized write as one frame, which the transport refuses.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateWorkflowArguments(
@@ -3917,7 +4064,8 @@ export async function dehydrateWorkflowArguments(
   framedByteStreams = false,
   compression: CompressionMode = false,
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  splitStreamChunks = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3930,7 +4078,8 @@ export async function dehydrateWorkflowArguments(
         framedByteStreams,
         undefined,
         readbackOps,
-        framedAbortStreams
+        framedAbortStreams,
+        splitStreamChunks
       )
     );
     return revive(str);
@@ -3948,7 +4097,8 @@ export async function dehydrateWorkflowArguments(
           framedByteStreams,
           undefined,
           readbackOps,
-          framedAbortStreams
+          framedAbortStreams,
+          splitStreamChunks
         )
       ),
       compression,
@@ -4156,6 +4306,9 @@ export async function hydrateStepArguments(
  *   backwards compatibility with older runs.
  * @param framedAbortStreams - Whether the target deployment supports length-framed
  *   abort packets. Unknown/older targets must retain the unframed format.
+ * @param splitStreamChunks - Whether the target run reassembles object-stream
+ *   writes split across several wire chunks. Unknown/older targets must keep
+ *   receiving an oversized write as one frame, which the transport refuses.
  * @returns The dehydrated value as binary data (Uint8Array) with format prefix
  */
 export async function dehydrateStepReturnValue(
@@ -4172,7 +4325,8 @@ export async function dehydrateStepReturnValue(
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  splitStreamChunks = false
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4185,7 +4339,8 @@ export async function dehydrateStepReturnValue(
         framedByteStreams,
         runReadyBarrier,
         readbackOps,
-        framedAbortStreams
+        framedAbortStreams,
+        splitStreamChunks
       )
     );
     return revive(str);
@@ -4203,7 +4358,8 @@ export async function dehydrateStepReturnValue(
           framedByteStreams,
           runReadyBarrier,
           readbackOps,
-          framedAbortStreams
+          framedAbortStreams,
+          splitStreamChunks
         )
       ),
       compression,

@@ -95,9 +95,17 @@ export function getWritable<W = any>(
       runId,
       ctx.encryptionKey,
       true,
-      ctx.runReadyBarrier
+      ctx.runReadyBarrier,
+      undefined,
+      false,
+      true
     ),
-    ctx.encryptionKey
+    ctx.encryptionKey,
+    // Same reasoning as byte-stream framing above: this stream belongs to the
+    // run that owns this step, so its readers run the same SDK version. A
+    // write larger than one wire chunk is carried as continuation frames
+    // instead of being refused outright.
+    { splitChunks: true }
   );
 
   // Use flushable pipe so the ops promise resolves when the user releases

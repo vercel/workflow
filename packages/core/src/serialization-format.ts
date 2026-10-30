@@ -14,15 +14,6 @@ import { parse, unflatten } from 'devalue';
 // Key material (browser-safe re-exports)
 // ---------------------------------------------------------------------------
 
-/**
- * Re-exported from the envelope layer so browser consumers (web dashboard,
- * web-shared) can resolve key material without importing
- * `@workflow/core/serialization`, whose module graph reaches Node built-ins
- * (`node:util`, `node:async_hooks`) and cannot be bundled for the browser.
- *
- * Everything below is Web Crypto only: `serialization/encryption.ts`,
- * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
- */
 export {
   type DecryptionKey,
   decrypt as decryptEnvelope,
@@ -36,6 +27,29 @@ export {
   type SealTarget,
   sealTo,
 } from './serialization/encryption.js';
+/**
+ * Re-exported from the envelope layer so browser consumers (web dashboard,
+ * web-shared) can resolve key material without importing
+ * `@workflow/core/serialization`, whose module graph reaches Node built-ins
+ * (`node:util`, `node:async_hooks`) and cannot be bundled for the browser.
+ *
+ * Everything below is Web Crypto only: `serialization/encryption.ts`,
+ * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
+ */
+/**
+ * Re-exported so browser readers that decode raw stream frames (the o11y
+ * stream viewer) can reassemble a write the producer split across several
+ * chunks. Browser-safe for the same reason as the key material above: the
+ * split codec is pure byte manipulation over the format-prefix layer.
+ */
+export {
+  createSplitReassembler,
+  decodeSplitPart,
+  type SplitAcceptResult,
+  type SplitPart,
+  type SplitReassembler,
+  splitPayload,
+} from './serialization/split-frames.js';
 
 // ---------------------------------------------------------------------------
 // Format prefix constants and encoding/decoding
@@ -61,6 +75,14 @@ export const SerializationFormat = {
   GZIP: 'gzip',
   /** Zstandard-compressed payload (inner payload has its own format prefix after decompression) */
   ZSTD: 'zstd',
+  /**
+   * One continuation part of a stream write too large for a single wire
+   * chunk: a continuation header plus a slice of the encoded value (see
+   * `serialization/split-frames.ts`). Only ever a stream frame, never a
+   * stored payload, so {@link hydrateData} rejects it: a display layer that
+   * reads raw stream frames must reassemble the group first.
+   */
+  SPLIT: 'splt',
 } as const;
 
 export type SerializationFormatType =

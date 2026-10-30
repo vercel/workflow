@@ -61,6 +61,47 @@ export const getMaxBytesPerBatch = (): number =>
   });
 
 /**
+ * Wire limit: maximum bytes in a single stream *chunk*, as opposed to a batch
+ * of them. Every write transport enforces it (the Vercel stream API refuses a
+ * larger chunk; the WebSocket write path cannot carry one at all), so it is
+ * the size an object-stream write is split at rather than a batching knob.
+ * Default 10 MiB, matching the server's own cap.
+ *
+ * Override: `WORKFLOW_STREAM_MAX_CHUNK_BYTES`, for a deployment whose server
+ * cap is configured lower (integration tests do this) or for exercising the
+ * split path without 10 MiB of data.
+ */
+export const MAX_CHUNK_BYTES = 10 * 1024 * 1024;
+
+export const getMaxChunkBytes = (): number =>
+  envNumber('WORKFLOW_STREAM_MAX_CHUNK_BYTES', MAX_CHUNK_BYTES, {
+    integer: true,
+    min: 1,
+  });
+
+/**
+ * Kill switch for splitting oversized object-stream writes across several
+ * wire chunks. Splitting is otherwise on wherever the reader is known to
+ * reassemble it (see `RunCapabilities.splitStreamChunks`); setting this to
+ * `0`/`false` restores the pre-split behaviour, where such a write is emitted
+ * as one oversized chunk and the transport refuses it.
+ */
+export const isStreamChunkSplittingEnabled = (): boolean => {
+  // Serialization also runs where `process` does not exist (the workflow VM,
+  // browsers); an unreadable environment means "not switched off".
+  let raw: string | undefined;
+  try {
+    raw = (
+      globalThis as { process?: { env?: Record<string, string | undefined> } }
+    ).process?.env?.WORKFLOW_STREAM_SPLIT_CHUNKS;
+  } catch {
+    return true;
+  }
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+};
+
+/**
  * Buffer bound (bytes) for the server writable's group-commit buffer, the
  * byte-denominated counterpart of {@link MAX_INFLIGHT_CHUNKS}. `write()`
  * blocks once this much data is buffered-but-not-durable, so a fast producer
