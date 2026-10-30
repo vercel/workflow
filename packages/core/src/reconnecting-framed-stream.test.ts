@@ -834,7 +834,8 @@ describe('createReconnectingFramedStream', () => {
       {
         0: () => scriptedStream([{ kind: 'close' }]),
       },
-      async () => ({ tailIndex: 4, done: false })
+      // Nothing written yet: an idle stream, not a hole below the tail.
+      async () => ({ tailIndex: -1, done: false })
     );
     setWorld(world);
 
@@ -873,5 +874,95 @@ describe('createReconnectingFramedStream', () => {
     // Initial connect + one connect per allowed total reconnect; the next
     // reconnect throws before opening another stream.
     expect(calls).toBe(FRAMED_STREAM_MAX_TOTAL_RECONNECTS + 1);
+  });
+  describe('a hole below the known tail (#4306)', () => {
+    // The stream's metadata reports chunks through index 5, but chunk 2 is
+    // missing server-side. The live read delivers 0..1, and every session
+    // opened at index 2 ends (after the server's max duration in production,
+    // ~2 min each) without delivering a frame. Reconnecting from the same
+    // index can never make progress, so the reader must fail fast with an
+    // error naming the missing index instead of burning the whole
+    // consecutive-reconnect budget (~50 sessions, well over an hour).
+    const ends = [
+      ['a clean EOF', { kind: 'close' }],
+      ['an errored body', { kind: 'error', err: new Error('max duration') }],
+    ] as const;
+
+    for (const [label, end] of ends) {
+      it(`fails fast when every session at the hole ends with ${label}`, async () => {
+        const { world, calls } = makeWorldWithScriptedStreams(
+          {
+            0: () =>
+              scriptedStream([
+                { kind: 'value', value: payloadFrame(0) },
+                { kind: 'value', value: payloadFrame(1) },
+                end,
+              ]),
+            2: () => scriptedStream([end]),
+          },
+          async () => ({ tailIndex: 5, done: false })
+        );
+        setWorld(world);
+
+        const reader = createReconnectingFramedStream(
+          RUN_ID,
+          's',
+          0
+        ).getReader();
+        expect((await reader.read()).value).toEqual(payloadFrame(0));
+        expect((await reader.read()).value).toEqual(payloadFrame(1));
+        const error = await reader.read().catch((cause: unknown) => cause);
+
+        expect(StreamError.is(error)).toBe(true);
+        expect(error).toHaveProperty(
+          'message',
+          expect.stringMatching(/index 2.*tail index 5/)
+        );
+        const atHole = calls.filter((i) => i === 2).length;
+        expect(atHole).toBeGreaterThan(0);
+        expect(atHole).toBeLessThan(FRAMED_STREAM_MAX_RECONNECTS);
+      });
+    }
+
+    it('keeps waiting when the session is idle at the tail', async () => {
+      // Position 2 with tail 1: the reader is caught up and waiting for new
+      // chunks, which is not a hole. The next session delivers.
+      let infoCalls = 0;
+      const { world, calls } = makeWorldWithScriptedStreams(
+        {
+          0: () =>
+            scriptedStream([
+              { kind: 'value', value: payloadFrame(0) },
+              { kind: 'value', value: payloadFrame(1) },
+              { kind: 'close' },
+            ]),
+          2: () =>
+            calls.filter((i) => i === 2).length < 5
+              ? scriptedStream([{ kind: 'close' }])
+              : scriptedStream([
+                  { kind: 'value', value: payloadFrame(2) },
+                  { kind: 'close' },
+                ]),
+        },
+        async () => {
+          infoCalls++;
+          return calls.filter((i) => i === 2).length < 5
+            ? { tailIndex: 1, done: false }
+            : { tailIndex: 2, done: true };
+        }
+      );
+      setWorld(world);
+
+      const chunks = await readAll(
+        createReconnectingFramedStream(RUN_ID, 's', 0)
+      );
+      expect(chunks).toEqual([
+        payloadFrame(0),
+        payloadFrame(1),
+        payloadFrame(2),
+      ]);
+      expect(calls.filter((i) => i === 2)).toHaveLength(5);
+      expect(infoCalls).toBeGreaterThan(0);
+    });
   });
 });
