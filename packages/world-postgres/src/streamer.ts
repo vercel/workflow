@@ -5,7 +5,7 @@ import type {
   Streamer,
   StreamInfoResponse,
 } from '@workflow/world';
-import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, asc, between, eq, gt, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -16,6 +16,8 @@ const StreamPublishMessage = z.compile(
   z.object({
     streamId: z.string(),
     chunkId: z.templateLiteral(['chnk_', z.string()]),
+    firstChunkId: z.templateLiteral(['chnk_', z.string()]).optional(),
+    rangeFollows: z.literal(true).optional(),
   })
 );
 
@@ -233,25 +235,33 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
       const key = `strm:${parsed.streamId}` as const;
-      if (!events.listenerCount(key)) {
+      if (parsed.rangeFollows || !events.listenerCount(key)) {
         return;
       }
 
       const resource = getMutex(key);
       await resource.mutex.andThen(async () => {
-        const [value] = await drizzle
-          .select({ eof: streams.eof, data: streams.chunkData })
+        const chunks = await drizzle
+          .select({
+            id: streams.chunkId,
+            eof: streams.eof,
+            data: streams.chunkData,
+          })
           .from(streams)
           .where(
             and(
               eq(streams.streamId, parsed.streamId),
-              eq(streams.chunkId, parsed.chunkId)
+              between(
+                streams.chunkId,
+                parsed.firstChunkId ?? parsed.chunkId,
+                parsed.chunkId
+              )
             )
           )
-          .limit(1);
-        if (!value) return;
-        const { data, eof } = value;
-        events.emit(key, { id: parsed.chunkId, data, eof });
+          .orderBy(streams.chunkId);
+        for (const chunk of chunks) {
+          events.emit(key, chunk);
+        }
       });
     },
     { onReconnect: () => replayActiveStreams() }
@@ -294,8 +304,11 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     }
   };
 
-  const notifyStream = async (payload: string) => {
-    await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
+  const notifyStream = async (...payloads: string[]) => {
+    await pool.query(
+      'SELECT pg_notify($1, t.payload) FROM unnest($2::text[]) WITH ORDINALITY AS t(payload, i) ORDER BY t.i',
+      [STREAM_TOPIC, payloads]
+    );
   };
 
   const loadPersistedChunks = (name: string): Promise<StreamChunkEvent[]> =>
@@ -381,17 +394,19 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           }))
         );
 
-        // Notify for each chunk (could be batched in future if needed)
-        for (const chunkId of chunkIds) {
-          await notifyStream(
+        // older readers read exactly one chunkId per notification
+        const lastIndex = chunkIds.length - 1;
+        await notifyStream(
+          ...chunkIds.map((chunkId, i) =>
             JSON.stringify(
-              StreamPublishMessage.encode({
-                chunkId,
-                streamId: name,
-              })
+              StreamPublishMessage.encode(
+                i === lastIndex
+                  ? { chunkId, firstChunkId: chunkIds[0], streamId: name }
+                  : { chunkId, rangeFollows: true, streamId: name }
+              )
             )
-          );
-        }
+          )
+        );
       },
 
       async close(
