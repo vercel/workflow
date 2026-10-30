@@ -761,6 +761,27 @@ describe('handshake deadline', () => {
     expect(sockets).toHaveLength(1);
   });
 
+  it('covers a token fetch that never resolves', async () => {
+    let release: (value: Record<string, string>) => void = () => {};
+    const stalledHeaders = () =>
+      new Promise<Record<string, string>>((resolve) => {
+        release = resolve;
+      });
+    const transport = getWsEventsTransport(WS_URL, stalledHeaders);
+    transport.open();
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/handshake .* timed out after/);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
+
+    release({ authorization: 'Bearer late' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toHaveLength(0);
+  });
+
   it('honours WORKFLOW_REQUEST_TIMEOUT_MS', async () => {
     process.env.WORKFLOW_REQUEST_TIMEOUT_MS = '15000';
     const transport = getWsEventsTransport(WS_URL, headers);
