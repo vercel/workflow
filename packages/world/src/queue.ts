@@ -963,7 +963,145 @@ export interface QueueOptions {
    * (the pre-regional-routing behavior).
    */
   region?: string;
+  /**
+   * **Experimental.** Ask the queue to claim the message for its sender
+   * before `queue()` returns, so this process can run it now, in the request
+   * that sent it, with the queue as the crash backstop (see
+   * {@link HeldQueueMessage}). Only on a World that declares
+   * `capabilities.experimental_queueHold`; other Worlds ignore it and send
+   * the message as usual.
+   *
+   * When the queue holds the message, the result carries `experimental_held`:
+   * run it with `experimental_held.consume(handler)`. Otherwise it carries
+   * `experimental_notHeld` (or neither, on a World that ignores the option)
+   * and the queue delivers the message as usual: do not process it here.
+   *
+   * Cannot be combined with `delaySeconds`. Send an `idempotencyKey` with it:
+   * a send that fails with a network error may already have enqueued the
+   * message, and a retry without a key enqueues a second one.
+   *
+   * @experimental
+   */
+  experimental_hold?: QueueHoldOptions;
 }
+
+/**
+ * **Experimental.** Options for {@link QueueOptions.experimental_hold}.
+ *
+ * @experimental
+ */
+export interface QueueHoldOptions {
+  /**
+   * The hold's lease, in seconds. While `consume()` runs the World renews it;
+   * if nothing renews it (the sender died, or never called `consume`), the
+   * message is delivered as usual about this long after the last renewal. A
+   * World clamps it to what its queue supports (Vercel Queues: 30-3600 s,
+   * default 30).
+   */
+  visibilityTimeoutSeconds?: number;
+}
+
+/**
+ * **Experimental.** Why a send with {@link QueueOptions.experimental_hold}
+ * did not come back holding its message. In every case the queue (or a
+ * delivery it already made) is responsible for the message, so the sender
+ * must not process it.
+ *
+ * - `unsupported`: the queue ignored the hold (send-and-hold not enabled, an
+ *   older queue service, local development). The message is delivered as
+ *   usual.
+ * - `deferred`: the queue accepted the message for deferred processing. It
+ *   is delivered once it is ingested.
+ * - `lost`: another claim on the message won, or its run's orchestrator is
+ *   busy (the run's concurrency key is held). The queue delivers it.
+ * - `coalesced`: the run's orchestrator is running in another delivery and
+ *   this message was coalesced into it; that delivery covers it.
+ * - `concurrency_limited`: no delivery slot was free. Delivered once one is.
+ * - `duplicate`: the idempotency key belongs to an earlier message.
+ * - `error`: the hold could not be taken or its answer could not be read.
+ *   The queue delivers the message once any lease taken for it lapses.
+ *
+ * @experimental
+ */
+export type QueueNotHeldReason =
+  | 'unsupported'
+  | 'deferred'
+  | 'lost'
+  | 'coalesced'
+  | 'concurrency_limited'
+  | 'duplicate'
+  | 'error';
+
+/**
+ * **Experimental.** A message the queue claimed for its sender before
+ * `queue()` returned ({@link QueueOptions.experimental_hold}). It counts as
+ * the message's first delivery: running it here replaces the queue hop to a
+ * consumer, and the queue stays the backstop if this process stops renewing
+ * the lease.
+ *
+ * @experimental
+ */
+export interface HeldQueueMessage {
+  /** ID of the held message. The same ID a redelivery of it carries. */
+  readonly messageId: MessageId;
+  /** When the hold lapses unless `consume()` renews it. */
+  readonly leaseExpiresAt: Date;
+
+  /**
+   * Run `handler` on the message here, exactly as the World's
+   * {@link Queue.createQueueHandler} runs a delivery of it: with the same
+   * `meta` (`deliveryCount: 1`), the same handler-result semantics (a
+   * `{ timeoutSeconds }` result redelivers the message, a handoff continues
+   * it in a fresh delivery) and the same retries when it rejects. The lease
+   * is renewed while the handler runs and the message is acknowledged when
+   * it resolves.
+   *
+   * Pass the same handler the queue consumer for this message's prefix uses.
+   * Call it as soon as `queue()` returns (nothing renews the hold until it
+   * starts), at most once, and not after `release()`. Keep the invocation
+   * alive until it settles (for example with `waitUntil`).
+   */
+  consume(handler: QueueHandler): Promise<void>;
+
+  /**
+   * Give the message back without running it here: the queue delivers it as
+   * usual after `delaySeconds` (default 0).
+   */
+  release(delaySeconds?: number): Promise<void>;
+}
+
+/** What {@link Queue.queue} resolves with. */
+export interface QueueResult {
+  messageId: MessageId | null;
+  /**
+   * **Experimental.** The queue holds the message for this process
+   * ({@link QueueOptions.experimental_hold}).
+   *
+   * @experimental
+   */
+  experimental_held?: HeldQueueMessage;
+  /**
+   * **Experimental.** The send asked for a hold and did not get it: the
+   * queue delivers the message (see {@link QueueNotHeldReason}).
+   *
+   * @experimental
+   */
+  experimental_notHeld?: { reason: QueueNotHeldReason };
+}
+
+/** The handler {@link Queue.createQueueHandler} runs for each delivery. */
+export type QueueHandler = (
+  message: unknown,
+  meta: {
+    attempt: number;
+    deliveryCount?: number;
+    createdAt?: Date;
+    queueName: ValidQueueName;
+    messageId: MessageId;
+    requestId?: string;
+    invocationStartedAt?: number;
+  }
+) => Promise<unknown>;
 
 /**
  * Outcome of one message in a {@link Queue.queueBatch} call, in input order.
@@ -1024,7 +1162,7 @@ export interface Queue {
     queueName: ValidQueueName,
     message: QueuePayload,
     opts?: QueueOptions
-  ): Promise<{ messageId: MessageId | null }>;
+  ): Promise<QueueResult>;
 
   /**
    * Enqueues several messages to the SAME logical queue in as few round trips
@@ -1167,18 +1305,7 @@ export interface Queue {
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (
-      message: unknown,
-      meta: {
-        attempt: number;
-        deliveryCount?: number;
-        createdAt?: Date;
-        queueName: ValidQueueName;
-        messageId: MessageId;
-        requestId?: string;
-        invocationStartedAt?: number;
-      }
-    ) => Promise<unknown>
+    handler: QueueHandler
   ): (req: Request) => Promise<Response>;
 
   /**

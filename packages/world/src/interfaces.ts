@@ -691,6 +691,20 @@ export interface WorldCapabilities {
   maxConcurrency?: boolean;
 
   /**
+   * **Experimental.** The World's queue can hold a message for its sender
+   * (`QueueOptions.experimental_hold`): `queue()` may come back with
+   * `experimental_held`, a claim the sender runs itself in the request that
+   * sent it, with the queue as the crash backstop. Declares *support*: a
+   * given send can still come back not held (the queue service has
+   * send-and-hold off, local development), and is then delivered as usual.
+   * A caller that runs work in process behind a delayed backstop message
+   * where this is unset can send undelayed with a hold where it is set.
+   *
+   * @experimental
+   */
+  experimental_queueHold?: boolean;
+
+  /**
    * The World implements the in-band writer fence on single-orchestrator runs
    * (spec >= 9). **Required for spec 9 runs**: `@workflow/core` refuses to
    * create one in `start()`, or to begin a spec 9 orchestrator delivery, on
