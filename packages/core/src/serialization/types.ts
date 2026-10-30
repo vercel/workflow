@@ -46,6 +46,17 @@ export const SerializationFormat = {
   GZIP: 'gzip' as FormatPrefix,
   /** Zstandard-compressed payload (inner payload has its own format prefix) */
   ZSTD: 'zstd' as FormatPrefix,
+  /**
+   * One continuation part of an object-stream write too large for a single
+   * wire chunk: a continuation header plus a slice of the encoded value. The
+   * reassembled slices carry their own format prefix (`encr`/`encp`/`devl`).
+   *
+   * Unlike every other prefix here, this one never describes a stored payload
+   * on its own: it appears only as a stream frame, and only between a
+   * producer and reader that both understand it. See
+   * `serialization/split-frames.ts`.
+   */
+  SPLIT: 'splt' as FormatPrefix,
 } as const;
 
 // ---- Serializable Types ----

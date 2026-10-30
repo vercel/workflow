@@ -7,6 +7,7 @@ import {
   encryptEnvelope,
   SerializationFormat,
   sealTo,
+  splitPayload,
 } from '@workflow/core/serialization-format';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StreamResponse } from '~/lib/client/workflow-streams';
@@ -39,6 +40,16 @@ async function encryptedPacket(mode: (typeof ENCRYPTION_MODES)[number]) {
       ? await importKey(RUN_KEY)
       : sealTo((await deriveRunPayloadKeys(RUN_KEY)).keyPair.publicKey);
   return (await encryptEnvelope(serializeAbortPacket(), key)) as Uint8Array;
+}
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
 }
 
 function frame(payload: Uint8Array): Uint8Array {
@@ -170,6 +181,35 @@ describe('useStreamReader payloads', () => {
       'plain text',
       { index: 3 },
     ]);
+  });
+
+  it('renders a write the producer split across chunks as one chunk', async () => {
+    const value = serializeAbortPacket();
+    const frames = splitPayload(value, 12, 0x515a).map(frame);
+    expect(frames.length).toBeGreaterThan(1);
+    mockStreamResponse(concat(frames));
+
+    const { result } = renderReader(undefined, 'strm_test_user');
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    // One value, and one chunk id: the continuation frames render nothing of
+    // their own, so the viewer's numbering stays dense.
+    expect(result.current.chunks).toEqual([{ id: 0, value: ABORT_PACKET }]);
+  });
+
+  it('drops the truncated group a mid-split read starts on', async () => {
+    const parts = splitPayload(serializeAbortPacket(), 12, 0x515b).map(frame);
+    // The reader resumed in the middle of the group, then saw a whole write.
+    mockStreamResponse(
+      concat([...parts.slice(1), frame(serializeAbortPacket())])
+    );
+
+    const { result } = renderReader(undefined, 'strm_test_user');
+    await waitFor(() => expect(result.current.isInitialLoading).toBe(false));
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.chunks).toEqual([{ id: 0, value: ABORT_PACKET }]);
   });
 });
 

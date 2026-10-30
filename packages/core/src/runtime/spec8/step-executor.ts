@@ -1192,6 +1192,10 @@ export async function executeStep(
           // write on the run-ready barrier. Undefined on the await path.
           optimisticStart ? params.runReadyBarrier : undefined,
           ops,
+          true,
+          // The step's own run reads this value back, so its deployment is
+          // this one: a returned stream larger than one wire chunk per write
+          // may be carried as continuation frames.
           true
         );
         const durationMs = Date.now() - startTime;

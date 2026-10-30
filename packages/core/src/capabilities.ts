@@ -35,6 +35,10 @@
  *   counts as zstd-capable when its execution context records a `nodeVersion`
  *   that has it (see {@link nodeVersionSupportsZstd}). Runs created before
  *   that field existed get gzip, which every supported runtime decodes.
+ * - `splt` / `splitStreamChunks` (continuation framing for object-stream
+ *   writes larger than one wire chunk): added in `5.3.0`. A `splt` frame is
+ *   never a stored payload, only a stream frame, so it is tracked as a
+ *   non-format capability rather than in `FORMAT_VERSION_TABLE`.
  * - `encp` (X25519 sealed-box encryption for cross-run writes): added in
  *   `5.0.0-beta.37`. Note that producers do **not** gate `encp` on this table:
  *   they gate on the presence of `encryptionPublicKey` on the target run,
@@ -79,6 +83,18 @@ export interface RunCapabilities {
 
   /** Whether real-time abort packets may carry a length envelope. */
   framedAbortStreams: boolean;
+
+  /**
+   * Whether the target run can reassemble object-stream writes that were
+   * split across several wire chunks. When true, a write whose encoded
+   * payload exceeds the transport's per-chunk cap is carried as several
+   * `splt` continuation frames instead of failing. When false, the write is
+   * emitted as a single oversized frame exactly as before, which the
+   * transport refuses: an explicit failure is the only safe behaviour,
+   * because a reader that predates `splt` silently ignores frames in a
+   * format it does not know and would read the value as absent.
+   */
+  splitStreamChunks: boolean;
 }
 
 /**
@@ -129,6 +145,11 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // release that actually ships the compatible abort reader: a lower cutoff
   // would make new producers frame packets for old, unframed-only readers.
   { capability: 'framedAbortStreams', minVersion: '5.3.0' },
+  // This change has a minor changeset. Keep this cutoff aligned with the
+  // release that actually ships the reassembling reader: a lower cutoff would
+  // make new producers split writes for readers that drop `splt` frames
+  // silently, turning an oversized-write failure into a missing value.
+  { capability: 'splitStreamChunks', minVersion: '5.3.0' },
   // NOTE: the hook-resume consumer protocol ("does the consumer re-ensure
   // `hook_received` from the queue message's `hookInput`?") is intentionally
   // NOT gated here. A version-compare against a predicted release cutoff is a
@@ -208,6 +229,7 @@ export function getRunCapabilities(
       supportedFormats: BASELINE_FORMATS,
       framedByteStreams: false,
       framedAbortStreams: false,
+      splitStreamChunks: false,
     };
   }
 
@@ -226,6 +248,7 @@ export function getRunCapabilities(
     supportedFormats: formats,
     framedByteStreams: false,
     framedAbortStreams: false,
+    splitStreamChunks: false,
   };
 
   for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {

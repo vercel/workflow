@@ -8,6 +8,7 @@ import {
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
+import { getRunCapabilities } from '../capabilities.js';
 import {
   deriveRunPayloadKeys,
   type PayloadKey,
@@ -133,6 +134,28 @@ export type WorkflowReadableStream<R = any> = ReadableStream<R> & {
    * Returns `-1` when no chunks have been written yet.
    */
   getTailIndex(): Promise<number>;
+
+  /**
+   * The stream position reached by the value most recently read from this
+   * stream: the index of the last chunk that value occupied. Passing
+   * `position + 1` as the next read's `startIndex` resumes exactly after it.
+   *
+   * This is what a resumable consumer should carry as its cursor, rather than
+   * a count of the values it has received. The two differ: a value too large
+   * for one chunk is stored across several, so it advances the position by
+   * more than one, and a count would resume behind the value and replay it.
+   *
+   * Read it immediately after reading a value — it advances with each one.
+   * `-1` before the first value. `undefined` when the position cannot be
+   * known absolutely, which is the case for a negative (last-N) `startIndex`:
+   * the server resolves those, so the client never learns where it landed.
+   *
+   * A stream written by an SDK that predates chunk framing has no positions to
+   * count, so this stays at `startIndex - 1` for one. A consumer carrying it as
+   * a cursor re-reads such a stream from where it opened rather than skipping
+   * part of it.
+   */
+  readonly position: number | undefined;
 };
 
 /**
@@ -448,24 +471,40 @@ export class Run<TResult> {
     // is inert. A consumed empty stream still performs the speculative lookup
     // to keep the first encrypted-frame path concurrent.
     const encryptionKey = this.#getEncryptionKeyLazily();
+    // Absolute stream position of the value most recently read. A negative
+    // `startIndex` is resolved by the server, so this reader cannot anchor the
+    // frames it counts to an absolute index and reports none.
+    const base = startIndex === undefined ? 0 : startIndex;
+    const anchored = base >= 0;
+    let framesConsumed = 0;
     const stream = getRunReadableStream<R>(
       global,
       ops,
       this.runId,
       name,
       startIndex,
-      encryptionKey
+      encryptionKey,
+      (frames) => {
+        framesConsumed = frames;
+      }
     );
 
     const worldPromise = this.#lazyWorldPromise;
     const runId = this.runId;
-    return Object.assign(stream, {
+    const withTailIndex = Object.assign(stream, {
       getTailIndex: async (): Promise<number> => {
         const world = await worldPromise;
         const info = await world.streams.getInfo(runId, name);
         return info.tailIndex;
       },
     });
+    // defineProperty, not an `Object.assign` getter: assign copies a getter's
+    // current value, which would freeze the position at its initial -1.
+    Object.defineProperty(withTailIndex, 'position', {
+      get: () => (anchored ? base + framesConsumed - 1 : undefined),
+      enumerable: true,
+    });
+    return withTailIndex as WorkflowReadableStream<R>;
   }
 
   /** The writable stream of the workflow run. */
@@ -497,6 +536,8 @@ export class Run<TResult> {
           key: PayloadKey | undefined;
           deploymentId?: string;
           encryptionPublicKey?: string;
+          /** Whether the owner run reassembles split stream writes. */
+          splitStreamChunks: boolean;
         }>
       | undefined;
     let writable: WritableStream<W>;
@@ -511,6 +552,13 @@ export class Run<TResult> {
           ),
           deploymentId: run.deploymentId,
           encryptionPublicKey: run.encryptionPublicKey,
+          // The owner run's own deployment decodes what we write, so its
+          // `@workflow/core` version decides whether an oversized write may
+          // be carried as continuation frames.
+          splitStreamChunks: getRunCapabilities(
+            run.executionContext?.workflowCoreVersion as string | undefined,
+            run.executionContext?.nodeVersion as string | undefined
+          ).splitStreamChunks,
         };
         tagForwardedWritableTarget(writable, target);
         return target;
@@ -524,6 +572,8 @@ export class Run<TResult> {
       runId: this.runId,
       name,
       key: () => resolveTarget().then(({ key }) => key),
+      splitChunks: () =>
+        resolveTarget().then(({ splitStreamChunks }) => splitStreamChunks),
     });
     return writable;
   }

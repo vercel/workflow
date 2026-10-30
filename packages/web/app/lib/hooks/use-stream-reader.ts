@@ -1,10 +1,12 @@
 import {
+  createSplitReassembler,
   decryptEnvelope,
   deriveRunPayloadKeys,
   hydrateData,
   isEncryptedData,
   type PayloadKey,
   SerializationFormat,
+  type SplitReassembler,
 } from '@workflow/core/serialization-format';
 import { getWebRevivers } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
@@ -19,8 +21,33 @@ export interface StreamChunk {
 }
 
 const FRAME_HEADER_SIZE = 4;
+const FORMAT_PREFIX_SIZE = 4;
 const ENCRYPTED_PLACEHOLDER = '[Encrypted]';
 const POLL_INTERVAL_MS = 3000;
+
+/** Shared: this runs once per wire frame, and a decoder per frame is waste. */
+const prefixDecoder = new TextDecoder();
+
+/**
+ * Whether a frame carries one continuation part of a write the producer split
+ * across several chunks (see `serialization/split-frames.ts`). Such a frame is
+ * a fragment of a value, so it renders nothing on its own; the reassembler
+ * turns the last part of a group into the value.
+ */
+function isSplitPart(frameData: Uint8Array): boolean {
+  if (frameData.length < FORMAT_PREFIX_SIZE) return false;
+  const prefix = prefixDecoder.decode(
+    frameData.subarray(0, FORMAT_PREFIX_SIZE)
+  );
+  return prefix === SerializationFormat.SPLIT;
+}
+
+/** What one wire frame contributed: a rendered chunk, nothing yet, or a stop. */
+type ProcessedFrame =
+  | { kind: 'encrypted' }
+  /** A continuation part: its group is still incomplete, or unassemblable. */
+  | { kind: 'pending' }
+  | { kind: 'chunk'; chunk: StreamChunk };
 
 function isRunActive(status?: WorkflowRunStatus): boolean {
   return status === 'pending' || status === 'running';
@@ -80,21 +107,37 @@ export function useStreamReader(
   const runStatusRef = useRef(runStatus);
   runStatusRef.current = runStatus;
   const serverCursorRef = useRef<string | null>(null);
+  // Reassembles writes the producer split across several stored chunks. It
+  // outlives one fetch so a group straddling a poll boundary still completes;
+  // the poll skips only frames this reader already fed into it.
+  const splitPartsRef = useRef<SplitReassembler>(createSplitReassembler());
 
   const processFrame = useCallback(
     async (
       rawFrame: Uint8Array,
       cryptoKey: PayloadKey | undefined,
-      revivers: ReturnType<typeof getWebRevivers>
-    ): Promise<
-      { encrypted: true } | { encrypted: false; chunk: StreamChunk }
-    > => {
+      revivers: ReturnType<typeof getWebRevivers>,
+      splitParts: SplitReassembler
+    ): Promise<ProcessedFrame> => {
       let frameData = rawFrame;
-      // Safety net: if a chunk was stored with an extra inner length prefix
-      // (double-framing), strip it. In practice the format prefix bytes
-      // ("devl"=0x6465766c, "encr"=0x656e6372) decode to uint32 values >1B
-      // which fail the <= 10MB check, so this branch is rarely taken.
-      if (
+
+      // A write larger than one stored chunk arrives as several continuation
+      // frames. Reassemble before anything else: until the group completes
+      // there is no value to decrypt, hydrate, or render. The reassembler
+      // lives across polls, so a group that straddles a poll boundary still
+      // completes, and it drops the leading fragments of a group whose first
+      // part this reader never saw (a stream read from a later position).
+      if (isSplitPart(frameData)) {
+        const assembled = splitParts.accept(
+          frameData.subarray(FORMAT_PREFIX_SIZE)
+        );
+        if (assembled.kind !== 'complete') return { kind: 'pending' };
+        frameData = assembled.payload;
+      } else if (
+        // Safety net: if a chunk was stored with an extra inner length prefix
+        // (double-framing), strip it. In practice the format prefix bytes
+        // ("devl"=0x6465766c, "encr"=0x656e6372) decode to uint32 values >1B
+        // which fail the <= 10MB check, so this branch is rarely taken.
         frameData.length >= FRAME_HEADER_SIZE + 4 &&
         !isEncryptedData(frameData)
       ) {
@@ -117,7 +160,7 @@ export function useStreamReader(
       try {
         if (isEncryptedData(frameData)) {
           if (!cryptoKey) {
-            return { encrypted: true };
+            return { kind: 'encrypted' };
           }
           // Envelope-aware: frames may be symmetric ('encr', written by the
           // run itself) or sealed ('encp', written by another run into a
@@ -135,7 +178,7 @@ export function useStreamReader(
       }
 
       const chunkId = chunkIdRef.current++;
-      return { encrypted: false, chunk: { id: chunkId, value: hydrated } };
+      return { kind: 'chunk', chunk: { id: chunkId, value: hydrated } };
     },
     []
   );
@@ -148,6 +191,7 @@ export function useStreamReader(
     chunkIdRef.current = 0;
     frameCountRef.current = 0;
     serverCursorRef.current = null;
+    splitPartsRef.current = createSplitReassembler();
 
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current);
@@ -227,9 +271,14 @@ export function useStreamReader(
           if (encoding === 'unframed' && buffer.length > 0) {
             frameIndex++;
             if (frameIndex > skipFrames) {
-              const result = await processFrame(buffer, cryptoKey, revivers);
-              if (result.encrypted) return { encrypted: true };
-              targetBuffer.push(result.chunk);
+              const result = await processFrame(
+                buffer,
+                cryptoKey,
+                revivers,
+                splitPartsRef.current
+              );
+              if (result.kind === 'encrypted') return { encrypted: true };
+              if (result.kind === 'chunk') targetBuffer.push(result.chunk);
             }
           } else if (encoding === 'legacy' && textRemainder.trim()) {
             frameIndex++;
@@ -303,12 +352,19 @@ export function useStreamReader(
             continue;
           }
 
-          const result = await processFrame(frameData, cryptoKey, revivers);
-          if (result.encrypted) {
+          const result = await processFrame(
+            frameData,
+            cryptoKey,
+            revivers,
+            splitPartsRef.current
+          );
+          if (result.kind === 'encrypted') {
             reader.cancel().catch(() => {});
             return { encrypted: true };
           }
-          targetBuffer.push(result.chunk);
+          // A continuation part renders nothing until its group completes,
+          // but it still counts as a frame so the next poll skips it.
+          if (result.kind === 'chunk') targetBuffer.push(result.chunk);
 
           framesInBatch++;
           if (framesInBatch % YIELD_EVERY_N_FRAMES === 0) {

@@ -127,6 +127,57 @@ If the absolute value exceeds the total number of chunks, reading starts from th
 Because streams are live and continue receiving chunks, negative `startIndex` values resolve to different absolute positions on each call. Accurate pagination over a live stream requires cursor-based access, which is not yet supported. Keep this in mind when building clients that paginate over stream data.
 </Callout>
 
+### Tracking where a reader got to
+
+`run.getReadable()` reports the position it has reached as `readable.position`:
+the index of the last chunk the value you just read occupied. Pass
+`position + 1` as the next read's `startIndex` to resume exactly after it.
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript
+const readable = run.getReadable();
+for await (const chunk of readable) {
+  send(chunk, { cursor: readable.position }); // [!code highlight]
+}
+```
+
+Carry that as your cursor rather than a count of the values you have received.
+The two are not the same: a value too large for one chunk is stored across
+several, so it advances the position by more than one, and resuming from a
+count would land behind the value and replay everything after it. `position` is
+`-1` before the first value, and `undefined` for a negative (last-N)
+`startIndex`, which the server resolves and the client never learns the
+absolute position of.
+
+### Writes larger than one chunk
+
+A stored stream chunk holds at most **10 MiB**. A single write larger than that
+is carried across as many chunks as it needs, and the reader reassembles it
+before your code sees it: writing a 30 MiB value and reading it back yields one
+30 MiB value, not four pieces of one.
+
+Two consequences are worth knowing about:
+
+- **`startIndex` counts stored chunks, not writes.** A write that was carried
+  across four chunks advances the stream's position by four. Resuming with the
+  index of the last chunk you received is always correct, because that is the
+  position the stream actually reached; what you cannot do is assume "chunk 7"
+  means "the 8th value written".
+- **A read that starts in the middle of a large write skips it.** The pieces of
+  a value whose beginning falls before `startIndex` cannot be reassembled, so
+  they are dropped and reading continues with the next whole value. That is why
+  a negative `startIndex` (the last-N form) may return fewer values than you
+  asked for when the tail of the stream contains a large write.
+
+Both apply to object streams. A byte stream (`ReadableStream` of `Uint8Array`)
+has no fixed value boundaries, so write it in chunks under the limit and the
+reader is free to re-chunk them.
+
+Older deployments cannot reassemble a split write, so a run created by a
+deployment on `@workflow/core` older than 5.3.0 keeps the previous behaviour: an
+oversized write is rejected rather than split. Set
+`WORKFLOW_STREAM_SPLIT_CHUNKS=0` to restore that behaviour everywhere.
+
 ## Streams as data types
 
 [`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow SDK makes serializable. Workflow SDK lets you pass these standard types between functions while maintaining their streaming capabilities.
