@@ -56,6 +56,7 @@ function admittingWorld(overrides: Record<string, unknown> = {}) {
     specVersion: SPEC_VERSION_CURRENT,
     getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
     capabilities: {
+      inBandFence: true,
       atomicStartHook: { active: true },
       hookRetention: { active: true },
     },
@@ -158,7 +159,7 @@ describe('the workflow.start span of start({ hook })', () => {
   });
 
   it('records an outcome on a capability throw before anything is written', async () => {
-    admittingWorld({ capabilities: {} });
+    admittingWorld({ capabilities: { inBandFence: true } });
     await rejection(start(workflow, [], { hook: { token: TOKEN } }));
     expect(spanAttributes).toMatchObject({
       'workflow.start_hook.outcome': 'failed',
