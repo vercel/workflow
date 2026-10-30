@@ -287,6 +287,32 @@ describe('the invocation span of a queued copy', () => {
     });
   });
 
+  it('tells a redelivery that read the run apart from the write that admitted it', () => {
+    recordAcceptedStartHookCandidate(
+      runInput,
+      { runId: 'wrun_x', startHook: { token: runInput.startHook!.token } },
+      fakeSpan(),
+      'run_load'
+    );
+    expect(spanAttributes).toEqual({
+      'workflow.start_hook': true,
+      'workflow.start_hook.outcome': 'accepted',
+      'workflow.start_hook.trigger': 'run_load',
+    });
+    expect(() =>
+      recordAcceptedStartHookCandidate(
+        runInput,
+        { runId: 'wrun_x' },
+        fakeSpan(),
+        'run_load'
+      )
+    ).toThrow();
+    expect(spanAttributes).toMatchObject({
+      'workflow.start_hook.outcome': 'failed',
+      'workflow.start_hook.trigger': 'run_load',
+    });
+  });
+
   it('refuses a run_started whose run does not echo the start Hook token', () => {
     const thrown = (() => {
       try {

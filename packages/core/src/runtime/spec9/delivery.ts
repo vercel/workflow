@@ -1617,7 +1617,12 @@ async function runDelivery(
         // echo the token too before any code runs, through the same
         // setup-failure path as a fresh start.
         try {
-          recordAcceptedStartHookCandidate(runInput, run ?? { runId }, span);
+          recordAcceptedStartHookCandidate(
+            runInput,
+            run ?? { runId },
+            span,
+            'run_load'
+          );
         } catch (err) {
           if (!(await recordWorkflowSetupFailure(err))) {
             throw err;
