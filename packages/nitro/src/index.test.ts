@@ -347,7 +347,11 @@ describe('@workflow/nitro Vercel functionRules', () => {
       preset: 'vercel',
     });
     nitro.hooks.hook = (name: string, fn: () => void) => {
-      if (name === 'compiled') compiledHooks.push(fn);
+      // The registration check also runs on `compiled`; these assertions are
+      // about the legacy VercelBuilder hook, so skip it by name.
+      if (name === 'compiled' && fn.name !== 'assertWorkflowRegistrations') {
+        compiledHooks.push(fn);
+      }
     };
 
     await nitroModule.setup(nitro);
@@ -384,7 +388,11 @@ describe('@workflow/nitro isNitroV2 detection', () => {
       preset: 'vercel',
     });
     nitro.hooks.hook = (name: string, fn: () => void) => {
-      if (name === 'compiled') compiledHooks.push(fn);
+      // The registration check also runs on `compiled`; these assertions are
+      // about the legacy VercelBuilder hook, so skip it by name.
+      if (name === 'compiled' && fn.name !== 'assertWorkflowRegistrations') {
+        compiledHooks.push(fn);
+      }
     };
 
     await nitroModule.setup(nitro);

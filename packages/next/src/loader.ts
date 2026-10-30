@@ -145,6 +145,15 @@ async function resolveWorkflowAliasPath(
   return resolveWorkflowAliasRelativePath(filePath, workingDir);
 }
 
+/** Record what this transform stamped in, for the build's registration check. */
+async function recordWorkflowAppGraph(
+  filename: string,
+  transformedCode: string
+): Promise<void> {
+  const { recordTransformedWorkflows } = await getBuildersModule();
+  await recordTransformedWorkflows({ file: filename, code: transformedCode });
+}
+
 async function getRelativeFilenameForSwc(
   filename: string,
   workingDir: string
@@ -307,6 +316,8 @@ export default function workflowLoader(
       minify: false,
       ...getLoaderSourceMapOptions(filename, sourceMap),
     });
+
+    await recordWorkflowAppGraph(filename, result.code);
 
     let transformedMap = sourceMap;
     if (typeof result.map === 'string') {

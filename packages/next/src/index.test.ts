@@ -502,4 +502,236 @@ describe('withWorkflow builder config', () => {
       rmSync(projectDir, { recursive: true, force: true });
     }
   });
+
+  describe('registration check after a production compile', () => {
+    let projectDir: string;
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+
+    const REGISTERED = 'workflow//./workflows/order//order';
+    const UNREGISTERED = 'workflow//./workflows/mail//mail';
+
+    beforeEach(() => {
+      projectDir = mkdtempSync(join(realTmpDir, 'workflow-next-registration-'));
+      // `buildConfig` resolves the app-graph directory from the working
+      // directory, the way a real `next build` does, so the test has to be in
+      // the project it is pretending to build.
+      process.chdir(projectDir);
+      warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      delete process.env.WORKFLOW_REGISTRATION_CHECK;
+      delete process.env.WORKFLOW_DISCOVER_NODE_MODULES;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_DIR;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_MANIFEST;
+      writeFile(
+        join(projectDir, 'app/.well-known/workflow/v1/manifest.json'),
+        JSON.stringify({
+          version: '1.0.0',
+          steps: {},
+          workflows: {
+            'workflows/order.ts': {
+              order: {
+                workflowId: REGISTERED,
+                graph: { nodes: [], edges: [] },
+              },
+            },
+          },
+          classes: {},
+        })
+      );
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+      delete process.env.WORKFLOW_REGISTRATION_CHECK;
+      delete process.env.WORKFLOW_DISCOVER_NODE_MODULES;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_DIR;
+      delete process.env.WORKFLOW_PRIVATE_APP_GRAPH_MANIFEST;
+      process.chdir(originalCwd);
+      rmSync(projectDir, { recursive: true, force: true });
+    });
+
+    /**
+     * Evaluate the config (which arms the check), let the loader record what
+     * the compile would have, then run the hook Next calls once it is done.
+     */
+    const compile = async ({
+      declares = [],
+      userHook,
+    }: {
+      declares?: string[];
+      userHook?: () => Promise<void>;
+    } = {}) => {
+      const nextConfig = await withWorkflow({
+        compiler: userHook
+          ? ({ runAfterProductionCompile: userHook } as never)
+          : undefined,
+      })('phase-production-build', { defaultConfig: {} });
+
+      // The builder is mocked, so publish the manifest path a real build
+      // would have.
+      process.env.WORKFLOW_PRIVATE_APP_GRAPH_MANIFEST = join(
+        projectDir,
+        'app/.well-known/workflow/v1/manifest.json'
+      );
+      await recordDeclaredWorkflows(declares);
+
+      return (
+        nextConfig.compiler as unknown as {
+          runAfterProductionCompile: (metadata: {
+            projectDir: string;
+            distDir: string;
+          }) => Promise<void>;
+        }
+      ).runAfterProductionCompile({ projectDir, distDir: '.next' });
+    };
+
+    /**
+     * Stand in for the loader: record the ids the transform would have
+     * reported for a module the bundler compiled.
+     */
+    const recordDeclaredWorkflows = async (workflowIds: string[]) => {
+      if (workflowIds.length === 0) {
+        return;
+      }
+      const { recordWorkflowAppGraphEntry } = await import(
+        '@workflow/builders'
+      );
+      await recordWorkflowAppGraphEntry({
+        appGraphDir: join(projectDir, '.next/workflow-app-graph'),
+        file: join(projectDir, 'workflows/declared.ts'),
+        manifest: {
+          workflows: {
+            'workflows/declared.ts': Object.fromEntries(
+              workflowIds.map((workflowId, index) => [
+                `workflow${index}`,
+                { workflowId },
+              ])
+            ),
+          },
+        },
+      });
+    };
+
+    it('fails the build when the app can start an unregistered workflow', async () => {
+      await expect(
+        compile({ declares: [REGISTERED, UNREGISTERED] })
+      ).rejects.toThrow(
+        /not registered in this build[\s\S]*workflow\/\/\.\/workflows\/mail\/\/mail/
+      );
+    });
+
+    it('names WorkflowRegistrationError and points at discovery', async () => {
+      const error = (await compile({ declares: [UNREGISTERED] }).catch(
+        (thrown: unknown) => thrown
+      )) as Error;
+
+      expect(error.name).toBe('WorkflowRegistrationError');
+      expect(error.message).toContain('WORKFLOW_REGISTRATION_CHECK=warn');
+    });
+
+    it('still copies the diagnostics manifest before failing', async () => {
+      await expect(compile({ declares: [UNREGISTERED] })).rejects.toThrow();
+      expect(
+        existsSync(
+          join(projectDir, '.next/diagnostics/workflows-manifest.json')
+        )
+      ).toBe(true);
+    });
+
+    it("still runs the app's own runAfterProductionCompile before failing", async () => {
+      const userHook = vi.fn(async () => {});
+
+      await expect(
+        compile({ declares: [UNREGISTERED], userHook })
+      ).rejects.toThrow();
+      expect(userHook).toHaveBeenCalledOnce();
+    });
+
+    it('passes when every compiled workflow is registered', async () => {
+      await expect(
+        compile({ declares: [REGISTERED] })
+      ).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    // A bundler that served every module from its loader cache records
+    // nothing, which must read as "no information", not "no workflows".
+    it('says nothing when the compile recorded no workflows', async () => {
+      await expect(compile()).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('says nothing when the app has no workflow manifest', async () => {
+      rmSync(join(projectDir, 'app'), { recursive: true, force: true });
+
+      await expect(
+        compile({ declares: [UNREGISTERED] })
+      ).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    // Reading an unwritable manifest as "registered nothing" would report
+    // every workflow in the app.
+    it('says nothing when the manifest cannot be parsed', async () => {
+      writeFile(
+        join(projectDir, 'app/.well-known/workflow/v1/manifest.json'),
+        '{"workflows": {'
+      );
+
+      await expect(
+        compile({ declares: [UNREGISTERED] })
+      ).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('empties what an earlier build recorded before compiling', async () => {
+      // Recorded before the config runs, the way a previous build would have
+      // left it behind.
+      await recordDeclaredWorkflows([UNREGISTERED]);
+
+      await expect(
+        compile({ declares: [REGISTERED] })
+      ).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('warns without failing when WORKFLOW_REGISTRATION_CHECK=warn', async () => {
+      process.env.WORKFLOW_REGISTRATION_CHECK = 'warn';
+
+      await expect(
+        compile({ declares: [UNREGISTERED] })
+      ).resolves.toBeUndefined();
+      expect(String(warnSpy.mock.calls[0]?.[0])).toContain(UNREGISTERED);
+    });
+
+    // Opting out of dependency discovery deliberately leaves a dependency's
+    // workflows unregistered while the bundler still compiles them.
+    it('reports without failing when node_modules discovery is off', async () => {
+      process.env.WORKFLOW_DISCOVER_NODE_MODULES = '0';
+
+      await expect(
+        compile({ declares: [UNREGISTERED] })
+      ).resolves.toBeUndefined();
+      expect(String(warnSpy.mock.calls[0]?.[0])).toContain(UNREGISTERED);
+    });
+
+    it('still fails for that opt-out when the check is forced on', async () => {
+      process.env.WORKFLOW_DISCOVER_NODE_MODULES = '0';
+      process.env.WORKFLOW_REGISTRATION_CHECK = 'error';
+
+      await expect(compile({ declares: [UNREGISTERED] })).rejects.toThrow();
+    });
+
+    it.each([
+      'off',
+      '0',
+      'false',
+    ])('skips the check when WORKFLOW_REGISTRATION_CHECK=%s', async (value) => {
+      process.env.WORKFLOW_REGISTRATION_CHECK = value;
+
+      await expect(
+        compile({ declares: [UNREGISTERED] })
+      ).resolves.toBeUndefined();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+  });
 });

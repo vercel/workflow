@@ -19,6 +19,7 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
+import { APP_GRAPH_MANIFEST_ENV } from './app-graph.js';
 import {
   applySwcTransform,
   type WorkflowManifest,
@@ -2378,10 +2379,14 @@ export const OPTIONS = handler;`;
       const manifestJson = JSON.stringify(output, null, 2);
 
       await mkdir(manifestDir, { recursive: true });
-      await writeFileIfChanged(
-        join(manifestDir, 'manifest.json'),
-        manifestJson
-      );
+      const manifestPath = join(manifestDir, 'manifest.json');
+      await writeFileIfChanged(manifestPath, manifestJson);
+
+      // Publish where this build recorded its registrations, so the
+      // registration check does not have to know each framework's manifest
+      // location. Every integration reaches `createManifest`, and the builder
+      // is the only thing that knows where it wrote.
+      process.env[APP_GRAPH_MANIFEST_ENV] = manifestPath;
 
       const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
       if (diagnosticsManifestPath) {

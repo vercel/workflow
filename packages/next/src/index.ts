@@ -2,6 +2,8 @@ import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  armWorkflowAppGraph,
+  assertWorkflowsAreRegistered,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
@@ -365,15 +367,34 @@ function getWorkflowManifestCopyPaths({
     return;
   }
 
-  const resolvedDistDir = isAbsolute(distDir)
-    ? distDir
-    : join(projectDir, distDir);
   const diagnosticsManifestPath = join(
-    resolvedDistDir,
+    resolveDistDir({ projectDir, distDir }),
     'diagnostics',
     'workflows-manifest.json'
   );
   return { manifestPath, diagnosticsManifestPath };
+}
+
+function resolveDistDir({
+  projectDir,
+  distDir,
+}: {
+  projectDir: string;
+  distDir: string;
+}): string {
+  return isAbsolute(distDir) ? distDir : join(projectDir, distDir);
+}
+
+/**
+ * Where the loader records the workflow IDs it stamps into application code.
+ * Inside `distDir`, so the records are cleaned with the rest of the build
+ * output rather than outliving it.
+ */
+function resolveNextAppGraphDir(metadata: {
+  projectDir: string;
+  distDir: string;
+}): string {
+  return join(resolveDistDir(metadata), 'workflow-app-graph');
 }
 
 async function copyWorkflowDiagnosticsManifest(metadata: {
@@ -590,6 +611,21 @@ export function withWorkflow(
     let workflowBuilderPromise: Promise<any> | undefined;
     const distDir = nextConfig.distDir || '.next';
 
+    // Arm the registration check before Next compiles anything: empty whatever
+    // a previous build recorded, then tell the loader where to write. Loader
+    // workers inherit `process.env`, which is how the SWC plugin cache reaches
+    // them too, and it keeps both bundlers on one channel. Production only —
+    // `next dev` has no compile to check, and its env reloads can drop a
+    // variable set here (see the WORKFLOW_NEXT_PRIVATE_BUILT note above).
+    if (phase === 'phase-production-build') {
+      await armWorkflowAppGraph({
+        appGraphDir: resolveNextAppGraphDir({
+          projectDir: workingDir,
+          distDir,
+        }),
+      });
+    }
+
     nextConfig.compiler = {
       ...existingCompiler,
       runAfterProductionCompile: async (metadata) => {
@@ -598,6 +634,11 @@ export function withWorkflow(
         }
         await copyWorkflowDiagnosticsManifest(metadata);
         registerWorkflowDiagnosticsManifestCopy(metadata);
+        // Last, so the diagnostics manifest describing the build is in place
+        // even when the build is about to fail over what it says.
+        await assertWorkflowsAreRegistered({
+          workingDir: metadata.projectDir,
+        });
       },
     };
 
