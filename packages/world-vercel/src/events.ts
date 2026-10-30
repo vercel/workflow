@@ -36,6 +36,7 @@ import {
   HookNotFoundError,
   IN_BAND_SUPERSEDED_CODE,
   InBandSupersededError,
+  START_HOOK_ADMISSION_REJECTED,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -59,6 +60,7 @@ import {
   mintedSpecVersion,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  type StartHook,
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
@@ -195,6 +197,12 @@ interface SplitEventData {
     /** Ref key of dynamic workflow code uploaded ahead of the write, for
      *  definitions too large to send inline. */
     dynamicWorkflowCodeRef?: string;
+    /**
+     * Atomic start Hook admission (run_created / resilient run_started).
+     * Nested as `{ token, tokenRetentionUntil? }`; the retention is a Date
+     * (CBOR tag 1). See `start-hook.ts` in @workflow/world for the contract.
+     */
+    startHook?: StartHook;
     /** Client-measured time-to-first-step ms (step_completed / step_failed). */
     ttfs?: number;
     /** Client-measured step-to-step overhead ms (step_completed / step_failed). */
@@ -256,6 +264,7 @@ type MetaSourceField =
   | 'encryptionPublicKey'
   | 'dynamicWorkflowCode'
   | 'dynamicWorkflowCodeRef'
+  | 'startHook'
   | 'ttfs'
   | 'stso'
   | 'stepCount'
@@ -437,6 +446,28 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.dynamicWorkflowCodeRef === 'string') {
     meta.dynamicWorkflowCodeRef = eventData.dynamicWorkflowCodeRef;
+  }
+  // Atomic start Hook admission. The server drops meta keys it does not
+  // know, so this adapter only advertises `atomicStartHook` once the backend
+  // admits it (see `index.ts`); otherwise the start Hook would vanish here
+  // without an error and the run would start without it.
+  if (
+    eventData.startHook !== undefined &&
+    eventData.startHook !== null &&
+    typeof eventData.startHook === 'object'
+  ) {
+    const startHook = eventData.startHook as StartHook;
+    meta.startHook = {
+      token: startHook.token,
+      ...(startHook.tokenRetentionUntil instanceof Date
+        ? { tokenRetentionUntil: startHook.tokenRetentionUntil }
+        : {}),
+      // The serialized metadata bytes, exactly what `hook_created` would
+      // carry as its payload; a CBOR byte string in the meta.
+      ...(startHook.metadata instanceof Uint8Array
+        ? { metadata: startHook.metadata }
+        : {}),
+    };
   }
   // Client-measured latency telemetry on step terminal events (TTFS / STSO).
   // The server consumes these for metrics; they are not read back.
@@ -906,6 +937,17 @@ async function createWorkflowRunEventInner(
   if (data.eventType === 'run_created') {
     const validationError = validateWorkflowRunIdTimestamp(id);
     if (validationError) {
+      // A `start({ hook })` candidate gets the answer the backend gives it
+      // (a permanent admission rejection), so its queued copy stops retrying.
+      if ((data.eventData as { startHook?: unknown }).startHook) {
+        throw new WorkflowWorldError(validationError, {
+          status: 400,
+          code: START_HOOK_ADMISSION_REJECTED,
+          reason: validationError.includes('in the past')
+            ? 'expired'
+            : 'invalid',
+        });
+      }
       throw new WorkflowWorldError(validationError, { status: 400 });
     }
   }
@@ -1108,6 +1150,11 @@ function reconstructRunFromReplayEvents(events: Event[]) {
       input: runCreated.eventData.input,
       attributes,
       encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+      // The start Hook echo (`start({ hook })`): the backend keeps it on
+      // `run_created`, without its metadata.
+      ...(runCreated.eventData.startHook
+        ? { startHook: runCreated.eventData.startHook }
+        : {}),
       startedAt: runStarted.createdAt,
       createdAt: runCreated.createdAt,
       updatedAt,

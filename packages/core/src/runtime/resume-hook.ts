@@ -310,6 +310,38 @@ export async function getHookByToken(token: string): Promise<Hook> {
 }
 
 /**
+ * `world.hooks.getByToken`, recording what the lookup found on the
+ * `hook.resume` span. A start Hook (`start(workflow, args, { hook })`) is an
+ * ordinary Hook here: it resolves from the moment its run is admitted.
+ */
+async function lookupByToken(
+  world: Awaited<ReturnType<typeof getWorldLazy>>,
+  token: string,
+  /** The `hook.resume` span, which records the lookup's result. */
+  span?: Span,
+  /** Whether this lookup follows a takeover of the token mid-resume. */
+  redirected = false
+): Promise<ResumableHook> {
+  try {
+    const hook = await world.hooks.getByToken(token);
+    span?.setAttributes(
+      Attribute.HookLookupResult(redirected ? 'redirected' : 'found')
+    );
+    return hook;
+  } catch (error) {
+    recordLookupFailure(span, error);
+    throw error;
+  }
+}
+
+/** Records a by-token lookup's `not_found` answer on `span`. */
+function recordLookupFailure(span: Span | undefined, error: unknown): void {
+  if (HookNotFoundError.is(error)) {
+    span?.setAttributes(Attribute.HookLookupResult('not_found'));
+  }
+}
+
+/**
  * The result of {@link resumeHook}: a {@link Hook} augmented
  * with an optional resilience signal.
  *
@@ -524,7 +556,8 @@ async function resumeHookImpl<T = any>(
             fresh,
             resumeRequestedAtMs,
             resumeId,
-            webhookOnly
+            webhookOnly,
+            redirects > 0
           );
         } catch (err) {
           if (
@@ -601,6 +634,7 @@ async function resumeHookImpl<T = any>(
             try {
               relocated = await world.hooks.getByToken(token);
             } catch (lookupError) {
+              recordLookupFailure(span, lookupError);
               if (!HookNotFoundError.is(lookupError)) {
                 runtimeLogger.warn(
                   'Hook resume: re-resolving the token after a not-found failed; surfacing the original error',
@@ -624,6 +658,7 @@ async function resumeHookImpl<T = any>(
               assertResendable(err);
               redirects++;
               span?.setAttributes({
+                ...Attribute.HookLookupResult('redirected'),
                 'workflow.hook.resume_redirects': redirects,
                 'workflow.hook.resume_redirect_to_run': relocated.runId,
               });
@@ -649,14 +684,16 @@ async function resumeHookAttempt<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   logicalResumeId: string,
-  webhookOnly: boolean
+  webhookOnly: boolean,
+  /** Whether a takeover redirected this resume to the token's new owner. */
+  redirected = false
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
     let hook: ResumableHook;
     if (suppliedToken) {
       try {
-        hook = await world.hooks.getByToken(tokenOrHook);
+        hook = await lookupByToken(world, tokenOrHook, span, redirected);
       } catch (lookupError) {
         if (HookNotFoundError.is(lookupError)) {
           notFoundReasons.set(lookupError, 'lookup');

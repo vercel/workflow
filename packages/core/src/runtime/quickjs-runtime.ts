@@ -78,6 +78,10 @@ import {
   type QuickJSSerde,
 } from './quickjs-serde.js';
 import { runIdCreatedAt } from './run-id-time.js';
+import {
+  type RunStartHook,
+  resolveRunStartHook,
+} from './start-hook-binding.js';
 
 // ---- Host -> VM payload preparation ----
 
@@ -147,6 +151,12 @@ export interface PendingHook {
   force?: boolean;
   metadata?: unknown;
   hasCreatedEvent: boolean;
+  /**
+   * The run's start Hook, opened by `createHook({ token })` with the start
+   * token. Created by the run's admission, so `hasCreatedEvent` is true from
+   * the start and no `hook_created` is written for it.
+   */
+  startHook?: true;
   /**
    * True for internal system hooks (e.g. AbortController's hook), which
    * are exempt from user-hook token namespace conflict checks.
@@ -281,6 +291,12 @@ export interface QuickJSRuntimeOptions {
    * (eventually-consistent read after the parent's start() wrote it).
    */
   runInput?: RunInput;
+  /**
+   * The run's start Hook. Resolved from `events`, `runInput` and
+   * `workflowRun` (see `resolveRunStartHook`) when omitted; `null` for none.
+   * Fixed at the fresh boot: a restored heap keeps the value it booted with.
+   */
+  startHook?: RunStartHook | null;
 }
 
 // ---- VM Bootstrap Code ----
@@ -390,6 +406,11 @@ globalThis.__workflowError = undefined;
 // Keyed by correlationId → array of payloads (preserves delivery order).
 // This mirrors the event-replay runtime's payloadsQueue in hook.ts.
 globalThis.__hookPayloadBuffer = {};
+// A buffered payload that failed to decrypt or deserialize: the failure is
+// held at the payload's place in the buffer and only rejects the await that
+// takes it, so a payload nothing reads (a start Hook the workflow never opens)
+// cannot fail the run. Mirrors the node:vm engine's buffered outcome.
+globalThis.__HydrationFailure = function(error) { this.error = error; };
 
 // Buffer for step/wait/attr terminal outcomes that arrive before this VM
 // has constructed the corresponding awaiting promise. In fresh-VM replay
@@ -754,11 +775,48 @@ if (typeof Request === "undefined") {
   });
 }
 
+// The error createHook throws when it opens the start Hook with options only
+// a write could apply. Same text as startHookOptionsError in workflow/hook.ts.
+globalThis.__startHookOptionsError = function(rejected) {
+  return "\`createHook()\` was called with this run's start token and " +
+    rejected.map(function(name) { return "\`" + name + "\`"; }).join(", ") +
+    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
+};
+// Hook correlation ids are minted from the run's ULID sequence, skipping the
+// one id a run must never mint: its start Hook's (see __startHook). A redraw is
+// a pure function of the sequence, so every replay makes it. Mirrors
+// mintHookCorrelationId in start-hook-binding.ts.
+globalThis.__mintHookCorrelationId = function() {
+  var id = "hook_" + globalThis.__generateUlid();
+  var startHook = globalThis.__startHook;
+  while (startHook && id === startHook.hookId) {
+    id = "hook_" + globalThis.__generateUlid();
+  }
+  return id;
+};
+
 // createHook — returns a Hook object that is both a Thenable and AsyncIterable.
 // Each await/yield creates a new promise keyed by the same correlationId.
 // The promise is resolved when a hook_received event arrives.
 globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
+  // The run's start Hook (start(workflow, args, { hook })), injected by the
+  // host as __startHook, was created by the run's admission: the first
+  // createHook with its token opens it (no hook_created, no suspension).
+  // Mirrors workflow/hook.ts.
+  var startHook = globalThis.__startHook;
+  var bindsStartHook = !!startHook && !startHook.bound &&
+    typeof options.token === "string" && options.token === startHook.token;
+  if (bindsStartHook) {
+    var rejectedStartHookOptions = [];
+    if (options.metadata !== undefined) rejectedStartHookOptions.push("metadata");
+    if (options.experimental_minRetention !== undefined) rejectedStartHookOptions.push("experimental_minRetention");
+    if (options.isWebhook === true) rejectedStartHookOptions.push("isWebhook");
+    if (options.experimental_force === true) rejectedStartHookOptions.push("experimental_force");
+    if (rejectedStartHookOptions.length > 0) {
+      throw new Error(globalThis.__startHookOptionsError(rejectedStartHookOptions));
+    }
+  }
   if (options.isWebhook === true && options.experimental_minRetention !== undefined) {
     throw new Error('Webhook hooks do not support \`experimental_minRetention\`. Use a non-webhook \`createHook()\` with \`resumeHook()\`.');
   }
@@ -783,7 +841,15 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     }
   }
   var token = options.token || globalThis.__generateNanoid();
-  var correlationId = "hook_" + globalThis.__generateUlid();
+  var correlationId;
+  if (bindsStartHook) {
+    // Still draw one ULID, so later ids do not depend on whether this bound.
+    globalThis.__generateUlid();
+    correlationId = startHook.hookId;
+    startHook.bound = true;
+  } else {
+    correlationId = globalThis.__mintHookCorrelationId();
+  }
   var isDisposed = false;
   var hasCreatedEvent = false;
   var tokenRetentionUntil;
@@ -812,7 +878,19 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
 
   // Register in pending operations. Metadata stays a RAW value; the host
   // serializes it through a handle when it collects the pending op.
-  var pendingOp = {
+  // The start Hook's creation is run_created itself, so its op is created
+  // from the start and nothing writes hook_created for it.
+  var pendingOp = bindsStartHook ? {
+    type: "hook",
+    correlationId: correlationId,
+    token: token,
+    tokenRetentionUntil: startHook.tokenRetentionUntil,
+    isWebhook: false,
+    force: false,
+    metadata: undefined,
+    hasCreatedEvent: true,
+    startHook: true,
+  } : {
     type: "hook",
     correlationId: correlationId,
     token: token,
@@ -835,12 +913,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   globalThis.__hooks = globalThis.__hooks || {};
   var hookState = globalThis.__hooks[correlationId] = {
     token: token,
-    created: false,
+    created: bindsStartHook,
     conflict: null,
     // Set by the host on a hook_disposed{forceClaimedBy}: another run took
     // the token. Buffered payloads (delivered before the takeover) are still
-    // drained; every await after them rejects with this error.
-    forceClaimed: null,
+    // drained; every await after them rejects with this error. For the start
+    // Hook the takeover may precede this call (__startHookForceClaimed).
+    forceClaimed: bindsStartHook ? (globalThis.__startHookForceClaimed || null) : null,
     force: options.experimental_force === true,
     getConflictResolvers: [],
   };
@@ -853,7 +932,10 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     // heap. Drain it immediately (matching event-replay payloadsQueue).
     var buf = globalThis.__hookPayloadBuffer[correlationId];
     if (buf && buf.length > 0) {
-      return Promise.resolve(buf.shift());
+      var next = buf.shift();
+      return next instanceof globalThis.__HydrationFailure
+        ? Promise.reject(next.error)
+        : Promise.resolve(next);
     }
     if (hookState.forceClaimed) {
       return Promise.reject(hookState.forceClaimed);
@@ -1058,7 +1140,7 @@ globalThis.AbortController = function WorkflowAbortController() {
   this[__ABORT_STREAM_NAME] = streamName;
   this[__ABORT_HOOK_TOKEN] = hookToken;
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
-  var correlationId = "hook_" + globalThis.__generateUlid();
+  var correlationId = globalThis.__mintHookCorrelationId();
   this[__ABORT_HOOK_CID] = correlationId;
   // Register an internal system hook. isSystem prevents token namespace
   // conflicts with user hooks.
@@ -1685,6 +1767,16 @@ export async function startQuickJSWorkflow(
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
 
+  // The run's start Hook (start(workflow, args, { hook })), or undefined.
+  const runStartHook = (): RunStartHook | undefined =>
+    options.startHook === undefined
+      ? resolveRunStartHook({
+          events,
+          workflowRun,
+          runInput: options.runInput,
+        })
+      : (options.startHook ?? undefined);
+
   // ---- Correlation-id ULID machinery ----
   // Hoisted out of the per-run phase so BOTH the fresh-boot path and the
   // snapshot-restore path share it (the `__generateUlid` host callback
@@ -1851,6 +1943,24 @@ export async function startQuickJSWorkflow(
         vm.registerHostCallback(callback.name, callback.fn(vm));
       }
 
+      // A start({ hook }) run's heap must have booted with the start Hook
+      // binding (and the run's __startHook). One captured by an older engine
+      // build would mint a fresh id for the start token, so it is refused
+      // here and the entrypoint falls back to a full replay. Checked only for
+      // such runs: every other snapshot restores exactly as before.
+      if (
+        runStartHook() &&
+        !vm.dump(
+          vm.evalCode(
+            'typeof globalThis.__mintHookCorrelationId === "function" && !!globalThis.__startHook'
+          )
+        )
+      ) {
+        throw new Error(
+          'QuickJS snapshot predates start Hook binding for this run'
+        );
+      }
+
       // `process.env` is a per-invocation copy of the host env (see the
       // fresh-boot install), so replace the one the snapshot carried: a
       // restored run must see the env of THIS invocation, the same as a
@@ -1996,6 +2106,21 @@ export async function startQuickJSWorkflow(
     vm.evalCode(
       `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
     ).dispose();
+
+    // The run's start Hook (start(workflow, args, { hook })), for the guest's
+    // createHook binding. Not set at all for a run without one, which boots
+    // exactly as before.
+    const startHook = runStartHook();
+    if (startHook) {
+      vm.evalCode(
+        `globalThis.__startHook = ${JSON.stringify({
+          token: startHook.token,
+          hookId: startHook.hookId,
+          tokenRetentionUntil: startHook.tokenRetentionUntil?.getTime(),
+          bound: false,
+        })};`
+      ).dispose();
+    }
 
     // Install every host callback from the shared list (see
     // hostCallbacks above — the restore path re-registers from the same
@@ -2828,20 +2953,44 @@ async function processEvents(
               ? Object.keys(rawPayload)
               : undefined,
         });
-        if (hasResolver) {
-          if (rawPayload instanceof Uint8Array) {
+        // A payload that cannot be decrypted or deserialized becomes an
+        // error in the VM (`globalThis.__tmp_err`) for the await that takes
+        // it, never an exception out of replay.
+        const setHydrationError = (error: unknown) => {
+          const name = error instanceof Error ? error.name : 'Error';
+          const message =
+            error instanceof Error ? error.message : String(error);
+          vm.evalCode(
+            `globalThis.__tmp_err = new Error(${JSON.stringify(message)});` +
+              `globalThis.__tmp_err.name = ${JSON.stringify(name)};`
+          ).dispose();
+        };
+        const hydrateIntoTmp = async (bytes: Uint8Array): Promise<boolean> => {
+          try {
             // Decrypt if encrypted: the VM only understands 'devl' format
             const decryptedPayload = await prepareBytesForVM(
-              rawPayload,
+              bytes,
               encryptionKey
             );
             const payloadHandle = serde.deserialize(decryptedPayload);
             vm.setProp(vm.global, '__tmp_result', payloadHandle);
             payloadHandle.dispose();
+            return true;
+          } catch (error) {
+            setHydrationError(error);
+            return false;
+          }
+        };
+        if (hasResolver) {
+          if (rawPayload instanceof Uint8Array) {
+            const hydrated = await hydrateIntoTmp(rawPayload);
             vm.evalCode(
-              `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);` +
+              (hydrated
+                ? `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);`
+                : `globalThis.__resolvers[${cidJs}].reject(globalThis.__tmp_err);`) +
                 `delete globalThis.__resolvers[${cidJs}];` +
-                `delete globalThis.__tmp_result;`
+                `delete globalThis.__tmp_result;` +
+                `delete globalThis.__tmp_err;`
             ).dispose();
           } else {
             const serialized =
@@ -2881,22 +3030,16 @@ async function processEvents(
               ? `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${eventIdJs}] = true;`
               : '');
           if (rawPayload instanceof Uint8Array) {
-            // Decrypt if encrypted: the VM only understands 'devl' format
-            const decryptedPayload = await prepareBytesForVM(
-              rawPayload,
-              encryptionKey
-            );
-            const payloadHandle = serde.deserialize(decryptedPayload);
-            vm.setProp(vm.global, '__tmp_result', payloadHandle);
-            payloadHandle.dispose();
+            const hydrated = await hydrateIntoTmp(rawPayload);
             // NOTE: replacement is a function so `$`-sequences in the
             // substituted JS never get interpreted as String.replace
             // special replacement patterns.
             vm.evalCode(
-              bufferAndTrack.replace(
-                '%PAYLOAD%',
-                () => 'globalThis.__tmp_result'
-              ) + 'delete globalThis.__tmp_result;'
+              bufferAndTrack.replace('%PAYLOAD%', () =>
+                hydrated
+                  ? 'globalThis.__tmp_result'
+                  : 'new globalThis.__HydrationFailure(globalThis.__tmp_err)'
+              ) + 'delete globalThis.__tmp_result;delete globalThis.__tmp_err;'
             ).dispose();
           } else {
             const serialized =
@@ -3075,6 +3218,14 @@ async function processEvents(
                   var gc = state.getConflictResolvers;
                   state.getConflictResolvers = [];
                   for (var i = 0; i < gc.length; i++) { gc[i].resolve(null); settled = true; }
+                } else if (
+                  globalThis.__startHook &&
+                  globalThis.__startHook.hookId === cid &&
+                  !globalThis.__startHook.bound
+                ) {
+                  // Another run took the start Hook before the body opened
+                  // it: a later createHook binds to a Hook already taken.
+                  globalThis.__startHookForceClaimed = err;
                 }
                 if (globalThis.__resolvers[cid]) {
                   globalThis.__resolvers[cid].reject(err);
