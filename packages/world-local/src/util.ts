@@ -24,11 +24,12 @@ export function once<T>(fn: () => T) {
  * Used by `createEventsStorage` to serialize same-key event writes
  * (`step_*` for the same step, `hook_created` for the same hook) and by
  * `createStreamer` to serialize updates to a run's stream index.
- * The map is instantiated per instance: different
- * instances do NOT share locks, so two instances sharing one data
- * directory behave exactly like two separate OS processes from the
- * locking standpoint. Cross-instance / cross-process arbitration
- * relies on the on-disk constraint / claim / lock files instead.
+ * The caller decides the map's scope. Most maps are per instance, so two
+ * instances sharing one data directory arbitrate those writes like two
+ * separate OS processes, through the on-disk constraint / claim / lock files.
+ * The in-band fence and step publication turn pass process-wide maps (see
+ * `globalSingleton`), shared by every instance and bundled copy in a process;
+ * other processes still arbitrate through the filesystem.
  */
 export function withInProcessLock<T>(
   locks: Map<string, Promise<unknown>>,
