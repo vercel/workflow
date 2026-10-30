@@ -1,5 +1,25 @@
 # @workflow/errors
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add the atomic start Hook admission contract: `startHook` on `run_created`, the resilient `run_started` and the queued run input, the `atomicStartHook` capability, `startHookId()`, `WorkflowStartError`, the `START_HOOK_ADMISSION_DISABLED` and `START_HOOK_CANDIDATE_CANCELLED` codes, and a conformance suite. Admission creates the run's start Hook in the same atomic step: `run_created` stands for its `hook_created`, it accepts deliveries while the run is still `pending`, and it then follows the ordinary Hook lifecycle. `HookConflictError` gains `kind: 'start'` for a refused start.
+
+### Patch Changes
+
+- [#5115](https://github.com/vercel/workflow/pull/5115) [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry steps whose stream encryption key lookup fails transiently instead of failing them with a `SerializationError`
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+- Updated dependencies [[`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f)]:
+  - @workflow/world@5.1.0
+
 ## 5.0.5
 
 ### Patch Changes

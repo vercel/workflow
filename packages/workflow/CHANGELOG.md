@@ -1,5 +1,27 @@
 # workflow
 
+## 5.3.0
+
+### Minor Changes
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add `start(workflow, args, { hook: { token, metadata, experimental_minRetention } })`, which admits the run and creates its start Hook in one atomic step, and throws `HookConflictError` naming the owner for a duplicate, which never becomes a run. `resumeHook(token)` works as soon as the run is admitted, and payloads sent before the workflow calls `createHook({ token })` are delivered in order once it does; that `createHook()` binds to the start Hook without registering a new one. Disposing the start Hook releases the token immediately; otherwise the run's end releases it, after any `experimental_minRetention` (there is no default retention). `cancel()` of a candidate that never became a run fences it.
+
+### Patch Changes
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+- Updated dependencies [[`7d31a0a`](https://github.com/vercel/workflow/commit/7d31a0a329dd020441e0aebba2bb55068f8e0f4b), [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0), [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`44d7c76`](https://github.com/vercel/workflow/commit/44d7c769e94fb8b8a684dd69f2450ea9c52990cc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`e127948`](https://github.com/vercel/workflow/commit/e1279482719168a0987e48f73d107be6287670c3)]:
+  - @workflow/core@5.3.0
+  - @workflow/errors@5.1.0
+  - @workflow/cli@5.0.7
+  - @workflow/next@5.0.7
+  - @workflow/nitro@5.0.7
+  - @workflow/typescript-plugin@5.0.0
+  - @workflow/astro@5.0.7
+  - @workflow/nest@5.1.5
+  - @workflow/rollup@5.0.7
+  - @workflow/sveltekit@5.0.7
+  - @workflow/nuxt@5.0.7
+
 ## 5.2.3
 
 ### Patch Changes

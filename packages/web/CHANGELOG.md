@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 5.0.7
+
+### Patch Changes
+
+- [#5079](https://github.com/vercel/workflow/pull/5079) [`f4f6b02`](https://github.com/vercel/workflow/commit/f4f6b02f53b42bf56f634508e3043fa8a27f7691) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Recognize unframed serialized abort packets in the Streams viewer so encrypted packets can be decrypted, and keep stream-list rows at least 40px tall.
+- Updated dependencies [[`3ca3bf0`](https://github.com/vercel/workflow/commit/3ca3bf0b36b1bcdf1d105b8af530b6f0e553485b), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`2a3e4c0`](https://github.com/vercel/workflow/commit/2a3e4c00fd4114473d7cf95737bdb70bddc41e8d), [`6455beb`](https://github.com/vercel/workflow/commit/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`72131a2`](https://github.com/vercel/workflow/commit/72131a227d3efbf2613104026976c3a0d887d1c6)]:
+  - @workflow/world-local@5.2.0
+
 ## 5.0.6
 
 ### Patch Changes
