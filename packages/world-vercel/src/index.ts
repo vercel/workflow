@@ -79,6 +79,9 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // Cached hook writes use a distinct endpoint that rejects before writing
+      // when the backend cannot enforce the required deduplication contract.
+      resolvedHookResume: true,
       // The backend fences in-band writes on every sealed-log run (spec >= 7,
       // the backend's event sequencer): a stale one is refused with 412
       // `in-band-superseded`, carrying the run's `seq` and `seqInBand`

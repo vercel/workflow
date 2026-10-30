@@ -2459,6 +2459,126 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('does not turn an uncertain resolved write into a rollback refusal', async () => {
+    const agent = mockAgent();
+    const reset = Object.assign(new Error('committed response was lost'), {
+      code: 'ECONNRESET',
+    });
+    let rollbackAttempts = 0;
+    const path = '/api/v4/runs/wrun_1/events/hook_received/resolved';
+    agent.get(ORIGIN).intercept({ path, method: 'POST' }).replyWithError(reset);
+    agent
+      .get(ORIGIN)
+      .intercept({ path, method: 'POST' })
+      .reply(() => {
+        rollbackAttempts++;
+        return { statusCode: 404, data: 'route was rolled back' };
+      });
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        hookReceivedRequest(),
+        {
+          resumeId: RESUME_ID,
+          resumePayloadDigest: DIGEST,
+          requireHookResumeDedup: true,
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({ code: 'STREAM_ERROR', status: undefined });
+    expect(rollbackAttempts).toBe(0);
+  });
+
+  it('does not resend the server ambiguous-write 503 even with Retry-After', async () => {
+    const agent = mockAgent();
+    const path = '/api/v4/runs/wrun_1/events/hook_received/resolved';
+    agent
+      .get(ORIGIN)
+      .intercept({ path, method: 'POST' })
+      .reply(
+        503,
+        JSON.stringify({
+          error: 'service-unavailable',
+          message: 'Service temporarily unavailable',
+        }),
+        { headers: { 'content-type': 'application/json', 'retry-after': '1' } }
+      );
+    let killSwitchRequests = 0;
+    agent
+      .get(ORIGIN)
+      .intercept({ path, method: 'POST' })
+      .reply(() => {
+        killSwitchRequests++;
+        return {
+          statusCode: 404,
+          data: JSON.stringify({
+            error: 'resolved-hook-unavailable',
+          }),
+        };
+      });
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        hookReceivedRequest(),
+        {
+          resumeId: RESUME_ID,
+          resumePayloadDigest: DIGEST,
+          requireHookResumeDedup: true,
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({
+      status: 503,
+      code: 'service-unavailable',
+      retryAfter: 1,
+    });
+    expect(killSwitchRequests).toBe(0);
+  });
+
+  it('surfaces a kill-switch refusal after an admission retry without losing retry history', async () => {
+    const agent = mockAgent();
+    const path = '/api/v4/runs/wrun_1/events/hook_received/resolved';
+    agent
+      .get(ORIGIN)
+      .intercept({ path, method: 'POST' })
+      .reply(
+        429,
+        JSON.stringify({
+          error: 'request-cost-exceeded',
+          message: 'Busy',
+        }),
+        { headers: { 'content-type': 'application/json', 'retry-after': '1' } }
+      );
+    agent
+      .get(ORIGIN)
+      .intercept({ path, method: 'POST' })
+      .reply(
+        404,
+        JSON.stringify({
+          error: 'resolved-hook-unavailable',
+          message: 'Unavailable',
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      );
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        hookReceivedRequest(),
+        {
+          resumeId: RESUME_ID,
+          resumePayloadDigest: DIGEST,
+          requireHookResumeDedup: true,
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({
+      code: 'HOOK_RESUME_RETRY_REFUSED',
+      status: 404,
+      cause: { status: 404, code: 'resolved-hook-unavailable' },
+    });
+    agent.assertNoPendingInterceptors();
+  });
+
   it('retries the atomic preload write past a transient transport failure', async () => {
     // The (runId, resumeId) claim makes the write idempotent-on-retry, so
     // createWorkflowRunEvent opts this shape into withEventPostRetry — an

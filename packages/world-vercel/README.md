@@ -1,5 +1,17 @@
 # @workflow/world-vercel
 
+Resolved hook resumes use `/api/v4/runs/:runId/events/hook_received/resolved`.
+This HTTP-only endpoint requires atomic resume deduplication, including when
+the normal event transport uses WebSockets. Older servers and the dedup kill
+switch reject before writing. Definite 400/404 refusals are preserved so core
+can look up the token and fall back to ordinary delivery. The adapter retries
+429 and 503 admission refusals with Retry-After, using the same resume identity.
+It never re-sends after an uncertain transport failure: a lost response must not
+become a safe-looking rejection after a backend rollback.
+
+Core traces expose `workflow.hook.resume_route` (`lookup`, `resolved`, or
+`resolved_fallback`) and `workflow.hook.resolved_refusal_status` on fallback.
+
 Production workflow backend for Vercel platform deployments.
 
 Integrates with Vercel's infrastructure for storage, queuing, and authentication. Handles workflow persistence and scaling in production environments.

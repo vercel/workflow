@@ -741,7 +741,8 @@ export interface WorldCapabilities {
    *
    * The core runtime fails closed on this: a `resumeId` is attached ONLY when
    * the World declares `hookResumeDedup === true` (or the live backend attests
-   * it per-lookup, below). A World that accepts a `resumeId` but does not
+   * it per-lookup, below, or `resolvedHookResume` requires it for a cached
+   * hook). A World that accepts a `resumeId` but does not
    * enforce the `(runId, resumeId)` constraint must leave this unset so the
    * runtime keeps the plain single-shot write.
    *
@@ -765,6 +766,17 @@ export interface WorldCapabilities {
    * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
    */
   hookResumeDedup?: boolean;
+
+  /**
+   * Supports cached hook delivery with `requireHookResumeDedup`. The adapter
+   * must enforce atomic resume deduplication or reject before writing, even
+   * against an older backend or when dedup support is disabled. This is an
+   * adapter contract, not a cached attestation of live backend support.
+   * A definite refusal (HTTP 400/404) MUST guarantee nothing was written:
+   * core may then resolve the token and deliver through the ordinary route.
+   * Uncertain failures MUST NOT be retried or reported as definite refusals.
+   */
+  resolvedHookResume?: boolean;
 
   /**
    * Supports `createHook({ experimental_force: true })`: a `hook_created`

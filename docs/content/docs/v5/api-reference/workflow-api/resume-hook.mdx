@@ -16,7 +16,11 @@ It durably writes the `hook_received` event and only then publishes a workflow w
 
 `resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended. See [durable hook resume](/docs/changelog/lazy-hook-resume).
 
-If `resumeHook()` throws any other error, the outcome is ambiguous only in dispatch, never in durability: the event may already be durable even though the workflow wake failed, and any later wake of the run delivers it. Calling `resumeHook()` again creates a new `resumeId` and can append a second `hook_received`. Callers that need at-most-once behavior across separate invocations must retain and deduplicate their own request key.
+Other errors can occur before or after persistence. A lost write response leaves
+the write's outcome unknown; a failed workflow wake can leave an already durable
+event waiting for a later wake. Calling `resumeHook()` again creates a new
+`resumeId` and can append a second `hook_received`. Callers that need at-most-once
+behavior across separate invocations must retain and deduplicate their own request key.
 
 <Callout type="warn">
 `resumeHook` is a runtime function that must be called from outside a workflow function.
@@ -66,6 +70,53 @@ showSections={["returns"]}
 />
 
 ## Examples
+
+### Reuse a resolved hook
+
+Pass the `Hook` returned by `getHookByToken()` to `resumeHook()` to skip the
+token lookup on later deliveries. Store the Hook alongside your application's
+session state; JSON and other ordinary serializers are supported.
+
+```typescript
+import { getHookByToken, resumeHook } from 'workflow/api';
+
+// Resolve once; save the returned JSON alongside your server-side session.
+export async function prepareSession(token: string): Promise<string> {
+  const hook = await getHookByToken(token);
+  return JSON.stringify(hook);
+}
+
+// Load that JSON for later deliveries, then save the updated snapshot.
+export async function deliverMessage(storedHook: string, message: unknown): Promise<string> {
+  const hook = await resumeHook(JSON.parse(storedHook), message);
+  return JSON.stringify(hook);
+}
+```
+
+A Hook object targets that specific hook and its force-claim successor. It does
+not send to an unrelated hook that later happens to use the same token. Hooks
+without `resumeContext` keep the existing run-lookup behavior. Worlds that do
+not support guarded delivery keep their existing behavior too.
+
+A stored Hook contains its **token** and is at least as sensitive as that token.
+Keep it server-side, or sign the **whole object** before returning it to a client;
+also encrypt it if the token must remain secret. The deployment ID controls both
+the payload encryption key and the deployment that is woken, so authenticating
+only the IDs is insufficient. Trace carriers may contain private baggage; omit
+them before exposing a snapshot to a client. Schema validation is not authentication.
+
+The SDK handles a definite refusal of the first send by looking up the token
+and falling back to ordinary delivery. It retries admission throttles and
+503 `run-spec-version-changed`, retaining the delivery identity. Other 503s
+are uncertain even with `Retry-After` and are never resent. A refusal after a
+retried send is also surfaced without fallback, because an earlier send may
+have committed. Do not implement fallback yourself.
+
+| Outcome | Meaning |
+| --- | --- |
+| `HookNotFoundError` | The hook cannot receive this message; the SDK has already checked for a live token or an eligible successor. |
+| `HookForceClaimedError` | The SDK follows supported ownership redirects automatically. |
+| Any other error | The write may already have committed. Do not call `resumeHook()` again as a new delivery. |
 
 ### Basic API route
 

@@ -895,6 +895,9 @@ export interface CreateEventParams {
    * alongside {@link resumeId}.
    */
   resumePayloadDigest?: string;
+  /** Require the server's deduplicated resolved-hook endpoint. Unsupported
+   * backends must reject before writing rather than silently dropping dedup. */
+  requireHookResumeDedup?: boolean;
   /**
    * Marks a `step_created` create as the queue consumer's re-ensure of a
    * resilient step dispatch (a step message carrying `stepInput`, see

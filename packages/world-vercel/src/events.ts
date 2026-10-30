@@ -792,12 +792,16 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
         // The atomic lazy-resume shape is deduplicated server-side by the
         // (runId, resumeId) claim, so its POST is idempotent-on-retry even
         // though plain hook_received is not; see EVENT_RETRY_ELIGIBILITY.
+        // Resolved-route writes run once: a rollback after a lost response
+        // must not turn a committed first attempt into a seemingly safe 404.
         idempotentHookResume:
           data.eventType === 'hook_received' &&
+          params?.requireHookResumeDedup !== true &&
           params?.resumeId !== undefined &&
           params?.resumePayloadDigest !== undefined,
         afterStepBody: params?.afterStepBody === true,
         inBand: params?.inBand === true,
+        resolvedHookResume: params?.requireHookResumeDedup === true,
       }
     );
     if (data.eventType === 'run_created' && !result.run) {
@@ -833,6 +837,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     // older backend, or a wrong base URL), and saying the hook does not
     // exist would hide that.
     if (
+      params?.requireHookResumeDedup !== true &&
       isHookEventRequiringExistence(data.eventType) &&
       WorkflowWorldError.is(err) &&
       err.status === 404 &&
@@ -968,6 +973,7 @@ async function createWorkflowRunEventInner(
     ...(params?.resumePayloadDigest
       ? { resumePayloadDigest: params.resumePayloadDigest }
       : {}),
+    ...(params?.requireHookResumeDedup ? { requireHookResumeDedup: true } : {}),
     // Resilient step dispatch re-ensure marker (step_created only).
     // Advisory: the server MAY refuse it with 410 → RunExpiredError as
     // defense-in-depth when it recorded a 412 rejection for this correlation
