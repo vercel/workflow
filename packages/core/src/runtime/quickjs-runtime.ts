@@ -3324,6 +3324,11 @@ const TERMINAL_STATE_JS = `
       return drawn ? !globalThis.__resolvers[cid] : !!globalThis.__terminalBuffer[cid];
     }
     if (!drawn || (globalThis.__abortSignals && globalThis.__abortSignals[cid])) return false;
+    // The run's start Hook id is derived from the run's id, not drawn: it
+    // sorts before every id the VM draws, so "drawn and no state" says
+    // nothing about it until the body has opened it.
+    var startHook = globalThis.__startHook;
+    if (startHook && cid === startHook.hookId && !startHook.bound) return false;
     var state = globalThis.__hooks && globalThis.__hooks[cid];
     return !state || !!state.forceClaimed;
   }

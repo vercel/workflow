@@ -18,7 +18,10 @@ import {
   startQuickJSWorkflow,
 } from './quickjs-runtime.js';
 
-const RUN_ID = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+// The lowest id of its millisecond: every id the VM draws (seeded from the
+// run's time) sorts after the start Hook id derived from it, the order that
+// once made an unopened start Hook look closed.
+const RUN_ID = 'wrun_01ARZ3NDEK0000000000000000';
 const START_ID = startHookId(RUN_ID);
 const TOKEN = 'order:1';
 const WORKFLOW_ID = 'workflow//test//workflow';
@@ -342,6 +345,46 @@ describe('createHook with the start token (QuickJS)', () => {
       'HookForceClaimedError',
       'wrun_other',
     ]);
+  });
+
+  it('keeps a payload a live VM scans after drawing ids, before the body opens the Hook', async () => {
+    // The start Hook's id is derived from the run's, so it sorts before
+    // every id the VM draws: once the VM has drawn one, a payload for the
+    // unopened start Hook must still be buffered, not taken for a closed
+    // Hook's straggler.
+    const body = `var gate = createHook({ token: "gate" });
+       await gate;
+       var hook = createHook({ token: ${JSON.stringify(TOKEN)} });
+       return await hook;`;
+    const session = await startQuickJSWorkflow({
+      workflowCode: code(body),
+      workflowId: WORKFLOW_ID,
+      workflowRun: run,
+      events: [runCreated(), runStarted()],
+    });
+    try {
+      const gateOp = pending(session.result).find(
+        (op) => op.type === 'hook' && op.correlationId !== START_ID
+      );
+      expect(gateOp).toBeDefined();
+      // The start Hook's payload lands in a batch of its own.
+      pending(await session.continueWithEvents([received('p1')]));
+      const continued = await session.continueWithEvents([
+        event({
+          eventType: 'hook_created',
+          correlationId: gateOp!.correlationId,
+          eventData: { token: 'gate' },
+        }),
+        event({
+          eventType: 'hook_received',
+          correlationId: gateOp!.correlationId,
+          eventData: { token: 'gate', payload: 'open' },
+        }),
+      ]);
+      expect(output(continued)).toBe('p1');
+    } finally {
+      session.dispose();
+    }
   });
 
   it('records a takeover the live VM scans once, before the body opens the Hook', async () => {
