@@ -1,5 +1,24 @@
 # @workflow/world-testing
 
+## 5.0.7
+
+### Patch Changes
+
+- [#4990](https://github.com/vercel/workflow/pull/4990) [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0) Thanks [@pranaygp](https://github.com/pranaygp)! - Verify terminal cleanup releases non-retained hook tokens and avoid comparing fence counters with a stale event listing.
+
+- [#5073](https://github.com/vercel/workflow/pull/5073) [`5f5299b`](https://github.com/vercel/workflow/commit/5f5299b39974a18b1500d2c857c02783fb45f7f7) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Wait for `run_completed` to be listed before comparing a run's event reads in the `resolveData` check.
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+- Updated dependencies [[`7d31a0a`](https://github.com/vercel/workflow/commit/7d31a0a329dd020441e0aebba2bb55068f8e0f4b), [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0), [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`44d7c76`](https://github.com/vercel/workflow/commit/44d7c769e94fb8b8a684dd69f2450ea9c52990cc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`e127948`](https://github.com/vercel/workflow/commit/e1279482719168a0987e48f73d107be6287670c3)]:
+  - @workflow/core@5.3.0
+  - @workflow/world@5.1.0
+  - workflow@5.3.0
+  - @workflow/cli@5.0.7
+
 ## 5.0.6
 
 ### Patch Changes

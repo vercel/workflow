@@ -1,5 +1,46 @@
 # @workflow/core
 
+## 5.3.0
+
+### Minor Changes
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add `start(workflow, args, { hook: { token, metadata, experimental_minRetention } })`, which admits the run and creates its start Hook in one atomic step, and throws `HookConflictError` naming the owner for a duplicate, which never becomes a run. `resumeHook(token)` works as soon as the run is admitted, and payloads sent before the workflow calls `createHook({ token })` are delivered in order once it does; that `createHook()` binds to the start Hook without registering a new one. Disposing the start Hook releases the token immediately; otherwise the run's end releases it, after any `experimental_minRetention` (there is no default retention). `cancel()` of a candidate that never became a run fences it.
+
+- [#5081](https://github.com/vercel/workflow/pull/5081) [`e127948`](https://github.com/vercel/workflow/commit/e1279482719168a0987e48f73d107be6287670c3) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Use length-prefixed frames for real-time abort stream packets. Keep readers compatible with existing unframed packets, reassemble split transport reads, and retain unframed writes for older cross-deployment targets and hook resumptions without an attested receiving runtime. Payload encryption and durable hook events are unchanged.
+
+### Patch Changes
+
+- [#5041](https://github.com/vercel/workflow/pull/5041) [`7d31a0a`](https://github.com/vercel/workflow/commit/7d31a0a329dd020441e0aebba2bb55068f8e0f4b) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Close a stream read that is cancelled while it is still connecting, so a fast signal-bearing step no longer leaves its abort-stream read open until the server's max duration.
+
+- [#4990](https://github.com/vercel/workflow/pull/4990) [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0) Thanks [@pranaygp](https://github.com/pranaygp)! - Skip redundant hook disposal events when a workflow completes or fails.
+
+- [#5018](https://github.com/vercel/workflow/pull/5018) [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183) Thanks [@pranaygp](https://github.com/pranaygp)! - Run steps started beside an awaited `hook.getConflict()` inline instead of handing them to the queue: the suspension now defers their creates, settles the awaiter off the hook write, and runs the bodies on the pass after it. Those steps now share one inline batch with whatever the settled awaiter started, so work the awaiter's branch begins after its own first step waits for them — where queueing put the branch in a separate invocation. Steps past `WORKFLOW_MAX_INLINE_STEPS` are unaffected and still queue.
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - With `WORKFLOW_VM=quickjs`, replay ignores events for a step, wait or hook after its terminal event, as the default engine does.
+
+- [#4945](https://github.com/vercel/workflow/pull/4945) [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Keep the QuickJS VM heap flat over long runs: settled steps, sleeps, attributes and disposed hooks are released instead of retained (with their step arguments) for the rest of the run, and event replay no longer scans every operation the run ever created.
+
+- [#5070](https://github.com/vercel/workflow/pull/5070) [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Forward the run's `encryptionPublicKey` on a resilient `run_started`, so a run created from its queued copy can still receive sealed writes.
+
+- [#5115](https://github.com/vercel/workflow/pull/5115) [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Retry steps whose stream encryption key lookup fails transiently instead of failing them with a `SerializationError`
+
+- [#5053](https://github.com/vercel/workflow/pull/5053) [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Fix a step that could be created and never run when two executions of it met in one process and the first one's claim lost.
+
+- [#5156](https://github.com/vercel/workflow/pull/5156) [`44d7c76`](https://github.com/vercel/workflow/commit/44d7c769e94fb8b8a684dd69f2450ea9c52990cc) Thanks [@alangenfeld](https://github.com/alangenfeld)! - The single-orchestrator engine admits `start({ hook })` candidates: their first delivery skips turbo, `run_started` carries the start Hook request, a refused candidate acknowledges without running code, and the workflow's `createHook({ token })` binds to the start Hook.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+- Updated dependencies [[`3ca3bf0`](https://github.com/vercel/workflow/commit/3ca3bf0b36b1bcdf1d105b8af530b6f0e553485b), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`612c5f4`](https://github.com/vercel/workflow/commit/612c5f4d558e61ea8c55dd269f2511b7bca69636), [`1123ea6`](https://github.com/vercel/workflow/commit/1123ea6c13cce041b5088da2684987dfa5165a92), [`2a3e4c0`](https://github.com/vercel/workflow/commit/2a3e4c00fd4114473d7cf95737bdb70bddc41e8d), [`6455beb`](https://github.com/vercel/workflow/commit/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`72131a2`](https://github.com/vercel/workflow/commit/72131a227d3efbf2613104026976c3a0d887d1c6), [`5dc9e15`](https://github.com/vercel/workflow/commit/5dc9e1543dfcbb1d130b9a4cff87b8952c4cd7c2)]:
+  - @workflow/world-local@5.2.0
+  - @workflow/world@5.1.0
+  - @workflow/errors@5.1.0
+  - @workflow/world-vercel@5.3.0
+
 ## 5.2.3
 
 ### Patch Changes

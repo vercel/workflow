@@ -1,5 +1,30 @@
 # @workflow/world-vercel
 
+## 5.3.0
+
+### Minor Changes
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Send `startHook` on run creation and map start Hook answers, retrying a delivery to a start Hook whose run is still being created, honoring `Retry-After`; `atomicStartHook` is advertised only with `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1`, which needs a backend that supports start Hooks.
+
+### Patch Changes
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+
+- [#5072](https://github.com/vercel/workflow/pull/5072) [`612c5f4`](https://github.com/vercel/workflow/commit/612c5f4d558e61ea8c55dd269f2511b7bca69636) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Name the fields a v4 `createEvent` response failed its schema on in the error message.
+
+- [#5043](https://github.com/vercel/workflow/pull/5043) [`1123ea6`](https://github.com/vercel/workflow/commit/1123ea6c13cce041b5088da2684987dfa5165a92) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade `@vercel/queue` to 0.10.0 and publish a fan-out's batched step dispatches through the now-stable `sendBatch` instead of the deprecated `experimental_sendBatch`
+
+- [#4994](https://github.com/vercel/workflow/pull/4994) [`5dc9e15`](https://github.com/vercel/workflow/commit/5dc9e1543dfcbb1d130b9a4cff87b8952c4cd7c2) Thanks [@neilverc](https://github.com/neilverc)! - Stop following HTTP redirects on workflow API requests. `fetch` strips `Authorization` across origins but forwards every other header, so a redirect carried the request's `x-vercel-trusted-oidc-idp-token` to the host named in `Location`. A 3xx now surfaces as an error, matching the node:http transport.
+- Updated dependencies [[`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f)]:
+  - @workflow/world@5.1.0
+  - @workflow/errors@5.1.0
+
 ## 5.2.3
 
 ### Patch Changes
