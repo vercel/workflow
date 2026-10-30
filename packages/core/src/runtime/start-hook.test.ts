@@ -27,9 +27,11 @@ import {
   start,
 } from './start.js';
 import {
+  resetStartHookHolderWakes,
   START_HOOK_HOLDER_WAKE_AFTER_MS,
   START_HOOK_HOLDER_WAKE_WINDOW_MS,
   startHookHolderWakeKey,
+  wakePendingStartHookHolder,
 } from './start-hook-holder.js';
 import { setWorld } from './world.js';
 
@@ -61,6 +63,7 @@ function admittingWorld(overrides: Record<string, unknown> = {}) {
     specVersion: SPEC_VERSION_CURRENT,
     getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
     capabilities: {
+      inBandFence: true,
       atomicStartHook: { active: true },
       hookRetention: { active: true },
     },
@@ -89,6 +92,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setWorld(undefined);
+  resetStartHookHolderWakes();
   vi.clearAllMocks();
   vi.unstubAllEnvs();
 });
@@ -150,6 +154,21 @@ describe('start({ hook })', () => {
     expect(payload.runInput.startHook).toEqual(event.eventData.startHook);
   });
 
+  it('admits a single-orchestrator run the same way', async () => {
+    admittingWorld({ specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR });
+
+    await start(workflow, ['a'], { hook: { token: TOKEN } });
+
+    expect(calls).toEqual(['queue', 'create']);
+    const [, event] = eventsCreate.mock.calls[0];
+    expect(event.specVersion).toBe(SPEC_VERSION_SINGLE_ORCHESTRATOR);
+    expect(event.eventData.startHook.token).toBe(TOKEN);
+    expect(queue.mock.calls[0][1].runInput).toMatchObject({
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      startHook: { token: TOKEN },
+    });
+  });
+
   describe('retention', () => {
     it('sets none by default: the token is released when the run ends', async () => {
       admittingWorld();
@@ -177,7 +196,9 @@ describe('start({ hook })', () => {
     });
 
     it('sets none on a World without Hook retention either', async () => {
-      admittingWorld({ capabilities: { atomicStartHook: { active: true } } });
+      admittingWorld({
+        capabilities: { inBandFence: true, atomicStartHook: { active: true } },
+      });
 
       await start(workflow, [], { hook: { token: TOKEN } });
 
@@ -298,7 +319,9 @@ describe('start({ hook })', () => {
   });
 
   it('refuses a World without the capability before writing anything', async () => {
-    admittingWorld({ capabilities: { hookRetention: { active: true } } });
+    admittingWorld({
+      capabilities: { inBandFence: true, hookRetention: { active: true } },
+    });
 
     const error = await rejection(
       start(workflow, [], { hook: { token: TOKEN } })
@@ -310,39 +333,10 @@ describe('start({ hook })', () => {
     expect(eventsCreate).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['an explicit specVersion', 'explicit'],
-    ["the World's own version", 'world'],
-  ] as const)('refuses a single-orchestrator run from %s before publishing or admitting anything', async (_label, source) => {
-    admittingWorld({
-      ...(source === 'world'
-        ? { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
-        : {}),
-      capabilities: {
-        inBandFence: true,
-        atomicStartHook: { active: true },
-        hookRetention: { active: true },
-      },
-    });
-
-    const error = await rejection(
-      start(workflow, [], {
-        hook: { token: TOKEN },
-        ...(source === 'explicit'
-          ? { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
-          : {}),
-      })
-    );
-
-    expect(WorkflowWorldError.is(error)).toBe(true);
-    expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
-    expect((error as Error).message).toMatch(/single-orchestrator/);
-    expect(queue).not.toHaveBeenCalled();
-    expect(eventsCreate).not.toHaveBeenCalled();
-  });
-
   it('refuses a retention on a World without Hook retention', async () => {
-    admittingWorld({ capabilities: { atomicStartHook: { active: true } } });
+    admittingWorld({
+      capabilities: { inBandFence: true, atomicStartHook: { active: true } },
+    });
 
     const error = await rejection(
       start(workflow, [], {
@@ -385,12 +379,12 @@ describe('start({ hook })', () => {
   });
 
   describe('a refusal naming a holder', () => {
-    const holderRun = (status: string, ageMs: number) => ({
+    const holderRun = (status: string, ageMs: number, specVersion = 8) => ({
       runId: 'wrun_owner',
       status,
       workflowName: 'workflow//./test//orders',
       deploymentId: 'dpl_owner',
-      specVersion: 8,
+      specVersion,
       executionContext: { queueNamespace: 'eve' },
       createdAt: new Date(Date.now() - ageMs),
       updatedAt: new Date(),
@@ -432,6 +426,87 @@ describe('start({ hook })', () => {
         deploymentId: 'dpl_owner',
         specVersion: 8,
         idempotencyKey: startHookHolderWakeKey('wrun_owner', Date.now()),
+      });
+    });
+
+    it("wakes a single-orchestrator holder on its run's own channel, without a key", async () => {
+      const get = vi
+        .fn()
+        .mockResolvedValue(
+          holderRun(
+            'pending',
+            START_HOOK_HOLDER_WAKE_AFTER_MS + 1_000,
+            SPEC_VERSION_SINGLE_ORCHESTRATOR
+          )
+        );
+      refusingWorld(get);
+
+      await rejection(start(workflow, [], { hook: { token: TOKEN } }));
+
+      await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(2));
+      const [, payload, opts] = queue.mock.calls[1];
+      expect(payload).toMatchObject({
+        runId: 'wrun_owner',
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      });
+      expect(opts).toEqual({
+        deploymentId: 'dpl_owner',
+        specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      });
+    });
+
+    describe('a single-orchestrator holder, which its wake carries no key for', () => {
+      const pendingHolder = () =>
+        holderRun(
+          'pending',
+          START_HOOK_HOLDER_WAKE_AFTER_MS + 1_000,
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
+
+      it('is woken once per window in this process, however many duplicates are refused', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(10 * START_HOOK_HOLDER_WAKE_WINDOW_MS + 1_000);
+          const world = {
+            runs: { get: vi.fn().mockResolvedValue(pendingHolder()) },
+            queue,
+          } as any;
+
+          expect(
+            await wakePendingStartHookHolder(world, 'wrun_owner', {})
+          ).toBe('woken');
+          expect(
+            await wakePendingStartHookHolder(world, 'wrun_owner', {})
+          ).toBe('throttled');
+          expect(queue).toHaveBeenCalledTimes(1);
+
+          // The next window wakes it again.
+          vi.setSystemTime(11 * START_HOOK_HOLDER_WAKE_WINDOW_MS + 1_000);
+          expect(
+            await wakePendingStartHookHolder(world, 'wrun_owner', {})
+          ).toBe('woken');
+          expect(queue).toHaveBeenCalledTimes(2);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('gives the window back when the publish fails', async () => {
+        const world = {
+          runs: { get: vi.fn().mockResolvedValue(pendingHolder()) },
+          queue: vi
+            .fn()
+            .mockRejectedValueOnce(new Error('queue unavailable'))
+            .mockResolvedValue({ messageId: null }),
+        } as any;
+
+        expect(await wakePendingStartHookHolder(world, 'wrun_owner', {})).toBe(
+          'error'
+        );
+        expect(await wakePendingStartHookHolder(world, 'wrun_owner', {})).toBe(
+          'woken'
+        );
+        expect(world.queue).toHaveBeenCalledTimes(2);
       });
     });
 
@@ -874,7 +949,7 @@ describe('start({ hook })', () => {
         healthy: true,
         format: 'json',
         specVersion: SPEC_VERSION_CURRENT,
-        capabilities: { hookRetention: { active: true } },
+        capabilities: { inBandFence: true, hookRetention: { active: true } },
       });
 
       const error = await rejection(
@@ -916,7 +991,7 @@ describe('start({ hook })', () => {
         healthy: true,
         format: 'json',
         specVersion: SPEC_VERSION_CURRENT,
-        capabilities: { atomicStartHook: { active: true } },
+        capabilities: { inBandFence: true, atomicStartHook: { active: true } },
       });
 
       await start(workflow, [], {

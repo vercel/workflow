@@ -153,12 +153,14 @@ export const WorkflowStartHookEnqueueFailed = SemanticConvention<boolean>(
 );
 
 /**
- * Which write decided a start Hook candidate on this span: `run_started`, on
- * the invocation span of its queued copy.
+ * How the queued copy of a start Hook candidate learned its outcome, on its
+ * invocation span: `run_started`, the write this delivery made, or
+ * `run_load`, a redelivery's read of a run whose `run_started` an earlier
+ * delivery committed.
  */
-export const WorkflowStartHookTrigger = SemanticConvention<'run_started'>(
-  'workflow.start_hook.trigger'
-);
+export const WorkflowStartHookTrigger = SemanticConvention<
+  'run_started' | 'run_load'
+>('workflow.start_hook.trigger');
 
 /** SHA-256 of a dynamic run's source and step bindings. */
 export const WorkflowDynamicSourceHash = SemanticConvention<string>(
