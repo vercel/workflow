@@ -3,7 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
-import { eventIdToSlot } from '@workflow/world';
+import {
+  eventIdToSlot,
+  type WorkflowRun,
+  WorkflowRunSchema,
+} from '@workflow/world';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -16,8 +20,10 @@ import {
   resolveWithinBase,
   runEntityDir,
   stripTag,
+  taggedPath,
   ulidToDate,
   withWindowsRetry,
+  writeExclusive,
 } from '../fs.js';
 
 /**
@@ -409,6 +415,11 @@ export const HookTokenClaimSchema = z.compile(
     // canonical hook_created event before concurrent retries publish it.
     eventId: z.string().optional(),
     tokenRetentionUntil: z.coerce.date().optional(),
+    // When an admission wrote this claim for its run's `start({ hook })` Hook
+    // (ms since the epoch), for the orphan grace
+    // (`START_HOOK_ORPHAN_GRACE_MS`). Only read while the claim's run record
+    // is missing.
+    reservedAt: z.number().optional(),
     // Set when this claim took the token from another run
     // (`experimental_force`), so a retry that adopts the claim can still
     // report — and wake — the run it came from.
@@ -426,6 +437,19 @@ export const HookTokenClaimSchema = z.compile(
 
 export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
 
+/**
+ * Whether a start Hook claim whose run record is missing is still inside its
+ * orphan grace (see `START_HOOK_ORPHAN_GRACE_MS`). A claim without
+ * `reservedAt` is not.
+ */
+export function isWithinStartHookOrphanGrace(claim: HookTokenClaim): boolean {
+  const reservedAt = claim.reservedAt;
+  return (
+    reservedAt !== undefined &&
+    Date.now() - reservedAt <= START_HOOK_ORPHAN_GRACE_MS
+  );
+}
+
 export async function readHookTokenClaim(
   claimPath: string
 ): Promise<HookTokenClaim | null> {
@@ -437,6 +461,85 @@ export async function readHookTokenClaim(
     }
     throw error;
   }
+}
+
+/**
+ * How long the token claim lock is a lease for: a holder that stalls past it
+ * loses the lock to the next claimant (`proper-lockfile`'s `stale`).
+ */
+export const HOOK_TOKEN_CLAIM_LOCK_STALE_MS = 30_000;
+
+/**
+ * How long a start Hook claim whose run record was never written keeps its
+ * token. Its writer may only be stalled past the lock's lease, not dead, and
+ * could still write the run when it resumes, so the claim holds for the
+ * lease plus as long again before a contender may take the token. A
+ * contender then fences the candidate's run record path before releasing it
+ * (see {@link StartHookFenceSchema}), so a writer still stalled past the
+ * grace can never publish the run.
+ */
+export const START_HOOK_ORPHAN_GRACE_MS = 2 * HOOK_TOKEN_CLAIM_LOCK_STALE_MS;
+
+/**
+ * What is written on a run-less start Hook claim's run record path once its
+ * orphan grace has passed, before anything treats the token as free: the
+ * stalled writer's exclusive publication of that run then fails, so the
+ * orphan can never become a run. A contender's fence names the run the token
+ * went to, which every later attempt for the orphan answers as its owner. A
+ * cancellation's fence (a `run_cancelled` for an admitted candidate that was
+ * never created) names none, and later attempts are refused permanently.
+ */
+export const StartHookFenceSchema = z.compile(
+  z.object({
+    startHookFence: z.object({
+      /** Absent on a cancellation's fence, which knows only the run id. */
+      token: z.string().optional(),
+      conflictingRunId: z.string().optional(),
+    }),
+  })
+);
+export type StartHookFence = z.infer<typeof StartHookFenceSchema>;
+
+/**
+ * A run record file as world-local reads it: a run, or `null` for a start
+ * Hook fence (no run). Every read of a run record goes through this.
+ */
+export const RunRecordSchema: z.ZodType<WorkflowRun | null> = z.compile(
+  z.union([StartHookFenceSchema.transform(() => null), WorkflowRunSchema])
+) as z.ZodType<WorkflowRun | null>;
+
+/** A run record path's fence, if it holds one. */
+export async function readStartHookFence(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<StartHookFence['startHookFence'] | null> {
+  const record = await readJSON(
+    taggedPath(basedir, 'runs', runId, tag),
+    z.unknown()
+  ).catch((error: unknown) => {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  });
+  const parsed = StartHookFenceSchema.safeParse(record);
+  return parsed.success ? parsed.data.startHookFence : null;
+}
+
+/**
+ * Fences a run-less start Hook claim's run record path (see
+ * {@link StartHookFenceSchema}). False if the path already holds a record:
+ * the run was published after all, or another contender fenced it first.
+ */
+export async function fenceStartHookCandidate(
+  basedir: string,
+  runId: string,
+  tag: string | undefined,
+  fence: StartHookFence['startHookFence']
+): Promise<boolean> {
+  return writeExclusive(
+    taggedPath(basedir, 'runs', runId, tag),
+    JSON.stringify({ startHookFence: fence } satisfies StartHookFence)
+  );
 }
 
 /**
@@ -455,7 +558,7 @@ export async function withHookTokenClaimLock<T>(
   try {
     release = await lock(claimPath, {
       realpath: false,
-      stale: 30_000,
+      stale: HOOK_TOKEN_CLAIM_LOCK_STALE_MS,
       update: 1_000,
       retries: {
         retries: 350,
@@ -496,6 +599,45 @@ export async function withHookTokenClaimLock<T>(
     });
   }
   return result;
+}
+
+/**
+ * Path of the record of a refused `start({ hook })` candidate. Only refusals
+ * are recorded: an accepted candidate's decision is its run record, which is
+ * written under the token claim lock right after the start Hook's claim.
+ */
+export function startHookRejectionPath(
+  basedir: string,
+  runId: string,
+  tag?: string
+): string {
+  return taggedPath(basedir, path.join('hooks', 'admissions'), runId, tag);
+}
+
+export const StartHookRejectionSchema = z.object({
+  runId: z.string(),
+  token: z.string(),
+  conflictingRunId: z.string(),
+});
+
+export type StartHookRejection = z.infer<typeof StartHookRejectionSchema>;
+
+export async function readStartHookRejection(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<StartHookRejection | null> {
+  try {
+    return await readJSON(
+      startHookRejectionPath(basedir, runId, tag),
+      StartHookRejectionSchema
+    );
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 /**

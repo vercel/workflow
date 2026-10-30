@@ -145,6 +145,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   const capabilities = {
     hookRetention: { active: true },
+    // `start({ hook })`: the start Hook's token claim, the run and the Hook
+    // entity are written under the claim lock; a refusal is recorded per
+    // candidate. See `admitStartHook` in storage/events-storage.ts.
+    atomicStartHook: { active: true },
     // Stored whole on the run record; no upload path, so `start()` always
     // sends the code inline.
     dynamicWorkflowCode: true,
@@ -302,6 +306,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           ...runScopedDirs,
           'hooks',
           'hooks/by-run',
+          'hooks/admissions',
           'waits',
           'streams/runs',
         ];

@@ -126,6 +126,12 @@ import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import { resolveRunStartHook } from '../start-hook-binding.js';
+import {
+  ackRefusedStartHookCandidate,
+  admitsTurboStart,
+  recordAcceptedStartHookCandidate,
+} from '../start-hook-delivery.js';
 import { computeStepLatencyTracking } from '../step-latency.js';
 import { useQuickJSVm } from '../vm-mode.js';
 import { getWaitContinuationDispatch } from '../wait-continuation.js';
@@ -534,6 +540,7 @@ export async function runSpec8Delivery(
   const turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
+    admitsTurboStart(runInput) &&
     metadata.attempt === 1 &&
     incomingStepId === undefined &&
     !replayDivergence;
@@ -1594,6 +1601,10 @@ export async function runSpec8Delivery(
               // Without the key, a run this event creates could never
               // receive sealed writes.
               encryptionPublicKey: runInput.encryptionPublicKey,
+              // The queued copy of `start({ hook })`: this
+              // write may be the one that admits or refuses
+              // the candidate.
+              startHook: runInput.startHook,
             },
           }
         : {}),
@@ -1732,6 +1743,7 @@ export async function runSpec8Delivery(
           throw setupError;
         }
         const result = await replayLoad;
+        recordAcceptedStartHookCandidate(runInput, result.run, span);
         // A single-orchestrator run reached here on a wrong routing
         // hint: hand the message to its orchestrator.
         if (
@@ -1788,6 +1800,11 @@ export async function runSpec8Delivery(
         }
         startWorkflowCompile(workflowRun);
       } catch (err) {
+        // A refused `start({ hook })` candidate's queued copy: nothing
+        // ran, ack. Narrowed to the two admission answers.
+        if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
+          return;
+        }
         // Run was concurrently completed/failed/canceled
         if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
           // EntityConflictError: run was concurrently
@@ -2544,6 +2561,14 @@ export async function runSpec8Delivery(
           // events before the terminal `awaitRunReady()` below.
           drainPendingQueue: pendingQueueDrain(world, runReadyBarrier),
           worldCapabilities: world.capabilities,
+          // `start({ hook })` runs: the body's createHook with the start
+          // token binds to the Hook the admission created. Undefined for
+          // every other run.
+          startHook: resolveRunStartHook({
+            events: eventLog.events,
+            workflowRun,
+            runInput,
+          }),
         });
       }
       await payloadPrewarm;
