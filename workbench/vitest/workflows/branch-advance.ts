@@ -178,3 +178,17 @@ export async function retryBesideSleepWorkflow(
     failOnceStep(flakyMs, markerPath),
   ]);
 }
+
+/** A race whose loser fails its first attempt after the run has ended. */
+export async function raceLoserRetriesWorkflow(
+  fastMs: number,
+  slowMs: number,
+  markerPath: string
+) {
+  'use workflow';
+  const winner = await Promise.race([
+    timedStep('fast', fastMs, markerPath),
+    retryOnceStep('slow', slowMs, markerPath),
+  ]);
+  return winner.name;
+}

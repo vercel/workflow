@@ -10,6 +10,7 @@ import {
   hookVsStepWorkflow,
   leafFanOutWorkflow,
   parallelChainsWorkflow,
+  raceLoserRetriesWorkflow,
   raceLoserThenThrowWorkflow,
   raceLoserWorkflow,
   retryBesideSleepWorkflow,
@@ -182,6 +183,54 @@ describe('parallel branches advance independently (#4457)', () => {
     },
     60_000
   );
+
+  // Pins the current behavior. With early advance on, the run ends over the
+  // loser, so its retry is never attempted (the World refuses a step start on
+  // a terminal run) and the step is left pending after the terminal event.
+  // With it off, node:vm waits for the loser to retry and complete; the
+  // QuickJS loop waits for its first attempt only, then ends the run with the
+  // step still pending.
+  for (const earlyAdvance of ['1', '0']) {
+    it.skipIf(lockstepEngine && earlyAdvance === '1')(
+      `a race loser that retries after the run ended (early advance ${earlyAdvance})`,
+      async () => {
+        process.env.WORKFLOW_INLINE_EARLY_ADVANCE = earlyAdvance;
+        const markerPath = await markerFile();
+        const run = await start(raceLoserRetriesWorkflow, [
+          FAST_MS,
+          FAST_MS * 4,
+          markerPath,
+        ]);
+        await expect(run.returnValue).resolves.toBe('fast');
+        // Past the loser's first attempt and its 100ms retryAfter.
+        await new Promise((resolve) => setTimeout(resolve, FAST_MS * 10));
+
+        const types = await eventsThroughTerminal(run.runId, 'run_completed');
+        const world = await getWorld();
+        const { data: steps } = await world.steps.list({
+          runId: run.runId,
+          resolveData: 'none',
+        });
+        const slow = steps.find((s) => s.stepName.endsWith('retryOnceStep'));
+        if (earlyAdvance === '1') {
+          expect(types.slice(types.indexOf('run_completed') + 1)).toEqual([
+            'step_retrying',
+          ]);
+          expect(slow?.status).toBe('pending');
+          expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
+        } else if (lockstepEngine) {
+          expect(types.slice(-2)).toEqual(['step_retrying', 'run_completed']);
+          expect(slow?.status).toBe('pending');
+          expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
+        } else {
+          expect(types.at(-1)).toBe('run_completed');
+          expect(slow?.status).toBe('completed');
+          expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 2 });
+        }
+      },
+      60_000
+    );
+  }
 
   it('registers a hook in one branch while the other branch is still running a step', async () => {
     const markerPath = await markerFile();
