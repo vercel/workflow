@@ -135,6 +135,12 @@ import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
 import { resumeTimingForMessage } from '../resume-latency.js';
 import { runIdCreatedAt } from '../run-id-time.js';
+import { resolveRunStartHook } from '../start-hook-binding.js';
+import {
+  ackRefusedStartHookCandidate,
+  admitsTurboStart,
+  recordAcceptedStartHookCandidate,
+} from '../start-hook-delivery.js';
 import { computeStepLatencyTracking } from '../step-latency.js';
 import { useQuickJSVm } from '../vm-mode.js';
 import { getNearDueWaitWindowSeconds } from '../wait-continuation.js';
@@ -364,19 +370,6 @@ async function runDelivery(
     completeWaits,
     recovery,
   } = delivery.message;
-  // A `start({ hook })` candidate's queued copy, which this engine cannot
-  // admit yet: its `run_started` would create the run without the start
-  // Hook, even after the World refused it. `start()` refuses the combination
-  // up front, so only a message from another SDK version reaches here.
-  // Acknowledged before anything is written or run.
-  if (runInput?.startHook) {
-    runtimeLogger.error(
-      'Dropped a start({ hook }) candidate on a single-orchestrator run: this runtime does not support start Hooks on spec 9 runs. Nothing was written or run.',
-      { workflowRunId: runId, workflowName }
-    );
-    continuation.exit = 'start-hook-unsupported';
-    return undefined;
-  }
   // Waits a `run.wakeUp()` asked this delivery to complete now, whatever
   // their `resumeAt`. Spent on the first pass that sees them.
   const wakeUpWaits = new Set(completeWaits ?? []);
@@ -652,9 +645,13 @@ async function runDelivery(
   // does a re-run of a delivery whose queue coalesced other
   // messages into it, which the World reports as one too.
   // A restart in place (see `MAX_RUN_AHEAD_RESTARTS`) is not turbo.
+  // Never for a `start({ hook })` candidate: its `run_started`
+  // may refuse it, and turbo runs inline step bodies before that
+  // write returns (see `admitsTurboStart`).
   let turbo =
     isTurboEnabled() &&
     runInput !== undefined &&
+    admitsTurboStart(runInput) &&
     metadata.attempt === 1 &&
     (metadata.deliveryCount ?? 1) === 1 &&
     !incomingStepId &&
@@ -1297,6 +1294,11 @@ async function runDelivery(
         continue;
       }
       if (turboStartFailure) {
+        // Defensive: turbo is off for start Hook candidates, so a
+        // backgrounded `run_started` never decides one.
+        if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
+          return undefined;
+        }
         if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
           runtimeLogger.info('Run already finished during setup, skipping', {
             workflowRunId: runId,
@@ -1364,6 +1366,9 @@ async function runDelivery(
               // Without the key, a run this event creates could never
               // receive sealed writes.
               encryptionPublicKey: runInput.encryptionPublicKey,
+              // The queued copy of `start({ hook })`: this write may
+              // be the one that admits or refuses the candidate.
+              startHook: runInput.startHook,
             },
           }
         : {}),
@@ -1572,6 +1577,11 @@ async function runDelivery(
           const started = await createEvent(runStartedRequest(), {
             requestId,
           });
+          recordAcceptedStartHookCandidate(
+            runInput,
+            started.run ?? { runId },
+            span
+          );
           run = started.run ?? run;
           maxEventsLimit = clampMaxEvents(started.maxEvents);
           runStartedReceivedAtMs = Date.now();
@@ -1579,6 +1589,12 @@ async function runDelivery(
             resumeTracking.setupSource = 'run_started';
           }
         } catch (err) {
+          // A refused `start({ hook })` candidate: nothing ran and
+          // it never becomes a run. Narrowed to the two admission
+          // answers; every other error keeps its handling below.
+          if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
+            return undefined;
+          }
           if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info('Run already finished during setup, skipping', {
               workflowRunId: runId,
@@ -1594,8 +1610,28 @@ async function runDelivery(
         // The log now holds the run's own start (and, after a
         // resilient start, its creation).
         await fullLoad();
-      } else if (resumeTracking) {
-        resumeTracking.setupSource = 'event_load';
+      } else {
+        // A redelivery of a candidate's first message whose
+        // `run_started` committed but whose answer was lost (a 503
+        // `in-band-outcome-unknown`, a crash): the loaded run must
+        // echo the token too before any code runs, through the same
+        // setup-failure path as a fresh start.
+        try {
+          recordAcceptedStartHookCandidate(
+            runInput,
+            run ?? { runId },
+            span,
+            'run_load'
+          );
+        } catch (err) {
+          if (!(await recordWorkflowSetupFailure(err))) {
+            throw err;
+          }
+          return undefined;
+        }
+        if (resumeTracking) {
+          resumeTracking.setupSource = 'event_load';
+        }
       }
     }
     assert(run, 'Workflow run must be loaded before replay');
@@ -2915,6 +2951,14 @@ async function runDelivery(
               drainPendingQueue: pendingQueueDrain(world, (data, params) =>
                 writeInBand(data, params)
               ),
+              // `start({ hook })` runs: the body's createHook with the start
+              // token binds to the Hook the admission created. Undefined for
+              // every other run.
+              startHook: resolveRunStartHook({
+                events: log.events,
+                workflowRun,
+                runInput,
+              }),
             });
           }
           await payloadPrewarm;

@@ -91,12 +91,18 @@ export function ackRefusedStartHookCandidate(
 export function recordAcceptedStartHookCandidate(
   runInput: RunInput | undefined,
   run: Pick<WorkflowRun, 'runId'> & { startHook?: { token?: string } },
-  span?: Span
+  span?: Span,
+  /**
+   * `run_load` when the run was read rather than returned by this delivery's
+   * own `run_started` (a redelivery after that write committed), so the span
+   * does not count it as another admission.
+   */
+  trigger: StartHookTrigger = 'run_started'
 ): void {
   if (runInput?.startHook === undefined) return;
   if (run.startHook?.token !== runInput.startHook.token) {
     span?.setAttributes({
-      ...queuedCopyAttributes('failed'),
+      ...queuedCopyAttributes('failed', trigger),
       ...Attribute.WorkflowStartHookErrorCode(
         RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
       ),
@@ -106,13 +112,18 @@ export function recordAcceptedStartHookCandidate(
       { code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR }
     );
   }
-  span?.setAttributes(queuedCopyAttributes('accepted'));
+  span?.setAttributes(queuedCopyAttributes('accepted', trigger));
 }
 
-function queuedCopyAttributes(outcome: 'accepted' | 'rejected' | 'failed') {
+type StartHookTrigger = 'run_started' | 'run_load';
+
+function queuedCopyAttributes(
+  outcome: 'accepted' | 'rejected' | 'failed',
+  trigger: StartHookTrigger = 'run_started'
+) {
   return {
     ...Attribute.WorkflowStartHook(true),
     ...Attribute.WorkflowStartHookOutcome(outcome),
-    ...Attribute.WorkflowStartHookTrigger('run_started'),
+    ...Attribute.WorkflowStartHookTrigger(trigger),
   };
 }

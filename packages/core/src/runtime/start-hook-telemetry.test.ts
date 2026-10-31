@@ -56,6 +56,7 @@ function admittingWorld(overrides: Record<string, unknown> = {}) {
     specVersion: SPEC_VERSION_CURRENT,
     getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
     capabilities: {
+      inBandFence: true,
       atomicStartHook: { active: true },
       hookRetention: { active: true },
     },
@@ -158,7 +159,7 @@ describe('the workflow.start span of start({ hook })', () => {
   });
 
   it('records an outcome on a capability throw before anything is written', async () => {
-    admittingWorld({ capabilities: {} });
+    admittingWorld({ capabilities: { inBandFence: true } });
     await rejection(start(workflow, [], { hook: { token: TOKEN } }));
     expect(spanAttributes).toMatchObject({
       'workflow.start_hook.outcome': 'failed',
@@ -283,6 +284,32 @@ describe('the invocation span of a queued copy', () => {
       'workflow.start_hook': true,
       'workflow.start_hook.outcome': 'accepted',
       'workflow.start_hook.trigger': 'run_started',
+    });
+  });
+
+  it('tells a redelivery that read the run apart from the write that admitted it', () => {
+    recordAcceptedStartHookCandidate(
+      runInput,
+      { runId: 'wrun_x', startHook: { token: runInput.startHook!.token } },
+      fakeSpan(),
+      'run_load'
+    );
+    expect(spanAttributes).toEqual({
+      'workflow.start_hook': true,
+      'workflow.start_hook.outcome': 'accepted',
+      'workflow.start_hook.trigger': 'run_load',
+    });
+    expect(() =>
+      recordAcceptedStartHookCandidate(
+        runInput,
+        { runId: 'wrun_x' },
+        fakeSpan(),
+        'run_load'
+      )
+    ).toThrow();
+    expect(spanAttributes).toMatchObject({
+      'workflow.start_hook.outcome': 'failed',
+      'workflow.start_hook.trigger': 'run_load',
     });
   });
 
