@@ -142,7 +142,7 @@ async def sleepingWorkflow(durationMs: int = 10_000) -> dict:
 @app.workflow
 async def parallelSleepWorkflow() -> dict:
     startTime = time_ns() // 1_000_000
-    await asyncio.gather(*(sleep("1s") for _ in range(10)))
+    await asyncio.gather(*(sleep("6s") for _ in range(10)))
     endTime = time_ns() // 1_000_000
     return {"startTime": startTime, "endTime": endTime}
 
