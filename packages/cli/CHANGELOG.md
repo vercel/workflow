@@ -1,5 +1,15 @@
 # @workflow/cli
 
+## 4.3.20
+
+### Patch Changes
+
+- Updated dependencies [[`dbfd1ba`](https://github.com/vercel/workflow/commit/dbfd1ba90e97bd444a95996e589d47e3552f338b), [`ceaaa5c`](https://github.com/vercel/workflow/commit/ceaaa5c5666b2da198fcc5f020feeae423f712ae)]:
+  - @workflow/web@4.1.32
+  - @workflow/world-local@4.4.5
+  - @workflow/core@4.8.16
+  - @workflow/builders@4.1.21
+
 ## 4.3.19
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.32
+
+### Patch Changes
+
+- [#5079](https://github.com/vercel/workflow/pull/5079) [`dbfd1ba`](https://github.com/vercel/workflow/commit/dbfd1ba90e97bd444a95996e589d47e3552f338b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Recognize unframed serialized abort packets in the Streams viewer so encrypted packets can be decrypted.
+
 ## 4.1.31
 
 ## 4.1.30

@@ -1,5 +1,18 @@
 # @workflow/world-postgres
 
+## 4.4.0
+
+### Minor Changes
+
+- [#4759](https://github.com/vercel/workflow/pull/4759) [`3ff458e`](https://github.com/vercel/workflow/commit/3ff458ef6ffa8e75237743ea096451fb56370add) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `jobLockStaleSeconds` (`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`, default `0`, off). When set, a running delivery renews its Graphile job lock, and a job whose process died is redelivered by another process once its lock has gone unrenewed for that many seconds, instead of after Graphile Worker's fixed 4 hours or the next restart. `30` is a good value when more than one process shares the database. It's off by default because of rolling upgrades: processes on an earlier version don't renew their locks, so turn it on once every process that shares the database runs this version.
+
+### Patch Changes
+
+- [#5136](https://github.com/vercel/workflow/pull/5136) [`5c9b65d`](https://github.com/vercel/workflow/commit/5c9b65d28ccedd955b1ce299f0c2e05c62e8d91d) Thanks [@alangenfeld](https://github.com/alangenfeld)! - A `run_started` that races the run ending no longer moves the run back to `running`; it's refused with `RunExpiredError`.
+
+- Updated dependencies [[`ceaaa5c`](https://github.com/vercel/workflow/commit/ceaaa5c5666b2da198fcc5f020feeae423f712ae)]:
+  - @workflow/world-local@4.4.5
+
 ## 4.3.11
 
 ### Patch Changes
