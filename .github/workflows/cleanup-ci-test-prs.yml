@@ -1,0 +1,119 @@
+name: Cleanup CI Test PRs
+
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  cleanup:
+    name: Cleanup CI Test PR
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Check if this was a CI test branch
+        id: check-ci-branch
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const headBranch = context.payload.workflow_run.head_branch;
+            
+            // Check if this is a CI test branch
+            if (!headBranch.startsWith('ci-test/')) {
+              console.log('Not a CI test branch, skipping cleanup');
+              return { skip: true };
+            }
+            
+            // Find the PR associated with this branch
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${headBranch}`,
+              state: 'open'
+            });
+            
+            if (prs.data.length === 0) {
+              console.log('No open PR found for this branch');
+              return { skip: true };
+            }
+            
+            const pr = prs.data[0];
+            
+            return {
+              skip: false,
+              pr_number: pr.number,
+              branch_name: headBranch,
+              conclusion: context.payload.workflow_run.conclusion
+            };
+      
+      - name: Comment on CI test PR and close
+        if: fromJSON(steps.check-ci-branch.outputs.result).skip != true
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const result = ${{ steps.check-ci-branch.outputs.result }};
+            const prNumber = result.pr_number;
+            const branchName = result.branch_name;
+            const conclusion = result.conclusion;
+            
+            const statusEmoji = conclusion === 'success' ? '✅' : '❌';
+            const statusText = conclusion === 'success' ? 'passed' : 'failed';
+            
+            // Comment on the CI test PR
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `${statusEmoji} CI tests have ${statusText}.
+
+This automated PR is now being closed and the branch will be deleted.`
+            });
+            
+            // Close the PR
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              state: 'closed'
+            });
+            
+            // Delete the branch
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`
+              });
+              console.log(`Deleted branch: ${branchName}`);
+            } catch (error) {
+              console.error('Error deleting branch:', error);
+            }
+            
+            // Extract original PR number from branch name (ci-test/{number}-{timestamp})
+            const match = branchName.match(/ci-test\/(\d+)-/);
+            if (match) {
+              const originalPRNumber = match[1];
+              
+              // Comment on the original PR with results
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: parseInt(originalPRNumber),
+                  body: `${statusEmoji} CI tests have completed with status: **${statusText}**
+
+View the full test run: ${context.payload.workflow_run.html_url}`
+                });
+              } catch (error) {
+                console.error('Error commenting on original PR:', error);
+              }
+            }
+
