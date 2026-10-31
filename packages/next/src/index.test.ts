@@ -125,6 +125,15 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('forwards the after-bundle hook to the workflow builder', async () => {
+    const onAfterBundle = vi.fn();
+    const config = withWorkflow({}, { workflows: { onAfterBundle } });
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs[0].onAfterBundle).toBe(onAfterBundle);
+  });
+
   it.each([
     'phase-production-build',
     'phase-development-server',

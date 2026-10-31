@@ -46,3 +46,11 @@ export default defineNuxtConfig({
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `typescriptPlugin` | `boolean` | `true` | Adds the `workflow` TypeScript plugin to the generated `tsconfig.json` for IDE IntelliSense. Set to `false` to disable it. |
+| `onAfterBundle` | `WorkflowAfterBundleHook` | — | Optional callback invoked after the workflow bundles and serialized manifest are written. |
+
+`onAfterBundle` receives absolute paths for the `steps`, `workflows`, and
+`manifest` artifacts. It runs before later Nuxt/Nitro outputs are written.
+Production builds reject hook failures; development updates use the normal
+queued-build logging behavior. Keep the callback fast and make external side
+effects idempotent. This is a programmatic callback and is not exposed as a
+command-line option.

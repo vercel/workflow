@@ -104,6 +104,14 @@ export default withWorkflow(nextConfig, {
 | --- | --- | --- | --- |
 | `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
 | `workflows.sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. See [Source maps](#source-maps) below. |
+| `workflows.onAfterBundle` | `WorkflowAfterBundleHook` | — | Optional callback invoked after the workflow bundles and serialized manifest are written. |
+
+`workflows.onAfterBundle` is a build-process callback for programmatic
+integrations. It receives absolute paths for the `steps`, `workflows`, and
+`manifest` artifacts. It runs at the workflow bundle boundary, before later
+Next-specific outputs such as `config.json` are written. Production build
+failures reject the build; the Next development watcher logs the failure and
+continues. Keep the callback fast and make external side effects idempotent.
 
 ### Source maps
 
