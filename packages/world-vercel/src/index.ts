@@ -25,7 +25,7 @@ export {
   MAX_EXECUTION_CONTEXT_BYTES,
   validateRunExecutionContext,
 } from './execution-context.js';
-export { createQueue } from './queue.js';
+export { createQueue, vercelTriggerConsumerGroup } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';
@@ -99,6 +99,10 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // `queue()` passes `experimental_hold` to Vercel Queues' send-and-hold.
+      // Support, not configuration: a queue service with it switched off
+      // answers `notHeld: unsupported` and delivers the message as usual.
+      experimental_queueHold: true,
       // The backend fences in-band writes on every sealed-log run (spec >= 7,
       // the backend's event sequencer): a stale one is refused with 412
       // `in-band-superseded`, carrying the run's `seq` and `seqInBand`

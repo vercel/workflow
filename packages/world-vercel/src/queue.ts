@@ -1,5 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { Transport } from '@vercel/queue';
+import type {
+  ExperimentalHoldOptions,
+  MessageHandler,
+  RetryHandler,
+  Transport,
+} from '@vercel/queue';
 import {
   ConcurrencyCoalescedPendingError,
   ConsumerDiscoveryError,
@@ -13,6 +18,7 @@ import {
   parseQueueName,
   type Queue,
   type QueueBatchResult,
+  type QueueHandler,
   type QueueOptions,
   type QueuePayload,
   QueuePayloadSchema,
@@ -829,6 +835,98 @@ function concurrencyKeyOf(
   return orchestratorRunIdOf(payload);
 }
 
+/**
+ * The consumer group a held message is claimed for when the send names none
+ * (`QueueHoldOptions.consumerGroup`): the one the Workflow SDK's generated
+ * queue triggers subscribe with (`consumer: 'default'`), so a hold that
+ * lapses is delivered to the route that would have received the message
+ * anyway.
+ */
+export const HOLD_CONSUMER_GROUP = 'default';
+
+/** Vercel Queues' pattern for a consumer group name. */
+const CONSUMER_GROUP_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The consumer group Vercel subscribes a `queue/v2beta` trigger with when the
+ * Function is configured in `vercel.json` / `vercel.ts` (`functions[pattern]
+ * .experimentalTriggers`). There the trigger takes no `consumer`: the build
+ * names the group after the function's pattern, prefixed by the service name
+ * in a multi-service project, escaping every character outside
+ * `[A-Za-z0-9-]` (`_` → `__`, `/` → `_S`, `.` → `_D`, anything else → `_`
+ * and its char code in hex). For example `app/api/libfx/route.ts` →
+ * `app_Sapi_Slibfx_Sroute_Dts`.
+ *
+ * Pass it as `experimental_hold.consumerGroup` for a message such a Function
+ * consumes. Mirrors `@vercel/build-utils`; a test pins it.
+ */
+export function vercelTriggerConsumerGroup(
+  functionPattern: string,
+  serviceName?: string
+): string {
+  const path = serviceName
+    ? `${serviceName}~${functionPattern}`
+    : functionPattern;
+  let result = '';
+  for (const char of path) {
+    if (char === '_') result += '__';
+    else if (char === '/') result += '_S';
+    else if (char === '.') result += '_D';
+    else if (/[A-Za-z0-9-]/.test(char)) result += char;
+    else {
+      result += `_${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+  }
+  return result;
+}
+
+/** Vercel Queues' bounds on a hold's lease. */
+const MIN_HOLD_VISIBILITY_SECONDS = 30;
+const MAX_HOLD_VISIBILITY_SECONDS = 3600;
+
+/**
+ * The `experimental_hold` a send carries for `QueueOptions.experimental_hold`,
+ * or `undefined` without one. The lease is clamped to what Vercel Queues
+ * accepts and to the message's retention, so a caller's value never turns
+ * into a rejected send. Exported for unit tests.
+ *
+ * @throws {TypeError} With `delaySeconds`: a held message is delivered to its
+ *   sender now, so there is nothing to delay.
+ */
+export function resolveHoldOptions(
+  opts: QueueOptions | undefined,
+  lifetime: { delaySeconds?: number; retentionSeconds?: number }
+): ExperimentalHoldOptions | undefined {
+  const hold = opts?.experimental_hold;
+  if (!hold) return undefined;
+  if (lifetime.delaySeconds !== undefined) {
+    throw new TypeError(
+      'experimental_hold cannot be combined with delaySeconds: a held message runs in the process that sent it, now'
+    );
+  }
+  const consumerGroup = hold.consumerGroup ?? HOLD_CONSUMER_GROUP;
+  if (!CONSUMER_GROUP_PATTERN.test(consumerGroup)) {
+    throw new TypeError(
+      `experimental_hold.consumerGroup must match ${CONSUMER_GROUP_PATTERN}: "${consumerGroup}"`
+    );
+  }
+  const requested = hold.visibilityTimeoutSeconds;
+  if (requested === undefined || !Number.isFinite(requested)) {
+    return { consumerGroup };
+  }
+  const ceiling = Math.min(
+    MAX_HOLD_VISIBILITY_SECONDS,
+    lifetime.retentionSeconds ?? DEFAULT_MESSAGE_RETENTION_SECONDS
+  );
+  return {
+    consumerGroup,
+    visibilityTimeoutSeconds: Math.min(
+      Math.max(Math.ceil(requested), MIN_HOLD_VISIBILITY_SECONDS),
+      ceiling
+    ),
+  };
+}
+
 type QueueFunction = (
   queueName: ValidQueueName,
   payload: QueuePayload,
@@ -965,18 +1063,38 @@ export function createQueue(config?: APIConfig): Queue {
   ) => {
     const prepared = prepareSend(queueName, payload, opts);
     const client = clientFor(prepared);
+    const hold = resolveHoldOptions(opts, prepared.sendOptions);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
     // returns a fresh message ID and only one of the messages is delivered, so
     // there is no conflict for the caller to handle here.
-    const { messageId } = await client.send(
-      prepared.topic,
-      prepared.wrapper,
-      prepared.sendOptions
-    );
+    const sent = await client.send(prepared.topic, prepared.wrapper, {
+      ...prepared.sendOptions,
+      ...(hold && { experimental_hold: hold }),
+    });
+    const { messageId, experimental_held, experimental_notHeld } = sent;
     return {
       // messageId may be null when the queue fails over to a different region:
       // the event is ingested but the responding region cannot return an ID.
       messageId: messageId ? MessageId.parse(messageId) : null,
+      ...(experimental_held && {
+        experimental_held: {
+          messageId: MessageId.parse(experimental_held.messageId),
+          leaseExpiresAt: experimental_held.leaseExpiresAt,
+          // The held message goes through the same callback and retry
+          // directives as a pushed delivery of it (`createQueueHandler`), so
+          // a `{ timeoutSeconds }` result, a handoff and a rejection mean
+          // what they mean there.
+          consume: (handler) =>
+            experimental_held.consume(
+              deliveryCallback(handler),
+              deliveryOptions
+            ),
+          release: (delaySeconds) => experimental_held.release(delaySeconds),
+        },
+      }),
+      ...(experimental_notHeld && {
+        experimental_notHeld: { reason: experimental_notHeld.reason },
+      }),
     };
   };
 
@@ -1075,6 +1193,218 @@ export function createQueue(config?: APIConfig): Queue {
     return results;
   };
 
+  /**
+   * The `@vercel/queue` callback that runs `handler` on one delivery: a
+   * pushed one (`createQueueHandler`) or a message the queue held for its
+   * sender (`experimental_held.consume`), which runs the same way.
+   */
+  const deliveryCallback =
+    (handler: QueueHandler): MessageHandler<unknown> =>
+    async (message, metadata) => {
+      if (!message || !metadata) {
+        return;
+      }
+
+      const invocation = invocationStorage.getStore();
+      const requestId = invocation?.requestId;
+      // The CborTransport handles CBOR decoding inside deserialize(),
+      // so message is already a plain object with Uint8Array values intact.
+      const { payload, queueName, deploymentId } =
+        MessageWrapper.parse(message);
+
+      // Earliest point in an invocation where the run id is known, so the WS
+      // handshake happens here instead of on the runtime's first event write
+      // (which would record a `step_started` later than the work it
+      // timestamps). This path also absorbs `ws`'s module init.
+      const wsEvents = wsEventsChannelForInvocation(
+        getRunIdFromPayload(payload),
+        getWorkflowNameFromQueueName(queueName),
+        config
+      );
+      const collectStepIds = !(
+        'stepId' in payload && typeof payload.stepId === 'string'
+      );
+      wsEvents.open();
+
+      try {
+        const runHandler = () =>
+          handler(payload, {
+            queueName,
+            // Stable across redeliveries of one message, including the
+            // ones a `{ timeoutSeconds }` result asks for below.
+            messageId: MessageId.parse(metadata.messageId),
+            // A handed-off delivery is not an attempt (see
+            // `RedeliverSameMessage`), and neither is a coalesced re-run.
+            attempt: Math.max(
+              1,
+              metadata.deliveryCount - (metadata.experimental_handoffCount ?? 0)
+            ),
+            // A coalesced re-run reports the next count: it must read the
+            // log, as a redelivery does (`Queue.createQueueHandler`).
+            deliveryCount:
+              metadata.deliveryCount +
+              (metadata.experimental_coalesced?.rerun ?? 0),
+            createdAt: metadata.createdAt,
+            requestId,
+            ...(invocation && { invocationStartedAt: invocation.startedAt }),
+          });
+        const result = await (invocation
+          ? invocationStorage.run({ ...invocation, collectStepIds }, runHandler)
+          : runHandler());
+
+        /**
+         * Continues a spec 9 orchestrator message close to its expiry, or
+         * to its handoff bound (`orchestratorMessageRotation`), on a new
+         * message, and returns `true` once it was sent; `false` when the
+         * message is not due or is not an orchestrator message. A step
+         * message keeps its own (its idempotency key would drop a copy).
+         *
+         * The new message is a continuation (spec stamp, run context, so
+         * the same concurrency key, and what the message is a wake for),
+         * never a copy: the run's start message carries `runInput`, which
+         * on a first delivery selects the runtime's fresh-start path. It is
+         * delayed past this delivery's acknowledgment. Callers rotate only
+         * once the runtime sent every message its committed writes owe, so
+         * this message's id owes nothing more.
+         */
+        const rotateIfDue = async (): Promise<boolean> => {
+          if ('invoke' in payload && payload.invoke === true) return false;
+          const rotation = orchestratorMessageRotation(metadata);
+          const continuation =
+            rotation === undefined
+              ? undefined
+              : singleOrchestratorContinuationPayload(payload);
+          if (rotation === undefined || continuation === undefined) {
+            return false;
+          }
+          await queue(queueName, continuation, {
+            deploymentId,
+            delaySeconds: ORCHESTRATOR_ROTATION_DELAY_SECONDS,
+            specVersion: continuation.runSpecVersion,
+          });
+          console.info(
+            `[workflow] Continuing run "${getRunIdFromPayload(payload)}" on a new message instead of handing off message "${metadata.messageId}" (${rotation}; handoffs: ${metadata.experimental_handoffCount ?? 0})`
+          );
+          return true;
+        };
+
+        // The last coalesced re-run of a delivery that acknowledges. If
+        // more messages were coalesced into it meanwhile, `@vercel/queue`
+        // refuses the acknowledgment and hands the message off itself
+        // (`ConcurrencyCoalescedPendingError` in `retry` below), which
+        // keeps the message's expiry and handoff count and cannot send.
+        // So a message due for rotation is continued on a new one here,
+        // before that acknowledgment. If the acknowledgment then succeeds,
+        // the continuation is one extra wake, which replays from the log.
+        if (
+          isLastCoalescedRerun(metadata) &&
+          !(
+            typeof result === 'object' &&
+            result !== null &&
+            'timeoutSeconds' in result &&
+            typeof result.timeoutSeconds === 'number'
+          ) &&
+          (await rotateIfDue())
+        ) {
+          return;
+        }
+
+        if (
+          !('invoke' in payload && payload.invoke === true) &&
+          typeof result === 'object' &&
+          result !== null &&
+          'timeoutSeconds' in result &&
+          typeof result.timeoutSeconds === 'number'
+        ) {
+          if (!isSingleOrchestratorMessage(payload)) {
+            // A spec-8 run continues on a NEW message. When timeoutSeconds
+            // is 0, skip delaySeconds entirely for immediate re-enqueue.
+            // Otherwise, clamp to one continuation hop (23h by default).
+            // Longer sleeps chain delayed messages until the full duration
+            // has elapsed. A new message starts with a fresh retention and
+            // delivery count, so a long sleep or retry chain is bounded by
+            // neither VQS's 900s redelivery delay nor the delivery cap.
+            const delaySeconds =
+              result.timeoutSeconds > 0
+                ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+                : undefined;
+
+            // Send new message BEFORE acknowledging current message.
+            // This ensures crash safety: if process dies after send but before ack,
+            // we may get a duplicate invocation but won't lose the scheduled wakeup.
+            await queue(queueName, payload, { deploymentId, delaySeconds });
+            return;
+          }
+          // A single-orchestrator run: leave this message unacknowledged
+          // and have VQS deliver it again after the delay (a step retried
+          // in place, an orchestrator delivery deferred for load). The same
+          // message keeps its id, so a redelivery of the delivery that
+          // created a step still recognizes itself. `0` (or less) is a
+          // handoff. A non-finite delay is no handoff: a handoff is not an
+          // attempt, so a handler that kept answering one would be
+          // redelivered at once forever. It is the longest redelivery
+          // instead, which the delivery cap counts.
+          const afterSeconds = Number.isFinite(result.timeoutSeconds)
+            ? Math.max(0, Math.ceil(result.timeoutSeconds))
+            : MAX_REDELIVERY_DELAY_SECONDS;
+          // A handoff of a message close to its expiry, or to exhausting
+          // its handoffs, continues on a new message instead, and this one
+          // is acknowledged.
+          if (afterSeconds === 0 && (await rotateIfDue())) return;
+          throw new RedeliverSameMessage(afterSeconds);
+        }
+      } finally {
+        // The only point in the SDK that knows an invocation has no writes
+        // left. In a `finally` so a failed handler closes too, since the
+        // retry arrives as a new invocation and opens its own channel.
+        await wsEvents.close();
+      }
+    };
+
+  /** Retry directives for {@link deliveryCallback}. */
+  const deliveryOptions: {
+    experimental_maxCoalescedReruns: number;
+    retry: RetryHandler;
+  } = {
+    // Without an explicit retry directive, @vercel/queue leaves failed
+    // handler messages invisible until the default 300s visibility timeout
+    // expires. Start retrying after 1s, then back off by delivery count
+    // with jitter so an outage or poison message cannot hot-loop or
+    // redrive in lockstep. Workflow handlers are event-sourced and must
+    // remain idempotent because queue retries can happen close together.
+    experimental_maxCoalescedReruns: MAX_COALESCED_RERUNS,
+    retry: (error, { messageId, deliveryCount }) => {
+      if (error instanceof RedeliverSameMessage) {
+        // A requested redelivery, not a failure: no backoff, no log line.
+        return error.handoff
+          ? { afterSeconds: 0, experimental_handoff: true }
+          : { afterSeconds: error.afterSeconds };
+      }
+      if (error instanceof ConcurrencyCoalescedPendingError) {
+        // The handler finished, but messages kept being coalesced into
+        // the delivery through every re-run: a busy run, not a failing
+        // one. Hand the message off: its next delivery replays from the
+        // log, which holds what those messages were sent for, and it is
+        // not counted as an attempt.
+        // A message due for rotation was already continued on a new one
+        // by its last re-run (see `isLastCoalescedRerun`).
+        console.debug(
+          `[workflow] Handing off message "${messageId}" with coalesced messages still pending after ${MAX_COALESCED_RERUNS} re-runs (delivery ${deliveryCount})`
+        );
+        return { afterSeconds: 0, experimental_handoff: true };
+      }
+      const afterSeconds = getHandlerErrorRetryAfterSeconds(
+        error,
+        deliveryCount
+      );
+      console.error(
+        `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
+        error
+      );
+      return { afterSeconds };
+    },
+  };
+
   const createQueueHandler: Queue['createQueueHandler'] = (
     _prefix,
     handler
@@ -1082,209 +1412,8 @@ export function createQueue(config?: APIConfig): Queue {
     const client = new QueueClient(clientOptions);
     observeHandoffOutcomes(client);
     const vqsHandler = client.handleCallback(
-      async (message: unknown, metadata) => {
-        if (!message || !metadata) {
-          return;
-        }
-
-        const invocation = invocationStorage.getStore();
-        const requestId = invocation?.requestId;
-        // The CborTransport handles CBOR decoding inside deserialize(),
-        // so message is already a plain object with Uint8Array values intact.
-        const { payload, queueName, deploymentId } =
-          MessageWrapper.parse(message);
-
-        // Earliest point in an invocation where the run id is known, so the WS
-        // handshake happens here instead of on the runtime's first event write
-        // (which would record a `step_started` later than the work it
-        // timestamps). This path also absorbs `ws`'s module init.
-        const wsEvents = wsEventsChannelForInvocation(
-          getRunIdFromPayload(payload),
-          getWorkflowNameFromQueueName(queueName),
-          config
-        );
-        const collectStepIds = !(
-          'stepId' in payload && typeof payload.stepId === 'string'
-        );
-        wsEvents.open();
-
-        try {
-          const runHandler = () =>
-            handler(payload, {
-              queueName,
-              // Stable across redeliveries of one message, including the
-              // ones a `{ timeoutSeconds }` result asks for below.
-              messageId: MessageId.parse(metadata.messageId),
-              // A handed-off delivery is not an attempt (see
-              // `RedeliverSameMessage`), and neither is a coalesced re-run.
-              attempt: Math.max(
-                1,
-                metadata.deliveryCount -
-                  (metadata.experimental_handoffCount ?? 0)
-              ),
-              // A coalesced re-run reports the next count: it must read the
-              // log, as a redelivery does (`Queue.createQueueHandler`).
-              deliveryCount:
-                metadata.deliveryCount +
-                (metadata.experimental_coalesced?.rerun ?? 0),
-              createdAt: metadata.createdAt,
-              requestId,
-              ...(invocation && { invocationStartedAt: invocation.startedAt }),
-            });
-          const result = await (invocation
-            ? invocationStorage.run(
-                { ...invocation, collectStepIds },
-                runHandler
-              )
-            : runHandler());
-
-          /**
-           * Continues a spec 9 orchestrator message close to its expiry, or
-           * to its handoff bound (`orchestratorMessageRotation`), on a new
-           * message, and returns `true` once it was sent; `false` when the
-           * message is not due or is not an orchestrator message. A step
-           * message keeps its own (its idempotency key would drop a copy).
-           *
-           * The new message is a continuation (spec stamp, run context, so
-           * the same concurrency key, and what the message is a wake for),
-           * never a copy: the run's start message carries `runInput`, which
-           * on a first delivery selects the runtime's fresh-start path. It is
-           * delayed past this delivery's acknowledgment. Callers rotate only
-           * once the runtime sent every message its committed writes owe, so
-           * this message's id owes nothing more.
-           */
-          const rotateIfDue = async (): Promise<boolean> => {
-            if ('invoke' in payload && payload.invoke === true) return false;
-            const rotation = orchestratorMessageRotation(metadata);
-            const continuation =
-              rotation === undefined
-                ? undefined
-                : singleOrchestratorContinuationPayload(payload);
-            if (rotation === undefined || continuation === undefined) {
-              return false;
-            }
-            await queue(queueName, continuation, {
-              deploymentId,
-              delaySeconds: ORCHESTRATOR_ROTATION_DELAY_SECONDS,
-              specVersion: continuation.runSpecVersion,
-            });
-            console.info(
-              `[workflow] Continuing run "${getRunIdFromPayload(payload)}" on a new message instead of handing off message "${metadata.messageId}" (${rotation}; handoffs: ${metadata.experimental_handoffCount ?? 0})`
-            );
-            return true;
-          };
-
-          // The last coalesced re-run of a delivery that acknowledges. If
-          // more messages were coalesced into it meanwhile, `@vercel/queue`
-          // refuses the acknowledgment and hands the message off itself
-          // (`ConcurrencyCoalescedPendingError` in `retry` below), which
-          // keeps the message's expiry and handoff count and cannot send.
-          // So a message due for rotation is continued on a new one here,
-          // before that acknowledgment. If the acknowledgment then succeeds,
-          // the continuation is one extra wake, which replays from the log.
-          if (
-            isLastCoalescedRerun(metadata) &&
-            !(
-              typeof result === 'object' &&
-              result !== null &&
-              'timeoutSeconds' in result &&
-              typeof result.timeoutSeconds === 'number'
-            ) &&
-            (await rotateIfDue())
-          ) {
-            return;
-          }
-
-          if (
-            !('invoke' in payload && payload.invoke === true) &&
-            typeof result === 'object' &&
-            result !== null &&
-            'timeoutSeconds' in result &&
-            typeof result.timeoutSeconds === 'number'
-          ) {
-            if (!isSingleOrchestratorMessage(payload)) {
-              // A spec-8 run continues on a NEW message. When timeoutSeconds
-              // is 0, skip delaySeconds entirely for immediate re-enqueue.
-              // Otherwise, clamp to one continuation hop (23h by default).
-              // Longer sleeps chain delayed messages until the full duration
-              // has elapsed. A new message starts with a fresh retention and
-              // delivery count, so a long sleep or retry chain is bounded by
-              // neither VQS's 900s redelivery delay nor the delivery cap.
-              const delaySeconds =
-                result.timeoutSeconds > 0
-                  ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
-                  : undefined;
-
-              // Send new message BEFORE acknowledging current message.
-              // This ensures crash safety: if process dies after send but before ack,
-              // we may get a duplicate invocation but won't lose the scheduled wakeup.
-              await queue(queueName, payload, { deploymentId, delaySeconds });
-              return;
-            }
-            // A single-orchestrator run: leave this message unacknowledged
-            // and have VQS deliver it again after the delay (a step retried
-            // in place, an orchestrator delivery deferred for load). The same
-            // message keeps its id, so a redelivery of the delivery that
-            // created a step still recognizes itself. `0` (or less) is a
-            // handoff. A non-finite delay is no handoff: a handoff is not an
-            // attempt, so a handler that kept answering one would be
-            // redelivered at once forever. It is the longest redelivery
-            // instead, which the delivery cap counts.
-            const afterSeconds = Number.isFinite(result.timeoutSeconds)
-              ? Math.max(0, Math.ceil(result.timeoutSeconds))
-              : MAX_REDELIVERY_DELAY_SECONDS;
-            // A handoff of a message close to its expiry, or to exhausting
-            // its handoffs, continues on a new message instead, and this one
-            // is acknowledged.
-            if (afterSeconds === 0 && (await rotateIfDue())) return;
-            throw new RedeliverSameMessage(afterSeconds);
-          }
-        } finally {
-          // The only point in the SDK that knows an invocation has no writes
-          // left. In a `finally` so a failed handler closes too, since the
-          // retry arrives as a new invocation and opens its own channel.
-          await wsEvents.close();
-        }
-      },
-      {
-        // Without an explicit retry directive, @vercel/queue leaves failed
-        // handler messages invisible until the default 300s visibility timeout
-        // expires. Start retrying after 1s, then back off by delivery count
-        // with jitter so an outage or poison message cannot hot-loop or
-        // redrive in lockstep. Workflow handlers are event-sourced and must
-        // remain idempotent because queue retries can happen close together.
-        experimental_maxCoalescedReruns: MAX_COALESCED_RERUNS,
-        retry: (error, { messageId, deliveryCount }) => {
-          if (error instanceof RedeliverSameMessage) {
-            // A requested redelivery, not a failure: no backoff, no log line.
-            return error.handoff
-              ? { afterSeconds: 0, experimental_handoff: true }
-              : { afterSeconds: error.afterSeconds };
-          }
-          if (error instanceof ConcurrencyCoalescedPendingError) {
-            // The handler finished, but messages kept being coalesced into
-            // the delivery through every re-run: a busy run, not a failing
-            // one. Hand the message off: its next delivery replays from the
-            // log, which holds what those messages were sent for, and it is
-            // not counted as an attempt.
-            // A message due for rotation was already continued on a new one
-            // by its last re-run (see `isLastCoalescedRerun`).
-            console.debug(
-              `[workflow] Handing off message "${messageId}" with coalesced messages still pending after ${MAX_COALESCED_RERUNS} re-runs (delivery ${deliveryCount})`
-            );
-            return { afterSeconds: 0, experimental_handoff: true };
-          }
-          const afterSeconds = getHandlerErrorRetryAfterSeconds(
-            error,
-            deliveryCount
-          );
-          console.error(
-            `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
-            error
-          );
-          return { afterSeconds };
-        },
-      }
+      deliveryCallback(handler),
+      deliveryOptions
     );
 
     return async (req: Request) => {
