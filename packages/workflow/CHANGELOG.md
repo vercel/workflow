@@ -1,5 +1,21 @@
 # workflow
 
+## 4.8.16
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@4.3.20
+  - @workflow/nitro@4.1.22
+  - @workflow/core@4.8.16
+  - @workflow/nuxt@4.0.32
+  - @workflow/next@4.1.20
+  - @workflow/typescript-plugin@4.0.3
+  - @workflow/astro@4.0.31
+  - @workflow/nest@4.0.32
+  - @workflow/rollup@4.0.31
+  - @workflow/sveltekit@4.0.31
+
 ## 4.8.15
 
 ### Patch Changes
