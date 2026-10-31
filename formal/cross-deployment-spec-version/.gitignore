@@ -1,0 +1,7 @@
+# TLC state directories and caches
+**/states/
+**/__pycache__/
+# Lean build output
+ResolveLean/build/
+# per-run logs of the root run.sh (results/verdicts.txt is kept)
+results/*.log
