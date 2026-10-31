@@ -836,12 +836,49 @@ function concurrencyKeyOf(
 }
 
 /**
- * The consumer group a held message is claimed for: the one every Workflow
- * SDK queue trigger subscribes with (`consumer: 'default'`, also what
- * durable-harness and libfx generate), so a hold that lapses is delivered to
- * the route that would have received the message anyway.
+ * The consumer group a held message is claimed for when the send names none
+ * (`QueueHoldOptions.consumerGroup`): the one the Workflow SDK's generated
+ * queue triggers subscribe with (`consumer: 'default'`), so a hold that
+ * lapses is delivered to the route that would have received the message
+ * anyway.
  */
 export const HOLD_CONSUMER_GROUP = 'default';
+
+/** Vercel Queues' pattern for a consumer group name. */
+const CONSUMER_GROUP_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * The consumer group Vercel subscribes a `queue/v2beta` trigger with when the
+ * Function is configured in `vercel.json` / `vercel.ts` (`functions[pattern]
+ * .experimentalTriggers`). There the trigger takes no `consumer`: the build
+ * names the group after the function's pattern, prefixed by the service name
+ * in a multi-service project, escaping every character outside
+ * `[A-Za-z0-9-]` (`_` → `__`, `/` → `_S`, `.` → `_D`, anything else → `_`
+ * and its char code in hex). For example `app/api/libfx/route.ts` →
+ * `app_Sapi_Slibfx_Sroute_Dts`.
+ *
+ * Pass it as `experimental_hold.consumerGroup` for a message such a Function
+ * consumes. Mirrors `@vercel/build-utils`; a test pins it.
+ */
+export function vercelTriggerConsumerGroup(
+  functionPattern: string,
+  serviceName?: string
+): string {
+  const path = serviceName
+    ? `${serviceName}~${functionPattern}`
+    : functionPattern;
+  let result = '';
+  for (const char of path) {
+    if (char === '_') result += '__';
+    else if (char === '/') result += '_S';
+    else if (char === '.') result += '_D';
+    else if (/[A-Za-z0-9-]/.test(char)) result += char;
+    else {
+      result += `_${char.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+  }
+  return result;
+}
 
 /** Vercel Queues' bounds on a hold's lease. */
 const MIN_HOLD_VISIBILITY_SECONDS = 30;
@@ -867,16 +904,22 @@ export function resolveHoldOptions(
       'experimental_hold cannot be combined with delaySeconds: a held message runs in the process that sent it, now'
     );
   }
+  const consumerGroup = hold.consumerGroup ?? HOLD_CONSUMER_GROUP;
+  if (!CONSUMER_GROUP_PATTERN.test(consumerGroup)) {
+    throw new TypeError(
+      `experimental_hold.consumerGroup must match ${CONSUMER_GROUP_PATTERN}: "${consumerGroup}"`
+    );
+  }
   const requested = hold.visibilityTimeoutSeconds;
   if (requested === undefined || !Number.isFinite(requested)) {
-    return { consumerGroup: HOLD_CONSUMER_GROUP };
+    return { consumerGroup };
   }
   const ceiling = Math.min(
     MAX_HOLD_VISIBILITY_SECONDS,
     lifetime.retentionSeconds ?? DEFAULT_MESSAGE_RETENTION_SECONDS
   );
   return {
-    consumerGroup: HOLD_CONSUMER_GROUP,
+    consumerGroup,
     visibilityTimeoutSeconds: Math.min(
       Math.max(Math.ceil(requested), MIN_HOLD_VISIBILITY_SECONDS),
       ceiling

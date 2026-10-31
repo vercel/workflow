@@ -25,7 +25,7 @@ export {
   MAX_EXECUTION_CONTEXT_BYTES,
   validateRunExecutionContext,
 } from './execution-context.js';
-export { createQueue } from './queue.js';
+export { createQueue, vercelTriggerConsumerGroup } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
 export type { APIConfig } from './utils.js';

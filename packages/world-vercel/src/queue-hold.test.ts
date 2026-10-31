@@ -29,6 +29,7 @@ import {
   DEFAULT_MESSAGE_RETENTION_SECONDS,
   HOLD_CONSUMER_GROUP,
   resolveHoldOptions,
+  vercelTriggerConsumerGroup,
 } from './queue.js';
 
 const sendOptionsOf = (call = 0) => mockSend.mock.calls[call][2];
@@ -209,5 +210,57 @@ describe('resolveHoldOptions', () => {
     expect(() =>
       resolveHoldOptions({ experimental_hold: {} }, { delaySeconds: 1 })
     ).toThrow(TypeError);
+  });
+});
+
+describe('the hold consumer group', () => {
+  it("defaults to the generated triggers' group, and takes the caller's", () => {
+    expect(resolveHoldOptions({ experimental_hold: {} }, {})).toEqual({
+      consumerGroup: 'default',
+    });
+    expect(
+      resolveHoldOptions(
+        {
+          experimental_hold: {
+            consumerGroup: 'app_Sapi_Slibfx_Sroute_Dts',
+            visibilityTimeoutSeconds: 60,
+          },
+        },
+        {}
+      )
+    ).toEqual({
+      consumerGroup: 'app_Sapi_Slibfx_Sroute_Dts',
+      visibilityTimeoutSeconds: 60,
+    });
+  });
+
+  it('refuses a group Vercel Queues cannot name', () => {
+    expect(() =>
+      resolveHoldOptions(
+        { experimental_hold: { consumerGroup: 'api/flow.ts' } },
+        {}
+      )
+    ).toThrow(TypeError);
+  });
+
+  // Pinned to `sanitizeConsumerName` in @vercel/build-utils 15.2.0, which
+  // names the group of a `queue/v2beta` trigger configured in vercel.json.
+  it.each([
+    ['app/api/libfx/route.ts', undefined, 'app_Sapi_Slibfx_Sroute_Dts'],
+    ['api/flow.ts', undefined, 'api_Sflow_Dts'],
+    [
+      'app/.well-known/durable-harness/v1/flow/route.ts',
+      undefined,
+      'app_S_Dwell-known_Sdurable-harness_Sv1_Sflow_Sroute_Dts',
+    ],
+    [
+      'app/api/sessions/*/live/route.ts',
+      undefined,
+      'app_Sapi_Ssessions_S_2A_Slive_Sroute_Dts',
+    ],
+    ['api/my_fn.ts', undefined, 'api_Smy__fn_Dts'],
+    ['api/flow.ts', 'web', 'web_7Eapi_Sflow_Dts'],
+  ])('names %s (service %s) %s', (pattern, service, group) => {
+    expect(vercelTriggerConsumerGroup(pattern, service)).toBe(group);
   });
 });

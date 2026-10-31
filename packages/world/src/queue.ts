@@ -992,6 +992,17 @@ export interface QueueOptions {
  */
 export interface QueueHoldOptions {
   /**
+   * The consumer group to hold the message for: the group whose handler
+   * would otherwise receive it, so a hold that lapses is delivered to the
+   * same route. A World with one fixed group uses it and ignores this; a
+   * World whose queue names groups per route needs it whenever the route's
+   * group is not the World's default (world-vercel: `'default'`, the group
+   * the Workflow SDK's generated triggers subscribe with; a Function
+   * configured in `vercel.json` / `vercel.ts` gets a group named after its
+   * path instead, see world-vercel's `vercelTriggerConsumerGroup`).
+   */
+  consumerGroup?: string;
+  /**
    * The hold's lease, in seconds. While `consume()` runs the World renews it;
    * if nothing renews it (the sender died, or never called `consume`), the
    * message is delivered as usual about this long after the last renewal. A
