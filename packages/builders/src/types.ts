@@ -162,6 +162,8 @@ export interface VercelBuildOutputConfig extends BaseWorkflowConfig {
  */
 export interface NextConfig extends BaseWorkflowConfig {
   buildTarget: 'next';
+  /** Maximum duration in seconds for the combined workflow function on Vercel. */
+  maxDuration?: number | 'max';
   // Next.js builder computes paths dynamically, so these are not used
   stepsBundlePath: string;
   workflowsBundlePath: string;

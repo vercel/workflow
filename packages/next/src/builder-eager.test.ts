@@ -1,8 +1,57 @@
-import { describe, expect, it } from 'vitest';
-import { createNextEntrypointMatcher } from './builder-eager.js';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as builders from '@workflow/builders';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  createNextEntrypointMatcher,
+  getNextBuilderEager,
+} from './builder-eager.js';
 
 const pageExtensions = ['js', 'jsx', 'ts', 'tsx', 'mts', 'cts'];
 const isNextEntrypoint = createNextEntrypointMatcher(pageExtensions);
+
+describe('generated function duration', () => {
+  it.each([
+    [undefined, 'max'],
+    ['max', 'max'],
+    [300, 300],
+    [1800, 1800],
+  ] as const)('writes maxDuration %s as %s', async (configured, expected) => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const outputDir = await mkdtemp(
+      join(tmpdir(), 'workflow-function-config-')
+    );
+    try {
+      await mkdir(join(outputDir, '.well-known/workflow/v1'), {
+        recursive: true,
+      });
+      const Builder = await getNextBuilderEager(builders);
+      // Exercise the real config writer without building an entire Next app.
+      const builder = Object.create(Builder.prototype) as {
+        config: { maxDuration: typeof configured };
+        writeFunctionsConfig(outputDir: string): Promise<void>;
+      };
+      builder.config = { maxDuration: configured };
+      await builder.writeFunctionsConfig(outputDir);
+      const config = JSON.parse(
+        await readFile(
+          join(outputDir, '.well-known/workflow/v1/config.json'),
+          'utf8'
+        )
+      );
+      expect(config.version).toBe('0');
+      expect(config.workflows.maxDuration).toBe(expected);
+      expect(config.workflows.experimentalTriggers).toEqual([
+        expect.objectContaining({ type: 'queue/v2beta', consumer: 'default' }),
+      ]);
+      expect(Object.keys(config)).toEqual(['version', 'workflows']);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(outputDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('isNextEntrypoint', () => {
   it.each([
