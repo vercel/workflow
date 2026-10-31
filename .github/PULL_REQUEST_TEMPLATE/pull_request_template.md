@@ -17,6 +17,7 @@
 ### PR Checklist - Required to merge
 
 - [ ] 📦 `pnpm changeset` was run to create a changelog for this PR
+  - Add one changeset per PR, listing every package it changes. Keep the summary to a sentence or two on what changed for users (see "Writing changesets" in `AGENTS.md`).
   - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes.
   - Use `pnpm changeset --empty` if you are changing documentation or workbench apps
 - [ ] 🔒 DCO sign-off passes (run `git commit --signoff` on your commits)
