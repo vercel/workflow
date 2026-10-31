@@ -64,7 +64,7 @@ jobs:
       - name: Setup Node.js 24.x
         uses: actions/setup-node@v6
         with:
-          node-version: 24.22.2
+          node-version: 24.x
 
       # `turbo test` only runs a package's tests if that package declares a
       # `test` script, so a suite can exist for months without ever running.
@@ -82,7 +82,7 @@ jobs:
       - name: Setup Node.js 24.x
         uses: actions/setup-node@v6
         with:
-          node-version: 24.22.2
+          node-version: 24.x
 
       # Suites under `scripts/` are named file by file: the rest of that
       # directory is vitest files, which `node --test` cannot import.
