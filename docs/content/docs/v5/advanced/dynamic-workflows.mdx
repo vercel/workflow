@@ -197,6 +197,10 @@ Dynamic workflows need a World that can store the run's workflow code.
 
 After the opt-in and same-deployment checks, `start()` fails a dynamic start on a World that does not declare `capabilities.dynamicWorkflowCode`. On Vercel, `start()` then validates the final execution context against the 2,048-byte limit. All of this happens before serializing or uploading code, creating an event, or publishing a queue message.
 
+These refusals, like a source that breaks the [rules for the source](#rules-for-the-source), are fatal, so a step that calls `start()` fails on its first attempt instead of retrying. The exception is a start that cannot determine the current deployment, which stays retryable because the lookup can succeed on a later attempt.
+
+Once the checks pass, a dynamic `start()` waits for the World to confirm it stored the run's code before it queues the run. Any failure to create the run, including a transient one, throws from `start()` with nothing queued, so a failed call never leaves a run executing.
+
 ## Security
 
 <Callout type="warning">
