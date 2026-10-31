@@ -536,7 +536,8 @@ export interface EventPostRetryOptions {
  */
 export type ThrottleBudget = 'bounded' | 'invocation';
 
-async function resolveDeadlineMs(): Promise<number | undefined> {
+/** The invocation's deadline in epoch ms, or `undefined` when unknowable. */
+export async function resolveDeadlineMs(): Promise<number | undefined> {
   try {
     const deadline = await getDeadline();
     const ms = deadline?.getTime();

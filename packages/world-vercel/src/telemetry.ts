@@ -237,6 +237,11 @@ export const HttpResponseStatusCode = SemanticConvention<number>(
   'http.response.status_code'
 );
 
+/** Resends of one HTTP request (standard OTEL: http.request.resend_count) */
+export const HttpRequestResendCount = SemanticConvention<number>(
+  'http.request.resend_count'
+);
+
 /** Error type when request fails (standard OTEL: error.type) */
 export const ErrorType = SemanticConvention<string>('error.type');
 
