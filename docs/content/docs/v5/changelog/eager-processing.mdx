@@ -78,6 +78,8 @@ Each background step message is handled by a separate function invocation of the
 - **Steps still pending**: The handler returns without queuing a continuation. The last handler to complete its step will see all steps done and replay inline.
 - **Pending ops (stream writes)**: The handler queues a continuation and returns, so `waitUntil` can flush the pending stream data.
 
+The inline steps of one invocation do not wait for each other. When one of them completes while its siblings are still running, the handler replays the workflow right away, so the branch it belongs to can start its next step inline. The siblings stay owned by this handler. If the workflow returns or throws first, the run ends right away; the handler still lets the siblings' bodies finish before it returns. See [`WORKFLOW_INLINE_EARLY_ADVANCE`](/docs/configuration/runtime-tuning#workflow_inline_early_advance).
+
 ### Convergence after parallel steps
 
 When multiple background steps complete near-simultaneously, multiple handlers may observe "all steps done" and attempt to advance the workflow concurrently. The event-sourced architecture plus the invariants below ensure safe convergence:

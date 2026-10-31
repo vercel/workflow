@@ -155,6 +155,15 @@ export interface SuspensionHandlerParams {
    * suspension. Omitted, every suspension republishes on its own.
    */
   forceClaimVictimWakes?: Set<string>;
+  /**
+   * Steps this invocation is already executing inline from an earlier pass
+   * of the same delivery (see `isInlineEarlyAdvanceEnabled`). They are left
+   * out entirely: nothing is created, deferred, or reported in
+   * `pendingSteps` for them, since their own executions write their events.
+   * They still occupy inline slots, so fewer new steps are deferred for
+   * inline execution while they run.
+   */
+  inFlightStepCorrelationIds?: ReadonlySet<string>;
 }
 
 /**
@@ -389,6 +398,7 @@ export async function handleSuspension({
   ownerMessageId,
   allowDeferredBatchWork,
   forceClaimVictimWakes,
+  inFlightStepCorrelationIds,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -516,7 +526,9 @@ export async function handleSuspension({
   };
   // Separate queue items by type
   const stepItems = suspension.items.filter(
-    (item): item is StepInvocationQueueItem => item.type === 'step'
+    (item): item is StepInvocationQueueItem =>
+      item.type === 'step' &&
+      !inFlightStepCorrelationIds?.has(item.correlationId)
   );
   const allHookItems = suspension.items.filter(
     (item): item is HookInvocationQueueItem =>
@@ -796,7 +808,13 @@ export async function handleSuspension({
   const lazyInlineCorrelationIds = new Set<string>(
     stepItems
       .filter((item) => stepsNeedingCreation.has(item.correlationId))
-      .slice(0, getMaxInlineSteps())
+      .slice(
+        0,
+        Math.max(
+          0,
+          getMaxInlineSteps() - (inFlightStepCorrelationIds?.size ?? 0)
+        )
+      )
       .map((item) => item.correlationId)
   );
   // Collected by correlationId because the per-step ops below run concurrently
@@ -1805,7 +1823,12 @@ export async function handleSuspension({
  */
 export function pendingQueueDrain(
   world: World,
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /**
+   * Steps the caller is still executing inline. Read live, and left out of
+   * the drain: their own executions write their events.
+   */
+  inFlightStepCorrelationIds?: ReadonlySet<string>
 ): PendingQueueDrain {
   return async (suspension, run) => {
     await handleSuspension({
@@ -1814,6 +1837,7 @@ export function pendingQueueDrain(
       run,
       runReadyBarrier,
       terminalDrain: true,
+      inFlightStepCorrelationIds,
     });
   };
 }

@@ -464,6 +464,14 @@ export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
 );
 
 /**
+ * Replay passes this invocation started after one inline step settled while
+ * sibling inline steps were still running (see `isInlineEarlyAdvanceEnabled`).
+ */
+export const WorkflowInlineEarlyAdvances = SemanticConvention<number>(
+  'workflow.inline.early_advances'
+);
+
+/**
  * Number of pending steps whose immediate step-execution enqueue this replay
  * pass skipped because THIS invocation already published that step's message
  * on an earlier pass (a fan-out that ran inline steps and replayed again).

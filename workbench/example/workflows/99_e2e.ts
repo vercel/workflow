@@ -247,6 +247,34 @@ export async function stepWinsRaceWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+// Times come from inside the step, on the host clock: the workflow's own
+// `Date.now()` is the replay clock, which says nothing about when a step ran.
+async function timedDelayStep(ms: number, label: string) {
+  'use step';
+  const startedAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return { label, startedAt, endedAt: Date.now() };
+}
+
+/**
+ * A two-step chain beside one long step (vercel/workflow#4457). The chain's
+ * second step should start once its first settles, not once the long step
+ * beside it does.
+ */
+export async function parallelBranchesAdvanceIndependentlyWorkflow() {
+  'use workflow';
+  const [chain, long] = await Promise.all([
+    (async () => [
+      await timedDelayStep(500, 'chain1'),
+      await timedDelayStep(500, 'chain2'),
+    ])(),
+    timedDelayStep(10_000, 'long'),
+  ]);
+  return { chain, long };
+}
+
+//////////////////////////////////////////////////////////
+
 // Takes an OBJECT argument: under VM retention (WORKFLOW_RETAINED_VM), a
 // boundary whose new step has a non-primitive input falls back to cold
 // replay instead of resuming the retained VM.

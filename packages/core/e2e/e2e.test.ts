@@ -1010,6 +1010,25 @@ describe.concurrent('e2e', () => {
     expect(returnValue.winner).toBe('step');
   });
 
+  // vercel/workflow#4457. Early advance is implemented by the Node.js VM
+  // engine's inline loop only (see WORKFLOW_INLINE_EARLY_ADVANCE).
+  test.skipIf(process.env.WORKFLOW_VM === 'quickjs')(
+    'parallelBranchesAdvanceIndependentlyWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await e2e('parallelBranchesAdvanceIndependentlyWorkflow'),
+        []
+      );
+      const { chain, long } = await run.returnValue;
+      // The chain's second step starts once its first settles, rather than
+      // once the 10s step beside it does. Both steps run in one invocation,
+      // so the times share a host clock; the margin under lockstep is the
+      // other way round by seconds.
+      expect(chain[1].startedAt).toBeLessThan(long.endedAt - 2_000);
+    }
+  );
+
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
     const returnValue = await run.returnValue;
