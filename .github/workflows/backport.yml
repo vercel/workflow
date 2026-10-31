@@ -55,10 +55,27 @@ jobs:
     # backport). To force a backport after the fact, re-run this workflow
     # via `workflow_dispatch` with the relevant commit SHA.
     runs-on: ubuntu-latest
+    # This job runs opencode with every tool allowed, on input that includes
+    # PR titles and bodies. It deliberately gets neither write access to the
+    # repository nor `id-token: write`: any step in a job with `id-token:
+    # write` can request an OIDC token, so the AI could otherwise mint a
+    # gh-sts token itself. The resulting commit is handed to the
+    # `open-backport-pr` job below, which runs no AI and no repository code.
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
       issues: write
+    outputs:
+      push: ${{ steps.bundle.outputs.push }}
+      branch: ${{ steps.existing-pr.outputs.branch }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      trigger: ${{ steps.resolve.outputs.trigger }}
+      pr_number: ${{ steps.pr-lookup.outputs.pr_number }}
+      pr_title: ${{ steps.pr-lookup.outputs.pr_title }}
+      cherry_pick_status: ${{ steps.cherry-pick.outputs.status }}
+      reasoning: ${{ steps.decide.outputs.reasoning }}
+      local_head: ${{ steps.bundle.outputs.local_head }}
+      parent_sha: ${{ steps.bundle.outputs.parent_sha }}
     steps:
       - name: Validate AI model
         # Deliberately inline rather than a `.github/scripts/*.js` helper with
@@ -786,6 +803,225 @@ jobs:
               ;;
           esac
 
+      - name: Bundle backport commit
+        # Hands the local cherry-pick commit to the `open-backport-pr` job.
+        # A bundle carries only git objects, so that job never runs anything
+        # this job (or the AI in it) produced.
+        id: bundle
+        if: |
+          steps.cherry-pick.outputs.status == 'clean' ||
+          (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/backport"
+          git bundle create "$RUNNER_TEMP/backport/backport.bundle" origin/stable..HEAD
+          echo "local_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "parent_sha=$(git rev-parse HEAD~1)" >> "$GITHUB_OUTPUT"
+          echo "push=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload backport commit
+        if: steps.bundle.outputs.push == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backport-commit
+          path: ${{ runner.temp }}/backport/backport.bundle
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Comment on conflict failure
+        # Only post the manual-resolution comment when the AI ran cleanly
+        # but couldn't resolve all conflicts (`resolved=false`). Infra
+        # failures (auth errors, opencode crashes, etc.) cause the
+        # `Resolve conflicts with opencode` step to exit non-zero, which
+        # fails the job — we don't want to also post a misleading
+        # "couldn't resolve" comment in that case.
+        if: |
+          steps.cherry-pick.outputs.status == 'conflict' &&
+          steps.ai-resolve.outputs.resolved == 'false' &&
+          steps.pr-lookup.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const sha = process.env.SHA;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const shortSha = sha.slice(0, 12);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                `**Backport to \`stable\` failed** — the cherry-pick had conflicts that could not be resolved automatically ([backport job run](${runUrl})).`,
+                '',
+                'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`). Note: this repository requires verified signatures on every branch, so your local commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
+                '```bash',
+                'git fetch origin stable',
+                `git checkout -b backport/pr-${prNumber}-to-stable origin/stable`,
+                `git cherry-pick -S ${sha}    # -S signs the commit`,
+                '# Fix conflicts, then:',
+                'git add -A',
+                'git cherry-pick --continue',
+                `git push -u origin backport/pr-${prNumber}-to-stable`,
+                `gh pr create --base stable --head backport/pr-${prNumber}-to-stable \\`,
+                `  --title "Backport #${prNumber}: <original PR title>" \\`,
+                `  --body "Manual backport of #${prNumber} (cherry-pick ${shortSha}) to \\\`stable\\\`."`,
+                '```'
+              ].join('\n')
+            });
+
+      - name: Comment on backport failure
+        # Catch-all for task/infra failures that fail the job outright — e.g.
+        # the configured AI model not being found, AI Gateway errors, opencode
+        # crashes, or any other step erroring out. Without this, such failures
+        # only surface as a red workflow run with no signal on the source PR.
+        #
+        # This is deliberately disjoint from "Comment on conflict failure"
+        # above: that step handles the case where the AI ran cleanly but
+        # couldn't resolve conflicts (`resolved == 'false'`), which exits 0 and
+        # does NOT fail the job — so `failure()` is false there and we won't
+        # double-comment. We also skip if no source PR is associated (nowhere
+        # to comment) or if the failure occurred before the PR lookup ran.
+        if: |
+          failure() &&
+          steps.pr-lookup.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const sha = process.env.SHA || '';
+            const prNumber = Number(process.env.PR_NUMBER);
+            const shortSha = sha ? sha.slice(0, 12) : '(unknown)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
+            const lines = [
+              `**Backport to \`stable\` failed** for ${shortSha} due to a workflow error ([backport job run](${runUrl})).`,
+              '',
+              'This is usually an infrastructure problem (e.g. the configured AI model could not be found, an AI Gateway error, or an opencode crash) rather than a merge conflict. Check the job logs linked above for details.',
+            ];
+            if (sha) {
+              lines.push(
+                '',
+                `Once the underlying issue is fixed, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
+                '',
+                '```',
+                sha,
+                '```'
+              );
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: lines.join('\n')
+            });
+
+  open-backport-pr:
+    name: Open backport PR
+    needs: backport
+    if: needs.backport.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    # Runs only the inline scripts in this file: no AI, no package scripts,
+    # and nothing from the backported tree is executed (the commit arrives as
+    # a git bundle and is read through `git` plumbing).
+    permissions:
+      # `GITHUB_TOKEN` pushes and opens the PR for AI-resolved backports (see
+      # the mint step below), and comments on the source PR.
+      contents: write
+      pull-requests: write
+      issues: write
+      # Lets the job request the OIDC token that gh-sts exchanges.
+      id-token: write
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download backport commit
+        uses: actions/download-artifact@v4
+        with:
+          name: backport-commit
+          path: ${{ runner.temp }}/backport
+
+      - name: Load backport commit
+        env:
+          LOCAL_HEAD: ${{ needs.backport.outputs.local_head }}
+          PARENT_SHA: ${{ needs.backport.outputs.parent_sha }}
+        run: |
+          set -euo pipefail
+          BUNDLE="$RUNNER_TEMP/backport/backport.bundle"
+          git bundle verify "$BUNDLE"
+          git fetch --no-tags "$BUNDLE" HEAD
+          if [ "$(git rev-parse FETCH_HEAD)" != "$LOCAL_HEAD" ] || [ "$(git rev-parse FETCH_HEAD~1)" != "$PARENT_SHA" ]; then
+            echo "::error::Backport bundle does not contain the expected commit ($LOCAL_HEAD on top of $PARENT_SHA)."
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Mint scoped GitHub token via gh-sts
+        # Exchanges this job's GitHub Actions OIDC token for a GitHub App
+        # installation token scoped to `contents: write` and
+        # `pull_requests: write` on this repository. The gh-sts policy that
+        # authorizes it only matches this workflow file on `main` (pinned by
+        # repository and owner ID) for `push` and `workflow_dispatch`, so
+        # pull requests and forks cannot mint it. The token is revoked at the
+        # end of the job.
+        #
+        # Only clean cherry-picks get it. A PR opened with the App token runs
+        # its CI (with repository secrets) right away, which is fine for a
+        # mechanical cherry-pick of an already-reviewed commit. A backport
+        # whose conflicts the AI resolved contains AI-written code, so it is
+        # still opened with `GITHUB_TOKEN` and its CI waits for a maintainer
+        # to approve it.
+        if: needs.backport.outputs.cherry_pick_status == 'clean'
+        id: gh-sts
+        uses: actions/github-script@v7
+        env:
+          GH_STS_POLICY: vercel-workflow-backport-to-stable
+        with:
+          script: |
+            const audience = 'gh-sts.vercel-infra.com';
+            const policy = process.env.GH_STS_POLICY;
+            const { owner, repo } = context.repo;
+            const permissions = { contents: 'write', pull_requests: 'write' };
+
+            const idToken = await core.getIDToken(audience);
+            const res = await fetch(`https://${audience}/token`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${idToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ policy, owner, repo, permissions }),
+            });
+            const text = await res.text();
+            let body;
+            try {
+              body = JSON.parse(text);
+            } catch {}
+            if (!res.ok || typeof body?.token !== 'string') {
+              const detail = body ? `${body.code}: ${body.error}` : text.slice(0, 500);
+              throw new Error(`gh-sts token exchange failed (HTTP ${res.status}) ${detail}`);
+            }
+            core.setSecret(body.token);
+            if (body.policy !== policy || body.owner !== owner || body.repo !== repo) {
+              throw new Error(
+                `gh-sts returned a token for ${body.policy} (${body.owner}/${body.repo}), expected ${policy} (${owner}/${repo})`,
+              );
+            }
+            core.setOutput('token', body.token);
+            core.info(
+              `Minted ${JSON.stringify(body.permissions)} token for ${owner}/${repo} via policy ${policy}, expires ${body.expires_at}`,
+            );
+
       - name: Push backport branch via GitHub API
         # Branch protection on this repo requires verified signatures on
         # every ref (an enterprise-level ruleset matching `~ALL`). A normal
@@ -795,17 +1031,15 @@ jobs:
         # mutation, which signs commits automatically with GitHub's
         # internal key (the same way commits made via the web UI are
         # signed). The resulting commit is attributed to the token owner
-        # (`github-actions[bot]`), not the original author.
-        if: |
-          steps.cherry-pick.outputs.status == 'clean' ||
-          (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
+        # (the gh-sts GitHub App, or `github-actions[bot]`), not the original
+        # author.
         id: push-branch
         uses: actions/github-script@v7
         env:
-          BRANCH: ${{ steps.existing-pr.outputs.branch }}
-          SHA: ${{ steps.resolve.outputs.sha }}
+          BRANCH: ${{ needs.backport.outputs.branch }}
+          SHA: ${{ needs.backport.outputs.sha }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.gh-sts.outputs.token || secrets.GITHUB_TOKEN }}
           script: |
             const { execFileSync } = require('node:child_process');
 
@@ -1003,14 +1237,17 @@ jobs:
         if: steps.push-branch.outputs.pushed == 'true'
         id: backport-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ steps.resolve.outputs.sha }}
-          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
-          PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
-          BRANCH: ${{ steps.existing-pr.outputs.branch }}
-          CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
-          AI_REASONING: ${{ steps.decide.outputs.reasoning }}
-          TRIGGER: ${{ steps.resolve.outputs.trigger }}
+          # The gh-sts App token for clean cherry-picks, so the PR's
+          # `pull_request` workflows run without a manual approval (see the
+          # mint step above).
+          GITHUB_TOKEN: ${{ steps.gh-sts.outputs.token || secrets.GITHUB_TOKEN }}
+          SHA: ${{ needs.backport.outputs.sha }}
+          PR_NUMBER: ${{ needs.backport.outputs.pr_number }}
+          PR_TITLE: ${{ needs.backport.outputs.pr_title }}
+          BRANCH: ${{ needs.backport.outputs.branch }}
+          CHERRY_PICK_STATUS: ${{ needs.backport.outputs.cherry_pick_status }}
+          AI_REASONING: ${{ needs.backport.outputs.reasoning }}
+          TRIGGER: ${{ needs.backport.outputs.trigger }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # Build the PR title.
@@ -1064,12 +1301,12 @@ jobs:
       - name: Comment on source PR (backport created)
         if: |
           steps.backport-pr.outputs.pr_url != '' &&
-          steps.pr-lookup.outputs.pr_number != ''
+          needs.backport.outputs.pr_number != ''
         uses: actions/github-script@v7
         env:
-          CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
+          CHERRY_PICK_STATUS: ${{ needs.backport.outputs.cherry_pick_status }}
           PR_URL: ${{ steps.backport-pr.outputs.pr_url }}
-          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+          PR_NUMBER: ${{ needs.backport.outputs.pr_number }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -1087,96 +1324,43 @@ jobs:
               body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote} ([backport job run](${runUrl}))`
             });
 
-      - name: Comment on conflict failure
-        # Only post the manual-resolution comment when the AI ran cleanly
-        # but couldn't resolve all conflicts (`resolved=false`). Infra
-        # failures (auth errors, opencode crashes, etc.) cause the
-        # `Resolve conflicts with opencode` step to exit non-zero, which
-        # fails the job — we don't want to also post a misleading
-        # "couldn't resolve" comment in that case.
-        if: |
-          steps.cherry-pick.outputs.status == 'conflict' &&
-          steps.ai-resolve.outputs.resolved == 'false' &&
-          steps.pr-lookup.outputs.pr_number != ''
-        uses: actions/github-script@v7
-        env:
-          SHA: ${{ steps.resolve.outputs.sha }}
-          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const sha = process.env.SHA;
-            const prNumber = Number(process.env.PR_NUMBER);
-            const shortSha = sha.slice(0, 12);
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: [
-                `**Backport to \`stable\` failed** — the cherry-pick had conflicts that could not be resolved automatically ([backport job run](${runUrl})).`,
-                '',
-                'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`). Note: this repository requires verified signatures on every branch, so your local commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
-                '```bash',
-                'git fetch origin stable',
-                `git checkout -b backport/pr-${prNumber}-to-stable origin/stable`,
-                `git cherry-pick -S ${sha}    # -S signs the commit`,
-                '# Fix conflicts, then:',
-                'git add -A',
-                'git cherry-pick --continue',
-                `git push -u origin backport/pr-${prNumber}-to-stable`,
-                `gh pr create --base stable --head backport/pr-${prNumber}-to-stable \\`,
-                `  --title "Backport #${prNumber}: <original PR title>" \\`,
-                `  --body "Manual backport of #${prNumber} (cherry-pick ${shortSha}) to \\\`stable\\\`."`,
-                '```'
-              ].join('\n')
-            });
-
       - name: Comment on backport failure
-        # Catch-all for task/infra failures that fail the job outright — e.g.
-        # the configured AI model not being found, AI Gateway errors, opencode
-        # crashes, or any other step erroring out. Without this, such failures
-        # only surface as a red workflow run with no signal on the source PR.
-        #
-        # This is deliberately disjoint from "Comment on conflict failure"
-        # above: that step handles the case where the AI ran cleanly but
-        # couldn't resolve conflicts (`resolved == 'false'`), which exits 0 and
-        # does NOT fail the job — so `failure()` is false there and we won't
-        # double-comment. We also skip if no source PR is associated (nowhere
-        # to comment) or if the failure occurred before the PR lookup ran.
         if: |
           failure() &&
-          steps.pr-lookup.outputs.pr_number != ''
+          needs.backport.outputs.pr_number != ''
         uses: actions/github-script@v7
         env:
-          SHA: ${{ steps.resolve.outputs.sha }}
-          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+          SHA: ${{ needs.backport.outputs.sha }}
+          PR_NUMBER: ${{ needs.backport.outputs.pr_number }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const sha = process.env.SHA || '';
             const prNumber = Number(process.env.PR_NUMBER);
-            const shortSha = sha ? sha.slice(0, 12) : '(unknown)';
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
-            const lines = [
-              `**Backport to \`stable\` failed** for ${shortSha} due to a workflow error ([backport job run](${runUrl})).`,
-              '',
-              'This is usually an infrastructure problem (e.g. the configured AI model could not be found, an AI Gateway error, or an opencode crash) rather than a merge conflict. Check the job logs linked above for details.',
-            ];
-            if (sha) {
-              lines.push(
-                '',
-                `Once the underlying issue is fixed, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
-                '',
-                '```',
-                sha,
-                '```'
-              );
-            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: lines.join('\n')
+              body: [
+                `**Backport to \`stable\` failed** for ${sha.slice(0, 12)} while pushing the backport branch or opening its PR ([backport job run](${runUrl})).`,
+                '',
+                `Check the job logs linked above. Once the underlying issue is fixed, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` with this commit SHA as the \`ref\` input:`,
+                '',
+                '```',
+                sha,
+                '```',
+              ].join('\n'),
             });
+
+      - name: Revoke gh-sts token
+        # Installation tokens otherwise stay valid for an hour after the job.
+        if: always() && steps.gh-sts.outputs.token != ''
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.gh-sts.outputs.token }}
+          script: |
+            await github.request('DELETE /installation/token');
+            core.info('Revoked the gh-sts installation token.');
