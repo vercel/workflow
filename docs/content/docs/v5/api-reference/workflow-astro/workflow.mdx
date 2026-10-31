@@ -39,6 +39,13 @@ The integration registers the workflow Vite transform plugins during `astro:conf
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
 | `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles, which helps stay under the Vercel 250 MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
+| `onAfterBundle` | `WorkflowAfterBundleHook` | — | Optional callback invoked after the workflow bundles and serialized manifest are written. |
+
+`onAfterBundle` receives absolute paths for the `steps`, `workflows`, and
+`manifest` artifacts. It runs at the workflow bundle boundary, before later
+Astro/Vercel outputs are written. Production hook failures reject the build;
+development hot updates follow their normal queued-build error handling. Keep
+the callback fast and make external side effects idempotent.
 
 ### Returns
 

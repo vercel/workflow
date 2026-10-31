@@ -2,7 +2,10 @@ import { existsSync } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { loadConfig } from '@sveltejs/load-config';
-import { createBuildQueue } from '@workflow/builders';
+import {
+  createBuildQueue,
+  type WorkflowAfterBundleHook,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Plugin, PluginOption } from 'vite';
@@ -16,6 +19,11 @@ export interface WorkflowPluginOptions {
    * also be set via the `WORKFLOW_SOURCEMAP` environment variable.
    */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+
+  /**
+   * Runs after the workflow bundles and manifest have been written.
+   */
+  onAfterBundle?: WorkflowAfterBundleHook;
 }
 
 const resolvingConfig = new Set<string>();

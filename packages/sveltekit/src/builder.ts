@@ -38,6 +38,7 @@ export class SvelteKitBuilder extends BaseBuilder {
         watch: config.watch,
         externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
         sourcemap: config.sourcemap,
+        onAfterBundle: config.onAfterBundle,
       }),
       ...config,
       dirs,
