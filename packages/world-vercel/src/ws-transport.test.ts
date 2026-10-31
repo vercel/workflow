@@ -90,6 +90,14 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
       this.emit('close', code);
     }
 
+    terminate(): void {
+      if (this.readyState === FakeSocket.CONNECTING) {
+        this.failHandshake(new Error('terminated while connecting'));
+        return;
+      }
+      this.close(1006);
+    }
+
     // ---- test drivers ----
 
     /** Complete the handshake. */
@@ -668,10 +676,11 @@ describe('failures are never silent', () => {
     void promise.catch(() => {});
 
     await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(30_000);
 
-    // A socket that swallowed a request is not the one to send the retry on.
-    expect(latest()).not.toBe(socket);
+    expect(socket.readyState).toBe(3);
+    expect(sockets).toHaveLength(1);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 
   it('disarms the deadline once a reply lands', async () => {
@@ -721,6 +730,128 @@ describe('failures are never silent', () => {
     await tick();
 
     expect(loggedWithoutDebug()).not.toContain('drain notice');
+  });
+});
+
+describe('handshake deadline', () => {
+  it('fails a write waiting on a handshake that never completes', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/handshake .* timed out after/);
+    expect(socket.readyState).toBe(3);
+    expect(socket.sent).toHaveLength(0);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminates a stalled socket whose channel was already released, without an error log', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const socket = await nextSocket();
+    transport.release('invocation complete');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    expect(socket.readyState).toBe(3);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('closes the channel so later writes take HTTP', async () => {
+    const config = { token: 'test-token' };
+    openWsChannel('wrun_1', config);
+    await nextSocket();
+    expect(resolveWsTransport('wrun_1', config)).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(resolveWsTransport('wrun_1', config)).toBeNull();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('covers a token fetch that never resolves', async () => {
+    let release: (value: Record<string, string>) => void = () => {};
+    const stalledHeaders = () =>
+      new Promise<Record<string, string>>((resolve) => {
+        release = resolve;
+      });
+    const transport = getWsEventsTransport(WS_URL, stalledHeaders);
+    transport.open();
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/handshake .* timed out after/);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
+
+    release({ authorization: 'Bearer late' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toHaveLength(0);
+  });
+
+  it('honours WORKFLOW_REQUEST_TIMEOUT_MS', async () => {
+    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = '15000';
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(socket.readyState).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    await expect(promise).rejects.toThrow(/timed out after 15000ms/);
+  });
+
+  it('is disarmed once the handshake completes', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({ meta: { reqId: 1 } });
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+
+    expect(socket.readyState).toBe(1);
+    expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
+    expect(loggedErrors()).not.toContain('timed out');
+  });
+
+  it('is disarmed once a handshake fails on its own', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    (await nextSocket()).failHandshake();
+    await expect(promise).rejects.toThrow('ECONNREFUSED');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+
+    expect(loggedErrors()).not.toContain('handshake');
+  });
+
+  it('bounds a stalled eager reconnect and stops reconnecting', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    socket.close(1006);
+    await expect(promise).rejects.toThrow();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sockets).toHaveLength(2);
+    const joined = transport.request(eventFrame);
+    void joined.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    await expect(joined).rejects.toThrow(/handshake .* timed out/);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1].readyState).toBe(3);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 });
 

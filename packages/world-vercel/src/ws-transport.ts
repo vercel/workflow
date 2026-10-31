@@ -237,6 +237,7 @@ class WsEventsTransport {
             `workflow-server events WS connection to ${this.wsUrl} ` +
               `abandoned after request ${reqId} timed out`
           );
+          this.close('request timed out');
         }, timeoutMs);
         deadline.unref?.();
         const onSent = (err?: Error) => {
@@ -309,10 +310,7 @@ class WsEventsTransport {
    * HTTP: writes resolve no channel and take the pooled HTTP route instead of
    * paying another handshake attempt each.
    *
-   * That de-opt covers the handshake only. A channel that connects and then
-   * fails every write stays registered and keeps taking the WS path, so the
-   * fallback is per-invocation rather than a circuit breaker. Tolerable while
-   * the transport is opt-in; defaulting it on needs a write-failure de-opt too.
+   * A write that times out closes the channel too; other failed writes leave it registered.
    */
   open(): void {
     if (this.closed) return;
@@ -481,10 +479,28 @@ class WsEventsTransport {
   private connect(): Promise<Connection> {
     return new Promise<Connection>((resolve, reject) => {
       void (async () => {
+        const handshakeTimeoutMs = getRequestTimeoutMs();
+        let timedOut = false;
+        let socket: WebSocket | undefined;
+        const handshakeDeadline = setTimeout(() => {
+          timedOut = true;
+          const message =
+            `workflow-server events WS handshake to ${this.wsUrl} timed out ` +
+            `after ${handshakeTimeoutMs}ms`;
+          const log = this.closed ? debugLog : console.error;
+          log(`world-vercel: ws events transport ${message}`);
+          reject(new WsTransportError(message));
+          socket?.terminate();
+          this.close('handshake timed out');
+        }, handshakeTimeoutMs);
+        handshakeDeadline.unref?.();
+
         let conn: Connection;
         try {
           const headers = await this.resolveUpgradeHeaders();
+          if (timedOut) return;
           const ws = new WebSocket(this.wsUrl, { headers });
+          socket = ws;
           ws.binaryType = 'nodebuffer';
           const pending = new Map<number, PendingRequest>();
           conn = {
@@ -504,6 +520,8 @@ class WsEventsTransport {
             }),
           };
         } catch (err) {
+          clearTimeout(handshakeDeadline);
+          if (timedOut) return;
           console.error(
             `world-vercel: ws events transport could not open a connection ` +
               `to ${this.wsUrl}: ${describeError(err)}`
@@ -527,6 +545,7 @@ class WsEventsTransport {
 
         ws.on('open', () => {
           opened = true;
+          clearTimeout(handshakeDeadline);
           if (this.closed) {
             // Released while this handshake was in flight: `close()` could
             // only null out the connection it could see. Adopting this one now
@@ -550,6 +569,7 @@ class WsEventsTransport {
         });
 
         ws.on('error', (err) => {
+          if (timedOut) return;
           console.error(
             `world-vercel: ws events transport socket error ` +
               `(${this.wsUrl}): ${describeError(err)}`
@@ -564,6 +584,7 @@ class WsEventsTransport {
         });
 
         ws.on('close', (code: number) => {
+          clearTimeout(handshakeDeadline);
           const wasActive = this.connection === conn;
           if (wasActive) this.connection = null;
 
