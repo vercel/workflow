@@ -746,6 +746,19 @@ describe('handshake deadline', () => {
     await expect(promise).rejects.toThrow(/handshake .* timed out after/);
     expect(socket.readyState).toBe(3);
     expect(socket.sent).toHaveLength(0);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminates a stalled socket whose channel was already released, without an error log', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const socket = await nextSocket();
+    transport.release('invocation complete');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    expect(socket.readyState).toBe(3);
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it('closes the channel so later writes take HTTP', async () => {

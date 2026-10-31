@@ -1683,7 +1683,8 @@ function replyMetaToHeaderRecord(
  * defaults `methods` to GET/HEAD/OPTIONS/PUT/DELETE/TRACE, which is why
  * event-retry.ts exists at all. So `postEventFrameOverWs` makes exactly one
  * attempt and reports in that policy's vocabulary; a retry from it re-enters
- * `transport.request()`, which reconnects on the way through.
+ * `transport.request()`, which reconnects on the way through, or goes over HTTP
+ * once a timeout has closed the channel.
  */
 
 /** Part count for a write whose reply was split; see `ws-parts.ts`. Absent

@@ -487,7 +487,8 @@ class WsEventsTransport {
           const message =
             `workflow-server events WS handshake to ${this.wsUrl} timed out ` +
             `after ${handshakeTimeoutMs}ms`;
-          console.error(`world-vercel: ws events transport ${message}`);
+          const log = this.closed ? debugLog : console.error;
+          log(`world-vercel: ws events transport ${message}`);
           reject(new WsTransportError(message));
           socket?.terminate();
           this.close('handshake timed out');
@@ -568,6 +569,7 @@ class WsEventsTransport {
         });
 
         ws.on('error', (err) => {
+          if (timedOut) return;
           console.error(
             `world-vercel: ws events transport socket error ` +
               `(${this.wsUrl}): ${describeError(err)}`
