@@ -454,6 +454,85 @@ describe('createWorkflowRunEvent with v1Compat', () => {
   });
 });
 
+describe('createWorkflowRunEvent run_started start Hook echo', () => {
+  it('reconstructs run.startHook from the streamed run_created', async () => {
+    const agent = mockAgent();
+    const tokenRetentionUntil = new Date('2026-06-11T00:00:00.000Z');
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_1',
+          eventType: 'run_created',
+          createdAt: new Date('2026-06-09T23:59:59.000Z'),
+          specVersion: 2,
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            startHook: {
+              token: 'order:1',
+              hookId: 'hook_1',
+              tokenRetentionUntil,
+            },
+          },
+        },
+        new Uint8Array()
+      ),
+      encodeFrame(
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          eventType: 'run_started',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          specVersion: 2,
+          eventData: {},
+        },
+        new Uint8Array()
+      ),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_1', hasMore: false },
+        new Uint8Array()
+      ),
+    ]);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(200, () => frames, {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.run?.startHook).toMatchObject({
+      token: 'order:1',
+      hookId: 'hook_1',
+    });
+    expect(
+      new Date(
+        result.run?.startHook?.tokenRetentionUntil as unknown as string
+      ).getTime()
+    ).toBe(tokenRetentionUntil.getTime());
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 /**
  * `run_started` attests the spec version this SDK runs, separately from the
  * `specVersion` it repeats from the queue message (the stamp of whoever called

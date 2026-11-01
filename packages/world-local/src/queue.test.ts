@@ -971,7 +971,7 @@ describe('per-run orchestrator serialization', () => {
       }
     );
     localQueue.registerHandler('__wkf_workflow_', handler);
-    return { started, releases, maxActive };
+    return { started, releases, maxActive, handler };
   }
 
   it('holds a second orchestrator delivery of a spec 9 run until the first finishes', async () => {
@@ -1031,6 +1031,30 @@ describe('per-run orchestrator serialization', () => {
     );
     await vi.waitFor(() => expect(started).toHaveLength(5));
     for (const release of releases) release();
+  });
+
+  // A script or test process that calls `start()` or `resumeHook()` sends its
+  // messages with a queue of its own, which the sending gate cannot see; the
+  // handler of the process serving the routes holds them back instead.
+  it('holds back a delivery sent by another process’s queue', async () => {
+    const { started, releases, maxActive, handler } = holdingHandler();
+    const otherProcess = createQueue({ baseUrl: 'http://localhost:3000' });
+    try {
+      // The other process's messages reach this process's handler.
+      otherProcess.registerHandler('__wkf_workflow_', handler);
+      await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+      await otherProcess.queue('__wkf_workflow_test' as any, spec9('run_a'));
+      await vi.waitFor(() => expect(started).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(started).toHaveLength(1);
+
+      releases[0]?.();
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      releases[1]?.();
+      expect(maxActive.get('run_a')).toBe(1);
+    } finally {
+      await otherProcess.close();
+    }
   });
 
   it('frees the run while a delivery waits out its timeoutSeconds', async () => {

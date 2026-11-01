@@ -1766,7 +1766,9 @@ describe('createWebhook', () => {
       await expect(hook.getConflict()).rejects.toBeInstanceOf(FatalError);
     });
 
-    it('keeps a hook_conflict the World marked as declined on purpose an ordinary HookConflictError', async () => {
+    it.each([
+      'victim-spec-version',
+    ] as const)('keeps a hook_conflict the World marked as declined on purpose (%s) an ordinary HookConflictError', async (forceRefusedReason) => {
       // `forceRefusedReason` says the World implements forcing but would not
       // take this token: the run holding it predates involuntary disposal.
       // That is the everyday conflict the caller can catch and route, not a
@@ -1780,7 +1782,7 @@ describe('createWebhook', () => {
           eventData: {
             token: 'shared',
             conflictingRunId: 'wrun_legacy_victim',
-            forceRefusedReason: 'victim-spec-version',
+            forceRefusedReason,
           },
           createdAt: new Date(),
         },

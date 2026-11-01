@@ -234,7 +234,7 @@ jobs:
           EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
 
       # This lane's own numbers, for the job summary. The PR comment covering
-      # all three lanes is rendered once, from the artifacts, by
+      # every lane is rendered once, from the artifacts, by
       # `event-log-race-repro-comment`.
       - name: Render repro summary
         if: always()
@@ -262,7 +262,14 @@ jobs:
         if: always()
         run: node .github/scripts/render-event-log-race-repro-results.js event-log-race-repro-results.json --check
 
-  # The same harness against the self-hosted Worlds, one parallel job per World.
+  # The same harness against the self-hosted Worlds, one parallel job per World
+  # and spec version. `default` creates spec 8 runs; `spec9` sets
+  # WORKFLOW_SPEC_VERSION=9 for the app and the harness (one process tree, so
+  # unlike the Vercel cell there is no deployment to configure separately), and
+  # the harness fails if a run comes back at another spec version. Both Worlds
+  # serialize a spec 9 run's orchestrator deliveries in their own way (an
+  # in-process run gate, a Graphile named queue per run), so the single
+  # orchestrator needs a cell on each.
   # `scripts/event-log-race-repro-local.sh` owns the whole lifecycle: it builds
   # the packages and the workbench app with WORKFLOW_TARGET_WORLD and
   # WORKFLOW_PUBLIC_MANIFEST=1 set at *build* time (both are build-time inputs),
@@ -281,7 +288,7 @@ jobs:
   # A soak dispatch that raises `budget_ms` has to raise `timeout-minutes` here
   # too, same as the Vercel lane.
   event-log-race-repro-local-worlds:
-    name: Event Log Race Repro (world-${{ matrix.world }})
+    name: Event Log Race Repro (world-${{ matrix.world }}${{ matrix.spec == 'spec9' && ', spec 9' || '' }})
     runs-on: ubuntu-latest
     # The Vercel lane's 25 minutes, plus room for what it never pays for:
     # pnpm build, the app build, and (postgres) container startup + migrations.
@@ -291,6 +298,7 @@ jobs:
       fail-fast: false
       matrix:
         world: [local, postgres]
+        spec: [default, spec9]
     # No comment-writing scopes: see the Vercel lane's permissions.
     permissions:
       contents: read
@@ -311,13 +319,14 @@ jobs:
           # the same environment as the app.
           build-packages: 'false'
 
-      - name: Run event log race repro (world-${{ matrix.world }})
+      - name: Run event log race repro (world-${{ matrix.world }}${{ matrix.spec == 'spec9' && '-spec9' || '' }})
         id: repro
         # The script exits with the harness' own status, which fails on any
         # regression outcome — expected on some baselines, see the job comment.
         continue-on-error: true
         run: ./scripts/event-log-race-repro-local.sh --world ${{ matrix.world }}
         env:
+          WORKFLOW_SPEC_VERSION: ${{ matrix.spec == 'spec9' && '9' || '' }}
           # Deliberately unguarded pass-through: on a `pull_request` event every
           # `inputs.*` is empty, and the harness reads an empty variable as unset
           # and falls back to its own default. See the note on the inputs above.
@@ -353,7 +362,7 @@ jobs:
         run: |
           node .github/scripts/render-event-log-race-repro-results.js \
             event-log-race-repro-results.json \
-            --label "world-${{ matrix.world }}" \
+            --label "world-${{ matrix.world }}${{ matrix.spec == 'spec9' && '-spec9' || '' }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
@@ -363,7 +372,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: event-log-race-repro-results-world-${{ matrix.world }}
+          name: event-log-race-repro-results-world-${{ matrix.world }}${{ matrix.spec == 'spec9' && '-spec9' || '' }}
           path: |
             event-log-race-repro-results.json
             event-log-race-repro-summary.md
@@ -378,11 +387,12 @@ jobs:
         if: always()
         run: test -f event-log-race-repro-results.json
 
-  # One PR comment for all three lanes. They run as parallel jobs and each
+  # One PR comment for all six lanes. They run as parallel jobs and each
   # uploads its own results file, so the comment is rendered here, from the
   # artifacts, once every lane has finished. One comment means one stored
-  # history, which is the point: the three worlds' numbers sit on the same rows
-  # of one table, and a push adds three rows rather than editing three comments.
+  # history, which is the point: every lane's numbers sit on the same rows of
+  # one table, and a push adds one row per lane rather than editing a comment
+  # per lane.
   event-log-race-repro-comment:
     name: Event Log Race Repro (comment)
     runs-on: ubuntu-latest
@@ -432,12 +442,15 @@ jobs:
           fi
 
           # Lane order here is the row order in the comment: the two gating
-          # Vercel lanes first, then the two report-only worlds.
+          # Vercel lanes first, then the report-only worlds, each at the
+          # default spec version and then at spec 9.
           node .github/scripts/render-event-log-race-repro-results.js \
             --lane vercel=lane-results/event-log-race-repro-results/event-log-race-repro-results.json \
             --lane vercel-spec9=lane-results/event-log-race-repro-results-vercel-spec9/event-log-race-repro-results.json \
             --lane local=lane-results/event-log-race-repro-results-world-local/event-log-race-repro-results.json \
+            --lane local-spec9=lane-results/event-log-race-repro-results-world-local-spec9/event-log-race-repro-results.json \
             --lane postgres=lane-results/event-log-race-repro-results-world-postgres/event-log-race-repro-results.json \
+            --lane postgres-spec9=lane-results/event-log-race-repro-results-world-postgres-spec9/event-log-race-repro-results.json \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \

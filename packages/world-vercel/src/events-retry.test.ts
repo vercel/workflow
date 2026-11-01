@@ -274,14 +274,19 @@ describe('createWorkflowRunEvent retry wiring', () => {
   });
 
   it.each([
-    429, 503,
-  ])('retries definite %s admission refusals on the resolved route', async (status) => {
+    { status: 429, code: undefined },
+    { status: 503, code: 'run-spec-version-changed' },
+    { status: 503, code: 'start-hook-run-pending' },
+  ])('retries definite $status $code admission refusals on the resolved route', async ({
+    status,
+    code,
+  }) => {
     const error =
       status === 429
         ? new ThrottleError('busy', { retryAfter: 1 })
         : new WorkflowWorldError('busy', {
             status: 503,
-            code: 'run-spec-version-changed',
+            code,
             retryAfter: 1,
           });
     createV4Mock
@@ -365,14 +370,27 @@ describe('createWorkflowRunEvent retry wiring', () => {
   });
 
   it.each([
-    400, 404,
-  ])('preserves retry history when a later send is refused with %s', async (status) => {
+    { status: 400, pending: false },
+    { status: 404, pending: false },
+    { status: 404, pending: true },
+  ])('preserves retry history after a pending=$pending admission retry and $status refusal', async ({
+    status,
+    pending,
+  }) => {
     const refusal = new WorkflowWorldError('refused', {
       status,
       code: 'resolved-hook-unavailable',
     });
     createV4Mock
-      .mockRejectedValueOnce(new ThrottleError('busy', { retryAfter: 1 }))
+      .mockRejectedValueOnce(
+        pending
+          ? new WorkflowWorldError('pending', {
+              status: 503,
+              code: 'start-hook-run-pending',
+              retryAfter: 1,
+            })
+          : new ThrottleError('busy', { retryAfter: 1 })
+      )
       .mockRejectedValueOnce(refusal);
     const delivery = createWorkflowRunEvent(
       RUN_ID,

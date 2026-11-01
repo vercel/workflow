@@ -5,7 +5,8 @@ This HTTP-only endpoint requires atomic resume deduplication, including when
 the normal event transport uses WebSockets. Older servers and the dedup kill
 switch reject before writing. Definite 400/404 refusals are preserved so core
 can look up the token and fall back to ordinary delivery. The adapter retries
-429 and 503 admission refusals with Retry-After, using the same resume identity.
+429 and explicit 503 `run-spec-version-changed` / `start-hook-run-pending`
+admission refusals, using the same resume identity and bounded wait budgets.
 It never re-sends after an uncertain transport failure: a lost response must not
 become a safe-looking rejection after a backend rollback.
 
