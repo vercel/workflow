@@ -97,9 +97,13 @@ export const SnapshotMetadataSchema = z.object({
  * on load, and the heap stops retaining consumed step results. v2
  * snapshots are treated as a miss.
  *
+ * v4: the heap releases settled pending operations (keyed in a Map instead
+ * of an append-only array). v3 heaps carry the old bookkeeping layout and
+ * are treated as a miss.
+ *
  * @experimental See `Storage.experimental_snapshots`.
  */
-export const SNAPSHOT_FORMAT_VERSION = 3;
+export const SNAPSHOT_FORMAT_VERSION = 4;
 
 /** @experimental See `Storage.experimental_snapshots`. */
 export type SnapshotMetadata = z.infer<typeof SnapshotMetadataSchema>;

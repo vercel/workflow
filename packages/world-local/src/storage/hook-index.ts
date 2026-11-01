@@ -10,13 +10,16 @@ import {
   hasTag,
   isUntagged,
   listJSONFiles,
+  listRunScopedDirs,
   readJSON,
   resolveWithinBase,
+  runEntityDir,
   stripTag,
   taggedPath,
   writeExclusive,
 } from '../fs.js';
 import { hashToken } from './helpers.js';
+import { hookCreatedFromRunCreated } from './start-hook.js';
 
 /**
  * Durable secondary indexes for hook lookups. Event files are keyed by
@@ -42,6 +45,10 @@ import { hashToken } from './helpers.js';
  * index (event publish / entity write), so a crash can only leave a
  * dangling entry pointing at a write that never landed. Readers skip
  * those. A committed event/entity invisible to the index cannot occur.
+ *
+ * A run's `start({ hook })` Hook has no `hook_created`: its admission writes
+ * the entries pointing at the run's `run_created` (its first slot), which
+ * readers take as the creation it stands for (`hookCreatedFromRunCreated`).
  *
  * Pre-index data directories are handled by a one-time backfill
  * (`ensureHookIndexes`) guarded by a completion marker.
@@ -264,31 +271,36 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     // Marker absent, so backfill below.
   }
 
-  const eventsDir = path.join(basedir, 'events');
-  await forEachConcurrent(
-    await listJSONFiles(eventsDir),
-    32,
-    async (fileId) => {
-      const event = await readEventLenient(
-        path.join(eventsDir, `${fileId}.json`)
+  const indexEventFile = async (eventFile: string) => {
+    const fileId = path.basename(eventFile, '.json');
+    const read = await readEventLenient(eventFile);
+    const event = read && (hookCreatedFromRunCreated(read) ?? read);
+    if (!event || event.eventType !== 'hook_created') return;
+    if (typeof event.correlationId !== 'string') return;
+    const token = (event.eventData as { token?: unknown } | undefined)?.token;
+    if (typeof token !== 'string') return;
+    try {
+      await writeHookCreatedIndexEntries(
+        basedir,
+        token,
+        event.runId,
+        event.correlationId,
+        event.eventId,
+        tagOf(fileId)
       );
-      if (!event || event.eventType !== 'hook_created') return;
-      if (typeof event.correlationId !== 'string') return;
-      const token = (event.eventData as { token?: unknown } | undefined)?.token;
-      if (typeof token !== 'string') return;
-      try {
-        await writeHookCreatedIndexEntries(
-          basedir,
-          token,
-          event.runId,
-          event.correlationId,
-          event.eventId,
-          tagOf(fileId)
-        );
-      } catch {
-        // Unsafe ids cannot have been written by this storage layer; skip.
-      }
+    } catch {
+      // Unsafe ids cannot have been written by this storage layer; skip.
     }
+  };
+  // One run at a time per worker, so only one run's file names are held in
+  // memory per worker rather than every event path in the store.
+  await forEachConcurrent(
+    await listRunScopedDirs(basedir, 'events'),
+    8,
+    async (runDir) =>
+      forEachConcurrent(await listJSONFiles(runDir), 32, (fileId) =>
+        indexEventFile(path.join(runDir, `${fileId}.json`))
+      )
   );
 
   const hooksDir = path.join(basedir, 'hooks');
@@ -373,15 +385,17 @@ export async function findIndexedHookCreatedEvent(
     try {
       eventPath = taggedPath(
         basedir,
-        'events',
+        runEntityDir('events', entry.runId),
         `${entry.runId}-${eventId}`,
         tagOf(entryId)
       );
     } catch {
       continue;
     }
-    const event = await readEventLenient(eventPath);
-    if (!event) continue;
+    const read = await readEventLenient(eventPath);
+    if (!read) continue;
+    // A start Hook's entries point at its run's `run_created`.
+    const event = hookCreatedFromRunCreated(read) ?? read;
     if (event.eventType !== 'hook_created') continue;
     if (typeof event.correlationId !== 'string') continue;
     if (!(await accept(event))) continue;

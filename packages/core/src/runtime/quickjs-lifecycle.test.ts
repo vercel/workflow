@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import {
   dehydrateRunError,
+  dehydrateStepArguments,
   encodeWithFormatPrefix,
   hydrateRunError,
   maybeDecrypt,
@@ -18,8 +19,8 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
-import { runWorkflowWithQuickJS } from './quickjs-entrypoint.js';
 import { startQuickJSWorkflow } from './quickjs-runtime.js';
+import { runWorkflowWithQuickJS } from './spec9/quickjs-entrypoint.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -230,4 +231,56 @@ it.each([
   }
   expect(createEvent).toHaveBeenCalledTimes(1);
   expect(dispatchRunFailedHooks).not.toHaveBeenCalled();
+});
+
+it('frames QuickJS abort streams while keeping the encrypted hook event unchanged', async () => {
+  const write = vi.fn().mockResolvedValue(undefined);
+  const close = vi.fn().mockResolvedValue(undefined);
+  setWorld({
+    specVersion: SPEC_VERSION_CURRENT,
+    capabilities: {},
+    events: {
+      list: async () => ({ data: [], cursor: null, hasMore: false }),
+      create: createEvent,
+    },
+    streams: { write, close },
+    getEncryptionKeyForRun: async () => new Uint8Array(32).fill(7),
+  } as unknown as World);
+  vi.mocked(startQuickJSWorkflow).mockResolvedValueOnce({
+    result: {
+      suspended: {
+        pendingOperations: [
+          {
+            type: 'hook',
+            correlationId: 'hook_abort',
+            token: 'abrt_test',
+            hasCreatedEvent: true,
+            abortRequested: true,
+            abortPayload: (await dehydrateStepArguments(
+              { aborted: true, reason: 'stop' },
+              runId,
+              undefined
+            )) as Uint8Array,
+            isSystem: true,
+          },
+        ],
+      },
+    },
+    continueWithEvents: vi.fn(),
+    dispose: vi.fn(),
+  });
+  await run();
+  expect(write).toHaveBeenCalledOnce();
+  const [id, name, wire] = write.mock.calls[0];
+  expect(id).toBe(runId);
+  expect(name).toBe('strm_test_system_abort');
+  expect(new DataView(wire.buffer, wire.byteOffset).getUint32(0, false)).toBe(
+    wire.length - 4
+  );
+  const abortEvent = createEvent.mock.calls.find(
+    ([, e]) => e.eventType === 'hook_received'
+  )?.[1];
+  expect(wire.slice(4)).toEqual(abortEvent?.eventData?.payload);
+  expect(new TextDecoder().decode(wire.slice(4, 8))).toBe('encr');
+  expect(close).toHaveBeenCalledWith(runId, name);
 });

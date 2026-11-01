@@ -1,11 +1,21 @@
-import { FatalError, RUN_ERROR_CODES } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  ERROR_SLUGS,
+  FatalError,
+  formatErrorMessageWithDetails,
+  QUICKJS_SNAPSHOT_REMEDIATION,
+  RUN_ERROR_CODES,
+} from '@workflow/errors';
 import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
-import { memoizeEncryptionKey, type SlotSnapshotParams } from './helpers.js';
+import {
+  type EventCreator,
+  memoizeEncryptionKey,
+  type SlotSnapshotParams,
+} from './helpers.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import { getWorld } from './world.js';
 
 /**
@@ -127,6 +137,13 @@ export async function handleReplayBudgetExhausted(args: {
    * World should be told which view.
    */
   slotSnapshot?: SlotSnapshotParams;
+  /** The run's spec version, which the terminal event is stamped with. */
+  runSpecVersion: number | undefined;
+  /**
+   * Writes the terminal event. The orchestrator passes its in-band writer;
+   * without one the event goes straight to the World.
+   */
+  writeEvent?: EventCreator;
 }): Promise<void> {
   const { runId, workflowName, requestId, attempt, limitMs, slotSnapshot } =
     args;
@@ -163,7 +180,13 @@ export async function handleReplayBudgetExhausted(args: {
 
   const getEncryptionKey = memoizeEncryptionKey(world, runId);
   const timeoutErr = new FatalError(
-    `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`
+    formatErrorMessageWithDetails(
+      `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`,
+      {
+        hint: `Replay time grows with the size of the event log. ${QUICKJS_SNAPSHOT_REMEDIATION}`,
+        slug: ERROR_SLUGS.REPLAY_TIMEOUT,
+      }
+    )
   );
   const encryptionKey = await getEncryptionKey();
   const dehydratedError = await dehydrateRunError(
@@ -171,18 +194,18 @@ export async function handleReplayBudgetExhausted(args: {
     runId,
     encryptionKey
   );
-  await world.events.create(
-    runId,
-    {
-      eventType: 'run_failed',
-      specVersion: SPEC_VERSION_CURRENT,
-      eventData: {
-        error: dehydratedError,
-        errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
-      },
+  const runFailed = {
+    eventType: 'run_failed',
+    specVersion: specVersionForRunWrite(args.runSpecVersion),
+    eventData: {
+      error: dehydratedError,
+      errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
     },
-    { requestId, ...slotSnapshot }
-  );
+  } as const;
+  const params = { requestId, ...slotSnapshot };
+  await (args.writeEvent
+    ? args.writeEvent(runFailed, params)
+    : world.events.create(runId, runFailed, params));
   dispatchRunFailedHooks(
     runId,
     workflowName,

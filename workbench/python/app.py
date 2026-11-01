@@ -21,7 +21,7 @@ from __future__ import annotations
 import importlib
 from typing import Any, AsyncIterator, Callable
 
-import httpx
+import httpx2
 from vercel.workflow import ENDPOINT_PATH, MANIFEST_PATH, HTTPRequest, HTTPResponse
 from vercel.workflow._internal import world as w
 
@@ -40,7 +40,7 @@ class AsgiRequest(HTTPRequest):
 
     def __init__(self, scope: dict[str, Any], receive: Callable) -> None:
         self._scope = scope
-        self._headers = httpx.Headers(
+        self._headers = httpx2.Headers(
             [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope["headers"]]
         )
         self._receive = receive
@@ -58,7 +58,7 @@ class AsgiRequest(HTTPRequest):
         return self._scope["path"] + (f"?{query}" if query else "")
 
     @property
-    def headers(self) -> httpx.Headers:
+    def headers(self) -> httpx2.Headers:
         return self._headers
 
     async def aiter_bytes(self, chunk_size: int | None = None) -> AsyncIterator[bytes]:

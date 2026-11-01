@@ -43,6 +43,12 @@ export interface HookInvocationQueueItem {
   force?: boolean;
   metadata?: Serializable;
   hasCreatedEvent?: boolean;
+  /**
+   * The run's start Hook: created by the run's admission, so it never has a
+   * `hook_created` of its own (`hasCreatedEvent` is set from the start).
+   * Disposal still writes an ordinary `hook_disposed`.
+   */
+  startHook?: true;
   /** Whether the workflow is awaiting `hook.getConflict()` for this hook */
   hasConflictAwaiter?: boolean;
   disposed?: boolean;

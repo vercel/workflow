@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
-import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type SpecVersion,
+  stripEventDataRefs,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fsModule from './fs.js';
@@ -332,6 +337,54 @@ describe('Storage', () => {
           input: new Uint8Array(),
         });
         expect(created.encryptionPublicKey).toBeUndefined();
+      });
+    });
+
+    describe('maxEvents', () => {
+      const startRun = async (executionContext?: Record<string, unknown>) => {
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+          ...(executionContext ? { executionContext } : {}),
+        });
+        const start = () =>
+          storage.events.create(created.runId, {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          });
+        return { first: await start(), second: await start() };
+      };
+
+      it('advertises the default ceiling for node runs', async () => {
+        const { first, second } = await startRun({ workflowVm: 'node' });
+        expect(first.maxEvents).toBe(25_000);
+        // Idempotent run_started on an already-running run.
+        expect(second.maxEvents).toBe(25_000);
+      });
+
+      it('honors WORKFLOW_MAX_EVENTS for non-exempt runs', async () => {
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '10');
+        const { first } = await startRun();
+        expect(first.maxEvents).toBe(10);
+      });
+
+      it('exempts QuickJS runs with a positive snapshot threshold', async () => {
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '10');
+        const { first, second } = await startRun({
+          workflowVm: 'quickjs',
+          snapshotThreshold: 1000,
+        });
+        expect(first.maxEvents).toBe(Number.MAX_SAFE_INTEGER);
+        expect(second.maxEvents).toBe(Number.MAX_SAFE_INTEGER);
+      });
+
+      it('keeps the ceiling for QuickJS runs with snapshotting disabled', async () => {
+        const { first } = await startRun({
+          workflowVm: 'quickjs',
+          snapshotThreshold: 0,
+        });
+        expect(first.maxEvents).toBe(25_000);
       });
     });
 
@@ -730,6 +783,7 @@ describe('Storage', () => {
         const filePath = path.join(
           testDir,
           'steps',
+          testRunId,
           `${testRunId}-step_123.json`
         );
         const fileExists = await fs
@@ -865,10 +919,59 @@ describe('Storage', () => {
         expect(persisted.input).toEqual(new Uint8Array([7, 8, 9]));
       });
 
-      it('writes a synthetic step_created event so replay observes it', async () => {
+      it('records a single-orchestrator step created by its start alone, keeping the input on it', async () => {
+        const { runId: testRunId } = await createRun(
+          storage,
+          {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
         await storage.events.create(testRunId, {
           eventType: 'step_started',
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          correlationId: 'lazy_step_2',
+          eventData: {
+            stepName: 'lazy-step',
+            input: new Uint8Array([1]),
+            inline: true,
+          },
+        });
+
+        const events = await storage.events.listByCorrelationId({
+          correlationId: 'lazy_step_2',
+          runId: testRunId,
+          resolveData: 'all',
+        });
+        expect(events.data.map((e) => e.eventType)).toEqual(['step_started']);
+        expect(events.data[0]?.eventData).toMatchObject({
+          input: new Uint8Array([1]),
+          inline: true,
+        });
+        const step = await storage.steps.get(testRunId, 'lazy_step_2');
+        expect(step.input).toEqual(new Uint8Array([1]));
+      });
+
+      it('writes a synthetic step_created event on a run before the single orchestrator, so replay observes it', async () => {
+        const legacy = await storage.events.create(null, {
+          eventType: 'run_created',
+          specVersion: (SPEC_VERSION_SINGLE_ORCHESTRATOR - 1) as SpecVersion,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+          },
+        });
+        const legacyRunId = legacy.run!.runId;
+        await storage.events.create(legacyRunId, {
+          eventType: 'run_started',
+          specVersion: (SPEC_VERSION_SINGLE_ORCHESTRATOR - 1) as SpecVersion,
+        });
+        await storage.events.create(legacyRunId, {
+          eventType: 'step_started',
+          specVersion: (SPEC_VERSION_SINGLE_ORCHESTRATOR - 1) as SpecVersion,
           correlationId: 'lazy_step_2',
           eventData: {
             stepName: 'lazy-step',
@@ -878,7 +981,7 @@ describe('Storage', () => {
 
         const events = await storage.events.listByCorrelationId({
           correlationId: 'lazy_step_2',
-          runId: testRunId,
+          runId: legacyRunId,
         });
         const types = events.data.map((e) => e.eventType);
         // Both a step_created (synthetic) and a step_started must be present:
@@ -1318,6 +1421,7 @@ describe('Storage', () => {
         const filePath = path.join(
           testDir,
           'events',
+          testRunId,
           `${testRunId}-${event.eventId}.json`
         );
         const fileExists = await fs
@@ -4002,7 +4106,12 @@ describe('Storage', () => {
       // Simulate a crash after the hook entity write but before the
       // event write by deleting the just-written event from disk.
       await fs.unlink(
-        path.join(testDir, 'events', `${testRunId}-${first.event.eventId}.json`)
+        path.join(
+          testDir,
+          'events',
+          testRunId,
+          `${testRunId}-${first.event.eventId}.json`
+        )
       );
 
       // Sanity: the hook entity is still durable but the
@@ -4200,7 +4309,12 @@ describe('Storage', () => {
       await fs.unlink(hookPath);
       await fs.unlink(tokenClaimPath);
       await fs.writeFile(
-        path.join(testDir, 'events', 'wrun_malformed-event.json'),
+        path.join(
+          testDir,
+          'events',
+          testRunId,
+          `${testRunId}-evnt_malformed.json`
+        ),
         '{'
       );
 
@@ -4571,7 +4685,7 @@ describe('Storage', () => {
         JSON.stringify({ token, hookId, runId: run.runId })
       );
       const preExistingEventId = 'evnt_pre_upgrade_existing';
-      const eventsDir = path.join(testDir, 'events');
+      const eventsDir = path.join(testDir, 'events', run.runId);
       await fs.mkdir(eventsDir, { recursive: true });
       await fs.writeFile(
         path.join(eventsDir, `${run.runId}-${preExistingEventId}.json`),
@@ -5482,6 +5596,7 @@ describe('Storage', () => {
       const eventPath = path.join(
         testDir,
         'events',
+        run.runId,
         `${run.runId}-${stalledEventId}.json`
       );
       await expect(promoteExclusive(stagedPath, eventPath)).resolves.toBe(
@@ -5629,7 +5744,7 @@ describe('Storage', () => {
           workflowName: 'test-workflow',
           input: new Uint8Array(),
         });
-        const eventsDir = path.join(testDir, 'events');
+        const eventsDir = path.join(testDir, 'events', run.runId);
         await fs.chmod(eventsDir, 0o000);
 
         try {

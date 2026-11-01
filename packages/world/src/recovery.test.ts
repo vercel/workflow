@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Storage } from './interfaces.js';
 import type { Queue } from './queue.js';
+import {
+  singleOrchestratorRunIdOf,
+  WorkflowInvokePayloadSchema,
+} from './queue.js';
 import { reenqueueActiveRuns } from './recovery.js';
+import {
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+} from './spec-version.js';
 
 function createRuns(): Storage['runs'] {
   return {
@@ -49,6 +57,131 @@ describe('reenqueueActiveRuns', () => {
     expect(enqueue).toHaveBeenCalledWith('__explicit_wkf_workflow_myWorkflow', {
       runId: 'wrun_AAA',
     });
+  });
+
+  it("re-enqueues a run to the queue namespace it recorded, not this process's", async () => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
+    const runs = {
+      list: vi.fn(async () => ({
+        data: [
+          // Started by a queue consumer of its own (namespace `agent`).
+          {
+            runId: 'wrun_OWN',
+            workflowName: 'workflow//agent//session',
+            status: 'running',
+            executionContext: { queueNamespace: 'agent' },
+          },
+          // Started by the Workflow SDK under another namespace.
+          {
+            runId: 'wrun_EVE',
+            workflowName: 'myWorkflow',
+            status: 'running',
+            executionContext: { queueNamespace: 'eve' },
+          },
+          // Recorded nothing (or nothing usable): the default namespace.
+          {
+            runId: 'wrun_DEF',
+            workflowName: 'myWorkflow',
+            status: 'pending',
+            executionContext: { workflowCoreVersion: '5.0.0' },
+          },
+          {
+            runId: 'wrun_BAD',
+            workflowName: 'myWorkflow',
+            status: 'pending',
+            executionContext: { queueNamespace: 'Not-Valid' },
+          },
+        ],
+        hasMore: false,
+        cursor: null,
+      })),
+    } as unknown as Storage['runs'];
+    const enqueue = vi.fn<Queue['queue']>();
+
+    await reenqueueActiveRuns(runs, enqueue, 'test');
+
+    expect(enqueue.mock.calls).toEqual([
+      ['__agent_wkf_workflow_workflow//agent//session', { runId: 'wrun_OWN' }],
+      ['__eve_wkf_workflow_myWorkflow', { runId: 'wrun_EVE' }],
+      ['__wkf_workflow_myWorkflow', { runId: 'wrun_DEF' }],
+      ['__wkf_workflow_myWorkflow', { runId: 'wrun_BAD' }],
+    ]);
+  });
+
+  it("stamps each message with its run's spec version", async () => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
+    const runs = {
+      list: vi.fn(async () => ({
+        data: [
+          {
+            runId: 'wrun_NEW',
+            workflowName: 'myWorkflow',
+            status: 'running',
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          },
+          {
+            runId: 'wrun_OLD',
+            workflowName: 'myWorkflow',
+            status: 'running',
+            specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+          },
+          // No recorded version: no stamp, so the runtime reads the run.
+          { runId: 'wrun_NONE', workflowName: 'myWorkflow', status: 'pending' },
+        ],
+        hasMore: false,
+        cursor: null,
+      })),
+    } as unknown as Storage['runs'];
+    const enqueue = vi.fn<Queue['queue']>();
+
+    await reenqueueActiveRuns(runs, enqueue, 'test');
+
+    const messages = enqueue.mock.calls.map(([, message]) => message);
+    expect(messages).toEqual([
+      { runId: 'wrun_NEW', runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+      {
+        runId: 'wrun_OLD',
+        runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      },
+      { runId: 'wrun_NONE' },
+    ]);
+    // A World's per-run gate covers the spec 9 run's recovery message only.
+    expect(messages.map(singleOrchestratorRunIdOf)).toEqual([
+      'wrun_NEW',
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it('marks each message as a recovery after the queue lost its messages, and only then', async () => {
+    const enqueue = vi.fn<Queue['queue']>();
+    await reenqueueActiveRuns(createRuns(), enqueue, 'test', undefined, {
+      queueLost: true,
+    });
+    await reenqueueActiveRuns(createRuns(), enqueue, 'test');
+    const messages = enqueue.mock.calls.map(([, message]) => message);
+    expect(messages).toEqual([
+      { runId: 'wrun_AAA', recovery: true },
+      { runId: 'wrun_AAA' },
+    ]);
+    // The marker survives the orchestrator payload schema, and a malformed
+    // one never fails the parse.
+    expect(WorkflowInvokePayloadSchema.parse(messages[0])).toMatchObject({
+      recovery: true,
+    });
+    expect(
+      WorkflowInvokePayloadSchema.parse({ runId: 'wrun_AAA', recovery: 'yes' })
+        .recovery
+    ).toBeUndefined();
+  });
+
+  it('rejects an invalid default namespace before enqueueing anything', async () => {
+    const enqueue = vi.fn<Queue['queue']>();
+
+    await expect(
+      reenqueueActiveRuns(createRuns(), enqueue, 'test', 'Not-Valid')
+    ).rejects.toThrow();
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it('recovers runs without logging', async () => {

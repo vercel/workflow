@@ -1,5 +1,59 @@
 # @workflow/cli
 
+## 5.0.6
+
+### Patch Changes
+
+- [#4758](https://github.com/vercel/workflow/pull/4758) [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b) Thanks [@pranaygp](https://github.com/pranaygp)! - Resolve a run's encryption key from metadata only when decrypting in `workflow inspect --decrypt` and the web UI, instead of making the server resolve the run's whole input and output for each lookup.
+- Updated dependencies [[`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95), [`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b), [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec), [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a), [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/core@5.2.3
+  - @workflow/world-local@5.1.2
+  - @workflow/web@5.0.6
+  - @workflow/world@5.0.5
+  - @workflow/world-vercel@5.2.3
+  - @workflow/errors@5.0.5
+  - @workflow/builders@5.0.6
+
+## 5.0.5
+
+### Patch Changes
+
+- Updated dependencies [[`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa), [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658), [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd), [`02993a2`](https://github.com/vercel/workflow/commit/02993a26cbabec8f00df1f8a3a758158d095008a)]:
+  - @workflow/core@5.2.2
+  - @workflow/world-vercel@5.2.2
+  - @workflow/builders@5.0.5
+  - @workflow/web@5.0.5
+
+## 5.0.4
+
+### Patch Changes
+
+- [#4760](https://github.com/vercel/workflow/pull/4760) [`1342a96`](https://github.com/vercel/workflow/commit/1342a96af38aa52fbacaa49ee615d5b6412540e5) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve `workflow inspect` for long runs and scoped lookups: add `--all` for complete steps, events, and sleeps listings, print reusable cursor hints, and keep pagination on the read path that issued the cursor. Support event ID and short workflow-name lookups, require `--runId` for individual steps, events, and streams, fix `st` to mean streams, include run IDs in stream hints, and exit non-zero when a stream read fails.
+- Updated dependencies [[`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/core@5.2.1
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/world-vercel@5.2.1
+  - @workflow/world-local@5.1.1
+  - @workflow/utils@5.0.2
+  - @workflow/builders@5.0.4
+  - @workflow/web@5.0.4
+
+## 5.0.3
+
+### Patch Changes
+
+- [#4376](https://github.com/vercel/workflow/pull/4376) [`2036247`](https://github.com/vercel/workflow/commit/203624721d76f0e01be3e62ce352483185ca0543) Thanks [@withkarann](https://github.com/withkarann)! - Ship an oclif command manifest so the CLI loads only the command being run, and skip loading the runtime on exit when no World was created. `workflow --version` starts in about 50 ms instead of 650 ms.
+- Updated dependencies [[`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69), [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118), [`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431), [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616), [`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1), [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f), [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07), [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc), [`28cb70d`](https://github.com/vercel/workflow/commit/28cb70da502b8051d955fda981502c509c93c714), [`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf), [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2), [`d0f6b91`](https://github.com/vercel/workflow/commit/d0f6b9140841f548663c29f8adaaa21ae5dec09b)]:
+  - @workflow/core@5.2.0
+  - @workflow/world-vercel@5.2.0
+  - @workflow/world@5.0.3
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/web@5.0.3
+  - @workflow/world-local@5.1.0
+  - @workflow/builders@5.0.3
+  - @workflow/errors@5.0.3
+
 ## 5.0.2
 
 ### Patch Changes

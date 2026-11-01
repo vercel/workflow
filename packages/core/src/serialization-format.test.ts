@@ -213,6 +213,37 @@ describe('hydrateResourceIO', () => {
     expect(hydrated.dynamicWorkflowCode).toBe(code);
   });
 
+  it('strips executionContext but keeps display-safe fields', () => {
+    const hydrated = hydrateResourceIO(
+      {
+        runId: 'wrun_ctx',
+        executionContext: {
+          workflowCoreVersion: '5.0.0',
+          workflowVm: 'quickjs',
+          snapshotThreshold: 1000,
+          traceCarrier: { traceparent: 'x' },
+        },
+      },
+      testRevivers
+    ) as Record<string, unknown>;
+    expect('executionContext' in hydrated).toBe(false);
+    expect(hydrated.workflowCoreVersion).toBe('5.0.0');
+    expect(hydrated.workflowVm).toBe('quickjs');
+    expect(hydrated.snapshotThreshold).toBe(1000);
+    expect('traceCarrier' in hydrated).toBe(false);
+  });
+
+  it('does not add VM fields when executionContext lacks them', () => {
+    const hydrated = hydrateResourceIO(
+      { runId: 'wrun_ctx', executionContext: { traceCarrier: {} } },
+      testRevivers
+    ) as Record<string, unknown>;
+    expect('executionContext' in hydrated).toBe(false);
+    expect('workflowCoreVersion' in hydrated).toBe(false);
+    expect('workflowVm' in hydrated).toBe(false);
+    expect('snapshotThreshold' in hydrated).toBe(false);
+  });
+
   it('should not add dynamicWorkflowCode to a static run', () => {
     const hydrated = hydrateResourceIO(
       { runId: 'wrun_static', input: makeDevlPayload(['arg']) },

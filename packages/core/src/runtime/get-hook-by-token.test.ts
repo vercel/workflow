@@ -165,10 +165,12 @@ describe('getHookByToken (lazy metadata)', () => {
 
     await found.metadata;
 
-    expect(runsGet).toHaveBeenCalledWith(hook.runId);
-    // The fallback reuses the run it just fetched rather than re-resolving by
-    // runId + deploymentId.
-    expect(getEncryptionKeyForRun).toHaveBeenCalledWith(run);
+    // Metadata only: hydrating needs the run's deploymentId, not its
+    // payloads (#4645).
+    expect(runsGet).toHaveBeenCalledWith(hook.runId, { resolveData: 'none' });
+    expect(getEncryptionKeyForRun).toHaveBeenCalledWith(hook.runId, {
+      deploymentId: run.deploymentId,
+    });
   });
 
   it('surfaces a hydration failure on access, not on lookup', async () => {

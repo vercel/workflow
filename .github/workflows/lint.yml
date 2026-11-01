@@ -84,8 +84,10 @@ jobs:
         with:
           node-version: 24.x
 
-      - name: Run .github/scripts and .github/actions unit tests
-        run: node --test ".github/scripts/**/*.test.js" ".github/actions/**/*.test.js"
+      # Suites under `scripts/` are named file by file: the rest of that
+      # directory is vitest files, which `node --test` cannot import.
+      - name: Run CI script unit tests
+        run: node --test ".github/scripts/**/*.test.js" ".github/actions/**/*.test.js" "scripts/trusted-sources-headers.test.mjs"
 
   changesets:
     name: Changesets

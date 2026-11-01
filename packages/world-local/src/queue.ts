@@ -1,13 +1,21 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { createWorkflowUrl, debugLog } from '@workflow/utils';
+import {
+  createAppRouteUrl,
+  createWorkflowUrl,
+  debugLog,
+} from '@workflow/utils';
 import {
   isNodeHttpEnabled,
+  isSingleOrchestratorMessage,
   MessageId,
   parseQueueName,
+  parseQueueRoute,
   type Queue,
-  type QueuePrefix,
+  QueuePrefix,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
+  WORKFLOW_FLOW_ROUTE,
 } from '@workflow/world';
 import {
   createNodeHttpAgents,
@@ -59,6 +67,35 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // When the clamped timeout fires, the handler will recalculate remaining time from
 // persistent state and return another timeoutSeconds if needed.
 const MAX_SAFE_TIMEOUT_MS = 2147483647;
+
+/**
+ * The most deliveries world-local makes of one message (handoffs aside): a
+ * guard against a message that fails forever. The runtime enforces its own
+ * delivery cap well below it.
+ */
+export const MAX_LOCAL_SAFETY_LIMIT = 256;
+
+/** Failed deliveries retried 5s apart, before the backoff grows. */
+const LINEAR_RETRY_DELIVERIES = 32;
+const LINEAR_RETRY_DELAY_MS = 5_000;
+const MAX_RETRY_DELAY_MS = 60_000;
+
+/**
+ * The delay before world-local retries a message whose `failedDeliveries`-th
+ * delivery failed: 5s for the first 32, as Vercel Queues does, then doubling
+ * up to a minute. So the {@link MAX_LOCAL_SAFETY_LIMIT} deliveries of a
+ * message that keeps failing span hours, longer than the runtime's stall
+ * window for a step message (`QUEUE_MIN_STEP_REDELIVERY_SPAN_MS` in
+ * `@workflow/world`), and a step whose every delivery throws is failed
+ * rather than left with no message.
+ */
+export function localRetryDelayMs(failedDeliveries: number): number {
+  if (failedDeliveries <= LINEAR_RETRY_DELIVERIES) return LINEAR_RETRY_DELAY_MS;
+  return Math.min(
+    MAX_RETRY_DELAY_MS,
+    LINEAR_RETRY_DELAY_MS * 2 ** (failedDeliveries - LINEAR_RETRY_DELIVERIES)
+  );
+}
 
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
@@ -119,6 +156,11 @@ export type LocalQueue = Queue & {
   close(): Promise<void>;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
+  /**
+   * Route a queue prefix's HTTP deliveries to `path` on the app instead of
+   * the Workflow SDK's flow route (see `Queue.registerRoute`).
+   */
+  registerRoute(prefix: QueuePrefix, path: string): void;
 };
 
 const DETACHED_ARRAYBUFFER_ERROR =
@@ -145,6 +187,40 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Per-run mutual exclusion for orchestrator deliveries, in FIFO order.
+ *
+ * `acquire(runId)` resolves once every earlier holder for that run has
+ * released, with the release function. Keys are dropped when the last holder
+ * releases, so the map holds only runs with a delivery in flight or waiting.
+ */
+export function createRunGate() {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    async acquire(runId: string): Promise<() => void> {
+      const previous = tails.get(runId) ?? Promise.resolve();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.then(() => held);
+      tails.set(runId, tail);
+      await previous;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        release();
+        if (tails.get(runId) === tail) tails.delete(runId);
+      };
+    },
+    /** Runs with a delivery in flight or waiting. For tests. */
+    size(): number {
+      return tails.size;
+    },
+  };
+}
+
 export function createQueue(config: Partial<Config>): LocalQueue {
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
@@ -160,6 +236,21 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
+  // A single-orchestrator run's (spec >= 9) orchestrator deliveries go one at
+  // a time, like a concurrency key on Vercel Queues: the single-writer
+  // guarantee's queue half (the in-band fence is the other). Step messages,
+  // health checks and earlier runs' messages are not gated (see
+  // `singleOrchestratorRunIdOf`), so a run's steps keep running in parallel
+  // with each other and with its orchestrator.
+  const runGate = createRunGate();
+  // The same gate on the receiving side, held by `createQueueHandler` around
+  // the handler. `runGate` only sees the messages this process's queue sends,
+  // but a run's messages can come from several processes on one data
+  // directory (an app, plus a script or test process that calls `start()` or
+  // `resumeHook()`), and all of them reach the handler of the process that
+  // serves the workflow routes. Separate from `runGate`, which a sender holds
+  // while it delivers to its own process's handler.
+  const handlerRunGate = createRunGate();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
   // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
@@ -176,6 +267,19 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const inflightMessages = new Map<string, MessageId>();
   /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
   const directHandlers = new Map<string, DirectHandler>();
+  /**
+   * HTTP delivery routes by queue prefix. A prefix without one is delivered
+   * to the Workflow SDK's flow route. Read on every delivery attempt, so a
+   * route registered after a message was enqueued (a consumer whose module
+   * loads after `start()` re-enqueued its runs) takes the next attempt.
+   */
+  const routes = new Map<string, string>();
+  const deliveryUrl = (baseUrl: string, prefix: string) => {
+    const route = routes.get(prefix);
+    return route
+      ? createAppRouteUrl(baseUrl, route)
+      : createWorkflowUrl(baseUrl, { type: 'flow' });
+  };
 
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
@@ -190,12 +294,24 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
+    // One message for its whole life: every delivery below, including the
+    // `{ timeoutSeconds }` redeliveries, reuses this id and creation time.
+    const createdAt = new Date().toISOString();
 
     // Extract identifiers from the message for structured logging.
     // Combined workflow messages carry `runId` and may include `stepId`.
     const msg = message as Record<string, unknown>;
     const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
+    // Keyed by prefix as well, so a run id never gates deliveries on another
+    // prefix (a queue consumer of its own, or another namespace).
+    const orchestratorRunKey = (() => {
+      const id = singleOrchestratorRunIdOf(message);
+      return id === undefined ? undefined : `${prefix}${id}`;
+    })();
+    // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a handoff: the
+    // redelivery starts at once and the handed-off delivery is not an attempt.
+    const handsOff = isSingleOrchestratorMessage(message);
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -217,20 +333,37 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await setTimeout(delayMs, undefined, { signal: closeSignal });
       }
 
-      const token = semaphore.tryAcquire();
-      if (!token) {
-        // Debug-gated: this is the semaphore doing its job. A fan-out wider
-        // than the limit queues behind it and every message still runs, so a
-        // per-message warning turns a healthy wide run into a wall of output.
-        debugLog(
-          `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
-        );
-        await semaphore.acquire();
-      }
-      // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow handler
-      // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
-      const MAX_LOCAL_SAFETY_LIMIT = 256;
+      /**
+       * Takes this message's delivery slots: its run's orchestrator gate
+       * first (when it is an orchestrator delivery), then a worker slot. The
+       * gate is taken first so a delivery waiting for its run holds no worker
+       * slot. Both are held for one delivery attempt only and released before
+       * any sleep (a `{ timeoutSeconds }` redelivery delay, a retry backoff),
+       * because a message that is not being delivered occupies neither, as on
+       * Vercel Queues.
+       */
+      const acquireDelivery = async (): Promise<() => void> => {
+        const releaseRun = orchestratorRunKey
+          ? await runGate.acquire(orchestratorRunKey)
+          : undefined;
+        if (!semaphore.tryAcquire()) {
+          // Debug-gated: this is the semaphore doing its job. A fan-out wider
+          // than the limit queues behind it and every message still runs, so
+          // a per-message warning turns a healthy wide run into a wall of
+          // output.
+          debugLog(
+            `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
+          );
+          await semaphore.acquire();
+        }
+        return () => {
+          semaphore.release();
+          releaseRun?.();
+        };
+      };
+      // Handoffs counted as such per message, as Vercel Queues bounds them;
+      // past it a handoff counts toward `attempt` and the safety limit.
+      const MAX_LOCAL_HANDOFFS = 10_000;
       // Number of times the message has actually reached a handler (returned
       // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
       // not the loop counter, is the attempt the handler sees via
@@ -238,14 +371,28 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
       let delivery = 0;
+      // Deliveries that ended in a handoff, which `attempt` and the safety
+      // limit leave out.
+      let handoffs = 0;
+      // Deliveries whose handler answered with an error.
+      let failedDeliveries = 0;
+      let releaseDelivery: (() => void) | undefined;
+      const endDelivery = () => {
+        releaseDelivery?.();
+        releaseDelivery = undefined;
+      };
       try {
-        for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+        for (let loop = 0; loop - handoffs < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+          releaseDelivery = await acquireDelivery();
+          if (closeSignal.aborted) return;
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(delivery + 1),
+            'x-vqs-message-attempt': String(delivery + 1 - handoffs),
+            'x-vqs-message-delivery-count': String(delivery + 1),
+            'x-vqs-message-created-at': createdAt,
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
@@ -254,15 +401,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           try {
             if (directHandler) {
               const req = new Request(
-                createWorkflowUrl(resolveDirectBaseUrl(config), {
-                  type: 'flow',
-                }),
+                deliveryUrl(resolveDirectBaseUrl(config), prefix),
                 { method: 'POST', headers, body }
               );
               response = await directHandler(req);
             } else {
               const baseUrl = await resolveBaseUrl(config);
-              const url = createWorkflowUrl(baseUrl, { type: 'flow' });
+              const url = deliveryUrl(baseUrl, prefix);
               response = nodeHttpAgents
                 ? await nodeHttpFetch(url, {
                     method: 'POST',
@@ -286,6 +431,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             delivery++;
             text = await response.text();
           } catch (err) {
+            endDelivery();
             // A transport can fail before response headers or while consuming
             // the body. Both are transient: back off and retry the same
             // durable message rather than leaving its run stalled. Two
@@ -317,6 +463,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             continue;
           }
 
+          endDelivery();
           if (response.ok) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
@@ -332,6 +479,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   await setTimeout(timeoutMs, undefined, {
                     signal: closeSignal,
                   });
+                } else if (handsOff && handoffs < MAX_LOCAL_HANDOFFS) {
+                  handoffs++;
                 }
                 continue;
               }
@@ -347,14 +496,22 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               ...(runId && { runId }),
               ...(stepId && { stepId }),
               handlerError: text,
+              ...(!directHandler &&
+                !routes.has(prefix) &&
+                (response.status === 400 || response.status === 404) && {
+                  hint:
+                    `No route or handler is registered for queue prefix "${prefix}", ` +
+                    `so its messages go to the Workflow SDK's flow route (${WORKFLOW_FLOW_ROUTE}). ` +
+                    `A queue consumer of its own registers one with world.registerRoute(prefix, path) or world.registerHandler(prefix, handler).`,
+                }),
             }
           );
 
-          // 5s linear backoff to approximate VQS retry timing in local dev.
-          // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient: the handler enforces the real
-          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000, undefined, { signal: closeSignal });
+          // Backs off as VQS does (see `localRetryDelayMs`).
+          failedDeliveries++;
+          await setTimeout(localRetryDelayMs(failedDeliveries), undefined, {
+            signal: closeSignal,
+          });
         }
 
         console.error(
@@ -367,7 +524,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         );
       } finally {
-        semaphore.release();
+        endDelivery();
       }
     })()
       .catch((err) => {
@@ -409,6 +566,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       'x-vqs-queue-name': ValidQueueName,
       'x-vqs-message-id': MessageId,
       'x-vqs-message-attempt': z.coerce.number(),
+      // Sent by world-postgres, whose `attempt` restarts on a reschedule.
+      'x-vqs-message-delivery-count': z.coerce
+        .number()
+        .int()
+        .positive()
+        .optional(),
+      // Absent on a delivery from a sender that predates it.
+      'x-vqs-message-created-at': z.iso.datetime().optional(),
     })
   );
 
@@ -430,14 +595,35 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       const queueName = headers.data['x-vqs-queue-name'];
       const messageId = headers.data['x-vqs-message-id'];
       const attempt = headers.data['x-vqs-message-attempt'];
+      const deliveryCountHeader = headers.data['x-vqs-message-delivery-count'];
+      const createdAtHeader = headers.data['x-vqs-message-created-at'];
 
       if (!queueName.startsWith(prefix)) {
-        return Response.json({ error: 'Unhandled queue' }, { status: 400 });
+        return Response.json(
+          {
+            error: 'Unhandled queue',
+            detail: `This route handles queue prefix "${prefix}", not "${queueName}".`,
+          },
+          { status: 400 }
+        );
       }
 
       const body = await new TypedJsonTransport().deserialize(req.body);
+      const orchestratorRunId = singleOrchestratorRunIdOf(body);
+      const releaseRun =
+        orchestratorRunId === undefined
+          ? undefined
+          : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
       try {
-        const result = await handler(body, { attempt, queueName, messageId });
+        const result = await handler(body, {
+          attempt,
+          // Counts every delivery of this message that reached a handler,
+          // starting at 1, including `{ timeoutSeconds }` redeliveries.
+          deliveryCount: deliveryCountHeader ?? attempt,
+          ...(createdAtHeader ? { createdAt: new Date(createdAtHeader) } : {}),
+          queueName,
+          messageId,
+        });
 
         if (
           typeof body === 'object' &&
@@ -468,6 +654,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         return Response.json({ ok: true });
       } catch (error) {
         return Response.json(String(error), { status: 500 });
+      } finally {
+        releaseRun?.();
       }
     };
   };
@@ -483,6 +671,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     getDeploymentId,
     registerHandler(prefix: QueuePrefix, handler: DirectHandler) {
       directHandlers.set(prefix, handler);
+    },
+    registerRoute(prefix: QueuePrefix, path: string) {
+      routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
     },
     async close() {
       // Idempotent: shutdown paths (CLI signal handlers, test teardown)

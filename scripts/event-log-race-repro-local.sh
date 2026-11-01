@@ -156,12 +156,20 @@ to 10 here. Export your own value to override:
   WORKFLOW_POSTGRES_WORKER_CONCURRENCY   (--world postgres)
   WORKFLOW_LOCAL_QUEUE_CONCURRENCY       (--world local)
 
+`WORKFLOW_SPEC_VERSION` is passed through the same way, to the app and the
+harness alike. Export `WORKFLOW_SPEC_VERSION=9` to race the single
+orchestrator: both Worlds then create spec 9 runs, and the harness fails if a
+run comes back at another spec version.
+
 Examples:
   # Default scale (a regression check, a few minutes).
   scripts/event-log-race-repro-local.sh
 
   # Same, against world-local. No Docker, no database.
   scripts/event-log-race-repro-local.sh --world local
+
+  # Same, with spec 9 (single-orchestrator) runs.
+  WORKFLOW_SPEC_VERSION=9 scripts/event-log-race-repro-local.sh --world local
 
   # One run per scenario, to smoke the plumbing.
   EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS=1 \

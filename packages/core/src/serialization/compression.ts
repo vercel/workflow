@@ -55,6 +55,16 @@ export const COMPRESSION_MIN_BYTES = 1024;
  */
 export const COMPRESSION_MIN_SAVINGS_RATIO = 0.05;
 
+/**
+ * Payloads below this size are compressed synchronously even when the
+ * caller asks for the threadpool (`preferAsync`). Handing a buffer to the
+ * threadpool and back costs ~0.5 ms of wall time regardless of size,
+ * while sync zstd at level 3 blocks the loop for ~0.1 ms at 2 KiB and
+ * ~0.4 ms at 64 KiB; the trade only pays off once the sync call would
+ * block for longer than the round trip.
+ */
+export const COMPRESSION_ASYNC_MIN_BYTES = 256 * 1024;
+
 /** Default zstd compression level: the sweet spot of speed vs ratio. */
 const ZSTD_LEVEL = 3;
 
@@ -230,11 +240,12 @@ function zstdBytes(data: Uint8Array): Uint8Array {
 }
 
 /**
- * Async (libuv threadpool) zstd — same output bytes as {@link zstdBytes}
- * but off the event loop, for large payloads compressed on a latency-
- * sensitive path (VM snapshots: multi-MB heap images whose sync
- * compression would block the response from flushing). Falls back to
- * the sync path where the callback API is unavailable.
+ * Async (libuv threadpool) zstd, for large payloads compressed on a
+ * latency-sensitive path where the sync call would block the event loop
+ * for the whole compression. Decodes identically to {@link zstdBytes} but
+ * is not byte-identical: the callback API streams, so its frame header
+ * omits the content-size field the one-shot sync call writes. Falls back
+ * to the sync path where the callback API is unavailable.
  */
 function zstdBytesAsync(data: Uint8Array): Promise<Uint8Array> {
   const z = getNodeZlib();
@@ -354,9 +365,11 @@ export async function compress(
     /**
      * Compress off the event loop where the codec supports it (zstd via
      * the libuv threadpool; gzip is stream-based and already async).
-     * For multi-MB payloads compressed while a response is flushing —
-     * the sync zstd path would block the loop for the whole compression.
-     * Output bytes are identical either way.
+     * For payloads compressed on a latency-sensitive path, where the
+     * sync zstd call would block the loop for the whole compression.
+     * Only applied from {@link COMPRESSION_ASYNC_MIN_BYTES} up: below
+     * that the threadpool round trip costs more wall time than the sync
+     * call blocks. The result decodes identically either way.
      */
     preferAsync?: boolean;
   }
@@ -380,7 +393,7 @@ export async function compress(
 
   const compressed =
     codec === 'zstd'
-      ? opts?.preferAsync
+      ? opts?.preferAsync && data.length >= COMPRESSION_ASYNC_MIN_BYTES
         ? await zstdBytesAsync(data)
         : zstdBytes(data)
       : await gzipBytes(data);

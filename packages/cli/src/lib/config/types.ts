@@ -34,6 +34,11 @@ export type InspectCLIOptions = {
   backend?: string;
   disableRelativeDates?: boolean;
   interactive?: boolean;
+  /**
+   * Follow cursors to the last page and print every row (`--all`). Applies
+   * to the steps, events, and sleeps listings.
+   */
+  all?: boolean;
   /** When true, decrypt encrypted values (triggers audit-logged key retrieval) */
   decrypt?: boolean;
 };

@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 5.0.1
+
+### Patch Changes
+
+- [#4615](https://github.com/vercel/workflow/pull/4615) [`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Stabilize nested step IDs across scopes and SWC transform modes. Self-hosted runs that already recorded one of the previously colliding IDs may report a replay divergence if they continue on upgraded code; restart those in-flight runs after upgrading.
+
 ## 5.0.0
 
 ### Major Changes

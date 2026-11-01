@@ -1,7 +1,10 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
-import { ReplayPayloadCache } from './replay-payload-cache.js';
+import {
+  ReplayPayloadCache,
+  replayPayloadEventKey,
+} from './replay-payload-cache.js';
 import {
   dehydrateStepReturnValue,
   deserializePreparedReplayPayload,
@@ -111,12 +114,16 @@ describe('ReplayPayloadCache', () => {
     expect(starts).toEqual([1]);
 
     const second = cache.prepareEventPayload(
-      'queued',
+      replayPayloadEventKey(queued),
       'result',
       queued.eventData?.result
     );
     expect(
-      cache.prepareEventPayload('queued', 'result', queued.eventData?.result)
+      cache.prepareEventPayload(
+        replayPayloadEventKey(queued),
+        'result',
+        queued.eventData?.result
+      )
     ).toBe(second);
     const third = cache.prepareEventPayload(
       'demand',
@@ -134,7 +141,11 @@ describe('ReplayPayloadCache', () => {
     await Promise.all([
       second,
       third,
-      cache.prepareEventPayload('later', 'result', later.eventData?.result),
+      cache.prepareEventPayload(
+        replayPayloadEventKey(later),
+        'result',
+        later.eventData?.result
+      ),
     ]);
   });
 
@@ -158,14 +169,14 @@ describe('ReplayPayloadCache', () => {
     }
     await expect(
       cache.prepareEventPayload(
-        event.eventId,
+        replayPayloadEventKey(event),
         'result',
         event.eventData?.result
       )
     ).rejects.toBe(failure);
     await expect(
       cache.prepareEventPayload(
-        event.eventId,
+        replayPayloadEventKey(event),
         'result',
         event.eventData?.result
       )
@@ -211,7 +222,7 @@ describe('ReplayPayloadCache', () => {
         await cache.prewarm(makeRun(undefined), events);
         for (let index = 0; index < events.length; index++) {
           const prepared = await cache.prepareEventPayload(
-            events[index].eventId,
+            replayPayloadEventKey(events[index]),
             'result',
             payloads[index]
           );
@@ -272,7 +283,7 @@ describe('ReplayPayloadCache', () => {
 
     resolveKey(undefined);
     await expect(
-      cache.prepareEventPayload(event.eventId, 'result', payload)
+      cache.prepareEventPayload(replayPayloadEventKey(event), 'result', payload)
     ).resolves.toEqual({ data: payload });
     expect(preparer).toHaveBeenCalledOnce();
   });
@@ -454,5 +465,53 @@ describe('ReplayPayloadCache', () => {
       'ok'
     );
     expect(hydrate).toHaveBeenCalledTimes(2);
+  });
+
+  it("never serves one step's payload to another step's event at the same id", async () => {
+    // A run-ahead outcome is prepared at the id of the slot it predicts; when
+    // it commits further up, that id belongs to another step's event.
+    const predicted = new Uint8Array([1]);
+    const committed = new Uint8Array([2]);
+    const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
+    const cache = new ReplayPayloadCache(undefined, preparer);
+    const speculative = {
+      ...makeEvents([predicted])[0],
+      correlationId: 'step_ahead',
+    } as Event;
+    const real = {
+      ...makeEvents([committed])[0],
+      correlationId: 'step_below',
+    } as Event;
+
+    cache.prepareEvent(speculative);
+    cache.prepareEvent(real);
+    await expect(
+      cache.prepareEventPayload(
+        replayPayloadEventKey(real),
+        'result',
+        committed
+      )
+    ).resolves.toEqual({ data: committed });
+    await expect(
+      cache.prepareEventPayload(
+        replayPayloadEventKey(speculative),
+        'result',
+        predicted
+      )
+    ).resolves.toEqual({ data: predicted });
+  });
+
+  it("never serves one step's memoized result to another step at the same id", async () => {
+    const cache = new ReplayPayloadCache(undefined);
+    const ahead = { eventId: 'evnt_result', correlationId: 'step_ahead' };
+    const below = { eventId: 'evnt_result', correlationId: 'step_below' };
+
+    await cache.getStepResult(
+      replayPayloadEventKey(ahead),
+      async () => 'ahead'
+    );
+    await expect(
+      cache.getStepResult(replayPayloadEventKey(below), async () => 'below')
+    ).resolves.toBe('below');
   });
 });
