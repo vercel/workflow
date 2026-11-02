@@ -177,6 +177,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Number of newly-created steps one invocation runs inline in parallel before queueing the rest.
 - Steps started beside an awaited hook registration (`hook.getConflict()`) count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
 
+### `WORKFLOW_INLINE_EARLY_ADVANCE`
+
+- Default: enabled
+- Spec 8 runs on the Node.js VM engine only (not QuickJS, and not spec 9 runs). When one inline step of a parallel batch completes or fails while its siblings are still running, the invocation replays the workflow right away instead of waiting for the slowest sibling. A branch of a `Promise.all` can then start its next step without waiting for the other branches.
+- Steps still running stay owned by the invocation that started them. They count against `WORKFLOW_MAX_INLINE_STEPS`, so fewer new steps run inline while they run. A branch that fans out while its siblings still run queues the steps past the remaining slots as background steps.
+- When the workflow returns or throws while one of its inline steps is still running (for example a `Promise.race` loser), the run completes or fails right away. That step gets only its current attempt: the invocation lets its body finish, and the bundled Worlds record its `step_completed`, `step_failed` or `step_retrying` after the run's terminal event, but a retry is never run, so a step whose attempt fails retryably stays pending. This matches what happens when a `sleep()` or hook wins a race. `run_completed` or `run_failed` is therefore not always the last event of a run. With this setting off, the run waits for the loser and its retries. The `workflow.inline.running_at_terminal` and `workflow.inline.discarded_outcomes` span attributes, and an info log, report these steps.
+- A step that retries, is throttled, or leaves stream writes unflushed waits for its whole batch, as with this setting off.
+- Branches whose steps were queued because the batch exceeded `WORKFLOW_MAX_INLINE_STEPS` still advance only when the last pending step of the batch completes.
+- When the invocation hands the run off (its replay budget or inline window is spent), it waits for every inline step still running first, so branches advance in lockstep at that point, as with this setting off. An info log marks the hand-off.
+- `workflow.inline.early_advances` counts early replays and `workflow.inline.slots_held_back` counts steps queued because running steps held the inline slots.
+- Set `0` or `false` to wait for every inline step of a batch before replaying.
+
 ### `WORKFLOW_TURBO`
 
 - Default: enabled
@@ -427,3 +439,49 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Clamp-down only: it never raises the World's limit, and it applies even when the World supplies none. With no World limit and no override, nothing is enforced.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
 - QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
+
+## Spec 9 (experimental)
+
+Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below. See [Settings and behaviour on spec 9 runs](/docs/changelog/spec-9#settings-and-behaviour-on-spec-9-runs) for each one in full.
+
+### `WORKFLOW_SPEC_VERSION`
+
+- Default: unset. New runs use spec version 8, or 6 with [`WORKFLOW_SEALED_LOG=0`](#workflow_sealed_log), which this setting takes precedence over.
+- `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
+- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist. See [Opting in](/docs/changelog/spec-9#opting-in).
+
+### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
+
+- Default: `2000`
+- Log-tail poll interval of a busy orchestrator while no live event feed covers the run. `0` turns polling off.
+
+### `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`
+
+- Default: `10000`
+- Log-tail poll interval while the World's live event feed is up.
+
+### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
+
+- Default: `30000`
+- How long an orchestrator with nothing left to run stays live on the event feed while the run waits on an open hook or a background step. `0` turns it off.
+
+### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
+
+- Default: `5000`
+- Deadline for one incremental read of the event log before the orchestrator sends it again. `0` turns the deadline off.
+
+### `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`
+
+- Default: `60000`
+- How long before the inline window ends the orchestrator stops starting inline steps.
+
+### `WORKFLOW_OPTIMISTIC_BACKGROUND_START`
+
+- Default: unset
+- `1` or `true` starts a background step's body before its `step_started` commits. Use only when background step bodies are idempotent.
+
+### `WORKFLOW_RUN_AHEAD_DEPTH`
+
+- Default: `10`
+- Clamp: `0` to `16`
+- How many inline step outcomes may be unconfirmed at once while the orchestrator runs ahead of its writes. `0` disables run-ahead.

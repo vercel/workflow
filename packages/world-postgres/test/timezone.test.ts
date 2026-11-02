@@ -308,7 +308,11 @@ if (process.platform === 'win32') {
           .filter((c) => c.column_name === 'created_at')
           .map((c) => `${c.table_name} ${c.column_default}`)
           .sort()
-      ).toEqual(TABLES.map((table) => `${table} now()`).sort());
+      ).toEqual(
+        [...TABLES, 'workflow_start_hook_admissions']
+          .map((table) => `${table} now()`)
+          .sort()
+      );
     }, 60_000);
 
     describe('upgrading a database written by 5.0.x', () => {
@@ -530,11 +534,17 @@ if (process.platform === 'win32') {
         await runMigrations(url);
 
         // Only the partial index whose predicate reads `responded_at` is
-        // rebuilt; tables and every other index keep their storage.
+        // rebuilt; tables and every other index keep their storage. Later
+        // migrations only add relations.
         const after = await storageFiles(pool);
-        expect(Object.keys(after)).toEqual(Object.keys(before));
+        expect(Object.keys(after).filter((name) => !(name in before))).toEqual([
+          'workflow_hooks_token_claim_unique',
+        ]);
+        expect(Object.keys(after)).toEqual(
+          expect.arrayContaining(Object.keys(before))
+        );
         expect(
-          Object.keys(after).filter((name) => after[name] !== before[name])
+          Object.keys(before).filter((name) => after[name] !== before[name])
         ).toEqual(['workflow_invocations_pending']);
         await expectRepaired(pool, legacy);
       }, 60_000);

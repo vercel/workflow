@@ -383,6 +383,10 @@ Fail the migration if any of these are true:
 - `## Optional Surface Not Implemented` lists what was left out and what each absence costs, so the user can decide.
 - `## Rollout` carries the step 7 warning and which of its two cases applies to this deployment.
 
+## Spec 9 (experimental)
+
+A World does not implement the in-band fence to migrate to v5. Spec 9 is opt-in (`WORKFLOW_SPEC_VERSION=9`), and `mintedSpecVersion()` called with no options never returns 9. A World that opts in declares `capabilities.inBandFence: true`, calls `mintedSpecVersion(process.env, { inBandFence: true })`, and tells its users to upgrade the whole fleet first and not to roll back below that release once spec 9 runs exist. See <https://workflow.dev/docs/changelog/spec-9#implementing-spec-9-in-a-world>.
+
 ## Reference
 
 - Upgrading a World to v5: <https://workflow.dev/worlds/upgrading-to-v5>

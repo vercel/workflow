@@ -32,10 +32,12 @@
 import { SerializationError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
+  classifyEntityEvent,
   type Event,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
+  TERMINAL_EVENT_CLASSES,
   type WorkflowRun,
   type WorldCapabilities,
 } from '@workflow/world';
@@ -76,6 +78,10 @@ import {
   type QuickJSSerde,
 } from './quickjs-serde.js';
 import { runIdCreatedAt } from './run-id-time.js';
+import {
+  type RunStartHook,
+  resolveRunStartHook,
+} from './start-hook-binding.js';
 
 // ---- Host -> VM payload preparation ----
 
@@ -145,6 +151,12 @@ export interface PendingHook {
   force?: boolean;
   metadata?: unknown;
   hasCreatedEvent: boolean;
+  /**
+   * The run's start Hook, opened by `createHook({ token })` with the start
+   * token. Created by the run's admission, so `hasCreatedEvent` is true from
+   * the start and no `hook_created` is written for it.
+   */
+  startHook?: true;
   /**
    * True for SDK-internal hooks (the AbortController hook, the child-run
    * completion hook). Recorded on `hook_created`; such hooks are resumed by
@@ -282,6 +294,12 @@ export interface QuickJSRuntimeOptions {
    * (eventually-consistent read after the parent's start() wrote it).
    */
   runInput?: RunInput;
+  /**
+   * The run's start Hook. Resolved from `events`, `runInput` and
+   * `workflowRun` (see `resolveRunStartHook`) when omitted; `null` for none.
+   * Fixed at the fresh boot: a restored heap keeps the value it booted with.
+   */
+  startHook?: RunStartHook | null;
 }
 
 // ---- VM Bootstrap Code ----
@@ -393,6 +411,11 @@ globalThis.__workflowError = undefined;
 // Keyed by correlationId → array of payloads (preserves delivery order).
 // This mirrors the event-replay runtime's payloadsQueue in hook.ts.
 globalThis.__hookPayloadBuffer = {};
+// A buffered payload that failed to decrypt or deserialize: the failure is
+// held at the payload's place in the buffer and only rejects the await that
+// takes it, so a payload nothing reads (a start Hook the workflow never opens)
+// cannot fail the run. Mirrors the node:vm engine's buffered outcome.
+globalThis.__HydrationFailure = function(error) { this.error = error; };
 
 // Buffer for step/wait/attr terminal outcomes that arrive before this VM
 // has constructed the corresponding awaiting promise. In fresh-VM replay
@@ -757,11 +780,150 @@ if (typeof Request === "undefined") {
   });
 }
 
+// Readers over in-VM stream handles, mirroring the node:vm engine. A handle
+// is either a named stream stored in the World (e.g. the body of a Response
+// returned by the fetch step) or a body passed to the Response/Request
+// polyfills. The whole body is loaded once, through the arrayBuffer step for
+// named streams, and handed to the reader as a single chunk, so readers such
+// as the AI SDK's response size limit replay from the event log. Handles are
+// never locked or disturbed: every new reader loads the body again instead of
+// throwing, like json()/text()/arrayBuffer() on these handles.
+(function() {
+  var proto = globalThis.ReadableStream.prototype;
+  if (typeof proto.getReader === "function") return;
+  var BODY_INIT = Symbol.for("BODY_INIT");
+  function unsupported() {
+    throw new Error("This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.");
+  }
+  function encode(text) {
+    return new TextEncoder().encode(text);
+  }
+  function readBytes(stream, seen) {
+    if (seen.indexOf(stream) !== -1) unsupported();
+    seen.push(stream);
+    if (Object.prototype.hasOwnProperty.call(stream, BODY_INIT)) {
+      var init = stream[BODY_INIT];
+      if (typeof init === "string") return Promise.resolve(encode(init));
+      if (typeof URLSearchParams !== "undefined" && init instanceof URLSearchParams) {
+        return Promise.resolve(encode(String(init)));
+      }
+      if (init instanceof ArrayBuffer) return Promise.resolve(new Uint8Array(init.slice(0)));
+      if (ArrayBuffer.isView(init)) {
+        return Promise.resolve(new Uint8Array(init.buffer.slice(init.byteOffset, init.byteOffset + init.byteLength)));
+      }
+      if (init !== null && typeof init === "object" && Object.getPrototypeOf(init) === proto) {
+        return readBytes(init, seen);
+      }
+      unsupported();
+    }
+    var response = Object.create(globalThis.Response.prototype);
+    response.status = 200;
+    response.statusText = "";
+    response.headers = new globalThis.Headers([]);
+    response.body = stream;
+    response.type = "default";
+    response.url = "";
+    response.redirected = false;
+    return response.arrayBuffer().then(function(buffer) { return new Uint8Array(buffer); });
+  }
+  Object.defineProperty(proto, "locked", { get: function() { return false; }, configurable: true });
+  proto.cancel = function() { return Promise.resolve(); };
+  proto.getReader = function(options) {
+    if (options && options.mode !== undefined) unsupported();
+    var stream = this;
+    // Single chunk, claimed synchronously by the first read() so overlapping
+    // reads deliver it once; the closed promise settles with that read. Same contract
+    // as the node:vm engine.
+    var bytes = null;
+    var claimed = false;
+    var released = false;
+    var resolveClosed;
+    var rejectClosed;
+    var closed = new Promise(function(resolve, reject) { resolveClosed = resolve; rejectClosed = reject; });
+    closed.catch(function() {});
+    return {
+      closed: closed,
+      read: function() {
+        if (released) {
+          return Promise.reject(new TypeError("This reader has been released and can no longer be read from."));
+        }
+        if (claimed) {
+          var pending = bytes || Promise.resolve();
+          return pending.then(function() { return { done: true, value: undefined }; });
+        }
+        claimed = true;
+        if (!bytes) bytes = readBytes(stream, []);
+        return bytes.then(function(value) {
+          resolveClosed();
+          if (value.byteLength > 0) return { done: false, value: value };
+          return { done: true, value: undefined };
+        }, function(error) {
+          rejectClosed(error);
+          throw error;
+        });
+      },
+      cancel: function() {
+        claimed = true;
+        resolveClosed();
+        return Promise.resolve();
+      },
+      releaseLock: function() { released = true; },
+    };
+  };
+  proto.values = function() {
+    var reader = this.getReader();
+    var iterator = {
+      next: function() { return reader.read(); },
+      return: function() { return reader.cancel().then(function() { return { done: true, value: undefined }; }); },
+    };
+    iterator[Symbol.asyncIterator] = function() { return iterator; };
+    return iterator;
+  };
+  proto[Symbol.asyncIterator] = proto.values;
+})();
+
+// The error createHook throws when it opens the start Hook with options only
+// a write could apply. Same text as startHookOptionsError in workflow/hook.ts.
+globalThis.__startHookOptionsError = function(rejected) {
+  return "\`createHook()\` was called with this run's start token and " +
+    rejected.map(function(name) { return "\`" + name + "\`"; }).join(", ") +
+    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
+};
+// Hook correlation ids are minted from the run's ULID sequence, skipping the
+// one id a run must never mint: its start Hook's (see __startHook). A redraw is
+// a pure function of the sequence, so every replay makes it. Mirrors
+// mintHookCorrelationId in start-hook-binding.ts.
+globalThis.__mintHookCorrelationId = function() {
+  var id = "hook_" + globalThis.__generateUlid();
+  var startHook = globalThis.__startHook;
+  while (startHook && id === startHook.hookId) {
+    id = "hook_" + globalThis.__generateUlid();
+  }
+  return id;
+};
+
 // createHook — returns a Hook object that is both a Thenable and AsyncIterable.
 // Each await/yield creates a new promise keyed by the same correlationId.
 // The promise is resolved when a hook_received event arrives.
 globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
+  // The run's start Hook (start(workflow, args, { hook })), injected by the
+  // host as __startHook, was created by the run's admission: the first
+  // createHook with its token opens it (no hook_created, no suspension).
+  // Mirrors workflow/hook.ts.
+  var startHook = globalThis.__startHook;
+  var bindsStartHook = !!startHook && !startHook.bound &&
+    typeof options.token === "string" && options.token === startHook.token;
+  if (bindsStartHook) {
+    var rejectedStartHookOptions = [];
+    if (options.metadata !== undefined) rejectedStartHookOptions.push("metadata");
+    if (options.experimental_minRetention !== undefined) rejectedStartHookOptions.push("experimental_minRetention");
+    if (options.isWebhook === true) rejectedStartHookOptions.push("isWebhook");
+    if (options.experimental_force === true) rejectedStartHookOptions.push("experimental_force");
+    if (rejectedStartHookOptions.length > 0) {
+      throw new Error(globalThis.__startHookOptionsError(rejectedStartHookOptions));
+    }
+  }
   if (options.isWebhook === true && options.experimental_minRetention !== undefined) {
     throw new Error('Webhook hooks do not support \`experimental_minRetention\`. Use a non-webhook \`createHook()\` with \`resumeHook()\`.');
   }
@@ -786,7 +948,15 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     }
   }
   var token = options.token || globalThis.__generateNanoid();
-  var correlationId = "hook_" + globalThis.__generateUlid();
+  var correlationId;
+  if (bindsStartHook) {
+    // Still draw one ULID, so later ids do not depend on whether this bound.
+    globalThis.__generateUlid();
+    correlationId = startHook.hookId;
+    startHook.bound = true;
+  } else {
+    correlationId = globalThis.__mintHookCorrelationId();
+  }
   var isDisposed = false;
   var hasCreatedEvent = false;
   var tokenRetentionUntil;
@@ -815,7 +985,19 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
 
   // Register in pending operations. Metadata stays a RAW value; the host
   // serializes it through a handle when it collects the pending op.
-  var pendingOp = {
+  // The start Hook's creation is run_created itself, so its op is created
+  // from the start and nothing writes hook_created for it.
+  var pendingOp = bindsStartHook ? {
+    type: "hook",
+    correlationId: correlationId,
+    token: token,
+    tokenRetentionUntil: startHook.tokenRetentionUntil,
+    isWebhook: false,
+    force: false,
+    metadata: undefined,
+    hasCreatedEvent: true,
+    startHook: true,
+  } : {
     type: "hook",
     correlationId: correlationId,
     token: token,
@@ -841,12 +1023,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   globalThis.__hooks = globalThis.__hooks || {};
   var hookState = globalThis.__hooks[correlationId] = {
     token: token,
-    created: false,
+    created: bindsStartHook,
     conflict: null,
     // Set by the host on a hook_disposed{forceClaimedBy}: another run took
     // the token. Buffered payloads (delivered before the takeover) are still
-    // drained; every await after them rejects with this error.
-    forceClaimed: null,
+    // drained; every await after them rejects with this error. For the start
+    // Hook the takeover may precede this call (__startHookForceClaimed).
+    forceClaimed: bindsStartHook ? (globalThis.__startHookForceClaimed || null) : null,
     force: options.experimental_force === true,
     getConflictResolvers: [],
   };
@@ -859,7 +1042,10 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     // heap. Drain it immediately (matching event-replay payloadsQueue).
     var buf = globalThis.__hookPayloadBuffer[correlationId];
     if (buf && buf.length > 0) {
-      return Promise.resolve(buf.shift());
+      var next = buf.shift();
+      return next instanceof globalThis.__HydrationFailure
+        ? Promise.reject(next.error)
+        : Promise.resolve(next);
     }
     if (hookState.forceClaimed) {
       return Promise.reject(hookState.forceClaimed);
@@ -1064,7 +1250,7 @@ globalThis.AbortController = function WorkflowAbortController() {
   this[__ABORT_STREAM_NAME] = streamName;
   this[__ABORT_HOOK_TOKEN] = hookToken;
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
-  var correlationId = "hook_" + globalThis.__generateUlid();
+  var correlationId = globalThis.__mintHookCorrelationId();
   this[__ABORT_HOOK_CID] = correlationId;
   // Register an internal system hook. Its token is unique by construction.
   globalThis.__pushPending({
@@ -1691,6 +1877,16 @@ export async function startQuickJSWorkflow(
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
 
+  // The run's start Hook (start(workflow, args, { hook })), or undefined.
+  const runStartHook = (): RunStartHook | undefined =>
+    options.startHook === undefined
+      ? resolveRunStartHook({
+          events,
+          workflowRun,
+          runInput: options.runInput,
+        })
+      : (options.startHook ?? undefined);
+
   // ---- Correlation-id ULID machinery ----
   // Hoisted out of the per-run phase so BOTH the fresh-boot path and the
   // snapshot-restore path share it (the `__generateUlid` host callback
@@ -1857,6 +2053,24 @@ export async function startQuickJSWorkflow(
         vm.registerHostCallback(callback.name, callback.fn(vm));
       }
 
+      // A start({ hook }) run's heap must have booted with the start Hook
+      // binding (and the run's __startHook). One captured by an older engine
+      // build would mint a fresh id for the start token, so it is refused
+      // here and the entrypoint falls back to a full replay. Checked only for
+      // such runs: every other snapshot restores exactly as before.
+      if (
+        runStartHook() &&
+        !vm.dump(
+          vm.evalCode(
+            'typeof globalThis.__mintHookCorrelationId === "function" && !!globalThis.__startHook'
+          )
+        )
+      ) {
+        throw new Error(
+          'QuickJS snapshot predates start Hook binding for this run'
+        );
+      }
+
       // `process.env` is a per-invocation copy of the host env (see the
       // fresh-boot install), so replace the one the snapshot carried: a
       // restored run must see the env of THIS invocation, the same as a
@@ -1867,6 +2081,7 @@ export async function startQuickJSWorkflow(
 
       // Process the delta events and drain jobs.
       {
+        const inert = beginTerminalInertBatch(vm, events, lastUlid);
         let maxIterations = 100;
         let madeProgress: boolean;
         do {
@@ -1876,6 +2091,7 @@ export async function startQuickJSWorkflow(
             events,
             advanceClock,
             () => lastUlid,
+            inert,
             options.encryptionKey
           );
           let batch: number;
@@ -1884,6 +2100,7 @@ export async function startQuickJSWorkflow(
             if (batch > 0) madeProgress = true;
           } while (batch > 0);
         } while (madeProgress && --maxIterations > 0);
+        endTerminalInertBatch(vm, inert, lastUlid);
       }
 
       return makeLiveSession(
@@ -1999,6 +2216,21 @@ export async function startQuickJSWorkflow(
     vm.evalCode(
       `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
     ).dispose();
+
+    // The run's start Hook (start(workflow, args, { hook })), for the guest's
+    // createHook binding. Not set at all for a run without one, which boots
+    // exactly as before.
+    const startHook = runStartHook();
+    if (startHook) {
+      vm.evalCode(
+        `globalThis.__startHook = ${JSON.stringify({
+          token: startHook.token,
+          hookId: startHook.hookId,
+          tokenRetentionUntil: startHook.tokenRetentionUntil?.getTime(),
+          bound: false,
+        })};`
+      ).dispose();
+    }
 
     // Install every host callback from the shared list (see
     // hostCallbacks above — the restore path re-registers from the same
@@ -2167,6 +2399,7 @@ export async function startQuickJSWorkflow(
     // subsequent events. Re-processing events matches these new resolvers
     // against events that were already delivered.
     {
+      const inert = beginTerminalInertBatch(vm, events, lastUlid);
       let maxIterations = 100;
       let madeProgress: boolean;
       do {
@@ -2182,6 +2415,7 @@ export async function startQuickJSWorkflow(
           events,
           advanceClock,
           () => lastUlid,
+          inert,
           options.encryptionKey
         );
         do {
@@ -2189,6 +2423,7 @@ export async function startQuickJSWorkflow(
           if (batch > 0) madeProgress = true;
         } while (batch > 0);
       } while (madeProgress && --maxIterations > 0);
+      endTerminalInertBatch(vm, inert, lastUlid);
       if (madeProgress && maxIterations === 0) {
         // The drain loop hit its bound while still making progress:
         // proceeding as if it converged would present as a mysterious
@@ -2302,6 +2537,7 @@ function makeLiveSession(
         }
       }
 
+      const inert = beginTerminalInertBatch(vm, newEvents, getLastUlid());
       let maxIterations = 100;
       let madeProgress: boolean;
       do {
@@ -2316,6 +2552,7 @@ function makeLiveSession(
           newEvents,
           advanceClock,
           getLastUlid,
+          inert,
           encryptionKey
         );
         do {
@@ -2323,6 +2560,7 @@ function makeLiveSession(
           if (batch > 0) madeProgress = true;
         } while (batch > 0);
       } while (madeProgress && --maxIterations > 0);
+      endTerminalInertBatch(vm, inert, getLastUlid());
 
       const next = checkWorkflowState(vm, serde, {
         keepAliveOnSuspend: true,
@@ -2382,10 +2620,13 @@ async function processEvents(
   advanceClock: (ms: number) => void,
   /** The last correlation-id ULID this VM drew (see isConsumedTerminal). */
   getLastUlid: () => string | undefined,
+  /** This batch's terminal-inert facts (see beginTerminalInertBatch). */
+  inert: TerminalInertBatch,
   encryptionKey?: DecryptionKey
 ): Promise<boolean> {
   let resolved = false;
-  for (const event of events) {
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
     // A sealed-log noop occupies a slot whose writer died; the run never
     // observed it. Step over it BEFORE the clock line below, not at the
     // switch: its `createdAt` is the sealer's wall clock and can postdate
@@ -2414,10 +2655,34 @@ async function processEvents(
     const cid = event.correlationId;
     if (!cid) continue;
 
-    // JSON.stringify handles quotes, backslashes and control characters;
-    // correlation ids are host-generated ULIDs today, but the eval-string
-    // safety shouldn't depend on that invariant being asserted nowhere.
+    // Terminal-inert, the rule `EventsConsumer` applies on the node:vm
+    // engine: once an entity's terminal event (step outcome, wait
+    // completion, hook disposal, workflow attribute write) is in the log,
+    // every event AFTER it under the same correlation id is inert. The test
+    // is a log position, not "this VM has seen the terminal": the fixed-point
+    // loop re-scans the same batch, and the entity's earlier events must
+    // still reach `markCreated` on a re-scan (a terminal buffered before the
+    // VM called the step leaves the step's pending op to be marked then).
     const cidJs = JSON.stringify(cid);
+    const terminalIndex = inert.firstTerminalIndex.get(cid);
+    if (
+      inert.closedBefore.has(cid) ||
+      (terminalIndex !== undefined && index > terminalIndex)
+    ) {
+      // Inert for the workflow, but the pending-op bookkeeping still
+      // applies: an op under this id has its creation in the log either
+      // way.
+      markCreated(vm, cidJs);
+      if (event.eventType === 'hook_disposed') {
+        markCreated(vm, cidJs, 'hook_dispose');
+      }
+      continue;
+    }
+
+    // JSON.stringify (above) handles quotes, backslashes and control
+    // characters; correlation ids are host-generated ULIDs today, but the
+    // eval-string safety shouldn't depend on that invariant being asserted
+    // nowhere.
     const eventData =
       'eventData' in event
         ? (event.eventData as Record<string, unknown>)
@@ -2798,20 +3063,44 @@ async function processEvents(
               ? Object.keys(rawPayload)
               : undefined,
         });
-        if (hasResolver) {
-          if (rawPayload instanceof Uint8Array) {
+        // A payload that cannot be decrypted or deserialized becomes an
+        // error in the VM (`globalThis.__tmp_err`) for the await that takes
+        // it, never an exception out of replay.
+        const setHydrationError = (error: unknown) => {
+          const name = error instanceof Error ? error.name : 'Error';
+          const message =
+            error instanceof Error ? error.message : String(error);
+          vm.evalCode(
+            `globalThis.__tmp_err = new Error(${JSON.stringify(message)});` +
+              `globalThis.__tmp_err.name = ${JSON.stringify(name)};`
+          ).dispose();
+        };
+        const hydrateIntoTmp = async (bytes: Uint8Array): Promise<boolean> => {
+          try {
             // Decrypt if encrypted: the VM only understands 'devl' format
             const decryptedPayload = await prepareBytesForVM(
-              rawPayload,
+              bytes,
               encryptionKey
             );
             const payloadHandle = serde.deserialize(decryptedPayload);
             vm.setProp(vm.global, '__tmp_result', payloadHandle);
             payloadHandle.dispose();
+            return true;
+          } catch (error) {
+            setHydrationError(error);
+            return false;
+          }
+        };
+        if (hasResolver) {
+          if (rawPayload instanceof Uint8Array) {
+            const hydrated = await hydrateIntoTmp(rawPayload);
             vm.evalCode(
-              `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);` +
+              (hydrated
+                ? `globalThis.__resolvers[${cidJs}].resolve(globalThis.__tmp_result);`
+                : `globalThis.__resolvers[${cidJs}].reject(globalThis.__tmp_err);`) +
                 `delete globalThis.__resolvers[${cidJs}];` +
-                `delete globalThis.__tmp_result;`
+                `delete globalThis.__tmp_result;` +
+                `delete globalThis.__tmp_err;`
             ).dispose();
           } else {
             const serialized =
@@ -2851,22 +3140,16 @@ async function processEvents(
               ? `(globalThis.__hookPayloadBuffer.__processedEventIds = globalThis.__hookPayloadBuffer.__processedEventIds || {})[${eventIdJs}] = true;`
               : '');
           if (rawPayload instanceof Uint8Array) {
-            // Decrypt if encrypted: the VM only understands 'devl' format
-            const decryptedPayload = await prepareBytesForVM(
-              rawPayload,
-              encryptionKey
-            );
-            const payloadHandle = serde.deserialize(decryptedPayload);
-            vm.setProp(vm.global, '__tmp_result', payloadHandle);
-            payloadHandle.dispose();
+            const hydrated = await hydrateIntoTmp(rawPayload);
             // NOTE: replacement is a function so `$`-sequences in the
             // substituted JS never get interpreted as String.replace
             // special replacement patterns.
             vm.evalCode(
-              bufferAndTrack.replace(
-                '%PAYLOAD%',
-                () => 'globalThis.__tmp_result'
-              ) + 'delete globalThis.__tmp_result;'
+              bufferAndTrack.replace('%PAYLOAD%', () =>
+                hydrated
+                  ? 'globalThis.__tmp_result'
+                  : 'new globalThis.__HydrationFailure(globalThis.__tmp_err)'
+              ) + 'delete globalThis.__tmp_result;delete globalThis.__tmp_err;'
             ).dispose();
           } else {
             const serialized =
@@ -3045,6 +3328,14 @@ async function processEvents(
                   var gc = state.getConflictResolvers;
                   state.getConflictResolvers = [];
                   for (var i = 0; i < gc.length; i++) { gc[i].resolve(null); settled = true; }
+                } else if (
+                  globalThis.__startHook &&
+                  globalThis.__startHook.hookId === cid &&
+                  !globalThis.__startHook.bound
+                ) {
+                  // Another run took the start Hook before the body opened
+                  // it: a later createHook binds to a Hook already taken.
+                  globalThis.__startHookForceClaimed = err;
                 }
                 if (globalThis.__resolvers[cid]) {
                   globalThis.__resolvers[cid].reject(err);
@@ -3086,6 +3377,137 @@ async function processEvents(
     }
   }
   return resolved;
+}
+
+/**
+ * The terminal-inert facts for one batch of events, which every scan of that
+ * batch shares (the fixed-point loop re-scans a batch while it makes
+ * progress, and must reach the same verdicts each time).
+ *
+ * - `firstTerminalIndex`: the position of the first terminal event per
+ *   correlation id in this batch. An event after it is inert; an event
+ *   before it is not, even on a re-scan that runs after the terminal settled
+ *   the entity.
+ * - `closedBefore`: the correlation ids whose terminal is in an EARLIER
+ *   batch, so every event of this batch under them is inert. This is read
+ *   from the VM heap when the batch begins (see TERMINAL_STATE_JS), so it
+ *   travels with a VM snapshot: a restored VM is fed only the events after
+ *   the snapshot, and a straggler among them is recognized against a
+ *   terminal it saw before.
+ *
+ * Both are host-side and live for one batch only. Nothing here grows with
+ * the run's length.
+ */
+interface TerminalInertBatch {
+  firstTerminalIndex: Map<string, number>;
+  closedBefore: Set<string>;
+}
+
+/**
+ * VM-side predicate `reflected(cid)`: whether the VM's own state already
+ * shows that the entity's terminal event was processed, without a record
+ * per entity. `lastUlid` (the last id this VM drew, or null) is in scope.
+ *
+ * - Step, wait and attribute ids are drawn from the run's monotonic ULID
+ *   sequence by the call that registers their resolver, and only a
+ *   terminal event removes that resolver. A drawn id with no resolver has
+ *   had its terminal; an undrawn id has had it exactly when it sits in
+ *   `__terminalBuffer` (an undrawn id's terminal is always buffered).
+ * - A hook id is drawn the same way, but the hook object can register a
+ *   new resolver after its disposal, so resolver absence says nothing.
+ *   Instead: a drawn user hook keeps its `__hooks` entry until this run's
+ *   own disposal is matched (`__releaseDisposedHook`), and a disposal by
+ *   another run's takeover sets `forceClaimed` on it.
+ *
+ * Everything else (an AbortController's system hook, a hook disposed in
+ * the log before this VM reached `dispose()` or created it, an id outside
+ * the ULID scheme) is not reflected, and its terminal is recorded in
+ * `__unreflectedTerminals` until it is (see endTerminalInertBatch).
+ */
+const TERMINAL_STATE_JS = `
+  var re = /^(step|wait|attr|hook)_([0-9A-HJKMNP-TV-Z]{26})$/;
+  function reflected(cid) {
+    var m = re.exec(cid);
+    if (!m) return false;
+    var drawn = lastUlid !== null && m[2] <= lastUlid;
+    if (m[1] !== "hook") {
+      return drawn ? !globalThis.__resolvers[cid] : !!globalThis.__terminalBuffer[cid];
+    }
+    if (!drawn || (globalThis.__abortSignals && globalThis.__abortSignals[cid])) return false;
+    // The run's start Hook id is derived from the run's id, not drawn: it
+    // sorts before every id the VM draws, so "drawn and no state" says
+    // nothing about it until the body has opened it.
+    var startHook = globalThis.__startHook;
+    if (startHook && cid === startHook.hookId && !startHook.bound) return false;
+    var state = globalThis.__hooks && globalThis.__hooks[cid];
+    return !state || !!state.forceClaimed;
+  }
+`;
+
+/**
+ * Starts a batch: finds each correlation id's first terminal event in it,
+ * and asks the VM which ids were already closed by an earlier batch. Also
+ * drops record entries the VM state reflects by now, which keeps the record
+ * at the handful of entities whose terminal outran this VM.
+ */
+function beginTerminalInertBatch(
+  vm: QuickJS,
+  events: Event[],
+  lastUlid: string | undefined
+): TerminalInertBatch {
+  const firstTerminalIndex = new Map<string, number>();
+  const cids = new Set<string>();
+  for (let index = 0; index < events.length; index++) {
+    const event = events[index];
+    const cid = event.correlationId;
+    if (!cid || isSealedNoopEvent(event)) continue;
+    cids.add(cid);
+    if (firstTerminalIndex.has(cid)) continue;
+    const entityClass = classifyEntityEvent(event);
+    if (
+      entityClass !== undefined &&
+      TERMINAL_EVENT_CLASSES.has(entityClass.eventClass)
+    ) {
+      firstTerminalIndex.set(cid, index);
+    }
+  }
+  if (cids.size === 0) return { firstTerminalIndex, closedBefore: new Set() };
+  // An object result must be disposed: a leaked handle keeps the array
+  // alive in the VM heap.
+  using closedHandle = vm.evalCode(
+    `(function(cids, lastUlid){${TERMINAL_STATE_JS}
+        var record = globalThis.__unreflectedTerminals;
+        if (record) for (var k in record) if (reflected(k)) delete record[k];
+        var out = [];
+        for (var i = 0; i < cids.length; i++) {
+          if ((record && record[cids[i]]) || reflected(cids[i])) out.push(cids[i]);
+        }
+        return out;
+      })(${JSON.stringify([...cids])}, ${JSON.stringify(lastUlid ?? null)})`
+  );
+  const closed = vm.dump(closedHandle) as string[];
+  return { firstTerminalIndex, closedBefore: new Set(closed) };
+}
+
+/**
+ * Ends a batch: records each terminal it held that the VM state does not
+ * reflect (see TERMINAL_STATE_JS), so the next batch, or a VM restored
+ * from a snapshot taken now, still treats its entity as closed.
+ */
+function endTerminalInertBatch(
+  vm: QuickJS,
+  inert: TerminalInertBatch,
+  lastUlid: string | undefined
+): void {
+  if (inert.firstTerminalIndex.size === 0) return;
+  vm.evalCode(
+    `(function(cids, lastUlid){${TERMINAL_STATE_JS}
+      for (var i = 0; i < cids.length; i++) {
+        if (reflected(cids[i])) continue;
+        (globalThis.__unreflectedTerminals = globalThis.__unreflectedTerminals || {})[cids[i]] = true;
+      }
+    })(${JSON.stringify([...inert.firstTerminalIndex.keys()])}, ${JSON.stringify(lastUlid ?? null)})`
+  ).dispose();
 }
 
 /**

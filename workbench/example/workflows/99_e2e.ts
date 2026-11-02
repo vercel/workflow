@@ -247,6 +247,34 @@ export async function stepWinsRaceWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+// Times come from inside the step, on the host clock: the workflow's own
+// `Date.now()` is the replay clock, which says nothing about when a step ran.
+async function timedDelayStep(ms: number, label: string) {
+  'use step';
+  const startedAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return { label, startedAt, endedAt: Date.now() };
+}
+
+/**
+ * A two-step chain beside one long step (vercel/workflow#4457). The chain's
+ * second step should start once its first settles, not once the long step
+ * beside it does.
+ */
+export async function parallelBranchesAdvanceIndependentlyWorkflow() {
+  'use workflow';
+  const [chain, long] = await Promise.all([
+    (async () => [
+      await timedDelayStep(500, 'chain1'),
+      await timedDelayStep(500, 'chain2'),
+    ])(),
+    timedDelayStep(10_000, 'long'),
+  ]);
+  return { chain, long };
+}
+
+//////////////////////////////////////////////////////////
+
 // Takes an OBJECT argument: under VM retention (WORKFLOW_RETAINED_VM), a
 // boundary whose new step has a non-primitive input falls back to cold
 // replay instead of resuming the retained VM.
@@ -459,6 +487,44 @@ export async function fetchWorkflow() {
   const response = await fetch('https://jsonplaceholder.typicode.com/todos/1');
   const data = await response.json();
   return data;
+}
+
+// Libraries such as the AI SDK call the global `fetch` and read the response
+// through `response.body.getReader()` (to enforce a download size limit).
+export async function fetchResponseBodyReaderWorkflow() {
+  'use workflow';
+  globalThis.fetch = fetch;
+  const response = await globalThis.fetch(
+    'https://jsonplaceholder.typicode.com/todos/1'
+  );
+  if (!response.body) throw new Error('response has no body');
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return {
+    status: response.status,
+    data: JSON.parse(new TextDecoder().decode(bytes)),
+  };
 }
 
 //////////////////////////////////////////////////////////
@@ -905,6 +971,215 @@ export async function hookSignalOwnerWorkflow(token: string, message: string) {
   return {
     role: 'owner' as const,
     received: payload.message,
+  };
+}
+
+/**
+ * The owner of a `start({ hook })` token. The start Hook exists from
+ * admission; `createHook()` with the start token binds this run to it (no
+ * write, never a conflict) and collects `expected` payloads, including any
+ * resumed before the body got here.
+ */
+export async function startHookOwnerWorkflow(token: string, expected: number) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+
+  // The start Hook is this run's own, so binding to it never conflicts.
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return { conflictRunId: conflict.runId, messages: [] as string[] };
+  }
+
+  const messages: string[] = [];
+  for await (const payload of hook) {
+    messages.push(payload.message);
+    if (messages.length >= expected) break;
+  }
+  return { conflictRunId: null, messages };
+}
+
+/**
+ * A `start({ hook })` run that waits on a separate gate token before it opens
+ * its start Hook, then reads `expected` payloads from it: payloads resumed
+ * before the gate opens are already in the log when `createHook()` runs.
+ */
+export async function startHookGateThenClaimWorkflow(
+  token: string,
+  gateToken: string,
+  expected: number
+) {
+  'use workflow';
+
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+  using hook = createHook<{ message: string }>({ token });
+  const messages: string[] = [];
+  for await (const payload of hook) {
+    messages.push(payload.message);
+    if (messages.length >= expected) break;
+  }
+  return { messages };
+}
+
+/**
+ * A `start({ hook })` run that never opens its start Hook: the token is only
+ * its idempotency key. It waits on a separate gate token so a test can
+ * observe it while it runs.
+ */
+export async function startHookUnclaimedWorkflow(
+  gateToken: string,
+  value: string
+) {
+  'use workflow';
+
+  using gate = createHook<{ release: true }>({ token: gateToken });
+  await gate;
+  return { value };
+}
+
+/**
+ * A `start({ hook })` run that opens its start Hook late: it first waits on
+ * a gate token, then calls `createHook()` with the start token and awaits one
+ * payload. If another run force-claimed the token meanwhile, the await
+ * rejects with HookForceClaimedError, which this reports.
+ */
+export async function startHookLateClaimWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+
+  using hook = createHook<{ message: string }>({ token });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, message: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * A `start({ hook })` run that reads one payload from its start Hook and
+ * disposes it (which frees the token), waits on a gate token, then calls
+ * `createHook()` with the same token again: an ordinary new Hook, which
+ * conflicts if another run took the token in between.
+ */
+export async function startHookReclaimWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  const messages: string[] = [];
+  {
+    using hook = createHook<{ message: string }>({ token });
+    messages.push((await hook).message);
+  }
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+  using again = createHook<{ message: string }>({ token });
+  const conflict = await again.getConflict();
+  if (conflict) {
+    return { messages, conflictRunId: conflict.runId };
+  }
+  messages.push((await again).message);
+  return { messages, conflictRunId: null };
+}
+
+/**
+ * A `start({ hook })` run that opens its start Hook but never reads from it:
+ * payloads resumed to it stay unconsumed, and the run still completes.
+ */
+export async function startHookClaimUnreadWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+  using gate = createHook<{ release: true }>({ token: gateToken });
+  await gate;
+  return { hookToken: hook.token };
+}
+
+/**
+ * Reads one payload from its start Hook and ends without disposing it, so a
+ * retention set on `start({ hook })` keeps the token past the run's end.
+ */
+export async function startHookRetainedOwnerWorkflow(token: string) {
+  'use workflow';
+
+  // Deliberately not `using`: disposing would free the token at scope exit.
+  const hook = createHook<{ message: string }>({ token });
+  const payload = await hook;
+  return { message: payload.message };
+}
+
+/**
+ * Passes an option that belongs on `start({ hook })` to `createHook()` with
+ * the start token, which throws.
+ */
+export async function startHookOptionsOnStartTokenWorkflow(
+  token: string,
+  option: 'metadata' | 'retention'
+) {
+  'use workflow';
+
+  using hook =
+    option === 'metadata'
+      ? createHook<{ message: string }>({ token, metadata: { late: true } })
+      : createHook<{ message: string }>({
+          token,
+          experimental_minRetention: '1h',
+        });
+  const payload = await hook;
+  return { message: payload.message };
+}
+
+/**
+ * Opens its start Hook, then calls `createHook()` with the same token again
+ * while the first is live: an ordinary second Hook, which conflicts with this
+ * very run. The start Hook still receives its payload.
+ */
+export async function startHookSecondCreateWorkflow(token: string) {
+  'use workflow';
+
+  using first = createHook<{ message: string }>({ token });
+  const second = createHook<{ message: string }>({ token });
+  const firstConflict = await first.getConflict();
+  const secondConflict = await second.getConflict();
+  const secondError = secondConflict
+    ? await second.then(
+        () => null,
+        (err: unknown) =>
+          HookConflictError.is(err)
+            ? (err.conflictingRunId ?? null)
+            : Promise.reject(err)
+      )
+    : null;
+  const payload = await first;
+  return {
+    runId: getWorkflowMetadata().workflowRunId,
+    firstConflictRunId: firstConflict ? firstConflict.runId : null,
+    secondConflictRunId: secondConflict ? secondConflict.runId : null,
+    secondErrorRunId: secondError,
+    message: payload.message,
   };
 }
 

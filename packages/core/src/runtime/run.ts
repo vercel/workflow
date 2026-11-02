@@ -1,13 +1,16 @@
 import {
   RunExpiredError,
+  START_HOOK_CANDIDATE_CANCELLED,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
   isTerminalWorkflowRunStatus,
+  SPEC_VERSION_CURRENT,
   type WorkflowRun,
   type WorkflowRunStatus,
   type World,
@@ -32,8 +35,10 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
+  wakeRunAfterOutOfBandWrite,
   wakeUpRun,
 } from './runs.js';
 
@@ -323,6 +328,9 @@ export class Run<TResult> {
    * @param options - Optional settings to target specific sleep calls by correlation ID.
    *   If not provided, all pending sleep calls will be interrupted.
    * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
+   *   On a single-orchestrator run it is the number of sleep calls the run's
+   *   orchestrator was asked to complete, which is best-effort while an
+   *   orchestrator invocation of the run is live (see `wakeUpRun`).
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
     'use step';
@@ -340,14 +348,52 @@ export class Run<TResult> {
     'use step';
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
-    const run = await world.runs.get(this.runId, { resolveData: 'none' });
-    await world.events.create(this.runId, {
-      eventType: 'run_cancelled',
-      specVersion: specVersionForRunWrite(run.specVersion),
+    // A run that does not exist is cancelled through the World all the same:
+    // a `start({ hook })` candidate that was admitted but never created its
+    // run (the one a `WorkflowStartError` names) is fenced by it, so it can
+    // never start. Otherwise the World answers `WorkflowRunNotFoundError`.
+    const run = await world.runs
+      .get(this.runId, { resolveData: 'none' })
+      .catch((err: unknown) => {
+        // Only a World with start Hooks can have a candidate with no run
+        // to fence; anywhere else a missing run stays a plain not-found.
+        if (
+          !WorkflowRunNotFoundError.is(err) ||
+          world.capabilities?.atomicStartHook?.active !== true
+        ) {
+          throw err;
+        }
+        return undefined;
+      });
+    const cancelled = {
+      eventType: 'run_cancelled' as const,
+      specVersion: run
+        ? specVersionForRunWrite(run.specVersion)
+        : SPEC_VERSION_CURRENT,
       ...(options?.cancelReason !== undefined
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
-    });
+    };
+    if (!run) {
+      try {
+        await world.events.create(this.runId, cancelled);
+      } catch (err) {
+        if (
+          WorkflowWorldError.is(err) &&
+          err.code === START_HOOK_CANDIDATE_CANCELLED
+        ) {
+          return;
+        }
+        throw err;
+      }
+      return;
+    }
+    if (isSingleOrchestratorRun(run)) {
+      await world.events.create(this.runId, cancelled, { inBand: false });
+    } else {
+      await world.events.create(this.runId, cancelled);
+    }
+    await wakeRunAfterOutOfBandWrite(world, run);
     await notifyParentOfRunCompletion(world, run, 'cancelled');
   }
 

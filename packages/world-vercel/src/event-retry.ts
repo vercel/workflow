@@ -59,6 +59,16 @@
  * THROTTLE_RETRY_BUDGET_MS. Beyond either, the ThrottleError surfaces and the
  * queue's redelivery takes over.
  *
+ * A `503 start-hook-run-pending` has a third policy, also for every event type.
+ * The backend answers it to a write that reaches a run's start Hook (the
+ * Hook a `start({ hook })` admission created) while the run itself is not
+ * stored yet: admission across regions is two writes, and the second one has
+ * not landed. Like a 429 it is a definitive no-write, and the run appears
+ * shortly, so the POST is re-sent in-process after each Retry-After for up to
+ * START_HOOK_RUN_PENDING_BUDGET_MS. Past that budget the 503 surfaces as an
+ * ordinary retryable `WorkflowWorldError` carrying `retryAfter`; it is never
+ * mapped to a Hook-specific error.
+ *
  * This is the *only* retry loop on the event-write path, for both transports.
  * The WebSocket transport raises `code: 'TRANSPORT'` (the shape `utils.ts`
  * produces for a failed `fetch`), so it lands here rather than carrying a
@@ -68,6 +78,7 @@
 import {
   EntityConflictError,
   HookForceClaimedError,
+  HookNotFoundError,
   RunExpiredError,
   StreamError,
   ThrottleError,
@@ -231,6 +242,33 @@ export const EVENT_RETRY_ELIGIBILITY = {
     reason: 'server-originated; never POSTed by the SDK',
   },
 } satisfies Record<WorkflowEventType, EventRetryPolicy>;
+
+/**
+ * The error code of a `503` the backend answers to a write that reaches a
+ * run's start Hook before the run is stored (see the module comment).
+ */
+export const START_HOOK_RUN_PENDING_CODE = 'start-hook-run-pending';
+/**
+ * In-process budget for `503 start-hook-run-pending` retries of one POST,
+ * measured from its first attempt, so it counts the time the backend spends
+ * polling for the run before each 503 as well as the waits between them.
+ * Admission's second write normally lands within a second or two; this covers
+ * a slow one without holding a `resumeHook()` caller for long.
+ */
+export const START_HOOK_RUN_PENDING_BUDGET_MS = 30_000;
+/** Backoff when a `start-hook-run-pending` 503 carries no usable Retry-After. */
+const DEFAULT_START_HOOK_RUN_PENDING_RETRY_AFTER_SECONDS = 1;
+
+/** Whether `err` is the backend's `503 start-hook-run-pending`. */
+export function isStartHookRunPendingError(
+  err: unknown
+): err is WorkflowWorldError {
+  return (
+    WorkflowWorldError.is(err) &&
+    err.status === 503 &&
+    err.code === START_HOOK_RUN_PENDING_CODE
+  );
+}
 
 /** Up to this many retries after the initial attempt (3 attempts total). */
 export const MAX_EVENT_POST_RETRIES = 2;
@@ -440,6 +478,8 @@ export interface EventPostRetryOptions {
    * responses stay non-retryable regardless.
    */
   idempotentHookResume?: boolean;
+  /** Resolved delivery retries only definite admission refusals, never uncertainty. */
+  resolvedHookResume?: boolean;
   /**
    * Batch POST retry verdict, set by `createWorkflowRunEventBatch` from the
    * batch's CONTENTS. `true` means every event in the batch converges on a
@@ -572,6 +612,51 @@ export function createThrottleWaiter(
   };
 }
 
+/**
+ * Wait accounting for `503 start-hook-run-pending` retries of one POST, like
+ * createThrottleWaiter but with its own START_HOOK_RUN_PENDING_BUDGET_MS. Each
+ * call waits out one 503's `retryAfter` (seconds) so the caller can re-send,
+ * or rethrows the 503 once the wait would exceed the budget or outlast the
+ * invocation. The rethrown error always carries a `retryAfter`, so a caller
+ * that turns it into a retry (a step's `RetryableError`, the queue's
+ * redelivery) waits as long as the backend asked.
+ */
+export function createStartHookRunPendingWaiter(
+  target: string,
+  /** When the POST's first attempt was sent. */
+  startedAtMs: number = Date.now()
+): (err: WorkflowWorldError) => Promise<void> {
+  let waitedMs = 0;
+  let deadline: { ms: number | undefined } | undefined;
+  return async (err) => {
+    err.retryAfter ??= DEFAULT_START_HOOK_RUN_PENDING_RETRY_AFTER_SECONDS;
+    const waitMs = Math.max(1, err.retryAfter) * 1000;
+    deadline ??= { ms: await resolveDeadlineMs() };
+    const outlastsInvocation =
+      deadline.ms !== undefined &&
+      Date.now() + waitMs > deadline.ms - THROTTLE_DEADLINE_RESERVE_MS;
+    if (
+      Date.now() + waitMs - startedAtMs > START_HOOK_RUN_PENDING_BUDGET_MS ||
+      outlastsInvocation
+    ) {
+      logRetry('start Hook run still pending; surfacing as retryable', {
+        target,
+        waitedMs,
+        retryAfter: err.retryAfter,
+        outlastsInvocation,
+      });
+      throw err;
+    }
+    waitedMs += waitMs;
+    logRetry('start Hook run pending; retrying in-process', {
+      target,
+      waitMs,
+      waitedMs,
+    });
+    await sleep(waitMs);
+  };
+}
+
 function throttleBudgetFor(
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
@@ -590,6 +675,7 @@ function isEligibleForTransientRetry(
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
 ): boolean {
+  if (options?.resolvedHookResume === true) return false;
   if (options?.inBand === true) return false;
   // A batch call always carries an explicit verdict derived from every event
   // it contains; the per-type matrix (keyed on the batch's FIRST event) must
@@ -601,6 +687,51 @@ function isEligibleForTransientRetry(
     (eventType === 'hook_received' && options?.idempotentHookResume === true) ||
     (EVENT_RETRY_ELIGIBILITY[eventType]?.retryable ?? false)
   );
+}
+
+/**
+ * Waits out one definitive no-write answer to an event POST (a 429, or a
+ * `503 start-hook-run-pending`), resolving `true` so the caller re-sends it
+ * whatever the event type's transient eligibility, or `false` for any other
+ * failure. Each answer draws on its own per-POST budget and rethrows once that
+ * is spent.
+ */
+function createNoWriteWaiter(
+  eventType: WorkflowEventType,
+  options?: EventPostRetryOptions
+): (err: unknown) => Promise<boolean> {
+  const target = `writing ${eventType} event`;
+  const startedAtMs = Date.now();
+  const waitOutThrottle = createThrottleWaiter(
+    target,
+    throttleBudgetFor(eventType, options)
+  );
+  // Created on the first `start-hook-run-pending` only.
+  let waitOutRunPending:
+    | ((err: WorkflowWorldError) => Promise<void>)
+    | undefined;
+  return async (err) => {
+    if (
+      ThrottleError.is(err) ||
+      (options?.resolvedHookResume === true &&
+        WorkflowWorldError.is(err) &&
+        err.status === 503 &&
+        err.code === 'run-spec-version-changed' &&
+        err.retryAfter !== undefined)
+    ) {
+      await waitOutThrottle(err);
+      return true;
+    }
+    if (isStartHookRunPendingError(err)) {
+      waitOutRunPending ??= createStartHookRunPendingWaiter(
+        target,
+        startedAtMs
+      );
+      await waitOutRunPending(err);
+      return true;
+    }
+    return false;
+  };
 }
 
 /**
@@ -616,20 +747,38 @@ export async function withEventPostRetry<T>(
   options?: EventPostRetryOptions
 ): Promise<T> {
   const retryable = isEligibleForTransientRetry(eventType, options);
-  // Throttle waits draw on a shared per-POST budget instead of the transient
-  // attempt counter, so a throttled write keeps its full transient-blip
-  // allowance (and vice versa).
-  const waitOutThrottle = createThrottleWaiter(
-    `writing ${eventType} event`,
-    throttleBudgetFor(eventType, options)
-  );
+  // Throttle (and start Hook run-pending) waits draw on per-POST budgets
+  // instead of the transient attempt counter, so a throttled write keeps its
+  // full transient-blip allowance (and vice versa).
+  const waitOutNoWrite = createNoWriteWaiter(eventType, options);
+  let retried = false;
   for (let attempt = 0; ; ) {
     try {
       return await fn();
     } catch (err) {
       if (err instanceof AfterCommitError) throw err;
-      if (ThrottleError.is(err)) {
-        await waitOutThrottle(err);
+      if (
+        options?.resolvedHookResume === true &&
+        retried &&
+        (HookNotFoundError.is(err) ||
+          HookForceClaimedError.is(err) ||
+          RunExpiredError.is(err) ||
+          (WorkflowWorldError.is(err) &&
+            (err.status === 400 || err.status === 404)))
+      ) {
+        // A refusal only proves THIS send wrote nothing. Never let it hide
+        // an earlier send and enable a lookup followed by a claim-less write.
+        throw new WorkflowWorldError(
+          'Resolved hook delivery was refused after an earlier send; its outcome may be uncertain',
+          {
+            code: 'HOOK_RESUME_RETRY_REFUSED',
+            status: WorkflowWorldError.is(err) ? err.status : undefined,
+            cause: err,
+          }
+        );
+      }
+      if (await waitOutNoWrite(err)) {
+        retried = true;
         continue;
       }
       if (!retryable || !isRetryableEventPostError(err)) {
@@ -660,6 +809,7 @@ export async function withEventPostRetry<T>(
         error: errorMarker(err),
       });
       await sleep(backoff);
+      retried = true;
     }
   }
 }

@@ -77,7 +77,7 @@ export async function chatWorkflow(prompt: string) {
 This is the most common scenario - using AI SDK functions that make HTTP requests:
 
 ```typescript lineNumbers
-import { generateText, streamText } from "ai";
+import { generateText } from "ai";
 import { fetch } from "workflow"; // [!code highlight]
 
 export async function aiWorkflow(userMessage: string) {
@@ -89,11 +89,17 @@ export async function aiWorkflow(userMessage: string) {
   const response = await generateText({
     model: "spacexai/grok-4.6",
     prompt: userMessage,
+    maxRetries: 0, // [!code highlight]
   });
 
   return response.text;
 }
 ```
+
+#### AI SDK limitations in workflow functions
+
+- **Set `maxRetries: 0`.** When a provider returns a retryable status such as 429 or 5xx, the AI SDK waits with `setTimeout` before it retries, and [timers are not available in workflow functions](/docs/errors/timeout-in-workflow). With the default `maxRetries`, the run fails with a timer error instead of the provider's error. To retry these calls, put the `generateText()` call inside a step function, which the workflow retries on failure.
+- **Streaming is not supported.** `streamText()` and other streaming calls pipe the response through web streams, which are not available in workflow functions. Use [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent), or call `streamText()` inside a step function.
 
 ### Direct API calls
 

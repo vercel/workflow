@@ -1,7 +1,7 @@
-import type { Queue, Storage, World } from '@workflow/world';
+import type { Queue, Storage, World, WorldCapabilities } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
-import type { PostgresWorldConfig } from './config.js';
+import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
@@ -13,6 +13,7 @@ import { createSnapshotsStorage } from './snapshots.js';
 import {
   createEventsStorage,
   createHooksStorage,
+  createRecoverableRunsList,
   createRunsStorage,
   createStepsStorage,
 } from './storage.js';
@@ -20,11 +21,12 @@ import { createStreamer } from './streamer.js';
 
 function createStorage(
   drizzle: Drizzle,
-  runStatusListener: RunStatusListener
+  runStatusListener: RunStatusListener,
+  jobPrefix: string
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
-    events: createEventsStorage(drizzle),
+    events: createEventsStorage(drizzle, { jobPrefix }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
@@ -43,6 +45,19 @@ function getDefaultConnectionString(): string {
     process.env.DATABASE_URL ||
     'postgres://world:world@localhost:5432/world'
   );
+}
+
+/**
+ * Opts this World into `start({ hook })`. Every worker that serves the
+ * database must run a version with start Hook support first: an older one
+ * creates a candidate's run from its queued copy without its start Hook.
+ */
+export const EXPERIMENTAL_START_HOOK_ENV =
+  'WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK';
+
+function isExperimentalStartHookEnabled(): boolean {
+  const value = process.env[EXPERIMENTAL_START_HOOK_ENV];
+  return value === '1' || value === 'true';
 }
 
 export function createWorld(
@@ -72,25 +87,45 @@ export function createWorld(
   // Opens its `LISTEN` connection lazily, on the first `waitForTerminalStatus`
   // call, so a deployment that never awaits a run never pays for it.
   const runStatusListener = createRunStatusListener(pool);
-  const storage = createStorage(drizzle, runStatusListener);
+  // The prefix of the Graphile task this World's runner claims. Stamped on
+  // every run this World creates, and the scope of its startup recovery.
+  const jobPrefix = resolveJobPrefix(config);
+  const storage = createStorage(drizzle, runStatusListener, jobPrefix);
   const streamer = createStreamer(pool, drizzle);
 
+  const capabilities = {
+    hookRetention: { active: true },
+    // `start({ hook })`: the decision, the start Hook and the run it
+    // admits commit in one transaction; see start-hook.ts. Opt-in while a
+    // database may still be served by workers that predate it (they would
+    // create a candidate's run without its start Hook).
+    ...(isExperimentalStartHookEnabled()
+      ? { atomicStartHook: { active: true } }
+      : {}),
+    // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
+    // upload path, so `start()` always sends the code inline.
+    dynamicWorkflowCode: true,
+    hookResumeDedup: true,
+    ...(config.enableInvoke ? { invoke: true } : {}),
+    // One transaction re-points the token, journals the victim's
+    // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
+    // the hook_created branch of storage.ts.
+    hookForceClaim: true,
+    // A single-orchestrator run's orchestrator deliveries share one
+    // Graphile named queue (see queue.ts), and the events storage fences
+    // in-band writes and stores them at their `occurredAt` (see
+    // storage.ts): the two halves of the single-writer guarantee.
+    maxConcurrency: true,
+    // Required by the runtime; see in-band-fence.test.ts for conformance.
+    inBandFence: true,
+  } satisfies WorldCapabilities;
   return {
-    specVersion: mintedSpecVersion(),
-    capabilities: {
-      hookRetention: { active: true },
-      // Stored in the runs table's `dynamic_workflow_code_cbor` column; no
-      // upload path, so `start()` always sends the code inline.
-      dynamicWorkflowCode: true,
-      hookResumeDedup: true,
-      ...(config.enableInvoke ? { invoke: true } : {}),
-      // One transaction re-points the token, journals the victim's
-      // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
-      // the hook_created branch of storage.ts.
-      hookForceClaim: true,
-      // The events storage fences in-band writes; see storage.ts.
-      inBandFence: true,
-    },
+    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
+    // the in-band fence declared above; spec 8 otherwise.
+    specVersion: mintedSpecVersion(process.env, {
+      inBandFence: capabilities.inBandFence,
+    }),
+    capabilities,
     ...storage,
     ...streamer,
     ...queue,
@@ -99,8 +134,14 @@ export function createWorld(
     }),
     async start() {
       await queue.start();
+      // Recover only this World's runs (and unstamped legacy ones): every
+      // recovered run lands in this World's own task, so a run created under
+      // another `jobPrefix` would be driven by the wrong app's runner.
       await reenqueueActiveRuns(
-        storage.runs,
+        {
+          ...storage.runs,
+          list: createRecoverableRunsList(drizzle, jobPrefix),
+        },
         queue.queue,
         'world-postgres',
         config.namespace

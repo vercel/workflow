@@ -158,7 +158,7 @@ The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. T
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.
-- **Hook minimum retention**: [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) cannot exceed 30 days.
+- **Hook minimum retention**: `experimental_minRetention` cannot exceed 30 days, on both [`createHook()`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) and [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts).
 
 ## Observability
 
@@ -379,6 +379,10 @@ The Vercel World doesn't follow HTTP redirects on workflow API requests, so poin
 ### `VERCEL_WORKFLOW_SERVER_URL`
 
 Custom workflow-server URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
+
+### `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK`
+
+Set to `1` (or `true`) to enable [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) on the Vercel World. Off by default; without it, `start({ hook })` throws before it enqueues anything. It needs a backend that supports start Hooks. Set it on the deployment that starts runs and on any deployment those runs target.
 
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 
