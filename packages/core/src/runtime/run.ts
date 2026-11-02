@@ -29,8 +29,8 @@ import {
   tagForwardedWritableTarget,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { afterRunCancelled } from './after-terminal-write.js';
 import { awaitChildRunCompletion } from './child-run-completion.js';
-import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
@@ -394,7 +394,7 @@ export class Run<TResult> {
       await world.events.create(this.runId, cancelled);
     }
     await wakeRunAfterOutOfBandWrite(world, run);
-    await notifyParentOfRunCompletion(world, run, 'cancelled');
+    await afterRunCancelled(world, run);
   }
 
   /**

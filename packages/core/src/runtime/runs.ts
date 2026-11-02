@@ -22,7 +22,7 @@ import {
 import { runtimeLogger } from '../logger.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
-import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
+import { afterRunCancelled } from './after-terminal-write.js';
 import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -277,7 +277,7 @@ export async function cancelRun(
     });
     if (run) {
       await wakeRunAfterOutOfBandWrite(world, run);
-      await notifyParentOfRunCompletion(world, run, 'cancelled');
+      await afterRunCancelled(world, run);
     }
   } catch (err) {
     // The World fenced a candidate that never became a run: cancelled.
@@ -347,7 +347,7 @@ export async function cancelRuns(
     // same on the fallback path below).
     await forEachConcurrently(
       result.results.filter(({ outcome }) => outcome === 'cancelled'),
-      ({ runId }) => notifyParentOfRunCompletion(world, runId, 'cancelled')
+      ({ runId }) => afterRunCancelled(world, runId)
     );
     return result;
   }

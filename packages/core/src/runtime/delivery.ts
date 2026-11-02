@@ -41,7 +41,7 @@ import {
   hydrateDynamicWorkflowCode,
   type PayloadKey,
 } from '../serialization.js';
-import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
+import { afterRunFailed } from './after-terminal-write.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
@@ -55,7 +55,6 @@ import {
 } from './dynamic-workflow.js';
 import { memoizeEncryptionKey, queueMessage } from './helpers.js';
 import type { RunInputActivity } from './invocations.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -485,17 +484,13 @@ export async function recordFatalRunError({
     }
     throw failErr;
   }
-  dispatchRunFailedHooks(
-    runId,
+  await afterRunFailed(
+    world,
+    workflowRun ?? failedRun ?? runId,
     workflowName,
     dehydratedError,
     encryptionKey,
     errorCode
-  );
-  await notifyParentOfRunCompletion(
-    world,
-    workflowRun ?? failedRun ?? runId,
-    'failed'
   );
 }
 

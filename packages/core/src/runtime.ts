@@ -19,7 +19,7 @@ import {
 import { isRetryableWorldError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { type Logger, runtimeLogger } from './logger.js';
-import { notifyParentOfRunCompletion } from './runtime/child-run-completion-notify.js';
+import { afterRunFailed } from './runtime/after-terminal-write.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import { getMaxQueueDeliveries } from './runtime/constants.js';
 import type { Orchestrator } from './runtime/delivery.js';
@@ -31,7 +31,6 @@ import {
   withHealthCheck,
 } from './runtime/helpers.js';
 import { withRunInputs } from './runtime/invocations.js';
-import { dispatchRunFailedHooks } from './runtime/lifecycle-hooks.js';
 import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
@@ -504,17 +503,13 @@ export function workflowEntrypoint(
             );
             return;
           }
-          dispatchRunFailedHooks(
-            runId,
+          await afterRunFailed(
+            await getWorld(),
+            failedRun ?? runId,
             workflowName,
             dehydratedError,
             encryptionKey,
             RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
-          );
-          await notifyParentOfRunCompletion(
-            await getWorld(),
-            failedRun ?? runId,
-            'failed'
           );
           return;
         }

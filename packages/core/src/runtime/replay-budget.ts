@@ -8,14 +8,13 @@ import {
 import { describeError } from '../describe-error.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
-import { notifyParentOfRunCompletion } from './child-run-completion-notify.js';
+import { afterRunFailed } from './after-terminal-write.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
 import {
   type EventCreator,
   memoizeEncryptionKey,
   type SlotSnapshotParams,
 } from './helpers.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import { getWorld } from './world.js';
 
@@ -207,12 +206,12 @@ export async function handleReplayBudgetExhausted(args: {
   const failed = await (args.writeEvent
     ? args.writeEvent(runFailed, params)
     : world.events.create(runId, runFailed, params));
-  dispatchRunFailedHooks(
-    runId,
+  await afterRunFailed(
+    world,
+    failed?.run ?? runId,
     workflowName,
     dehydratedError,
     encryptionKey,
     RUN_ERROR_CODES.REPLAY_TIMEOUT
   );
-  await notifyParentOfRunCompletion(world, failed?.run ?? runId, 'failed');
 }

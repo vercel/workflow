@@ -72,7 +72,7 @@ import {
   type WorkflowSession,
   type WorkflowSessionRebase,
 } from '../../workflow.js';
-import { notifyParentOfRunCompletion } from '../child-run-completion-notify.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -126,10 +126,6 @@ import {
   settleEventSlotGap,
   slotSnapshotParams,
 } from '../helpers.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
@@ -3005,11 +3001,10 @@ async function runDelivery(
               );
               return undefined;
             }
-            dispatchRunCompletedHooks(runId, workflowName);
-            await notifyParentOfRunCompletion(
+            await afterRunCompleted(
               world,
               completed.run ?? workflowRun ?? runId,
-              'completed'
+              workflowName
             );
             span?.setAttributes({
               ...Attribute.WorkflowRunStatus('completed'),
@@ -4589,17 +4584,13 @@ async function runDelivery(
     if (recordedStatus !== undefined && recordedStatus !== 'failed') {
       return undefined;
     }
-    dispatchRunFailedHooks(
-      runId,
+    await afterRunFailed(
+      world,
+      failedResult?.run ?? workflowRun ?? runId,
       workflowName,
       dehydratedError,
       failureKey,
       errorCode
-    );
-    await notifyParentOfRunCompletion(
-      world,
-      failedResult?.run ?? workflowRun ?? runId,
-      'failed'
     );
     span?.setAttributes({
       ...Attribute.WorkflowRunStatus('failed'),

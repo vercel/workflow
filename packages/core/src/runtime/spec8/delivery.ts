@@ -67,7 +67,7 @@ import {
   type WorkflowResumeResult,
   type WorkflowSession,
 } from '../../workflow.js';
-import { notifyParentOfRunCompletion } from '../child-run-completion-notify.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getOpenWaitClockSkewMs,
@@ -115,10 +115,6 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
@@ -3033,12 +3029,7 @@ async function runDelivery(
         }
         throw err;
       }
-      dispatchRunCompletedHooks(runId, workflowName);
-      await notifyParentOfRunCompletion(
-        world,
-        workflowRun ?? runId,
-        'completed'
-      );
+      await afterRunCompleted(world, workflowRun ?? runId, workflowName);
 
       span?.setAttributes({
         ...Attribute.WorkflowRunStatus('completed'),
@@ -3248,17 +3239,13 @@ async function runDelivery(
             }
             throw failErr;
           }
-          dispatchRunFailedHooks(
-            runId,
+          await afterRunFailed(
+            world,
+            workflowRun ?? runId,
             workflowName,
             dehydratedError,
             failureKey,
             errorCode
-          );
-          await notifyParentOfRunCompletion(
-            world,
-            workflowRun ?? runId,
-            'failed'
           );
           span?.setAttributes({
             ...Attribute.WorkflowRunStatus('failed'),
@@ -5029,17 +5016,13 @@ async function runDelivery(
           }
           throw failErr;
         }
-        dispatchRunFailedHooks(
-          runId,
+        await afterRunFailed(
+          world,
+          workflowRun ?? runId,
           workflowName,
           dehydratedError,
           failureKey,
           errorCode
-        );
-        await notifyParentOfRunCompletion(
-          world,
-          workflowRun ?? runId,
-          'failed'
         );
 
         span?.setAttributes({
