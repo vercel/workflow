@@ -55,6 +55,12 @@ function tagOrigin(
     tagOrigin(value[key], sourceId, [...path, key]);
 }
 
+function deepFreeze(value: unknown): void {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const key of Object.keys(value)) deepFreeze((value as RecordValue)[key]);
+}
+
 /** One invocation's materialized views over flat hook/step log segments. */
 export class SharedHistoryContext {
   private readonly sources = new Map<string, unknown>();
@@ -109,6 +115,10 @@ export class SharedHistoryContext {
         if (this.sources.has(d.sourceId))
           throw new Error('Duplicate history source in event log');
         tagOrigin(d.value, d.sourceId);
+        // Later views serialize a `ref` to this producer instead of its bytes,
+        // so an in-place edit would be lost on cold recovery. Freeze it so
+        // such an edit fails loudly rather than diverging silently.
+        deepFreeze(d.value);
         this.sources.set(d.sourceId, d.value);
         return d.value;
       }

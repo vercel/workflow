@@ -108,3 +108,23 @@ describe('shared conversation log protocol', () => {
     ).toThrow('Non-contiguous');
   });
 });
+
+describe('shared history sources are immutable once revived', () => {
+  it('freezes a revived source so an in-place edit cannot diverge from its stored bytes', () => {
+    const reader = new SharedHistoryContext();
+    const bytes = workflow.serialize(
+      SharedHistory.source(
+        { payload: { message: 'hi', nested: { n: 1 } } },
+        'hook:f'
+      ),
+      { sharedHistory: new SharedHistoryContext() }
+    );
+    const value = workflow.deserialize(bytes, { sharedHistory: reader }) as any;
+    expect(Object.isFrozen(value)).toBe(true);
+    expect(Object.isFrozen(value.payload.nested)).toBe(true);
+    expect(() => {
+      'use strict';
+      value.payload.message = 'edited';
+    }).toThrow(TypeError);
+  });
+});
