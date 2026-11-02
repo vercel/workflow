@@ -2192,6 +2192,7 @@ async function runDelivery(
       inert: 0,
       observedHook: 0,
       unknownHook: 0,
+      abortSignal: 0,
       systemHook: 0,
       externalStep: 0,
       waitDue: 0,
@@ -2203,6 +2204,8 @@ async function runDelivery(
           outOfBandBoundaries.observedHook,
         'workflow.out_of_band.unknown_hook_boundaries':
           outOfBandBoundaries.unknownHook,
+        'workflow.out_of_band.abort_signal_boundaries':
+          outOfBandBoundaries.abortSignal,
         'workflow.out_of_band.system_hook_boundaries':
           outOfBandBoundaries.systemHook,
         'workflow.out_of_band.external_step_boundaries':
@@ -3216,6 +3219,9 @@ async function runDelivery(
           }
           if (observation.unknownHookCount > 0) {
             outOfBandBoundaries.unknownHook++;
+          }
+          if (observation.abortSignalHookCount > 0) {
+            outOfBandBoundaries.abortSignal++;
           }
           if (observation.systemHookCount > 0) {
             outOfBandBoundaries.systemHook++;

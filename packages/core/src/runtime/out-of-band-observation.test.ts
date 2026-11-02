@@ -6,6 +6,7 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { runWorkflow } from '../workflow.js';
+import { childRunCompletionToken } from './child-run-completion.js';
 import { observeOutOfBandWriters } from './out-of-band-observation.js';
 
 describe('observeOutOfBandWriters', () => {
@@ -57,7 +58,25 @@ describe('observeOutOfBandWriters', () => {
 
   it('treats an AbortController system hook as observed', () => {
     const result = observe([hook('abrt', { isSystem: true })]);
-    expect(result).toMatchObject({ systemHookCount: 1, inert: false });
+    expect(result).toMatchObject({
+      abortSignalHookCount: 1,
+      systemHookCount: 1,
+      inert: false,
+    });
+  });
+
+  it('treats the child-run completion hook as observed, apart from abort signals', () => {
+    const result = observe([
+      hook('cmpl', {
+        token: childRunCompletionToken('wrun_parent'),
+        isSystem: true,
+      }),
+    ]);
+    expect(result).toMatchObject({
+      abortSignalHookCount: 0,
+      systemHookCount: 1,
+      inert: false,
+    });
   });
 
   it('ignores a hook this suspension disposes', () => {

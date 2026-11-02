@@ -1,4 +1,5 @@
 import type { QueueItem } from '../global.js';
+import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
 
 /**
  * Whether any event an out-of-band writer could append right now is able to
@@ -134,9 +135,12 @@ export interface OutOfBandObservation {
    * no `observedHookIds`. Counted as path-changing.
    */
   unknownHookCount: number;
+  /** Open `AbortController` system hooks: always path-changing. */
+  abortSignalHookCount: number;
   /**
-   * Open SDK-internal hooks (`AbortController` signals, the child-run
-   * completion hook): always path-changing.
+   * Open SDK-internal hooks of any kind (`AbortController` signals and the
+   * child-run completion hook): always path-changing. A superset of
+   * {@link abortSignalHookCount}.
    */
   systemHookCount: number;
   /**
@@ -169,6 +173,7 @@ export function observeOutOfBandWriters(input: {
   let observedHookCount = 0;
   let unobservedHookCount = 0;
   let unknownHookCount = 0;
+  let abortSignalHookCount = 0;
   let systemHookCount = 0;
   let externalStepCount = 0;
   for (const item of input.items) {
@@ -185,6 +190,9 @@ export function observeOutOfBandWriters(input: {
       // are resumed by other runs and steps, whether or not workflow code is
       // awaiting them right now.
       systemHookCount++;
+      if (!item.token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX)) {
+        abortSignalHookCount++;
+      }
     } else if (input.observedHookIds === undefined) {
       unknownHookCount++;
     } else if (input.observedHookIds.has(item.correlationId)) {
@@ -197,6 +205,7 @@ export function observeOutOfBandWriters(input: {
     observedHookCount,
     unobservedHookCount,
     unknownHookCount,
+    abortSignalHookCount,
     systemHookCount,
     externalStepCount,
     waitDue: input.waitDue,
