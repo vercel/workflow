@@ -21,7 +21,9 @@ if (mode === 'hold-claim') {
   const { withHookTokenClaimLock } = await import('./helpers.ts');
   await withHookTokenClaimLock(lockDir, logPath, async () => {
     process.send('held');
-    await new Promise(() => {});
+    // Held until killed: a referenced timer keeps the process from exiting
+    // (and its exit hook from removing the lock) before the kill lands.
+    await new Promise(() => setInterval(() => {}, 60_000));
   });
 } else if (mode === 'hold') {
   await withFenceFileLock(lockDir, 'wrun_child', async () => {
