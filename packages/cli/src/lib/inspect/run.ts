@@ -112,6 +112,8 @@ export const startRun = async (
     // Health check failed, so use run's specVersion as fallback
   }
 
+  // Never forward the source run's `startHook`: a re-run is a new run by
+  // intent, and its start Hook token would refuse it as a duplicate.
   const newRun = await start({ workflowId }, jsonArgs, {
     deploymentId,
     specVersion,

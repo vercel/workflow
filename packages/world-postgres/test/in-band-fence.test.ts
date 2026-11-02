@@ -5,7 +5,7 @@ import {
   type AnyEventRequest,
   eventIdToSlot,
   IN_BAND_SEQ_AT_RUN_CREATION,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   slotToEventId,
 } from '@workflow/world';
 import type { Pool } from 'pg';
@@ -19,7 +19,7 @@ import { createEventsStorage } from '../src/storage.js';
 import { TestPool } from './pool.js';
 
 /**
- * The in-band writer fence: an in-band write is
+ * The in-band writer fence for single-orchestrator runs: an in-band write is
  * accepted only at the run's current in-band count, a refusal allocates
  * nothing, out-of-band writes leave the count alone, and of concurrent
  * in-band writers holding the same count exactly one wins. `list` reports
@@ -31,7 +31,7 @@ describe('in-band fence (world-postgres)', () => {
     return;
   }
 
-  const SPEC = SPEC_VERSION_CURRENT;
+  const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
   let pool: Pool;
   let events: ReturnType<typeof createEventsStorage>;

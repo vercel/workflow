@@ -13,6 +13,7 @@
 
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createWorkflowUrl } from '@workflow/utils';
+import { isSingleOrchestratorMessage } from '@workflow/world';
 import { encodeMessage, type QueuedMessage } from './queue.js';
 import type { PendingMessageView } from './types.js';
 import type { SimWorld } from './world.js';
@@ -100,7 +101,18 @@ export async function driveQueue(options: {
     }
 
     const message = selectMessage(world, options.selectNext);
-    if (!message) break;
+    if (!message) {
+      // Nothing deliverable, but a run's orchestrator message may be waiting
+      // only for that run's in-flight delivery, which a script started (the
+      // loop's own deliveries have all returned by now). That is not
+      // quiescence: wait until the lease frees or that delivery enqueues
+      // something, and look again.
+      if (world.simQueue.gated().length > 0) {
+        await world.simQueue.nextChange();
+        continue;
+      }
+      break;
+    }
 
     if (deliveries >= limits.maxDeliveries) {
       world.simQueue.requeue(message, message.readyAtMs);
@@ -139,11 +151,18 @@ function selectMessage(
   if (selectNext) {
     const chosen = selectNext(world.simQueue.view());
     if (chosen) {
-      const message = world.simQueue.takeById(chosen);
-      if (message) return message;
+      const pending = world.simQueue
+        .pending()
+        .find((m) => m.messageId === chosen);
+      if (pending && world.simQueue.isDeliverable(pending)) {
+        const message = world.simQueue.takeById(chosen);
+        if (message) return message;
+      }
       world.pushTrace({
         kind: 'warn',
-        message: `selectNext chose ${chosen}, which is not pending; falling back to the default order`,
+        message: pending
+          ? `selectNext chose ${chosen}, whose run has an orchestrator delivery in flight; falling back to the default order`
+          : `selectNext chose ${chosen}, which is not pending; falling back to the default order`,
       });
     }
   }
@@ -153,10 +172,31 @@ function selectMessage(
 /**
  * Hand one message to the flow handler and apply the queue's response
  * protocol: `{ timeoutSeconds }` reschedules the same message (same
- * `messageId`, which the runtime's inline step-ownership lease depends on),
+ * `messageId`, which the runtime's inline step-ownership lease depends on;
+ * `0` on a single-orchestrator run is a handoff, not counted as an attempt),
  * a non-2xx redelivers after a backoff, anything else settles it.
+ *
+ * An orchestrator delivery holds its run's lease until the handler responds,
+ * and waits for the run's current holder first (see `SimQueue.acquireLease`).
  */
 export async function deliver(
+  world: SimWorld,
+  message: QueuedMessage
+): Promise<void> {
+  const lease = await world.simQueue.acquireLease(message, (holder) =>
+    world.pushTrace({
+      kind: 'note',
+      message: `${message.messageId} waits: ${holder.messageId} is the run's orchestrator delivery in flight`,
+    })
+  );
+  try {
+    await deliverHoldingLease(world, message);
+  } finally {
+    world.simQueue.releaseLease(lease);
+  }
+}
+
+async function deliverHoldingLease(
   world: SimWorld,
   message: QueuedMessage
 ): Promise<void> {
@@ -187,7 +227,10 @@ export async function deliver(
         'content-type': 'application/json',
         'x-vqs-queue-name': message.queueName,
         'x-vqs-message-id': message.messageId,
-        'x-vqs-message-attempt': String(message.deliveries),
+        'x-vqs-message-attempt': String(
+          message.deliveries - (message.handoffs ?? 0)
+        ),
+        'x-vqs-message-delivery-count': String(message.deliveries),
       },
       body: encodeMessage(message.payload),
     }
@@ -205,6 +248,13 @@ export async function deliver(
       // Not a timeout response.
     }
     if (timeoutSeconds !== undefined) {
+      // A handoff: the redelivery is not an attempt.
+      if (
+        timeoutSeconds === 0 &&
+        isSingleOrchestratorMessage(message.payload)
+      ) {
+        message.handoffs = (message.handoffs ?? 0) + 1;
+      }
       world.simQueue.requeue(
         message,
         world.clock.now() + timeoutSeconds * 1000

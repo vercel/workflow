@@ -174,6 +174,17 @@ them with an exclusive `link(2)` against a directory that two processes (the app
 and the harness) both write to. A slot race a transaction closes is not
 automatically closed by a filesystem.
 
+Export `WORKFLOW_SPEC_VERSION=9` to race the single orchestrator; CI runs both
+worlds at the default spec and at spec 9. Read the world-local spec 9 cell with
+one difference in mind: its run gate is in-process, and the harness calls
+`start()` and `resumeHook()` from its own process, so those messages reach the
+app through the harness' queue and overlap the app's own deliveries of the run.
+The in-band fence refuses each overlap (logged as "keep being refused by the
+in-band fence"), so the run stays correct but slower: on a 4-core box,
+`hook-storm` took about 300s a run at spec 9 against 150s at spec 8, and the
+same two-run `step-storm` logged 60 refusals on world-local and none on
+world-postgres, whose named queue gates across processes.
+
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
 Their defaults live only in `event-log-race-repro.test.ts`; neither the CI
 workflow nor the local script defines a second copy. The default scale (14 runs)

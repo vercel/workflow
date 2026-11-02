@@ -73,53 +73,96 @@ function matchesDebugNamespace(
   return enabled;
 }
 
+/** A call's metadata over its logger's, or `undefined` when both are empty. */
+function mergeMetadata(
+  parent: LogMetadata,
+  metadata: LogMetadata | undefined
+): LogMetadata | undefined {
+  const hasParent = Object.keys(parent).length > 0;
+  const hasCallSite = metadata && Object.keys(metadata).length > 0;
+  return hasParent || hasCallSite
+    ? { ...parent, ...(metadata ?? {}) }
+    : undefined;
+}
+
+/** Prints an enabled debug or info line and records it on the active span. */
+function emitDebug(
+  debugNamespace: string,
+  spanEventName: string,
+  message: string,
+  merged: LogMetadata | undefined
+): void {
+  console.debug(`[${debugNamespace}] ${message}`, merged ?? '');
+  getActiveSpan()
+    .then((span) => {
+      span?.addEvent(spanEventName, { message, ...merged });
+    })
+    .catch(() => {
+      // Silently ignore telemetry errors
+    });
+}
+
+/**
+ * One level's log function. Disabled debug and info logging sits on hot
+ * paths (once per event a replay walks), so it returns before building
+ * anything.
+ */
+function createLogFn(
+  namespace: string,
+  level: string,
+  debugNamespace: string,
+  parentMetadata: LogMetadata
+): LogFn {
+  const alwaysPrints = level === 'error' || level === 'warn';
+  // The `DEBUG` value `matchedEnabled` was computed for. `DEBUG` is read
+  // on every call, so a changed value takes effect on the next log, but
+  // its patterns are matched once per value.
+  let matchedDebug: unknown;
+  let matchedEnabled = false;
+  const isDebugEnabled = (): boolean => {
+    const raw = process.env.DEBUG;
+    if (!raw) return false;
+    if (raw !== matchedDebug) {
+      matchedDebug = raw;
+      matchedEnabled = matchesDebugNamespace(debugNamespace, raw);
+    }
+    return matchedEnabled;
+  };
+
+  return (message, metadata) => {
+    const debugEnabled = isDebugEnabled();
+    if (!alwaysPrints && !debugEnabled) return;
+
+    const merged = mergeMetadata(parentMetadata, metadata);
+
+    // Always output error/warn to console so users see critical issues.
+    // debug/info only output when DEBUG env var matches the namespace.
+    //
+    // Compose the framing + structured fields + (trimmed) stack into a
+    // single string so the runtime's `console.error` / `util.inspect`
+    // doesn't quote-escape multi-line stacks or paragraph hints inside
+    // a JSON-y object dump. The framing line stays at the top with the
+    // structured fields right under it; the stack body (with framework
+    // internal frames collapsed) sits at the bottom. See log-format.ts.
+    if (alwaysPrints) {
+      (level === 'error' ? console.error : console.warn)(
+        composeLogLine('[workflow-sdk]', message, merged)
+      );
+    }
+
+    if (debugEnabled) {
+      emitDebug(debugNamespace, `${level}.${namespace}`, message, merged);
+    }
+  };
+}
+
 function createLogger(namespace: string, options: LoggerOptions = {}): Logger {
   const build = (parentMetadata: LogMetadata): Logger => {
     const getDebugNamespace = (level: string) =>
       options.debugNamespace ?? `workflow:${namespace}:${level}`;
 
-    const logger = (level: string): LogFn => {
-      const debugNamespace = getDebugNamespace(level);
-
-      return (message, metadata) => {
-        const hasParent = Object.keys(parentMetadata).length > 0;
-        const hasCallSite = metadata && Object.keys(metadata).length > 0;
-        const merged =
-          hasParent || hasCallSite
-            ? { ...parentMetadata, ...(metadata ?? {}) }
-            : undefined;
-
-        // Always output error/warn to console so users see critical issues.
-        // debug/info only output when DEBUG env var matches the namespace.
-        //
-        // Compose the framing + structured fields + (trimmed) stack into a
-        // single string so the runtime's `console.error` / `util.inspect`
-        // doesn't quote-escape multi-line stacks or paragraph hints inside
-        // a JSON-y object dump. The framing line stays at the top with the
-        // structured fields right under it; the stack body (with framework
-        // internal frames collapsed) sits at the bottom. See log-format.ts.
-        if (level === 'error' || level === 'warn') {
-          const out = level === 'error' ? console.error : console.warn;
-          out(composeLogLine('[workflow-sdk]', message, merged));
-        }
-
-        const debugEnabled = matchesDebugNamespace(
-          debugNamespace,
-          process.env.DEBUG
-        );
-
-        if (debugEnabled) {
-          console.debug(`[${debugNamespace}] ${message}`, merged ?? '');
-          getActiveSpan()
-            .then((span) => {
-              span?.addEvent(`${level}.${namespace}`, { message, ...merged });
-            })
-            .catch(() => {
-              // Silently ignore telemetry errors
-            });
-        }
-      };
-    };
+    const logger = (level: string): LogFn =>
+      createLogFn(namespace, level, getDebugNamespace(level), parentMetadata);
 
     return {
       debug: logger('debug'),

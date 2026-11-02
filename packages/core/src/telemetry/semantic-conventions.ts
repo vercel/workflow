@@ -88,6 +88,80 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
  */
 export const WorkflowDynamic = SemanticConvention<boolean>('workflow.dynamic');
 
+/** Set on a `start()` that reserves a Hook token (`start({ hook })`). */
+export const WorkflowStartHook = SemanticConvention<boolean>(
+  'workflow.start_hook'
+);
+
+/** The absolute retention a `start({ hook })` asked for, ISO 8601. */
+export const WorkflowStartHookRetentionUntil = SemanticConvention<string>(
+  'workflow.start_hook.retention_until'
+);
+
+/**
+ * How a `start({ hook })` ended: `accepted` (the candidate is the token's
+ * owner), `rejected` (another run owns it; no run was created), `uncertain`
+ * (queueing or admission could not be confirmed: `WorkflowStartError`), or
+ * `failed` (a deterministic World answer or contract error).
+ */
+export const WorkflowStartHookOutcome = SemanticConvention<
+  'accepted' | 'rejected' | 'uncertain' | 'failed'
+>('workflow.start_hook.outcome');
+
+/** The run that owns the token, on a `rejected` `start({ hook })`. */
+export const WorkflowStartHookConflictingRunId = SemanticConvention<string>(
+  'workflow.start_hook.conflicting_run_id'
+);
+
+/**
+ * Why the World refused a `start({ hook })` request it will never admit
+ * (`WorkflowWorldError.reason`): `invalid`, `expired`, `token_mismatch`,
+ * `ordinary_run` or `disabled`. `disabled` also marks an answer given while
+ * admission was switched off.
+ */
+export const WorkflowStartHookRejectionReason = SemanticConvention<string>(
+  'workflow.start_hook.rejection_reason'
+);
+
+/**
+ * The error code (or, without one, the error name) a `failed` or `uncertain`
+ * `start({ hook })` ended on. `WORLD_CONTRACT_ERROR` marks a World answer
+ * that broke the admission contract, such as a refusal naming no owner;
+ * `WorkflowStartError:queue` and `WorkflowStartError:admission` mark the
+ * stage an `uncertain` start could not confirm.
+ */
+export const WorkflowStartHookErrorCode = SemanticConvention<string>(
+  'workflow.start_hook.error_code'
+);
+
+/**
+ * How many times `start({ hook })` re-posted its candidate's `run_created`
+ * to confirm an uncertain admission in place. `0` when the first answer
+ * settled it.
+ */
+export const WorkflowStartHookConfirmAttempts = SemanticConvention<number>(
+  'workflow.start_hook.confirm_attempts'
+);
+
+/**
+ * Set when publishing a `start({ hook })` candidate's queue message failed
+ * without a permanent answer. An `accepted` outcome alongside it means the
+ * message was published again after admission.
+ */
+export const WorkflowStartHookEnqueueFailed = SemanticConvention<boolean>(
+  'workflow.start_hook.enqueue_failed'
+);
+
+/**
+ * How the queued copy of a start Hook candidate learned its outcome, on its
+ * invocation span: `run_started`, the write this delivery made, or
+ * `run_load`, a redelivery's read of a run whose `run_started` an earlier
+ * delivery committed.
+ */
+export const WorkflowStartHookTrigger = SemanticConvention<
+  'run_started' | 'run_load'
+>('workflow.start_hook.trigger');
+
 /** SHA-256 of a dynamic run's source and step bindings. */
 export const WorkflowDynamicSourceHash = SemanticConvention<string>(
   'workflow.dynamic.source_hash'
@@ -141,6 +215,18 @@ export const WorkflowParkedEventId = SemanticConvention<string>(
 /** Type of the oldest event still held unclaimed when the replay stopped. */
 export const WorkflowParkedEventType = SemanticConvention<string>(
   'workflow.events.parked.event_type'
+);
+
+/**
+ * Payloads resumed into the run's start Hook (`start(workflow, args, { hook
+ * })`) that the workflow had not opened with `createHook` when the replay
+ * stopped. Counted apart from {@link WorkflowParkedEventsCount}: the workflow
+ * may claim them later, or never (a start token used only as an idempotency
+ * key), and neither is a fault. Includes a takeover of the unopened Hook by
+ * another run (`hook_disposed` with `forceClaimedBy`).
+ */
+export const WorkflowParkedStartHookEventsCount = SemanticConvention<number>(
+  'workflow.events.parked.start_hook_count'
 );
 
 /** Number of arguments passed to the workflow */
@@ -235,6 +321,90 @@ export const WorkflowTraceMode = SemanticConvention<'linked' | 'continuous'>(
 
 /** Whether this workflow invocation is using the turbo first-delivery path */
 export const WorkflowTurbo = SemanticConvention<boolean>('workflow.turbo');
+
+/** The delivery found nothing new since the last consumed position. */
+export const WorkflowNoopDelivery = SemanticConvention<boolean>(
+  'workflow.noop_delivery'
+);
+
+/** The in-band fence refused this orchestrator delivery's write. */
+export const WorkflowSuperseded = SemanticConvention<boolean>(
+  'workflow.superseded'
+);
+
+/**
+ * The queue's `attempt` for this delivery, which the delivery cap counts:
+ * `deliveryCount` less the deliveries that followed a handoff and less
+ * coalesced re-runs (see `Queue` in `@workflow/world`).
+ */
+export const WorkflowDeliveryAttempt = SemanticConvention<number>(
+  'workflow.delivery.attempt'
+);
+
+/**
+ * The queue's `deliveryCount` for this delivery, when the World reports it:
+ * every delivery of the message, handoffs and coalesced re-runs included.
+ * Above `workflow.delivery.attempt` on a handoff or a coalesced re-run.
+ */
+export const WorkflowDeliveryCount = SemanticConvention<number>(
+  'workflow.delivery.count'
+);
+
+/**
+ * Why a spec 9 orchestrator delivery ended before the run suspended or
+ * finished: `superseded`, `deadline`, `hook-conflict`, `pending-stream-ops`,
+ * `quickjs-continue`, `run-ahead-restart`, `run-ahead-stop-handoff`. Unset
+ * when the delivery ran to a suspension or the run's end.
+ */
+export const WorkflowDeliveryExitReason = SemanticConvention<string>(
+  'workflow.delivery.exit_reason'
+);
+
+/**
+ * Whether a spec 9 orchestrator delivery handed the run to a fresh delivery
+ * of the same message (`{ timeoutSeconds: 0 }`).
+ */
+export const WorkflowDeliveryHandoff = SemanticConvention<boolean>(
+  'workflow.delivery.handoff'
+);
+
+/**
+ * Consecutive in-band fence refusals of this run's orchestrator deliveries in
+ * this process, set once the streak is long enough to log at warn.
+ */
+export const WorkflowConsecutiveFenceRefusals = SemanticConvention<number>(
+  'workflow.consecutive_fence_refusals'
+);
+
+/**
+ * Step messages a spec 9 orchestrator delivery's invocation sent again under
+ * their stable idempotency keys: background steps created and not started,
+ * re-sent once per invocation by a delivery that is not its message's first
+ * (a redelivery, a handoff continuation, a coalesced re-run). Set whenever a
+ * delivery passes that gate, 0 included. Most of these are deduped by the
+ * queue against the step's first message.
+ */
+export const WorkflowReenqueueCount = SemanticConvention<number>(
+  'workflow.reenqueue.count'
+);
+
+/**
+ * Steps the same re-send left alone because their last send is older than
+ * the re-send age bound, past which a second message could outlive the
+ * queue's dedupe window.
+ */
+export const WorkflowReenqueueSkippedTooOld = SemanticConvention<number>(
+  'workflow.reenqueue.skipped_too_old'
+);
+
+/**
+ * The delivery is of a recovery message a World sent after it lost its
+ * queue (world-local after a restart): its re-send also covers steps that
+ * started and have no outcome, and it arms every open wait's timer.
+ */
+export const WorkflowReenqueueRecovery = SemanticConvention<boolean>(
+  'workflow.reenqueue.recovery'
+);
 
 /** Name of the error that caused workflow failure */
 export const WorkflowErrorName = SemanticConvention<string>(
@@ -513,7 +683,11 @@ export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
   'workflow.deployment_mismatch.recovered'
 );
 
-/** The spec version `start()` stamped on the new run. */
+/**
+ * The run's spec version: on `start()`, the version it stamped on the new
+ * run; on a `workflow.execute` span, the version that picked the
+ * orchestrator handling the delivery.
+ */
 export const WorkflowRunSpecVersion = SemanticConvention<number>(
   'workflow.run.spec_version'
 );
@@ -571,6 +745,15 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
 export const HookResilientResume = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume'
 );
+
+/**
+ * What the `hook.resume` span's last by-token lookup found: `found`,
+ * `redirected` (the token's new owner, after a takeover while the resume was
+ * in flight) or `not_found`.
+ */
+export const HookLookupResult = SemanticConvention<
+  'found' | 'redirected' | 'not_found'
+>('workflow.hook.lookup_result');
 
 /**
  * Producer-side signal (on the `hook.resume` span) that the durable
@@ -655,6 +838,32 @@ export const HookResumeSetupSource = SemanticConvention<string>(
 export const StepDispatchPrologue = SemanticConvention<
   'run_context' | 'runs_get'
 >('workflow.step.dispatch_prologue');
+
+/**
+ * What a background step's delivery did with its message
+ * (`spec9/step-delivery.ts`): `run` the body, `ack` without running it,
+ * `redeliver` it later (a `retryAfter` not reached yet), or `fail` the step
+ * for exceeding its retries, or for a message delivered past the delivery
+ * cap without the step starting. A long `retryAfter` is many `redeliver`
+ * deliveries of one message; this tells them apart from the run.
+ */
+export const StepDeliveryDecision = SemanticConvention<
+  'run' | 'ack' | 'redeliver' | 'fail'
+>('step.delivery.decision');
+
+/**
+ * Why a background step's delivery did not run the body: `step-terminal`,
+ * `run-terminal`, `retry-after`, `max-retries` or `max-deliveries`. Absent
+ * for `run`.
+ */
+export const StepDeliveryReason = SemanticConvention<string>(
+  'step.delivery.reason'
+);
+
+/** The delay a `redeliver` delivery asked the queue for, in seconds. */
+export const StepDeliveryTimeoutSeconds = SemanticConvention<number>(
+  'step.delivery.timeout_seconds'
+);
 
 // Hook-triggered time-to-resume (TTR) attributes
 //

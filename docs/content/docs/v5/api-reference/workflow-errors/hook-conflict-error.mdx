@@ -1,15 +1,18 @@
 ---
 title: HookConflictError
-description: Thrown when creating a hook with a token that is already in use by another workflow run.
+description: Thrown when creating a hook, or starting a run with a hook, whose token another workflow run owns.
 type: reference
-summary: Catch HookConflictError when a hook token is already claimed by another active workflow run.
+summary: Catch HookConflictError when a hook token is already owned by another workflow run, including a duplicate start({ hook }).
 related:
   - /docs/api-reference/workflow/create-hook
   - /docs/foundations/hooks
   - /docs/errors/hook-conflict
+  - /docs/foundations/idempotency
 ---
 
-`HookConflictError` is thrown when creating a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows. See the [hook-conflict](/docs/errors/hook-conflict) error guide for resolution strategies. To take the token over instead, create the hook with [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds).
+`HookConflictError` is thrown when creating a hook, or calling [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts), with a token that another workflow run owns. From `start()` it always carries `conflictingRunId`, and no run was created for the duplicate. The owner may still be running, or may have finished while an `experimental_minRetention` holds the token. To deliver the duplicate's data instead, resume the owner's start Hook: see [Start or route to the owner](/docs/foundations/idempotency#start-or-route-to-the-owner).
+
+When creating a hook, it means the token is already in use by another active workflow run. Hook tokens must be unique across all running workflows. See the [hook-conflict](/docs/errors/hook-conflict) error guide for resolution strategies. To take the token over instead, create the hook with [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds).
 
 ```typescript lineNumbers
 import { HookConflictError } from "workflow/errors"

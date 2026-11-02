@@ -10,13 +10,13 @@ import {
   isTerminalWorkflowRunStatus,
   type Queue,
   readRunRetention,
-  SPEC_VERSION_CURRENT,
   WorkflowInvokePayloadSchema,
   type World,
 } from '@workflow/world';
 import { z } from 'zod';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { trace } from '../telemetry.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 
 /** Runner protocol, not a hook-specific World operation. */
 export const HookInvocationSchema = z.object({
@@ -53,16 +53,20 @@ export async function handleInvocation(
   const digest = Buffer.from(
     await crypto.subtle.digest('SHA-256', input.payload)
   ).toString('hex');
+  // The run's spec version, which the `hook_received` is stamped with.
+  let runSpecVersion: number | undefined;
   try {
     const hook = await world.hooks.get(input.hookId);
     if (hook.runId !== runId || hook.token !== input.token)
       throw new HookNotFoundError(input.token);
     const run = await world.runs.get(runId, { resolveData: 'none' });
+    runSpecVersion = run.specVersion;
     if (isTerminalWorkflowRunStatus(run.status))
       throw new HookNotFoundError(input.token);
   } catch (error) {
     if (!isHookGone(error)) throw error;
     const run = await world.runs.get(runId, { resolveData: 'none' });
+    runSpecVersion = run.specVersion;
     if (
       run.expiredAt ||
       (isTerminalWorkflowRunStatus(run.status) &&
@@ -88,10 +92,11 @@ export async function handleInvocation(
     {
       eventType: 'hook_received',
       correlationId: input.hookId,
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: specVersionForRunWrite(runSpecVersion),
       eventData: { token: input.token, payload: input.payload },
     },
     {
+      inBand: false,
       ...(world.capabilities?.hookResumeDedup
         ? { resumeId: requestId, resumePayloadDigest: digest }
         : {}),
