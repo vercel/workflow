@@ -401,6 +401,14 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - Document every user-configurable environment variable in the docs.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
+### Vercel docs vs. Workflow SDK docs
+
+The Workflow SDK docs in `docs/content/` are the full documentation. The Vercel docs at [vercel.com/docs/workflows](https://vercel.com/docs/workflows) are only a short intro and getting started for Vercel Workflows.
+
+- Put API details, options, edge cases, and World-specific behavior in `docs/content/`, never only in the Vercel docs.
+- If a change also needs a Vercel docs update, keep it to an intro: what the feature does, a minimal example, and anything specific to Vercel.
+- Every Vercel docs section links out to the matching Workflow SDK page for details, such as `https://workflow-sdk.dev/docs/foundations/hooks`.
+
 ### Docs preview links in PR descriptions
 
 When a PR adds or updates docs pages (anything under `docs/content/`), add a "Docs Preview" section to the PR description with direct links to each changed page on the `workflow-docs` preview deployment:
