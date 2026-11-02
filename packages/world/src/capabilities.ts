@@ -31,6 +31,7 @@ export const WorldCapabilitiesSchema = z
     maxConcurrency: flag,
     inBandFence: flag,
     hookResumeDedup: flag,
+    resolvedHookResume: flag,
     hookForceClaim: flag,
     deploymentAffinity: flag,
     dynamicWorkflowCode: flag,

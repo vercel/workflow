@@ -10,6 +10,7 @@ describe('parseWorldCapabilities', () => {
       maxConcurrency: true,
       inBandFence: true,
       hookResumeDedup: false,
+      resolvedHookResume: true,
       hookForceClaim: true,
       deploymentAffinity: true,
       dynamicWorkflowCode: true,
@@ -32,6 +33,7 @@ describe('parseWorldCapabilities', () => {
         hookRetention: { active: 'yes' },
         atomicStartHook: true,
         inBandFence: 'true',
+        resolvedHookResume: 'true',
         deploymentAffinity: true,
       })
     ).toEqual({ deploymentAffinity: true });

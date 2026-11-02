@@ -2,6 +2,18 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+Pass the Hook returned by `getHookByToken()` to `resumeHook()` to reuse its
+immutable resume context without another token lookup. JSON, object spreads,
+and structured cloning preserve this behavior. Cached capabilities are ignored;
+capable Worlds require an atomic, guarded write. A definite refusal triggers a
+fresh lookup and ordinary delivery inside the SDK. Uncertain writes are never
+re-sent. Hooks without resume context retain the run-fallback path.
+
+A stored Hook contains its token. Keep it server-side, or authenticate the whole
+object (and encrypt it if the token is secret) before carrying it through a
+client. Deployment metadata controls encryption and wake targeting; validation
+alone does not establish trust. Trace carriers may contain private baggage.
+
 The CI benchmark suite in `e2e/benchmark.test.ts` measures time to first step,
 fan-out, and sequential-step overhead. Streaming delivery performance is
 measured in durabench; stream correctness remains covered by unit and E2E tests.
