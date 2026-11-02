@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync, readlinkSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, readlinkSync, rmSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -87,9 +87,10 @@ function installExitHook() {
   state.exitHookInstalled = true;
   process.once('exit', () => {
     for (const [token, lockPath] of state.held) {
+      // This version only takes lock files, so a directory there is not
+      // this thread's: reading it throws, and it is left alone.
       try {
-        const ownerPath = ownerPathOf(lockPath, statSync(lockPath));
-        const owner = parseOwner(readFileSync(ownerPath, 'utf8'));
+        const owner = parseOwner(readFileSync(lockPath, 'utf8'));
         if (owner?.token === token) {
           rmSync(lockPath, { recursive: true, force: true });
         }
