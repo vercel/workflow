@@ -61,12 +61,100 @@ function deepFreeze(value: unknown): void {
   for (const key of Object.keys(value)) deepFreeze((value as RecordValue)[key]);
 }
 
+const MAX_STATE_CHAIN = 100_000;
+type Dict = Record<string, unknown>;
+
+/** Eve's notion of a plain object: an object literal or a dictionary, from any realm. */
+function isPlainObject(value: unknown): value is Dict {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return false;
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === null || Object.getPrototypeOf(proto) === null;
+}
+function objectLike(like: Dict, entries: [string, unknown][]): Dict {
+  const object = Object.fromEntries(entries);
+  return Object.getPrototypeOf(like) === null
+    ? Object.assign(Object.create(null) as Dict, object)
+    : object;
+}
+/**
+ * Copies plain objects and arrays, keeping dictionaries null-prototype and
+ * other values by reference (Eve's `snapshotValue`). A revived state value is
+ * a copy because step code may edit its input in place.
+ */
+export function copyStateValue<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((v) => copyStateValue(v)) as T;
+  if (!isPlainObject(value)) return value;
+  return objectLike(
+    value,
+    Object.keys(value).map((k) => [k, copyStateValue(value[k])])
+  ) as T;
+}
+/**
+ * Applies one of Eve's `ValueDelta`s (`{ kind: 'value' | 'array' | 'object' }`
+ * with `set` / `patch` / `keys` / `length`) without mutating `base`. This must
+ * stay identical to Eve's `applyValueDelta`.
+ */
+export function applyStateDelta(base: unknown, delta: unknown): unknown {
+  if (delta === undefined) return base;
+  const d = delta as Dict;
+  switch (d.kind) {
+    case 'value':
+      return d.value;
+    case 'array': {
+      if (!Array.isArray(base))
+        throw new Error(
+          'State delta does not match its base: expected an array.'
+        );
+      const next = base.slice(0, d.length as number);
+      for (const [i, v] of Object.entries((d.set as Dict) ?? {}))
+        next[Number(i)] = v;
+      for (const [i, change] of Object.entries((d.patch as Dict) ?? {}))
+        next[Number(i)] = applyStateDelta(base[Number(i)], change);
+      return next;
+    }
+    case 'object': {
+      if (!isPlainObject(base))
+        throw new Error(
+          'State delta does not match its base: expected an object.'
+        );
+      const set = (d.set as Dict) ?? {};
+      const patch = (d.patch as Dict) ?? {};
+      const baseKeys = Object.keys(base);
+      let keys = d.keys as string[] | undefined;
+      if (!keys) {
+        const known = new Set(baseKeys);
+        const added = Object.keys(set).filter((k) => !known.has(k));
+        keys = added.length === 0 ? baseKeys : [...baseKeys, ...added];
+      }
+      return objectLike(
+        base,
+        keys.map((k) => {
+          if (k === '__proto__') throw new Error('Invalid state delta key');
+          if (Object.hasOwn(set, k)) return [k, set[k]];
+          if (Object.hasOwn(patch, k))
+            return [k, applyStateDelta(base[k], patch[k])];
+          return [k, base[k]];
+        })
+      );
+    }
+    default:
+      throw new Error('Unknown state delta');
+  }
+}
+
 /** One invocation's materialized views over flat hook/step log segments. */
 export class SharedHistoryContext {
   private readonly sources = new Map<string, unknown>();
   private readonly segments = new Map<string, Map<number, RecordValue>>();
   private readonly prefixes = new Map<string, unknown[]>();
+  /** Session values by `logId:version`, adopted from replay or reconstructed. */
+  private readonly states = new Map<string, unknown>();
+  /** Committed state transitions by version. */
+  private readonly stateSegments = new Map<string, RecordValue>();
   readonly stats = {
+    adoptedStates: 0,
+    reconstructedStates: 0,
     adoptedPrefixes: 0,
     reconstructedPrefixes: 0,
     recoveryFetches: 0,
@@ -89,6 +177,10 @@ export class SharedHistoryContext {
     if (!m) return false;
     switch (m.kind) {
       case 'prefix':
+        // Only a context that saw the producing segments (this run's replay)
+        // may write a cursor; anywhere else, such as another run's start()
+        // input during a session handoff, the array is serialized in full.
+        if (!this.canResolvePrefix(m.logId, m.end)) return false;
         this.adopt(value as unknown[], m);
         return m;
       case 'source':
@@ -100,6 +192,30 @@ export class SharedHistoryContext {
         return { ...m, value: { ...(value as object) } };
       case 'ref':
         return m;
+      case 'state': {
+        // The unrooted starting value is stored once, in full; later versions
+        // are owned by the step outputs that produced them.
+        // Same rule as prefixes: a cursor only where its segment is known.
+        if (m.version === null || !this.stateSegments.has(m.version))
+          return { ...m, version: null, value: copyStateValue(value) };
+        this.states.set(`${m.logId}:${m.version}`, value);
+        this.stats.adoptedStates++;
+        return m;
+      }
+      case 'stateDelta': {
+        // The producer knows its own segment, so a context that writes it can
+        // later write cursors to it (the inline step's output goes through the
+        // run's replay context).
+        const record = { ...m, value: { ...(value as object) } };
+        const existing = this.stateSegments.get(m.version);
+        if (
+          existing &&
+          (existing.base !== m.base || existing.logId !== m.logId)
+        )
+          throw new Error('Conflicting state version');
+        this.stateSegments.set(m.version, record);
+        return record;
+      }
       case 'projection': {
         const rest = { ...(value as RecordValue) };
         for (const key of Object.keys(m.fields)) delete rest[key];
@@ -153,6 +269,43 @@ export class SharedHistoryContext {
           d.end
         );
       }
+      case 'state': {
+        if (typeof d.logId !== 'string' || d.logId.length > 256)
+          throw new Error('Invalid state log');
+        if (d.version === null) {
+          return SharedHistory.state(d.value as object, {
+            logId: d.logId,
+            version: null,
+          });
+        }
+        if (typeof d.version !== 'string')
+          throw new Error('Invalid state version');
+        const value = this.state(d.logId, d.version);
+        return SharedHistory.state(copyStateValue(value) as object, {
+          logId: d.logId,
+          version: d.version,
+        });
+      }
+      case 'stateDelta': {
+        if (
+          typeof d.logId !== 'string' ||
+          typeof d.version !== 'string' ||
+          (d.base !== null && typeof d.base !== 'string')
+        )
+          throw new Error('Invalid state segment');
+        const existing = this.stateSegments.get(d.version);
+        if (
+          existing &&
+          (existing.base !== d.base || existing.logId !== d.logId)
+        )
+          throw new Error('Conflicting state version');
+        this.stateSegments.set(d.version, d);
+        return SharedHistory.stateDelta(d.value as object, {
+          logId: d.logId,
+          base: d.base,
+          version: d.version,
+        });
+      }
       case 'prefix': {
         checkedCursor(d);
         const key = `${d.logId}:${d.end}`;
@@ -193,6 +346,59 @@ export class SharedHistoryContext {
     }
   };
 
+  /** Whether committed segments (or an adopted prefix) cover `[0, end)`. */
+  private canResolvePrefix(logId: string, end: number): boolean {
+    if (end === 0 || this.prefixes.has(`${logId}:${end}`)) return true;
+    const log = this.segments.get(logId);
+    let at = 0;
+    while (at < end) {
+      const part = log?.get(at);
+      if (!part || part.end <= at) return false;
+      at = part.end as number;
+    }
+    return at === end;
+  }
+
+  /**
+   * A session value at `version`: the one replay adopted, or the fold of the
+   * committed segments from the chain's whole-value root.
+   */
+  private state(logId: string, version: string): unknown {
+    const key = `${logId}:${version}`;
+    if (this.states.has(key)) return this.states.get(key);
+    const chain: RecordValue[] = [];
+    let at: string | null = version;
+    let base: unknown;
+    let found = false;
+    while (at !== null) {
+      const cached = `${logId}:${at}`;
+      if (this.states.has(cached) && chain.length > 0) {
+        base = this.states.get(cached);
+        found = true;
+        break;
+      }
+      const seg = this.stateSegments.get(at);
+      if (!seg || seg.logId !== logId)
+        throw new Error(`Missing state version: ${logId}:${at}`);
+      chain.push(seg);
+      if (chain.length > MAX_STATE_CHAIN)
+        throw new Error('State chain is too long');
+      at = seg.base as string | null;
+    }
+    if (!found) {
+      const root = chain[chain.length - 1]!;
+      if ((root.value as RecordValue | undefined)?.kind !== 'value')
+        throw new Error('State chain root must be a whole value');
+    }
+    let value = base;
+    for (const seg of chain.reverse()) {
+      value = applyStateDelta(value, seg.value);
+      this.states.set(`${logId}:${seg.version}`, value);
+    }
+    this.stats.reconstructedStates++;
+    return value;
+  }
+
   /** Recovery parses only the JSON log records, without running workflow code. */
   ingestPrepared(data: Uint8Array): void {
     const text = new TextDecoder().decode(data.subarray(4));
@@ -211,6 +417,17 @@ export class SharedHistoryContext {
           const value = this.revive(decode(raw[1], depth + 1));
           cache.set(n, value);
           return value;
+        }
+        if (raw[0] === 'null') {
+          // devalue's null-prototype object: ["null", key, index, ...]
+          const dict: RecordValue = Object.create(null);
+          cache.set(n, dict);
+          for (let i = 1; i + 1 < raw.length; i += 2) {
+            if (typeof raw[i] !== 'string' || raw[i] === '__proto__')
+              throw new Error('Invalid dictionary entry');
+            dict[raw[i] as string] = decode(raw[i + 1] as number, depth + 1);
+          }
+          return dict;
         }
         if (typeof raw[0] === 'string')
           throw new Error('History entries must be JSON values');

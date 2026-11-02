@@ -13,7 +13,30 @@ export type SharedHistoryMark =
   | ({ kind: 'ref' } & HistorySource)
   | ({ kind: 'prefix' } & HistoryCursor)
   | { kind: 'append'; logId: string; start: number; end: number }
-  | { kind: 'projection'; fields: Record<string, HistorySource> };
+  | { kind: 'projection'; fields: Record<string, HistorySource> }
+  /**
+   * A session value (not append-only) at a version. `version: null` is the
+   * unrooted starting value, serialized in full once; otherwise the value is
+   * the fold of the `stateDelta` chain ending at `version`.
+   */
+  | ({ kind: 'state' } & StateCursor)
+  /** A step's delta taking a session value from `base` to `version`. */
+  | ({ kind: 'stateDelta' } & StateSegment);
+
+/** A session value's identity: its log and version (null before any step). */
+export interface StateCursor {
+  readonly logId: string;
+  readonly version: string | null;
+}
+/**
+ * One committed transition. `base: null` means the delta must be a whole
+ * value (`{ kind: 'value' }`), which roots the chain.
+ */
+export interface StateSegment {
+  readonly logId: string;
+  readonly base: string | null;
+  readonly version: string;
+}
 export const SHARED_HISTORY_MARK = Symbol.for('@workflow/shared-history/v1');
 
 export function historyMark(value: unknown): SharedHistoryMark | undefined {
@@ -116,5 +139,29 @@ export const SharedHistory = {
   appendedCursor(value: unknown): HistoryCursor | undefined {
     const m = historyMark(value);
     return m?.kind === 'append' ? { logId: m.logId, end: m.end } : undefined;
+  },
+  /** Marks a session value with its log and version. The value is not frozen. */
+  state<T extends object>(value: T, cursor: StateCursor): T {
+    if (!cursor.logId || cursor.logId.length > 256)
+      throw new Error('Invalid state log');
+    return mark(value, { kind: 'state', ...cursor });
+  },
+  stateCursor(value: unknown): StateCursor | undefined {
+    const m = historyMark(value);
+    return m?.kind === 'state'
+      ? { logId: m.logId, version: m.version }
+      : undefined;
+  },
+  /** Marks a step's delta as the transition `segment`. */
+  stateDelta<T extends object>(delta: T, segment: StateSegment): T {
+    if (!segment.version || segment.version.length > 256)
+      throw new Error('Invalid state version');
+    return mark(delta, { kind: 'stateDelta', ...segment });
+  },
+  stateSegment(value: unknown): StateSegment | undefined {
+    const m = historyMark(value);
+    return m?.kind === 'stateDelta'
+      ? { logId: m.logId, base: m.base, version: m.version }
+      : undefined;
   },
 };
