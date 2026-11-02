@@ -86,3 +86,11 @@ scope open until the invocation's duration limit. Streams hydrated through
 Register in the workflow executor's host startup, never from workflow or step
 code. Framework-specific support, hot-reload behavior, and stream cleanup are
 documented in the [lifecycle hooks guide](https://workflow-sdk.dev/docs/observability/lifecycle-hooks).
+
+Response-body readers inside workflow functions consume stored bodies in
+replayable chunks of at most 64 KiB. Consumer byte limits and reader cancellation
+can stop consumption without allocating the full body. Each chunk opens a fresh
+stored-body reader and skips the preceding bytes without retaining them; reading
+large bodies in full can therefore require repeated prefix reads. Use a step for
+high-throughput streaming. Explicit `text()`, `json()`, and `arrayBuffer()` calls
+still load the full body.

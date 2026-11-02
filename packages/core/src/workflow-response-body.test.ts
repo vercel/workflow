@@ -124,6 +124,51 @@ function namedStream(name: string) {
 }
 
 describe('reading Response bodies inside the workflow VM', () => {
+  it('stops requesting stored chunks when a consumer cancels at its limit', async () => {
+    const { value, steps } = await runToCompletion(
+      `const fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fetch");
+      async function workflow() {
+        const reader = (await fetchStep("https://example.com")).body.getReader();
+        const first = await reader.read();
+        const exceeded = first.value.byteLength > 1024;
+        if (exceeded) await reader.cancel();
+        return { size: first.value.length, exceeded, done: (await reader.read()).done };
+      }${workflowRegistration('workflow')}`,
+      async (item) => {
+        if (item.stepName === 'fetch')
+          return new Response(namedStream('strm_large'));
+        expect(item.stepName).toBe('__builtin_response_read_chunk');
+        expect(item.args).toEqual([0]);
+        return { buffer: new ArrayBuffer(65536), done: false };
+      }
+    );
+    expect(value).toEqual({ size: 65536, exceeded: true, done: true });
+    expect(steps).toHaveLength(2);
+  });
+
+  it('serializes overlapping chunk reads and replays byte offsets', async () => {
+    const { value, steps } = await runToCompletion(
+      `const fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fetch");
+      async function workflow() {
+        const reader = (await fetchStep("https://example.com")).body.getReader();
+        const chunks = await Promise.all([reader.read(), reader.read(), reader.read()]);
+        await reader.closed;
+        return chunks.map(chunk => chunk.value[0]);
+      }${workflowRegistration('workflow')}`,
+      async (item) => {
+        if (item.stepName === 'fetch')
+          return new Response(namedStream('strm_chunks'));
+        const offset = item.args[0] as number;
+        return {
+          buffer: new Uint8Array([offset + 1]).buffer,
+          done: offset === 2,
+        };
+      }
+    );
+    expect(value).toEqual([1, 2, 3]);
+    expect(steps.slice(1).map((step) => step.args)).toEqual([[0], [1], [2]]);
+  });
+
   it('reads the body of a Response returned by a step through getReader()', async () => {
     const payload = JSON.stringify({ text: 'hello from the provider' });
     const { value, steps } = await runToCompletion(
@@ -143,14 +188,14 @@ describe('reading Response bodies inside the workflow VM', () => {
             headers: { 'content-type': 'application/json' },
           });
         }
-        expect(item.stepName).toBe('__builtin_response_array_buffer');
-        return new TextEncoder().encode(payload).buffer;
+        expect(item.stepName).toBe('__builtin_response_read_chunk');
+        return { buffer: new TextEncoder().encode(payload).buffer, done: true };
       }
     );
 
     expect(value).toEqual({ status: 200, first: payload, second: payload });
     const bodyReads = steps.filter(
-      (s) => s.stepName === '__builtin_response_array_buffer'
+      (s) => s.stepName === '__builtin_response_read_chunk'
     );
     // One step per reader, each passing the stored stream back to the host.
     expect(bodyReads).toHaveLength(2);
@@ -173,7 +218,7 @@ describe('reading Response bodies inside the workflow VM', () => {
       async (item) =>
         item.stepName === 'fetch'
           ? new Response(namedStream('strm_global_fetch'))
-          : new TextEncoder().encode('ok').buffer
+          : { buffer: new TextEncoder().encode('ok').buffer, done: true }
     );
     expect(value).toBe('ok');
     expect(steps[0]).toMatchObject({ stepName: 'fetch' });
@@ -192,7 +237,7 @@ describe('reading Response bodies inside the workflow VM', () => {
       async (item) =>
         item.stepName === 'fetch'
           ? new Response(namedStream('strm_empty'))
-          : new ArrayBuffer(0)
+          : { buffer: new ArrayBuffer(0), done: true }
     );
     expect(value).toBe(true);
   });
@@ -250,7 +295,7 @@ describe('reading Response bodies inside the workflow VM', () => {
       async (item) =>
         item.stepName === 'fetch'
           ? new Response(namedStream('strm_overlapping'))
-          : new TextEncoder().encode('payload').buffer
+          : { buffer: new TextEncoder().encode('payload').buffer, done: true }
     );
     expect(value).toEqual({
       first: { done: false, text: 'payload' },
@@ -259,7 +304,7 @@ describe('reading Response bodies inside the workflow VM', () => {
       closed: 'closed',
     });
     expect(
-      steps.filter((s) => s.stepName === '__builtin_response_array_buffer')
+      steps.filter((s) => s.stepName === '__builtin_response_read_chunk')
     ).toHaveLength(1);
   });
 

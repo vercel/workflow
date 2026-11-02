@@ -775,14 +775,9 @@ if (typeof Request === "undefined") {
   });
 }
 
-// Readers over in-VM stream handles, mirroring the node:vm engine. A handle
-// is either a named stream stored in the World (e.g. the body of a Response
-// returned by the fetch step) or a body passed to the Response/Request
-// polyfills. The whole body is loaded once, through the arrayBuffer step for
-// named streams, and handed to the reader as a single chunk, so readers such
-// as the AI SDK's response size limit replay from the event log. Handles are
-// never locked or disturbed: every new reader loads the body again instead of
-// throwing, like json()/text()/arrayBuffer() on these handles.
+// Bounded, replayable response-body readers, mirroring the node:vm engine.
+// Each host step materializes at most 64 KiB, so callers can enforce limits
+// and cancel without first allocating the entire stored body.
 (function() {
   var proto = globalThis.ReadableStream.prototype;
   if (typeof proto.getReader === "function") return;
@@ -793,23 +788,20 @@ if (typeof Request === "undefined") {
   function encode(text) {
     return new TextEncoder().encode(text);
   }
-  function readBytes(stream, seen) {
+  function readChunk(stream, offset, seen) {
     if (seen.indexOf(stream) !== -1) unsupported();
     seen.push(stream);
     if (Object.prototype.hasOwnProperty.call(stream, BODY_INIT)) {
       var init = stream[BODY_INIT];
-      if (typeof init === "string") return Promise.resolve(encode(init));
-      if (typeof URLSearchParams !== "undefined" && init instanceof URLSearchParams) {
-        return Promise.resolve(encode(String(init)));
-      }
-      if (init instanceof ArrayBuffer) return Promise.resolve(new Uint8Array(init.slice(0)));
-      if (ArrayBuffer.isView(init)) {
-        return Promise.resolve(new Uint8Array(init.buffer.slice(init.byteOffset, init.byteOffset + init.byteLength)));
-      }
-      if (init !== null && typeof init === "object" && Object.getPrototypeOf(init) === proto) {
-        return readBytes(init, seen);
-      }
-      unsupported();
+      var bytes;
+      if (typeof init === "string") bytes = encode(init);
+      else if (typeof URLSearchParams !== "undefined" && init instanceof URLSearchParams) bytes = encode(String(init));
+      else if (init instanceof ArrayBuffer) bytes = new Uint8Array(init);
+      else if (ArrayBuffer.isView(init)) bytes = new Uint8Array(init.buffer, init.byteOffset, init.byteLength);
+      else if (init !== null && typeof init === "object" && Object.getPrototypeOf(init) === proto) return readChunk(init, offset, seen);
+      else unsupported();
+      var end = Math.min(offset + 64 * 1024, bytes.byteLength);
+      return Promise.resolve({ value: bytes.slice(offset, end), done: end === bytes.byteLength });
     }
     var response = Object.create(globalThis.Response.prototype);
     response.status = 200;
@@ -819,18 +811,20 @@ if (typeof Request === "undefined") {
     response.type = "default";
     response.url = "";
     response.redirected = false;
-    return response.arrayBuffer().then(function(buffer) { return new Uint8Array(buffer); });
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("__builtin_response_read_chunk").call(response, offset).then(function(result) {
+      return { value: new Uint8Array(result.buffer), done: result.done };
+    });
   }
   Object.defineProperty(proto, "locked", { get: function() { return false; }, configurable: true });
   proto.cancel = function() { return Promise.resolve(); };
   proto.getReader = function(options) {
     if (options && options.mode !== undefined) unsupported();
     var stream = this;
-    // Single chunk, claimed synchronously by the first read() so overlapping
-    // reads deliver it once; the closed promise settles with that read. Same contract
-    // as the node:vm engine.
-    var bytes = null;
-    var claimed = false;
+    var pending = Promise.resolve();
+    var offset = 0;
+    var done = false;
+    var failed = false;
+    var failure;
     var released = false;
     var resolveClosed;
     var rejectClosed;
@@ -839,26 +833,29 @@ if (typeof Request === "undefined") {
     return {
       closed: closed,
       read: function() {
-        if (released) {
-          return Promise.reject(new TypeError("This reader has been released and can no longer be read from."));
-        }
-        if (claimed) {
-          var pending = bytes || Promise.resolve();
-          return pending.then(function() { return { done: true, value: undefined }; });
-        }
-        claimed = true;
-        if (!bytes) bytes = readBytes(stream, []);
-        return bytes.then(function(value) {
-          resolveClosed();
-          if (value.byteLength > 0) return { done: false, value: value };
-          return { done: true, value: undefined };
-        }, function(error) {
-          rejectClosed(error);
-          throw error;
+        var result = pending.then(function() {
+          if (released) throw new TypeError("This reader has been released and can no longer be read from.");
+          if (failed) throw failure;
+          if (done) return { done: true, value: undefined };
+          return Promise.resolve().then(function() { return readChunk(stream, offset, []); }).then(function(chunk) {
+            if (done) return { done: true, value: undefined };
+            offset += chunk.value.byteLength;
+            done = chunk.done;
+            if (done) resolveClosed();
+            if (chunk.value.byteLength > 0) return { done: false, value: chunk.value };
+            return { done: true, value: undefined };
+          }, function(error) {
+            failed = true;
+            failure = error;
+            rejectClosed(error);
+            throw error;
+          });
         });
+        pending = result.then(function() {}, function() {});
+        return result;
       },
       cancel: function() {
-        claimed = true;
+        done = true;
         resolveClosed();
         return Promise.resolve();
       },

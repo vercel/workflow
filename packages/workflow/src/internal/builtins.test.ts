@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __builtin_set_attributes } from './builtins.js';
+import {
+  __builtin_response_read_chunk,
+  __builtin_set_attributes,
+} from './builtins.js';
 
 const STEP_CONTEXT_STORAGE = Symbol.for('WORKFLOW_STEP_CONTEXT_STORAGE');
 const WORLD_CACHE = Symbol.for('@workflow/world//cache');
@@ -105,5 +108,79 @@ describe('__builtin_set_attributes', () => {
         }
       ).maxRetries
     ).toBe(2);
+  });
+});
+
+describe('__builtin_response_read_chunk', () => {
+  it('bounds an endless response and cancels without draining it', async () => {
+    let pulls = 0;
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          controller.enqueue(new Uint8Array(4096).fill(42));
+        },
+        cancel,
+      },
+      { highWaterMark: 0 }
+    );
+    const response = new Response(body);
+    const arrayBuffer = vi.spyOn(response, 'arrayBuffer');
+    const result = await __builtin_response_read_chunk.call(response, 0);
+    expect(result.done).toBe(false);
+    expect(result.buffer.byteLength).toBe(65536);
+    expect(new Uint8Array(result.buffer).every((byte) => byte === 42)).toBe(
+      true
+    );
+    expect(pulls).toBe(16);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('uses byte offsets independent of source chunk boundaries', async () => {
+    const payload = Uint8Array.from({ length: 150000 }, (_, i) => i % 251);
+    function response(chunkSize: number) {
+      let offset = 0;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (offset === payload.length) return controller.close();
+            const end = Math.min(offset + chunkSize, payload.length);
+            controller.enqueue(payload.slice(offset, end));
+            offset = end;
+          },
+        })
+      );
+    }
+    for (const offset of [0, 65536, 131072, 150000]) {
+      const first = await __builtin_response_read_chunk.call(
+        response(1000),
+        offset
+      );
+      const replay = await __builtin_response_read_chunk.call(
+        response(90000),
+        offset
+      );
+      expect(first).toEqual(replay);
+      expect(new Uint8Array(first.buffer)).toEqual(
+        payload.slice(offset, offset + 65536)
+      );
+      expect(first.done).toBe(offset + 65536 > payload.length);
+    }
+  });
+
+  it('cancels and releases its reader when a source fails', async () => {
+    const error = new Error('source failed');
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(error);
+      },
+    });
+    await expect(
+      __builtin_response_read_chunk.call(new Response(body), 0)
+    ).rejects.toBe(error);
+    expect(body.locked).toBe(false);
   });
 });

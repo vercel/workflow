@@ -124,6 +124,47 @@ async function runToCompletion(
 }
 
 describe('QuickJS: reading Response bodies inside the workflow', () => {
+  it('does not request another stored chunk after cancellation at a size limit', async () => {
+    const { value, stepIds } = await runToCompletion(
+      `var reader = (await fetchStep("https://example.com")).body.getReader();
+      var first = await reader.read();
+      var exceeded = first.value.byteLength > 1024;
+      if (exceeded) await reader.cancel();
+      return { size: first.value.length, exceeded: exceeded, done: (await reader.read()).done };`,
+      (stepId) => {
+        if (stepId === 'step//test//fetch')
+          return new Response(namedStream('strm_large'));
+        expect(stepId).toBe('__builtin_response_read_chunk');
+        return { buffer: new ArrayBuffer(65536), done: false };
+      }
+    );
+    expect(value).toEqual({ size: 65536, exceeded: true, done: true });
+    expect(stepIds).toEqual([
+      'step//test//fetch',
+      '__builtin_response_read_chunk',
+    ]);
+  });
+
+  it('serializes overlapping reads of a multi-chunk stored body', async () => {
+    let chunk = 0;
+    const { value, stepIds } = await runToCompletion(
+      `var reader = (await fetchStep("https://example.com")).body.getReader();
+      var chunks = await Promise.all([reader.read(), reader.read(), reader.read()]);
+      await reader.closed;
+      return chunks.map(function(chunk) { return chunk.value[0]; });`,
+      (stepId) => {
+        if (stepId === 'step//test//fetch')
+          return new Response(namedStream('strm_chunks'));
+        chunk++;
+        return { buffer: new Uint8Array([chunk]).buffer, done: chunk === 3 };
+      }
+    );
+    expect(value).toEqual([1, 2, 3]);
+    expect(stepIds.slice(1)).toEqual(
+      Array(3).fill('__builtin_response_read_chunk')
+    );
+  });
+
   it('reads the body of a Response returned by a step through getReader()', async () => {
     const payload = JSON.stringify({ text: 'hello from the provider' });
     const { value, stepIds } = await runToCompletion(
@@ -136,13 +177,13 @@ describe('QuickJS: reading Response bodies inside the workflow', () => {
       (stepId) =>
         stepId === 'step//test//fetch'
           ? new Response(namedStream('strm_quickjs_body'), { status: 200 })
-          : new TextEncoder().encode(payload).buffer
+          : { buffer: new TextEncoder().encode(payload).buffer, done: true }
     );
     expect(value).toEqual({ status: 200, first: payload, second: payload });
     expect(stepIds).toEqual([
       'step//test//fetch',
-      '__builtin_response_array_buffer',
-      '__builtin_response_array_buffer',
+      '__builtin_response_read_chunk',
+      '__builtin_response_read_chunk',
     ]);
   });
 
@@ -163,12 +204,12 @@ describe('QuickJS: reading Response bodies inside the workflow', () => {
       (stepId) =>
         stepId === 'step//test//fetch'
           ? new Response(namedStream('strm_quickjs_ai_sdk'), { status: 200 })
-          : new TextEncoder().encode(payload).buffer
+          : { buffer: new TextEncoder().encode(payload).buffer, done: true }
     );
     expect(value).toEqual({ text: 'hello from the provider' });
     expect(stepIds).toEqual([
       'step//test//fetch',
-      '__builtin_response_array_buffer',
+      '__builtin_response_read_chunk',
     ]);
   });
 
@@ -193,7 +234,7 @@ describe('QuickJS: reading Response bodies inside the workflow', () => {
       (stepId) =>
         stepId === 'step//test//fetch'
           ? new Response(namedStream('strm_quickjs_overlapping'))
-          : new TextEncoder().encode('payload').buffer
+          : { buffer: new TextEncoder().encode('payload').buffer, done: true }
     );
     expect(value).toEqual({
       first: { done: false, text: 'payload' },
@@ -203,7 +244,7 @@ describe('QuickJS: reading Response bodies inside the workflow', () => {
     });
     expect(stepIds).toEqual([
       'step//test//fetch',
-      '__builtin_response_array_buffer',
+      '__builtin_response_read_chunk',
     ]);
   });
 
