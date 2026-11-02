@@ -775,6 +775,98 @@ if (typeof Request === "undefined") {
   });
 }
 
+// Readers over in-VM stream handles, mirroring the node:vm engine. A handle
+// is either a named stream stored in the World (e.g. the body of a Response
+// returned by the fetch step) or a body passed to the Response/Request
+// polyfills. The whole body is loaded once, through the arrayBuffer step for
+// named streams, and handed to the reader as a single chunk, so readers such
+// as the AI SDK's response size limit replay from the event log.
+(function() {
+  var proto = globalThis.ReadableStream.prototype;
+  if (typeof proto.getReader === "function") return;
+  var BODY_INIT = Symbol.for("BODY_INIT");
+  function unsupported() {
+    throw new Error("This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.");
+  }
+  function encode(text) {
+    return new TextEncoder().encode(text);
+  }
+  function readBytes(stream, seen) {
+    if (seen.indexOf(stream) !== -1) unsupported();
+    seen.push(stream);
+    if (Object.prototype.hasOwnProperty.call(stream, BODY_INIT)) {
+      var init = stream[BODY_INIT];
+      if (typeof init === "string") return Promise.resolve(encode(init));
+      if (typeof URLSearchParams !== "undefined" && init instanceof URLSearchParams) {
+        return Promise.resolve(encode(String(init)));
+      }
+      if (init instanceof ArrayBuffer) return Promise.resolve(new Uint8Array(init.slice(0)));
+      if (ArrayBuffer.isView(init)) {
+        return Promise.resolve(new Uint8Array(init.buffer.slice(init.byteOffset, init.byteOffset + init.byteLength)));
+      }
+      if (init !== null && typeof init === "object" && Object.getPrototypeOf(init) === proto) {
+        return readBytes(init, seen);
+      }
+      unsupported();
+    }
+    var response = Object.create(globalThis.Response.prototype);
+    response.status = 200;
+    response.statusText = "";
+    response.headers = new globalThis.Headers([]);
+    response.body = stream;
+    response.type = "default";
+    response.url = "";
+    response.redirected = false;
+    return response.arrayBuffer().then(function(buffer) { return new Uint8Array(buffer); });
+  }
+  Object.defineProperty(proto, "locked", { get: function() { return false; }, configurable: true });
+  proto.cancel = function() { return Promise.resolve(); };
+  proto.getReader = function(options) {
+    if (options && options.mode !== undefined) unsupported();
+    var stream = this;
+    var bytes = null;
+    var done = false;
+    var released = false;
+    var resolveClosed;
+    var closed = new Promise(function(resolve) { resolveClosed = resolve; });
+    return {
+      closed: closed,
+      read: function() {
+        if (released) {
+          return Promise.reject(new TypeError("This reader has been released and can no longer be read from."));
+        }
+        if (done) {
+          resolveClosed();
+          return Promise.resolve({ done: true, value: undefined });
+        }
+        if (!bytes) bytes = readBytes(stream, []);
+        return bytes.then(function(value) {
+          done = true;
+          if (value.byteLength > 0) return { done: false, value: value };
+          resolveClosed();
+          return { done: true, value: undefined };
+        });
+      },
+      cancel: function() {
+        done = true;
+        resolveClosed();
+        return Promise.resolve();
+      },
+      releaseLock: function() { released = true; },
+    };
+  };
+  proto.values = function() {
+    var reader = this.getReader();
+    var iterator = {
+      next: function() { return reader.read(); },
+      return: function() { return reader.cancel().then(function() { return { done: true, value: undefined }; }); },
+    };
+    iterator[Symbol.asyncIterator] = function() { return iterator; };
+    return iterator;
+  };
+  proto[Symbol.asyncIterator] = proto.values;
+})();
+
 // The error createHook throws when it opens the start Hook with options only
 // a write could apply. Same text as startHookOptionsError in workflow/hook.ts.
 globalThis.__startHookOptionsError = function(rejected) {
