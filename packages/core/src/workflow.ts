@@ -1148,6 +1148,11 @@ async function createWorkflowSessionInner(
   // to the reader as a single chunk. Libraries that read `response.body`
   // with `getReader()` (such as the AI SDK's response size limit) therefore
   // replay deterministically, since the bytes come from the event log.
+  //
+  // Unlike a real stream, a handle is never locked or disturbed: `locked`
+  // and `bodyUsed` stay false, and every new reader loads the body again
+  // (one more step for a named stream) instead of throwing. This matches
+  // how `json()`/`text()`/`arrayBuffer()` already behave on these handles.
   const readStreamHandleBytes = async (
     stream: object,
     seen: Set<object> = new Set()

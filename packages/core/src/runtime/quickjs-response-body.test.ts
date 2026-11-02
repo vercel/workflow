@@ -88,6 +88,8 @@ async function runToCompletion(
     expect(result.suspended).toBeDefined();
     for (const op of result.suspended!.pendingOperations) {
       expect(op.type).toBe('step');
+      // A step whose arguments failed to serialize would fail at runtime.
+      expect((op as any).serializationError).toBeUndefined();
       const stepId = (op as any).stepId as string;
       stepIds.push(stepId);
       const ops: Promise<void>[] = [];
@@ -140,6 +142,32 @@ describe('QuickJS: reading Response bodies inside the workflow', () => {
     expect(stepIds).toEqual([
       'step//test//fetch',
       '__builtin_response_array_buffer',
+      '__builtin_response_array_buffer',
+    ]);
+  });
+
+  it('calls the fetch step with AI SDK request options (`signal: undefined`)', async () => {
+    // `postToApi` in `@ai-sdk/provider-utils` always passes `signal`, which
+    // is undefined unless the caller provides an abort signal.
+    const payload = JSON.stringify({ text: 'hello from the provider' });
+    const { value, stepIds } = await runToCompletion(
+      `
+      var response = await fetchStep("https://example.com/v1/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "hi" }),
+        signal: undefined,
+      });
+      return JSON.parse(await readBody(response));
+      `,
+      (stepId) =>
+        stepId === 'step//test//fetch'
+          ? new Response(namedStream('strm_quickjs_ai_sdk'), { status: 200 })
+          : new TextEncoder().encode(payload).buffer
+    );
+    expect(value).toEqual({ text: 'hello from the provider' });
+    expect(stepIds).toEqual([
+      'step//test//fetch',
       '__builtin_response_array_buffer',
     ]);
   });

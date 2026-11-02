@@ -780,7 +780,9 @@ if (typeof Request === "undefined") {
 // returned by the fetch step) or a body passed to the Response/Request
 // polyfills. The whole body is loaded once, through the arrayBuffer step for
 // named streams, and handed to the reader as a single chunk, so readers such
-// as the AI SDK's response size limit replay from the event log.
+// as the AI SDK's response size limit replay from the event log. Handles are
+// never locked or disturbed: every new reader loads the body again instead of
+// throwing, like json()/text()/arrayBuffer() on these handles.
 (function() {
   var proto = globalThis.ReadableStream.prototype;
   if (typeof proto.getReader === "function") return;
