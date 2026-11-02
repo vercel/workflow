@@ -1,5 +1,15 @@
 # @workflow/astro
 
+## 5.0.7
+
+### Patch Changes
+
+- [#5183](https://github.com/vercel/workflow/pull/5183) [`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop Astro and Vite from warning about generated workflow files during build and dev.
+- Updated dependencies [[`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1)]:
+  - @workflow/builders@5.0.7
+  - @workflow/rollup@5.0.7
+  - @workflow/vite@5.0.7
+
 ## 5.0.6
 
 ### Patch Changes
