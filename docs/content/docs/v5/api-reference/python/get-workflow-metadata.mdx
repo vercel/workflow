@@ -1,0 +1,103 @@
+---
+title: get_workflow_metadata
+description: Access run IDs and timing information within Python workflow and step functions.
+type: reference
+summary: Call get_workflow_metadata inside a workflow or step to access the run ID, timing information, and active features.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/python/get-step-metadata
+  - /docs/api-reference/python/attributes
+---
+
+Returns additional metadata available in the current workflow run. Python
+exposes the same run identity from both workflow and step functions.
+
+You may want to use this function when you need to:
+
+- Log workflow run IDs
+- Access timing information for a workflow
+- Detect whether encryption is enabled for the current run
+
+<Callout>
+If you need metadata for the current step attempt, use
+[`get_step_metadata()`](/docs/api-reference/python/get-step-metadata).
+</Callout>
+
+```python
+from vercel.workflow import get_workflow_metadata
+
+@wf.workflow
+async def process_order(order_id: str):
+    info = get_workflow_metadata()
+    return {"order_id": order_id, "run_id": info.run_id}
+```
+
+## API signature
+
+```python
+def get_workflow_metadata() -> WorkflowInfo
+```
+
+The function takes no parameters. Calling it outside a workflow or step raises
+`RuntimeError`.
+
+## WorkflowInfo
+
+`WorkflowInfo` is an immutable dataclass:
+
+```python
+@dataclass(frozen=True)
+class WorkflowInfo:
+    run_id: str
+    workflow_name: str
+    started_at: datetime | None
+    url: str
+    features: WorkflowFeatures
+
+@dataclass(frozen=True)
+class WorkflowFeatures:
+    encryption: bool
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `run_id` | `str` | Current workflow run ID. |
+| `workflow_name` | `str` | Machine-readable workflow ID derived from the decorated function's module and qualified name. |
+| `started_at` | `datetime \| None` | Time the workflow run started. This is `None` when metadata is read from a step. |
+| `url` | `str` | Base URL of the deployment serving the run. |
+| `features.encryption` | `bool` | Whether serialized step inputs, outputs, and other workflow data are encrypted at rest for this run. |
+
+## Detecting the runtime context
+
+You can use `get_workflow_metadata()` to detect whether code is running inside
+a workflow or step context. Because the function raises outside both contexts,
+wrap it in `try`/`except`:
+
+```python
+def current_run_id() -> str | None:
+    try:
+        return get_workflow_metadata().run_id
+    except RuntimeError:
+        return None
+```
+
+## Detecting encryption
+
+The `features` object indicates which capabilities are active for the current
+run. Library authors can use `features.encryption` to control whether sensitive
+data is included in step return values, which are serialized to the event log:
+
+```python
+from vercel.workflow import get_workflow_metadata
+
+@wf.step
+async def fetch_user_profile(user_id: str) -> dict[str, str]:
+    profile = await users.get_profile(user_id)
+    features = get_workflow_metadata().features
+
+    if not features.encryption:
+        profile.pop("ssn", None)
+
+    return profile
+```
