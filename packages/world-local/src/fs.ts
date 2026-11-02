@@ -100,7 +100,7 @@ const isWindows = process.platform === 'win32';
  * are briefly locked by another process or antivirus. This wrapper adds
  * exponential backoff retry logic. On non-Windows platforms, executes directly.
  */
-async function withWindowsRetry<T>(
+export async function withWindowsRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 5
 ): Promise<T> {
@@ -398,6 +398,21 @@ export async function write(
     }
     throw error;
   }
+}
+
+/**
+ * Writes a new private temporary file, making its directory. Unlike
+ * {@link write} it is neither atomic nor remembered in the created-files
+ * cache: the caller publishes the file under another name (as a stream chunk
+ * is linked into place) and removes it, so nothing reads it by this path.
+ */
+export async function writeTempFile(
+  filePath: string,
+  data: Buffer
+): Promise<void> {
+  await withEnsuredDirectory(path.dirname(filePath), () =>
+    fs.writeFile(filePath, data, { flag: 'wx' })
+  );
 }
 
 export async function readJSON<T>(
