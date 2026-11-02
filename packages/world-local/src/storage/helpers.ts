@@ -558,7 +558,6 @@ export async function withHookTokenClaimLock<T>(
   fn: (signal: AbortSignal) => Promise<T>
 ): Promise<T> {
   const claimPath = hookTokenClaimPath(basedir, token);
-  await fs.mkdir(path.dirname(claimPath), { recursive: true });
   return withOwnedFileLock(`${claimPath}.lock`, fn, {
     acquire: (cause) =>
       new WorkflowWorldError('Could not acquire Hook token claim lock', {

@@ -205,8 +205,16 @@ async function takeOverIfAbandoned(lockPath: string): Promise<boolean> {
       // holder that woke up and released, or a gate broken while in use):
       // what was moved is someone's live lock. Put it back. If a writer took
       // the path meanwhile, the moved lock's holder finds its lock gone and
-      // fails its write as lost.
-      await fs.rename(aside, lockPath).catch(() => {});
+      // fails its write as lost. A lock file goes back with an exclusive
+      // link, which keeps that writer's lock (a rename would replace it); an
+      // older version's lock directory can only be renamed back.
+      const movedStat = await fs.stat(aside).catch(() => null);
+      if (movedStat) {
+        await (movedStat.isDirectory()
+          ? fs.rename(aside, lockPath)
+          : fs.link(aside, lockPath)
+        ).catch(() => {});
+      }
     }
     await fs.rm(aside, { recursive: true, force: true }).catch(() => {});
     return true;
@@ -221,23 +229,19 @@ async function acquire(
   acquireFailed: (cause: unknown) => Error
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
+    let held = false;
     let failure: unknown;
     try {
       if (await writeExclusive(lockPath, JSON.stringify(owner))) return;
-      failure = Object.assign(new Error(`${lockPath} is held`), {
-        code: 'EEXIST',
-      });
+      held = true;
     } catch (error) {
       failure = error;
     }
-    if (
-      (failure as NodeJS.ErrnoException).code === 'EEXIST' &&
-      (await takeOverIfAbandoned(lockPath).catch(() => false))
-    ) {
+    if (held && (await takeOverIfAbandoned(lockPath).catch(() => false))) {
       continue;
     }
     if (attempt >= RETRIES) {
-      throw acquireFailed(failure);
+      throw acquireFailed(failure ?? new Error(`${lockPath} is held`));
     }
     await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
   }

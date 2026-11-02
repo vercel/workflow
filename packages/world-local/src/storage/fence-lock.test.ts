@@ -15,6 +15,7 @@ import { WorkflowWorldError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRun } from '../test-helpers.js';
 import { withFenceFileLock } from './fence-lock.js';
+import { hookTokenClaimPath } from './helpers.js';
 import { createStorage } from './index.js';
 
 let testDir: string;
@@ -203,8 +204,13 @@ describe('fence file lock (world-local)', () => {
     });
     const child = spawnChild(['hold-claim', testDir, 'token_held']);
     expect(await nextMessage(child)).toBe('held');
+    const exited = new Promise((r) => child.once('exit', r));
     child.kill('SIGKILL');
-    await new Promise((r) => child.once('exit', r));
+    await exited;
+    // The kill, not a clean exit, ended the holder: its lock is left behind.
+    await expect(
+      fs.stat(`${hookTokenClaimPath(testDir, 'token_held')}.lock`)
+    ).resolves.toBeDefined();
     const started = Date.now();
     await storage.events.create(run.runId, {
       eventType: 'hook_created',
