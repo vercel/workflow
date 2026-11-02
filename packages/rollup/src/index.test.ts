@@ -1,8 +1,18 @@
 import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
   WORKFLOW_OPTIONAL_OTEL_API_MODULE,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { transformMock } = vi.hoisted(() => ({
   transformMock: vi.fn(),
@@ -139,6 +149,75 @@ describe('workflowTransformPlugin resolveId — ws optional native accelerators'
     const { resolveId } = getResolveId();
     await expect(resolveId('bufferutil-extra')).resolves.toBeNull();
     await expect(resolveId('ws')).resolves.toBeNull();
+  });
+});
+
+describe('workflowTransformPlugin transform — workflow id basis', () => {
+  const originalCwd = process.cwd();
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(realpathSync(tmpdir()), 'workflow-rollup-'));
+    transformMock.mockResolvedValue({ code: 'compiled', map: null });
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    rmSync(root, { recursive: true, force: true });
+    transformMock.mockReset();
+  });
+
+  /** The relative filename handed to SWC, which is what the id is built from. */
+  const transformedFilename = async (id: string): Promise<string> => {
+    const plugin = workflowTransformPlugin();
+    const transform = plugin.transform;
+    if (typeof transform !== 'function') {
+      throw new Error('expected transform to be a function');
+    }
+    await transform.call(
+      {} as never,
+      'export async function order() {\n  "use workflow";\n}',
+      id
+    );
+    return transformMock.mock.calls.at(-1)?.[1]?.filename as string;
+  };
+
+  // A shared `workflows/` directory symlinked into the app, which this repo's
+  // own workbench apps do. Rollup resolves the module to its real path outside
+  // the app, while the builder globs it through the link: without resolving
+  // the alias back, the two name the same workflow differently and every
+  // `start()` enqueues an id the registry has never heard of.
+  it('names a symlinked workflow by the path the app imports it through', async () => {
+    mkdirSync(join(root, 'shared/workflows'), { recursive: true });
+    writeFileSync(join(root, 'shared/workflows/order.ts'), '', 'utf-8');
+    mkdirSync(join(root, 'app'), { recursive: true });
+    symlinkSync(join(root, 'shared/workflows'), join(root, 'app/workflows'));
+    process.chdir(join(root, 'app'));
+
+    await expect(
+      transformedFilename(join(root, 'shared/workflows/order.ts'))
+    ).resolves.toBe('workflows/order.ts');
+  });
+
+  it('keeps naming a file under the app by its own relative path', async () => {
+    mkdirSync(join(root, 'app/workflows'), { recursive: true });
+    writeFileSync(join(root, 'app/workflows/order.ts'), '', 'utf-8');
+    process.chdir(join(root, 'app'));
+
+    await expect(
+      transformedFilename(join(root, 'app/workflows/order.ts'))
+    ).resolves.toBe('workflows/order.ts');
+  });
+
+  it('falls back to stripping ../ for a file no alias explains', async () => {
+    mkdirSync(join(root, 'elsewhere/lib'), { recursive: true });
+    writeFileSync(join(root, 'elsewhere/lib/order.ts'), '', 'utf-8');
+    mkdirSync(join(root, 'app'), { recursive: true });
+    process.chdir(join(root, 'app'));
+
+    await expect(
+      transformedFilename(join(root, 'elsewhere/lib/order.ts'))
+    ).resolves.toBe('elsewhere/lib/order.ts');
   });
 });
 

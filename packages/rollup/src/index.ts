@@ -1,9 +1,14 @@
 import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import {
+  armWorkflowAppGraph,
+  assertWorkflowsAreRegistered,
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
+  recordTransformedWorkflows,
+  resolveAppGraphDir,
   resolveModuleSpecifier,
+  resolveWorkflowAliasRelativePath,
   shouldTransformFile,
   WORKFLOW_OPTIONAL_OTEL_API_MODULE,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
@@ -24,8 +29,38 @@ export function workflowTransformPlugin(
 ): Plugin {
   const { exclude = [] } = options;
 
+  // Workflow IDs already reported in this process, so the several compiler
+  // passes a framework runs do not repeat the same finding.
+  const reportedWorkflowIds = new Set<string>();
+
   return {
     name: 'workflow:transform',
+    /**
+     * Arm the registration check for this build. Idempotent per process, so
+     * the client and server passes — and the worker threads SvelteKit spawns,
+     * which inherit the armed environment — record into one set rather than
+     * wiping each other's.
+     */
+    async buildStart() {
+      await armWorkflowAppGraph({
+        appGraphDir: resolveAppGraphDir(),
+      });
+    },
+    /**
+     * Compare what this app can start against what the build registered.
+     *
+     * Runs at the end of every pass rather than at some known-final one: a
+     * partial app graph can only produce a subset of the findings a complete
+     * one would, so an early pass under-reports and never over-reports, and
+     * the last pass sees everything. Which pass is last is a property of the
+     * host framework that this plugin has no way to know.
+     */
+    async closeBundle() {
+      await assertWorkflowsAreRegistered({
+        workingDir: process.cwd(),
+        reportedWorkflowIds,
+      });
+    },
     resolveId: {
       order: 'pre',
       async handler(source, importer, options) {
@@ -127,10 +162,25 @@ export function workflowTransformPlugin(
         relativeFilename = relative(workingDir, id).replace(/\\/g, '/');
 
         if (relativeFilename.startsWith('../')) {
-          relativeFilename = relativeFilename
-            .split('/')
-            .filter((part) => part !== '..')
-            .join('/');
+          // A workflow reached through a symlink — a shared `workflows/`
+          // directory linked into the app, which this repo's own workbench
+          // does — resolves to its real path here, outside the app. Stripping
+          // the `../` segments names it by wherever it really lives, while
+          // the builder globs it through the link and names it by the app.
+          // The two then disagree about the workflow's id, and `start()`
+          // enqueues one the registry has never heard of. `@workflow/next`
+          // and the esbuild transform both resolve the alias back; this one
+          // did not.
+          const aliasedRelativePath = await resolveWorkflowAliasRelativePath(
+            id,
+            workingDir
+          );
+          relativeFilename =
+            aliasedRelativePath ??
+            relativeFilename
+              .split('/')
+              .filter((part) => part !== '..')
+              .join('/');
         }
       }
 
@@ -175,6 +225,8 @@ export function workflowTransformPlugin(
         sourceMaps: true,
         inlineSourcesContent: true,
       });
+
+      await recordTransformedWorkflows({ file: id, code: result.code });
 
       return {
         code: result.code,

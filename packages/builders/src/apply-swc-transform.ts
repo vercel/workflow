@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform, type WasmPlugin } from '@swc/core';
+import { extractWorkflowManifestComment } from './app-graph.js';
 import { getDecoratorOptionsForDirectory } from './config-helpers.js';
 import { resolveModuleSpecifier } from './module-specifier.js';
 
@@ -143,16 +144,8 @@ export async function applySwcTransform(
     minify: false,
   });
 
-  const workflowCommentMatch = result.code.match(
-    /\/\*\*__internal_workflows({.*?})\*\//s
-  );
-
-  const parsedWorkflows = JSON.parse(
-    workflowCommentMatch?.[1] || '{}'
-  ) as WorkflowManifest;
-
   return {
     code: result.code,
-    workflowManifest: parsedWorkflows || {},
+    workflowManifest: extractWorkflowManifestComment(result.code),
   };
 }

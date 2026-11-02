@@ -1,4 +1,9 @@
-import { createBuildQueue } from '@workflow/builders';
+import {
+  armWorkflowAppGraph,
+  assertWorkflowsAreRegistered,
+  createBuildQueue,
+  resolveAppGraphDir,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
@@ -13,11 +18,25 @@ export function workflow(options?: ModuleOptions): Plugin[] {
   let devNitro: Nitro | undefined;
   let nitroBuildDir: string;
   const enqueue = createBuildQueue();
+  const reportedWorkflowIds = new Set<string>();
 
   // Create a lazy transform plugin that excludes Nitro build artifacts.
   // The exclusion path is set during nitro setup, so we need to defer plugin creation
   const lazyTransformPlugin: Plugin = {
     name: 'workflow:transform',
+    // The wrapper builds a fresh plugin per transform and calls only its
+    // `transform`, so the registration check's own hooks would never fire on
+    // this path. Delegate them explicitly rather than let the check silently
+    // cover nothing here.
+    async buildStart() {
+      await armWorkflowAppGraph({ appGraphDir: resolveAppGraphDir() });
+    },
+    async closeBundle() {
+      await assertWorkflowsAreRegistered({
+        workingDir: process.cwd(),
+        reportedWorkflowIds,
+      });
+    },
     transform(code, id, options) {
       // Delegate to the actual transform plugin with exclusion
       // nitroBuildDir is set during nitro setup before transforms run

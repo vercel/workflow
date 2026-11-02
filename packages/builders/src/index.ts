@@ -1,3 +1,24 @@
+export {
+  APP_GRAPH_DIR_ENV,
+  APP_GRAPH_MANIFEST_ENV,
+  armWorkflowAppGraph,
+  assertWorkflowsAreRegistered,
+  extractWorkflowManifestComment,
+  findUnregisteredWorkflows,
+  formatUnregisteredWorkflows,
+  getManifestWorkflowIds,
+  REGISTRATION_FAILURE_GUIDANCE,
+  type RegistrationCheckMode,
+  readWorkflowAppGraph,
+  recordTransformedWorkflows,
+  recordWorkflowAppGraphEntry,
+  resetWorkflowAppGraph,
+  resolveAppGraphDir,
+  resolveRegistrationCheckMode,
+  type UnregisteredWorkflow,
+  type WorkflowAppGraphEntry,
+  WorkflowRegistrationError,
+} from './app-graph.js';
 export type { WorkflowManifest } from './apply-swc-transform.js';
 export { applySwcTransform } from './apply-swc-transform.js';
 export { BaseBuilder } from './base-builder.js';

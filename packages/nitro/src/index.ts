@@ -1,7 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  assertWorkflowsAreRegistered,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -402,6 +405,25 @@ export default {
         }
         addManifestHandler(nitro);
       }
+    }
+
+    // Nitro never closes its Rollup bundle, so the transform plugin's own
+    // `closeBundle` check never fires on this path — on a Nitro build its
+    // `buildStart` arms the recording and nothing ever compares it. `compiled`
+    // is Nitro's equivalent, and registering it here, after the Vercel builder
+    // hooked above, means the manifest exists on either path by the time this
+    // reads it.
+    if (!nitro.options.dev) {
+      // Named so a test can tell this `compiled` hook from the Vercel
+      // builder's.
+      nitro.hooks.hook(
+        'compiled',
+        async function assertWorkflowRegistrations() {
+          await assertWorkflowsAreRegistered({
+            workingDir: nitro.options.rootDir,
+          });
+        }
+      );
     }
   },
 } satisfies NitroModule;
