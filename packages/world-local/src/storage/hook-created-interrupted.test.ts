@@ -1,0 +1,127 @@
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createRun } from '../test-helpers.js';
+import { createStorage } from './index.js';
+
+// Interrupt `hook_created` at its event publish, after the token claim and
+// index entries are durable, the way a process exit mid-create leaves it.
+// A fresh `createStorage` over the same directory stands in for the restart.
+const interrupt = vi.hoisted(() => ({ armed: false }));
+vi.mock('../fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../fs.js')>();
+  return {
+    ...actual,
+    writeExclusive: async (filePath: string, content: string) => {
+      if (
+        interrupt.armed &&
+        filePath.includes(`${path.sep}events${path.sep}`) &&
+        JSON.parse(content).eventType === 'hook_created'
+      ) {
+        throw new Error('simulated process exit before hook_created publish');
+      }
+      return actual.writeExclusive(filePath, content);
+    },
+  };
+});
+
+const hookCreated = (hookId: string, token: string) => ({
+  eventType: 'hook_created' as const,
+  correlationId: hookId,
+  eventData: { token },
+});
+
+let dataDir: string;
+beforeEach(async () => {
+  dataDir = await fs.mkdtemp(
+    path.join(os.tmpdir(), 'hook-created-interrupted-')
+  );
+});
+afterEach(async () => {
+  interrupt.armed = false;
+  await fs.rm(dataDir, { recursive: true, force: true });
+});
+
+async function startRun() {
+  return createRun(createStorage(dataDir), {
+    deploymentId: 'dpl_test',
+    workflowName: 'test',
+    input: new Uint8Array(),
+  });
+}
+
+async function hookCreatedIds(runId: string): Promise<string[]> {
+  const { data } = await createStorage(dataDir).events.list({
+    runId,
+    pagination: { limit: 1000 },
+  });
+  return data
+    .filter((event) => event.eventType === 'hook_created')
+    .map((event) => event.correlationId as string);
+}
+
+describe('hook_created retried after an interrupted publish', () => {
+  it('creates the hook when an unrelated event took its claimed slot', async () => {
+    const run = await startRun();
+
+    interrupt.armed = true;
+    await expect(
+      createStorage(dataDir).events.create(
+        run.runId,
+        hookCreated('hook_a', 'token_a')
+      )
+    ).rejects.toThrow('simulated process exit');
+    interrupt.armed = false;
+
+    // After the restart, another writer appends first, as an inbox delivery
+    // to the same run does.
+    const restarted = createStorage(dataDir);
+    await restarted.events.create(run.runId, {
+      eventType: 'wait_created',
+      correlationId: 'wait_unrelated',
+      eventData: { resumeAt: new Date(Date.now() + 60_000) },
+    });
+
+    // Replay re-issues the creation. Core reads EntityConflictError as
+    // "already created" and moves on, so anything but a published
+    // hook_created leaves a hook the run believes it owns.
+    await restarted.events.create(run.runId, hookCreated('hook_a', 'token_a'));
+
+    expect(await hookCreatedIds(run.runId)).toEqual(['hook_a']);
+    await expect(restarted.hooks.getByToken('token_a')).resolves.toMatchObject({
+      hookId: 'hook_a',
+    });
+  });
+
+  it('creates every hook of a batch interrupted before any publish', async () => {
+    const run = await startRun();
+
+    // Concurrent creates draw the same candidate slot, so both claims name it.
+    interrupt.armed = true;
+    const owner = createStorage(dataDir);
+    const interrupted = await Promise.allSettled([
+      owner.events.create(run.runId, hookCreated('hook_a', 'token_a')),
+      owner.events.create(run.runId, hookCreated('hook_b', 'token_b')),
+    ]);
+    expect(interrupted.map((result) => result.status)).toEqual([
+      'rejected',
+      'rejected',
+    ]);
+    interrupt.armed = false;
+
+    const restarted = createStorage(dataDir);
+    await Promise.allSettled([
+      restarted.events.create(run.runId, hookCreated('hook_a', 'token_a')),
+      restarted.events.create(run.runId, hookCreated('hook_b', 'token_b')),
+    ]);
+
+    expect((await hookCreatedIds(run.runId)).sort()).toEqual([
+      'hook_a',
+      'hook_b',
+    ]);
+    await expect(restarted.hooks.getByToken('token_b')).resolves.toMatchObject({
+      hookId: 'hook_b',
+    });
+  });
+});
