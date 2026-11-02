@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, readlinkSync, rmSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { z } from 'zod';
@@ -18,11 +17,9 @@ import { writeExclusive } from '../fs.js';
  * of a fully written file, `writeExclusive`), so there is no instant at which
  * it exists without naming who holds it. A process that exits mid-acquire
  * therefore leaves either no lock or one whose holder can be checked. Earlier
- * versions took the lock as a directory (proper-lockfile's, empty; then one
- * holding `owner.json`), and `mkdir` followed by the owner write left a lock
- * that named nobody until the write landed: one left there by an exit could
- * only go stale. Those directories are still recognized. The exclusive link
- * fails on any existing path, so it never replaces one.
+ * versions took the lock as proper-lockfile's empty directory, which names
+ * nobody: one left at the path is still respected, and only goes stale. The
+ * exclusive link fails on any existing path, so it never replaces one.
  *
  * It keeps the rules of the proper-lockfile lock world-local took there
  * before, so a process running an older world-local on the same data
@@ -54,7 +51,6 @@ const RETRIES = 350;
 const RETRY_DELAY_MS = 100;
 /** A takeover takes milliseconds; a gate this old was left by a process that died during one. */
 const GATE_STALE_MS = 5_000;
-const OWNER_FILE = 'owner.json';
 
 const OwnerSchema = z.object({
   pid: z.number().int().positive(),
@@ -108,11 +104,6 @@ function parseOwner(raw: string): Owner | null {
   }
 }
 
-/** Where a lock names its owner: the lock file, or `owner.json` in an older lock directory. */
-function ownerPathOf(lockPath: string, stat: { isDirectory(): boolean }) {
-  return stat.isDirectory() ? path.join(lockPath, OWNER_FILE) : lockPath;
-}
-
 /** A lock's owner and mtime, or `null` when there is no lock there. */
 async function inspect(
   lockPath: string
@@ -123,11 +114,10 @@ async function inspect(
   } catch {
     return null;
   }
-  // An older lock directory that names nobody (proper-lockfile's, or one
-  // whose holder exited between its mkdir and its owner write), or an
-  // unreadable owner: only staleness applies.
+  // An older version's lock directory (reading it throws) or an unreadable
+  // owner: only staleness applies.
   const owner = await fs
-    .readFile(ownerPathOf(lockPath, stat), 'utf8')
+    .readFile(lockPath, 'utf8')
     .then(parseOwner, () => null);
   return { owner, mtimeMs: stat.mtimeMs };
 }

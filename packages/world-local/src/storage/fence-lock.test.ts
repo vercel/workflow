@@ -173,18 +173,6 @@ describe('fence file lock (world-local)', () => {
     expect(left).toEqual([]);
   });
 
-  it('takes over at once a dead holder of a lock directory an earlier version took', async () => {
-    await fs.mkdir(lockPath);
-    await fs.writeFile(
-      path.join(lockPath, 'owner.json'),
-      ownerRecord({ pid: deadPid() })
-    );
-    const started = Date.now();
-    await withFenceFileLock(lockPath, 'wrun_test', async () => {});
-    expect(Date.now() - started).toBeLessThan(2_000);
-    await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
   it('takes over at once the lock of a holder that was SIGKILLed', async () => {
     const child = spawnChild(['hold', lockPath]);
     expect(await nextMessage(child)).toBe('held');
