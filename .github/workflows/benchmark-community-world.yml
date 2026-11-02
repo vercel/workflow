@@ -58,7 +58,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Start MongoDB
         if: ${{ inputs.service-type == 'mongodb' }}
@@ -131,7 +131,7 @@ jobs:
           backend: ${{ inputs.world-id }}
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}
           path: |

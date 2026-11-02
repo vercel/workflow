@@ -36,7 +36,7 @@ runs:
       uses: pnpm/action-setup@v5
 
     - name: Setup Node.js ${{ inputs.node-version }}
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
         node-version: ${{ inputs.node-version }}
         # Only enable the pnpm store cache when this action actually runs
