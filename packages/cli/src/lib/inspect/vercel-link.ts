@@ -12,7 +12,7 @@ import { execSync } from 'node:child_process';
 import fs, { statSync } from 'node:fs';
 import { lstat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, normalize, posix, relative } from 'node:path';
+import { join, normalize, posix, relative, resolve } from 'node:path';
 import util from 'node:util';
 import { promisify } from 'util';
 import { logger } from '../config/log.js';
@@ -123,12 +123,39 @@ export function getVercelDirectory(cwd: string): string {
   return existingDirs[0] || possibleDirs[0];
 }
 
+/**
+ * Resolves the Vercel project linked to `path`.
+ *
+ * Precedence, nearest link first:
+ * 1. A `.vercel/project.json` in `path` or any directory between `path` and
+ *    the repo root (exclusive). A project-level link inside a monorepo is more
+ *    specific than the repo-level mapping.
+ * 2. The `.vercel/repo.json` entry whose `directory` contains `path`.
+ * 3. A `.vercel/project.json` at the repo root.
+ *
+ * Without a repo root, only `path` itself is checked.
+ */
 export async function getProjectLink(
   path: string
 ): Promise<ProjectLink | null> {
+  const absPath = resolve(path);
+  const repoRoot = await findRepoRoot(absPath, absPath);
+  if (repoRoot) {
+    for (const dir of traverseUpDirectories({
+      start: absPath,
+      base: repoRoot,
+    })) {
+      if (dir === normalize(repoRoot)) break;
+      const link = await getLinkFromDir(getVercelDirectory(dir));
+      if (link) {
+        logger.debug(`Using project link from ${dir}`);
+        return link;
+      }
+    }
+  }
   return (
-    (await getProjectLinkFromRepoLink(path)) ||
-    (await getLinkFromDir(getVercelDirectory(path)))
+    (repoRoot && (await getProjectLinkFromRepoLink(absPath, repoRoot))) ||
+    (await getLinkFromDir(getVercelDirectory(repoRoot ?? absPath)))
   );
 }
 
@@ -183,9 +210,10 @@ export function findProjectsFromPath(
 }
 
 async function getProjectLinkFromRepoLink(
-  path: string
+  path: string,
+  rootPath?: string
 ): Promise<ProjectLink | null> {
-  const repoLink = await getRepoLink(path);
+  const repoLink = await getRepoLink(path, rootPath);
   if (!repoLink?.repoConfig) {
     logger.debug('No repo link found');
     return null;
@@ -368,10 +396,13 @@ export function isGitWorktreeOrSubmodule(cwd: string): boolean {
  * and returns the parsed `.vercel/repo.json` file if the repository
  * has already been linked.
  */
-export async function getRepoLink(cwd: string): Promise<RepoLink | undefined> {
+export async function getRepoLink(
+  cwd: string,
+  knownRootPath?: string
+): Promise<RepoLink | undefined> {
   // Determine where the root of the repo is
   logger.debug(`Getting repo link for ${cwd}`);
-  const rootPath = await findRepoRoot(cwd, './');
+  const rootPath = knownRootPath ?? (await findRepoRoot(cwd, cwd));
   if (!rootPath) {
     logger.debug('getRepoLink: No repo root found');
     return undefined;

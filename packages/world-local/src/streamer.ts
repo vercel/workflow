@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { globalSingleton } from '@workflow/utils';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
@@ -9,7 +8,6 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { type LockOptions, lock } from 'proper-lockfile';
-import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
   assertSafeEntityId,
@@ -20,19 +18,10 @@ import {
   withWindowsRetry,
   write,
   writeJSON,
+  writeTempFile,
 } from './fs.js';
+import { createChunkPlacer } from './stream-chunk-place.js';
 import { withInProcessLock } from './util.js';
-
-// Monotonic ULID source for chunk IDs: always increasing even within one
-// millisecond. On `globalThis` rather than at module scope because a bundler
-// can put several copies of this file in one process (see `globalSingleton`),
-// and two copies advancing their own sequences can mint the same `chnk_` ID.
-const chunkIds = globalSingleton(
-  '@workflow/world-local//streamerMonotonicUlid',
-  1,
-  () => ({ next: monotonicFactory(() => Math.random()) })
-);
-const monotonicUlid = (seedTime?: number): string => chunkIds.next(seedTime);
 
 // Schema for the run-to-streams mapping file
 const RunStreamsSchema = z.compile(
@@ -126,7 +115,8 @@ function chunkDirForStream(chunksBaseDir: string, name: string): string {
 }
 
 /**
- * List chunk files for a stream, sorted chronologically (ULID order).
+ * List chunk files for a stream, sorted by name, which is the order they
+ * landed in (see stream-chunk-place.ts).
  * Returns the sorted chunk keys (each key is the chunk ULID), a map of
  * key → extension for resolving the full path, and the per-stream directory
  * the files live in. Handles tagged and legacy (.json) formats.
@@ -280,10 +270,6 @@ export function createStreamer(
   // Streams this instance has registered (`<runId>:<name>`), so only a
   // stream's first write touches the run's stream index.
   const registeredStreams = new Set<string>();
-  // A reader delivers the chunk files it lists, so a chunk must not land
-  // before one with a smaller id: writes to one stream run one at a time, in
-  // the order they took their ids.
-  const streamWriteLocks = new Map<string, Promise<unknown>>();
   // Serializes this instance's updates to one run's stream index. The file
   // lock in `addToRunStreams` does the same across instances and processes.
   const runStreamsLocks = new Map<string, Promise<unknown>>();
@@ -397,31 +383,6 @@ export function createStreamer(
     return !compromised;
   }
 
-  function chunkPath(name: string, chunkId: string): string {
-    return path.join(
-      chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name),
-      `${chunkId}${tagSuffix}.bin`
-    );
-  }
-
-  /** Writes one data chunk's file, then tells this instance's readers. */
-  async function writeChunk(
-    name: string,
-    chunkId: string,
-    chunkBuffer: Buffer
-  ): Promise<void> {
-    await write(
-      chunkPath(name, chunkId),
-      serializeChunk({ chunk: chunkBuffer, eof: false })
-    );
-    // Copy so a reader's enqueue cannot detach the caller's ArrayBuffer.
-    streamEmitter.emit(`chunk:${name}` as const, {
-      streamName: name,
-      chunkData: Uint8Array.from(chunkBuffer),
-      chunkId,
-    });
-  }
-
   // Helper to convert a chunk to a Buffer
   function toBuffer(chunk: string | Uint8Array): Buffer {
     if (typeof chunk === 'string') {
@@ -432,6 +393,16 @@ export function createStreamer(
       return Buffer.from(chunk);
     }
   }
+
+  // Names each chunk as it lands, after every chunk already in its stream
+  // (see stream-chunk-place.ts).
+  const placer = createChunkPlacer({
+    tagSuffix,
+    writeFile: writeTempFile,
+    retry: (fn) => withWindowsRetry(fn),
+  });
+  const chunkDir = (name: string) =>
+    chunkDirForStream(path.join(basedir, 'streams', 'chunks'), name);
 
   return {
     clearCache() {
@@ -444,16 +415,31 @@ export function createStreamer(
         name: string,
         chunk: string | Uint8Array
       ) {
-        // Generate ULID synchronously BEFORE any await to preserve call order.
-        // This ensures that chunks written in sequence maintain their order even
-        // when runId is a promise that multiple writes are waiting on.
-        const chunkId = `chnk_${monotonicUlid()}`;
-        const chunkBuffer = toBuffer(chunk);
-        await withInProcessLock(streamWriteLocks, name, async () => {
+        // Take this write's turn before any await, so chunks written in
+        // sequence land in that order even when runId is a promise that
+        // several writes are waiting on.
+        const turn = placer.turn(name);
+        try {
           // Await runId if it's a promise to ensure proper flushing
-          await registerStreamForRun(await _runId, name);
-          await writeChunk(name, chunkId, chunkBuffer);
-        });
+          const runId = await _runId;
+
+          // Register this stream for the run
+          await registerStreamForRun(runId, name);
+
+          const chunkBuffer = toBuffer(chunk);
+          const [chunkId] = await turn.land(chunkDir(name), [
+            serializeChunk({ chunk: chunkBuffer, eof: false }),
+          ]);
+
+          // Emit real-time event with Uint8Array (create copy to prevent ArrayBuffer detachment)
+          streamEmitter.emit(`chunk:${name}` as const, {
+            streamName: name,
+            chunkData: Uint8Array.from(chunkBuffer),
+            chunkId,
+          });
+        } finally {
+          turn.done();
+        }
       },
 
       async writeMulti(
@@ -463,33 +449,56 @@ export function createStreamer(
       ) {
         if (chunks.length === 0) return;
 
-        // Generate all ULIDs synchronously BEFORE any await to preserve call order.
-        // This ensures that chunks maintain their order even when runId is a promise.
-        const chunkIds = chunks.map(() => `chnk_${monotonicUlid()}`);
-        const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
-        await withInProcessLock(streamWriteLocks, name, async () => {
-          await registerStreamForRun(await _runId, name);
-          // One at a time: a reader listing the stream mid-group must not see
-          // a later chunk before an earlier one.
-          for (const [i, chunkBuffer] of chunkBuffers.entries()) {
-            await writeChunk(name, chunkIds[i], chunkBuffer);
-          }
-        });
+        // Take this batch's turn before any await, as write() does.
+        const turn = placer.turn(name);
+        try {
+          // Await runId if it's a promise
+          const runId = await _runId;
+
+          // Register this stream for the run
+          await registerStreamForRun(runId, name);
+
+          // The chunks are written in parallel, then land in order, each
+          // emitted once it landed.
+          const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
+          await turn.land(
+            chunkDir(name),
+            chunkBuffers.map((chunkBuffer) =>
+              serializeChunk({ chunk: chunkBuffer, eof: false })
+            ),
+            (chunkId, index) => {
+              streamEmitter.emit(`chunk:${name}` as const, {
+                streamName: name,
+                chunkData: Uint8Array.from(chunkBuffers[index]),
+                chunkId,
+              });
+            }
+          );
+        } finally {
+          turn.done();
+        }
       },
 
       async close(_runId: string | Promise<string>, name: string) {
-        // Generate ULID synchronously BEFORE any await to preserve call order.
-        const chunkId = `chnk_${monotonicUlid()}`;
-        await withInProcessLock(streamWriteLocks, name, async () => {
+        // Take the end's turn before any await, as write() does.
+        const turn = placer.turn(name);
+        try {
+          // Await runId if it's a promise to ensure proper flushing
+          const runId = await _runId;
+
           // Register this stream for the run (in case write wasn't called), and
           // put its name back if a writer outside this instance dropped it.
-          await registerStreamForRun(await _runId, name, { verify: true });
-          await write(
-            chunkPath(name, chunkId),
-            serializeChunk({ chunk: Buffer.from([]), eof: true })
-          );
+          await registerStreamForRun(runId, name, { verify: true });
+          await turn.land(chunkDir(name), [
+            serializeChunk({ chunk: Buffer.from([]), eof: true }),
+          ]);
+          // The stream ended: its newest id need not be kept.
+          placer.forget(chunkDir(name));
+
           streamEmitter.emit(`close:${name}` as const, { streamName: name });
-        });
+        } finally {
+          turn.done();
+        }
       },
 
       async list(runId: string) {

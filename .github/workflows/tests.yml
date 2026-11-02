@@ -33,7 +33,7 @@ jobs:
       vercel-spec9-matrix: ${{ steps.vercel-matrix.outputs.vercel-spec9-matrix }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -89,7 +89,7 @@ jobs:
 
     steps:
       - name: Find existing test comment
-        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -99,7 +99,7 @@ jobs:
       - name: Get existing comment body
         if: steps.find-comment.outputs.comment-id != ''
         id: get-comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           STARTED_AT: ${{ github.run_started_at }}
         with:
@@ -149,7 +149,7 @@ jobs:
 
       - name: Create new test comment
         if: steps.find-comment.outputs.comment-id == ''
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           message: |
@@ -165,14 +165,14 @@ jobs:
 
       - name: Update existing test comment with stale warning
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results == 'true'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           path: ${{ steps.get-comment.outputs.stale-comment-path }}
 
       - name: Update existing test comment without results
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results != 'true'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           message: |
@@ -201,7 +201,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -225,7 +225,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -251,7 +251,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -299,7 +299,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -327,7 +327,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -337,7 +337,7 @@ jobs:
           build-packages: 'true'
 
       - name: Upload package build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-package-build-artifacts
           # Keep this list aligned with package build outputs in turbo.json.
@@ -395,7 +395,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -498,7 +498,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ fromJSON(needs.ci-scope.outputs.vercel-projects)['nextjs-turbopack']['project-id'] }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -589,7 +589,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -684,7 +684,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -793,7 +793,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -862,7 +862,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -895,7 +895,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -916,7 +916,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -976,7 +976,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
@@ -1003,7 +1003,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1024,7 +1024,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1096,7 +1096,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
@@ -1207,7 +1207,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1228,7 +1228,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1317,7 +1317,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
@@ -1355,7 +1355,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1368,7 +1368,7 @@ jobs:
       # vitest suite imports `@workflow/core` and shells out to the `workflow`
       # CLI to inspect runs.
       - name: Download shared package builds
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1429,7 +1429,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-conformance-python
           path: |
@@ -1459,7 +1459,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1593,7 +1593,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
           path: |
@@ -1605,7 +1605,7 @@ jobs:
 
       - name: Upload Next.js server logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextjs-server-logs-windows-${{ matrix.vm }}
           path: nextjs-server.log
@@ -1625,7 +1625,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1668,12 +1668,12 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: e2e-results-*
           path: e2e-results
@@ -1689,7 +1689,7 @@ jobs:
 
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           path: e2e-summary.md
@@ -1789,12 +1789,12 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: e2e-results-*
           path: e2e-results
