@@ -12,6 +12,7 @@ vi.mock('@workflow/world-local', () => ({
 describe('workflowEntrypoint world initialization', () => {
   const world = {
     specVersion: SPEC_VERSION_CURRENT,
+    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       () => async () => new Response(null, { status: 204 })
     ),

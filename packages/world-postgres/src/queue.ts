@@ -12,6 +12,8 @@ import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
+  getQueueAuthKey,
+  QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
@@ -724,6 +726,11 @@ export function createQueue(
     headers.delete(EXECUTOR_JOB_HEADER);
     headers.delete(EXECUTOR_WORKER_HEADER);
     headers.delete(EXECUTOR_ATTEMPT_HEADER);
+    // This process's in-memory key, set at delivery time and never stored on
+    // the job: the worker delivering a job is in the process whose routes it
+    // reaches, and the runtime refuses a delivery without it (`queueAuth:
+    // 'in-process-key'`). `set` replaces any caller-supplied copy.
+    headers.set(QUEUE_AUTH_HEADER, getQueueAuthKey());
     if (executorDelivery) {
       headers.set(EXECUTOR_JOB_HEADER, executorDelivery.id);
       headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
@@ -1208,6 +1215,9 @@ export function createQueue(
   }
 
   return {
+    // Every delivery carries this process's in-memory key (see
+    // `deliverMessage`); the handler is world-local's.
+    queueAuth: 'in-process-key',
     createQueueHandler,
     getDeploymentId,
     queue,

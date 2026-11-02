@@ -996,8 +996,36 @@ export interface InvokeOptions {
   timeoutMs?: number;
 }
 
+/**
+ * How the runtime authenticates a delivery that reaches a queue route (the
+ * Workflow SDK's flow route, or a consumer's own route), before it does any
+ * work. See {@link Queue.queueAuth}.
+ *
+ * - `'in-process-key'`: the World's queue runs in the app's own process and
+ *   attaches the process's in-memory key (`getQueueAuthKey()` from
+ *   `@workflow/utils`) as the `QUEUE_AUTH_HEADER` header of every delivery it
+ *   sends, over HTTP or to an in-process handler. The runtime refuses, with a
+ *   401 and without touching any run, a delivery that does not carry it.
+ * - `'skip'`: the World's transport authenticates deliveries itself (Vercel
+ *   Queues reaches a private route), so the runtime does not check.
+ */
+export type QueueAuthMode = 'in-process-key' | 'skip';
+
 export interface Queue {
   getDeploymentId(): Promise<string>;
+
+  /**
+   * How the runtime authenticates the deliveries this World's queue sends
+   * (see {@link QueueAuthMode}). A World that declares nothing is treated as
+   * `'in-process-key'`, so it fails closed: unless its queue attaches the key,
+   * every delivery is refused. A World whose transport authenticates
+   * deliveries itself declares `'skip'`.
+   *
+   * `WORKFLOW_QUEUE_AUTH=off` turns the check off for `'in-process-key'`
+   * Worlds (a trusted network, or a sender in another process), except while
+   * dynamic workflows are enabled.
+   */
+  queueAuth?: QueueAuthMode;
 
   /**
    * Send an invocation to a run's executor. Must be enabled via capabilities.invoke.

@@ -4,6 +4,8 @@ import {
   createAppRouteUrl,
   createWorkflowUrl,
   debugLog,
+  getQueueAuthKey,
+  QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
@@ -293,6 +295,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
+    // A caller's headers never carry the auth header: only the send loop
+    // below sets it. Dropped case-insensitively, since a differently cased
+    // copy would be merged into the one the loop sets.
+    const callerHeaders = Object.fromEntries(
+      Object.entries(opts?.headers ?? {}).filter(
+        ([name]) => name.toLowerCase() !== QUEUE_AUTH_HEADER
+      )
+    );
     const messageId = MessageId.parse(`msg_${generateId()}`);
     // One message for its whole life: every delivery below, including the
     // `{ timeoutSeconds }` redeliveries, reuses this id and creation time.
@@ -386,8 +396,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           releaseDelivery = await acquireDelivery();
           if (closeSignal.aborted) return;
           const headers: Record<string, string> = {
-            ...opts?.headers,
+            ...callerHeaders,
             'content-type': 'application/json',
+            // This process's in-memory key, which the runtime checks before
+            // the handler does any work (`queueAuth: 'in-process-key'`).
+            // Attached on every attempt and both transports, so health
+            // checks and in-process deliveries carry it too.
+            [QUEUE_AUTH_HEADER]: getQueueAuthKey(),
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
             'x-vqs-message-attempt': String(delivery + 1 - handoffs),
@@ -496,6 +511,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               ...(runId && { runId }),
               ...(stepId && { stepId }),
               handlerError: text,
+              ...(response.status === 401 && {
+                hint:
+                  'The app refused the delivery as unauthenticated. A queue delivery is only accepted ' +
+                  "by the process whose queue sent it (it carries that process's in-memory key), so " +
+                  'messages enqueued from a separate process (a script, CLI, or test runner) are ' +
+                  'refused by the app. On a trusted network, set WORKFLOW_QUEUE_AUTH=off on the app ' +
+                  'to accept them (refused while dynamic workflows are enabled).',
+              }),
               ...(!directHandler &&
                 !routes.has(prefix) &&
                 (response.status === 400 || response.status === 404) && {
@@ -666,6 +689,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   };
 
   return {
+    // Every delivery carries this process's in-memory key (see the send
+    // loop), and the runtime refuses one that does not.
+    queueAuth: 'in-process-key',
     queue,
     createQueueHandler,
     getDeploymentId,

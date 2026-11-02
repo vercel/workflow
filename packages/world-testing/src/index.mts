@@ -7,6 +7,7 @@ import { inBandFence } from './in-band-fence.mjs';
 import { inlineExecution } from './inline-execution.mjs';
 import { lineage } from './lineage.mjs';
 import { nullByte } from './null-byte.mjs';
+import { queueAuth } from './queue-auth.mjs';
 import { resolveData } from './resolve-data.mjs';
 
 export function createTestSuite(pkgName: string) {
@@ -16,6 +17,7 @@ export function createTestSuite(pkgName: string) {
   inBandFence(pkgName);
   hooks(pkgName);
   nullByte(pkgName);
+  queueAuth(pkgName);
   errors(pkgName);
   inlineExecution(pkgName);
   lineage(pkgName);

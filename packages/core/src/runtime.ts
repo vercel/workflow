@@ -31,6 +31,11 @@ import {
 } from './runtime/helpers.js';
 import { withRunInputs } from './runtime/invocations.js';
 import { dispatchRunFailedHooks } from './runtime/lifecycle-hooks.js';
+import {
+  authorizeQueueDelivery,
+  createQueueAuthRefusalLogger,
+  logQueueAuthSetting,
+} from './runtime/queue-auth.js';
 import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
@@ -300,10 +305,10 @@ export function workflowEntrypoint(
         // when the message turns out to carry resume timing; taking it
         // unconditionally keeps it honest for the deliveries that do.
         const handlerEnteredAtMs = Date.now();
-        // Check if this is a health check message
-        // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
-        // They only write a status response to a stream and do not expose sensitive data.
-        // The stream name includes a unique correlationId that must be known by the caller.
+        // Check if this is a health check message. It is a queue delivery
+        // like any other, so it passed the route's queue auth check (the
+        // World's queue sends it with the key). It only writes a status
+        // response to a stream named by a correlationId the caller knows.
         const healthCheck = parseHealthCheckPayload(message_);
         if (healthCheck) {
           await handleHealthCheckMessage(
@@ -633,7 +638,15 @@ export function workflowEntrypoint(
       })
     );
 
-  let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  // The handler, with the World it was built for (which declares how its
+  // deliveries are authenticated) and this route's refusal log.
+  let cachedRoute:
+    | {
+        handler: (req: Request) => Promise<Response>;
+        world: World;
+        logQueueAuthRefusal: () => void;
+      }
+    | undefined;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
   const routeModuleBodyInitMs =
@@ -643,7 +656,7 @@ export function workflowEntrypoint(
 
   return withHealthCheck(async (req) => {
     invocationCount += 1;
-    const handlerCached = cachedHandler !== undefined;
+    const handlerCached = cachedRoute !== undefined;
     const spanKind = await getSpanKind('SERVER');
 
     return trace(
@@ -666,8 +679,8 @@ export function workflowEntrypoint(
         },
       },
       async (span) => {
-        if (!cachedHandler) {
-          cachedHandler = await trace('workflow.route.init', async () => {
+        if (!cachedRoute) {
+          cachedRoute = await trace('workflow.route.init', async () => {
             // The full runtime World, not `getWorldHandlers()`. That accessor
             // owns a second, build-time-safe cache, so calling it here built a
             // second World in the same process: duplicate connection pools and
@@ -682,11 +695,27 @@ export function workflowEntrypoint(
               'workflow.route.get_world_handlers',
               async () => getWorld()
             );
-            return handler(worldHandlers);
+            logQueueAuthSetting(worldHandlers);
+            return {
+              handler: handler(worldHandlers),
+              world: worldHandlers,
+              logQueueAuthRefusal: createQueueAuthRefusalLogger(worldHandlers),
+            };
           });
         }
 
-        const response = await cachedHandler(req);
+        // Before the handler reads the body or touches any run: a request
+        // that is not a delivery from this process's own queue is refused
+        // and dropped (see `authorizeQueueDelivery`). Covers every delivery
+        // to this route, health checks and invocations included.
+        const refusal = authorizeQueueDelivery(cachedRoute.world, req);
+        if (refusal) {
+          cachedRoute.logQueueAuthRefusal();
+          span?.setAttributes(Attribute.HttpResponseStatusCode(refusal.status));
+          return refusal;
+        }
+
+        const response = await cachedRoute.handler(req);
         if (response instanceof Response) {
           span?.setAttributes(
             Attribute.HttpResponseStatusCode(response.status)

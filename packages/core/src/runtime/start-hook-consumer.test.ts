@@ -87,6 +87,7 @@ async function deliver(opts: {
   setWorld({
     specVersion: SPEC_8,
     getDeploymentId: vi.fn(async () => 'test-deployment'),
+    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
         async () => {

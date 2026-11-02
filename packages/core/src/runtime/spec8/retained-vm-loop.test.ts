@@ -869,6 +869,7 @@ async function drive(
 
   setWorld({
     specVersion: SPEC8_EVENT_SPEC_VERSION,
+    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
         async () => {
@@ -1038,6 +1039,7 @@ async function driveConcurrentWakeRace(
 
   setWorld({
     specVersion: SPEC8_EVENT_SPEC_VERSION,
+    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
         async () => {

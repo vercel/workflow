@@ -54,6 +54,10 @@ Full base URL override for HTTPS or custom hostnames. Default: `http://localhost
 
 Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
+### `WORKFLOW_QUEUE_AUTH`
+
+Whether the flow route accepts only deliveries sent by this process's own queue. Default: `on`. Every delivery carries a random in-memory key, and the route refuses a request without it with a `401` and touches no run. Messages enqueued by another process on the same data directory (a script, the CLI, or a test runner calling `start()` or `resumeHook()` against a running app) carry that process's key, so the app refuses them; set `off` on the app to accept them on a trusted machine. `off` is refused while dynamic workflows are enabled. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
 Maximum number of concurrent queue message handlers. Default: `1000`
@@ -158,6 +162,6 @@ The Local World is designed for development, not production:
 - **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
 - **Filesystem storage**: Data is stored in local JSON files.
 - **Single instance**: The Local World cannot handle distributed deployments.
-- **No authentication**: The Local World is suitable only for local development.
+- **Minimal authentication**: The flow route accepts only its own process's deliveries (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)), but nothing else is authenticated. The Local World is suitable only for local development.
 
 For production deployments, use the [Vercel World](/worlds/vercel), which handles execution, persistence, multi-tenancy, scale, observability, and security for you on Vercel, or check out the [Postgres World](/worlds/postgres) - a tested reference implementation that implements the complete World spec and can be used to deploy workflows anywhere.

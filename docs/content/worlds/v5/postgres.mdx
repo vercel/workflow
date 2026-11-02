@@ -226,27 +226,27 @@ The Postgres World is not compatible with Vercel deployments. On Vercel, workflo
 
 ## Security
 
-Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/docs/how-it-works/encryption) workflow traffic automatically, the Postgres World does **not** automatically authenticate requests that drive workflow execution. Adding that is your responsibility and should be in place before an app using this World is used in production and reachable by untrusted clients. We also recommend [enabling encryption](/docs/how-it-works/encryption#custom-world-implementations).
+Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/docs/how-it-works/encryption) workflow traffic automatically, the Postgres World authenticates only the deliveries that reach its queue route, and only within one process. Securing the rest of your app is your responsibility and should be in place before an app using this World is used in production and reachable by untrusted clients. We also recommend [enabling encryption](/docs/how-it-works/encryption#custom-world-implementations).
 
-### Protect the queue route
+### The queue route
 
-`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default, and it accepts any request whose headers and body are well-formed: there is no signature, shared secret, or caller check. Anyone who can reach it can forge or replay a workflow or step invocation, including steps your application would only reach after its own gating. Restrict it before you expose the app.
+`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default. Every delivery the worker sends carries a random key that its process generates on first use and holds only in memory. The route refuses a request that does not carry that key with a `401`, before it reads the body, and does not touch any run. A request from outside the app cannot start a run, fail a running one, re-trigger a step, or replay a delivery. A queue consumer that registered its own route with [`registerRoute()`](#queue-consumers-other-than-the-workflow-sdk) is checked the same way.
+
+The key belongs to one process. A worker accepts its own deliveries, which it sends to its own loopback address, and refuses deliveries sent by any other process. If a worker delivers to a route served by another process or host (`WORKFLOW_LOCAL_BASE_URL` pointing at a separate web tier, for example), the route refuses those deliveries. Until the World supports that topology, set [`WORKFLOW_QUEUE_AUTH=off`](/docs/configuration/runtime-tuning#workflow_queue_auth) on the app that serves the route, and protect the route at the network as described below. `off` is refused while dynamic workflows are enabled.
 
 The other routes under `/.well-known/workflow/v1/` differ:
 
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
 - `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
+- `flow?__health` answers a static health response (the SDK and Node.js versions) without authentication. It touches no run.
 
-A queue consumer that registered its own route with [`registerRoute()`](#queue-consumers-other-than-the-workflow-sdk) receives deliveries the same way, so protect that route like the flow route.
+### Defense in depth
 
-### Bringing your own auth
-
-Workflow does not prescribe an auth mechanism for self-hosted Worlds, so restrict the flow route at the network edge rather than inside the application:
+Keep the flow route behind your network edge as well:
 
 - **Keep the flow route unreachable from outside.** By default the worker delivers to a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology nothing outside the container needs to reach it. Blocking external requests to `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall costs you nothing, because loopback delivery never traverses that layer. Do not block the whole `/.well-known/workflow/` prefix if you use [`createWebhook()`](/docs/api-reference/workflow/create-webhook): its `webhook/:token` route sits under the same prefix and has to stay reachable by whoever calls it.
-- **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments, require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
+- **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments (and you therefore run with `WORKFLOW_QUEUE_AUTH=off`), require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
 - **Do not gate these paths in framework middleware.** The [Next.js setup guide](/docs/getting-started/next) tells you to exclude `/.well-known/workflow/*` from your proxy matcher, because a handler that consumes the internal request body breaks execution. Adding the paths back in order to gate them reintroduces that failure mode.
-- **Do not expect the World to present a credential.** It does not sign its delivery requests or attach a secret to them, so an in-application check that requires one will reject the World's own deliveries.
 
 ### Data at rest
 

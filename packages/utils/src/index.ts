@@ -14,6 +14,11 @@ export {
 } from './parse-name.js';
 export { pluralize } from './pluralize.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
+export {
+  getQueueAuthKey,
+  isQueueAuthKey,
+  QUEUE_AUTH_HEADER,
+} from './queue-auth.js';
 export { parseDurationToDate } from './time.js';
 export {
   createAppRouteUrl,

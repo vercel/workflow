@@ -21,6 +21,7 @@ function installWorld(attempt: number) {
       create,
       list: async () => ({ data: [], hasMore: false, cursor: null }),
     },
+    queueAuth: 'skip',
     createQueueHandler: (_prefix, handler) => async () => {
       await handler(
         {

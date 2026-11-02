@@ -1319,6 +1319,9 @@ export function createQueue(config?: APIConfig): Queue {
   ) => error instanceof ConsumerDiscoveryError;
 
   return {
+    // Vercel Queues delivers to a private route that is not reachable from
+    // outside the platform, so the runtime does not check deliveries itself.
+    queueAuth: 'skip',
     queue,
     queueBatch,
     createQueueHandler,

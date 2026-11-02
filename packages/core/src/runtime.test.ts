@@ -122,6 +122,7 @@ async function runWorkflowHandlerWithEvents(
       async () => options.currentDeploymentId ?? workflowRun.deploymentId
     ),
     isDeploymentUnavailableError: options.isDeploymentUnavailableError,
+    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (
         _prefix: string,
@@ -447,6 +448,7 @@ describe('workflowEntrypoint replay guards', () => {
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -982,6 +984,7 @@ describe('workflowEntrypoint replay guards', () => {
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1245,6 +1248,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       telemetry: { recordStepExecution },
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1496,6 +1500,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -1662,6 +1667,7 @@ describe('workflowEntrypoint queued step consumption (stepInput)', () => {
     setWorld({
       capabilities: { inBandFence: true },
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1963,6 +1969,7 @@ describe('workflowEntrypoint turbo mode', () => {
       getDeploymentId: vi.fn(
         async () => opts.currentDeploymentId ?? 'test-deployment'
       ),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -2321,6 +2328,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => 'test-deployment'),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -2702,6 +2710,7 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
       specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
       capabilities: { inBandFence: true },
       getDeploymentId: vi.fn(async () => 'dpl_test'),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {

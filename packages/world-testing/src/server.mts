@@ -13,7 +13,7 @@ import {
 import { Hono } from 'hono';
 import { ulid } from 'ulid';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { getWorld } from 'workflow/runtime';
+import { getWorld, healthCheck } from 'workflow/runtime';
 import * as z from 'zod';
 import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
@@ -109,6 +109,15 @@ async function fenceCountersOf(
 // host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
 
+// The first delivery each run received, as an observer who does not hold the
+// queue auth key would see it: the body and every header but the key. Lets a
+// test replay a real delivery.
+// per-copy-ok: standalone test server process, as for the map above.
+const firstDeliveries = new Map<
+  string,
+  { headers: Record<string, string>; body: string }
+>();
+
 /**
  * A digest of an event's payload field (its `input`, `result`, `output`, …),
  * or null when the event carries none. Lets a test compare what two reads of
@@ -139,7 +148,8 @@ const app = new Hono()
     // /_flow-invocations after seeing the run as completed.
     const cloned = ctx.req.raw.clone();
     try {
-      const body = (await cloned.json()) as Record<string, unknown>;
+      const text = await cloned.text();
+      const body = JSON.parse(text) as Record<string, unknown>;
       const runId =
         typeof body?.runId === 'string'
           ? body.runId
@@ -147,6 +157,12 @@ const app = new Hono()
                 ?.runId === 'string'
             ? ((body.payload as Record<string, unknown>).runId as string)
             : undefined;
+      if (runId && !firstDeliveries.has(runId)) {
+        const headers = Object.fromEntries(ctx.req.raw.headers);
+        // `QUEUE_AUTH_HEADER` in @workflow/utils.
+        delete headers['x-workflow-auth'];
+        firstDeliveries.set(runId, { headers, body: text });
+      }
       if (runId) {
         flowInvocationCounts.set(
           runId,
@@ -161,6 +177,16 @@ const app = new Hono()
   .get('/_flow-invocations/:runId', (ctx) => {
     const count = flowInvocationCounts.get(ctx.req.param('runId')) ?? 0;
     return ctx.json({ count });
+  })
+  .get('/_first-delivery/:runId', (ctx) => {
+    const delivery = firstDeliveries.get(ctx.req.param('runId'));
+    return delivery ? ctx.json(delivery) : ctx.json(null, 404);
+  })
+  .post('/_health-check', async (ctx) => {
+    // A queue health check: a message through the World's own queue to the
+    // flow route above, answered on a stream.
+    const result = await healthCheck(await getWorld(), { timeout: 20_000 });
+    return ctx.json(result);
   })
   .get('/_manifest', (ctx) => ctx.json(manifest))
   .post('/invoke', async (ctx) => {

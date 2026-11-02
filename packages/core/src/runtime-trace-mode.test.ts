@@ -169,6 +169,7 @@ async function driveHandler(opts: {
   setWorld({
     capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_CURRENT,
+    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (
         _prefix: string,
@@ -559,6 +560,7 @@ describe('workflowEntrypoint trace modes', () => {
     setWorld({
       capabilities: { inBandFence: true },
       specVersion: SPEC_VERSION_CURRENT,
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,

@@ -130,6 +130,7 @@ async function runWorkflowHandlerWithEvents(
       async () => options.currentDeploymentId ?? workflowRun.deploymentId
     ),
     isDeploymentUnavailableError: options.isDeploymentUnavailableError,
+    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (
         _prefix: string,
@@ -437,6 +438,7 @@ describe('workflowEntrypoint replay guards', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => 'test-deployment'),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -536,6 +538,7 @@ describe('workflowEntrypoint replay guards', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => 'test-deployment'),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -634,6 +637,7 @@ describe('workflowEntrypoint replay guards', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -714,6 +718,7 @@ describe('workflowEntrypoint replay guards', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1256,6 +1261,7 @@ describe('workflowEntrypoint replay guards', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1366,6 +1372,7 @@ describe('workflowEntrypoint replay guards', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1627,6 +1634,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       telemetry: { recordStepExecution },
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -1940,6 +1948,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -2094,6 +2103,7 @@ describe('workflowEntrypoint queued step consumption', () => {
     const runsGet = vi.fn(async () => workflowRun);
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -2355,6 +2365,7 @@ describe('workflowEntrypoint fan-out last completer (fetch-free prologue)', () =
     let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
+      queueAuth: 'skip',
       createQueueHandler: vi.fn((_prefix: string, h: typeof handler) => {
         handler = h;
         return async () => new Response(null, { status: 204 });
@@ -2593,6 +2604,7 @@ describe('workflowEntrypoint turbo mode', () => {
       getDeploymentId: vi.fn(
         async () => opts.currentDeploymentId ?? 'test-deployment'
       ),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -2957,6 +2969,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       capabilities: opts.capabilities,
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (
           _prefix: string,
@@ -3237,6 +3250,7 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => 'test-deployment'),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -3775,6 +3789,7 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
     let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
+      queueAuth: 'skip',
       createQueueHandler: vi.fn((_prefix: string, h: typeof handler) => {
         handler = h;
         return async () => new Response(null, { status: 204 });
@@ -3953,6 +3968,7 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
       getDeploymentId: vi.fn(async () => 'dpl_test'),
+      queueAuth: 'skip',
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -4123,6 +4139,7 @@ describe('workflowEntrypoint concurrent hook continuation', () => {
     let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
     setWorld({
       specVersion: SPEC8_EVENT_SPEC_VERSION,
+      queueAuth: 'skip',
       createQueueHandler: vi.fn((_prefix: string, callback: typeof handler) => {
         handler = callback;
         return async () => new Response(null, { status: 204 });

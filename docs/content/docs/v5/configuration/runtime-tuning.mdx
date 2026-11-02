@@ -68,6 +68,15 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Delivery attempts before a run or step is failed gracefully.
 - Can only be lowered. Workflow calibrates the default to record failure before the queue expires the message.
 
+### `WORKFLOW_QUEUE_AUTH`
+
+- Default: `on`
+- Applies to the [Local](/worlds/local) and [Postgres](/worlds/postgres) Worlds. With `on`, the flow route (`POST /.well-known/workflow/v1/flow`), and a queue consumer's own route, accept only deliveries sent by this process's own queue.
+- Every delivery those Worlds send carries a random key. The process generates the key the first time it needs one and holds it only in memory. The key is never stored or configured. The route refuses a request that does not carry the key with a `401`, before it reads the body, and does not touch any run. A request from outside the app therefore cannot start a run, fail a running one, re-trigger a step, or replay a delivery.
+- `off` accepts unauthenticated deliveries, as releases before this setting did. Use it only for local development or on a trusted network. One case that needs it: a separate process (a script, the CLI, or a test runner) enqueues messages that the app's route receives, because that process has its own key, not the app's. The runtime logs a warning when a route starts with `off`.
+- `off` is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`). Both variables are read on every delivery, so the check comes back on as soon as dynamic workflows are enabled.
+- Any value other than `off` leaves the check on. The [Vercel World](/worlds/vercel) delivers to a private route and is not affected.
+
 ### `WORKFLOW_MAX_EVENTS`
 
 - Default: `25000`
