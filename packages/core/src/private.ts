@@ -133,6 +133,8 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
 
 export interface WorkflowOrchestratorContext {
   runId: string;
+  /** Experimental input delta: latest call per step name. */
+  stepCallChains?: Map<string, import('./global.js').StepInvocationQueueItem>;
   encryptionKey: PayloadKey | undefined;
   worldCapabilities?: WorldCapabilities;
   /**

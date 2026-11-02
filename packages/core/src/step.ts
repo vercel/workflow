@@ -12,6 +12,7 @@ import {
 import { replayPayloadEventKey } from './replay-payload-cache.js';
 import type { Serializable } from './schemas.js';
 import { markUseStepClosureFn } from './serialization/hardened.js';
+import { inputDeltaEnabled } from './serialization/input-delta.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
@@ -45,6 +46,21 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       const closureVars = closureVarsFn?.();
       if (closureVars) {
         queueItem.closureVars = closureVars;
+      }
+
+      // Experimental input delta: remember the previous call of this step
+      // (by reference; replay re-derives its arguments) as a candidate base.
+      if (inputDeltaEnabled()) {
+        const chains = (ctx.stepCallChains ??= new Map());
+        const previous = chains.get(stepName);
+        queueItem.callOrdinal = previous ? previous.callOrdinal! + 1 : 0;
+        if (previous) {
+          queueItem.deltaBase = previous;
+          // Only the immediately previous call can serve as a base; drop older
+          // links so a long replay does not retain every call's arguments.
+          if (previous.deltaBase) previous.deltaBase.deltaBase = undefined;
+        }
+        chains.set(stepName, queueItem);
       }
 
       ctx.invocationsQueue.set(correlationId, queueItem);

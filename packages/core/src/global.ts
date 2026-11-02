@@ -12,6 +12,12 @@ export interface StepInvocationQueueItem {
   thisVal?: Serializable;
   hasCreatedEvent?: boolean;
   /**
+   * Experimental input delta (`WORKFLOW_INPUT_DELTA=1`): the previous call of
+   * the same step in this run, and this call's ordinal among them.
+   */
+  deltaBase?: StepInvocationQueueItem;
+  callOrdinal?: number;
+  /**
    * Inline step ownership, derived from the step's LATEST `step_started`
    * during replay: the queue message ID stamped by the invocation running
    * the step inline, or undefined when the latest start was unstamped (a

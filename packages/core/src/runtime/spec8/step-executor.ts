@@ -953,6 +953,11 @@ export async function executeStep(
       // Use the provided encryption key when available, otherwise resolve
       // through the memoized accessor declared at the top of this trace.
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
+      const inputDeltaStats = {
+        memoryHits: 0,
+        recoveryFetches: 0,
+        patchesApplied: 0,
+      };
       const hydratedInput = await trace(
         'step.hydrate',
         {},
@@ -969,9 +974,19 @@ export async function executeStep(
             streamStates,
             // A workflow-created writable passed into an optimistic step can
             // emit chunks before run_started lands, just like getWritable().
-            optimisticStart ? params.runReadyBarrier : undefined
+            optimisticStart ? params.runReadyBarrier : undefined,
+            { world: params.world, stats: inputDeltaStats }
           );
           const durationMs = Date.now() - startTime;
+          if (inputDeltaStats.memoryHits || inputDeltaStats.recoveryFetches) {
+            hydrateSpan?.setAttributes({
+              'workflow.input_delta.memory_hits': inputDeltaStats.memoryHits,
+              'workflow.input_delta.recovery_fetches':
+                inputDeltaStats.recoveryFetches,
+              'workflow.input_delta.patches_applied':
+                inputDeltaStats.patchesApplied,
+            });
+          }
           hydrateSpan?.setAttributes({
             ...Attribute.StepArgumentsCount(hydrated.args.length),
             ...Attribute.QueueDeserializeTimeMs(durationMs),

@@ -33,7 +33,10 @@ import { runtimeLogger } from '../../logger.js';
 import {
   dehydrateStepArguments,
   dehydrateStepError,
+  dehydrateStepInputWithDelta,
 } from '../../serialization.js';
+import { inputDeltaEnabled } from '../../serialization/input-delta.js';
+import { getActiveSpan } from '../../telemetry.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 
 import type { PendingQueueDrain } from '../../workflow.js';
@@ -921,17 +924,48 @@ export async function handleSuspension({
       const stepOp = (async () => {
         let dehydratedInput: SerializedData;
         try {
-          dehydratedInput = await dehydrateInput(
-            {
+          const dehydrateFull = (value: unknown) =>
+            dehydrateInput(value, {
+              source: 'step_input',
+              correlationId: queueItem.correlationId,
+            });
+          if (inputDeltaEnabled()) {
+            const written = await dehydrateStepInputWithDelta(
+              queueItem,
+              encryptionKey,
+              suspension.globalThis,
+              dehydrateFull
+            );
+            dehydratedInput = written.input;
+            if (written.inputDelta) {
+              (await getActiveSpan())?.addEvent('workflow.input_delta.write', {
+                'workflow.step_id': queueItem.correlationId,
+                'workflow.input_delta.kind': written.inputDelta.kind,
+                ...(written.inputDelta.reason
+                  ? { 'workflow.input_delta.reason': written.inputDelta.reason }
+                  : {}),
+                ...(written.inputDelta.depth !== undefined
+                  ? { 'workflow.input_delta.depth': written.inputDelta.depth }
+                  : {}),
+                ...(written.inputDelta.rawBytes !== undefined
+                  ? {
+                      'workflow.input_delta.raw_bytes':
+                        written.inputDelta.rawBytes,
+                      'workflow.input_delta.persisted_bytes':
+                        written.inputDelta.persistedBytes ?? 0,
+                      'workflow.input_delta.diff_ms':
+                        written.inputDelta.diffMs ?? 0,
+                    }
+                  : {}),
+              });
+            }
+          } else {
+            dehydratedInput = await dehydrateFull({
               args: queueItem.args,
               closureVars: queueItem.closureVars,
               thisVal: queueItem.thisVal,
-            },
-            {
-              source: 'step_input',
-              correlationId: queueItem.correlationId,
-            }
-          );
+            });
+          }
         } catch (err) {
           if (!SerializationError.is(err)) {
             // e.g. RuntimeDecryptionError: an SDK fault, not a user value

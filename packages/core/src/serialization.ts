@@ -7,7 +7,13 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
-import type { StreamWriteSession } from '@workflow/world';
+import type {
+  SerializedData,
+  StreamWriteSession,
+  World,
+} from '@workflow/world';
+import type { StepInvocationQueueItem } from './global.js';
+import { devalueCodec } from './serialization/codec-devalue.js';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -94,6 +100,19 @@ import {
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
 import * as stepModule from './serialization/step.js';
+import {
+  applyValueOp,
+  diffValue,
+  InputDelta,
+  type InputDeltaStats,
+  inputDeltaEnabled,
+  inputDeltaSnapshotEvery,
+  isInputDelta,
+  isPlainData,
+  rememberFullPayload,
+  sha256Hex,
+  takeFullPayload,
+} from './serialization/input-delta.js';
 import {
   type FormatPrefix,
   isFormatPrefix,
@@ -4133,6 +4152,155 @@ export async function dehydrateStepArguments(
 }
 
 /**
+ * Experimental input delta writer (`WORKFLOW_INPUT_DELTA=1`). Returns the
+ * bytes to persist for a new step's input: an `InputDelta` envelope against
+ * the previous committed call of the same step when supported and economical,
+ * otherwise the ordinary full input produced by `dehydrateFull`.
+ */
+export async function dehydrateStepInputWithDelta(
+  queueItem: StepInvocationQueueItem,
+  _key: PayloadKey | undefined,
+  global: Record<string, any>,
+  dehydrateFull: (value: unknown) => Promise<SerializedData>
+): Promise<{ input: SerializedData; inputDelta?: InputDeltaWriteStats }> {
+  const value = {
+    args: queueItem.args,
+    closureVars: queueItem.closureVars,
+    thisVal: queueItem.thisVal,
+  };
+  const base = queueItem.deltaBase;
+  const ordinal = queueItem.callOrdinal ?? 0;
+  const every = inputDeltaSnapshotEvery();
+  const full = async (reason: string) => ({
+    input: await dehydrateFull(value),
+    inputDelta: { kind: 'snapshot' as const, reason },
+  });
+  if (!inputDeltaEnabled() || !base) return full('no_base');
+  // The base must already be durable before a delta may reference it.
+  if (!base.hasCreatedEvent) return full('base_uncommitted');
+  if (ordinal % every === 0) return full('checkpoint');
+  const started = performance.now();
+  const baseValue = {
+    args: base.args,
+    closureVars: base.closureVars,
+    thisVal: base.thisVal,
+  };
+  if (!isPlainData(value) || !isPlainData(baseValue)) {
+    return full('unsupported_value');
+  }
+  const payload = devalueCodec.serialize(value, 'step', {
+    global,
+    extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
+  });
+  const digest = await sha256Hex(payload);
+  const op = diffValue(baseValue, value) ?? { k: 'o' as const };
+  const diffMs = performance.now() - started;
+  const envelope = new InputDelta({
+    v: 1,
+    base: base.correlationId,
+    depth: ordinal % every,
+    digest,
+    op,
+  });
+  const input = await dehydrateFull(envelope);
+  const persistedBytes =
+    input instanceof Uint8Array ? input.byteLength : payload.byteLength;
+  // A delta larger than a quarter of the raw payload is not worth a chain link.
+  if (persistedBytes * 4 > payload.byteLength) return full('uneconomical');
+  // Small inputs: compressing the full value is cheap, so keep whichever
+  // representation is actually smaller.
+  if (payload.byteLength < 64_000) {
+    const fullInput = await dehydrateFull(value);
+    if (
+      fullInput instanceof Uint8Array &&
+      fullInput.byteLength <= persistedBytes
+    ) {
+      return {
+        input: fullInput,
+        inputDelta: { kind: 'snapshot' as const, reason: 'smaller_full' },
+      };
+    }
+  }
+  rememberFullPayload(digest, payload);
+  return {
+    input,
+    inputDelta: {
+      kind: 'delta',
+      depth: ordinal % every,
+      rawBytes: payload.byteLength,
+      persistedBytes,
+      diffMs,
+    },
+  };
+}
+
+export interface InputDeltaWriteStats {
+  kind: 'snapshot' | 'delta';
+  reason?: string;
+  depth?: number;
+  rawBytes?: number;
+  persistedBytes?: number;
+  diffMs?: number;
+}
+
+/**
+ * Resolves a persisted `InputDelta` envelope into the full step input: from
+ * this process's memory when it wrote the delta (the inline step), otherwise by
+ * walking the base chain through the World and verifying each digest.
+ */
+async function resolveInputDelta(
+  envelope: InputDelta,
+  runId: string,
+  key: PayloadKey | undefined,
+  deserializeFull: (payload: Uint8Array) => unknown,
+  world: Pick<World, 'steps'> | undefined,
+  stats: InputDeltaStats | undefined,
+  depth = 0
+): Promise<unknown> {
+  const { data } = envelope;
+  const cached = takeFullPayload(data.digest);
+  if (cached) {
+    if (stats) stats.memoryHits++;
+    return deserializeFull(cached);
+  }
+  if (!world) {
+    throw new WorkflowRuntimeError(
+      'Step input is an input delta whose base is not in memory, and no World was provided to recover it'
+    );
+  }
+  if (depth > 1000) {
+    throw new WorkflowRuntimeError('Input delta chain is too deep');
+  }
+  if (stats) stats.recoveryFetches++;
+  const baseStep = await world.steps.get(runId, data.base, {
+    resolveData: 'all',
+  });
+  const baseDecoded = await stepModule.deserialize(baseStep.input, key, {});
+  const baseValue = isInputDelta(baseDecoded)
+    ? await resolveInputDelta(
+        baseDecoded,
+        runId,
+        key,
+        (payload) => devalueCodec.deserialize(payload, 'step', {}),
+        world,
+        stats,
+        depth + 1
+      )
+    : baseDecoded;
+  const value = applyValueOp(baseValue, data.op);
+  if (stats) stats.patchesApplied++;
+  const payload = devalueCodec.serialize(value, 'step', {});
+  if ((await sha256Hex(payload)) !== data.digest) {
+    throw new WorkflowRuntimeError(
+      `Input delta digest mismatch for base ${data.base}; refusing to run the step with a reconstructed input that differs from the original`
+    );
+  }
+  // Re-decode through the caller's revivers so the result has exactly the
+  // semantics of an ordinary hydration.
+  return depth === 0 ? deserializeFull(payload) : value;
+}
+
+/**
  * Called from the step executor to hydrate the arguments of a step
  * from the database at the start of the step execution.
  */
@@ -4145,10 +4313,12 @@ export async function hydrateStepArguments(
   extraRevivers: Record<string, (value: any) => any> = {},
   deploymentId?: string,
   streamStates?: FlushableStreamState[],
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  /** Experimental input delta: World for cold recovery, and counters. */
+  inputDelta?: { world?: Pick<World, 'steps'>; stats?: InputDeltaStats }
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
-  const result = await stepModule.deserialize(value, key, {
+  const options = {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
@@ -4165,7 +4335,18 @@ export async function hydrateStepArguments(
       ...extraRevivers,
     },
     compressionStats,
-  });
+  };
+  let result = await stepModule.deserialize(value, key, options);
+  if (isInputDelta(result)) {
+    result = await resolveInputDelta(
+      result,
+      runId,
+      key,
+      (payload) => devalueCodec.deserialize(payload, 'step', options),
+      inputDelta?.world,
+      inputDelta?.stats
+    );
+  }
   await recordCompression(compressionStats, 'deserialize');
   return result;
 }

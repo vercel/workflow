@@ -25,6 +25,11 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './reducers/step-function.js';
+import {
+  INPUT_DELTA_REDUCER,
+  InputDelta,
+  type InputDeltaData,
+} from './input-delta.js';
 import { type Reducers, type Revivers, SerializationFormat } from './types.js';
 
 const encoder = new TextEncoder();
@@ -139,6 +144,8 @@ export const devalueCodec: Codec = {
     // inside a workflow VM cannot execute sandbox code behind our back.
     // Where workflow code must run (getters, proxies, custom serializers),
     // the execution is recorded into `options.guestCodeStats`.
+    (reducers as Record<string, (v: unknown) => unknown>)[INPUT_DELTA_REDUCER] =
+      (v) => (v instanceof InputDelta ? v.data : false);
     const str = withGuestCodeStats(options?.guestCodeStats, () =>
       stringify(value, reducers, { operations: hardenedStringifyOperations })
     );
@@ -155,6 +162,7 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraRevivers
     );
+    revivers[INPUT_DELTA_REDUCER] = (v: InputDeltaData) => new InputDelta(v);
     const str = decoder.decode(data);
     return parse(str, revivers, parseOptions);
   },
