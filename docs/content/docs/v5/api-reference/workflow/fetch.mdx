@@ -91,6 +91,12 @@ We call `fetch()` with a URL and optional request options, like the standard fet
 
 This API lets you use `fetch` in a workflow. You can also implement a custom fetch for different error handling and retry logic.
 
+### Reading the response body
+
+Inside a workflow function, `response.json()`, `response.text()`, and `response.arrayBuffer()` each read the body through a step, so the result is recorded in the event log and replays deterministically.
+
+`response.body` can also be read with `getReader()` or `for await`, which is how libraries such as the AI SDK read responses. The whole body is loaded through a single step and delivered as one chunk. The body is not marked as used after a read: each new reader or body method runs its own step, so read the body once and reuse the result. Incremental streaming APIs such as `pipeThrough()` and `tee()` are not available in workflow functions. To process a response as a stream, read it inside a step function.
+
 ### Customizing fetch behavior
 
 The following custom fetch wrapper provides more advanced error handling with custom retry logic. Call `globalThis.fetch` inside your own `"use step"` function because calling the workflow `fetch` imported from `workflow` would nest a step inside a step:

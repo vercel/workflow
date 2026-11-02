@@ -121,6 +121,30 @@ export function isInlineOwnershipEnabled(): boolean {
 }
 
 /**
+ * Whether the Node.js inline loop advances the workflow as each inline step
+ * settles, instead of waiting for every step of the batch (default ON).
+ *
+ * When one inline step of a parallel batch completes or fails while its
+ * siblings are still running, the loop replays right away in the same
+ * invocation, with the siblings still in flight. A branch whose step settled
+ * can then start its next step without waiting for the slowest sibling. The
+ * siblings stay owned by this invocation: the replay neither creates, queues
+ * nor recovers them. A pass that ends the workflow writes the run's terminal
+ * event right away; the invocation still waits for the siblings' bodies
+ * before it returns, and their later step events are the World's to accept or
+ * refuse against the terminal run.
+ *
+ * Reads `process.env.WORKFLOW_INLINE_EARLY_ADVANCE` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive), which
+ * restores waiting for the whole batch.
+ */
+export function isInlineEarlyAdvanceEnabled(): boolean {
+  const raw = process.env.WORKFLOW_INLINE_EARLY_ADVANCE;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * Default inline-ownership lease, in seconds: how long after a step's latest
  * (stamped) `step_started` a non-owner invocation assumes the owning
  * invocation may still be alive. Within the lease, wake replays enqueue the

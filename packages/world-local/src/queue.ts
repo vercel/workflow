@@ -243,6 +243,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   // `singleOrchestratorRunIdOf`), so a run's steps keep running in parallel
   // with each other and with its orchestrator.
   const runGate = createRunGate();
+  // The same gate on the receiving side, held by `createQueueHandler` around
+  // the handler. `runGate` only sees the messages this process's queue sends,
+  // but a run's messages can come from several processes on one data
+  // directory (an app, plus a script or test process that calls `start()` or
+  // `resumeHook()`), and all of them reach the handler of the process that
+  // serves the workflow routes. Separate from `runGate`, which a sender holds
+  // while it delivers to its own process's handler.
+  const handlerRunGate = createRunGate();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
   // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
@@ -601,6 +609,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
 
       const body = await new TypedJsonTransport().deserialize(req.body);
+      const orchestratorRunId = singleOrchestratorRunIdOf(body);
+      const releaseRun =
+        orchestratorRunId === undefined
+          ? undefined
+          : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
       try {
         const result = await handler(body, {
           attempt,
@@ -641,6 +654,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         return Response.json({ ok: true });
       } catch (error) {
         return Response.json(String(error), { status: 500 });
+      } finally {
+        releaseRun?.();
       }
     };
   };

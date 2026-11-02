@@ -21,7 +21,11 @@
  * is the highest slot it holds, and a log of ids it cannot read as slots
  * produces no snapshot.
  */
-import { PreconditionFailedError, RUN_ERROR_CODES } from '@workflow/errors';
+import {
+  PreconditionFailedError,
+  RetryableError,
+  RUN_ERROR_CODES,
+} from '@workflow/errors';
 import {
   type CreateEventRequest,
   type Event,
@@ -723,7 +727,12 @@ async function attributeSnapshotScenario() {
  * (412) once, with the sibling's just-committed `step_created` attached as the
  * events the client is supposedly missing.
  */
-async function inlineClaimRejectionScenario() {
+async function inlineClaimRejectionScenario({
+  firstStepRetries = false,
+}: {
+  /** The accepted sibling's attempt fails with a 5s retryable error. */
+  firstStepRetries?: boolean;
+} = {}) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
   const runId = 'wrun_precondition_inline_claim';
@@ -784,7 +793,13 @@ async function inlineClaimRejectionScenario() {
     cursor: staleEventsCursor,
   }));
 
-  registerStepFunction('pA', async () => 'a');
+  const queue = vi.fn().mockResolvedValue({ messageId: null });
+  registerStepFunction('pA', async () => {
+    if (firstStepRetries) {
+      throw new RetryableError('pA failed', { retryAfter: 5_000 });
+    }
+    return 'a';
+  });
   registerStepFunction('pB', async () => 'b');
 
   const createEvent = vi.fn(
@@ -867,7 +882,7 @@ async function inlineClaimRejectionScenario() {
       list: listEvents,
       create: createEvent,
     },
-    queue: vi.fn().mockResolvedValue({ messageId: null }),
+    queue,
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
   } as unknown as World;
 
@@ -903,6 +918,7 @@ async function inlineClaimRejectionScenario() {
     handlerInvocation,
     createParams,
     listEvents,
+    queue,
     rejectionCount: () => rejections,
   };
 }
@@ -1109,6 +1125,53 @@ describe('precondition guard through the real replay loop', () => {
     expect(
       result.createParams.filter((c) => c.eventType === 'run_failed')
     ).toHaveLength(0);
+  });
+
+  it("publishes a sibling's retry, delayed and keyed, before restarting over a 412", async () => {
+    const result = await inlineClaimRejectionScenario({
+      firstStepRetries: true,
+    });
+    await result.handlerInvocation;
+
+    expect(result.rejectionCount()).toBe(1);
+    // The restarted replay re-dispatches the retrying step at once under
+    // its dispatch key. The delayed message published before the restart
+    // carries the same key, so it wins and the 5s backoff holds.
+    const stepMessages = result.queue.mock.calls.filter(
+      ([, message]) => (message as { stepName?: string }).stepName === 'pA'
+    );
+    const delayed = stepMessages.filter(
+      ([, , options]) =>
+        ((options as { delaySeconds?: number } | undefined)?.delaySeconds ??
+          0) > 0
+    );
+    expect(delayed).toHaveLength(1);
+    const [, , delayedOptions] = delayed[0];
+    expect(delayedOptions).toMatchObject({
+      delaySeconds: 5,
+      idempotencyKey: expect.any(String),
+    });
+    expect(
+      result.queue.mock.invocationCallOrder[
+        result.queue.mock.calls.indexOf(delayed[0])
+      ]
+    ).toBeLessThan(
+      Math.min(
+        ...stepMessages
+          .filter((call) => call !== delayed[0])
+          .map(
+            (call) =>
+              result.queue.mock.invocationCallOrder[
+                result.queue.mock.calls.indexOf(call)
+              ]
+          )
+      )
+    );
+    for (const [, , options] of stepMessages) {
+      expect((options as { idempotencyKey?: string }).idempotencyKey).toBe(
+        (delayedOptions as { idempotencyKey: string }).idempotencyKey
+      );
+    }
   });
 
   it('bounds in-process restarts, then schedules a single delayed re-invocation instead of failing the run', async () => {

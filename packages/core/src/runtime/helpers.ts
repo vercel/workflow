@@ -14,12 +14,14 @@ import type {
   ValidQueueName,
   WorkflowRun,
   World,
+  WorldCapabilities,
 } from '@workflow/world';
 import {
   FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  parseWorldCapabilities,
   ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
   resolveQueueNamespace,
@@ -145,6 +147,16 @@ export interface HealthCheckResult {
    * Present only when the target has opted in to dynamic workflows.
    */
   dynamicWorkflowVersion?: number;
+  /**
+   * The responding deployment's `World.capabilities`, so a cross-deployment
+   * `start()` can check that the World which will execute the run supports a
+   * feature before relying on it (`start({ hook })` checks
+   * `atomicStartHook`). Parsed tolerantly: an unknown capability is dropped
+   * and a malformed one reads as unsupported, so a peer on a different SDK
+   * version can only ever lose a feature, never its health. Omitted when the
+   * responder predates the field or declares none.
+   */
+  capabilities?: WorldCapabilities;
 }
 
 /**
@@ -231,6 +243,7 @@ export async function handleHealthCheckMessage(
       ? { dynamicWorkflowVersion: DYNAMIC_WORKFLOW_VERSION }
       : {}),
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+    ...(world.capabilities ? { capabilities: world.capabilities } : {}),
     timestamp: Date.now(),
   });
   // Use a deterministic fake runId derived from the correlationId so that
@@ -395,6 +408,10 @@ function parseHealthCheckResponse(
   }
   if (typeof r.dynamicWorkflowVersion === 'number') {
     parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;
+  }
+  const capabilities = parseWorldCapabilities(r.capabilities);
+  if (capabilities) {
+    parsed.capabilities = capabilities;
   }
   return parsed;
 }

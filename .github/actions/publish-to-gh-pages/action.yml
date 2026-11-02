@@ -27,7 +27,7 @@ runs:
   using: 'composite'
   steps:
     - name: Publish via createCommitOnBranch
-      uses: actions/github-script@v7
+      uses: actions/github-script@v9
       env:
         SOURCE_DIR: ${{ inputs.source-dir }}
         DEST_DIR: ${{ inputs.destination-dir }}

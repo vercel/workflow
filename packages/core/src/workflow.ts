@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import { Script } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import {
@@ -16,7 +17,11 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { entityEventClass } from '@workflow/world/event-metadata';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
 import { monotonicFactory } from 'ulid';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import {
+  EventConsumerResult,
+  EventsConsumer,
+  type ParkedSummary,
+} from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
@@ -26,6 +31,7 @@ import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
+import type { RunStartHook } from './runtime/start-hook-binding.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
@@ -121,6 +127,11 @@ interface WorkflowSessionOptions {
   /** Records the end-of-run drain. */
   readonly drainPendingQueue?: PendingQueueDrain;
   readonly worldCapabilities?: WorldCapabilities;
+  /**
+   * The run's start Hook, from `resolveRunStartHook`. `undefined` for a run
+   * started without one, which then replays exactly as before.
+   */
+  readonly startHook?: RunStartHook;
 }
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
@@ -241,11 +252,7 @@ export type WorkflowResult =
        * Ordinary on a suspension, and only actionable across a run's
        * suspensions, so it is reported for telemetry rather than acted on here.
        */
-      readonly parked?: {
-        readonly count: number;
-        readonly eventId: string;
-        readonly eventType: string;
-      };
+      readonly parked?: Readonly<ParkedSummary>;
     };
 
 /**
@@ -337,11 +344,22 @@ function recordResult(
     // not ordinary (the same event still held pass after pass) is a shape
     // across these spans, which is why the eventId is on each one and no pass
     // tries to rule on it alone.
-    if (result.parked) {
+    if (result.parked?.eventId !== undefined) {
       span.setAttributes({
         ...Attribute.WorkflowParkedEventsCount(result.parked.count),
         ...Attribute.WorkflowParkedEventId(result.parked.eventId),
-        ...Attribute.WorkflowParkedEventType(result.parked.eventType),
+        ...(result.parked.eventType !== undefined
+          ? Attribute.WorkflowParkedEventType(result.parked.eventType)
+          : {}),
+      });
+    }
+    // Payloads resumed into the start Hook that the body has not opened (yet,
+    // or ever: the token may be only an idempotency key). Not a stuck bet.
+    if (result.parked?.unclaimedStartHook !== undefined) {
+      span.setAttributes({
+        ...Attribute.WorkflowParkedStartHookEventsCount(
+          result.parked.unclaimedStartHook
+        ),
       });
     }
   }
@@ -371,7 +389,9 @@ export async function runWorkflow(
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
    */
-  worldCapabilities?: WorldCapabilities
+  worldCapabilities?: WorldCapabilities,
+  /** The run's start Hook, if it was started with one. */
+  startHook?: RunStartHook
 ): Promise<Uint8Array | unknown> {
   const result = await replayWorkflow({
     workflowCode,
@@ -381,6 +401,7 @@ export async function runWorkflow(
     replayPayloadCache,
     drainPendingQueue,
     worldCapabilities,
+    ...(startHook ? { startHook } : {}),
   });
   if (result.type === 'suspended') throw result.suspension;
   return result.output;
@@ -404,6 +425,7 @@ async function createWorkflowSessionInner(
     compiledWorkflowScripts,
     drainPendingQueue,
     worldCapabilities,
+    startHook,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
 ): Promise<{
@@ -594,12 +616,26 @@ async function createWorkflowSessionInner(
     },
     getPromiseQueue: () => promiseQueueHolder.current,
     isDeliveryIdle: () => deliveryIdleHolder.current(),
+    // Payloads resumed into the start Hook before the body calls
+    // `createHook` (from the run's admission on, even before `run_started`)
+    // park at once rather than after the deferred check.
+    ...(startHook ? { eagerParkCorrelationId: startHook.hookId } : {}),
   });
 
   const workflowContext: WorkflowOrchestratorContext = {
     runId: workflowRun.runId,
     encryptionKey,
     worldCapabilities,
+    ...(startHook
+      ? {
+          startHook: {
+            token: startHook.token,
+            hookId: startHook.hookId,
+            tokenRetentionUntil: startHook.tokenRetentionUntil,
+            bound: false,
+          },
+        }
+      : {}),
     globalThis: vmGlobalThis,
     onWorkflowError,
     eventsConsumer,
@@ -1104,6 +1140,81 @@ async function createWorkflowSessionInner(
     },
   });
 
+  // Streams inside the workflow VM are handles: either a named stream that
+  // lives in the World (e.g. the body of a Response returned by the `fetch`
+  // step), or a body passed to the in-VM `Request`/`Response` constructors.
+  // They cannot be constructed or piped here, but they can be read: the
+  // whole body is loaded once, through a step for named streams, and handed
+  // to the reader as a single chunk. Libraries that read `response.body`
+  // with `getReader()` (such as the AI SDK's response size limit) therefore
+  // replay deterministically, since the bytes come from the event log.
+  //
+  // Unlike a real stream, a handle is never locked or disturbed: `locked`
+  // and `bodyUsed` stay false, and every new reader loads the body again
+  // (one more step for a named stream) instead of throwing. This matches
+  // how `json()`/`text()`/`arrayBuffer()` already behave on these handles.
+  const readStreamHandleBytes = async (
+    stream: object,
+    seen: Set<object> = new Set()
+  ): Promise<Uint8Array> => {
+    if (seen.has(stream)) ENOTSUP();
+    seen.add(stream);
+    if (BODY_INIT_SYMBOL in stream) {
+      const bodyInit = (stream as Record<symbol, unknown>)[BODY_INIT_SYMBOL];
+      if (typeof bodyInit === 'string') {
+        return new vmGlobalThis.Uint8Array(
+          new vmGlobalThis.TextEncoder().encode(bodyInit)
+        );
+      }
+      if (bodyInit instanceof vmGlobalThis.URLSearchParams) {
+        return new vmGlobalThis.Uint8Array(
+          new vmGlobalThis.TextEncoder().encode(String(bodyInit))
+        );
+      }
+      if (types.isArrayBuffer(bodyInit)) {
+        return new vmGlobalThis.Uint8Array(bodyInit.slice(0));
+      }
+      if (ArrayBuffer.isView(bodyInit)) {
+        return new vmGlobalThis.Uint8Array(
+          bodyInit.buffer.slice(
+            bodyInit.byteOffset,
+            bodyInit.byteOffset + bodyInit.byteLength
+          )
+        );
+      }
+      if (
+        bodyInit !== null &&
+        typeof bodyInit === 'object' &&
+        bodyInit instanceof ReadableStream
+      ) {
+        return readStreamHandleBytes(bodyInit, seen);
+      }
+      ENOTSUP();
+    }
+    // A named stream: read it through the same built-in step that backs
+    // `Response.prototype.arrayBuffer()`.
+    const response = Object.create(Response.prototype);
+    response.status = 200;
+    response.statusText = '';
+    response.headers = new vmGlobalThis.Headers();
+    response.body = stream;
+    response.type = 'default';
+    response.url = '';
+    response.redirected = false;
+    const buffer: ArrayBuffer = await response.arrayBuffer();
+    return new vmGlobalThis.Uint8Array(buffer);
+  };
+
+  async function* iterateStreamHandle(reader: {
+    read(): Promise<{ done: boolean; value?: Uint8Array }>;
+  }) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  }
+
   class ReadableStream<T> implements globalThis.ReadableStream<T> {
     constructor() {
       ENOTSUP();
@@ -1113,12 +1224,65 @@ async function createWorkflowSessionInner(
       return false;
     }
 
-    cancel(): any {
-      ENOTSUP();
+    async cancel(): Promise<void> {
+      // The underlying bytes are either in memory or stored in the World,
+      // so there is no connection to release.
     }
 
-    getReader(): any {
-      ENOTSUP();
+    getReader(options?: { mode?: string }): any {
+      if (options?.mode !== undefined) ENOTSUP();
+      // The body is a single chunk. The first read() claims it synchronously,
+      // so overlapping reads (e.g. a consumer that prefetches the next read)
+      // get it exactly once: later reads wait for the same load and then
+      // report done. The stream has no more data once the chunk is handed
+      // out, so `closed` settles together with that read.
+      let bytes: Promise<Uint8Array> | undefined;
+      let claimed = false;
+      let released = false;
+      let resolveClosed: () => void;
+      let rejectClosed: (error: unknown) => void;
+      const closed = new vmGlobalThis.Promise<void>(
+        (resolve: () => void, reject: (error: unknown) => void) => {
+          resolveClosed = resolve;
+          rejectClosed = reject;
+        }
+      );
+      // A failed load also rejects the pending read(); don't report the
+      // `closed` rejection as unhandled when nobody awaits it.
+      closed.catch(() => {});
+      return {
+        closed,
+        read: async () => {
+          if (released) {
+            throw new vmGlobalThis.TypeError(
+              'This reader has been released and can no longer be read from.'
+            );
+          }
+          if (!claimed) {
+            claimed = true;
+            bytes ??= readStreamHandleBytes(this);
+            let value: Uint8Array;
+            try {
+              value = await bytes;
+            } catch (error) {
+              rejectClosed(error);
+              throw error;
+            }
+            resolveClosed();
+            if (value.byteLength > 0) return { done: false, value };
+            return { done: true, value: undefined };
+          }
+          if (bytes) await bytes;
+          return { done: true, value: undefined };
+        },
+        cancel: async () => {
+          claimed = true;
+          resolveClosed();
+        },
+        releaseLock: () => {
+          released = true;
+        },
+      };
     }
 
     pipeThrough(): any {
@@ -1134,7 +1298,7 @@ async function createWorkflowSessionInner(
     }
 
     values(): any {
-      ENOTSUP();
+      return iterateStreamHandle(this.getReader());
     }
 
     static from(): any {
@@ -1142,7 +1306,7 @@ async function createWorkflowSessionInner(
     }
 
     [Symbol.asyncIterator](): any {
-      ENOTSUP();
+      return this.values();
     }
   }
   vmGlobalThis.ReadableStream = ReadableStream;

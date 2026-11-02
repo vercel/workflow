@@ -304,7 +304,12 @@ The `bootstrap` migration command uses the same precedence.
 
 ### `WORKFLOW_POSTGRES_JOB_PREFIX`
 
-Prefix for graphile-worker queue job names. Useful when sharing a database between multiple applications. Default: `workflow_`
+Prefix for graphile-worker queue job names. Default: `workflow_`
+
+Give each application that shares a database its own prefix. A World claims jobs only under its own prefix and stamps that prefix on every run it creates. On `start()`, it re-enqueues only the active runs stamped with its prefix, so restarting one application does not hand another application's runs to its worker. `WORKFLOW_QUEUE_NAMESPACE` does not separate applications that share a database.
+
+Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. The CLI and the observability UI build their World from the environment, so a run they create, such as a re-run, is stamped with the prefix they see, and only a World with that prefix runs and recovers it.
+
 
 ### `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 
@@ -357,6 +362,16 @@ To turn it on, set `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` (or `jobLockSta
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.
+
+### `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK`
+
+Set to `1` (or `true`) to enable [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) on the Postgres World. Off by default; without it, `start({ hook })` throws before it enqueues anything.
+
+Stop workers running a previous version before you turn it on. The queue does not route by deployment, so an older worker that picks up a candidate's queued message would create its run without the start Hook, and the start would no longer be idempotent (`start()` reports that the World did not confirm the start Hook). An older runtime replaying a start Hook run can't bind the workflow's `createHook({ token })` to the start Hook either.
+
+For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while start Hooks are live.
+
+Migration `0028_add_start_hook_admissions` is required even with this variable unset, because every Hook insert writes its `claims_token` column. It takes table locks on `workflow_hooks` and then `workflow_runs` (building the new unique index scans `workflow_hooks` first), and gives up after 10 seconds (unless the session sets its own `lock_timeout`), leaving the migration to retry, rather than stall traffic. Apply it with the rest of the migrations before deploying this version.
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
 
