@@ -10,7 +10,7 @@ related:
   - /docs/foundations/idempotency
 ---
 
-Resumes a workflow run by sending a payload to a hook identified by its token.
+Resumes a workflow run by sending a payload to a hook identified by its token. You can also pass a `Hook` from an earlier `getHookByToken()` or `resumeHook()` call to skip the token lookup. See [Reuse a resolved hook](#reuse-a-resolved-hook).
 
 It durably writes the `hook_received` event and only then publishes a workflow wake. The call resolves only after both operations succeed, in that order.
 
@@ -97,8 +97,9 @@ export async function deliverMessage(storedHook: string, message: unknown): Prom
 
 A Hook object targets that specific hook and its force-claim successor. It does
 not send to an unrelated hook that later happens to use the same token. Hooks
-without `resumeContext` keep the existing run-lookup behavior. Worlds that do
-not support guarded delivery keep their existing behavior too.
+without `resumeContext` keep the existing run-lookup behavior. The
+[Vercel World](/worlds/vercel) supports guarded delivery. Other Worlds accept a
+Hook object and deliver it through their existing path.
 
 A stored Hook contains its **token** and is at least as sensitive as that token.
 Keep it server-side, or sign the **whole object** before returning it to a client;
