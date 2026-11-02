@@ -28,7 +28,7 @@ jobs:
 
     steps:
       - name: Find existing benchmark comment
-        uses: peter-evans/find-comment@v3
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -38,7 +38,7 @@ jobs:
       - name: Get existing comment body
         if: steps.find-comment.outputs.comment-id != ''
         id: get-comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const comment = await github.rest.issues.getComment({
@@ -66,7 +66,7 @@ jobs:
 
       - name: Create new benchmark comment
         if: steps.find-comment.outputs.comment-id == ''
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           message: |
@@ -82,7 +82,7 @@ jobs:
 
       - name: Update existing benchmark comment with stale warning
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           message: |
@@ -102,7 +102,7 @@ jobs:
 
       - name: Update existing benchmark comment without results
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results != 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           message: |
@@ -127,7 +127,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -136,7 +136,7 @@ jobs:
 
       # Cache node_modules and package build outputs
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-artifacts
           path: |
@@ -164,7 +164,7 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -173,7 +173,7 @@ jobs:
           build-packages: 'false'
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-artifacts
           path: .
@@ -219,7 +219,7 @@ jobs:
           baseline-file: baseline-results/bench-results-${{ matrix.app }}-local.json
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ matrix.app }}-local
           path: |
@@ -262,7 +262,7 @@ jobs:
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -271,7 +271,7 @@ jobs:
           build-packages: 'false'
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-artifacts
           path: .
@@ -321,7 +321,7 @@ jobs:
           baseline-file: baseline-results/bench-results-${{ matrix.app }}-postgres.json
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ matrix.app }}-postgres
           path: |
@@ -354,7 +354,7 @@ jobs:
             project-slug: "workbench-express-workflow"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -363,7 +363,7 @@ jobs:
           build-packages: 'false'
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: build-artifacts
           path: .
@@ -425,7 +425,7 @@ jobs:
           baseline-file: baseline-results/bench-results-${{ matrix.app.name }}-vercel.json
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ matrix.app.name }}-vercel
           path: |
@@ -440,7 +440,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -479,10 +479,10 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all benchmark artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bench-results-*
           path: benchmark-results
@@ -546,14 +546,14 @@ jobs:
 
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           path: benchmark-summary.md
 
       - name: Append failure notice to PR comment
         if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           append: true
@@ -569,7 +569,7 @@ jobs:
 
       - name: Append community warning to PR comment
         if: github.event_name == 'pull_request' && steps.check-status.outputs.has_warnings == 'true'
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           append: true
@@ -584,7 +584,7 @@ jobs:
       # On main branch, save results as baseline for future PR comparisons
       - name: Upload baseline results
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: baseline-benchmark-results
           path: benchmark-results/
@@ -602,10 +602,10 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all benchmark artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bench-*
           path: benchmark-results

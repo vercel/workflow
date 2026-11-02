@@ -32,7 +32,7 @@ jobs:
       RELEASE_VERSION: 4
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -45,7 +45,7 @@ jobs:
         uses: pnpm/action-setup@v5
 
       - name: Setup Node.js 24.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24.x
           cache: "pnpm"
