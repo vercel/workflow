@@ -13,15 +13,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WorkflowWorldError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createRun } from '../test-helpers.js';
 import { withFenceFileLock } from './fence-lock.js';
+import { createStorage } from './index.js';
 
 let testDir: string;
-let lockDir: string;
+let lockPath: string;
 const children: ChildProcess[] = [];
 
 beforeEach(async () => {
   testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wl-fence-lock-'));
-  lockDir = path.join(testDir, 'wrun_test.in-band.lock');
+  lockPath = path.join(testDir, 'wrun_test.in-band.lock');
 });
 
 afterEach(async () => {
@@ -43,28 +45,33 @@ function pidNamespace(): string | undefined {
   }
 }
 
-/** A lock directory as a holder that went away left it. */
+/**
+ * A lock as a holder that went away left it: a lock file naming `owner`, or
+ * with no owner, an empty directory as proper-lockfile left one.
+ */
 async function leaveLock(
   owner?: { pid: number; host?: string },
   ageMs = 0
 ): Promise<void> {
-  await fs.mkdir(lockDir);
   if (owner) {
-    const ns = pidNamespace();
-    await fs.writeFile(
-      path.join(lockDir, 'owner.json'),
-      JSON.stringify({
-        pid: owner.pid,
-        host: owner.host ?? os.hostname(),
-        ...(ns !== undefined ? { pidNamespace: ns } : {}),
-        token: 'left-behind',
-      })
-    );
+    await fs.writeFile(lockPath, ownerRecord(owner));
+  } else {
+    await fs.mkdir(lockPath);
   }
   if (ageMs > 0) {
     const then = new Date(Date.now() - ageMs);
-    await fs.utimes(lockDir, then, then);
+    await fs.utimes(lockPath, then, then);
   }
+}
+
+function ownerRecord(owner: { pid: number; host?: string }): string {
+  const ns = pidNamespace();
+  return JSON.stringify({
+    pid: owner.pid,
+    host: owner.host ?? os.hostname(),
+    ...(ns !== undefined ? { pidNamespace: ns } : {}),
+    token: 'left-behind',
+  });
 }
 
 /** Whether `promise` is still pending after `ms`. */
@@ -136,16 +143,14 @@ function expectOneHolderAtATime(
 }
 
 describe('fence file lock (world-local)', () => {
-  it('holds the lock directory, naming its holder, only while fn runs', async () => {
-    const result = await withFenceFileLock(lockDir, 'wrun_test', async () => {
-      const owner = JSON.parse(
-        await fs.readFile(path.join(lockDir, 'owner.json'), 'utf8')
-      );
+  it('holds the lock, naming its holder, only while fn runs', async () => {
+    const result = await withFenceFileLock(lockPath, 'wrun_test', async () => {
+      const owner = JSON.parse(await fs.readFile(lockPath, 'utf8'));
       expect(owner).toMatchObject({ pid: process.pid, host: os.hostname() });
       return 'done';
     });
     expect(result).toBe('done');
-    await expect(fs.stat(lockDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('lets one holder in at a time, also while taking over a dead holder', async () => {
@@ -154,7 +159,7 @@ describe('fence file lock (world-local)', () => {
     let most = 0;
     await Promise.all(
       Array.from({ length: 8 }, () =>
-        withFenceFileLock(lockDir, 'wrun_test', async () => {
+        withFenceFileLock(lockPath, 'wrun_test', async () => {
           inside++;
           most = Math.max(most, inside);
           await sleep(5);
@@ -167,21 +172,53 @@ describe('fence file lock (world-local)', () => {
     expect(left).toEqual([]);
   });
 
+  it('takes over at once a dead holder of a lock directory an earlier version took', async () => {
+    await fs.mkdir(lockPath);
+    await fs.writeFile(
+      path.join(lockPath, 'owner.json'),
+      ownerRecord({ pid: deadPid() })
+    );
+    const started = Date.now();
+    await withFenceFileLock(lockPath, 'wrun_test', async () => {});
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await expect(fs.stat(lockPath)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('takes over at once the lock of a holder that was SIGKILLed', async () => {
-    const child = spawnChild(['hold', lockDir]);
+    const child = spawnChild(['hold', lockPath]);
     expect(await nextMessage(child)).toBe('held');
     child.kill('SIGKILL');
     await new Promise((r) => child.once('exit', r));
     const started = Date.now();
-    await withFenceFileLock(lockDir, 'wrun_test', async () => {});
+    await withFenceFileLock(lockPath, 'wrun_test', async () => {});
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it('lets a Hook be created at once after its token claim lock holder was SIGKILLed', async () => {
+    const storage = createStorage(testDir);
+    const run = await createRun(storage, {
+      deploymentId: 'dpl_test',
+      workflowName: 'test',
+      input: new Uint8Array(),
+    });
+    const child = spawnChild(['hold-claim', testDir, 'token_held']);
+    expect(await nextMessage(child)).toBe('held');
+    child.kill('SIGKILL');
+    await new Promise((r) => child.once('exit', r));
+    const started = Date.now();
+    await storage.events.create(run.runId, {
+      eventType: 'hook_created',
+      correlationId: 'hook_held',
+      eventData: { token: 'token_held' },
+    });
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('waits for a live holder in another process', async () => {
-    const child = spawnChild(['hold', lockDir]);
+    const child = spawnChild(['hold', lockPath]);
     expect(await nextMessage(child)).toBe('held');
     let acquired = false;
-    const mine = withFenceFileLock(lockDir, 'wrun_test', async () => {
+    const mine = withFenceFileLock(lockPath, 'wrun_test', async () => {
       acquired = true;
     });
     expect(await pendingAfter(mine, 1_500)).toBe(true);
@@ -217,10 +254,10 @@ describe('fence file lock (world-local)', () => {
     for (const [name, leave] of Object.entries(cases)) {
       it(`is not taken over while fresh when ${name}`, async () => {
         await leave();
-        const mine = withFenceFileLock(lockDir, 'wrun_test', async () => {});
+        const mine = withFenceFileLock(lockPath, 'wrun_test', async () => {});
         expect(await pendingAfter(mine, 500)).toBe(true);
         // The holder releases.
-        await fs.rm(lockDir, { recursive: true, force: true });
+        await fs.rm(lockPath, { recursive: true, force: true });
         await mine;
       });
     }
@@ -228,32 +265,28 @@ describe('fence file lock (world-local)', () => {
     it('is taken over once its mtime is 30s old', async () => {
       await leaveLock({ pid: process.pid }, 31_000);
       const started = Date.now();
-      await withFenceFileLock(lockDir, 'wrun_test', async () => {});
+      await withFenceFileLock(lockPath, 'wrun_test', async () => {});
       expect(Date.now() - started).toBeLessThan(1_000);
     });
   });
 
   it('fails a write whose lock was taken over, and leaves the new holder its lock', async () => {
-    const error = await withFenceFileLock(lockDir, 'wrun_test', async () => {
+    const error = await withFenceFileLock(lockPath, 'wrun_test', async () => {
       // Another writer took the lock over meanwhile.
-      await fs.rm(lockDir, { recursive: true, force: true });
+      await fs.rm(lockPath, { recursive: true, force: true });
       await leaveLock({ pid: process.pid });
       return 'published';
     }).catch((err: unknown) => err);
     expect(WorkflowWorldError.is(error)).toBe(true);
     expect((error as Error).message).toMatch(/was lost while a write held it/);
-    const owner = JSON.parse(
-      await fs.readFile(path.join(lockDir, 'owner.json'), 'utf8')
-    );
+    const owner = JSON.parse(await fs.readFile(lockPath, 'utf8'));
     expect(owner.token).toBe('left-behind');
   });
 
   it('keeps one holder at a time across processes that are SIGKILLed while holding it', async () => {
     // The loop runs until enough has happened, not for a fixed time: on a
     // loaded CI runner (Windows, next to storage.test.ts) a few seconds can
-    // see under 20 acquisitions. The deadline also leaves room for one 30 s
-    // stall: a holder killed between its mkdir and its owner write leaves a
-    // lock with no owner, which only goes stale.
+    // see under 20 acquisitions.
     const minEnters = 100;
     const minKills = 12;
     const deadline = Date.now() + 45_000;
@@ -261,7 +294,7 @@ describe('fence file lock (world-local)', () => {
     const killed = new Set<number>();
     const unexpectedExits: number[] = [];
     const start = async () => {
-      const child = spawnChild(['loop', lockDir, logPath]);
+      const child = spawnChild(['loop', lockPath, logPath]);
       child.once('exit', (code, signal) => {
         if (signal !== 'SIGKILL') unexpectedExits.push(code ?? -1);
       });
@@ -279,6 +312,10 @@ describe('fence file lock (world-local)', () => {
       killed.add(running[i].pid as number);
       running[i].kill('SIGKILL');
       kills++;
+      // A kill at any point of an acquisition leaves no lock, or one that
+      // names its holder: never one that can only go stale.
+      const left = await fs.stat(lockPath).catch(() => null);
+      expect(left?.isDirectory() ?? false).toBe(false);
       running[i] = await start();
     }
     for (const child of running) {
