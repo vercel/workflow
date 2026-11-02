@@ -965,9 +965,22 @@ export function createQuickJSSerde(
     return result;
   };
 
+  /**
+   * The own `signal` property, only when it holds an object. Plain objects
+   * such as fetch options carry `signal: undefined` (the AI SDK always
+   * passes one), and reading symbol keys off that handle throws.
+   */
+  const ownSignal = (value: JSValueHandle): JSValueHandle | undefined => {
+    const signal = own(value, 'signal');
+    if (!signal) return undefined;
+    if (signal.typeof === 'object' && !signal.isNull) return signal;
+    signal.dispose();
+    return undefined;
+  };
+
   const reduceAbort = (value: JSValueHandle): unknown => {
     // streamName/hookToken live on the signal (or the controller's signal).
-    const signal = own(value, 'signal');
+    const signal = ownSignal(value);
     const holder = signal ?? value;
     const streamName =
       ownSymbolString(value, 'WORKFLOW_ABORT_STREAM_NAME') ??
@@ -1001,7 +1014,7 @@ export function createQuickJSSerde(
       if (!guestHasOwn(value, 'signal')) return false;
       const hasStamp =
         ownSymbolString(value, 'WORKFLOW_ABORT_STREAM_NAME') !== undefined ||
-        own(value, 'signal')?.consume(
+        ownSignal(value)?.consume(
           (signal) =>
             ownSymbolString(signal, 'WORKFLOW_ABORT_STREAM_NAME') !== undefined
         );
