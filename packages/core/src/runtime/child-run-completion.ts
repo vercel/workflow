@@ -30,7 +30,11 @@
  * without going through the SDK, or a child whose invocation dies between its
  * terminal write and the resume. So while children are pending, the
  * dispatcher also keeps one safety-net sleep open and re-reads every pending
- * child when it fires ({@link safetyCheckDelayMs}).
+ * child when it fires ({@link safetyCheckDelayMs}). A sleep cannot be
+ * cancelled, so when a wait ends before its check is due the sleep outlives
+ * it: the next wait reuses it, and if none is running when it fires the
+ * parent gets one no-op wake. That is at most one wake per outstanding sleep,
+ * and a wait due minutes out is inert to spec 9's run-ahead.
  *
  * This module is evaluated inside the workflow VM (it is imported by
  * `run.ts`, which is compiled into the workflow bundle), so it must stay free
@@ -268,8 +272,12 @@ async function dispatch(
     d.toCheck.length = 0;
     for (const runId of [...d.waiting.keys()]) release(d, runId);
   } finally {
-    // Close the hook between waits, so children the parent is not awaiting
-    // cannot wake it. The next await registers it again.
+    // Close the hook between waits. While it is open, every suspension of the
+    // parent counts as path-changing (system hooks are resumed by other runs
+    // whether or not anything awaits them, `out-of-band-observation.ts`), so
+    // spec 9 would drain instead of running ahead for the rest of the run
+    // (`spec9/run-ahead.runtime.test.ts`). Closing it also stops children the
+    // parent never awaits from waking it. The next await registers it again.
     hook.dispose();
     d.running = false;
   }
