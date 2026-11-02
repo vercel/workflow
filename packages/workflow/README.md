@@ -102,13 +102,3 @@ To participate in our Open Source Software Bug Bounty program, please email
 [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com).
 We will add you to the program and provide further instructions for submitting
 your report.
-
-## Response-body readers
-
-Response-body readers inside workflow functions consume stored bodies in
-replayable chunks of at most 64 KiB. Consumer byte limits and reader cancellation
-can stop consumption without allocating the full body. Each chunk opens a fresh
-stored-body reader and skips the preceding bytes without retaining them; reading
-large bodies in full can therefore require repeated prefix reads. Use a step for
-high-throughput streaming. Explicit `text()`, `json()`, and `arrayBuffer()` calls
-still load the full body.
