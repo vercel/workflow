@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import { Script } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import {
@@ -1139,6 +1140,81 @@ async function createWorkflowSessionInner(
     },
   });
 
+  // Streams inside the workflow VM are handles: either a named stream that
+  // lives in the World (e.g. the body of a Response returned by the `fetch`
+  // step), or a body passed to the in-VM `Request`/`Response` constructors.
+  // They cannot be constructed or piped here, but they can be read: the
+  // whole body is loaded once, through a step for named streams, and handed
+  // to the reader as a single chunk. Libraries that read `response.body`
+  // with `getReader()` (such as the AI SDK's response size limit) therefore
+  // replay deterministically, since the bytes come from the event log.
+  //
+  // Unlike a real stream, a handle is never locked or disturbed: `locked`
+  // and `bodyUsed` stay false, and every new reader loads the body again
+  // (one more step for a named stream) instead of throwing. This matches
+  // how `json()`/`text()`/`arrayBuffer()` already behave on these handles.
+  const readStreamHandleBytes = async (
+    stream: object,
+    seen: Set<object> = new Set()
+  ): Promise<Uint8Array> => {
+    if (seen.has(stream)) ENOTSUP();
+    seen.add(stream);
+    if (BODY_INIT_SYMBOL in stream) {
+      const bodyInit = (stream as Record<symbol, unknown>)[BODY_INIT_SYMBOL];
+      if (typeof bodyInit === 'string') {
+        return new vmGlobalThis.Uint8Array(
+          new vmGlobalThis.TextEncoder().encode(bodyInit)
+        );
+      }
+      if (bodyInit instanceof vmGlobalThis.URLSearchParams) {
+        return new vmGlobalThis.Uint8Array(
+          new vmGlobalThis.TextEncoder().encode(String(bodyInit))
+        );
+      }
+      if (types.isArrayBuffer(bodyInit)) {
+        return new vmGlobalThis.Uint8Array(bodyInit.slice(0));
+      }
+      if (ArrayBuffer.isView(bodyInit)) {
+        return new vmGlobalThis.Uint8Array(
+          bodyInit.buffer.slice(
+            bodyInit.byteOffset,
+            bodyInit.byteOffset + bodyInit.byteLength
+          )
+        );
+      }
+      if (
+        bodyInit !== null &&
+        typeof bodyInit === 'object' &&
+        bodyInit instanceof ReadableStream
+      ) {
+        return readStreamHandleBytes(bodyInit, seen);
+      }
+      ENOTSUP();
+    }
+    // A named stream: read it through the same built-in step that backs
+    // `Response.prototype.arrayBuffer()`.
+    const response = Object.create(Response.prototype);
+    response.status = 200;
+    response.statusText = '';
+    response.headers = new vmGlobalThis.Headers();
+    response.body = stream;
+    response.type = 'default';
+    response.url = '';
+    response.redirected = false;
+    const buffer: ArrayBuffer = await response.arrayBuffer();
+    return new vmGlobalThis.Uint8Array(buffer);
+  };
+
+  async function* iterateStreamHandle(reader: {
+    read(): Promise<{ done: boolean; value?: Uint8Array }>;
+  }) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  }
+
   class ReadableStream<T> implements globalThis.ReadableStream<T> {
     constructor() {
       ENOTSUP();
@@ -1148,12 +1224,65 @@ async function createWorkflowSessionInner(
       return false;
     }
 
-    cancel(): any {
-      ENOTSUP();
+    async cancel(): Promise<void> {
+      // The underlying bytes are either in memory or stored in the World,
+      // so there is no connection to release.
     }
 
-    getReader(): any {
-      ENOTSUP();
+    getReader(options?: { mode?: string }): any {
+      if (options?.mode !== undefined) ENOTSUP();
+      // The body is a single chunk. The first read() claims it synchronously,
+      // so overlapping reads (e.g. a consumer that prefetches the next read)
+      // get it exactly once: later reads wait for the same load and then
+      // report done. The stream has no more data once the chunk is handed
+      // out, so `closed` settles together with that read.
+      let bytes: Promise<Uint8Array> | undefined;
+      let claimed = false;
+      let released = false;
+      let resolveClosed: () => void;
+      let rejectClosed: (error: unknown) => void;
+      const closed = new vmGlobalThis.Promise<void>(
+        (resolve: () => void, reject: (error: unknown) => void) => {
+          resolveClosed = resolve;
+          rejectClosed = reject;
+        }
+      );
+      // A failed load also rejects the pending read(); don't report the
+      // `closed` rejection as unhandled when nobody awaits it.
+      closed.catch(() => {});
+      return {
+        closed,
+        read: async () => {
+          if (released) {
+            throw new vmGlobalThis.TypeError(
+              'This reader has been released and can no longer be read from.'
+            );
+          }
+          if (!claimed) {
+            claimed = true;
+            bytes ??= readStreamHandleBytes(this);
+            let value: Uint8Array;
+            try {
+              value = await bytes;
+            } catch (error) {
+              rejectClosed(error);
+              throw error;
+            }
+            resolveClosed();
+            if (value.byteLength > 0) return { done: false, value };
+            return { done: true, value: undefined };
+          }
+          if (bytes) await bytes;
+          return { done: true, value: undefined };
+        },
+        cancel: async () => {
+          claimed = true;
+          resolveClosed();
+        },
+        releaseLock: () => {
+          released = true;
+        },
+      };
     }
 
     pipeThrough(): any {
@@ -1169,7 +1298,7 @@ async function createWorkflowSessionInner(
     }
 
     values(): any {
-      ENOTSUP();
+      return iterateStreamHandle(this.getReader());
     }
 
     static from(): any {
@@ -1177,7 +1306,7 @@ async function createWorkflowSessionInner(
     }
 
     [Symbol.asyncIterator](): any {
-      ENOTSUP();
+      return this.values();
     }
   }
   vmGlobalThis.ReadableStream = ReadableStream;
