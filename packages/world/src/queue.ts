@@ -987,6 +987,11 @@ export interface QueueOptions {
    * a send that fails with a network error may already have enqueued the
    * message, and a retry without a key enqueues a second one.
    *
+   * Only this deployment's messages are held: a send pinned to another
+   * deployment (`deploymentId`) is sent as usual and reports `notHeld:
+   * unsupported`, because its own deployment must run it. A batched send
+   * ({@link Queue.queueBatch}) never holds; its results carry neither field.
+   *
    * @experimental
    */
   experimental_hold?: QueueHoldOptions;
@@ -1066,13 +1071,19 @@ export interface HeldQueueMessage {
   readonly leaseExpiresAt: Date;
 
   /**
-   * Run `handler` on the message here, exactly as the World's
-   * {@link Queue.createQueueHandler} runs a delivery of it: with the same
-   * `meta` (`deliveryCount: 1`), the same handler-result semantics (a
-   * `{ timeoutSeconds }` result redelivers the message, a handoff continues
-   * it in a fresh delivery) and the same retries when it rejects. The lease
-   * is renewed while the handler runs and the message is acknowledged when
-   * it resolves.
+   * Run `handler` on the message here, as the World's
+   * {@link Queue.createQueueHandler} runs a delivery of it: the same
+   * handler-result semantics (a `{ timeoutSeconds }` result redelivers the
+   * message, a handoff continues it in a fresh delivery) and the same retries
+   * when it rejects. The lease is renewed while the handler runs and the
+   * message is acknowledged when it resolves.
+   *
+   * `meta` is a first delivery's (`deliveryCount: 1`, `attempt: 1`), with
+   * two differences from a pushed one. `invocationStartedAt` is when the
+   * enclosing queue delivery began if `consume` runs inside one, else when
+   * `consume` was called; coalesced re-runs share it either way. And
+   * `requestId` is set only inside a queue delivery, so do not hold an
+   * `invoke: true` request, which needs one.
    *
    * Pass the same handler the queue consumer for this message's prefix uses.
    * Call it as soon as `queue()` returns (nothing renews the hold until it
@@ -1186,6 +1197,8 @@ export interface Queue {
    * Enqueues several messages to the SAME logical queue in as few round trips
    * as the backing transport allows. Optional: callers MUST fall back to
    * per-message {@link Queue.queue} when a World does not implement it.
+   * Never holds a message: `opts.experimental_hold` is ignored here, and a
+   * result carries neither `experimental_held` nor `experimental_notHeld`.
    *
    * Exists for wide fan-outs. Publishing an N-branch `Promise.all` one message
    * at a time costs N round trips through a bounded connection pool, and that

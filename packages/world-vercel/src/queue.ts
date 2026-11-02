@@ -1063,7 +1063,16 @@ export function createQueue(config?: APIConfig): Queue {
   ) => {
     const prepared = prepareSend(queueName, payload, opts);
     const client = clientFor(prepared);
-    const hold = resolveHoldOptions(opts, prepared.sendOptions);
+    const resolvedHold = resolveHoldOptions(opts, prepared.sendOptions);
+    // A held message runs in this process, so this deployment's handler would
+    // run a message pinned to another deployment. Send that one plain: its
+    // own deployment receives it.
+    const pinnedElsewhere =
+      resolvedHold !== undefined &&
+      prepared.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID;
+    const hold = pinnedElsewhere ? undefined : resolvedHold;
+    // A held run's handoffs go through this client's API client.
+    if (hold) observeHandoffOutcomes(client);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
     // returns a fresh message ID and only one of the messages is delivered, so
     // there is no conflict for the caller to handle here.
@@ -1083,17 +1092,31 @@ export function createQueue(config?: APIConfig): Queue {
           // The held message goes through the same callback and retry
           // directives as a pushed delivery of it (`createQueueHandler`), so
           // a `{ timeoutSeconds }` result, a handoff and a rejection mean
-          // what they mean there.
+          // what they mean there. Under an invocation context like a pushed
+          // delivery's, so its coalesced re-runs share one inline budget:
+          // the enclosing delivery's when it is consumed inside one, else
+          // one that starts now.
           consume: (handler) =>
-            experimental_held.consume(
-              deliveryCallback(handler),
-              deliveryOptions
+            invocationStorage.run(
+              invocationStorage.getStore() ?? {
+                collectStepIds: false,
+                requestId: undefined,
+                stepIds: new Set(),
+                startedAt: Date.now(),
+              },
+              () =>
+                experimental_held.consume(
+                  deliveryCallback(handler),
+                  deliveryOptions
+                )
             ),
           release: (delaySeconds) => experimental_held.release(delaySeconds),
         },
       }),
-      ...(experimental_notHeld && {
-        experimental_notHeld: { reason: experimental_notHeld.reason },
+      ...((experimental_notHeld || pinnedElsewhere) && {
+        experimental_notHeld: {
+          reason: experimental_notHeld?.reason ?? 'unsupported',
+        },
       }),
     };
   };

@@ -96,8 +96,10 @@ describe('send-and-hold (experimental_hold)', () => {
 
   describe('a held message', () => {
     const leaseExpiresAt = new Date('2026-10-30T12:00:30Z');
-    const sendHeld = async (payload: Record<string, unknown>) => {
-      const consume = vi.fn().mockResolvedValue(undefined);
+    const sendHeld = async (
+      payload: Record<string, unknown>,
+      consume = vi.fn().mockResolvedValue(undefined)
+    ) => {
       const release = vi.fn().mockResolvedValue(undefined);
       mockSend.mockResolvedValue({
         messageId: 'msg_1',
@@ -171,6 +173,66 @@ describe('send-and-hold (experimental_hold)', () => {
       expect(
         options.retry(error, { messageId: 'msg_1', deliveryCount: 1 })
       ).toEqual({ afterSeconds: 7 });
+    });
+
+    it('gives its coalesced re-runs one invocation start, as a pushed delivery does', async () => {
+      const payload = { runId: 'wrun_1' };
+      const metas: { invocationStartedAt?: number }[] = [];
+      const consume = vi.fn(
+        async (
+          callback: (message: unknown, metadata: unknown) => Promise<void>
+        ) => {
+          const wrapper = mockSend.mock.calls[0][1];
+          const createdAt = new Date();
+          // The first run, then one coalesced re-run of the same delivery.
+          await callback(wrapper, {
+            messageId: 'msg_1',
+            deliveryCount: 1,
+            createdAt,
+          });
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await callback(wrapper, {
+            messageId: 'msg_1',
+            deliveryCount: 1,
+            createdAt,
+            experimental_coalesced: { rerun: 1 },
+          });
+        }
+      );
+      const before = Date.now();
+      const { result } = await sendHeld(payload, consume);
+      await result.experimental_held?.consume(async (_message, meta) => {
+        metas.push(meta);
+      });
+      expect(metas).toHaveLength(2);
+      expect(metas[0]?.invocationStartedAt).toBeGreaterThanOrEqual(before);
+      expect(metas[1]?.invocationStartedAt).toBe(metas[0]?.invocationStartedAt);
+    });
+
+    it('is not taken for a message pinned to another deployment', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg_1' });
+      const result = await createQueue().queue(
+        '__wkf_workflow_test',
+        { runId: 'wrun_1' },
+        { deploymentId: 'dpl_other', experimental_hold: {} }
+      );
+      expect(sendOptionsOf()).not.toHaveProperty('experimental_hold');
+      expect(result).toEqual({
+        messageId: 'msg_1',
+        experimental_notHeld: { reason: 'unsupported' },
+      });
+    });
+
+    it('is asked for a message pinned to this deployment', async () => {
+      mockSend.mockResolvedValue({ messageId: 'msg_1' });
+      await createQueue().queue(
+        '__wkf_workflow_test',
+        { runId: 'wrun_1' },
+        { deploymentId: 'dpl_test', experimental_hold: {} }
+      );
+      expect(sendOptionsOf().experimental_hold).toEqual({
+        consumerGroup: HOLD_CONSUMER_GROUP,
+      });
     });
 
     it('is released through the queue client', async () => {

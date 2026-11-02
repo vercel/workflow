@@ -58,9 +58,31 @@ const { messageId } = await world.queue(queueName, payload, opts); // [!code hig
 |-----------|------|-------------|
 | `queueName` | `ValidQueueName` | The queue name (branded string) |
 | `message` | `QueuePayload` | Internal SDK payload |
-| `opts` | `QueueOptions` | Optional: `deploymentId`, `idempotencyKey`, `delaySeconds`, `headers`, `region` (regional routing hint), `specVersion` |
+| `opts` | `QueueOptions` | Optional: `deploymentId`, `idempotencyKey`, `delaySeconds`, `headers`, `region` (regional routing hint), `specVersion`, `experimental_hold` (see below) |
 
-**Returns:** `{ messageId: MessageId | null }`
+**Returns:** `{ messageId: MessageId | null, experimental_held?, experimental_notHeld? }`
+
+#### Holding a message for its sender (experimental)
+
+On a World that declares `capabilities.experimental_queueHold` (`@workflow/world-vercel`), `opts.experimental_hold: { consumerGroup?, visibilityTimeoutSeconds? }` asks the queue to claim the message for the process that sent it. That process can then run the message in the same request, without a queue hop, and the queue stays the crash backstop.
+
+{/* @skip-typecheck: shape illustration, not runnable code */}
+```typescript lineNumbers
+const sent = await world.queue(queueName, payload, {
+  idempotencyKey,
+  experimental_hold: {},
+});
+if (sent.experimental_held) {
+  // Same handler as the prefix's createQueueHandler, run as a first delivery.
+  waitUntil(sent.experimental_held.consume(handler));
+}
+// Otherwise (experimental_notHeld, or neither field) the queue delivers it.
+```
+
+- `consume(handler)` renews the lease while the handler runs and acknowledges the message when the handler resolves. A `{ timeoutSeconds }` result and a rejection mean what they mean in `createQueueHandler`.
+- If the process stops renewing the lease, the queue delivers the message as usual about `visibilityTimeoutSeconds` (default 30) after the last renewal.
+- `consumerGroup` defaults to `default`, which is what the Workflow SDK's generated triggers subscribe with. A Function configured in `vercel.json` gets a group named after its path; `vercelTriggerConsumerGroup(functionPattern)` from `@workflow/world-vercel` returns that name.
+- A hold can't be combined with `delaySeconds`, and a send pinned to another deployment is never held. `queueBatch()` doesn't hold messages.
 
 ### createQueueHandler()
 
