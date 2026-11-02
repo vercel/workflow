@@ -72,6 +72,7 @@ import {
   type WorkflowSession,
   type WorkflowSessionRebase,
 } from '../../workflow.js';
+import { notifyParentOfRunCompletion } from '../child-run-completion-notify.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -3002,6 +3003,11 @@ async function runDelivery(
               return undefined;
             }
             dispatchRunCompletedHooks(runId, workflowName);
+            await notifyParentOfRunCompletion(
+              world,
+              completed.run ?? workflowRun ?? runId,
+              'completed'
+            );
             span?.setAttributes({
               ...Attribute.WorkflowRunStatus('completed'),
             });
@@ -4583,6 +4589,11 @@ async function runDelivery(
       dehydratedError,
       failureKey,
       errorCode
+    );
+    await notifyParentOfRunCompletion(
+      world,
+      failedResult?.run ?? workflowRun ?? runId,
+      'failed'
     );
     span?.setAttributes({
       ...Attribute.WorkflowRunStatus('failed'),
