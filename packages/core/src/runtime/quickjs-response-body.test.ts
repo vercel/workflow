@@ -144,6 +144,59 @@ describe('QuickJS: reading Response bodies inside the workflow', () => {
     ]);
   });
 
+  it('delivers the body once to overlapping reads and settles `closed` with it', async () => {
+    const { value, stepIds } = await runToCompletion(
+      `
+      var response = await fetchStep("https://example.com");
+      var reader = response.body.getReader();
+      var reads = await Promise.all([reader.read(), reader.read()]);
+      var closed = await Promise.race([
+        reader.closed.then(function() { return "closed"; }),
+        Promise.resolve().then(function() {}).then(function() { return "pending"; }),
+      ]);
+      var third = await reader.read();
+      return {
+        first: { done: reads[0].done, text: new TextDecoder().decode(reads[0].value) },
+        second: { done: reads[1].done, value: reads[1].value },
+        third: { done: third.done, value: third.value },
+        closed: closed,
+      };
+      `,
+      (stepId) =>
+        stepId === 'step//test//fetch'
+          ? new Response(namedStream('strm_quickjs_overlapping'))
+          : new TextEncoder().encode('payload').buffer
+    );
+    expect(value).toEqual({
+      first: { done: false, text: 'payload' },
+      second: { done: true, value: undefined },
+      third: { done: true, value: undefined },
+      closed: 'closed',
+    });
+    expect(stepIds).toEqual([
+      'step//test//fetch',
+      '__builtin_response_array_buffer',
+    ]);
+  });
+
+  it('settles `closed` after reading an in-VM body without a trailing read', async () => {
+    const { value } = await runToCompletion(
+      `
+      var reader = new Response("hi").body.getReader();
+      var reads = await Promise.all([reader.read(), reader.read()]);
+      var closed = await Promise.race([
+        reader.closed.then(function() { return "closed"; }),
+        Promise.resolve().then(function() {}).then(function() { return "pending"; }),
+      ]);
+      return { first: reads[0].value.length, second: reads[1].done, closed: closed };
+      `,
+      () => {
+        throw new Error('no step expected');
+      }
+    );
+    expect(value).toEqual({ first: 2, second: true, closed: 'closed' });
+  });
+
   it('reads in-VM Response bodies without running a step', async () => {
     const { value, stepIds } = await runToCompletion(
       `

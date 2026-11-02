@@ -1226,13 +1226,25 @@ async function createWorkflowSessionInner(
 
     getReader(options?: { mode?: string }): any {
       if (options?.mode !== undefined) ENOTSUP();
+      // The body is a single chunk. The first read() claims it synchronously,
+      // so overlapping reads (e.g. a consumer that prefetches the next read)
+      // get it exactly once: later reads wait for the same load and then
+      // report done. The stream has no more data once the chunk is handed
+      // out, so `closed` settles together with that read.
       let bytes: Promise<Uint8Array> | undefined;
-      let done = false;
+      let claimed = false;
       let released = false;
       let resolveClosed: () => void;
-      const closed = new vmGlobalThis.Promise<void>((resolve: () => void) => {
-        resolveClosed = resolve;
-      });
+      let rejectClosed: (error: unknown) => void;
+      const closed = new vmGlobalThis.Promise<void>(
+        (resolve: () => void, reject: (error: unknown) => void) => {
+          resolveClosed = resolve;
+          rejectClosed = reject;
+        }
+      );
+      // A failed load also rejects the pending read(); don't report the
+      // `closed` rejection as unhandled when nobody awaits it.
+      closed.catch(() => {});
       return {
         closed,
         read: async () => {
@@ -1241,17 +1253,25 @@ async function createWorkflowSessionInner(
               'This reader has been released and can no longer be read from.'
             );
           }
-          if (!done) {
+          if (!claimed) {
+            claimed = true;
             bytes ??= readStreamHandleBytes(this);
-            const value = await bytes;
-            done = true;
+            let value: Uint8Array;
+            try {
+              value = await bytes;
+            } catch (error) {
+              rejectClosed(error);
+              throw error;
+            }
+            resolveClosed();
             if (value.byteLength > 0) return { done: false, value };
+            return { done: true, value: undefined };
           }
-          resolveClosed();
+          if (bytes) await bytes;
           return { done: true, value: undefined };
         },
         cancel: async () => {
-          done = true;
+          claimed = true;
           resolveClosed();
         },
         releaseLock: () => {

@@ -824,31 +824,39 @@ if (typeof Request === "undefined") {
   proto.getReader = function(options) {
     if (options && options.mode !== undefined) unsupported();
     var stream = this;
+    // Single chunk, claimed synchronously by the first read() so overlapping
+    // reads deliver it once; the closed promise settles with that read. Same contract
+    // as the node:vm engine.
     var bytes = null;
-    var done = false;
+    var claimed = false;
     var released = false;
     var resolveClosed;
-    var closed = new Promise(function(resolve) { resolveClosed = resolve; });
+    var rejectClosed;
+    var closed = new Promise(function(resolve, reject) { resolveClosed = resolve; rejectClosed = reject; });
+    closed.catch(function() {});
     return {
       closed: closed,
       read: function() {
         if (released) {
           return Promise.reject(new TypeError("This reader has been released and can no longer be read from."));
         }
-        if (done) {
-          resolveClosed();
-          return Promise.resolve({ done: true, value: undefined });
+        if (claimed) {
+          var pending = bytes || Promise.resolve();
+          return pending.then(function() { return { done: true, value: undefined }; });
         }
+        claimed = true;
         if (!bytes) bytes = readBytes(stream, []);
         return bytes.then(function(value) {
-          done = true;
-          if (value.byteLength > 0) return { done: false, value: value };
           resolveClosed();
+          if (value.byteLength > 0) return { done: false, value: value };
           return { done: true, value: undefined };
+        }, function(error) {
+          rejectClosed(error);
+          throw error;
         });
       },
       cancel: function() {
-        done = true;
+        claimed = true;
         resolveClosed();
         return Promise.resolve();
       },

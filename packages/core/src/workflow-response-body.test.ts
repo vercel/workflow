@@ -225,6 +225,62 @@ describe('reading Response bodies inside the workflow VM', () => {
     expect(steps).toHaveLength(0);
   });
 
+  it('delivers the body once to overlapping reads and settles `closed` with it', async () => {
+    const { value, steps } = await runToCompletion(
+      `const fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fetch");
+      async function workflow() {
+        const response = await fetchStep("https://example.com");
+        const reader = response.body.getReader();
+        // A consumer that prefetches issues the next read before the
+        // previous one settles.
+        const [first, second] = await Promise.all([reader.read(), reader.read()]);
+        // No further read: \`closed\` must already be settled, so it wins a
+        // race against a promise that settles a few microtasks later.
+        const closed = await Promise.race([
+          reader.closed.then(() => "closed"),
+          Promise.resolve().then(() => undefined).then(() => "pending"),
+        ]);
+        return {
+          first: { done: first.done, text: new TextDecoder().decode(first.value) },
+          second: { done: second.done, value: second.value },
+          third: await reader.read(),
+          closed,
+        };
+      }${workflowRegistration('workflow')}`,
+      async (item) =>
+        item.stepName === 'fetch'
+          ? new Response(namedStream('strm_overlapping'))
+          : new TextEncoder().encode('payload').buffer
+    );
+    expect(value).toEqual({
+      first: { done: false, text: 'payload' },
+      second: { done: true, value: undefined },
+      third: { done: true, value: undefined },
+      closed: 'closed',
+    });
+    expect(
+      steps.filter((s) => s.stepName === '__builtin_response_array_buffer')
+    ).toHaveLength(1);
+  });
+
+  it('settles `closed` after reading an in-VM body without a trailing read', async () => {
+    const { value } = await runToCompletion(
+      `async function workflow() {
+        const reader = new Response("hi").body.getReader();
+        const [first, second] = await Promise.all([reader.read(), reader.read()]);
+        const closed = await Promise.race([
+          reader.closed.then(() => "closed"),
+          Promise.resolve().then(() => undefined).then(() => "pending"),
+        ]);
+        return { first: first.value.length, second: second.done, closed };
+      }${workflowRegistration('workflow')}`,
+      async () => {
+        throw new Error('no step expected');
+      }
+    );
+    expect(value).toEqual({ first: 2, second: true, closed: 'closed' });
+  });
+
   it('still rejects BYOB readers and stream construction', async () => {
     await expect(
       runToCompletion(
