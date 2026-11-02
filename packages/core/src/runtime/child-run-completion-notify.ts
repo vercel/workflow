@@ -87,18 +87,22 @@ export async function notifyParentOfRunCompletion(
         await resumeHookOnWorld(world, token, payload);
         return;
       } catch (err) {
-        if (
-          HookNotFoundError.is(err) ||
-          EntityConflictError.is(err) ||
-          RunExpiredError.is(err)
-        ) {
+        if (HookNotFoundError.is(err) || RunExpiredError.is(err)) {
           // The parent is not waiting on any child right now (or has
           // finished): when it next awaits this run, its read sees this run's
           // terminal state instead.
           return;
         }
+        // A 409 on `hook_received` is transient and committed nothing (see
+        // `resumeHookAttempt`), so it is retried like a 5xx rather than read
+        // as "nobody is waiting".
         const delay = NOTIFY_RETRY_DELAYS_MS[attempt];
-        if (delay === undefined || !isRetryableWorldError(err)) throw err;
+        if (
+          delay === undefined ||
+          !(EntityConflictError.is(err) || isRetryableWorldError(err))
+        ) {
+          throw err;
+        }
         await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }

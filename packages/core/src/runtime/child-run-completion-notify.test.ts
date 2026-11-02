@@ -1,4 +1,9 @@
-import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import {
@@ -77,6 +82,26 @@ describe('notifyParentOfRunCompletion', () => {
 
     expect(resume).toHaveBeenCalledTimes(1);
     expect(error).not.toHaveBeenCalled();
+  });
+
+  it('treats an ended parent as "no parent waiting"', async () => {
+    const error = vi.spyOn(runtimeLogger, 'error').mockImplementation(() => {});
+    resume.mockRejectedValue(new RunExpiredError('wrun_parent'));
+    await notifyParentOfRunCompletion(world, stamped, 'completed');
+
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('retries a transient write conflict instead of dropping the resume', async () => {
+    resume
+      .mockRejectedValueOnce(new EntityConflictError('slot conflict'))
+      .mockResolvedValueOnce({} as any);
+    const done = notifyParentOfRunCompletion(world, stamped, 'completed');
+    await vi.runAllTimersAsync();
+    await done;
+
+    expect(resume).toHaveBeenCalledTimes(2);
   });
 
   it('retries transient failures', async () => {
