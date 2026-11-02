@@ -180,6 +180,56 @@ export const inferVercelProjectAndTeam = async () => {
   };
 };
 
+/**
+ * Merges a `.vercel` link into the explicitly configured project/team values.
+ *
+ * Explicit values are never replaced. The link fills in missing values, and
+ * its project ID/name are only used when the link refers to the same project
+ * as an explicit `--project` (matched by ID or name), so a stale or unrelated
+ * link cannot redirect lookups to another project.
+ */
+export const resolveProjectFromLink = (
+  envVars: Record<string, string>,
+  link: { projectId: string; projectName?: string; teamId: string }
+) => {
+  const explicitProject = envVars.WORKFLOW_VERCEL_PROJECT;
+  const explicitTeam = envVars.WORKFLOW_VERCEL_TEAM;
+  const linkMatches =
+    !explicitProject ||
+    explicitProject === link.projectId ||
+    (!!link.projectName && explicitProject === link.projectName);
+
+  if (!linkMatches) {
+    logger.debug(
+      `Ignoring linked project ${link.projectName || link.projectId}: --project ${explicitProject} was given explicitly`
+    );
+    const team = explicitTeam || link.teamId;
+    if (!explicitTeam) {
+      logger.warn(
+        `--team was not given, using team ${link.teamId} from the .vercel link for project ${explicitProject}`
+      );
+    }
+    return {
+      WORKFLOW_VERCEL_PROJECT: explicitProject,
+      WORKFLOW_VERCEL_PROJECT_NAME:
+        envVars.WORKFLOW_VERCEL_PROJECT_NAME ||
+        (explicitProject.startsWith('prj_') ? '' : explicitProject),
+      WORKFLOW_VERCEL_TEAM: team,
+    };
+  }
+
+  return {
+    // WORKFLOW_VERCEL_PROJECT is the project ID (e.g., prj_xxx)
+    WORKFLOW_VERCEL_PROJECT: link.projectId,
+    // WORKFLOW_VERCEL_PROJECT_NAME is the project slug (e.g., my-app)
+    WORKFLOW_VERCEL_PROJECT_NAME:
+      envVars.WORKFLOW_VERCEL_PROJECT_NAME ||
+      link.projectName ||
+      link.projectId,
+    WORKFLOW_VERCEL_TEAM: explicitTeam || link.teamId,
+  };
+};
+
 export interface VercelEnvVars {
   token?: string;
   environment?: string;
@@ -198,28 +248,22 @@ export interface VercelEnvVars {
 export const inferVercelEnvVars = async (): Promise<VercelEnvVars> => {
   const envVars = getEnvVars();
 
-  // Infer project/team from .vercel folder when:
-  // - WORKFLOW_VERCEL_PROJECT or WORKFLOW_VERCEL_TEAM is missing, OR
-  // - WORKFLOW_VERCEL_PROJECT is set but doesn't look like a real project ID
-  //   (e.g., user passed a slug via --project flag), OR
-  // - WORKFLOW_VERCEL_PROJECT_NAME is missing (need to populate the slug)
+  // Precedence: explicit values (CLI flags, which oclif seeds from the
+  // WORKFLOW_VERCEL_* env vars when absent) always win over the `.vercel`
+  // link. The link only fills in values that were not given explicitly.
+  const explicitProject = envVars.WORKFLOW_VERCEL_PROJECT;
   const needsInference =
-    !envVars.WORKFLOW_VERCEL_PROJECT ||
+    !explicitProject ||
     !envVars.WORKFLOW_VERCEL_TEAM ||
     !envVars.WORKFLOW_VERCEL_PROJECT_NAME ||
-    !envVars.WORKFLOW_VERCEL_PROJECT.startsWith('prj_');
+    !explicitProject.startsWith('prj_');
 
   if (needsInference) {
     logger.debug('Inferring vercel project and team from .vercel folder');
-    const inferredProject = await inferVercelProjectAndTeam();
-    if (inferredProject) {
-      const { projectId, projectName, teamId } = inferredProject;
-      // WORKFLOW_VERCEL_PROJECT is the real project ID (e.g., prj_xxx)
-      envVars.WORKFLOW_VERCEL_PROJECT = projectId;
-      // WORKFLOW_VERCEL_PROJECT_NAME is the project slug (e.g., my-app)
-      envVars.WORKFLOW_VERCEL_PROJECT_NAME = projectName || projectId;
-      envVars.WORKFLOW_VERCEL_TEAM = envVars.WORKFLOW_VERCEL_TEAM || teamId;
-    } else {
+    const inferred = await inferVercelProjectAndTeam();
+    if (inferred) {
+      Object.assign(envVars, resolveProjectFromLink(envVars, inferred));
+    } else if (!explicitProject || !envVars.WORKFLOW_VERCEL_TEAM) {
       logger.warn(
         'Could not infer vercel project and team from .vercel folder, server authentication might fail.'
       );
