@@ -889,6 +889,10 @@ export interface StepResult {
         `export async function load() {\n  return await import('./step');\n}\n`,
       ],
       ['a require call', `const step = require('./step');\nvoid step;\n`],
+      [
+        'a module.require call next to type-only syntax',
+        `export type StepModule = typeof import('./step');\nconst step = module.require('./step');\nvoid step;\n`,
+      ],
       ['a named re-export', `export { doStep } from './step';\n`],
       ['a star re-export', `export * from './step';\n`],
       [

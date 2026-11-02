@@ -347,11 +347,22 @@ function visitModuleDeclaration(node: AstNode): AstNodeVisit {
   return { descend: !node.declare };
 }
 
+function isRequireCallee(callee: AstNode | undefined): boolean {
+  if (callee?.type === 'Identifier') {
+    return callee.value === 'require';
+  }
+  if (callee?.type === 'MemberExpression') {
+    // `<expr>.require(...)`, e.g. `module.require`; SWC marks `<expr>['require']` as `Computed`.
+    const property = callee.property as AstNode | undefined;
+    return property?.type === 'Identifier' && property.value === 'require';
+  }
+  return false;
+}
+
 function visitCall(node: AstNode): AstNodeVisit {
   const callee = node.callee as AstNode | undefined;
   const isImportOrRequire =
-    callee?.type === 'Import' ||
-    (callee?.type === 'Identifier' && callee.value === 'require');
+    callee?.type === 'Import' || isRequireCallee(callee);
   if (!isImportOrRequire || !Array.isArray(node.arguments)) {
     return { descend: true };
   }
