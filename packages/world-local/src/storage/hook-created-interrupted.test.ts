@@ -7,6 +7,7 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRun } from '../test-helpers.js';
+import { hookTokenClaimPath } from './helpers.js';
 import { createStorage } from './index.js';
 
 // Interrupt `hook_created` at its event publish, after the token claim and
@@ -65,7 +66,8 @@ async function inBandAt(runId: string) {
     runId,
     pagination: { limit: 1000 },
   });
-  return { inBand: true as const, expectedSeqInBand: snapshot!.seqInBand };
+  if (!snapshot) throw new Error(`Run ${runId} has no event log snapshot`);
+  return { inBand: true as const, expectedSeqInBand: snapshot.seqInBand };
 }
 
 async function hookCreatedIds(runId: string): Promise<string[]> {
@@ -178,6 +180,39 @@ describe('hook_created retried after an interrupted publish', () => {
     await expect(restarted.hooks.getByToken('token_a')).resolves.toMatchObject({
       hookId: 'hook_a',
     });
+  });
+
+  it('does not create again a hook an older writer published past its claimed slot', async () => {
+    const run = await startRun();
+    const storage = createStorage(dataDir);
+
+    // The layout a writer from before claims moved with the publish leaves:
+    // it claimed slot N, lost N to another event, and published at N + 1
+    // without recording it.
+    const { event: unrelated } = await storage.events.create(run.runId, {
+      eventType: 'wait_created',
+      correlationId: 'wait_unrelated',
+      eventData: { resumeAt: new Date(Date.now() + 60_000) },
+    });
+    await storage.events.create(run.runId, hookCreated('hook_a', 'token_a'));
+    const claimPath = hookTokenClaimPath(dataDir, 'token_a');
+    const claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+    await fs.writeFile(
+      claimPath,
+      JSON.stringify({ ...claim, eventId: unrelated?.eventId })
+    );
+
+    await expect(
+      createStorage(dataDir).events.create(
+        run.runId,
+        hookCreated('hook_a', 'token_a')
+      )
+    ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+    expect(await hookCreatedIds(run.runId)).toEqual(['hook_a']);
+    await expect(
+      createStorage(dataDir).hooks.getByToken('token_a')
+    ).resolves.toMatchObject({ hookId: 'hook_a' });
   });
 
   it('creates every hook of a batch interrupted before any publish', async () => {
