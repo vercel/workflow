@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { turbopackContentPattern } from '@workflow/builders';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -553,6 +554,12 @@ describe('withWorkflow builder config', () => {
     ])('still sends files using %s to the workflow loader', async (_, source) => {
       for (const [key, pattern] of await getRuleContentPatterns()) {
         expect(pattern.test(source), `rule ${key}`).toBe(true);
+      }
+    });
+
+    it('uses the builders pattern itself, not a copy', async () => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern, `rule ${key}`).toBe(turbopackContentPattern);
       }
     });
 

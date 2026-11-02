@@ -3862,6 +3862,26 @@ describe.concurrent('e2e', () => {
   );
 
   testJsOnly(
+    'importedSerdeKeyWorkflow - classes keyed by imported WORKFLOW_SERIALIZE symbols round-trip through steps',
+    { timeout: 60_000 },
+    async () => {
+      // Temperature (serde-imported-key-models.ts) has no directive, no
+      // `@workflow/serde` import and no `Symbol.for` key: its only serde
+      // marker is `static [WORKFLOW_SERIALIZE]`, imported from a plain
+      // module. Under Turbopack that key is the only thing that sends the
+      // file to the workflow loader, so a content condition that misses it
+      // leaves the class unregistered in the step bundle (#4897).
+      const run = await start(await e2e('importedSerdeKeyWorkflow'), []);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        cold: { celsius: 20 },
+        warm: { celsius: 25 },
+      });
+    }
+  );
+
+  testJsOnly(
     'errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary',
     { timeout: 60_000 },
     async () => {

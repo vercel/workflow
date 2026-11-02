@@ -2,10 +2,16 @@ import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  generatedWorkflowPathPattern,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
   turbopackContentPattern,
+  useStepPattern,
+  useWorkflowPattern,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
+  workflowSerdeComputedPropertyPattern,
+  workflowSerdeImportPattern,
+  workflowSerdeSymbolPattern,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
@@ -45,13 +51,6 @@ const WORKFLOW_BUNDLE_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
-const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
-const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
-const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
-const workflowSerdeSymbolPattern =
-  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
-const workflowSerdeComputedPropertyPattern =
-  /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
@@ -665,7 +664,7 @@ export function withWorkflow(
                 all: [
                   ...(existingRules[key]?.condition?.all || []),
                   // Exclude generated workflow route files from transformation
-                  { not: { path: /[/\\]\.well-known[/\\]workflow[/\\]/ } },
+                  { not: { path: generatedWorkflowPathPattern } },
                   // Match files with workflow directives or custom serialization
                   // patterns, including `static [WORKFLOW_SERIALIZE]` computed keys
                   // (e.g. @ai-sdk/openai). Shared with the builders so the two
