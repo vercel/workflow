@@ -21,7 +21,7 @@ vi.mock('../serialization.js', async (importActual) => {
   const actual = await importActual<typeof import('../serialization.js')>();
   return {
     ...actual,
-    dehydrateStepReturnValue: vi.fn(async () => 'serialized'),
+    dehydrateStepReturnValue: vi.fn(async () => new Uint8Array([1, 2, 3])),
     hydrateStepArguments: vi.fn(async (value: unknown) => value),
   };
 });
@@ -63,7 +63,8 @@ describe('getHookByToken (lazy metadata)', () => {
 
   const makeWorld = (
     hook: Hook,
-    overrides: Partial<Record<string, ReturnType<typeof vi.fn>>> = {}
+    overrides: Partial<Record<string, ReturnType<typeof vi.fn>>> = {},
+    capabilities?: World['capabilities']
   ) => {
     const getByToken = overrides.getByToken ?? vi.fn().mockResolvedValue(hook);
     const runsGet = overrides.runsGet ?? vi.fn();
@@ -72,6 +73,7 @@ describe('getHookByToken (lazy metadata)', () => {
       vi.fn().mockResolvedValue(new Uint8Array(32).fill(0x4d));
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
+      capabilities,
       hooks: { getByToken },
       runs: { get: runsGet },
       events: { create: overrides.createEvent ?? vi.fn() },
@@ -246,22 +248,71 @@ describe('getHookByToken (lazy metadata)', () => {
     expect(hydrateSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('does not double-wrap a hook handed back to resumeHook', async () => {
+  it.each([
+    false,
+    true,
+  ])('preserves lazy metadata when reusing a Hook (resolved support: %s)', async (resolvedHookResume) => {
     // Passing the result of `getHookByToken` into `resumeHook` must not wrap a
     // Promise in another Promise (which would hand hydration a thenable).
     const metadata = { customData: 'stored' };
     const hook = {
       ...baseHook,
-      resumeContext,
+      resumeContext: resumeContextWithKey,
       metadata: metadata as unknown as Hook['metadata'],
     } satisfies Hook;
-    makeWorld(hook);
+    const createEvent = vi.fn();
+    const { getByToken, getEncryptionKeyForRun } = makeWorld(
+      hook,
+      { createEvent },
+      { resolvedHookResume }
+    );
 
     const found = await getHookByToken(hook.token);
     const resumed = await resumeHook(found, { approved: true });
 
+    expect(getByToken).toHaveBeenCalledTimes(1);
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+    expect(hydrateSpy).not.toHaveBeenCalled();
+    expect(createEvent.mock.calls[0][2].requireHookResumeDedup).toBe(
+      resolvedHookResume ? true : undefined
+    );
+    expect(Object.getOwnPropertyDescriptor(resumed, 'metadata')?.get).toBe(
+      Object.getOwnPropertyDescriptor(found, 'metadata')?.get
+    );
+
     expect(await resumed.metadata).toEqual(metadata);
+    const resumedAgain = await resumeHook(resumed, { approved: false });
+    expect(await resumedAgain.metadata).toEqual(metadata);
     expect(hydrateSpy).toHaveBeenCalledTimes(1);
     expect(hydrateSpy.mock.calls[0]?.[0]).toBe(metadata);
+  });
+
+  it.each([
+    false,
+    true,
+  ])('preserves raw supplied metadata without reading it during delivery (resolved support: %s)', async (resolvedHookResume) => {
+    const metadata = { customData: 'raw stored metadata' };
+    const hook = {
+      ...baseHook,
+      resumeContext: resumeContextWithKey,
+      metadata: metadata as unknown as Hook['metadata'],
+    } satisfies Hook;
+    const createEvent = vi.fn();
+    const { getByToken, getEncryptionKeyForRun } = makeWorld(
+      hook,
+      { createEvent },
+      { resolvedHookResume }
+    );
+
+    const resumed = await resumeHook(Object.freeze(hook), { approved: true });
+
+    expect(getByToken).not.toHaveBeenCalled();
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+    expect(hydrateSpy).not.toHaveBeenCalled();
+    expect(createEvent.mock.calls[0][2].requireHookResumeDedup).toBe(
+      resolvedHookResume ? true : undefined
+    );
+    expect(await resumed.metadata).toEqual(metadata);
+    expect(hydrateSpy).toHaveBeenCalledTimes(1);
   });
 });
