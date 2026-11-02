@@ -185,6 +185,13 @@ export interface StepExecutorParams {
    */
   forceOptimisticStart?: boolean;
   /**
+   * Called once this execution's `step_started` claim has settled, won or
+   * lost (immediately for a pre-claimed start). Not called when the execution
+   * returns before sending a claim; callers treat the execution settling as
+   * the claim settling too.
+   */
+  onStartSettled?: () => void;
+  /**
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed. When set, the lazy/optimistic `step_started` is
    * chained on it so the step is never created before its run exists. The body
@@ -700,6 +707,7 @@ export async function executeStep(
       step = params.preclaimedStart.step;
       stepStartPostSentAtMs = params.preclaimedStart.batchPostSentAtMs;
       stepClaimCompletedAtMs = params.preclaimedStart.claimCompletedAtMs;
+      params.onStartSettled?.();
     } else if (optimisticStart) {
       // Chain the lazy `step_started` on the run-ready barrier (turbo mode):
       // the step can't be created before its run exists, but the body below
@@ -738,6 +746,9 @@ export async function executeStep(
         () => ({ ok: true as const }),
         (err) => ({ ok: false as const, err })
       );
+      if (params.onStartSettled) {
+        void optimisticStartSettled.then(params.onStartSettled);
+      }
       const now = new Date();
       step = {
         runId: workflowRunId,
@@ -805,6 +816,7 @@ export async function executeStep(
           startEventParams
         );
         stepClaimCompletedAtMs = Date.now();
+        params.onStartSettled?.();
 
         // A spec 8 run keeps a step entity, and its World returns it from
         // the start; only a single-orchestrator run's start comes back
@@ -816,6 +828,7 @@ export async function executeStep(
         }
         step = startResult.step;
       } catch (err) {
+        params.onStartSettled?.();
         const mapped = startErrorToResult(err);
         if (mapped) return mapped;
         throw err;
