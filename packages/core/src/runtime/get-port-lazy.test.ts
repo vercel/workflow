@@ -167,19 +167,23 @@ describe('getPortLazy resolution', () => {
     expect(await getPortLazy()).toBe(detectedPort);
   });
 
-  it('returns undefined and logs at debug level when get-port cannot be resolved', async () => {
+  it('returns undefined and warns once when get-port cannot be resolved', async () => {
     const app = join(root, 'empty-app');
     mkdirSync(app, { recursive: true });
     writeFileSync(join(app, 'package.json'), '{"name":"empty-app"}');
     vi.spyOn(process, 'cwd').mockReturnValue(app);
-    vi.stubEnv('DEBUG', 'workflow:*');
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings = () =>
+      warn.mock.calls.filter((args) =>
+        String(args[0]).includes('Could not detect the port')
+      );
 
     expect(await getPortLazy()).toBeUndefined();
-    expect(
-      debug.mock.calls.some((args) =>
-        String(args[0]).includes('Could not load port detection')
-      )
-    ).toBe(true);
+    expect(warnings()).toHaveLength(1);
+    expect(String(warnings()[0][0])).toContain('PORT');
+
+    // The failed loader is cached for the process, so it does not warn again.
+    expect(await getPortLazy()).toBeUndefined();
+    expect(warnings()).toHaveLength(1);
   });
 });

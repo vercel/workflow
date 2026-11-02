@@ -136,9 +136,12 @@ function loadGetPort(): () => Promise<number | undefined> {
   }
 }
 
+// Prints once per process: the failed loader is cached in `portState.getPort`,
+// so later calls never reach it again. Only non-Vercel deployments resolve the
+// port (on Vercel the URL comes from `VERCEL_URL`), so this never prints there.
 function failedGetPort(errors: string[]): () => Promise<number | undefined> {
-  runtimeLogger.debug(
-    'Could not load port detection; workflow URLs fall back to a default port unless PORT is set',
+  runtimeLogger.warn(
+    'Could not detect the port this server listens on, so webhook and workflow URLs fall back to port 3000. Set the PORT environment variable to the port your server listens on.',
     { errors }
   );
   return async () => undefined;
