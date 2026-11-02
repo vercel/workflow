@@ -636,44 +636,89 @@ export function createStreamer(
 
         return new ReadableStream<Uint8Array>({
           async start(controller) {
-            // Track chunks delivered via events to prevent duplicates and maintain order.
+            const chunksDir = chunkDirForStream(chunksBaseDir, name);
+            // Ids of chunks this reader has delivered, or must never deliver.
             const deliveredChunkIds = new Set<string>();
-            // Buffer for chunks that arrive via events during disk reading
-            const bufferedEventChunks: Array<{
-              chunkId: string;
-              chunkData: Uint8Array;
-            }> = [];
+            // Live chunks that arrive while a disk read is in flight, by id. A
+            // disk read delivers the files it lists in id order; holding live
+            // chunks until it finishes keeps one from overtaking a listed chunk
+            // with a smaller id.
+            const bufferedEventChunks = new Map<string, Uint8Array>();
+            // True during the initial disk read and during each poll.
             let isReadingFromDisk = true;
             // Buffer close event if it arrives during disk reading
             let pendingClose = false;
+
+            const deliver = (chunkId: string, chunkData: Uint8Array) => {
+              if (streamClosed || deliveredChunkIds.has(chunkId)) return;
+              deliveredChunkIds.add(chunkId);
+              // Empty chunks are skipped, matching what a disk read delivers.
+              if (chunkData.byteLength) {
+                // Create a copy to prevent ArrayBuffer detachment
+                controller.enqueue(Uint8Array.from(chunkData));
+              }
+            };
+
+            const closeStream = () => {
+              streamClosed = true;
+              teardown();
+              try {
+                controller.close();
+              } catch {
+                // Ignore if controller is already closed (e.g., from cancel())
+              }
+            };
+
+            /** Delivers held live chunks in id order, then a held close. */
+            const finishDiskRead = () => {
+              isReadingFromDisk = false;
+              // Same code-unit order as a disk read's sorted listing.
+              const held = [...bufferedEventChunks].sort(([a], [b]) =>
+                a < b ? -1 : a > b ? 1 : 0
+              );
+              bufferedEventChunks.clear();
+              for (const [chunkId, chunkData] of held) {
+                deliver(chunkId, chunkData);
+              }
+              if (pendingClose) closeStream();
+            };
+
+            /** Delivers one listed chunk file; resolves `true` at end of stream. */
+            const deliverFile = async (
+              file: string,
+              ext: string
+            ): Promise<boolean> => {
+              // Files are sharded per stream, so the key is already the chunk id
+              // (no stream-name prefix, tag suffix already stripped).
+              const chunkId = file;
+              if (deliveredChunkIds.has(chunkId)) return false;
+              const live = bufferedEventChunks.get(chunkId);
+              if (live !== undefined) {
+                deliver(chunkId, live);
+                return false;
+              }
+              const chunk = deserializeChunk(
+                await readBuffer(path.join(chunksDir, `${file}${ext}`))
+              );
+              if (chunk?.eof === true) return true;
+              deliver(chunkId, chunk.chunk);
+              return false;
+            };
 
             const chunkListener = (event: {
               streamName: string;
               chunkData: Uint8Array;
               chunkId: string;
             }) => {
-              // Skip empty chunks to maintain consistency with disk reading behavior
-              if (event.chunkData.byteLength === 0) {
-                deliveredChunkIds.add(event.chunkId);
+              if (isReadingFromDisk) {
+                // Create a copy to prevent ArrayBuffer detachment when enqueued later
+                bufferedEventChunks.set(
+                  event.chunkId,
+                  Uint8Array.from(event.chunkData)
+                );
                 return;
               }
-
-              if (isReadingFromDisk) {
-                deliveredChunkIds.add(event.chunkId);
-                // Buffer chunks that arrive during disk reading to maintain order
-                // Create a copy to prevent ArrayBuffer detachment when enqueued later
-                bufferedEventChunks.push({
-                  chunkId: event.chunkId,
-                  chunkData: Uint8Array.from(event.chunkData),
-                });
-              } else if (!deliveredChunkIds.has(event.chunkId)) {
-                // Guard against duplicates: polling may have already claimed this
-                // chunk between its has() check and readBuffer() yield.
-                deliveredChunkIds.add(event.chunkId);
-                // After disk reading is complete, deliver chunks immediately
-                // Create a copy to prevent ArrayBuffer detachment
-                controller.enqueue(Uint8Array.from(event.chunkData));
-              }
+              deliver(event.chunkId, event.chunkData);
             };
 
             const closeListener = () => {
@@ -682,14 +727,7 @@ export function createStreamer(
                 pendingClose = true;
                 return;
               }
-              // Remove listeners before closing
-              streamClosed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Ignore if controller is already closed (e.g., from cancel() or EOF)
-              }
+              closeStream();
             };
             // Tear down listeners and the poll unconditionally. Unlike
             // closeListener this never defers on isReadingFromDisk, so cancel()
@@ -708,11 +746,8 @@ export function createStreamer(
             streamEmitter.on(`close:${name}` as const, closeListener);
 
             // Now load existing chunks from disk.
-            const {
-              files: chunkFiles,
-              extMap: fileExtMap,
-              dir: chunksDir,
-            } = await listChunkFilesForStream(chunksBaseDir, name, tag);
+            const { files: chunkFiles, extMap: fileExtMap } =
+              await listChunkFilesForStream(chunksBaseDir, name, tag);
 
             // Resolve negative startIndex relative to the number of data chunks
             // (excluding the trailing EOF marker chunk, if present).
@@ -739,78 +774,29 @@ export function createStreamer(
                 ? Math.max(0, dataChunkCount + startIndex)
                 : startIndex;
 
-            // Process existing chunks, skipping any already delivered via events
-            let isComplete = false;
-            for (let i = resolvedStartIndex; i < chunkFiles.length; i++) {
-              const file = chunkFiles[i];
-              // Files are sharded per stream, so the key is already the chunk id
-              // (no stream-name prefix, tag suffix already stripped).
-              const chunkId = file;
-
-              // Skip if already delivered via event
-              if (deliveredChunkIds.has(chunkId)) {
-                continue;
-              }
-
-              const ext = fileExtMap.get(file) ?? '.bin';
-              const chunk = deserializeChunk(
-                await readBuffer(path.join(chunksDir, `${file}${ext}`))
-              );
-              if (chunk?.eof === true) {
-                isComplete = true;
-                break;
-              }
-              // Track as handled so polling doesn't re-deliver
-              deliveredChunkIds.add(chunkId);
-              if (chunk.chunk.byteLength) {
-                // Create a copy to prevent ArrayBuffer detachment
-                controller.enqueue(Uint8Array.from(chunk.chunk));
-              }
-            }
-
-            // Finished reading from disk - now deliver buffered event chunks in chronological order
-            isReadingFromDisk = false;
-
-            // Sort buffered chunks by ULID (chronological order)
-            bufferedEventChunks.sort((a, b) =>
-              a.chunkId.localeCompare(b.chunkId)
-            );
-            for (const buffered of bufferedEventChunks) {
-              // Create a copy for defense in depth (already copied at storage, but be extra safe)
-              controller.enqueue(Uint8Array.from(buffered.chunkData));
-            }
-
-            if (isComplete) {
-              streamClosed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Ignore if controller is already closed (e.g., from closeListener event)
-              }
-              return;
-            }
-
-            // Process any pending close event that arrived during disk reading
-            if (pendingClose) {
-              streamClosed = true;
-              teardown();
-              try {
-                controller.close();
-              } catch {
-                // Ignore if controller is already closed
-              }
-              return;
-            }
-
-            // Track pre-startIndex chunks so polling doesn't re-deliver them
+            // Chunks before startIndex are never delivered, not even as a
+            // live copy that arrives during the read.
             for (
               let i = 0;
               i < resolvedStartIndex && i < chunkFiles.length;
               i++
             ) {
-              // Files are sharded per stream: the key is already the chunk id.
               deliveredChunkIds.add(chunkFiles[i]);
+            }
+
+            let isComplete = false;
+            for (let i = resolvedStartIndex; i < chunkFiles.length; i++) {
+              const file = chunkFiles[i];
+              if (await deliverFile(file, fileExtMap.get(file) ?? '.bin')) {
+                isComplete = true;
+                break;
+              }
+            }
+            finishDiskRead();
+
+            if (isComplete) {
+              closeStream();
+              return;
             }
 
             // If the reader was already cancelled/closed while we were reading
@@ -828,43 +814,27 @@ export function createStreamer(
             // the shared filesystem is the fallback delivery mechanism.
             let isPolling = false;
             pollInterval = setInterval(async () => {
-              if (isPolling) return;
+              if (isPolling || streamClosed) return;
               isPolling = true;
+              isReadingFromDisk = true;
+              let readEveryListedFile = false;
               try {
                 const { files: currentFiles, extMap: currentExtMap } =
                   await listChunkFilesForStream(chunksBaseDir, name, tag);
 
                 for (const file of currentFiles) {
-                  // Files are sharded per stream: the key is already the chunk id.
-                  const chunkId = file;
-
-                  if (deliveredChunkIds.has(chunkId)) continue;
-                  deliveredChunkIds.add(chunkId);
-
-                  const ext = currentExtMap.get(file) ?? '.bin';
-                  const chunk = deserializeChunk(
-                    await readBuffer(path.join(chunksDir, `${file}${ext}`))
-                  );
-
-                  if (chunk?.eof === true) {
-                    streamClosed = true;
-                    teardown();
-                    try {
-                      controller.close();
-                    } catch {
-                      // Ignore if controller is already closed
-                    }
+                  if (
+                    await deliverFile(file, currentExtMap.get(file) ?? '.bin')
+                  ) {
+                    finishDiskRead();
+                    closeStream();
                     return;
                   }
-
-                  // Guard against enqueue-after-close: closeListener may have
-                  // fired between our readBuffer() yield and this point.
+                  // closeListener or cancel() may have closed the stream
+                  // while the file was read.
                   if (streamClosed) return;
-
-                  if (chunk.chunk.byteLength) {
-                    controller.enqueue(Uint8Array.from(chunk.chunk));
-                  }
                 }
+                readEveryListedFile = true;
               } catch (err: unknown) {
                 // Silently ignore transient filesystem errors (ENOENT, EACCES, etc.)
                 // Surface unexpected errors so bugs aren't hidden
@@ -873,6 +843,9 @@ export function createStreamer(
                 }
               } finally {
                 isPolling = false;
+                // A poll that failed partway keeps holding live chunks: the
+                // next poll delivers the listed files it did not reach first.
+                if (readEveryListedFile && !streamClosed) finishDiskRead();
               }
             }, 100);
           },

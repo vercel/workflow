@@ -62,10 +62,17 @@ Setting `WORKFLOW_TARGET_WORLD=vercel` is not a workaround. The Vercel World nee
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
 - **[Vercel Workflow](https://vercel.com/docs/workflows)**: Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel Workflow data retention](https://vercel.com/docs/workflows/retention)**: How long run data is kept, where it is stored, and how to delete it sooner
 - **[Vercel limits](https://vercel.com/docs/limits)**: Platform-wide limits, including Workflow-specific constraints
 - **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)**: Free-tier included usage for Workflow and other resources
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
+
+## Data retention
+
+Retention for the Vercel World is documented in the [Vercel Workflows docs](https://vercel.com/docs/workflows/retention): how long run payloads stay readable and when they're deleted, how long run metadata is kept, where run data is stored, and how to delete run data sooner.
+
+Runs created by the 4.x release line follow the same retention rules as runs created by 5.x. Deleting a run's payloads as soon as it finishes (`experimental_retention: 0`) requires `workflow` 5.0.0 or later.
 
 ## Limitations
 

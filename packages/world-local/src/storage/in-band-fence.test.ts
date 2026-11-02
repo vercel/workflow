@@ -1,5 +1,5 @@
 /**
- * The in-band writer fence: an in-band write is
+ * The in-band writer fence for single-orchestrator runs: an in-band write is
  * accepted only when its `expectedSeqInBand` matches the run's count, a
  * refusal writes nothing, out-of-band writes leave the count alone, and of
  * concurrent in-band writers holding the same count exactly one wins. `list`
@@ -17,14 +17,14 @@ import {
   type AnyEventRequest,
   eventIdToSlot,
   IN_BAND_SEQ_AT_RUN_CREATION,
-  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { inBandFenceConformance } from '../../../world/src/test-support/in-band-fence-conformance.js';
 import { createWorld } from '../index.js';
 import { createStorage } from '../storage.js';
 
-const SPEC = SPEC_VERSION_CURRENT;
+const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
 let testDir: string;
 let storage: ReturnType<typeof createStorage>;
 

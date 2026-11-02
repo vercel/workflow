@@ -133,9 +133,10 @@ export interface APIConfig {
   /**
    * The spec version this World declared when it was created. Set by
    * `createWorld`, which reads `mintedSpecVersion()` once; `run_started`
-   * attests this value as `executorSpecVersion` so the attestation always
-   * matches what the runtime validated, even if `WORKFLOW_SEALED_LOG` changes
-   * in-process afterwards.
+   * attests at most this value as `executorSpecVersion` (see
+   * `executorSpecVersionFor`), so the attestation never exceeds what the
+   * runtime validated, even if `WORKFLOW_SPEC_VERSION` or
+   * `WORKFLOW_SEALED_LOG` changes in-process afterwards.
    *
    * @internal
    */
@@ -434,7 +435,19 @@ export async function makeRequest<T>({
         const nodeAgents = getNodeHttpAgents(config);
         const undiciRequest = nodeAgents
           ? undefined
-          : new Request(url, { ...options, body, headers, signal });
+          : new Request(url, {
+              ...options,
+              body,
+              headers,
+              signal,
+              // The workflow API answers directly, so a 3xx is a misdirected
+              // request rather than a hop to take. Following it would re-send
+              // `x-vercel-trusted-oidc-idp-token` to whatever host the
+              // `Location` names — fetch only strips `Authorization` across
+              // origins, not other credential headers. Matches the node:http
+              // transport, which never follows redirects.
+              redirect: 'manual',
+            });
         const undiciDispatcher = nodeAgents ? undefined : getDispatcher(config);
         // Both transports issue the same span against the same URL, so this
         // is the only thing that tells them apart in a trace.

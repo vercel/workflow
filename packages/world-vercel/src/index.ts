@@ -1,7 +1,7 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
-import { createRunId, describeRun } from './create-run-id.js';
+import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
 import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { validateRunExecutionContext } from './execution-context.js';
@@ -39,14 +39,28 @@ export type { APIConfig } from './utils.js';
  */
 export { openWsChannel as openEventsChannel } from './ws-transport.js';
 
+/**
+ * Opt-in switch for `start({ hook })` on Vercel, until the backend half ships
+ * everywhere. Any value other than `1` or `true` leaves it off.
+ */
+export const EXPERIMENTAL_START_HOOK_ENV =
+  'WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK';
+
+function isExperimentalStartHookEnabled(): boolean {
+  const value = process.env[EXPERIMENTAL_START_HOOK_ENV];
+  return value === '1' || value === 'true';
+}
+
 export function createWorld(config?: APIConfig): World {
   // Project ID for HKDF key derivation context.
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
   // Read once: the runtime validates this declaration, and `run_started`
-  // attests the same value (see `APIConfig.mintedSpecVersion`).
-  const specVersion = mintedSpecVersion();
+  // attests the same value (see `APIConfig.mintedSpecVersion`). The backend
+  // fences in-band writes (`capabilities.inBandFence` below), so
+  // `WORKFLOW_SPEC_VERSION=9` creates spec 9 runs; spec 8 otherwise.
+  const specVersion = mintedSpecVersion(process.env, { inBandFence: true });
   config = { ...config, mintedSpecVersion: specVersion };
 
   return {
@@ -62,13 +76,32 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // Vercel Queues supports maxConcurrency-limited consumers, which
-      // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
-      // flow topics (see queue.ts and @workflow/builders).
+      // `start({ hook })` admission. Opt-in until the backend that admits it
+      // is deployed: a server that predates it drops the `startHook` meta key
+      // silently and would start a run without its start Hook. Read per World, so a
+      // process can flip it without a rebuild. See `start-hook.ts` in
+      // @workflow/world for the contract the server implements.
+      ...(isExperimentalStartHookEnabled()
+        ? { atomicStartHook: { active: true } }
+        : {}),
+      // One orchestrator delivery per single-orchestrator run at a time: its
+      // orchestrator messages carry the run id as a VQS concurrency key on
+      // the flow topic (or, under WORKFLOW_SEQUENTIAL_REPLAYS=1, go to a
+      // per-run topic consumed with `maxConcurrency: 1`; see queue.ts).
+      // Spec-8 runs keep the shared, unserialized flow topic.
+      //
+      // Part of the spec-9 contract rather than capabilities: the backend
+      // stores an in-band event's `occurredAt` as its `createdAt` (clamped
+      // only for clock skew beyond an hour ahead or a week behind), and
+      // orders a batch per entity (409 `batch-earlier-item-failed` behind a
+      // refused item of the same correlation id).
       maxConcurrency: true,
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // Cached hook writes use a distinct endpoint that rejects before writing
+      // when the backend cannot enforce the required deduplication contract.
+      resolvedHookResume: true,
       // The backend fences in-band writes on every sealed-log run (spec >= 7,
       // the backend's event sequencer): a stale one is refused with 412
       // `in-band-superseded`, carrying the run's `seq` and `seqInBand`
@@ -78,7 +111,8 @@ export function createWorld(config?: APIConfig): World {
       // version. A list response carries `snapshot` and a single create
       // carries `allocated` where the backend reports them (events-v4.ts); a
       // run whose list carries no snapshot is still fenced, and its refusals
-      // carry the counters.
+      // carry the counters. Single-orchestrator runs (spec >= 9) always list
+      // one, which the runtime requires.
       inBandFence: true,
       // The server implements the takeover protocol behind
       // `createHook({ experimental_force: true })` (workflow-server
@@ -114,6 +148,7 @@ export function createWorld(config?: APIConfig): World {
         : createAnalytics(config),
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
+    regionForRunId,
     describeRun,
     // Reports the environment this client's writes land in, so `start()` can
     // stamp it into the queue message and the consuming deployment can detect

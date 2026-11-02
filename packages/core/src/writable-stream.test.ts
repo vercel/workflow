@@ -971,8 +971,14 @@ describe('WorkflowServerWritableStream', () => {
       } finally {
         if (reject) ready.reject(new Error('run_started failed'));
         else ready.resolve();
-        await closed;
-        await Promise.all(ops);
+        await closed.catch(() => {});
+        await Promise.allSettled(ops);
+      }
+      if (reject) {
+        // Nothing reaches the World for a run whose start failed.
+        expect(mockStreams.createWriteSession).not.toHaveBeenCalled();
+        expect(mockStreams.close).not.toHaveBeenCalled();
+        return;
       }
       expect(mockStreams.createWriteSession).toHaveBeenCalledTimes(1);
       expect(mockStreams.close).toHaveBeenCalledWith(
@@ -1044,7 +1050,7 @@ describe('WorkflowServerWritableStream', () => {
       expect(delivered.sort()).toEqual([1, 2, 3]);
     });
 
-    it('still writes when the barrier rejects (write surfaces the real error)', async () => {
+    it('fails the write and writes nothing when the barrier rejects', async () => {
       const runReadyBarrier = Promise.reject(new Error('run_started failed'));
       runReadyBarrier.catch(() => {});
 
@@ -1055,12 +1061,13 @@ describe('WorkflowServerWritableStream', () => {
       );
       const writer = stream.getWriter();
 
-      await writer.write(new Uint8Array([1, 2, 3]));
-      await writer.close();
-
-      // Barrier rejection is swallowed for ordering only — the write still
-      // fires and would surface a genuine run-not-found error from the World.
-      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      // A refused run_started can mean another orchestrator holds the run:
+      // the chunks would land on a stream whose run never records the step.
+      await writer.write(new Uint8Array([1, 2, 3])).catch(() => {});
+      await expect(writer.close()).rejects.toThrow('run_started failed');
+      expect(mockStreams.write).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
+      expect(mockStreams.close).not.toHaveBeenCalled();
     });
 
     it('gates the first write of a stream RETURNED from a turbo first step', async () => {

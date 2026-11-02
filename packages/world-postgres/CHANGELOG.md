@@ -1,5 +1,21 @@
 # @workflow/world-postgres
 
+## 5.0.5
+
+### Patch Changes
+
+- [#4883](https://github.com/vercel/workflow/pull/4883) [`93396c5`](https://github.com/vercel/workflow/commit/93396c5ca0e8579e69dc6e9f3b99a22f3d06eba5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Write `run_started`, `run_completed`, `run_failed`, `run_cancelled`, `attr_set`, `step_retrying`, `wait_created` and `wait_completed` in one transaction with the entity change they record. A process that died between the two used to leave an entity in a state its event log did not explain; a completed wait with no `wait_completed` made the run retry the wait forever. A wait left in that state by an earlier version now gets its missing event on the next attempt.
+
+- [#4882](https://github.com/vercel/workflow/pull/4882) [`ecaa047`](https://github.com/vercel/workflow/commit/ecaa047e1060e1c9f64d4ab9746f44c42be31058) Thanks [@dretanacr](https://github.com/dretanacr)! - Write a step's `step_completed` or `step_failed` row update and its event in one transaction, as `step_started` already does. A process that died between the two used to leave a terminal step with no terminal event, so the replayed `step_started` was refused as terminal and the run never advanced.
+
+- [#4812](https://github.com/vercel/workflow/pull/4812) [`32f213e`](https://github.com/vercel/workflow/commit/32f213e2884e494d3e684013b275a77598875f3e) Thanks [@pranaygp](https://github.com/pranaygp)! - Keep a checked-out client in the World's own `pg` pool from ending the process when the database drops its connection.
+
+- [#4757](https://github.com/vercel/workflow/pull/4757) [`7882c81`](https://github.com/vercel/workflow/commit/7882c81480b99241090f5c316250c8203c1c2ba1) Thanks [@pranaygp](https://github.com/pranaygp)! - Store timestamps as `timestamp with time zone` so `createdAt` is correct when the Postgres server or session is not in UTC. Migration 0027 converts the columns and repairs `created_at` values written by earlier versions.
+- Updated dependencies [[`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/world-local@5.1.2
+  - @workflow/world@5.0.5
+  - @workflow/errors@5.0.5
+
 ## 5.0.4
 
 ### Patch Changes

@@ -83,7 +83,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, test } from 'vitest';
-import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import { getRun } from '../src/runtime';
 import { setupWorld } from './utils';
 
@@ -230,13 +230,9 @@ async function triggerBenchRun(
   workflowFn: string,
   args: unknown[] = []
 ): Promise<BenchTriggerResponse> {
-  const headers: Record<string, string> = {
-    'content-type': 'application/json',
-    ...(await getTrustedSourcesHeaders()),
-  };
-  const response = await fetch(`${deploymentUrl}/api/bench`, {
+  const response = await fetchWithTrustedSources(`${deploymentUrl}/api/bench`, {
     method: 'POST',
-    headers,
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ workflowFn, args }),
   });
   if (!response.ok) {

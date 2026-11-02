@@ -2,7 +2,10 @@
  * Shared types for the serialization system.
  */
 
-import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+import type {
+  RuntimeDecryptionErrorContext,
+  WorkflowStartStage,
+} from '@workflow/errors';
 
 // ---- Format Prefix ----
 
@@ -96,6 +99,8 @@ export interface SerializableSpecial {
     token: string;
     // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
+    /** `'start'` for a refused `start({ hook })`; rebuilds its wording. */
+    kind?: 'start';
   };
   HookForceClaimedError: {
     message: string;
@@ -104,6 +109,13 @@ export interface SerializableSpecial {
     token: string;
     claimedByRunId: string;
     claimedByHookId?: string;
+  };
+  WorkflowStartError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    runId: string;
+    stage: WorkflowStartStage;
   };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string

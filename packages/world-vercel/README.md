@@ -1,10 +1,40 @@
 # @workflow/world-vercel
 
+Resolved hook resumes use `/api/v4/runs/:runId/events/hook_received/resolved`.
+This HTTP-only endpoint requires atomic resume deduplication, including when
+the normal event transport uses WebSockets. Older servers and the dedup kill
+switch reject before writing. Definite 400/404 refusals are preserved so core
+can look up the token and fall back to ordinary delivery. The adapter retries
+429 and explicit 503 `run-spec-version-changed` / `start-hook-run-pending`
+admission refusals, using the same resume identity and bounded wait budgets.
+It never re-sends after an uncertain transport failure: a lost response must not
+become a safe-looking rejection after a backend rollback.
+
+Core traces expose `workflow.hook.resume_route` (`lookup`, `resolved`, or
+`resolved_fallback`) and `workflow.hook.resolved_refusal_status` on fallback.
+
 Production workflow backend for Vercel platform deployments.
 
 Integrates with Vercel's infrastructure for storage, queuing, and authentication. Handles workflow persistence and scaling in production environments.
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
+
+## Concurrent hook registrations
+
+Concurrent independent hook registrations use the existing single-event
+requests. The Node.js runtime defers per-request history catch-up and reconciles
+the committed events after all requests settle. The adapter supplies an optional
+`eventCursor` in Vercel's cursor format and honors resolved hook metadata for this
+path. A consecutive suffix needs no history read; missing or intervening events
+retain the normal reload before continuation. No server upgrade or batch
+registration endpoint is required.
+
+The runtime applies this optimization only to hooks-only suspensions whose
+registrations are all independent. Mixed suspensions, forced claims, and
+same-token lifecycle operations keep the normal catch-up path without resolving
+metadata for unused mutation responses. Runtime spans record
+`workflow.concurrent_hooks.carried_forward` and, on fallback,
+`workflow.concurrent_hooks.fallback_reason`; debug logs include the same outcome.
 
 ## Connection failures
 

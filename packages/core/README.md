@@ -2,6 +2,18 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+Pass the Hook returned by `getHookByToken()` to `resumeHook()` to reuse its
+immutable resume context without another token lookup. JSON, object spreads,
+and structured cloning preserve this behavior. Cached capabilities are ignored;
+capable Worlds require an atomic, guarded write. A definite refusal triggers a
+fresh lookup and ordinary delivery inside the SDK. Uncertain writes are never
+re-sent. Hooks without resume context retain the run-fallback path.
+
+A stored Hook contains its token. Keep it server-side, or authenticate the whole
+object (and encrypt it if the token is secret) before carrying it through a
+client. Deployment metadata controls encryption and wake targeting; validation
+alone does not establish trust. Trace carriers may contain private baggage.
+
 The CI benchmark suite in `e2e/benchmark.test.ts` measures time to first step,
 fan-out, and sequential-step overhead. Streaming delivery performance is
 measured in durabench; stream correctness remains covered by unit and E2E tests.
@@ -21,6 +33,21 @@ Concurrent branches awaiting `hook.getConflict()` preserve their step correlatio
 IDs when replaying an extended event history. `setAttributes()` acknowledgements
 take part in the same ordering, so a branch awaiting `setAttributes()` while
 another branch is in flight keeps its own step results on replay.
+
+Hook disposals pending when a workflow completes or fails rely on the terminal
+event's hook cleanup, avoiding redundant `hook_disposed` events. Disposals still
+persist when the workflow suspends, a later pending registration needs the
+same token, or explicit disposal releases a retained token early. Final
+`AbortController.abort()` calls still propagate to steps.
+
+Real-time abort streams use a 4-byte big-endian length envelope around the
+existing serialized payload. Encryption and durable hook events are unchanged.
+Readers accept both framed packets and older unframed packets, reassembling
+split transport reads before hydration. Complete legacy packets propagate
+without waiting for stream close. Cross-deployment `start()` keeps unframed
+writes for targets whose core version predates abort framing or cannot be
+established. `resumeHook()` retains unframed abort writes until its resume
+context can attest the receiving runtime separately from the starting client.
 
 Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
 

@@ -6,12 +6,17 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  mintedSpecVersion,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  WorkflowInvokePayloadSchema,
   type World,
 } from '@workflow/world';
 import {
@@ -39,6 +44,7 @@ import {
   SerializationFormat,
 } from '../serialization.js';
 import { serializeTraceCarrier } from '../telemetry.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
@@ -55,6 +61,8 @@ vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
   trace: vi.fn((_name, fn) => fn(undefined)),
   getActiveSpan: vi.fn().mockResolvedValue(undefined),
+  recordElapsedSpan: vi.fn().mockResolvedValue(undefined),
+  getSpanKind: vi.fn().mockResolvedValue(2),
 }));
 
 describe('start', () => {
@@ -82,7 +90,7 @@ describe('start', () => {
         return {
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-          capabilities: { dynamicWorkflowCode: true },
+          capabilities: { inBandFence: true, dynamicWorkflowCode: true },
           getEncryptionKeyForRun: vi.fn(),
           uploadDynamicWorkflowCode: upload,
           events: { create: eventsCreate },
@@ -170,7 +178,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        capabilities: { dynamicWorkflowCode: true },
+        capabilities: { inBandFence: true, dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -192,7 +200,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        capabilities: { dynamicWorkflowCode: true },
+        capabilities: { inBandFence: true, dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -214,6 +222,7 @@ describe('start', () => {
     it('validates the queue name before start side effects', async () => {
       const getDeploymentId = vi.fn().mockResolvedValue('deploy_123');
       setWorld({
+        capabilities: { inBandFence: true },
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId,
         events: { create: eventsCreate },
@@ -240,7 +249,7 @@ describe('start', () => {
         return {
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-          capabilities: { dynamicWorkflowCode: true },
+          capabilities: { inBandFence: true, dynamicWorkflowCode: true },
           getEncryptionKeyForRun: vi.fn(),
           uploadDynamicWorkflowCode: upload,
           events: { create: eventsCreate },
@@ -293,6 +302,7 @@ describe('start', () => {
 
       it('rejects a concrete target when the current deployment is unknown', async () => {
         const world = dynamicWorld({
+          capabilities: { inBandFence: true },
           getDeploymentId: vi
             .fn()
             .mockRejectedValue(new Error('no current deployment')),
@@ -353,7 +363,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        capabilities: { dynamicWorkflowCode: true },
+        capabilities: { inBandFence: true, dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -395,7 +405,7 @@ describe('start', () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        capabilities: { dynamicWorkflowCode: true },
+        capabilities: { inBandFence: true, dynamicWorkflowCode: true },
         uploadDynamicWorkflowCode: upload,
         events: { create: eventsCreate },
         queue,
@@ -432,7 +442,7 @@ async function workflow() {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        capabilities: { dynamicWorkflowCode: true },
+        capabilities: { inBandFence: true, dynamicWorkflowCode: true },
         events: { create: eventsCreate },
         queue,
       } as any);
@@ -449,8 +459,11 @@ async function workflow() {
     });
 
     it.each([
-      ['no capabilities', undefined],
-      ['capabilities without the flag', { hookRetention: { active: true } }],
+      ['only the in-band fence', { inBandFence: true }],
+      [
+        'capabilities without the flag',
+        { inBandFence: true, hookRetention: { active: true } },
+      ],
     ])('rejects a World with %s before start side effects', async (_label, capabilities) => {
       // A World with an upload path but no declared capability is still
       // refused: the upload is an optional size escape hatch, not the signal.
@@ -480,7 +493,7 @@ async function workflow() {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-        capabilities: { dynamicWorkflowCode: true },
+        capabilities: { inBandFence: true, dynamicWorkflowCode: true },
         validateRunExecutionContext: vi.fn(() => {
           throw new Error('execution context too large');
         }),
@@ -512,7 +525,7 @@ async function workflow() {
         return {
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-          capabilities: { dynamicWorkflowCode: true },
+          capabilities: { inBandFence: true, dynamicWorkflowCode: true },
           events: { create: eventsCreate },
           queue,
           ...overrides,
@@ -638,7 +651,7 @@ async function workflow() {
         return {
           specVersion: SPEC_VERSION_CURRENT,
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
-          capabilities: { dynamicWorkflowCode: true },
+          capabilities: { inBandFence: true, dynamicWorkflowCode: true },
           events: { create: eventsCreate },
           queue,
           ...overrides,
@@ -684,7 +697,7 @@ async function workflow() {
         [
           'the World lacks the capability',
           () => {
-            setWorld(refusingWorld({ capabilities: undefined }));
+            setWorld(refusingWorld({ capabilities: { inBandFence: true } }));
             return start(source, { experimental_dynamic: { steps } });
           },
           /capabilities\.dynamicWorkflowCode/,
@@ -749,6 +762,7 @@ async function workflow() {
         // confirmed mismatch is a refusal.
         setWorld(
           refusingWorld({
+            capabilities: { inBandFence: true },
             getDeploymentId: vi
               .fn()
               .mockRejectedValue(new Error('lookup unavailable')),
@@ -777,6 +791,7 @@ async function workflow() {
       queue.mockResolvedValue(undefined);
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         validateRunExecutionContext,
         events: { create: eventsCreate },
@@ -873,6 +888,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -890,6 +906,7 @@ async function workflow() {
       });
 
       setWorld({
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -928,6 +945,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -947,6 +965,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_MAX_SUPPORTED + 1,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -971,6 +990,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -998,6 +1018,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_MAX_SUPPORTED,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1061,6 +1082,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1099,6 +1121,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         getEnvironment: () => 'preview',
         events: { create: mockEventsCreate },
@@ -1122,6 +1145,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         getEnvironment: () => undefined,
         events: { create: mockEventsCreate },
@@ -1143,6 +1167,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1174,6 +1199,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1193,6 +1219,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1210,6 +1237,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1248,6 +1276,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1268,6 +1297,7 @@ async function workflow() {
       });
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1311,6 +1341,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1483,6 +1514,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1521,6 +1553,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1552,6 +1585,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1594,6 +1628,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1624,6 +1659,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1653,6 +1689,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('dpl_default_789'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1692,6 +1729,7 @@ async function workflow() {
     const createWorld = (overrides: Record<string, unknown> = {}) =>
       ({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: mockGetDeploymentId,
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1715,6 +1753,75 @@ async function workflow() {
     afterEach(() => {
       setWorld(undefined);
       vi.clearAllMocks();
+    });
+
+    it('starts a spec 8 run on a World that declares spec 8, which needs no fence', async () => {
+      const world = createWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+        capabilities: {},
+      });
+      await start(validWorkflow, [], {
+        deploymentId: 'dpl_target_456',
+        world,
+        specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      });
+      expect(mockEventsCreate.mock.calls[0]?.[1]).toMatchObject({
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      });
+      // The first delivery routes to the spec 8 orchestrator off its runInput.
+      expect(mockQueue.mock.calls[0]?.[1]).toMatchObject({
+        runInput: { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM },
+      });
+    });
+
+    it.each([
+      undefined,
+      String(SPEC_VERSION_SINGLE_ORCHESTRATOR),
+    ])('starts a spec 8 run on a World written to the earlier guide (WORKFLOW_SPEC_VERSION=%s)', async (requested) => {
+      // The earlier "Building a World" guide: `specVersion:
+      // mintedSpecVersion()` and no fence. Opting in to spec 9 does not
+      // reach such a World, so it keeps creating spec 8 runs.
+      vi.stubEnv('WORKFLOW_SPEC_VERSION', requested);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const world = createWorld({
+          specVersion: mintedSpecVersion(),
+          capabilities: {},
+        });
+        expect(world.specVersion).toBe(SPEC_VERSION_DEFAULT_MINTED);
+        await start(validWorkflow, [], {
+          deploymentId: 'dpl_target_456',
+          world,
+        });
+        // An explicit target with no probe channel is stamped below spec 8
+        // (see the cross-deployment tests); never spec 9.
+        const created = mockEventsCreate.mock.calls[0]?.[1];
+        expect(created).toMatchObject({ eventType: 'run_created' });
+        expect(created.specVersion).toBeLessThanOrEqual(
+          SPEC_VERSION_DEFAULT_MINTED
+        );
+      } finally {
+        warn.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('refuses a World without the in-band fence for a spec 9 run, before any write', async () => {
+      await expect(
+        start(validWorkflow, [], {
+          deploymentId: 'dpl_target_456',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+          // A World that declares spec 9 without implementing the fence.
+          world: createWorld({
+            specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+            capabilities: { maxConcurrency: true },
+          }),
+        })
+      ).rejects.toThrow(/capabilities\.inBandFence/);
+      expect(mockGetDeploymentId).not.toHaveBeenCalled();
+      expect(mockEventsCreate).not.toHaveBeenCalled();
+      expect(mockQueue).not.toHaveBeenCalled();
     });
 
     it('starts a run targeted at an explicit deploymentId', async () => {
@@ -1812,6 +1919,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1844,6 +1952,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1863,6 +1972,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -1890,6 +2000,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2034,6 +2145,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2063,6 +2175,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2088,6 +2201,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2110,6 +2224,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2129,6 +2244,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2164,6 +2280,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2234,6 +2351,7 @@ async function workflow() {
 
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { inBandFence: true },
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -2282,13 +2400,17 @@ async function workflow() {
           workflowCoreVersion: '0.0.0-test',
           ...extra,
         });
+        const write = vi.fn().mockResolvedValue(undefined);
         setWorld({
           specVersion: SPEC_VERSION_CURRENT,
+          capabilities: { inBandFence: true },
           getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
           events: { create: mockEventsCreate },
           queue: mockQueue,
           getEncryptionKeyForRun,
           streams: {
+            write,
+            close: vi.fn().mockResolvedValue(undefined),
             get: vi.fn(
               async () =>
                 new ReadableStream<Uint8Array>({
@@ -2300,7 +2422,28 @@ async function workflow() {
             ),
           },
         });
+        return write;
       }
+
+      it.each([
+        undefined,
+        '5.2.3',
+        '5.3.0',
+      ])('uses the probed target for abort framing without changing the recorded client version: %s', async (targetVersion) => {
+        const write = worldWithProbe({ workflowCoreVersion: targetVersion });
+        const source = new AbortController();
+        await start(validWorkflow, [source.signal], {
+          deploymentId: 'dpl_other',
+        });
+        const executionContext =
+          mockEventsCreate.mock.calls[0][1].eventData.executionContext;
+        expect(executionContext.workflowCoreVersion).toBe(workflowCoreVersion);
+        source.abort('cancel');
+        await vi.waitFor(() => expect(write).toHaveBeenCalled());
+        expect(peekFormatPrefix(write.mock.calls[0][2])).toBe(
+          targetVersion === '5.3.0' ? null : SerializationFormat.DEVALUE_V1
+        );
+      });
 
       it('asks the probe for the run it is about to create', async () => {
         // The runId has to be minted before the probe for this to work, so
@@ -2314,10 +2457,31 @@ async function workflow() {
         );
         expect(probeCall?.[1]).toMatchObject({
           __healthCheck: true,
-          runId: expect.stringMatching(/^wrun_/),
+          probeRunId: expect.stringMatching(/^wrun_/),
         });
         // ...and it is the same run that actually gets created.
-        expect(probeCall?.[1].runId).toBe(mockEventsCreate.mock.calls[0][0]);
+        expect(probeCall?.[1].probeRunId).toBe(
+          mockEventsCreate.mock.calls[0][0]
+        );
+      });
+
+      it('sends a probe that a 4.x deployment cannot mistake for a run invocation', async () => {
+        // 4.x deployments parse queue payloads with a union that tries the
+        // invoke schema first. A probe that satisfies it is replayed as a run
+        // that doesn't exist yet (run_started 404, redelivered), so the probe
+        // never answers and every cross-deployment start() to a 4.x target
+        // waits out the full probe budget.
+        worldWithProbe({});
+
+        await start(validWorkflow, [], { deploymentId: 'dpl_other' });
+
+        const probeCall = mockQueue.mock.calls.find((c) =>
+          String(c[0]).endsWith('health_check')
+        );
+        expect(probeCall).toBeDefined();
+        expect(
+          WorkflowInvokePayloadSchema.safeParse(probeCall?.[1]).success
+        ).toBe(false);
       });
 
       it('seals the arguments with the probed key and skips the key lookup', async () => {

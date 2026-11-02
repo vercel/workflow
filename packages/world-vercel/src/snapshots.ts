@@ -172,6 +172,11 @@ export function createSnapshotsStorage(
       const response = await fetch(url, {
         method: 'GET',
         headers,
+        // A 3xx here is a misdirected request, not a hop to take: following it
+        // would re-send `x-vercel-trusted-oidc-idp-token` to whatever host the
+        // `Location` names, since fetch only strips `Authorization` across
+        // origins.
+        redirect: 'manual',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher
         dispatcher: getDispatcher(config),
       } as any);
@@ -227,6 +232,7 @@ export function createSnapshotsStorage(
       const response = await fetch(url, {
         method: 'DELETE',
         headers,
+        redirect: 'manual',
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher
         dispatcher: getDispatcher(config),
       } as any);

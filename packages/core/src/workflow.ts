@@ -16,7 +16,11 @@ import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
 import { entityEventClass } from '@workflow/world/event-metadata';
 import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
 import { monotonicFactory } from 'ulid';
-import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
+import {
+  EventConsumerResult,
+  EventsConsumer,
+  type ParkedSummary,
+} from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
@@ -26,8 +30,7 @@ import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
-import { handleSuspension } from './runtime/suspension-handler.js';
-import { getWorld } from './runtime/world.js';
+import type { RunStartHook } from './runtime/start-hook-binding.js';
 import { createSeededNanoid } from './seeded-nanoid.js';
 import type { PayloadKey } from './serialization/encryption.js';
 import {
@@ -69,7 +72,8 @@ import { createSleep } from './workflow/sleep.js';
  *
  * Treats completion as a final suspension so unawaited hook, wait, and
  * attribute operations are recorded before the run becomes terminal. This
- * also lets a final `controller.abort()` reach in-flight steps.
+ * also lets a final `controller.abort()` reach in-flight steps. Final hook
+ * disposals of non-retained hooks are omitted because termination releases them.
  *
  * It records `*_created` and native attribute events, but never executes step
  * bodies: `step_started` is rejected after the run becomes terminal. A
@@ -83,38 +87,12 @@ async function drainPendingQueueItems(
   vmGlobalThis: typeof globalThis,
   workflowRun: WorkflowRun,
   outcome: 'completed' | 'failed',
-  /**
-   * In turbo mode, gates final `*_created` writes on backgrounded
-   * `run_started`. Undefined when `run_started` is awaited.
-   */
-  runReadyBarrier?: Promise<unknown>
+  drainPendingQueue: PendingQueueDrain | undefined
 ): Promise<void> {
-  if (pendingQueue.size === 0) return;
-  // Implicitly dispose any abort hooks (system hooks) that are still alive at
-  // workflow completion so they don't leak rows in the hooks table for the
-  // run's lifetime. Skip hooks that already have an abort in flight; those
-  // will emit hook_received via the abort processing path. User hooks
-  // (isSystem !== true) are intentionally left alone: their lifetime is
-  // managed by the user's code, not the runtime.
-  for (const item of pendingQueue.values()) {
-    if (
-      item.type === 'hook' &&
-      item.isSystem &&
-      !item.disposed &&
-      !item.abortRequested
-    ) {
-      item.disposed = true;
-    }
-  }
+  if (pendingQueue.size === 0 || !drainPendingQueue) return;
   try {
-    const world = await getWorld();
     const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
-    await handleSuspension({
-      suspension: synthesized,
-      world,
-      run: workflowRun,
-      runReadyBarrier,
-    });
+    await drainPendingQueue(synthesized, workflowRun);
   } catch (err) {
     runtimeLogger.warn(
       `Failed to drain pending queue items for ${outcome} workflow run`,
@@ -126,6 +104,17 @@ async function drainPendingQueueItems(
   }
 }
 
+/**
+ * Records the items a finished run's workflow left queued, as the
+ * orchestrator records any suspension (see `drainPendingQueueItems`), except
+ * that disposals the terminal event makes redundant are skipped. Each
+ * orchestrator passes its own; without one nothing is drained.
+ */
+export type PendingQueueDrain = (
+  suspension: WorkflowSuspension,
+  workflowRun: WorkflowRun
+) => Promise<void>;
+
 /** Everything needed to cold-start a workflow VM over an event log. */
 interface WorkflowSessionOptions {
   readonly workflowCode: string;
@@ -134,8 +123,14 @@ interface WorkflowSessionOptions {
   readonly encryptionKey: PayloadKey | undefined;
   readonly replayPayloadCache: ReplayPayloadCache;
   readonly compiledWorkflowScripts?: CompiledWorkflowScripts;
-  readonly runReadyBarrier?: Promise<unknown>;
+  /** Records the end-of-run drain. */
+  readonly drainPendingQueue?: PendingQueueDrain;
   readonly worldCapabilities?: WorldCapabilities;
+  /**
+   * The run's start Hook, from `resolveRunStartHook`. `undefined` for a run
+   * started without one, which then replays exactly as before.
+   */
+  readonly startHook?: RunStartHook;
 }
 
 /** Context-independent V8 scripts that can be evaluated in any fresh VM. */
@@ -211,7 +206,32 @@ export function compileDynamicWorkflowBundle(
 export interface WorkflowSession {
   readonly workflowRun: WorkflowRun;
   readonly argumentCount: number;
-  resume(events: Event[]): Promise<WorkflowResumeResult>;
+  resume(
+    events: Event[],
+    rebase?: WorkflowSessionRebase
+  ): Promise<WorkflowResumeResult>;
+}
+
+/**
+ * How a log differs from what a retained session consumed, when it does not
+ * extend it: the session consumed some of its own events ahead of their
+ * writes, at positions they did not get, and another writer's events landed
+ * below them. Without a rebase, a log that is not a strict extension of what
+ * the session consumed sends it to a cold replay.
+ */
+export interface WorkflowSessionRebase {
+  /**
+   * The id each event the session consumed ahead of its write committed
+   * under, where the two differ.
+   */
+  readonly aliases: ReadonlyMap<string, string>;
+  /**
+   * Whether an event the session never consumed may still join it although
+   * it sits below events it did. It is fed after them, so this holds only
+   * for an event whose position before the next consumer cannot change what
+   * the workflow decides (see `runtime/out-of-band-observation.ts`).
+   */
+  admitBelow(event: Event): boolean;
 }
 
 /** A finished execution attempt: the workflow's output or a live boundary. */
@@ -231,11 +251,7 @@ export type WorkflowResult =
        * Ordinary on a suspension, and only actionable across a run's
        * suspensions, so it is reported for telemetry rather than acted on here.
        */
-      readonly parked?: {
-        readonly count: number;
-        readonly eventId: string;
-        readonly eventType: string;
-      };
+      readonly parked?: Readonly<ParkedSummary>;
     };
 
 /**
@@ -275,7 +291,8 @@ export function replayWorkflow(
 /** Warm-start: advance a retained session by appending events. */
 export function resumeWorkflow(
   session: WorkflowSession,
-  events: Event[]
+  events: Event[],
+  rebase?: WorkflowSessionRebase
 ): Promise<WorkflowResumeResult> {
   return traceExecution(
     'retained',
@@ -285,7 +302,7 @@ export function resumeWorkflow(
       span?.setAttributes({
         ...Attribute.WorkflowArgumentsCount(session.argumentCount),
       });
-      const result = await session.resume(events);
+      const result = await session.resume(events, rebase);
       return result.type === 'replay' ? result : recordResult(result, span);
     }
   );
@@ -326,11 +343,22 @@ function recordResult(
     // not ordinary (the same event still held pass after pass) is a shape
     // across these spans, which is why the eventId is on each one and no pass
     // tries to rule on it alone.
-    if (result.parked) {
+    if (result.parked?.eventId !== undefined) {
       span.setAttributes({
         ...Attribute.WorkflowParkedEventsCount(result.parked.count),
         ...Attribute.WorkflowParkedEventId(result.parked.eventId),
-        ...Attribute.WorkflowParkedEventType(result.parked.eventType),
+        ...(result.parked.eventType !== undefined
+          ? Attribute.WorkflowParkedEventType(result.parked.eventType)
+          : {}),
+      });
+    }
+    // Payloads resumed into the start Hook that the body has not opened (yet,
+    // or ever: the token may be only an idempotency key). Not a stuck bet.
+    if (result.parked?.unclaimedStartHook !== undefined) {
+      span.setAttributes({
+        ...Attribute.WorkflowParkedStartHookEventsCount(
+          result.parked.unclaimedStartHook
+        ),
       });
     }
   }
@@ -354,18 +382,15 @@ export async function runWorkflow(
   replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(
     encryptionKey
   ),
-  /**
-   * Turbo mode only: resolves once the backgrounded `run_started` has landed.
-   * Threaded into the end-of-run drain so fire-and-forget `*_created` writes
-   * committed at workflow completion order after the run's creation. Undefined
-   * outside turbo, where `run_started` is awaited up front.
-   */
-  runReadyBarrier?: Promise<unknown>,
+  /** Records the end-of-run drain. */
+  drainPendingQueue?: PendingQueueDrain,
   /**
    * Features supported by the World executing this workflow. Missing
    * capabilities are treated as unsupported.
    */
-  worldCapabilities?: WorldCapabilities
+  worldCapabilities?: WorldCapabilities,
+  /** The run's start Hook, if it was started with one. */
+  startHook?: RunStartHook
 ): Promise<Uint8Array | unknown> {
   const result = await replayWorkflow({
     workflowCode,
@@ -373,8 +398,9 @@ export async function runWorkflow(
     events,
     encryptionKey,
     replayPayloadCache,
-    runReadyBarrier,
+    drainPendingQueue,
     worldCapabilities,
+    ...(startHook ? { startHook } : {}),
   });
   if (result.type === 'suspended') throw result.suspension;
   return result.output;
@@ -396,8 +422,9 @@ async function createWorkflowSessionInner(
     encryptionKey,
     replayPayloadCache,
     compiledWorkflowScripts,
-    runReadyBarrier,
+    drainPendingQueue,
     worldCapabilities,
+    startHook,
   }: WorkflowSessionOptions,
   endVmTrace: () => void
 ): Promise<{
@@ -588,12 +615,26 @@ async function createWorkflowSessionInner(
     },
     getPromiseQueue: () => promiseQueueHolder.current,
     isDeliveryIdle: () => deliveryIdleHolder.current(),
+    // Payloads resumed into the start Hook before the body calls
+    // `createHook` (from the run's admission on, even before `run_started`)
+    // park at once rather than after the deferred check.
+    ...(startHook ? { eagerParkCorrelationId: startHook.hookId } : {}),
   });
 
   const workflowContext: WorkflowOrchestratorContext = {
     runId: workflowRun.runId,
     encryptionKey,
     worldCapabilities,
+    ...(startHook
+      ? {
+          startHook: {
+            token: startHook.token,
+            hookId: startHook.hookId,
+            tokenRetentionUntil: startHook.tokenRetentionUntil,
+            bound: false,
+          },
+        }
+      : {}),
     globalThis: vmGlobalThis,
     onWorkflowError,
     eventsConsumer,
@@ -1241,7 +1282,7 @@ async function createWorkflowSessionInner(
       vmGlobalThis,
       workflowRun,
       'failed',
-      runReadyBarrier
+      drainPendingQueue
     );
 
     throw error;
@@ -1302,7 +1343,7 @@ async function createWorkflowSessionInner(
         vmGlobalThis,
         workflowRun,
         'completed',
-        runReadyBarrier
+        drainPendingQueue
       );
 
       return { type: 'completed', output, resultType: typeof result };
@@ -1317,12 +1358,77 @@ async function createWorkflowSessionInner(
     workflowFn(...args)
   );
 
+  /** Ids consumed ahead of their write, mapped to the ids they committed at. */
+  const aliases = new Map<string, string>();
+  /** Events admitted below events consumed before them (see the rebase). */
+  const admittedBelow = new Set<string>();
+  const committedId = (eventId: string): string => {
+    let id = eventId;
+    for (let hops = 0; hops < 16 && aliases.has(id); hops++) {
+      id = aliases.get(id)!;
+    }
+    return id;
+  };
+  /**
+   * The events of `nextEvents` this session has not consumed, when the rest
+   * of it is what the session consumed under the rebase: every consumed
+   * event present at its committed id, in the order consumed (apart from the
+   * ones admitted below), and every new event below the last of them one the
+   * rebase admits. `undefined` when not, or when nothing is new.
+   */
+  const rebasedExtension = (
+    nextEvents: Event[],
+    rebase: WorkflowSessionRebase | undefined
+  ): Event[] | undefined => {
+    const indexById = new Map<string, number>();
+    for (const [index, event] of nextEvents.entries()) {
+      indexById.set(event.eventId, index);
+    }
+    const consumedIds = new Set<string>();
+    let last = -1;
+    for (const event of eventsConsumer.events) {
+      const id = committedId(event.eventId);
+      const index = indexById.get(id);
+      if (index === undefined) return undefined;
+      consumedIds.add(id);
+      if (admittedBelow.has(id)) continue;
+      if (index < last) return undefined;
+      last = index;
+    }
+    const fresh: Event[] = [];
+    for (const [index, event] of nextEvents.entries()) {
+      if (consumedIds.has(event.eventId)) continue;
+      if (index < last) {
+        if (!rebase?.admitBelow(event)) return undefined;
+        admittedBelow.add(event.eventId);
+      }
+      fresh.push(event);
+    }
+    return fresh.length > 0 ? fresh : undefined;
+  };
+
   const session: WorkflowSession = {
     workflowRun,
     argumentCount: args.length,
-    async resume(nextEvents) {
+    async resume(nextEvents, rebase) {
       switch (state.type) {
         case 'suspended': {
+          if (rebase || aliases.size > 0 || admittedBelow.size > 0) {
+            for (const [from, to] of rebase?.aliases ?? []) {
+              aliases.set(from, to);
+            }
+            const fresh = rebasedExtension(nextEvents, rebase);
+            if (!fresh) {
+              state = { type: 'replay' };
+              return { type: 'replay' };
+            }
+            const interruption = withResolvers<never>();
+            state = { type: 'running', interruption };
+            workflowContext.suspensionGeneration++;
+            workflowTraceContext.refresh();
+            eventsConsumer.append(fresh);
+            return waitForExecution(workflowBody, interruption);
+          }
           // The full O(known events) prefix compare is required: the runtime
           // usually grows one array in place, but its wait-completion and
           // stale-reload paths REPLACE the array with a fresh full fetch, so
