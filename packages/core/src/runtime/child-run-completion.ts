@@ -260,6 +260,13 @@ async function dispatch(
         d.toCheck.push(...d.waiting.keys());
       }
     }
+  } catch {
+    // The batched status read failed for good. It is only a shortcut: hand
+    // every waiting child back to its own `readValue`, which polls until the
+    // child is terminal and surfaces any error of its own, so one unreadable
+    // child cannot fail its siblings. A later await starts a fresh loop.
+    d.toCheck.length = 0;
+    for (const runId of [...d.waiting.keys()]) release(d, runId);
   } finally {
     // Close the hook between waits, so children the parent is not awaiting
     // cannot wake it. The next await registers it again.

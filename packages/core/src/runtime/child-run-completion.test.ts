@@ -10,6 +10,7 @@ import type {
 } from '../global.js';
 import { serialize } from '../serialization/workflow-vm.js';
 import {
+  dehydrateStepError,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
@@ -216,6 +217,22 @@ class Log {
       wait.resumeAt.getTime()
     );
     this.#clock = wait.resumeAt.getTime();
+  }
+
+  async stepFailed(step: StepInvocationQueueItem, error: Error) {
+    this.#push({
+      eventType: 'step_started',
+      correlationId: step.correlationId,
+      eventData: { stepName: step.stepName },
+    });
+    this.#push({
+      eventType: 'step_failed',
+      correlationId: step.correlationId,
+      eventData: {
+        stepName: step.stepName,
+        error: await dehydrateStepError(error, PARENT_RUN_ID, undefined),
+      },
+    });
   }
 
   async stepCompleted(step: StepInvocationQueueItem, result: unknown) {
@@ -436,6 +453,37 @@ describe('awaitChildRunCompletion', () => {
     await log.stepCompleted(s.steps[0], ['wrun_b']);
     s = await log.suspend();
     await log.stepCompleted(s.steps[0], 'B');
+    expect(await log.replay()).toEqual({ done: true, value: ['A', 'B'] });
+  });
+
+  it("falls back to each child's own read when the batched status read fails", async () => {
+    const log = new Log(
+      workflowCode(
+        `return await Promise.all([${awaitChild('wrun_a')}, ${awaitChild('wrun_b')}]);`
+      )
+    );
+    let s = await log.suspend();
+    const [hook] = s.hooks;
+    log.hookCreated(hook);
+    s = await log.suspend();
+    expect(stepsNamed(s, READ_FINISHED)).toHaveLength(1);
+    await log.stepFailed(s.steps[0], new Error('runs.get kept failing'));
+
+    // Both children read their own result; the hook is closed.
+    s = await log.suspend();
+    expect(stepsNamed(s, READ_VALUE).map((step) => step.args[0])).toEqual([
+      'wrun_a',
+      'wrun_b',
+    ]);
+    expect(
+      s.hooks.find((h) => h.correlationId === hook.correlationId)?.disposed
+    ).toBe(true);
+    log.hookDisposed(hook);
+    for (const [step, value] of stepsNamed(s, READ_VALUE).map(
+      (step, i) => [step, i === 0 ? 'A' : 'B'] as const
+    )) {
+      await log.stepCompleted(step, value);
+    }
     expect(await log.replay()).toEqual({ done: true, value: ['A', 'B'] });
   });
 
