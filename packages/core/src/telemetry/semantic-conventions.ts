@@ -386,6 +386,32 @@ export const WorkflowInlineEarlyAdvances = SemanticConvention<number>(
 );
 
 /**
+ * Inline steps of this invocation still running when it wrote the run's
+ * terminal event (a `Promise.race` loser, or a step the workflow stopped
+ * awaiting). Their later step events land after `run_completed`/`run_failed`.
+ */
+export const WorkflowInlineRunningAtTerminal = SemanticConvention<number>(
+  'workflow.inline.running_at_terminal'
+);
+
+/**
+ * `retry` or `throttled` outcomes of inline steps that settled only after
+ * this invocation ended the run, so nothing acted on them: the step's
+ * remaining attempts are not run.
+ */
+export const WorkflowInlineDiscardedOutcomes = SemanticConvention<number>(
+  'workflow.inline.discarded_outcomes'
+);
+
+/**
+ * New steps queued instead of run inline because inline steps still running
+ * from an earlier replay pass held the inline slots.
+ */
+export const WorkflowInlineSlotsHeldBack = SemanticConvention<number>(
+  'workflow.inline.slots_held_back'
+);
+
+/**
  * Number of pending steps whose immediate step-execution enqueue this replay
  * pass skipped because THIS invocation already published that step's message
  * on an earlier pass (a fan-out that ran inline steps and replayed again).

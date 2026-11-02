@@ -138,7 +138,10 @@ import {
   SPEC8_EVENT_SPEC_VERSION,
 } from './constants.js';
 import { countStepStartedEvents } from './count-step-started-events.js';
-import { InlineStepsInFlight } from './inline-steps-in-flight.js';
+import {
+  type InlineStepSettlement,
+  InlineStepsInFlight,
+} from './inline-steps-in-flight.js';
 import {
   hasOpenWaitDueBy,
   openHookAndWaitState,
@@ -178,7 +181,6 @@ function nextEventLogLoad(log: LoadedEventLog): ReplayEventLog {
   };
 }
 
-/** Runs one delivery of a spec 8 (or older) run's queue message. */
 /** An inline step as the replay loop tracks it while its body runs. */
 interface InlineStepRef {
   correlationId: string;
@@ -192,6 +194,33 @@ type InlineStepResult = Awaited<ReturnType<typeof executeStep>>;
  * (a retry, a throttled claim, unflushed ops, a run that is gone, or a
  * rejection) wait for the whole batch, as without early advance.
  */
+/** The delayed retries the `retry` outcomes among `settled` ask for. */
+function inlineRetries(
+  settled: readonly InlineStepSettlement<InlineStepRef, InlineStepResult>[]
+): { step: InlineStepRef; delaySeconds: number }[] {
+  return settled.flatMap(({ step, outcome }) =>
+    outcome.status === 'fulfilled' && outcome.value.type === 'retry'
+      ? [{ step, delaySeconds: outcome.value.timeoutSeconds }]
+      : []
+  );
+}
+
+/**
+ * The rejection a settlement round rethrows: a stale (412) claim when there
+ * is one, since only that is recovered in-process, otherwise the first.
+ */
+function roundRejection(
+  outcomes: readonly PromiseSettledResult<InlineStepResult>[]
+): PromiseRejectedResult | undefined {
+  const rejected = outcomes.filter(
+    (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected'
+  );
+  return (
+    rejected.find((outcome) => PreconditionFailedError.is(outcome.reason)) ??
+    rejected[0]
+  );
+}
+
 function isEarlyAdvanceOutcome(
   outcome: PromiseSettledResult<InlineStepResult>
 ): boolean {
@@ -204,6 +233,7 @@ function isEarlyAdvanceOutcome(
   );
 }
 
+/** Runs one delivery of a spec 8 (or older) run's queue message. */
 export async function runSpec8Delivery(
   delivery: WorkflowDelivery
 ): Promise<DeliveryResult> {
@@ -749,22 +779,32 @@ async function runDelivery(
     // path. A retry they returned is published here, delayed, ahead of the
     // continuation: that replay re-dispatches the retrying step at once under
     // the same key, and the earlier delayed message wins, so the backoff
-    // holds. Every other outcome is re-derived by the continuation's replay.
+    // holds. A throttled claim is re-attempted by the continuation itself,
+    // so the continuation waits out the longest throttle backoff. Every
+    // other outcome is re-derived by the continuation's replay.
     const settled = await inlineStepsInFlight.settleAll();
-    await publishInlineRetries(
-      settled.flatMap(({ step, outcome }) =>
-        outcome.status === 'fulfilled' && outcome.value.type === 'retry'
-          ? [{ step, delaySeconds: outcome.value.timeoutSeconds }]
-          : []
-      )
-    );
+    await publishInlineRetries(inlineRetries(settled));
+    let continuationDelaySeconds = delaySeconds;
+    for (const { outcome } of settled) {
+      if (
+        outcome.status === 'fulfilled' &&
+        outcome.value.type === 'throttled'
+      ) {
+        continuationDelaySeconds = Math.max(
+          continuationDelaySeconds,
+          outcome.value.timeoutSeconds
+        );
+      }
+    }
     assertNoInFlightOwnedSteps('reinvoke');
-    if (!turbo) return { timeoutSeconds: delaySeconds };
+    if (!turbo) return { timeoutSeconds: continuationDelaySeconds };
     await queueMessage(
       world,
       getWorkflowQueueName(workflowName, namespace),
       { ...(await replayMessage()), ...extraPayload },
-      delaySeconds > 0 ? { delaySeconds } : undefined
+      continuationDelaySeconds > 0
+        ? { delaySeconds: continuationDelaySeconds }
+        : undefined
     );
     return undefined;
   };
@@ -2355,19 +2395,18 @@ async function runDelivery(
     } finally {
       replayBudget.resume();
     }
-    const results: InlineStepResult[] = [];
-    for (const { outcome } of settled) {
-      if (outcome.status === 'fulfilled') {
-        results.push(outcome.value);
-        continue;
+    const rejection = roundRejection(settled.map(({ outcome }) => outcome));
+    if (rejection) {
+      if (!PreconditionFailedError.is(rejection.reason)) {
+        throw rejection.reason;
       }
-      if (!PreconditionFailedError.is(outcome.reason)) {
-        throw outcome.reason;
-      }
-      // A stale (412) claim, handled as the batch handles
-      // one. Siblings may have written, so reload in full.
+      // A stale (412) claim, handled as the batch handles one. Siblings may
+      // have written, so reload in full. Their retries are published first,
+      // delayed, so the restarted replay's immediate re-dispatch dedupes
+      // against them and the backoff holds.
+      await publishInlineRetries(inlineRetries(settled));
       if (
-        restartReplayInProcess('inline-claim', outcome.reason, {
+        restartReplayInProcess('inline-claim', rejection.reason, {
           allowDelta: false,
         })
       ) {
@@ -2375,7 +2414,7 @@ async function runDelivery(
       }
       const escalation = await reinvokeAfterStaleRejection(
         'inline-claim',
-        outcome.reason
+        rejection.reason
       );
       if (escalation.reinvoked) {
         return { done: true, value: escalation.result };
@@ -2384,7 +2423,10 @@ async function runDelivery(
     }
     const inlineAction = await actOnInlineOutcomes(
       settled.map(({ step }) => step),
-      results
+      settled.map(
+        ({ outcome }) =>
+          (outcome as PromiseFulfilledResult<InlineStepResult>).value
+      )
     );
     // A pass that already scheduled its next load (the loop
     // top, after an early advance) keeps it.
@@ -2394,8 +2436,45 @@ async function runDelivery(
     return inlineAction;
   };
 
+  /**
+   * Called once this delivery has written the run's terminal event. Inline
+   * steps still running (a `Promise.race` loser, or a step the workflow
+   * stopped awaiting) get only their current attempt: their bodies finish
+   * before the delivery returns, but a `retry` or `throttled` outcome has
+   * nothing left to act on it, so the step's remaining attempts never run.
+   */
+  const settleInlineStepsAfterTerminal = async (
+    terminal: 'run_completed' | 'run_failed'
+  ): Promise<void> => {
+    const running = inlineStepsInFlight.running;
+    if (inlineStepsInFlight.size === 0) return;
+    if (running > 0) {
+      span?.setAttributes(Attribute.WorkflowInlineRunningAtTerminal(running));
+    }
+    const discarded = (await inlineStepsInFlight.settleAll()).filter(
+      ({ outcome }) =>
+        outcome.status === 'fulfilled' &&
+        (outcome.value.type === 'retry' || outcome.value.type === 'throttled')
+    );
+    if (discarded.length === 0) return;
+    span?.setAttributes(
+      Attribute.WorkflowInlineDiscardedOutcomes(discarded.length)
+    );
+    runtimeLogger.info(
+      `Inline step settled after ${terminal}; its remaining attempts will not run`,
+      {
+        workflowRunId: runId,
+        stepIds: discarded.map(({ step }) => step.correlationId),
+        outcomes: discarded.map(({ outcome }) =>
+          outcome.status === 'fulfilled' ? outcome.value.type : 'rejected'
+        ),
+      }
+    );
+  };
+
   const inlineEarlyAdvance = isInlineEarlyAdvanceEnabled();
   let inlineEarlyAdvances = 0;
+  let inlineSlotsHeldBack = 0;
 
   // Main replay loop
   while (true) {
@@ -2411,6 +2490,19 @@ async function runDelivery(
       (replayBudget.isExhausted() ||
         Date.now() - invocationStartTime >= noInlineReplayAfterMs)
     ) {
+      // Branches stop advancing independently here: every tracked step is
+      // waited for before the hand-off, as without early advance.
+      runtimeLogger.info(
+        'Handing off the run: waiting for every inline step still running',
+        {
+          workflowRunId: runId,
+          loopIteration,
+          running: inlineStepsInFlight.running,
+          reason: replayBudget.isExhausted()
+            ? 'replay-budget'
+            : 'inline-window',
+        }
+      );
       const inlineAction = await settleInlineStepsInFlight();
       if (inlineAction.done) return inlineAction.value;
     }
@@ -2919,6 +3011,7 @@ async function runDelivery(
       span?.setAttributes({
         ...Attribute.WorkflowRunStatus('completed'),
       });
+      await settleInlineStepsAfterTerminal('run_completed');
       return;
     } catch (err) {
       if (WorkflowSuspension.is(err)) {
@@ -3031,6 +3124,12 @@ async function runDelivery(
             // executions write their events.
             inFlightStepCorrelationIds: inlineStepsInFlight.ids,
           });
+          if (suspensionResult.inlineSlotsHeldBack > 0) {
+            inlineSlotsHeldBack += suspensionResult.inlineSlotsHeldBack;
+            span?.setAttributes(
+              Attribute.WorkflowInlineSlotsHeldBack(inlineSlotsHeldBack)
+            );
+          }
         } catch (suspensionError) {
           // A suspension create was rejected as stale: re-derive
           // the replay from a corrected log in this invocation.
@@ -3131,6 +3230,7 @@ async function runDelivery(
             ...Attribute.WorkflowErrorMessage(suspensionError.message),
             ...Attribute.ErrorType(suspensionError.name),
           });
+          await settleInlineStepsAfterTerminal('run_failed');
           return;
         }
         // Open hooks/waits in the log this replay ran over,
@@ -4331,7 +4431,10 @@ async function runDelivery(
         // step still running from an earlier pass (see InlineStepsInFlight).
         let batchSteps: InlineStepRef[] = [];
         const stepResults: InlineStepResult[] = [];
-        let roundOutcomes: PromiseSettledResult<InlineStepResult>[] = [];
+        let roundSettled: InlineStepSettlement<
+          InlineStepRef,
+          InlineStepResult
+        >[] = [];
         const stepExecutionPromises = inlineExecutions.map((s, stepIndex) => {
           let markStartSettled!: () => void;
           const startSettled = new Promise<void>((resolve) => {
@@ -4492,9 +4595,7 @@ async function runDelivery(
               suspensionResult.deferredBatchWork,
             ]);
           } catch (dispatchErr) {
-            roundOutcomes = (await inlineStepsInFlight.settleAll()).map(
-              (settled) => settled.outcome
-            );
+            roundSettled = await inlineStepsInFlight.settleAll();
             throw dispatchErr;
           }
           // Early advance: once a step settles cleanly while others of this
@@ -4524,13 +4625,16 @@ async function runDelivery(
             // iteration starts.
             continue;
           }
-          roundOutcomes = round.settled.map((settled) => settled.outcome);
+          roundSettled = round.settled;
           batchSteps = round.settled.map((settled) => settled.step);
-          for (const outcome of roundOutcomes) {
-            if (outcome.status === 'rejected') {
-              throw outcome.reason;
-            }
-            stepResults.push(outcome.value);
+          const rejection = roundRejection(
+            round.settled.map((settled) => settled.outcome)
+          );
+          if (rejection) throw rejection.reason;
+          for (const { outcome } of round.settled) {
+            stepResults.push(
+              (outcome as PromiseFulfilledResult<InlineStepResult>).value
+            );
           }
         } catch (stepErr) {
           // A stale (412) rejection of an inline step_started
@@ -4544,7 +4648,11 @@ async function runDelivery(
           // executions to settle first so no owned body is in
           // flight when the restart (or the ack path) runs.
           if (PreconditionFailedError.is(stepErr)) {
-            const settled = roundOutcomes;
+            const settled = roundSettled.map((settled) => settled.outcome);
+            // A sibling's retry is published first, delayed, so the restarted
+            // replay's immediate re-dispatch dedupes against it and the
+            // backoff holds.
+            await publishInlineRetries(inlineRetries(roundSettled));
             // A sibling whose claim was accepted wrote step
             // events of its own, possibly after the World built
             // this 412's delta, so that delta can no longer be
@@ -4894,6 +5002,7 @@ async function runDelivery(
           ...Attribute.WorkflowErrorMessage(errorMessage),
           ...Attribute.ErrorType(errorName),
         });
+        await settleInlineStepsAfterTerminal('run_failed');
         return;
       }
     }

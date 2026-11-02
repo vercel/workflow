@@ -60,6 +60,15 @@ export class InlineStepsInFlight<
     return this.#entries.size;
   }
 
+  /** Tracked steps whose execution has not settled yet. */
+  get running(): number {
+    let running = 0;
+    for (const entry of this.#entries.values()) {
+      if (!entry.outcome) running++;
+    }
+    return running;
+  }
+
   track(step: Step, execution: Promise<Result>, startSettled: Promise<void>) {
     const entry: Entry<Step, Result> = {
       step,
@@ -94,8 +103,9 @@ export class InlineStepsInFlight<
     isClean: (outcome: PromiseSettledResult<Result>) => boolean
   ): Promise<InlineSettlementRound<Step, Result>> {
     if (this.#entries.size === 0) return { early: false, settled: [] };
+    if (!allowEarly) return { early: false, settled: await this.settleAll() };
     await Promise.race([...this.#entries.values()].map((e) => e.done));
-    if (allowEarly && this.#canAdvanceEarly(isClean)) {
+    if (this.#canAdvanceEarly(isClean)) {
       await Promise.all([...this.#entries.values()].map((e) => e.startSettled));
       if (this.#canAdvanceEarly(isClean)) {
         return { early: true, settled: this.#take((e) => !!e.outcome) };

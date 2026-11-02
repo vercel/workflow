@@ -204,6 +204,13 @@ export interface SuspensionHandlerResult {
    */
   queuedStepCorrelationIds: Set<string>;
   /**
+   * New steps this suspension did not defer for inline execution only
+   * because steps from `inFlightStepCorrelationIds` held inline slots. They
+   * are created and queued like any step past the inline limit. Zero
+   * without in-flight steps.
+   */
+  inlineSlotsHeldBack: number;
+  /**
    * How many events this phase's writes reported back as occupying slots they
    * skipped over, already merged into the caller's `eventLog.events`. Nonzero
    * means the array was reordered to restore slot order, so any index the
@@ -805,18 +812,19 @@ export async function handleSuspension({
   const hasHookConflictAwaiter = hooksNeedingCreation.some(
     (item) => item.hasConflictAwaiter === true
   );
-  const lazyInlineCorrelationIds = new Set<string>(
-    stepItems
-      .filter((item) => stepsNeedingCreation.has(item.correlationId))
-      .slice(
-        0,
-        Math.max(
-          0,
-          getMaxInlineSteps() - (inFlightStepCorrelationIds?.size ?? 0)
-        )
-      )
-      .map((item) => item.correlationId)
+  const inlineCandidates = stepItems.filter((item) =>
+    stepsNeedingCreation.has(item.correlationId)
   );
+  const inlineSlots = Math.max(
+    0,
+    getMaxInlineSteps() - (inFlightStepCorrelationIds?.size ?? 0)
+  );
+  const lazyInlineCorrelationIds = new Set<string>(
+    inlineCandidates.slice(0, inlineSlots).map((item) => item.correlationId)
+  );
+  const inlineSlotsHeldBack =
+    Math.min(inlineCandidates.length, getMaxInlineSteps()) -
+    lazyInlineCorrelationIds.size;
   // Collected by correlationId because the per-step ops below run concurrently
   // and settle out of order. We rebuild the array in deterministic
   // `lazyInlineCorrelationIds` order (the ordered slice above) after the ops
@@ -1786,6 +1794,7 @@ export async function handleSuspension({
     createdStepCorrelationIds,
     failedStepCorrelationIds,
     queuedStepCorrelationIds,
+    inlineSlotsHeldBack,
     lazyInlineSteps,
     inlineClaims,
     deferredBatchWork,

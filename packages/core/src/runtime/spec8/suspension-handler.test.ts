@@ -282,6 +282,68 @@ describe('handleSuspension', () => {
     expect([...result.createdStepCorrelationIds]).toEqual(['s4']);
   });
 
+  it('leaves inline slots held by steps still running from an earlier pass, beside an awaited hook', async () => {
+    // Two steps of this delivery are still running inline (early advance),
+    // so of the default three slots one is free: the first new step is
+    // deferred for the pass after the hook registration, and the other two
+    // are created and queued alongside the hook.
+    const eventsCreate = vi.fn(
+      async (_runId: string, request: { eventType: string }) => ({
+        event: { eventType: request.eventType },
+      })
+    );
+    const world = createWorld(eventsCreate);
+    const pending = new Map<string, QueueItem>([
+      [
+        'running1',
+        {
+          type: 'step',
+          correlationId: 'running1',
+          stepName: 'running1',
+          args: [],
+        },
+      ],
+      ...['s1', 's2', 's3'].map(
+        (id) =>
+          [id, { type: 'step', correlationId: id, stepName: id, args: [] }] as [
+            string,
+            QueueItem,
+          ]
+      ),
+      [
+        'hook_awaited',
+        {
+          type: 'hook',
+          correlationId: 'hook_awaited',
+          token: 'claim-token',
+          hasConflictAwaiter: true,
+        },
+      ],
+    ]);
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+      inFlightStepCorrelationIds: new Set(['running1', 'running2']),
+    });
+
+    expect(result.hasAwaitedHookCreation).toBe(true);
+    expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual(['s1']);
+    expect(result.inlineSlotsHeldBack).toBe(2);
+    expect([...result.createdStepCorrelationIds].sort()).toEqual(['s2', 's3']);
+    // The running step is left to the execution that owns it.
+    expect(result.pendingSteps.map((s) => s.correlationId)).not.toContain(
+      'running1'
+    );
+    expect(
+      eventsCreate.mock.calls.filter(
+        ([, request]) =>
+          (request as { correlationId?: string }).correlationId === 'running1'
+      )
+    ).toEqual([]);
+  });
+
   it('neither re-creates nor inlines a replayed step whose log holds only its step_started', async () => {
     // A World may record an inline step's creation on its step_started alone.
     // Replaying that log must hand the handler a step it already knows is
