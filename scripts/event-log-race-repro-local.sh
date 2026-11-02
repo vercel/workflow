@@ -261,6 +261,12 @@ else
   export WORKFLOW_TARGET_WORLD="local"
   export WORKFLOW_LOCAL_DATA_DIR="$DATA_DIR"
   export WORKFLOW_LOCAL_QUEUE_CONCURRENCY="${WORKFLOW_LOCAL_QUEUE_CONCURRENCY:-$LOCAL_QUEUE_CONCURRENCY}"
+  # The harness calls start() and resumeHook() in its own process, so its
+  # deliveries carry that process's in-memory queue key, which the app's flow
+  # route refuses with queue auth on. world-postgres needs nothing: the app's
+  # own worker delivers there. The runtime refuses this while dynamic
+  # workflows are enabled, so do not export WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
+  export WORKFLOW_QUEUE_AUTH="off"
 fi
 
 export PORT="$PORT"
