@@ -129,33 +129,57 @@ export function isPlainData(
   }
 }
 
-/**
- * Structural patch from `base` to `next`. Identity-equal subtrees are skipped
- * without descending (Eve applies state deltas copy-on-write, so unchanged
- * history entries are the same objects). Returns undefined when equal.
- */
-export function diffValue(base: unknown, next: unknown): ValueOp | undefined {
-  if (Object.is(base, next)) return undefined;
-  if (
-    typeof base === 'string' &&
-    typeof next === 'string' &&
-    base.length >= 256 &&
-    next.length > base.length &&
-    next.startsWith(base)
-  ) {
-    return { k: 's', n: base.length, v: next.slice(base.length) };
+/** Whether `value` is a container the patcher descends into. */
+function isPlainContainer(value: object): boolean {
+  if (Array.isArray(value)) {
+    return isPlainArray(value) && Object.keys(value).length === value.length;
   }
+  return (
+    isPlainObject(value) && Object.getOwnPropertySymbols(value).length === 0
+  );
+}
+
+/**
+ * Structural patch from `base` to `next`.
+ *
+ * Plain arrays and objects are descended into; every other non-primitive
+ * (streams, abort signals, Dates, class instances...) is an opaque leaf that
+ * is always re-emitted, even when it is the same object, because its
+ * serialized form can change without its identity changing (an AbortSignal
+ * becoming aborted). The identity shortcut is only taken for subtrees that are
+ * entirely plain data (memoized in `plain`), which is what Eve's copy-on-write
+ * history sharing produces. Returns undefined when nothing changed.
+ */
+export function diffValue(
+  base: unknown,
+  next: unknown,
+  plain: WeakSet<object> = new WeakSet()
+): ValueOp | undefined {
+  const nextObject = next !== null && typeof next === 'object';
+  if (!nextObject) {
+    if (Object.is(base, next)) return undefined;
+    if (
+      typeof base === 'string' &&
+      typeof next === 'string' &&
+      base.length >= 256 &&
+      next.length > base.length &&
+      next.startsWith(base)
+    ) {
+      return { k: 's', n: base.length, v: next.slice(base.length) };
+    }
+    return { k: 'v', v: next };
+  }
+  if (!isPlainContainer(next as object)) return { k: 'v', v: next };
+  if (Object.is(base, next) && isPlainData(next, plain)) return undefined;
   if (
     base === null ||
-    next === null ||
     typeof base !== 'object' ||
-    typeof next !== 'object'
+    !isPlainContainer(base as object) ||
+    Array.isArray(base) !== Array.isArray(next)
   ) {
     return { k: 'v', v: next };
   }
-  const baseArray = Array.isArray(base);
-  if (baseArray !== Array.isArray(next)) return { k: 'v', v: next };
-  if (baseArray) {
+  if (Array.isArray(next)) {
     const b = base as unknown[];
     const n = next as unknown[];
     const s: [number, unknown][] = [];
@@ -165,7 +189,7 @@ export function diffValue(base: unknown, next: unknown): ValueOp | undefined {
         s.push([i, n[i]]);
         continue;
       }
-      const change = diffValue(b[i], n[i]);
+      const change = diffValue(b[i], n[i], plain);
       if (change === undefined) continue;
       if (change.k === 'v') s.push([i, change.v]);
       else p.push([i, change]);
@@ -188,7 +212,7 @@ export function diffValue(base: unknown, next: unknown): ValueOp | undefined {
       s.push([key, n[key]]);
       continue;
     }
-    const change = diffValue(b[key], n[key]);
+    const change = diffValue(b[key], n[key], plain);
     if (change === undefined) continue;
     if (change.k === 'v') s.push([key, change.v]);
     else p.push([key, change]);
@@ -204,6 +228,42 @@ export function diffValue(base: unknown, next: unknown): ValueOp | undefined {
   if (s.length) op.s = s;
   if (p.length) op.p = p;
   return op;
+}
+
+/**
+ * A custom-serialized value (stream, signal, step function...) decoded
+ * without its reviver during cold recovery. It re-serializes to exactly the
+ * same devalue record, so a recovered payload can be digest-checked and then
+ * decoded once with the real step revivers.
+ */
+export class OpaqueValue {
+  constructor(
+    readonly type: string,
+    readonly data: unknown
+  ) {}
+}
+
+/**
+ * Revivers/reducers pair for recovery. `customTypes` must be exactly the
+ * reducer names of the codec that wrote the payload: every record of those
+ * types is in devalue's custom-record form, so wrapping it as an
+ * `OpaqueValue` and re-emitting it reproduces the same bytes. Types the codec
+ * has no reducer for are left to devalue's built-in handling, which also
+ * round-trips. The input delta envelope itself is revived for real.
+ */
+export function createOpaqueCodec(customTypes: Iterable<string>) {
+  const types = new Set(customTypes);
+  types.delete(INPUT_DELTA_REDUCER);
+  const revivers: Record<string, (v: any) => unknown> = {
+    [INPUT_DELTA_REDUCER]: (v: InputDeltaData) => new InputDelta(v),
+  };
+  const reducers: Record<string, (v: unknown) => unknown> = {};
+  for (const type of types) {
+    revivers[type] = (v: unknown) => new OpaqueValue(type, v);
+    reducers[type] = (v: unknown) =>
+      v instanceof OpaqueValue && v.type === type ? v.data : false;
+  }
+  return { revivers, reducers: () => reducers };
 }
 
 /** Applies `op` to `base` without mutating it. */

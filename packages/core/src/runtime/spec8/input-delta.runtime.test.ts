@@ -36,10 +36,20 @@ function rnd(seed: number, len: number): string {
   return out.slice(0, len);
 }
 const seen: unknown[][] = [];
+const seenTypes: string[] = [];
 registerStepFunction(
   'idt_turn',
-  async (input: { history: unknown[]; message: string; trace: string }) => {
+  async (input: {
+    history: unknown[];
+    message: string;
+    trace: string;
+    sessionWritable?: unknown;
+    abortSignal?: unknown;
+  }) => {
     seen.push(input.history);
+    seenTypes.push(
+      `${input.sessionWritable instanceof WritableStream}/${input.abortSignal instanceof AbortSignal}`
+    );
     const n = input.history.length;
     return {
       appended: [
@@ -60,7 +70,9 @@ registerStepFunction(
 );
 
 const TURNS = 12;
+const SUBSTEPS = 3;
 const code = `
+  var SUBSTEPS = ${SUBSTEPS};
   var useStep = globalThis[Symbol.for('WORKFLOW_USE_STEP')];
   var createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
   var turn = useStep('idt_turn');
@@ -68,11 +80,19 @@ const code = `
     var hook = createHook({ token: 'idt-inbox' });
     var history = [];
     var trace = '';
+    // Eve passes the session stream and a per-turn abort signal next to the history.
+    var sessionWritable = Object.create(WritableStream.prototype, {
+      [Symbol.for('WORKFLOW_STREAM_NAME')]: { value: globalThis[Symbol.for('WORKFLOW_GET_STREAM_ID')]() },
+    });
     for (var i = 0; i < ${TURNS}; i++) {
       var delivery = await hook;
-      var out = await turn({ history: history, message: delivery.message, trace: trace });
-      history = history.concat(out.appended);
-      trace = out.trace;
+      var controller = new AbortController();
+      // Like Eve's tool loop: several turn steps per delivery.
+      for (var sub = 0; sub < SUBSTEPS; sub++) {
+        var out = await turn({ history: history, message: delivery.message, trace: trace, sessionWritable: sessionWritable, abortSignal: controller.signal });
+        history = history.concat(out.appended);
+        trace = out.trace;
+      }
     }
     return history.length;
   }
@@ -166,6 +186,7 @@ describe.each([
   let dir: string | undefined;
   beforeEach(() => {
     seen.length = 0;
+    seenTypes.length = 0;
     vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
   });
   afterEach(async () => {
@@ -182,8 +203,9 @@ describe.each([
     const result = await drive(maxInline);
     dir = result.dir;
     expect(result.run.status).toBe('completed');
-    expect(seen).toHaveLength(TURNS);
+    expect(seen).toHaveLength(TURNS * SUBSTEPS);
     seen.forEach((history, i) => expect(history).toHaveLength(2 * i));
+    expect(new Set(seenTypes)).toEqual(new Set(['true/true']));
     // Every step's persisted input decodes (cold, from storage) to the
     // arguments the step actually received.
     const inputs = result.events.filter(
@@ -191,7 +213,7 @@ describe.each([
         (e.eventType === 'step_created' || e.eventType === 'step_started') &&
         (e as any).eventData?.input
     );
-    expect(inputs.length).toBe(TURNS);
+    expect(inputs.length).toBe(TURNS * SUBSTEPS);
     const sizes: number[] = [];
     let deltas = 0;
     const map = (globalThis as any)[
@@ -215,6 +237,8 @@ describe.each([
         { world: result.world, stats }
       );
       expect(value.args[0].history).toStrictEqual(seen[i]);
+      expect(value.args[0].sessionWritable).toBeInstanceOf(WritableStream);
+      expect(value.args[0].abortSignal).toBeInstanceOf(AbortSignal);
       if (stats.recoveryFetches > 0) deltas++;
     }
     if (flag === '1' && maxInline !== '0') {
@@ -225,7 +249,7 @@ describe.each([
     if (flag === '1') {
       // Once the history outweighs one turn's additions, inputs become deltas
       // and stay roughly one turn in size while the history keeps growing.
-      expect(deltas).toBeGreaterThanOrEqual(TURNS - 4);
+      expect(deltas).toBeGreaterThanOrEqual(TURNS * SUBSTEPS - 6);
       const last = sizes.at(-1)!;
       expect(last).toBeLessThan(20_000);
     }

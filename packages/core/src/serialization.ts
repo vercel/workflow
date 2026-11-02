@@ -13,7 +13,12 @@ import type {
   World,
 } from '@workflow/world';
 import type { StepInvocationQueueItem } from './global.js';
-import { devalueCodec } from './serialization/codec-devalue.js';
+import {
+  devalueCodec,
+  getReducersForMode,
+} from './serialization/codec-devalue.js';
+import { decompress as decompressPayload } from './serialization/compression.js';
+import { decrypt as decryptPayload } from './serialization/encryption.js';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -102,13 +107,13 @@ import {
 import * as stepModule from './serialization/step.js';
 import {
   applyValueOp,
+  createOpaqueCodec,
   diffValue,
   InputDelta,
   type InputDeltaStats,
   inputDeltaEnabled,
   inputDeltaSnapshotEvery,
   isInputDelta,
-  isPlainData,
   rememberFullPayload,
   sha256Hex,
   takeFullPayload,
@@ -4185,9 +4190,8 @@ export async function dehydrateStepInputWithDelta(
     closureVars: base.closureVars,
     thisVal: base.thisVal,
   };
-  if (!isPlainData(value) || !isPlainData(baseValue)) {
-    return full('unsupported_value');
-  }
+  // Workflow-mode reducers are pure (streams and signals reduce to their
+  // names/state), so serializing the full value here only costs CPU.
   const payload = devalueCodec.serialize(value, 'step', {
     global,
     extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
@@ -4254,11 +4258,9 @@ async function resolveInputDelta(
   key: PayloadKey | undefined,
   deserializeFull: (payload: Uint8Array) => unknown,
   world: Pick<World, 'steps'> | undefined,
-  stats: InputDeltaStats | undefined,
-  depth = 0
+  stats: InputDeltaStats | undefined
 ): Promise<unknown> {
-  const { data } = envelope;
-  const cached = takeFullPayload(data.digest);
+  const cached = takeFullPayload(envelope.data.digest);
   if (cached) {
     if (stats) stats.memoryHits++;
     return deserializeFull(cached);
@@ -4268,36 +4270,113 @@ async function resolveInputDelta(
       'Step input is an input delta whose base is not in memory, and no World was provided to recover it'
     );
   }
-  if (depth > 1000) {
-    throw new WorkflowRuntimeError('Input delta chain is too deep');
-  }
-  if (stats) stats.recoveryFetches++;
-  const baseStep = await world.steps.get(runId, data.base, {
-    resolveData: 'all',
-  });
-  const baseDecoded = await stepModule.deserialize(baseStep.input, key, {});
-  const baseValue = isInputDelta(baseDecoded)
-    ? await resolveInputDelta(
-        baseDecoded,
-        runId,
-        key,
-        (payload) => devalueCodec.deserialize(payload, 'step', {}),
-        world,
-        stats,
-        depth + 1
+  const payload = await recoverInputDeltaPayload(
+    envelope,
+    runId,
+    key,
+    world,
+    stats
+  );
+  return deserializeFull(payload);
+}
+
+/**
+ * The opaque codec for recovery. Its custom types are exactly the reducer
+ * names of the codec that writes step inputs (see `dehydrateStepArguments`).
+ */
+function recoveryCodec() {
+  return createOpaqueCodec(
+    Object.keys(
+      getReducersForMode(
+        'step',
+        globalThis,
+        getStreamAndRequestReducers(getWorkflowReducers(globalThis))
       )
-    : baseDecoded;
-  const value = applyValueOp(baseValue, data.op);
-  if (stats) stats.patchesApplied++;
-  const payload = devalueCodec.serialize(value, 'step', {});
-  if ((await sha256Hex(payload)) !== data.digest) {
+    )
+  );
+}
+
+const INPUT_DELTA_ROOT = new TextEncoder().encode('[["InputDeltaV1",');
+
+/** Whether a decrypted, decompressed payload's devalue root is an envelope. */
+function isInputDeltaPayload(decrypted: Uint8Array): boolean {
+  const { format, payload } = decodeFormatPrefix(decrypted);
+  if (format !== SerializationFormat.DEVALUE_V1) return false;
+  const bytes = payload as Uint8Array;
+  if (bytes.byteLength < INPUT_DELTA_ROOT.byteLength) return false;
+  for (let i = 0; i < INPUT_DELTA_ROOT.byteLength; i++) {
+    if (bytes[i] !== INPUT_DELTA_ROOT[i]) return false;
+  }
+  return true;
+}
+
+/** Decodes a stored step input to its devalue payload bytes (no revivers). */
+async function storedPayload(
+  data: unknown,
+  key: PayloadKey | undefined
+): Promise<Uint8Array> {
+  const decrypted = await decompressPayload(await decryptPayload(data, key));
+  if (!(decrypted instanceof Uint8Array)) {
+    throw new WorkflowRuntimeError('Input delta base is not a binary payload');
+  }
+  const { format, payload } = decodeFormatPrefix(decrypted);
+  if (format !== SerializationFormat.DEVALUE_V1) {
     throw new WorkflowRuntimeError(
-      `Input delta digest mismatch for base ${data.base}; refusing to run the step with a reconstructed input that differs from the original`
+      `Unsupported input delta base format: ${format}`
     );
   }
-  // Re-decode through the caller's revivers so the result has exactly the
-  // semantics of an ordinary hydration.
-  return depth === 0 ? deserializeFull(payload) : value;
+  return payload as Uint8Array;
+}
+
+/**
+ * Cold recovery: walks the delta chain to its snapshot through the World,
+ * decoding every custom-serialized value opaquely, applies the patches in
+ * order and verifies each link's digest. Returns the exact payload the
+ * writer serialized; it runs no workflow code and no reviver side effects.
+ */
+async function recoverInputDeltaPayload(
+  target: InputDelta,
+  runId: string,
+  key: PayloadKey | undefined,
+  world: Pick<World, 'steps'>,
+  stats: InputDeltaStats | undefined
+): Promise<Uint8Array> {
+  const codec = recoveryCodec();
+  const decode = (bytes: Uint8Array) =>
+    parse(new TextDecoder().decode(bytes), codec.revivers);
+  const chain: InputDelta[] = [target];
+  let base: unknown;
+  for (let depth = 0; ; depth++) {
+    if (depth > 1000)
+      throw new WorkflowRuntimeError('Input delta chain is too deep');
+    if (stats) stats.recoveryFetches++;
+    const step = await world.steps.get(
+      runId,
+      chain[chain.length - 1]!.data.base,
+      {
+        resolveData: 'all',
+      }
+    );
+    const decoded = decode(await storedPayload(step.input, key));
+    if (decoded instanceof InputDelta) {
+      chain.push(decoded);
+      continue;
+    }
+    base = decoded;
+    break;
+  }
+  let payload: Uint8Array | undefined;
+  for (const link of chain.reverse()) {
+    base = applyValueOp(base, link.data.op);
+    if (stats) stats.patchesApplied++;
+    payload = new TextEncoder().encode(stringify(base, codec.reducers()));
+    if ((await sha256Hex(payload)) !== link.data.digest) {
+      throw new WorkflowRuntimeError(
+        `Input delta digest mismatch applying a patch onto base ${link.data.base}; refusing to run the step with a reconstructed input that differs from the original`
+      );
+    }
+  }
+  return payload!;
 }
 
 /**
@@ -4336,16 +4415,34 @@ export async function hydrateStepArguments(
     },
     compressionStats,
   };
-  let result = await stepModule.deserialize(value, key, options);
-  if (isInputDelta(result)) {
+  // An input delta envelope must never meet the real revivers: its patch can
+  // hold streams and signals whose revival has side effects, and recovery
+  // needs their serialized form, not live objects. Decode the stored bytes
+  // once and route envelopes to the opaque decoder.
+  const decrypted = await decompressPayload(
+    await decryptPayload(value, key),
+    compressionStats
+  );
+  let result: unknown;
+  if (decrypted instanceof Uint8Array && isInputDeltaPayload(decrypted)) {
+    const { payload } = decodeFormatPrefix(decrypted);
+    const envelope = parse(
+      new TextDecoder().decode(payload as Uint8Array),
+      recoveryCodec().revivers
+    );
+    if (!isInputDelta(envelope)) {
+      throw new WorkflowRuntimeError('Malformed input delta envelope');
+    }
     result = await resolveInputDelta(
-      result,
+      envelope,
       runId,
       key,
-      (payload) => devalueCodec.deserialize(payload, 'step', options),
+      (full) => devalueCodec.deserialize(full, 'step', options),
       inputDelta?.world,
       inputDelta?.stats
     );
+  } else {
+    result = await stepModule.deserialize(decrypted, undefined, options);
   }
   await recordCompression(compressionStats, 'deserialize');
   return result;

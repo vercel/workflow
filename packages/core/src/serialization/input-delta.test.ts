@@ -274,7 +274,7 @@ describe('input delta writer and recovery', () => {
     ).rejects.toThrow(/digest mismatch/);
   });
 
-  it('falls back to a full input for unsupported values and uncommitted bases', async () => {
+  it('falls back to a full input for an uncommitted base', async () => {
     const a = item('step_a', [msg(0)], 0);
     const b = item('step_b', [msg(0), msg(1)], 1, a);
     a.hasCreatedEvent = false;
@@ -282,12 +282,56 @@ describe('input delta writer and recovery', () => {
       (await dehydrateStepInputWithDelta(b, undefined, globalThis, full))
         .inputDelta?.reason
     ).toBe('base_uncommitted');
-    a.hasCreatedEvent = true;
-    (b.args[0] as any).when = new Date(0);
-    expect(
-      (await dehydrateStepInputWithDelta(b, undefined, globalThis, full))
-        .inputDelta?.reason
-    ).toBe('unsupported_value');
+  });
+
+  it('carries non-plain values as opaque leaves and recovers them exactly', async () => {
+    const history = Array.from({ length: 20 }, (_, i) => msg(i));
+    const a = item('step_a', history, 0);
+    (a.args[0] as any).when = new Date(0);
+    (a.args[0] as any).tags = new Set(['x']);
+    const b = item('step_b', [...history, msg(20)], 1, a);
+    (b.args[0] as any).when = (a.args[0] as any).when; // same object: still re-emitted
+    (b.args[0] as any).tags = new Set(['x', 'y']);
+    (b.args[0] as any).big = 12n;
+    const stored = new Map<string, unknown>();
+    stored.set(
+      'step_a',
+      await full({ args: a.args, closureVars: undefined, thisVal: undefined })
+    );
+    const out = await dehydrateStepInputWithDelta(
+      b,
+      undefined,
+      globalThis,
+      full
+    );
+    expect(out.inputDelta?.kind).toBe('delta');
+    const map = (globalThis as any)[
+      Symbol.for('__workflowInputDeltaFullPayloads/v1')
+    ] as Map<string, Uint8Array>;
+    map.clear();
+    const world = {
+      steps: {
+        get: async (_r: string, id: string) => ({ input: stored.get(id) }),
+      },
+    } as any;
+    const value = await hydrateStepArguments(
+      out.input,
+      'r',
+      undefined,
+      [],
+      globalThis,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      { world }
+    );
+    expect(value).toStrictEqual({
+      args: b.args,
+      closureVars: undefined,
+      thisVal: undefined,
+    });
+    expect(value.args[0].when).toBeInstanceOf(Date);
   });
 
   it('is a no-op when the flag is off', async () => {

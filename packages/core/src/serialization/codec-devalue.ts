@@ -51,7 +51,7 @@ const parseOptions = {
 
 // ---- Reducer/Reviver composition per mode ----
 
-function getReducersForMode(
+export function getReducersForMode(
   mode: SerializationMode,
   global: Record<string, any> = globalThis,
   extraReducers?: Record<string, (value: any) => any>
