@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { __builtin_response_read_chunk } from '../../../workflow/src/internal/builtins.js';
 import { deserialize, serialize } from '../serialization/workflow-vm.js';
-import { dehydrateStepReturnValue } from '../serialization.js';
-import { STREAM_NAME_SYMBOL } from '../symbols.js';
+import {
+  dehydrateStepReturnValue,
+  hydrateStepArguments,
+} from '../serialization.js';
+import { STREAM_NAME_SYMBOL, STREAM_TYPE_SYMBOL } from '../symbols.js';
 import { runQuickJSWorkflow } from './quickjs-runtime.js';
+import { isClientDisconnectError } from './step-streams.js';
+import { setWorld } from './world.js';
 
 const workflowId = 'workflow//test//workflow';
 
@@ -55,7 +61,7 @@ function namedStream(name: string) {
 
 async function runToCompletion(
   body: string,
-  resolveStep: (stepId: string) => unknown
+  resolveStep: (stepId: string, input: Uint8Array) => unknown
 ) {
   const code = `
     var fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//fetch");
@@ -75,7 +81,7 @@ async function runToCompletion(
     },
   ];
   const stepIds: string[] = [];
-  for (let attempt = 0; attempt < 10; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     const result = await runQuickJSWorkflow({
       workflowCode: code,
       workflowId,
@@ -94,7 +100,7 @@ async function runToCompletion(
       stepIds.push(stepId);
       const ops: Promise<void>[] = [];
       const output = await dehydrateStepReturnValue(
-        await resolveStep(stepId),
+        await resolveStep(stepId, (op as any).input),
         run.runId,
         undefined,
         ops
@@ -123,7 +129,215 @@ async function runToCompletion(
   throw new Error('workflow did not complete');
 }
 
+// Same helper as the node:vm tests: chunk sizes plus a checksum.
+const collectChunks = `
+  async function collect(body) {
+    var reader = body.getReader();
+    var sizes = [];
+    var sum = 0;
+    var index = 0;
+    while (true) {
+      var r = await reader.read();
+      if (r.done) break;
+      sizes.push(r.value.byteLength);
+      for (var i = 0; i < r.value.length; i++) sum = (sum * 31 + r.value[i] + index++) % 1000000007;
+    }
+    return { sizes: sizes, sum: sum };
+  }
+`;
+
+function checksum(bytes: Uint8Array) {
+  let sum = 0;
+  for (let i = 0; i < bytes.length; i++)
+    sum = (sum * 31 + bytes[i] + i) % 1000000007;
+  return sum;
+}
+
+function patterned(length: number) {
+  return Uint8Array.from({ length }, (_, i) => (i * 7) % 251);
+}
+
+/**
+ * Runs the real `__builtin_response_read_chunk` the way a step executor
+ * does: hydrate the step input (a Response over a stored stream, served by
+ * a World that delivers `payload` in `transportChunk`-byte frames), call the
+ * builtin, and settle background stream operations.
+ */
+async function withStoredPayload<T>(
+  payload: Uint8Array,
+  transportChunk: number,
+  run: (readChunk: (input: Uint8Array) => Promise<unknown>) => Promise<T>
+): Promise<T> {
+  setWorld({
+    specVersion: 9,
+    streams: {
+      get: async () => {
+        let offset = 0;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (offset >= payload.length) return controller.close();
+            const end = Math.min(offset + transportChunk, payload.length);
+            controller.enqueue(payload.slice(offset, end));
+            offset = end;
+          },
+        });
+      },
+    },
+  } as any);
+  try {
+    return await run(async (input) => {
+      const ops: Promise<void>[] = [];
+      const { args, thisVal } = (await hydrateStepArguments(
+        input,
+        'wrun_quickjs_body',
+        undefined,
+        ops,
+        globalThis,
+        {},
+        'dpl_test'
+      )) as any;
+      const result = await __builtin_response_read_chunk.call(
+        thisVal,
+        ...(args as [number])
+      );
+      await Promise.all(
+        ops.map((op) =>
+          op.catch((error) => {
+            if (!isClientDisconnectError(error)) throw error;
+          })
+        )
+      );
+      return result;
+    });
+  } finally {
+    setWorld(undefined);
+  }
+}
+
+function storedStream(name: string) {
+  const stream = namedStream(name);
+  (stream as any)[STREAM_TYPE_SYMBOL] = 'bytes';
+  return stream;
+}
+
 describe('QuickJS: reading Response bodies inside the workflow', () => {
+  it('reads multi-chunk in-memory bodies of every init type without a step', async () => {
+    const { value, stepIds } = await runToCompletion(
+      `${collectChunks}
+      var bytes = new Uint8Array(300007);
+      for (var i = 0; i < bytes.length; i++) bytes[i] = (i * 7) % 251;
+      var padded = new Uint8Array(bytes.length + 5);
+      padded.set(bytes, 3);
+      return {
+        string: await collect(new Response("a".repeat(300007)).body),
+        arrayBuffer: await collect(new Response(bytes.buffer).body),
+        view: await collect(new Response(padded.subarray(3, 3 + bytes.length)).body),
+        nested: await collect(new Response(new Response(bytes).body).body),
+        exact: await collect(new Response(new Uint8Array(262144)).body),
+      };`,
+      () => {
+        throw new Error('no step expected');
+      }
+    );
+    const sizes = [65536, 65536, 131072, 37863];
+    const binary = { sizes, sum: checksum(patterned(300007)) };
+    expect(value).toEqual({
+      string: {
+        sizes,
+        sum: checksum(new TextEncoder().encode('a'.repeat(300007))),
+      },
+      arrayBuffer: binary,
+      view: binary,
+      nested: binary,
+      exact: {
+        sizes: [65536, 65536, 131072],
+        sum: checksum(new Uint8Array(262144)),
+      },
+    });
+    expect(stepIds).toHaveLength(0);
+  });
+
+  it('reads a stored body through the real host builtin with growing chunks', async () => {
+    const payload = patterned(300007);
+    const { value, stepIds } = await withStoredPayload(
+      payload,
+      7777,
+      (readChunk) =>
+        runToCompletion(
+          `${collectChunks}
+          var response = await fetchStep("https://example.com");
+          return [await collect(response.body), await collect(new Response(response.body).body)];`,
+          (stepId, input) =>
+            stepId === 'step//test//fetch'
+              ? new Response(storedStream('strm_quickjs_stored'))
+              : readChunk(input)
+        )
+    );
+    const expected = {
+      sizes: [65536, 65536, 131072, 37863],
+      sum: checksum(payload),
+    };
+    expect(value).toEqual([expected, expected]);
+    expect(stepIds.slice(1)).toEqual(
+      Array(8).fill('__builtin_response_read_chunk')
+    );
+  });
+
+  it('takes one trailing empty step for a stored body that fills its last chunk', async () => {
+    const payload = patterned(262144);
+    const { value, stepIds } = await withStoredPayload(
+      payload,
+      65536,
+      (readChunk) =>
+        runToCompletion(
+          `${collectChunks}
+          return collect((await fetchStep("https://example.com")).body);`,
+          (stepId, input) =>
+            stepId === 'step//test//fetch'
+              ? new Response(storedStream('strm_quickjs_exact'))
+              : readChunk(input)
+        )
+    );
+    expect(value).toEqual({
+      sizes: [65536, 65536, 131072],
+      sum: checksum(payload),
+    });
+    expect(stepIds.slice(1)).toEqual(
+      Array(4).fill('__builtin_response_read_chunk')
+    );
+  });
+
+  it('cancels and releases the reader when for-await finishes or exits early', async () => {
+    const { value } = await runToCompletion(
+      `function track(body, calls) {
+        var getReader = body.getReader;
+        body.getReader = function() {
+          var reader = getReader.call(this);
+          var cancel = reader.cancel;
+          var releaseLock = reader.releaseLock;
+          reader.cancel = function() { calls.push("cancel"); return cancel(); };
+          reader.releaseLock = function() { calls.push("releaseLock"); releaseLock(); };
+          return reader;
+        };
+        return body;
+      }
+      var finished = [];
+      var seen = 0;
+      for await (var chunk of track(new Response(new Uint8Array(100000)).body, finished)) seen += chunk.length;
+      var broke = [];
+      for await (var first of track(new Response("hello").body, broke)) break;
+      return { seen: seen, finished: finished, broke: broke };`,
+      () => {
+        throw new Error('no step expected');
+      }
+    );
+    expect(value).toEqual({
+      seen: 100000,
+      finished: ['cancel', 'releaseLock'],
+      broke: ['cancel', 'releaseLock'],
+    });
+  });
+
   it('does not request another stored chunk after cancellation at a size limit', async () => {
     const { value, stepIds } = await runToCompletion(
       `var reader = (await fetchStep("https://example.com")).body.getReader();

@@ -1,3 +1,7 @@
+import {
+  RESPONSE_BODY_CHUNK_MAX_BYTES,
+  responseBodyChunkSize,
+} from '@workflow/core/serialization-format';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   __builtin_response_read_chunk,
@@ -164,10 +168,61 @@ describe('__builtin_response_read_chunk', () => {
         offset
       );
       expect(first).toEqual(replay);
+      const size = responseBodyChunkSize(offset);
       expect(new Uint8Array(first.buffer)).toEqual(
-        payload.slice(offset, offset + 65536)
+        payload.slice(offset, offset + size)
       );
-      expect(first.done).toBe(offset + 65536 > payload.length);
+      expect(first.done).toBe(offset + size > payload.length);
+    }
+  });
+
+  it('grows the chunk size with the offset up to a cap', async () => {
+    expect(
+      [0, 1, 65536, 100000, 131072, 1 << 20, 1 << 30].map(responseBodyChunkSize)
+    ).toEqual([
+      65536,
+      65536,
+      65536,
+      100000,
+      131072,
+      1 << 20,
+      RESPONSE_BODY_CHUNK_MAX_BYTES,
+    ]);
+    const endless = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(new Uint8Array(1 << 20));
+          },
+        })
+      );
+    for (const offset of [131072, 32 << 20]) {
+      const result = await __builtin_response_read_chunk.call(
+        endless(),
+        offset
+      );
+      expect(result.buffer.byteLength).toBe(responseBodyChunkSize(offset));
+      expect(result.done).toBe(false);
+    }
+  });
+
+  it('needs one more empty read to see the end of a body that fills its last chunk', async () => {
+    const payload = new Uint8Array(131072).fill(7);
+    const response = () => new Response(payload);
+    const full = await __builtin_response_read_chunk.call(response(), 65536);
+    expect(full.buffer.byteLength).toBe(65536);
+    expect(full.done).toBe(false);
+    const end = await __builtin_response_read_chunk.call(response(), 131072);
+    expect(end).toEqual({ buffer: new ArrayBuffer(0), done: true });
+  });
+
+  it('rejects invalid offsets before reading the body', async () => {
+    for (const offset of [-1, 1.5, Number.NaN, 2 ** 53, '0' as any]) {
+      const body = new ReadableStream<Uint8Array>();
+      await expect(
+        __builtin_response_read_chunk.call(new Response(body), offset)
+      ).rejects.toThrow(RangeError);
+      expect(body.locked).toBe(false);
     }
   });
 

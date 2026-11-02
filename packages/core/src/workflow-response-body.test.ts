@@ -1,5 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
+import { __builtin_response_read_chunk } from '../../workflow/src/internal/builtins.js';
 import type { QueueItem, WorkflowSuspension } from './global.js';
 import {
   dehydrateStepReturnValue,
@@ -64,7 +65,7 @@ async function runToCompletion(
   const workflowRun = await makeRun();
   const events: Event[] = [];
   const steps: (QueueItem & { type: 'step' })[] = [];
-  for (let attempt = 0; attempt < 10; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     try {
       const result = await runWorkflow(code, workflowRun, events, undefined);
       return {
@@ -123,7 +124,187 @@ function namedStream(name: string) {
   return stream;
 }
 
+/**
+ * Reads every chunk of a body and reports chunk sizes plus an
+ * order-sensitive checksum, so large bodies compare cheaply.
+ */
+const collectChunks = `
+  async function collect(body) {
+    const reader = body.getReader();
+    const sizes = [];
+    let sum = 0;
+    let index = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sizes.push(value.byteLength);
+      for (let i = 0; i < value.length; i++) sum = (sum * 31 + value[i] + index++) % 1000000007;
+    }
+    return { sizes, sum };
+  }
+`;
+
+function checksum(bytes: Uint8Array) {
+  let sum = 0;
+  for (let i = 0; i < bytes.length; i++)
+    sum = (sum * 31 + bytes[i] + i) % 1000000007;
+  return sum;
+}
+
+function patterned(length: number) {
+  return Uint8Array.from({ length }, (_, i) => (i * 7) % 251);
+}
+
+/**
+ * Answers `__builtin_response_read_chunk` with the real host builtin over a
+ * stored payload, delivered in transport chunks of `transportChunk` bytes.
+ */
+function readStoredChunk(payload: Uint8Array, transportChunk = 7777) {
+  return (item: QueueItem & { type: 'step' }) => {
+    expect(item.stepName).toBe('__builtin_response_read_chunk');
+    let offset = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset >= payload.length) return controller.close();
+        const end = Math.min(offset + transportChunk, payload.length);
+        controller.enqueue(payload.slice(offset, end));
+        offset = end;
+      },
+    });
+    return __builtin_response_read_chunk.call(
+      new Response(body),
+      ...(item.args as [number])
+    );
+  };
+}
+
 describe('reading Response bodies inside the workflow VM', () => {
+  it('reads multi-chunk in-memory bodies of every init type without a step', async () => {
+    const { value, steps } = await runToCompletion(
+      `${collectChunks}
+      async function workflow() {
+        const bytes = new Uint8Array(300007);
+        for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 7) % 251;
+        const padded = new Uint8Array(bytes.length + 5);
+        padded.set(bytes, 3);
+        return {
+          string: await collect(new Response("a".repeat(300007)).body),
+          arrayBuffer: await collect(new Response(bytes.buffer).body),
+          view: await collect(new Response(padded.subarray(3, 3 + bytes.length)).body),
+          nested: await collect(new Response(new Response(bytes).body).body),
+          exact: await collect(new Response(new Uint8Array(262144)).body),
+        };
+      }${workflowRegistration('workflow')}`,
+      async () => {
+        throw new Error('no step expected');
+      }
+    );
+    const sizes = [65536, 65536, 131072, 37863];
+    const binary = { sizes, sum: checksum(patterned(300007)) };
+    expect(value).toEqual({
+      string: {
+        sizes,
+        sum: checksum(new TextEncoder().encode('a'.repeat(300007))),
+      },
+      arrayBuffer: binary,
+      view: binary,
+      nested: binary,
+      // In memory the end is known, so no trailing empty read is needed.
+      exact: {
+        sizes: [65536, 65536, 131072],
+        sum: checksum(new Uint8Array(262144)),
+      },
+    });
+    expect(steps).toHaveLength(0);
+  });
+
+  it('reads a stored body through the real host builtin with growing chunks', async () => {
+    const payload = patterned(300007);
+    const { value, steps } = await runToCompletion(
+      `const fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fetch");
+      ${collectChunks}
+      async function workflow() {
+        const response = await fetchStep("https://example.com");
+        return [await collect(response.body), await collect(new Response(response.body).body)];
+      }${workflowRegistration('workflow')}`,
+      async (item) =>
+        item.stepName === 'fetch'
+          ? new Response(namedStream('strm_stored'))
+          : readStoredChunk(payload)(item)
+    );
+    const expected = {
+      sizes: [65536, 65536, 131072, 37863],
+      sum: checksum(payload),
+    };
+    // A second reader, even through a wrapping Response, restarts at byte 0.
+    expect(value).toEqual([expected, expected]);
+    expect(steps.slice(1).map((step) => step.args)).toEqual([
+      [0],
+      [65536],
+      [131072],
+      [262144],
+      [0],
+      [65536],
+      [131072],
+      [262144],
+    ]);
+  });
+
+  it('takes one trailing empty step for a stored body that fills its last chunk', async () => {
+    const payload = patterned(262144);
+    const { value, steps } = await runToCompletion(
+      `const fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fetch");
+      ${collectChunks}
+      async function workflow() {
+        return collect((await fetchStep("https://example.com")).body);
+      }${workflowRegistration('workflow')}`,
+      async (item) =>
+        item.stepName === 'fetch'
+          ? new Response(namedStream('strm_exact'))
+          : readStoredChunk(payload, 65536)(item)
+    );
+    expect(value).toEqual({
+      sizes: [65536, 65536, 131072],
+      sum: checksum(payload),
+    });
+    expect(steps.slice(1).map((step) => step.args)).toEqual([
+      [0],
+      [65536],
+      [131072],
+      [262144],
+    ]);
+  });
+
+  it('cancels and releases the reader when for-await exits early', async () => {
+    const { value, steps } = await runToCompletion(
+      `const fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fetch");
+      async function workflow() {
+        const body = (await fetchStep("https://example.com")).body;
+        const calls = [];
+        const getReader = body.getReader;
+        body.getReader = function () {
+          const reader = getReader.call(this);
+          const { cancel, releaseLock } = reader;
+          reader.cancel = () => { calls.push("cancel"); return cancel(); };
+          reader.releaseLock = () => { calls.push("releaseLock"); releaseLock(); };
+          return reader;
+        };
+        let seen = 0;
+        for await (const chunk of body) {
+          seen += chunk.byteLength;
+          break;
+        }
+        return { seen, calls };
+      }${workflowRegistration('workflow')}`,
+      async (item) =>
+        item.stepName === 'fetch'
+          ? new Response(namedStream('strm_break'))
+          : { buffer: new ArrayBuffer(65536), done: false }
+    );
+    expect(value).toEqual({ seen: 65536, calls: ['cancel', 'releaseLock'] });
+    expect(steps).toHaveLength(2);
+  });
+
   it('stops requesting stored chunks when a consumer cancels at its limit', async () => {
     const { value, steps } = await runToCompletion(
       `const fetchStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fetch");
