@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { dehydrateStepReturnValue } from '../serialization.js';
 import { deserialize, serialize } from '../serialization/workflow-vm.js';
+import { dehydrateStepReturnValue } from '../serialization.js';
 import { STREAM_NAME_SYMBOL } from '../symbols.js';
 import { runQuickJSWorkflow } from './quickjs-runtime.js';
 

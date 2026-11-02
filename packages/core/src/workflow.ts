@@ -1,5 +1,5 @@
-import { Script } from 'node:vm';
 import { types } from 'node:util';
+import { Script } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import {
   ERROR_SLUGS,
