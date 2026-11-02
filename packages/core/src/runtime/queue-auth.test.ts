@@ -1,6 +1,21 @@
-import { getQueueAuthKey, QUEUE_AUTH_HEADER } from '@workflow/utils';
+import { metrics as otelMetrics } from '@opentelemetry/api';
+import {
+  getQueueAuthKey,
+  isQueueAuthRefusal,
+  QUEUE_AUTH_HEADER,
+  QUEUE_AUTH_REFUSED_CODE,
+  QUEUE_AUTH_REFUSED_HEADER,
+} from '@workflow/utils';
 import { type QueueAuthMode, SPEC_VERSION_CURRENT } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
@@ -10,6 +25,18 @@ import {
   logQueueAuthSetting,
 } from './queue-auth.js';
 import { setWorld } from './world.js';
+
+// Registered before the runtime first reaches for its meter, which it
+// memoizes. Records what the refusal counter is given.
+const counterAdds = vi.fn();
+const meter = {
+  createCounter: vi.fn(() => ({ add: counterAdds })),
+  createHistogram: vi.fn(() => ({ record: vi.fn() })),
+};
+otelMetrics.setGlobalMeterProvider({ getMeter: () => meter } as any);
+afterAll(() => {
+  otelMetrics.disable();
+});
 
 const FLOW_URL = 'http://localhost:3000/.well-known/workflow/v1/flow';
 
@@ -83,12 +110,27 @@ describe('authorizeQueueDelivery', () => {
     ['an empty header', { [QUEUE_AUTH_HEADER]: '' }],
     ['a wrong key', { [QUEUE_AUTH_HEADER]: 'x'.repeat(43) }],
     ['a truncated key', { [QUEUE_AUTH_HEADER]: getQueueAuthKey().slice(1) }],
-  ])('refuses %s with a 401', async (_name, headers) => {
-    const response = authorizeQueueDelivery(world, delivery(headers));
-    expect(response?.status).toBe(401);
-    await expect(response?.json()).resolves.toEqual({
+  ])('refuses %s with a marked 401', async (_name, headers) => {
+    const refusal = authorizeQueueDelivery(world, delivery(headers));
+    expect(refusal?.response.status).toBe(401);
+    // Marked, so the sending queue gives the message up instead of retrying
+    // it: the refusal cannot change on redelivery.
+    expect(refusal?.response.headers.get(QUEUE_AUTH_REFUSED_HEADER)).toBe('1');
+    expect(refusal && isQueueAuthRefusal(refusal.response)).toBe(true);
+    await expect(refusal?.response.json()).resolves.toEqual({
       error: 'Unauthorized queue delivery',
+      code: QUEUE_AUTH_REFUSED_CODE,
     });
+  });
+
+  it.each([
+    ['no-key', {}],
+    ['no-key', { [QUEUE_AUTH_HEADER]: '' }],
+    ['wrong-key', { [QUEUE_AUTH_HEADER]: 'x'.repeat(43) }],
+  ])('reports %s', (reason, headers) => {
+    expect(authorizeQueueDelivery(world, delivery(headers))?.reason).toBe(
+      reason
+    );
   });
 
   it("does not check a World that declares 'skip'", () => {
@@ -194,8 +236,49 @@ describe('workflowEntrypoint queue auth', () => {
     const response = await route(delivery());
 
     expect(response.status).toBe(401);
+    expect(isQueueAuthRefusal(response)).toBe(true);
     expect(routed).toHaveLength(0);
     expect(writes).not.toHaveBeenCalled();
+  });
+
+  it('counts every refusal by world, route and reason', async () => {
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
+    counterAdds.mockClear();
+    const { route } = installWorld('in-process-key');
+
+    await route(delivery());
+    await route(delivery({ [QUEUE_AUTH_HEADER]: 'x'.repeat(43) }));
+    await route(withKey());
+    // The counter is recorded without awaiting it.
+    await vi.waitFor(() => expect(counterAdds).toHaveBeenCalledTimes(2));
+
+    expect(meter.createCounter).toHaveBeenCalledWith(
+      'workflow.queue.delivery.refused',
+      expect.objectContaining({ unit: '{delivery}' })
+    );
+    const attributes = (reason: string) => ({
+      'workflow.world': 'local',
+      'http.route': '/.well-known/workflow/v1/flow',
+      'workflow.queue.refusal_reason': reason,
+    });
+    expect(counterAdds).toHaveBeenNthCalledWith(1, 1, attributes('no-key'));
+    expect(counterAdds).toHaveBeenNthCalledWith(2, 1, attributes('wrong-key'));
+  });
+
+  it('counts each refusal even while the log is rate-limited', async () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    counterAdds.mockClear();
+    const { route } = installWorld('in-process-key');
+
+    for (let i = 0; i < 5; i++) await route(delivery());
+    await vi.waitFor(() => expect(counterAdds).toHaveBeenCalledTimes(5));
+
+    expect(
+      warn.mock.calls.filter(([message]) =>
+        String(message).startsWith('Refused an unauthenticated queue delivery')
+      )
+    ).toHaveLength(1);
   });
 
   it('fails closed for a World that declares no mode', async () => {

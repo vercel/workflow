@@ -1,4 +1,10 @@
-import { isQueueAuthKey, QUEUE_AUTH_HEADER } from '@workflow/utils';
+import {
+  createLogLimiter,
+  isQueueAuthKey,
+  QUEUE_AUTH_HEADER,
+  QUEUE_AUTH_REFUSED_CODE,
+  QUEUE_AUTH_REFUSED_HEADER,
+} from '@workflow/utils';
 import type { QueueAuthMode, World } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
@@ -70,29 +76,43 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuth'>): void {
   }
 }
 
+/** Why a delivery was refused: it carried no key, or not this process's. */
+export type QueueAuthRefusalReason = 'no-key' | 'wrong-key';
+
+export interface QueueAuthRefusal {
+  reason: QueueAuthRefusalReason;
+  /** The 401 to answer with, marked as the runtime's own refusal. */
+  response: Response;
+}
+
 /**
  * Checks that a request to a queue route is a delivery from this process's
  * own queue, before the handler reads its body or touches any run.
  *
- * Returns `undefined` to let the delivery through, or the 401 response to
- * answer with. A refused request is dropped as is: its run id would come from
- * an unverified body, so failing or otherwise writing to that run would hand
- * the forger the very effect the check exists to deny.
+ * Returns `undefined` to let the delivery through, or the refusal to answer
+ * with. A refused request is dropped as is: its run id would come from an
+ * unverified body, so failing or otherwise writing to that run would hand the
+ * forger the very effect the check exists to deny.
+ *
+ * The 401 carries `QUEUE_AUTH_REFUSED_HEADER` and `QUEUE_AUTH_REFUSED_CODE`,
+ * so the sending queue can tell it from a proxy's bare 401 and give the
+ * message up rather than retry it: the refusal cannot change on redelivery.
  */
 export function authorizeQueueDelivery(
   world: Pick<World, 'queueAuth'>,
   req: Request
-): Response | undefined {
+): QueueAuthRefusal | undefined {
   if (!isQueueAuthEnforced(world)) return undefined;
-  if (isQueueAuthKey(req.headers.get(QUEUE_AUTH_HEADER))) return undefined;
-  return Response.json(
-    { error: 'Unauthorized queue delivery' },
-    { status: 401 }
-  );
+  const presented = req.headers.get(QUEUE_AUTH_HEADER);
+  if (isQueueAuthKey(presented)) return undefined;
+  return {
+    reason: presented ? 'wrong-key' : 'no-key',
+    response: Response.json(
+      { error: 'Unauthorized queue delivery', code: QUEUE_AUTH_REFUSED_CODE },
+      { status: 401, headers: { [QUEUE_AUTH_REFUSED_HEADER]: '1' } }
+    ),
+  };
 }
-
-/** At most one refusal log per this many milliseconds per queue route. */
-const REFUSAL_LOG_INTERVAL_MS = 60_000;
 
 /**
  * A rate-limited logger for refused deliveries, one per queue route: the
@@ -102,27 +122,19 @@ const REFUSAL_LOG_INTERVAL_MS = 60_000;
 export function createQueueAuthRefusalLogger(
   world: Pick<World, 'queueAuth'>
 ): () => void {
-  let lastLoggedAt = Number.NEGATIVE_INFINITY;
-  let suppressed = 0;
-  return () => {
-    const now = Date.now();
-    if (now - lastLoggedAt < REFUSAL_LOG_INTERVAL_MS) {
-      suppressed++;
-      return;
-    }
-    lastLoggedAt = now;
-    const refusedSinceLastLog = suppressed + 1;
-    suppressed = 0;
-    runtimeLogger.warn(
-      'Refused an unauthenticated queue delivery with a 401; no run was touched. ' +
-        'Only deliveries sent by this process’s own queue are accepted. If the ' +
-        'request came from a separate process (a script, CLI, or test runner) on a ' +
-        `trusted network, set ${QUEUE_AUTH_ENV}=off on this app.` +
-        (world.queueAuth === undefined
-          ? ' This World declares no `queueAuth` mode, so it is checked by default; ' +
-            "a World whose transport authenticates deliveries itself declares `queueAuth: 'skip'`."
-          : ''),
-      { refusedSinceLastLog }
-    );
-  };
+  const limit = createLogLimiter();
+  return () =>
+    limit((refusedSinceLastLog) => {
+      runtimeLogger.warn(
+        'Refused an unauthenticated queue delivery with a 401; no run was touched. ' +
+          'Only deliveries sent by this process’s own queue are accepted. If the ' +
+          'request came from a separate process (a script, CLI, or test runner) on a ' +
+          `trusted network, set ${QUEUE_AUTH_ENV}=off on this app.` +
+          (world.queueAuth === undefined
+            ? ' This World declares no `queueAuth` mode, so it is checked by default; ' +
+              "a World whose transport authenticates deliveries itself declares `queueAuth: 'skip'`."
+            : ''),
+        { refusedSinceLastLog }
+      );
+    });
 }

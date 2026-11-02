@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { serve } from '@hono/node-server';
 import {
   type AnyEventRequest,
@@ -103,6 +104,52 @@ async function fenceCountersOf(
   return null;
 }
 
+/**
+ * A meter provider that counts what the runtime adds to its counters, so a
+ * test can read `workflow.queue.delivery.refused` back over HTTP. Registered
+ * on the process-global OpenTelemetry API the runtime loads, before any
+ * request; `available` is false when that API cannot be loaded.
+ */
+const counters = await (async () => {
+  const sums = new Map<string, Map<string, number>>();
+  // Not a dependency of this package (the runtime's optional peer), so it is
+  // loaded by a non-literal specifier and typed by hand.
+  const specifier = '@opentelemetry/api';
+  type OtelApi = {
+    metrics: { setGlobalMeterProvider(provider: unknown): unknown };
+  };
+  let api: OtelApi | undefined;
+  try {
+    api = (await import(specifier)) as OtelApi;
+  } catch {
+    try {
+      // Resolved next to @workflow/core, which loads it the same way.
+      api = createRequire(import.meta.resolve('@workflow/core/runtime'))(
+        specifier
+      ) as OtelApi;
+    } catch {}
+  }
+  if (!api) return { available: false, sums };
+  const noop = () => ({ add() {}, record() {}, addCallback() {} });
+  const meter = new Proxy(
+    {
+      createCounter: (name: string) => ({
+        add(value: number, attributes: Record<string, unknown> = {}) {
+          const byAttributes = sums.get(name) ?? new Map<string, number>();
+          sums.set(name, byAttributes);
+          const key = JSON.stringify(
+            Object.fromEntries(Object.entries(attributes).sort())
+          );
+          byAttributes.set(key, (byAttributes.get(key) ?? 0) + value);
+        },
+      }),
+    } as Record<string, unknown>,
+    { get: (target, prop: string) => target[prop] ?? noop }
+  );
+  api.metrics.setGlobalMeterProvider({ getMeter: () => meter });
+  return { available: true, sums };
+})();
+
 // Track flow handler invocations per run for testing inline execution
 // per-copy-ok: this file is a standalone test server entry (it calls `serve()`
 // below), so it runs as its own process with one module instance. There is no
@@ -187,6 +234,13 @@ const app = new Hono()
     // flow route above, answered on a stream.
     const result = await healthCheck(await getWorld(), { timeout: 20_000 });
     return ctx.json(result);
+  })
+  .get('/_counters/:name', (ctx) => {
+    // Each series of the counter: its attributes and its sum.
+    const series = [...(counters.sums.get(ctx.req.param('name')) ?? [])].map(
+      ([attributes, sum]) => ({ attributes: JSON.parse(attributes), sum })
+    );
+    return ctx.json({ available: counters.available, series });
   })
   .get('/_manifest', (ctx) => ctx.json(manifest))
   .post('/invoke', async (ctx) => {

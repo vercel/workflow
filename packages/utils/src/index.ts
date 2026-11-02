@@ -15,9 +15,13 @@ export {
 export { pluralize } from './pluralize.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
 export {
+  createLogLimiter,
   getQueueAuthKey,
   isQueueAuthKey,
+  isQueueAuthRefusal,
   QUEUE_AUTH_HEADER,
+  QUEUE_AUTH_REFUSED_CODE,
+  QUEUE_AUTH_REFUSED_HEADER,
 } from './queue-auth.js';
 export { parseDurationToDate } from './time.js';
 export {

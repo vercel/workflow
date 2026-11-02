@@ -116,6 +116,8 @@ export async function startServer(opts: {
     const control = Control.parse(chunk);
     return {
       ...control,
+      /** The server's data directory (`WORKFLOW_LOCAL_DATA_DIR`). */
+      dataDir,
       getOutput: () => outputBuffer.join(''),
     };
   }

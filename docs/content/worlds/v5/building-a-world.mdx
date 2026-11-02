@@ -367,6 +367,8 @@ The flow route, and a queue consumer's own route, are mounted in the app like an
 
 Because an undeclared World is checked, a World with its own transport must either attach the key or declare `'skip'`. Otherwise every delivery is refused. Declare `'skip'` only when something other than the route really does authenticate the request. Operators can turn the check off with [`WORKFLOW_QUEUE_AUTH=off`](/docs/configuration/runtime-tuning#workflow_queue_auth), except while dynamic workflows are enabled.
 
+The runtime's `401` is marked: it carries the `x-workflow-auth-refused: 1` header (`QUEUE_AUTH_REFUSED_HEADER`) and `"code": "QUEUE_AUTH_REFUSED"` in its JSON body. Treat it as permanent. Within one process the sender and the route read the same key, so a refused delivery came from another process, and every redelivery would be refused too. A queue that sees the marker (`isQueueAuthRefusal(response)` from `@workflow/utils`) should give the message up and log it once, rather than retry. `@workflow/world-local` drops the message; `@workflow/world-postgres` retires the job without throwing. A `401` without the marker comes from something else in front of the app, such as a proxy, so keep retrying that one.
+
 ### Queue prefixes and delivery routes
 
 A queue name is a prefix followed by an id. The Workflow SDK uses the prefix `__wkf_workflow_`, or `__{namespace}_wkf_workflow_` when a queue namespace is set. A library that keeps its own runs in a World and consumes its own messages, such as a durable agent harness, uses a namespace of its own (`__agent_wkf_workflow_session`) so that its messages never reach the Workflow SDK's handler, and the Workflow SDK's never reach it.

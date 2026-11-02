@@ -53,3 +53,59 @@ export function isQueueAuthKey(value: string | null | undefined): boolean {
   }
   return diff === 0;
 }
+
+/**
+ * Set to `1` on the 401 the runtime answers a delivery with when it does not
+ * carry this process's queue key (see `authorizeQueueDelivery` in
+ * `@workflow/core`), so the sending queue can tell that refusal apart from a
+ * bare 401 from something in front of the app, such as a proxy.
+ *
+ * The refusal is permanent: inside one process the sender and the route read
+ * the same key, so a refused delivery came from another process (or a World
+ * that sends no key), and redelivering it can never succeed. A queue that sees
+ * the marker gives the message up instead of retrying it.
+ */
+export const QUEUE_AUTH_REFUSED_HEADER = 'x-workflow-auth-refused';
+
+/** The `code` in the JSON body of that 401. */
+export const QUEUE_AUTH_REFUSED_CODE = 'QUEUE_AUTH_REFUSED';
+
+/**
+ * Whether `response` is the runtime's queue auth refusal: a 401 carrying
+ * {@link QUEUE_AUTH_REFUSED_HEADER}. A 401 without it is not, and keeps the
+ * queue's ordinary retry behavior.
+ */
+export function isQueueAuthRefusal(response: {
+  status: number;
+  headers: Pick<Headers, 'get'>;
+}): boolean {
+  return (
+    response.status === 401 &&
+    response.headers.get(QUEUE_AUTH_REFUSED_HEADER) === '1'
+  );
+}
+
+/**
+ * A log limiter: the first call logs at once, later calls at most once per
+ * `intervalMs`, each with the number of calls since the last line (itself
+ * included). For a condition that can repeat at request rate, such as refused
+ * queue deliveries, so it cannot flood the logs. Hold one per long-lived owner
+ * (a World's queue, a route), not at module scope.
+ */
+export function createLogLimiter(
+  intervalMs = 60_000
+): (log: (countSinceLastLog: number) => void) => void {
+  let lastLoggedAt = Number.NEGATIVE_INFINITY;
+  let suppressed = 0;
+  return (log) => {
+    const now = Date.now();
+    if (now - lastLoggedAt < intervalMs) {
+      suppressed++;
+      return;
+    }
+    lastLoggedAt = now;
+    const count = suppressed + 1;
+    suppressed = 0;
+    log(count);
+  };
+}

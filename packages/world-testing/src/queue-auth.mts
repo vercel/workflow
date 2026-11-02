@@ -79,6 +79,30 @@ async function parkedRun(fetcher: Fetcher) {
   return { runId, queueName: `__wkf_workflow_${run.workflowName}` };
 }
 
+/**
+ * Asserts `response` is the runtime's queue auth refusal: a 401 marked with
+ * `x-workflow-auth-refused` and the stable code, which is what tells a
+ * sending queue to give the message up rather than retry it.
+ */
+async function expectAuthRefusal(response: Response) {
+  expect(response.status).toBe(401);
+  expect(response.headers.get('x-workflow-auth-refused')).toBe('1');
+  expect(await response.json()).toMatchObject({ code: 'QUEUE_AUTH_REFUSED' });
+}
+
+/** The series of `workflow.queue.delivery.refused` the server recorded. */
+async function refusalCounts(server: Server) {
+  const response = await fetch(
+    `http://localhost:${server.info.port}/_counters/workflow.queue.delivery.refused`
+  );
+  const { available, series } = (await response.json()) as {
+    available: boolean;
+    series: { attributes: Record<string, string>; sum: number }[];
+  };
+  expect(available).toBe(true);
+  return series;
+}
+
 /** Long enough for an accepted forged delivery to have written something. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 1_500));
 
@@ -136,7 +160,7 @@ export function queueAuth(world: string) {
         },
         { 'x-vqs-queue-name': queueName }
       );
-      expect(newRun.status).toBe(401);
+      await expectAuthRefusal(newRun);
 
       // Past the delivery cap, which would fail the running run.
       const pastCap = await forge(
@@ -148,7 +172,7 @@ export function queueAuth(world: string) {
           'x-vqs-message-delivery-count': '49',
         }
       );
-      expect(pastCap.status).toBe(401);
+      await expectAuthRefusal(pastCap);
 
       // Edited metadata: a step of another run re-triggered under made-up
       // queue metadata.
@@ -162,7 +186,7 @@ export function queueAuth(world: string) {
           'x-vqs-message-created-at': '2020-01-01T00:00:00.000Z',
         }
       );
-      expect(retrigger.status).toBe(401);
+      await expectAuthRefusal(retrigger);
 
       // A forged auth header is no better than none.
       const wrongKey = await forge(
@@ -174,7 +198,7 @@ export function queueAuth(world: string) {
           'x-workflow-auth': 'A'.repeat(43),
         }
       );
-      expect(wrongKey.status).toBe(401);
+      await expectAuthRefusal(wrongKey);
 
       // Replay of the parked run's real first delivery, headers and body as
       // sent, without the key.
@@ -191,7 +215,7 @@ export function queueAuth(world: string) {
         headers: delivery.headers,
         body: delivery.body,
       });
-      expect(replay.status).toBe(401);
+      await expectAuthRefusal(replay);
 
       await settle();
       expect(await runState(fetcher, runId)).toEqual(before);
@@ -200,6 +224,120 @@ export function queueAuth(world: string) {
         `http://localhost:${server.info.port}/runs/${forgedRunId}`
       );
       expect(forgedRun.ok).toBe(false);
+
+      // Every refusal is counted (the log is rate-limited, the counter is
+      // not), by whether the request carried a key at all.
+      const route = '/.well-known/workflow/v1/flow';
+      expect(await refusalCounts(server)).toEqual(
+        expect.arrayContaining([
+          {
+            attributes: {
+              'http.route': route,
+              'workflow.queue.refusal_reason': 'no-key',
+              'workflow.world': world,
+            },
+            sum: 4,
+          },
+          {
+            attributes: {
+              'http.route': route,
+              'workflow.queue.refusal_reason': 'wrong-key',
+              'workflow.world': world,
+            },
+            sum: 1,
+          },
+        ])
+      );
+    }
+  );
+
+  // A sender in another process: its world-local queue carries its own
+  // process's key, as `start()` from a script or test runner does. (An old
+  // World that sends no key is refused the same way, as `no-key`.)
+  // world-postgres has no such sender, since the app's own worker delivers
+  // every job; its worker's fail-fast is covered by world-postgres's
+  // queue-http integration test.
+  test.skipIf(world !== 'local')(
+    'a delivery from another process is refused once, given up, and leaves its run pending',
+    { timeout: 60_000 },
+    async () => {
+      const server = await startServer({
+        world,
+        env: { WORKFLOW_QUEUE_AUTH: 'on' },
+      });
+      const fetcher = createFetcher(server);
+      const { createWorld } = await import('@workflow/world-local');
+      const sender = createWorld({
+        dataDir: server.dataDir,
+        baseUrl: `http://localhost:${server.info.port}`,
+      });
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        // What `start()` in that process does: write `run_created` to the
+        // shared data directory, then enqueue the run's first delivery.
+        const manifest = (await fetch(
+          `http://localhost:${server.info.port}/_manifest`
+        ).then((response) => response.json())) as {
+          workflows: Record<string, Record<string, { workflowId: string }>>;
+        };
+        const { workflowId } =
+          manifest.workflows['workflows/addition.ts'].addition;
+        const created = await sender.events.create(null, {
+          eventType: 'run_created',
+          specVersion: 8,
+          eventData: {
+            deploymentId: await sender.getDeploymentId(),
+            workflowName: workflowId,
+            input: new Uint8Array([1]),
+          },
+        } as never);
+        const runId = (created as { run?: { runId: string } }).run!.runId;
+        await sender.queue(`__wkf_workflow_${workflowId}` as never, {
+          runId,
+          requestedAt: new Date(),
+        });
+
+        await vi.waitFor(
+          async () =>
+            expect(
+              (await refusalCounts(server)).reduce((n, s) => n + s.sum, 0)
+            ).toBe(1),
+          { interval: 100, timeout: 20_000 }
+        );
+        // Past world-local's 5s retry delay: a sender that retried would have
+        // been refused again by now.
+        await new Promise((resolve) => setTimeout(resolve, 7_000));
+        expect(await refusalCounts(server)).toEqual([
+          {
+            attributes: {
+              'http.route': '/.well-known/workflow/v1/flow',
+              'workflow.queue.refusal_reason': 'wrong-key',
+              'workflow.world': world,
+            },
+            sum: 1,
+          },
+        ]);
+        // One actionable line from the sender, not one per attempt.
+        const lines = errors.mock.calls.filter(([message]) =>
+          String(message).includes('refused by the app as unauthenticated')
+        );
+        expect(lines).toHaveLength(1);
+        expect(lines[0]?.[1]).toMatchObject({
+          runId,
+          hint: expect.stringContaining('WORKFLOW_QUEUE_AUTH=off'),
+        });
+        // The run stays as `start()` left it: created, never delivered. The
+        // refusing route touched nothing and the sender gave the message up,
+        // so nothing writes to it until the app's own queue re-enqueues it
+        // (its startup recovery, or `wf` reenqueue).
+        expect(await runState(fetcher, runId)).toEqual({
+          status: 'pending',
+          events: [expect.stringMatching(/^run_created:/)],
+        });
+      } finally {
+        errors.mockRestore();
+        await sender.close?.();
+      }
     }
   );
 
@@ -276,7 +414,7 @@ export function queueAuth(world: string) {
           'x-vqs-message-delivery-count': '49',
         }
       );
-      expect(pastCap.status).toBe(401);
+      await expectAuthRefusal(pastCap);
       await settle();
       expect(await runState(fetcher, runId)).toEqual(before);
       expect(server.getOutput()).toContain(

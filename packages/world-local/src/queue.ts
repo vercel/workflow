@@ -2,9 +2,11 @@ import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import {
   createAppRouteUrl,
+  createLogLimiter,
   createWorkflowUrl,
   debugLog,
   getQueueAuthKey,
+  isQueueAuthRefusal,
   QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
 import {
@@ -165,6 +167,12 @@ export type LocalQueue = Queue & {
   registerRoute(prefix: QueuePrefix, path: string): void;
 };
 
+const QUEUE_AUTH_REFUSAL_HINT =
+  'A queue delivery is only accepted by the process whose queue sent it: it carries that ' +
+  "process's in-memory key. Messages enqueued from a separate process (a script, CLI, or " +
+  'test runner) are refused by the app. On a trusted network, set WORKFLOW_QUEUE_AUTH=off ' +
+  'on the app to accept them (refused while dynamic workflows are enabled).';
+
 const DETACHED_ARRAYBUFFER_ERROR =
   'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
 const PROXY_HANDLER_DOCS_URL =
@@ -253,6 +261,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   // serves the workflow routes. Separate from `runGate`, which a sender holds
   // while it delivers to its own process's handler.
   const handlerRunGate = createRunGate();
+  // One line for the first queue auth refusal, then at most one a minute
+  // with a count, however many messages are refused.
+  const logAuthRefusal = createLogLimiter();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
   // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
@@ -503,6 +514,30 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             return;
           }
 
+          if (isQueueAuthRefusal(response)) {
+            // The runtime's own queue auth refusal (marked, unlike a proxy's
+            // bare 401). Permanent: this process's queue and its routes read
+            // the same key, so the route that refused it is another
+            // process's, and every redelivery would be refused the same way.
+            // Give the message up rather than retry it for hours. Its run is
+            // left as it is (the refusing route touched nothing), and the
+            // app's startup recovery re-enqueues a pending or running run.
+            logAuthRefusal((refusedSinceLastLog) => {
+              console.error(
+                '[world-local] Queue delivery refused by the app as unauthenticated; giving up the message (not retried)',
+                {
+                  queueName,
+                  messageId,
+                  ...(runId && { runId }),
+                  ...(stepId && { stepId }),
+                  refusedSinceLastLog,
+                  hint: QUEUE_AUTH_REFUSAL_HINT,
+                }
+              );
+            });
+            return;
+          }
+
           console.error(
             `[world-local] Queue message failed (attempt ${delivery}, HTTP ${response.status})`,
             {
@@ -513,11 +548,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               handlerError: text,
               ...(response.status === 401 && {
                 hint:
-                  'The app refused the delivery as unauthenticated. A queue delivery is only accepted ' +
-                  "by the process whose queue sent it (it carries that process's in-memory key), so " +
-                  'messages enqueued from a separate process (a script, CLI, or test runner) are ' +
-                  'refused by the app. On a trusted network, set WORKFLOW_QUEUE_AUTH=off on the app ' +
-                  'to accept them (refused while dynamic workflows are enabled).',
+                  'A 401 without the Workflow runtime’s refusal marker, so not a queue auth ' +
+                  'refusal (perhaps a proxy or auth layer in front of the app). Retrying.',
               }),
               ...(!directHandler &&
                 !routes.has(prefix) &&

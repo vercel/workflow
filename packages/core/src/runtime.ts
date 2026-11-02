@@ -4,7 +4,10 @@ import {
   RUN_ERROR_CODES,
   RunExpiredError,
 } from '@workflow/errors';
-import { setWorkflowBasePath } from '@workflow/utils';
+import {
+  resolveWorkflowTargetWorld,
+  setWorkflowBasePath,
+} from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -52,6 +55,7 @@ import {
   getSpanKind,
   getWorkflowTraceMode,
   isUsableTraceCarrier,
+  recordQueueDeliveryRefused,
   trace,
   withTraceContext,
   withWorkflowBaggage,
@@ -711,8 +715,16 @@ export function workflowEntrypoint(
         const refusal = authorizeQueueDelivery(cachedRoute.world, req);
         if (refusal) {
           cachedRoute.logQueueAuthRefusal();
-          span?.setAttributes(Attribute.HttpResponseStatusCode(refusal.status));
-          return refusal;
+          // Counted, not awaited: the 401 does not wait on a meter.
+          void recordQueueDeliveryRefused({
+            world: resolveWorkflowTargetWorld(),
+            route: new URL(req.url).pathname,
+            reason: refusal.reason,
+          });
+          span?.setAttributes(
+            Attribute.HttpResponseStatusCode(refusal.response.status)
+          );
+          return refusal.response;
         }
 
         const response = await cachedRoute.handler(req);

@@ -56,7 +56,7 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 ### `WORKFLOW_QUEUE_AUTH`
 
-Whether the flow route accepts only deliveries sent by this process's own queue. Default: `on`. Every delivery carries a random in-memory key, and the route refuses a request without it with a `401` and touches no run. Messages enqueued by another process on the same data directory (a script, the CLI, or a test runner calling `start()` or `resumeHook()` against a running app) carry that process's key, so the app refuses them; set `off` on the app to accept them on a trusted machine. `off` is refused while dynamic workflows are enabled. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+Whether the flow route accepts only deliveries sent by this process's own queue. Default: `on`. Every delivery carries a random in-memory key, and the route refuses a request without it with a `401` and touches no run. Messages enqueued by another process on the same data directory (a script, the CLI, or a test runner calling `start()` or `resumeHook()` against a running app) carry that process's key, so the app refuses them. The sending process logs one line and gives up each refused message instead of retrying it, and the run stays `pending` until the app's own queue re-enqueues it (its startup recovery does). Set `off` on the app to accept such messages on a trusted machine. `off` is refused while dynamic workflows are enabled. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
 
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 

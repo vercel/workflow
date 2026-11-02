@@ -9,10 +9,12 @@ import {
 } from '@workflow/errors/invocation';
 import {
   createAppRouteUrl,
+  createLogLimiter,
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
   getQueueAuthKey,
+  isQueueAuthRefusal,
   QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
@@ -196,12 +198,24 @@ const GraphileHelpers = z.compile(
 type HttpExecutionResult =
   | { type: 'completed' }
   | { type: 'reschedule'; timeoutSeconds: number }
+  // The runtime's queue auth refusal (see `isQueueAuthRefusal`): permanent.
+  | { type: 'refused' }
   | {
       type: 'error';
       status: number;
       text: string;
       headers: Record<string, string>;
     };
+
+/** A message's `runId`, for logs. */
+function runIdOf(message: unknown): string | undefined {
+  return typeof message === 'object' &&
+    message !== null &&
+    'runId' in message &&
+    typeof message.runId === 'string'
+    ? message.runId
+    : undefined;
+}
 
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
@@ -295,6 +309,9 @@ export function createQueue(
    */
   const ownPrefix = () =>
     getQueueTopicPrefix('workflow', resolveQueueNamespace(config.namespace));
+  // One line for the first queue auth refusal, then at most one a minute
+  // with a count, however many jobs are refused.
+  const logAuthRefusal = createLogLimiter();
   /** In-process handlers by queue prefix (`registerHandler`). */
   const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
@@ -776,6 +793,8 @@ export function createQueue(
     }
     const text = await response.text();
 
+    if (isQueueAuthRefusal(response)) return { type: 'refused' };
+
     if (!response.ok) {
       return {
         type: 'error',
@@ -1070,7 +1089,9 @@ export function createQueue(
           attempt: graphileHelpers.data.job.attempts,
         });
       }
-      const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
+      const executeTask = async (): Promise<
+        'completed' | 'rescheduled' | 'refused'
+      > => {
         const result = await deliverMessage({
           queueName,
           prefix,
@@ -1089,6 +1110,31 @@ export function createQueue(
 
         if (result.type === 'completed') {
           return 'completed';
+        }
+
+        if (result.type === 'refused') {
+          // Permanent: this worker and the routes of its own process read the
+          // same key, so the refusing route is another process's (a separate
+          // web tier, say), and every retry would be refused the same way.
+          // Throwing would have Graphile retry it for days. Returning retires
+          // the job at once; the refusing route touched no run.
+          logAuthRefusal((refusedSinceLastLog) => {
+            console.error(
+              '[world-postgres] Queue delivery refused by the app as unauthenticated; retiring the job (not retried)',
+              {
+                queueName,
+                messageId: messageData.messageId,
+                ...(runIdOf(body) && { runId: runIdOf(body) }),
+                refusedSinceLastLog,
+                hint:
+                  'A delivery is only accepted by the process whose worker sent it (it carries ' +
+                  "that process's in-memory key), so a worker cannot deliver to a route served by " +
+                  'another process or host. On a trusted network, set WORKFLOW_QUEUE_AUTH=off on ' +
+                  'the app serving the route (refused while dynamic workflows are enabled).',
+              }
+            );
+          });
+          return 'refused';
         }
 
         if (result.type === 'reschedule') {
