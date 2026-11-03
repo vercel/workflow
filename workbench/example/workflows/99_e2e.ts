@@ -1612,6 +1612,29 @@ export async function crossContextSerdeWorkflow() {
 }
 
 //////////////////////////////////////////////////////////
+// Serde classes keyed by imported WORKFLOW_SERIALIZE symbols
+//////////////////////////////////////////////////////////
+
+import { createTemperature, warmTemperature } from './serde-steps';
+
+/**
+ * Round-trips a class whose only serde marker is a computed key imported from
+ * a non-`@workflow` module (the `@ai-sdk/openai` shape from #4897). The
+ * workflow never imports Temperature; it only moves instances between steps.
+ */
+export async function importedSerdeKeyWorkflow() {
+  'use workflow';
+
+  const cold = await createTemperature(20);
+  const warm = await warmTemperature(cold, 5);
+
+  return {
+    cold: { celsius: cold.celsius },
+    warm: { celsius: warm.celsius },
+  };
+}
+
+//////////////////////////////////////////////////////////
 // Instance Method Step Tests
 //////////////////////////////////////////////////////////
 

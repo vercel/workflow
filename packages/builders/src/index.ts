@@ -54,6 +54,7 @@ export {
   useWorkflowPattern,
   type WorkflowPatternMatch,
   workflowSdkPathPattern,
+  workflowSerdeComputedPropertyPattern,
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';
