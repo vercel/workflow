@@ -34,6 +34,12 @@ export interface StateResolver {
    * were not added displays as a placeholder.
    */
   readonly revivers: Revivers;
+  /**
+   * How many values the revivers could not rebuild because their records were
+   * not added yet. When it grows after hydrating a value, add the run's newer
+   * payloads and hydrate the value again.
+   */
+  readonly unresolved: number;
 }
 
 /**
@@ -44,11 +50,15 @@ export interface StateResolver {
 export function createStateResolver(revivers: Revivers = {}): StateResolver {
   const context = new StateContext();
   context.allowPlaceholders = true;
+  let unresolved = 0;
   const placeholder = (record: Record<string, unknown>) =>
     record.kind === 'source' || record.kind === 'full'
       ? record.value
       : `<workflow/state ${String(record.version)}>`;
   return {
+    get unresolved() {
+      return unresolved;
+    },
     add(data) {
       if (!(data instanceof Uint8Array) || peekFormatPrefix(data) !== 'devl')
         return;
@@ -63,6 +73,7 @@ export function createStateResolver(revivers: Revivers = {}): StateResolver {
         try {
           return context.revive(record);
         } catch {
+          unresolved++;
           return placeholder(record);
         }
       },

@@ -56,6 +56,7 @@ import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
+  createRunStateHydratorForEnv,
   fetchSpanDetailResource,
   getErrorMessage,
   getErrorTitle,
@@ -356,12 +357,19 @@ export function RunDetailView({
     enabled: activeTab === 'events',
   });
 
+  // Reused across inspections so the run's history is read at most once.
+  const stateHydrator = useMemo(
+    () => createRunStateHydratorForEnv(env, runId),
+    [env, runId]
+  );
+
   const fetchSpanDetail = useCallback<FetchSpanDetail>(
     (selection) =>
       fetchSpanDetailResource(env, selection, {
         encryptionKey: encryptionKey ?? undefined,
+        stateHydrator,
       }),
-    [env, encryptionKey]
+    [env, encryptionKey, stateHydrator]
   );
 
   const [isDecrypting, setIsDecrypting] = useState(false);
