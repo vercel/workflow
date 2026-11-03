@@ -176,7 +176,7 @@ npx workflow inspect runs --backend vercel
 npx workflow web --backend vercel
 ```
 
-The CLI automatically retrieves authentication from the Vercel CLI (`vercel login`) and infers project/team IDs from your local Vercel project linking.
+The CLI automatically retrieves authentication from the Vercel CLI (`vercel login`) and infers project/team IDs from your local Vercel project linking. In a monorepo, it uses the nearest `.vercel/project.json`.
 
 To use the local observability UI instead of the Vercel dashboard:
 
@@ -184,7 +184,7 @@ To use the local observability UI instead of the Vercel dashboard:
 npx workflow web --backend vercel --localUi
 ```
 
-To override the automatic configuration:
+To override the automatic configuration, pass the values explicitly. `--project` and `--team` take precedence over the linked project:
 
 ```bash
 npx workflow inspect runs \

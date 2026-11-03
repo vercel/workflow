@@ -10,7 +10,7 @@ related:
 
 The Workflow CLI uses flags first, then environment variables, then defaults or local inference.
 
-Vercel project and auth settings can often be inferred from `.vercel/project.json` and your Vercel CLI login.
+Vercel project and auth settings can often be inferred from `.vercel/project.json` and your Vercel CLI login. In a monorepo, the CLI uses the nearest `.vercel/project.json` before the repository's `.vercel/repo.json`.
 
 Whichever way they are resolved, the CLI ends up building a Vercel World from an auth token plus a project ID, team ID, and environment — the same four values any external client needs. Set them explicitly when there is no interactive `vercel login` to infer from, or when writing your own script instead of using the CLI; see [Connecting from outside a deployment](/worlds/vercel#connecting-from-outside-a-deployment).
 
@@ -32,13 +32,15 @@ Whichever way they are resolved, the CLI ends up building a Vercel World from an
 
 - Environment variable: `WORKFLOW_VERCEL_PROJECT`
 - Default: inferred when possible
-- Vercel project ID for `--backend vercel`.
+- Vercel project ID or slug for `--backend vercel`.
+- Takes precedence over the project in the `.vercel` link. When `--project` names a different project, pass `--team` too, or the CLI uses the linked team and logs a warning.
 
 ### `--team`
 
 - Environment variable: `WORKFLOW_VERCEL_TEAM`
 - Default: inferred when possible
 - Vercel team ID for `--backend vercel`.
+- Takes precedence over the team in the `.vercel` link.
 
 ### `WORKFLOW_VERCEL_PROJECT_NAME`
 
