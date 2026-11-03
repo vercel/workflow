@@ -110,6 +110,18 @@ export function getReturnValueMaxLongPolls(): number {
 }
 
 /**
+ * Whether `await run.returnValue` may use the World's long poll
+ * (`runs.waitForTerminalStatus`). Always `true`: the
+ * `WORKFLOW_RETURN_VALUE_LONG_POLL` kill switch is no longer read.
+ *
+ * @deprecated No longer read by the runtime; always returns `true`.
+ * @internal
+ */
+export function isReturnValueLongPollEnabled(): boolean {
+  return true;
+}
+
+/**
  * A `ReadableStream` extended with workflow-specific helpers.
  */
 export type WorkflowReadableStream<R = any> = ReadableStream<R> & {

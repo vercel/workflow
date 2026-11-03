@@ -835,6 +835,17 @@ export function appendEventLog(
   log.cursor = appended.cursor ?? log.cursor;
 }
 
+/**
+ * Whether a replay refuses to run over a log with a hole in it (see
+ * {@link findEventSlotGap}). Always `true`: the `WORKFLOW_SLOT_GAP_CHECK`
+ * opt-out is no longer read.
+ *
+ * @deprecated No longer read by the runtime; always returns `true`.
+ */
+export function isSlotGapCheckEnabled(): boolean {
+  return true;
+}
+
 /*
  * Merging into a log a replay is midway through reading.
  *

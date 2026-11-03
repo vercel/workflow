@@ -189,6 +189,7 @@ export {
   isLegacySpecVersion,
   mintedSpecVersion,
   requiresNewerWorld,
+  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_DEFAULT_MINTED,
   SPEC_VERSION_ENV_VAR,

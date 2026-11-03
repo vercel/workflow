@@ -98,8 +98,8 @@ import {
 } from './invocation-retention.js';
 import { purgeRunUserDataIfZeroRetention } from './retention.js';
 import {
-  RUN_STATUS_POLL_INTERVAL_MS,
   notifyRunTerminal,
+  RUN_STATUS_POLL_INTERVAL_MS,
   type RunStatusListener,
 } from './run-status.js';
 import {

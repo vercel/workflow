@@ -161,6 +161,14 @@ export const SPEC_VERSION_DEFAULT_MINTED = SPEC_VERSION_CURRENT as SpecVersion;
  */
 export const SPEC_VERSION_ENV_VAR = 'WORKFLOW_SPEC_VERSION';
 
+/**
+ * Environment variable that used to opt new runs out of the sealed log. It is
+ * no longer read: set {@link SPEC_VERSION_ENV_VAR} to `6` instead.
+ *
+ * @deprecated No longer read. Set {@link SPEC_VERSION_ENV_VAR} instead.
+ */
+export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
+
 /** What a World can do that decides which spec versions it may mint. */
 export interface MintedSpecVersionOptions {
   /**

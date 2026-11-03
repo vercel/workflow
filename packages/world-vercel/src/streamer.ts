@@ -9,11 +9,11 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import {
-  type GetChunksOptions,
-  type StreamChunksResponse,
-  type Streamer,
-  type StreamInfoResponse,
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+  StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
 import {
