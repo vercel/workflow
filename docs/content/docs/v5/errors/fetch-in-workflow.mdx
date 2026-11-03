@@ -1,6 +1,6 @@
 ---
 title: fetch-in-workflow
-description: Make HTTP requests, including AI SDK calls, from step functions instead of workflow functions.
+description: Make HTTP requests from step functions instead of workflow functions.
 type: troubleshooting
 summary: Resolve the fetch-in-workflow error by moving HTTP requests into a step function.
 prerequisites:
@@ -29,7 +29,7 @@ Many libraries make HTTP requests under the hood. For example, the AI SDK's `gen
 
 ## Quick fix
 
-Move the code that makes the request into a step function, and call that step from the workflow. Steps run with full Node.js access, so the global `fetch()`, and libraries such as the AI SDK that call it, work as usual there. The step's return value is recorded in the event log, so the workflow replays deterministically without making the request again.
+Move the code that makes the request into a step function, and call that step from the workflow. Steps have full Node.js access, so `fetch()` and libraries that call it work as usual.
 
 **Before:**
 
@@ -57,7 +57,7 @@ import { generateText } from "ai";
 async function generate(prompt: string) {
   "use step"; // [!code highlight]
 
-  // generateText makes HTTP requests and reads the response inside the step
+  // generateText calls fetch() under the hood
   const result = await generateText({
     model: "spacexai/grok-4.6",
     prompt,
@@ -73,19 +73,17 @@ export async function chatWorkflow(prompt: string) {
 }
 ```
 
-Return only the values the workflow needs (here `result.text`): step return values must be [serializable](/docs/foundations/serialization), and smaller results keep the event log small.
-
 ## Common scenarios
 
 ### AI SDK integration
 
-For agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent), or [`HarnessAgent`](https://ai-sdk.dev/v7/docs/ai-sdk-harnesses/workflow-utilities) for coding-agent harnesses. They run each model call and step-backed tool as a step, so you don't call AI SDK functions from the workflow function yourself.
+For agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) or [`HarnessAgent`](https://ai-sdk.dev/v7/docs/ai-sdk-harnesses/workflow-utilities), which run model calls as steps.
 
-For a single `generateText()`, `generateObject()`, or `streamText()` call, wrap it in a step function as shown above. Reading the response, streaming included, then happens inside the step.
+For single AI SDK calls, use a step function as shown above.
 
 ### Direct API calls
 
-For a plain HTTP request whose response you only need as JSON or text, you can use the `fetch` step function from `workflow` directly in the workflow function:
+For simple requests, you can use the `fetch` step function from `workflow` directly:
 
 ```typescript lineNumbers
 import { fetch } from "workflow";
@@ -100,7 +98,5 @@ export async function dataWorkflow() {
   return data;
 }
 ```
-
-If you need to process the response further, for example to read `response.body` as a stream, make the request and process the response together inside your own step function instead.
 
 For more details on the `fetch` step function, see the [fetch API reference](/docs/api-reference/workflow/fetch).

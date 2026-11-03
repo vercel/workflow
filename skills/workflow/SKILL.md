@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.18'
+  version: '1.19'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -115,7 +115,7 @@ When you need logic directly in a workflow function (not in a step), these restr
 
 | Limitation | Workaround |
 |------------|------------|
-| No `fetch()` | Make the request (and any AI SDK call) in a step function; for simple JSON/text requests, `import { fetch } from "workflow"` and call it directly |
+| No `fetch()` | Make the request (and AI SDK calls) in a step function |
 | No `setTimeout`/`setInterval` | Use `sleep("5s")` from `"workflow"` |
 | No Node.js modules (fs, crypto, etc.) | Move to a step function |
 
@@ -125,7 +125,7 @@ When you need logic directly in a workflow function (not in a step), these restr
 import { generateText } from "ai";
 
 async function summarize(text: string) {
-  "use step"; // generateText calls fetch and reads the response here
+  "use step";
   const { text: summary } = await generateText({
     model: "spacexai/grok-4.6",
     prompt: `Summarize: ${text}`,
@@ -139,7 +139,7 @@ export async function myWorkflow(text: string) {
 }
 ```
 
-Do not assign `fetch` from `"workflow"` to `globalThis.fetch` to run AI SDK calls in the workflow function. For agents, use `WorkflowAgent` (below), which runs model calls in steps.
+For agents, use `WorkflowAgent` (below).
 
 **Note:** Plain `"provider/model"` strings use Vercel AI Gateway. Do not construct a direct provider instance unless the user explicitly needs a provider-only feature.
 

@@ -91,11 +91,7 @@ We call `fetch()` with a URL and optional request options, like the standard fet
 
 This API lets you use `fetch` in a workflow. You can also implement a custom fetch for different error handling and retry logic.
 
-### Reading the response body
-
-Inside a workflow function, `response.json()`, `response.text()`, and `response.arrayBuffer()` each read the body through a step, so the result is recorded in the event log and replays deterministically. Reading `response.body` as a stream is not available in workflow functions. To stream or otherwise process a response, make the request and read the response together inside your own step function.
-
-Don't assign this `fetch` to `globalThis.fetch` to make libraries such as the AI SDK work inside a workflow function. Call those libraries from a step function instead, or for agents use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent). See [`fetch-in-workflow`](/docs/errors/fetch-in-workflow).
+Libraries that call `fetch` internally, like AI SDK calls, should be called from a step function. For agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent). See [`fetch-in-workflow`](/docs/errors/fetch-in-workflow).
 
 ### Customizing fetch behavior
 

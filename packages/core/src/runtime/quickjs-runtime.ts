@@ -462,6 +462,15 @@ if (typeof ReadableStream === "undefined") {
   // Minimal ReadableStream that stores body data for Response.json()/text()
   globalThis.ReadableStream = function() {};
   globalThis.ReadableStream.prototype.__bodyData = null;
+  // Reading a body as a stream is not supported in workflow functions; match
+  // the node:vm engine's error instead of failing with "not a function".
+  var streamNotSupported = function() {
+    throw new Error("This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.");
+  };
+  ["cancel", "getReader", "pipeThrough", "pipeTo", "tee", "values"].forEach(function(name) {
+    globalThis.ReadableStream.prototype[name] = streamNotSupported;
+  });
+  globalThis.ReadableStream.prototype[Symbol.asyncIterator] = streamNotSupported;
 }
 
 if (typeof WritableStream === "undefined") {
