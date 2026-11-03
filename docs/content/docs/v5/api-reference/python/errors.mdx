@@ -1,0 +1,256 @@
+---
+title: Errors
+description: Error classes exported by the vercel-workflow Python SDK.
+type: reference
+summary: Handle retry control, failed runs, hooks, serialization, validation, and backend errors.
+prerequisites:
+  - /docs/foundations/errors-and-retries
+related:
+  - /docs/api-reference/python/run
+  - /docs/api-reference/python/base-hook
+  - /docs/api-reference/python/serialization
+---
+
+Python Workflow SDK errors can be imported from either `vercel.workflow` or
+`vercel.workflow.errors`:
+
+```python
+from vercel.workflow import FatalError, RetryableError
+```
+
+Use Python's normal `isinstance(error, ErrorClass)` checks when narrowing
+errors. The Python classes do not expose the TypeScript SDK's static `.is()`
+helpers.
+
+## Step retry control
+
+### FatalError
+
+```python
+class FatalError(Exception):
+    fatal = True
+```
+
+When a `FatalError` is raised in a step, the step is marked as permanently
+failed and is not retried. Use it when you do not want a specific step failure
+to retry.
+
+```python
+if not customer_id:
+    raise FatalError("customer_id is required")
+```
+
+### RetryableError
+
+```python
+RetryableError(
+    message: str,
+    *,
+    retry_after: int | float | timedelta | datetime | str | None = None,
+)
+```
+
+When a `RetryableError` is raised in a step, the step is retried. Use it when
+you want to retry after a specific duration or at a specific date and time.
+
+`retry_after` accepts the same values as
+[`sleep()`](/docs/api-reference/python/sleep); numeric values are seconds. It
+defaults to one second.
+
+The resolved timezone-aware date is available as `error.retry_at`.
+`RetryableError` changes retry timing, not the number of attempts configured
+by `@wf.step(max_retries=...)`.
+
+<Callout>
+Ordinary exceptions and `RetryableError` both retry while attempts remain. The
+difference is that `RetryableError` has a configurable `retry_after` value.
+</Callout>
+
+## Run errors
+
+### WorkflowRunFailedError
+
+```python
+WorkflowRunFailedError(
+    run_id: str,
+    error: Any,
+    *,
+    error_code: str | None = None,
+)
+```
+
+`WorkflowRunFailedError` is raised when awaiting
+[`Run.return_value()`](/docs/api-reference/python/run#awaiting-a-result) on a
+workflow run whose status is `"failed"`. The workflow cannot produce a return
+value.
+
+| Field | Description |
+| --- | --- |
+| `run_id` | Failed workflow run ID. |
+| `error` | Deserialized original error, or its best available representation. |
+| `error_code` | Runtime classification such as `USER_ERROR`, `REPLAY_DIVERGENCE`, or `WORLD_CONTRACT_ERROR`, when available. |
+
+The `error` property holds the original value hydrated through the workflow
+serialization pipeline. When it is an exception, it is also attached as
+`WorkflowRunFailedError.__cause__`; `error_code` contains the high-level error
+classification when available.
+
+### RemoteError
+
+```python
+RemoteError(message: str, *, name: str)
+```
+
+Represents an error serialized by another SDK when its concrete class is not
+available in Python. The original class name is in `name`, and the message is
+in `message`.
+
+## Hook errors
+
+### HookNotFoundError
+
+```python
+HookNotFoundError(
+    *,
+    token: str | None = None,
+    hook_id: str | None = None,
+)
+```
+
+Raised when a hook lookup or resume targets a hook that does not exist. This
+typically happens when:
+
+- The workflow run has ended or expired.
+- The hook was disposed.
+- The workflow has not registered the hook yet.
+
+The known identifier is available as `token` or `hook_id`.
+
+### HookConflictError
+
+```python
+HookConflictError(
+    token: str,
+    conflicting_run_id: str | None = None,
+)
+```
+
+A custom hook token is already owned by another active workflow run. Hook
+tokens must be unique across active workflows. Read `token` and, when supplied
+by the backend, `conflicting_run_id`. Prefer
+`await event.get_conflict()` when the workflow wants to handle ownership as a
+normal branch.
+
+### HookDisposedError
+
+```python
+HookDisposedError(token: str)
+```
+
+Raised when code uses a bare `await` on a disposed
+[`HookEvent`](/docs/api-reference/python/base-hook#hookevent). The token is
+available as `error.token`. Asynchronous iteration over a disposed event ends
+normally instead.
+
+## Serialization and registration errors
+
+### SerializationError
+
+```python
+class SerializationError(RuntimeError): ...
+```
+
+A payload could not be encoded, or arrived in a format the SDK could not read.
+
+### TypeValidationError
+
+```python
+class TypeValidationError(FatalError): ...
+```
+
+A received value did not match the workflow, step, hook, or typed-stream
+annotation used to validate it. It is fatal because retrying the same value
+cannot fix its type.
+
+### StepNotRegisteredError
+
+```python
+StepNotRegisteredError(step_name: str)
+```
+
+`StepNotRegisteredError` is raised when the runtime tries to execute a step
+function that is not registered in the current deployment. This usually means
+the module defining the step was not imported when the `Workflows` registry
+was created. The name is available as `error.step_name`.
+
+This is a `FatalError`, so the step is not retried. Control returns to the
+workflow function, which can catch the failure.
+
+## Backend errors
+
+### WorkflowWorldError
+
+```python
+WorkflowWorldError(
+    message: str,
+    *,
+    status: int,
+    code: str | None = None,
+    url: str | None = None,
+)
+```
+
+Base error for a non-success response from the workflow backend that is not
+mapped to a more specific error. It exposes `status`, `code`, and `url`.
+
+<Callout type="info">
+`RunExpiredError` and `ThrottleError` subclass `WorkflowWorldError`. In the
+Python SDK, `TooEarlyError` and `EntityConflictError` are separate `Exception`
+classes rather than `WorkflowWorldError` subclasses.
+</Callout>
+
+<Callout>
+The workflow runtime handles most backend errors automatically. Application
+code usually encounters one only through a runtime operation such as reading a
+run or stream, resuming a hook, or when an infrastructure failure persists.
+</Callout>
+
+### RunExpiredError
+
+Thrown by World implementations when a workflow run has expired and can no
+longer be operated on. It corresponds to HTTP 410 Gone semantics and is a
+`WorkflowWorldError`.
+
+### ThrottleError
+
+```python
+ThrottleError(
+    message: str,
+    *,
+    status: int,
+    code: str | None = None,
+    url: str | None = None,
+    retry_after: int | None = None,
+)
+```
+
+Thrown when a request to the workflow backend is rate-limited. It corresponds
+to HTTP 429 Too Many Requests semantics and is a `WorkflowWorldError`.
+`retry_after`, when present, is the number of seconds suggested by the server.
+
+### TooEarlyError
+
+```python
+TooEarlyError(message: str, retry_after: int | None = None)
+```
+
+Thrown when a step delivery arrives before its scheduled retry time. It
+corresponds to HTTP 425 Too Early semantics. `retry_after`, when present, is
+the number of seconds remaining before delivery should be retried.
+
+### EntityConflictError
+
+Thrown by World implementations when a storage operation conflicts with the
+current entity state, such as writing an event that already exists. It
+corresponds to HTTP 409 Conflict semantics. The runtime handles expected
+idempotent conflicts during replay and event deduplication.

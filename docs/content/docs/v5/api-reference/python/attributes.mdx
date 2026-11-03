@@ -1,0 +1,116 @@
+---
+title: Run attributes
+description: Attach string metadata to Python workflow runs for observability.
+type: reference
+summary: Use set_attributes inside a workflow or step function to set run attributes.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability/attributes
+  - /docs/api-reference/python/run
+  - /docs/api-reference/python/get-workflow-metadata
+  - /docs/api-reference/python/errors
+---
+
+`set_attributes()` attaches string metadata to the current workflow run.
+
+<Callout type="warn">
+Attributes are never encrypted. Do not store secrets, credentials, personal
+data, or other sensitive values in them.
+</Callout>
+
+## set_attributes()
+
+```python
+async def set_attributes(
+    attributes: Mapping[str, str] | None = None,
+    /,
+    *,
+    allow_reserved_attributes: bool = False,
+    **kwargs: str,
+) -> None
+```
+
+`set_attributes()` accepts a mapping, keyword arguments, or both. Keyword
+arguments override matching keys from the mapping, like `dict()`.
+
+```python
+from vercel.workflow import set_attributes
+
+@wf.workflow
+async def fulfill_order(order_id: str):
+    await set_attributes({"service.name": "checkout"}, order_id=order_id)
+    await reserve_inventory(order_id)
+    await set_attributes(phase="reserved")
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `attributes` | `Mapping[str, str] \| None` | `None` | Attribute pairs to merge into the run. |
+| `allow_reserved_attributes` | `bool` | `False` | Permit keys beginning with `$`. Intended for framework and library code. |
+| `**kwargs` | `str` values | — | Additional pairs to merge. |
+
+An empty call writes nothing.
+
+## Usage
+
+Call `set_attributes()` from a workflow or step function. Calling it from
+plain application code is not supported because there is no active workflow
+run.
+
+Attribute values must be strings. Python uses the separate
+`remove_attributes()` function to remove attributes; `None` is not part of the
+public `set_attributes()` signature.
+
+## remove_attributes()
+
+```python
+async def remove_attributes(
+    *keys: str,
+    allow_reserved_attributes: bool = False,
+) -> None
+```
+
+```python
+from vercel.workflow import remove_attributes
+
+await remove_attributes("order_id", "phase")
+```
+
+Removing a key that does not exist is a no-op. Reserved keys follow the same
+`allow_reserved_attributes` rule as `set_attributes()`.
+
+## Reading attributes
+
+```python
+run = Run(run_id)
+attributes = await run.attributes()
+```
+
+`Run.attributes()` returns a new `dict[str, str]` containing the run's
+current attributes.
+
+## Limits
+
+| Limit | Value |
+| --- | --- |
+| Attribute key | 256 UTF-16 code units |
+| Attribute value | 256 UTF-8 bytes |
+| Attributes per run | 64 after merging |
+
+Keys cannot be empty. Attribute validation failures and calls made outside a
+workflow or step raise
+[`FatalError`](/docs/api-reference/python/errors#fatalerror) before writing the
+change.
+
+Calls from both workflow and step bodies append a native `attr_set` event,
+which the World materializes onto the run's attributes. Workflow-originated
+events record a workflow writer; step-originated events record the step ID and
+attempt.
+
+Native attributes require spec version 4 or later. Step-body storage errors
+are raised from `set_attributes()` or `remove_attributes()`; catch them inside
+the step if the write should be best-effort. Workflow-body writes are committed
+when the workflow suspends: transient storage errors are retried with the
+suspension, while a write rejected by the World fails the run with the
+validation error.

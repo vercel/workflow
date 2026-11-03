@@ -16,6 +16,7 @@
     "workflow-errors",
     "workflow-serde",
     "workflow-ai",
-    "vitest"
+    "vitest",
+    "python"
   ]
 }

@@ -3,18 +3,24 @@ title: Streaming
 description: Stream data in real time to clients for progress updates and incremental content delivery.
 type: conceptual
 summary: Stream data to clients in real time without waiting for workflow completion.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/api-reference/workflow/get-writable
+  - /docs/api-reference/python/get-writable
   - /docs/ai/resumable-streams
 ---
 
 Workflows can stream data to clients in real time without waiting for the entire workflow to complete. Clients can receive progress updates, AI-generated content, log messages, and other incremental data as workflows execute.
 
-## Getting started with `getWritable()`
+## Getting started
 
-Every workflow run has a default writable stream that steps can write to using [`getWritable()`](/docs/api-reference/workflow/get-writable). Data written to this stream becomes immediately available to clients consuming the workflow's output.
+Every workflow run has a default writable stream that steps can write to using <LanguageLink ts="/docs/api-reference/workflow/get-writable" py="/docs/api-reference/python/get-writable"><LanguageText code ts="getWritable()" py="get_writable()" /></LanguageLink>. Data written to this stream becomes immediately available to clients consuming the workflow's output.
+
+<LanguageContent value="ts">
 
 ```typescript title="workflows/simple-streaming.ts" lineNumbers
 import { getWritable } from "workflow";
@@ -38,9 +44,33 @@ export async function simpleStreamingWorkflow() {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/workflows/simple_streaming.py" lineNumbers
+from app.workflow import wf
+from vercel.workflow import get_writable
+
+@wf.step
+async def write_progress(message: str):
+    # Steps can write to the run's default stream
+    writable = get_writable(type=str)  # [!code highlight]
+    await writable.write(message)
+
+@wf.workflow
+async def simple_streaming_workflow():
+    await write_progress("Starting task...")
+    await write_progress("Processing data...")
+    await write_progress("Task complete!")
+```
+
+</LanguageContent>
+
 ### Consuming the stream
 
-Use the `Run` object's `readable` property to consume the stream from your API route:
+Use the `Run` object's `readable` to consume the stream from your API route:
+
+<LanguageContent value="ts">
 
 ```typescript title="app/api/stream/route.ts" lineNumbers
 import { start } from "workflow/api";
@@ -56,7 +86,28 @@ export async function POST() {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/api/stream.py" lineNumbers
+from fastapi.responses import StreamingResponse
+
+from app.workflows.simple_streaming import simple_streaming_workflow
+from vercel import workflow
+
+@app.post("/api/stream")
+async def stream():
+    run = await workflow.start(simple_streaming_workflow)
+
+    # Return the readable stream to the client
+    return StreamingResponse(run.readable(type=str), media_type="text/plain")
+```
+
+</LanguageContent>
+
 When a client makes a request to this endpoint, they'll receive each message as it's written, without waiting for the workflow to complete.
+
+<LanguageContent value="ts">
 
 ### Avoiding function timeouts after client disconnects
 
@@ -64,7 +115,7 @@ On Vercel, `run.readable` and `run.getReadable()` reconnect to Workflow's stream
 
 For streaming routes using the Node.js runtime, opt in to [request cancellation](https://vercel.com/docs/functions/functions-api-reference#enable-cancellation) in `vercel.json`:
 
-```json filename="vercel.json"
+```json title="vercel.json"
 {
   "functions": {
     "app/api/stream/route.ts": {
@@ -82,9 +133,13 @@ Cancellation applies to every function matching the configured path or glob, eve
 
 This setting prevents abandoned stream readers from consuming the rest of a function invocation. It does not extend the function's maximum duration. An actively connected streaming response can still reach the configured limit, at which point the client should reconnect to the durable stream.
 
+</LanguageContent>
+
 ### Resuming streams from a specific point
 
-Use `run.getReadable({ startIndex })` to resume a stream from a specific position. This is useful for reconnecting after timeouts or network interruptions:
+Use <LanguageText code ts="run.getReadable({ startIndex })" py="run.readable(start_index=start_index)" /> to resume a stream from a specific position. This is useful for reconnecting after timeouts or network interruptions:
+
+<LanguageContent value="ts">
 
 ```typescript title="app/api/resume-stream/[runId]/route.ts" lineNumbers
 import { getRun } from "workflow/api";
@@ -109,11 +164,33 @@ export async function GET(
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/api/resume_stream.py" lineNumbers
+from fastapi.responses import StreamingResponse
+from vercel.workflow import Run
+
+@app.get("/api/resume-stream/{run_id}")
+async def resume_stream(
+    run_id: str,
+    # Client provides the last chunk index they received
+    start_index: int | None = None,  # [!code highlight]
+):
+    run = Run(run_id)
+    stream = run.readable(type=str, start_index=start_index)  # [!code highlight]
+    return StreamingResponse(stream, media_type="text/plain")
+```
+
+</LanguageContent>
+
 Clients can reconnect and continue receiving data from where they left off instead of restarting from the beginning.
 
-`startIndex` also supports **negative values** to read relative to the end of the stream. For example, `startIndex: -5` starts 5 chunks before the current end. This is useful when you want to show the most recent output without reading the entire stream history.
+<LanguageText code ts="startIndex" py="start_index" /> also supports **negative values** to read relative to the end of the stream. For example, <LanguageText code ts="startIndex: -5" py="start_index=-5" /> starts 5 chunks before the current end. This is useful when you want to show the most recent output without reading the entire stream history.
 
 On an active (not-yet-closed) stream, the negative index resolves relative to the chunk count at connection time; any chunks written afterward are still delivered normally.
+
+<LanguageContent value="ts">
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript
@@ -121,15 +198,34 @@ On an active (not-yet-closed) stream, the negative index resolves relative to th
 const stream = run.getReadable({ startIndex: -10 });
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python
+# Read only the last 10 chunks
+stream = run.readable(start_index=-10)
+```
+
+</LanguageContent>
+
 If the absolute value exceeds the total number of chunks, reading starts from the beginning (the value is clamped to 0).
 
 <Callout type="warn">
-Because streams are live and continue receiving chunks, negative `startIndex` values resolve to different absolute positions on each call. Accurate pagination over a live stream requires cursor-based access, which is not yet supported. Keep this in mind when building clients that paginate over stream data.
+Because streams are live and continue receiving chunks, negative <LanguageText code ts="startIndex" py="start_index" /> values resolve to different absolute positions on each call. Accurate pagination over a live stream requires cursor-based access, which is not yet supported. Keep this in mind when building clients that paginate over stream data.
 </Callout>
 
 ## Streams as data types
 
+<LanguageContent value="ts">
+
 [`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow SDK makes serializable. Workflow SDK lets you pass these standard types between functions while maintaining their streaming capabilities.
+
+</LanguageContent>
+<LanguageContent value="py">
+
+Python uses serializable [`WorkflowWritable`](/docs/api-reference/python/get-writable#workflowwritable) handles for durable output streams. A workflow can obtain a handle with `get_writable()` and pass it to steps; inside a step, the revived handle can write to the same stream. Pass a type to `get_writable(type=Model)` or `run.readable(type=Model)` to encode, decode, and validate typed chunks. An annotation such as `WorkflowWritable[Model]` carries that type when a handle crosses a workflow or step boundary.
+
+</LanguageContent>
 
 Unlike regular values that are fully serialized to the [event log](/docs/how-it-works/event-sourcing), streams maintain their streaming capabilities when passed between functions.
 
@@ -149,6 +245,8 @@ Persistent, resumable storage from the World implementation lets Workflow SDK st
 </Callout>
 
 ### Passing streams as arguments
+
+<LanguageContent value="ts">
 
 Because streams are serializable data types, you don't need to use [`getWritable()`](/docs/api-reference/workflow/get-writable). You can pass your own streams as arguments from outside a workflow into steps.
 
@@ -192,6 +290,53 @@ async function processInputStream(input: ReadableStream<Uint8Array>) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+Pass a `WorkflowWritable` handle from a workflow to any step that needs to produce output:
+
+```python title="app/workflows/streaming.py" lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel.workflow import WorkflowWritable, get_writable
+
+
+class Progress(pydantic.BaseModel):
+    item: str
+    status: str
+
+@wf.workflow
+async def stream_processing_workflow(items: list[str]):
+    progress = get_writable(type=Progress)
+    # Workflow passes stream to step for processing
+    await process_items(items, progress)  # [!code highlight]
+
+@wf.step
+async def process_items(
+    items: list[str],
+    progress: WorkflowWritable[Progress],  # [!code highlight]
+):
+    # Step writes to the stream
+    for item in items:
+        await progress.write(Progress(item=item, status="complete"))
+    await progress.close()
+```
+
+Read and validate the typed chunks by passing the same model to `Run.readable()`:
+
+```python title="app/api/progress.py" lineNumbers
+from app.workflows.streaming import Progress
+from vercel.workflow import Run
+
+async def read_progress(run_id: str):
+    run = Run(run_id)
+    async for progress in run.readable(type=Progress):
+        print(progress.item, progress.status)
+```
+
+</LanguageContent>
+
 ## Important limitation
 
 <Callout type="info">
@@ -203,6 +348,8 @@ You cannot read from or write to streams directly within a workflow function. Al
 Workflow functions must be deterministic to support replay. Streams bypass the [event log](/docs/how-it-works/event-sourcing) for performance, so reading stream data in a workflow would break determinism because each replay could see different data. Requiring all stream operations to happen in steps ensures consistent behavior.
 
 For more on determinism and replay, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
+
+<LanguageContent value="ts">
 
 ```typescript title="workflows/bad-example.ts" lineNumbers
 import { getWritable } from "workflow";
@@ -239,9 +386,44 @@ async function writeToStream(data: string) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/workflows/bad_example.py" lineNumbers
+from app.workflow import wf
+from vercel.workflow import get_writable
+
+@wf.workflow
+async def bad_workflow():
+    writable = get_writable(type=str)
+
+    # Cannot read/write streams in workflow context
+    await writable.write("data")  # [!code highlight]
+```
+
+```python title="app/workflows/good_example.py" lineNumbers
+from app.workflow import wf
+from vercel.workflow import get_writable
+
+@wf.workflow
+async def good_workflow():
+    # Delegate stream operations to steps
+    await write_to_stream("data")
+
+@wf.step
+async def write_to_stream(data: str):
+    # Stream operations must happen in steps
+    writable = get_writable(type=str)
+    await writable.write(data)
+```
+
+</LanguageContent>
+
 ## Namespaced streams
 
-Use `getWritable({ namespace: 'name' })` to create multiple independent streams for different types of data. This is useful when you want to separate logs, metrics, data outputs, or other distinct channels.
+Use <LanguageText code ts="getWritable({ namespace: 'name' })" py="get_writable(namespace='name')" /> to create multiple independent streams for different types of data. This is useful when you want to separate logs, metrics, data outputs, or other distinct channels.
+
+<LanguageContent value="ts">
 
 ```typescript title="workflows/multi-stream.ts" lineNumbers
 import { getWritable } from "workflow";
@@ -289,9 +471,56 @@ export async function multiStreamWorkflow() {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/workflows/multi_stream.py" lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel.workflow import get_writable
+
+class LogEntry(pydantic.BaseModel):
+    level: str
+    message: str
+
+class MetricEntry(pydantic.BaseModel):
+    cpu: int
+    memory: int
+
+@wf.step
+async def write_logs():
+    logs = get_writable(type=LogEntry, namespace="logs")  # [!code highlight]
+
+    await logs.write(LogEntry(level="info", message="Task started"))
+    await logs.write(LogEntry(level="info", message="Processing..."))
+
+@wf.step
+async def write_metrics():
+    metrics = get_writable(type=MetricEntry, namespace="metrics")  # [!code highlight]
+
+    await metrics.write(MetricEntry(cpu=45, memory=512))
+    await metrics.write(MetricEntry(cpu=52, memory=520))
+
+@wf.step
+async def close_streams():
+    await get_writable(namespace="logs").close()
+    await get_writable(namespace="metrics").close()
+
+@wf.workflow
+async def multi_stream_workflow():
+    await write_logs()
+    await write_metrics()
+    await close_streams()
+```
+
+</LanguageContent>
+
 ### Consuming namespaced streams
 
-Use `run.getReadable({ namespace: 'name' })` to access specific streams:
+Use <LanguageText code ts="run.getReadable({ namespace: 'name' })" py="run.readable(namespace='name')" /> to access specific streams:
+
+<LanguageContent value="ts">
 
 ```typescript title="app/api/multi-stream/route.ts" lineNumbers
 import { start } from "workflow/api";
@@ -313,6 +542,35 @@ export async function POST(request: Request) {
   });
 }
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/api/multi_stream.py" lineNumbers
+from fastapi.responses import StreamingResponse
+
+from app.workflows.multi_stream import LogEntry, MetricEntry, multi_stream_workflow
+from vercel.workflow import start
+
+@app.post("/api/multi-stream")
+async def multi_stream():
+    run = await start(multi_stream_workflow)
+
+    # Access specific named streams  # [!code highlight]
+    logs = run.readable(type=LogEntry, namespace="logs")  # [!code highlight]
+    metrics = run.readable(type=MetricEntry, namespace="metrics")  # [!code highlight]
+
+    async def body():
+        async for entry in logs:
+            yield entry.model_dump_json() + "\n"
+
+    # Return the logs stream to the client
+    return StreamingResponse(body(), media_type="application/x-ndjson")
+```
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ## Writing to another run's stream
 
@@ -342,11 +600,15 @@ Contributors should call `releaseLock()`, which flushes pending writes. Calling 
 
 The API grants append access, not read access or additional authorization. The owning run controls the stream's lifecycle, and writes to an unknown run fail.
 
+</LanguageContent>
+
 ## Common patterns
 
 ### Progress updates for long-running tasks
 
 Send incremental progress updates to keep users informed during lengthy workflows:
+
+<LanguageContent value="ts">
 
 ```typescript title="workflows/batch-processing.ts" lineNumbers
 import { getWritable, sleep } from "workflow";
@@ -397,6 +659,51 @@ export async function batchProcessingWorkflow(items: string[]) {
   await finalizeProgress();
 }
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/workflows/batch_processing.py" lineNumbers
+import asyncio
+import pydantic
+
+from app.workflow import wf
+from vercel import workflow
+
+class ProgressUpdate(pydantic.BaseModel):
+    item: str
+    progress: int
+    status: str
+
+@wf.step
+async def process_item(item: str, current: int, total: int):
+    writable = workflow.get_writable(type=ProgressUpdate)  # [!code highlight]
+
+    # Simulate processing
+    await asyncio.sleep(1)
+
+    # Send progress update  # [!code highlight]
+    await writable.write(ProgressUpdate(  # [!code highlight]
+        item=item,  # [!code highlight]
+        progress=round(current / total * 100),  # [!code highlight]
+        status="processing",  # [!code highlight]
+    ))  # [!code highlight]
+
+@wf.step
+async def finalize_progress():
+    await workflow.get_writable().close()
+
+@wf.workflow
+async def batch_processing_workflow(items: list[str]):
+    for current, item in enumerate(items, start=1):
+        await process_item(item, current, len(items))
+        await workflow.sleep("1s")
+    await finalize_progress()
+```
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ### Streaming AI responses with `WorkflowAgent`
 
@@ -541,7 +848,11 @@ async function uploadResult(stream: ReadableStream<Uint8Array>) {
 }
 ```
 
+</LanguageContent>
+
 ## Best practices
+
+<LanguageContent value="ts">
 
 **Batching and first-chunk latency:**
 
@@ -566,7 +877,11 @@ Stream locks acquired in a step only apply within that step, not across other st
 If a lock is not released, the invocation that ran the step cannot terminate. Even though the step returns and the workflow continues, the underlying request remains active until it times out and wastes compute resources.
 </Callout>
 
+</LanguageContent>
+
 **Close streams when done:**
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { getWritable } from "workflow";
@@ -578,9 +893,25 @@ async function finalizeStream() {
 }
 ```
 
-Streams are automatically closed when the workflow run completes, but explicitly closing them signals completion to consumers earlier.
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflow import wf
+from vercel.workflow import get_writable
+
+@wf.step
+async def finalize_stream():
+    await get_writable().close()  # Signal completion
+```
+
+</LanguageContent>
+
+Streams are intended to close automatically when the workflow run completes, but this is [not yet implemented (#333)](https://github.com/vercel/workflow/issues/333). For now, explicitly close streams to signal completion to consumers.
 
 **Use typed streams for type safety:**
+
+<LanguageContent value="ts">
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
@@ -588,6 +919,18 @@ const writable = getWritable<MyDataType>();
 const writer = writable.getWriter();
 await writer.write({ /* typed data */ });
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+writable = get_writable(type=MyDataType)
+await writable.write(data)  # An instance of MyDataType
+```
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ## Stream failures
 
@@ -642,15 +985,16 @@ Chunk trip time (CTT) measures how quickly a chunk written to a stream reaches i
 <MetricVideo metric="stream" />
 
 See [Chunk trip time](/docs/performance#chunk-trip-time-ctt) on the Performance page for how it's measured and the latest results.
+</LanguageContent>
 
 ## Related documentation
 
-- [`getWritable()` API reference](/docs/api-reference/workflow/get-writable): Get the workflow's writable stream
-- [`sleep()` API reference](/docs/api-reference/workflow/sleep): Pause workflow execution for a duration
-- [`start()` API reference](/docs/api-reference/workflow-api/start): Start workflows and access the `Run` object
-- [`getRun()` API reference](/docs/api-reference/workflow-api/get-run): Retrieve runs and their streams later
-- [`world.streams`](/docs/api-reference/workflow-runtime/world/streams): Use low-level stream read, write, and close operations through the World SDK
-- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): Build AI agents with durable, resumable streaming support
+- <LanguageLink ts="/docs/api-reference/workflow/get-writable" py="/docs/api-reference/python/get-writable"><LanguageText code ts="getWritable()" py="get_writable()" /> API reference</LanguageLink>: Get the workflow's writable stream
+- <LanguageLink ts="/docs/api-reference/workflow/sleep" py="/docs/api-reference/python/sleep">`sleep()` API reference</LanguageLink>: Pause workflow execution for a duration
+- <LanguageLink ts="/docs/api-reference/workflow-api/start" py="/docs/api-reference/python/start">`start()` API reference</LanguageLink>: Start workflows and access the `Run` object
+- <LanguageLink ts="/docs/api-reference/workflow-api/get-run" py="/docs/api-reference/python/run"><LanguageText code ts="getRun()" py="Run" /> API reference</LanguageLink>: Retrieve runs and their streams later
+- [`world.streams`](/docs/api-reference/workflow-runtime/world/streams): Use low-level stream read, write, and close operations through the World SDK <LanguageContent value="py" inline>(TypeScript only)</LanguageContent>
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): Build AI agents with durable, resumable streaming support <LanguageContent value="py" inline>(TypeScript only)</LanguageContent>
 - [Errors and retries](/docs/foundations/errors-and-retries): Understand error handling and retry behavior
 - [Serialization](/docs/foundations/serialization): Understand which data types you can pass in workflows
 - [Workflows and steps](/docs/foundations/workflows-and-steps): Learn the core concepts of workflow execution

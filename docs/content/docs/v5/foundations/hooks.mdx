@@ -3,6 +3,9 @@ title: Hooks & Webhooks
 description: Pause workflows and resume them later with external data, user interactions, or HTTP requests.
 type: conceptual
 summary: Pause workflows and resume them with external data or HTTP requests.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -27,6 +30,8 @@ When you create a hook, it generates a unique token that external systems can us
 
 This workflow creates a hook and waits for external data:
 
+<LanguageContent value="ts">
+
 ```typescript lineNumbers
 import { createHook } from "workflow";
 
@@ -49,19 +54,51 @@ export async function approvalWorkflow() {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel import workflow
+
+class Approval(pydantic.BaseModel, workflow.BaseHook):
+    approved: bool
+    comment: str
+
+@wf.workflow
+async def approval_workflow() -> None:
+    async with Approval.wait() as hook:
+        print("Waiting for approval...")
+        print("Send approval to token:", hook.token)
+
+        # Workflow pauses here until data is sent
+        result = await hook
+
+        if result.approved:
+            print("Approved with comment:", result.comment)
+        else:
+            print("Rejected:", result.comment)
+```
+
+</LanguageContent>
+
 The workflow will pause at `await hook` until external code sends data to resume it.
 
 <Callout type="info">
-We recommend using the `using` keyword which implements the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal for automatic cleanup.
+<LanguageContent value="ts" inline>We recommend using the `using` keyword which implements the [TC39 Explicit Resource Management](https://github.com/tc39/proposal-explicit-resource-management) proposal for automatic cleanup.</LanguageContent><LanguageContent value="py" inline>Use `async with` to dispose the hook automatically when the block exits.</LanguageContent>
 </Callout>
 
 <Callout type="info">
-See the full API reference for [`createHook()`](/docs/api-reference/workflow/create-hook) for all available options.
+See the full API reference for <LanguageLink ts="/docs/api-reference/workflow/create-hook" py="/docs/api-reference/python/base-hook#wait"><LanguageText code ts="createHook()" py="BaseHook.wait()" /></LanguageLink> for all available options.
 </Callout>
 
 ### Resuming a hook
 
-To send data to a waiting workflow, use [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) from an API route, server action, or any other external context:
+To send data to a waiting workflow, use <LanguageLink ts="/docs/api-reference/workflow-api/resume-hook" py="/docs/api-reference/python/base-hook#resume"><LanguageText code ts="resumeHook()" py="BaseHook.resume()" /></LanguageLink> from an API route, server action, or any other external context:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { resumeHook } from "workflow/api";
@@ -80,6 +117,24 @@ export async function POST(request: Request) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflows.approval import Approval
+from vercel import workflow
+
+@app.post("/api/approval")
+async def approve(token: str, approval: Approval):
+    try:
+        result = await approval.resume(token)  # [!code highlight]
+        return {"success": True, "run_id": result.run_id}
+    except workflow.HookNotFoundError:
+        return {"success": False, "error": "Invalid token"}
+```
+
+</LanguageContent>
+
 The key points:
 - Hooks allow you to pass **any [serializable data](/docs/foundations/serialization)** as the payload
 - You need the hook's `token` to resume it, but knowing the token does not authorize the caller. Check who is calling before `resumeHook()`; see [Security](#security)
@@ -87,7 +142,9 @@ The key points:
 
 ### Checking for token conflicts
 
-Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` for that:
+Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await <LanguageText code ts="hook.getConflict()" py="hook.get_conflict()" /> for that:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -112,15 +169,49 @@ export async function orderWorkflow(orderId: string) {
 }
 ```
 
-Calling `createHook()` on its own does not register the hook; registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, `getConflict()` rejects with `HookConflictError` instead of resolving with an incomplete handle. The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()`. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies. A run started with [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) already owns its token: `createHook({ token })` with that token binds to the run's start Hook, and `getConflict()` resolves `null` without suspending.
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel import workflow
+
+class OrderEvent(pydantic.BaseModel, workflow.BaseHook):
+    confirmed: bool
+
+@wf.workflow
+async def order_workflow(order_id: str):
+    async with OrderEvent.wait(token=f"order:{order_id}") as hook:
+        conflict = await hook.get_conflict()  # [!code highlight]
+        if conflict:  # [!code highlight]
+            # Another active run already owns this token.
+            return {"deduped_to": conflict.run_id}
+
+        # The hook token is registered and reserved here.
+        await process_order(order_id)
+```
+
+</LanguageContent>
+
+Calling <LanguageText code ts="createHook()" py="BaseHook.wait()" /> on its own does not register the hook; registration is only committed when the workflow suspends. Awaiting <LanguageText code ts="hook.getConflict()" py="hook.get_conflict()" /> suspends the workflow to commit the hook registration, then resolves with <LanguageText code ts="null" py="None" /> once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, <LanguageText code ts="getConflict()" py="get_conflict()" /> rejects with `HookConflictError` instead of resolving with an incomplete handle. <LanguageContent value="ts" inline>The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()`. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.</LanguageContent>
+
+<LanguageContent value="ts">
+
+ A run started with [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) already owns its token: `createHook({ token })` with that token binds to the run's start Hook, and `getConflict()` resolves `null` without suspending.
 
 Awaiting the registration costs one write, not a round trip through the queue: the invocation that commits the registration is the one that carries on past the awaiter, and it runs the steps the workflow started beside the awaiter — as in `await Promise.all([hook.getConflict(), prepare()])` — in that same invocation, once the registration is recorded. That covers the steps the invocation runs inline; a fan-out wider than the free inline slots ([`WORKFLOW_MAX_INLINE_STEPS`](/docs/configuration/runtime-tuning#workflow_max_inline_steps), less any inline steps the invocation is still running) queues the rest alongside the hook, so await `hook.getConflict()` before the step when the ordering itself matters. See [`createHook()`](/docs/api-reference/workflow/create-hook#registering-a-hook-before-a-step-uses-it).
+
+</LanguageContent>
 
 ### Custom tokens for deterministic hooks
 
 By default, hooks generate their own token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.
 
 For example, imagine a Slack bot where each channel should have its own workflow instance:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -150,7 +241,42 @@ async function processMessage(message: SlackMessage) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel import workflow
+
+class SlackMessage(pydantic.BaseModel, workflow.BaseHook):
+    user: str
+    text: str
+
+@wf.workflow
+async def slack_channel_bot(channel_id: str):
+    # Use channel ID in the token so Slack webhooks can find this workflow
+    async with SlackMessage.wait(token=f"slack_messages:{channel_id}") as hook:
+        async for message in hook:
+            print(f"{message.user}: {message.text}")
+
+            if message.text == "/stop":
+                break
+
+            await process_message(message)
+
+@wf.step
+async def process_message(message: SlackMessage):
+    # Process the Slack message
+    ...
+```
+
+</LanguageContent>
+
 Now your Slack webhook handler can deterministically resume the correct workflow:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { resumeHook } from "workflow/api";
@@ -170,9 +296,32 @@ export async function POST(request: Request) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from fastapi.responses import PlainTextResponse
+
+from app.workflows.slack import SlackMessage
+from vercel.workflow import HookNotFoundError
+
+@app.post("/api/slack")
+async def receive_slack_event(event: SlackMessage, channel_id: str):
+    try:
+        # Reconstruct the token using the channel ID
+        await event.resume(f"slack_messages:{channel_id}")
+        return PlainTextResponse("OK")
+    except HookNotFoundError:
+        return PlainTextResponse("Hook not found", status_code=404)
+```
+
+</LanguageContent>
+
 ### Receiving multiple events
 
-Hooks are _reusable_. They implement `AsyncIterable`, which means you can use `for await...of` to receive multiple events over time:
+Hooks are _reusable_. They implement `AsyncIterable`, which means you can use <LanguageText code ts="for await...of" py="async for" /> to receive multiple events over time:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -198,7 +347,38 @@ export async function dataCollectionWorkflow() {
 }
 ```
 
-Each time you call `resumeHook()` with the same token, the loop receives another value.
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel import workflow
+
+class DataPoint(pydantic.BaseModel, workflow.BaseHook):
+    value: int
+    done: bool = False
+
+@wf.workflow
+async def data_collection_workflow():
+    async with DataPoint.wait() as hook:
+        values: list[int] = []
+
+        # Keep receiving data until we get a "done" signal
+        async for payload in hook:
+            values.append(payload.value)
+
+            if payload.done:
+                break
+
+        print("Collected values:", values)
+        return values
+```
+
+</LanguageContent>
+
+Each time you call <LanguageText code ts="resumeHook()" py="BaseHook.resume()" /> with the same token, the loop receives another value.
 
 ### Waiting with a timeout
 
@@ -237,7 +417,9 @@ Don't await one hook from several places at the same time, for example `Promise.
 
 ### Disposing hooks early
 
-When a workflow ends, hooks are automatically disposed. However, you may want to release a hook token early so another workflow can use it while your workflow continues running. Use a block scope with `using` to control when disposal happens:
+When a workflow ends, hooks are automatically disposed. However, you may want to release a hook token early so another workflow can use it while your workflow continues running. Use a <LanguageText ts="block scope" py="context manager" /> with <LanguageText code ts="using" py="async with" /> to control when disposal happens:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -264,7 +446,38 @@ export async function handoffWorkflow(channelId: string) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel import workflow
+
+class ChannelMessage(pydantic.BaseModel, workflow.BaseHook):
+    message: str
+    handoff: bool = False
+
+@wf.workflow
+async def handoff_workflow(channel_id: str):
+    async with ChannelMessage.wait(token=f"channel:{channel_id}") as hook:
+        async for payload in hook:
+            print("Received:", payload.message)
+
+            if payload.handoff:
+                break
+    # Hook token released here
+
+    # Token is now available for another workflow
+    print("Continuing with other work...")
+```
+
+</LanguageContent>
+
 You can also manually dispose using the `dispose()` method:
+
+<LanguageContent value="ts">
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
@@ -273,9 +486,22 @@ const payload = await hook;
 hook.dispose(); // Manually release the token
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+hook = ChannelMessage.wait(token=f"channel:{channel_id}")
+payload = await hook
+hook.dispose()  # Manually release the token
+```
+
+</LanguageContent>
+
 <Callout type="info">
 After disposal, the hook will no longer receive events and the async iterator will stop yielding values.
 </Callout>
+
+<LanguageContent value="ts">
 
 ### Taking over a token from another run
 
@@ -310,6 +536,10 @@ export async function channelWorkflow(channelId: string) {
 ```
 
 The run that held the token is woken and its `await hook` (or `for await...of`) rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) once it has drained the payloads it received before the takeover. Every `resumeHook()` for the token from then on reaches the new run, including one that was already in flight, so senders never notice the handoff. Several runs forcing the same token at once chain in the same way and always end with exactly one owner. A run started at a spec version below 8 cannot be taken from; the forced hook then gets an ordinary `HookConflictError`. See [`createHook()`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for the full semantics.
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ## Understanding webhooks
 
@@ -583,6 +813,34 @@ Take the user identity from your authentication layer, never from the request bo
 ### Randomness in workflow functions
 
 The same determinism applies to your own code. `Math.random()`, `crypto.randomUUID()`, and `crypto.getRandomValues()` in a workflow function return values derived from the run's seed, so they are predictable to anyone who knows it. Don't use them for secrets, passwords, one-time codes, or any value that must be unguessable. Generate those in a step, as in the token example above.
+</LanguageContent>
+<LanguageContent value="py">
+
+## Webhooks
+
+The Python SDK does not currently provide the `create_webhook()` convenience API or an automatically generated public webhook URL. Use a typed hook behind an HTTP route in your application instead:
+
+```python lineNumbers
+from fastapi.responses import JSONResponse
+
+from app.workflows.events import ExternalEvent
+from vercel.workflow import HookNotFoundError
+
+@app.post("/api/events/{event_id}")
+async def receive_event(event_id: str, event: ExternalEvent):
+    # Authenticate and validate the HTTP request in this route first.
+    try:
+        hook = await event.resume(f"event:{event_id}")
+        return {"accepted": True, "run_id": hook.run_id}
+    except HookNotFoundError:
+        return JSONResponse({"error": "Hook not found"}, status_code=404)
+```
+
+This keeps HTTP authentication and response handling in your web framework while the typed hook provides durable workflow resumption.
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ## Advanced patterns
 
@@ -635,17 +893,25 @@ export async function POST(request: Request) {
 
 This pattern is especially valuable in larger applications where the workflow and API code are in separate files, providing both compile-time type safety and runtime validation.
 
+</LanguageContent>
+
 ## Best practices
 
 ### Token design
 
+<LanguageContent value="ts">
+
 Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always generate their own unique tokens. Neither kind of token authorizes the sender; see [Security](#security).
 
-When using custom tokens with `createHook()`:
+</LanguageContent>
+
+When using custom tokens with <LanguageText code ts="createHook()" py="BaseHook.wait()" />:
 
 - **Make them deterministic**: Base them on data the external system can reconstruct, such as channel IDs or user IDs.
-- **Use namespacing**: Prefix tokens to avoid conflicts, such as `slack:${channelId}` or `github:${repoId}`.
+- **Use namespacing**: Prefix tokens to avoid conflicts, such as <LanguageText code ts="slack:${channelId}" py='f"slack:{channel_id}"' /> or <LanguageText code ts="github:${repoId}" py='f"github:{repo_id}"' />.
 - **Include routing information**: Ensure the token contains enough information to identify the correct workflow instance.
+
+<LanguageContent value="ts">
 
 ### Response handling in webhooks
 
@@ -653,9 +919,13 @@ When using custom tokens with `createHook()`:
 - Use **manual mode** (`respondWith: "manual"`) when responses depend on request processing
 - Remember that `respondWith()` must be called from within a step function
 
+</LanguageContent>
+
 ### Iterating over events
 
-Both hooks and webhooks support iteration, making them perfect for long-running event loops:
+<LanguageText ts="Both hooks and webhooks" py="Hooks" /> support iteration, making them perfect for long-running event loops:
+
+<LanguageContent value="ts">
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript
@@ -670,6 +940,20 @@ for await (const event of hook) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python
+async with Event.wait() as hook:
+    async for event in hook:
+        await process_event(event)
+
+        if should_stop(event):
+            break
+```
+
+</LanguageContent>
+
 This pattern allows a single workflow instance to handle multiple events over time, maintaining state between events.
 
 ## Performance
@@ -682,9 +966,19 @@ See [Time to resume](/docs/performance#time-to-resume-ttr) on the Performance pa
 
 ## Related documentation
 
+<LanguageContent value="ts">
+
 - [Serialization](/docs/foundations/serialization) - Understanding what data can be passed through hooks
 - [`createHook()` API Reference](/docs/api-reference/workflow/create-hook)
 - [`createWebhook()` API Reference](/docs/api-reference/workflow/create-webhook)
 - [`defineHook()` API Reference](/docs/api-reference/workflow/define-hook)
 - [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook)
 - [`resumeWebhook()` API Reference](/docs/api-reference/workflow-api/resume-webhook)
+
+</LanguageContent>
+<LanguageContent value="py">
+
+- [Serialization](/docs/foundations/serialization) - Understanding what data can be passed through hooks
+- [`BaseHook` API Reference](/docs/api-reference/python/base-hook)
+
+</LanguageContent>
