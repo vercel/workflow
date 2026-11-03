@@ -28,22 +28,30 @@ import { writeExclusive } from '../fs.js';
  * before, so a process running an older world-local on the same data
  * directory still fences against this one: the same path (its `mkdir` fails
  * on the file as on a directory), the holder refreshes the lock's mtime
- * every second, and a lock whose mtime is
- * 30 s old is stale and may be taken over. On top of that, a lock whose
- * holder is known to be dead (its pid is gone, on this host and in this pid
- * namespace) is taken over at once: a holder that was SIGKILLed no longer
- * stalls the run for 30 s. A holder whose pid can't be checked (another
- * host or container, a pid now reused by a live process, this process's own
- * pid) only goes stale. The one thing an older world-local can't do is take
- * over a stale lock this one left: proper-lockfile removes it with `rmdir`,
- * which fails on a file, so it waits until a process of this version does.
+ * every second, and a lock whose mtime is 30 s old is stale and may be taken
+ * over. On top of that, a lock whose holder is known to be dead (its pid is
+ * gone, on this host and in this pid namespace) is taken over at once: a
+ * holder that was SIGKILLed no longer stalls the run for 30 s. A holder
+ * whose pid can't be checked (another host or container, a pid now reused by
+ * a live process, this process's own pid) only goes stale. The one thing an
+ * older world-local can't do is take over a stale lock this one left:
+ * proper-lockfile removes it with `rmdir`, which fails on a file, so it
+ * waits until a process of this version does.
+ *
+ * A holder removes its locks on `process.exit()` (the `exit` event), not on
+ * a signal: unlike proper-lockfile, which released on SIGTERM and SIGINT
+ * through `signal-exit`, this installs no signal handlers, so it never
+ * changes how the host process reacts to one. A holder ended by an unhandled
+ * signal leaves its lock like a SIGKILLed one: taken over at once where its
+ * pid can be checked, and only after 30 s where it can't.
  *
  * A takeover happens under a gate directory, so two processes don't take
  * over the same lock, and it moves the lock aside before deleting it, then
  * checks that what it moved is the abandoned lock it judged (the owner
  * travels with it). Everything a holder does after that is guarded by its
- * token: it refreshes, and finally removes, only a lock that still names it. A holder that finds its lock gone or taken
- * fails its write as lost rather than letting it pass as fenced.
+ * token: it refreshes, and finally removes, only a lock that still names
+ * it. A holder that finds its lock gone or taken fails its write as lost
+ * rather than letting it pass as fenced.
  */
 
 /** A lock not refreshed for this long is stale and may be taken over. */
