@@ -148,6 +148,14 @@ export function hasStepSourceMaps(): boolean {
     return true;
   }
 
+  // Nuxt 4.6's dev server replaces `Error.prepareStackTrace` and only remaps
+  // modules vite-node evaluated, which disables Node's `--enable-source-maps`
+  // for the natively imported step bundle even though it carries a valid
+  // inline map. Remove once https://github.com/nuxt/nuxt/pull/36833 ships.
+  if (appName === 'nuxt') {
+    return false;
+  }
+
   // Prod buils for frameworks typically don't consume source maps. So let's disable testing
   // in local prod and local postgres tests
   if (!process.env.DEV_TEST_CONFIG) {
