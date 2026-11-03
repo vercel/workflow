@@ -592,6 +592,10 @@ jobs:
         with:
           build-packages: 'false'
 
+      # Builds the packages the suite imports (@workflow/core, world, ...).
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
       # See the note on e2e-vercel-prod's deployment step.
       - name: Resolve Vercel deployment
         id: deployment
