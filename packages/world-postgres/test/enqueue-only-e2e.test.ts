@@ -49,7 +49,7 @@ if (process.platform === 'win32') {
       });
       const fetcher = createFetcher(server);
       const port = server.info.port;
-      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
       const connectionString = process.env.WORKFLOW_POSTGRES_URL;
       if (!connectionString) throw new Error('WORKFLOW_POSTGRES_URL is unset');
@@ -109,12 +109,12 @@ if (process.platform === 'win32') {
           )
         ).toBe(false);
         expect(
-          info.mock.calls.some(([message]) =>
+          warn.mock.calls.some(([message]) =>
             String(message).includes('Enqueue-only')
           )
         ).toBe(true);
       } finally {
-        info.mockRestore();
+        warn.mockRestore();
         errors.mockRestore();
         await producer.close?.();
       }

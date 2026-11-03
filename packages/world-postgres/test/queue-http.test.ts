@@ -214,7 +214,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   test('an enqueue-only queue stores its job but starts no worker', async () => {
     phase = 'accept';
     attempts = [];
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const producer = createQueue(
       {
         connectionString,
@@ -237,7 +237,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         locked_at: null,
       });
     } finally {
-      info.mockRestore();
+      warn.mockRestore();
       await producer.close();
       await pool.query('TRUNCATE graphile_worker._private_jobs');
     }
@@ -276,7 +276,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   test("an enqueue-only producer's job is delivered by another queue's worker", async () => {
     phase = 'accept';
     attempts = [];
-    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const producer = createQueue(
       {
         connectionString,
@@ -305,7 +305,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         .poll(() => jobFor(messageId), { timeout: 5_000 })
         .toBe(undefined);
     } finally {
-      info.mockRestore();
+      warn.mockRestore();
       await producer.close();
       await app.close();
       await pool.query('TRUNCATE graphile_worker._private_jobs');

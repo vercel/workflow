@@ -93,7 +93,9 @@ export function createWorld(
 
   const drizzle = createClient(pool);
   if (config.enqueueOnly) {
-    console.info(
+    // stderr, not stdout: a CLI printing `--json` results to stdout runs
+    // enqueue-only too, and a line there would corrupt its output.
+    console.warn(
       '[world-postgres] Enqueue-only: this process enqueues but starts no worker; ' +
         "the app's own worker delivers its jobs."
     );
