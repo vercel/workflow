@@ -7,7 +7,7 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRun } from '../test-helpers.js';
-import { hookTokenClaimPath } from './helpers.js';
+import { hashToken, hookTokenClaimPath } from './helpers.js';
 import { createStorage } from './index.js';
 
 // Interrupt `hook_created` at its event publish, after the token claim and
@@ -213,6 +213,54 @@ describe('hook_created retried after an interrupted publish', () => {
     await expect(
       createStorage(dataDir).hooks.getByToken('token_a')
     ).resolves.toMatchObject({ hookId: 'hook_a' });
+  });
+
+  it('indexes the creation an older writer published past its claimed slot', async () => {
+    const run = await startRun();
+    const storage = createStorage(dataDir);
+
+    // The same older-writer layout, with its index too: it indexed the
+    // claimed slot N, not N + 1 where it published.
+    const { event: unrelated } = await storage.events.create(run.runId, {
+      eventType: 'wait_created',
+      correlationId: 'wait_unrelated',
+      eventData: { resumeAt: new Date(Date.now() + 60_000) },
+    });
+    const { event: created } = await storage.events.create(
+      run.runId,
+      hookCreated('hook_a', 'token_a')
+    );
+    const claimPath = hookTokenClaimPath(dataDir, 'token_a');
+    const claim = JSON.parse(await fs.readFile(claimPath, 'utf8'));
+    await fs.writeFile(
+      claimPath,
+      JSON.stringify({ ...claim, eventId: unrelated?.eventId })
+    );
+    for (const dir of [
+      path.join(dataDir, 'hooks', 'token-index', hashToken('token_a')),
+      path.join(dataDir, 'hooks', 'id-index', 'hook_a'),
+    ]) {
+      await fs.rm(path.join(dir, `${run.runId}-${created?.eventId}.json`));
+      await fs.writeFile(
+        path.join(dir, `${run.runId}-${unrelated?.eventId}.json`),
+        JSON.stringify({ runId: run.runId })
+      );
+    }
+
+    await expect(
+      createStorage(dataDir).events.create(
+        run.runId,
+        hookCreated('hook_a', 'token_a')
+      )
+    ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+    // With the claim and entity caches gone, only the index finds the hook.
+    await fs.rm(claimPath);
+    await fs.rm(path.join(dataDir, 'hooks', 'hook_a.json'));
+    await expect(
+      createStorage(dataDir).hooks.getByToken('token_a')
+    ).resolves.toMatchObject({ hookId: 'hook_a' });
+    expect(await hookCreatedIds(run.runId)).toEqual(['hook_a']);
   });
 
   it('creates every hook of a batch interrupted before any publish', async () => {

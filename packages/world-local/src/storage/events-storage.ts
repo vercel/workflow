@@ -668,6 +668,24 @@ function startHookLog(message: string, detail: Record<string, string>): void {
   debugLog(`[world-local] start Hook: ${message}`, detail);
 }
 
+/**
+ * A `hook_created` retarget breadcrumb, under `DEBUG=workflow:*`: a lost
+ * publish moved the creation (an interrupted creation, or siblings that drew
+ * the same slot). Names the run and hook, never the token.
+ */
+function hookCreatedRetargetLog(
+  how: 'followed' | 'found' | 'drawn',
+  input: { runId: string; hookId: string; from: string },
+  to: string
+): void {
+  debugLog(`[world-local] hook_created retargeted (${how})`, {
+    runId: input.runId,
+    hookId: input.hookId,
+    from: input.from,
+    to,
+  });
+}
+
 function startHookRejected(
   message: string,
   reason: StartHookRejectionReason
@@ -1312,8 +1330,9 @@ export function createEventsStorage(
    * - The claim names another position: another writer moved it. Follow it.
    * - `lookForExisting` and this hook's `hook_created` is in the log: an older
    *   writer bumped past the claimed position without recording where it
-   *   published. Point the claim there; the publish then collides with it
-   *   and reports the duplicate.
+   *   published. Index that creation (the older writer indexed only the
+   *   claimed position) and point the claim there; the publish then collides
+   *   with it and reports the duplicate.
    * - Otherwise: draw a fresh slot, index it, and point the claim there.
    *
    * Returns `null` when the claim no longer belongs to this hook (a disposal
@@ -1333,6 +1352,7 @@ export function createEventsStorage(
         return null;
       }
       if (claim.eventId && claim.eventId !== input.from) {
+        hookCreatedRetargetLog('followed', input, claim.eventId);
         return claim.eventId;
       }
       let target = input.lookForExisting
@@ -1342,21 +1362,26 @@ export function createEventsStorage(
             input.hookId
           )
         : null;
+      const found = target !== null;
       if (target === null) {
         const slot = await drawEventSlot(input.runId, {
           atLeast: (eventIdToSlot(input.from) ?? 0) + 1,
         });
         assert(slot !== null);
         target = slotToEventId(slot);
-        await writeHookCreatedIndexEntries(
-          basedir,
-          input.token,
-          input.runId,
-          input.hookId,
-          target,
-          tag
-        );
       }
+      // Index before the claim names it (see hook-index.ts crash-ordering
+      // invariant). A found creation needs this too: its older writer indexed
+      // the claimed position, not the one it published at, and the cache
+      // rebuild from the index would otherwise miss a live hook.
+      await writeHookCreatedIndexEntries(
+        basedir,
+        input.token,
+        input.runId,
+        input.hookId,
+        target,
+        tag
+      );
       // A holder that lost the lock must not put its snapshot of the claim
       // back over a takeover or disposal that happened meanwhile.
       signal.throwIfAborted();
@@ -1366,6 +1391,7 @@ export function createEventsStorage(
         JSON.stringify({ token: input.token, ...claim, eventId: target }),
         { overwrite: true }
       );
+      hookCreatedRetargetLog(found ? 'found' : 'drawn', input, target);
       return target;
     });
   }
@@ -3743,9 +3769,11 @@ export function createEventsStorage(
               : undefined;
 
           // Index entries before the event publish (see hook-index.ts
-          // crash-ordering invariant). `eventId` is final here: the
-          // dedup-recovery branch above already reassigned it to the
-          // canonical id when applicable.
+          // crash-ordering invariant). `eventId` is the first target here:
+          // the dedup-recovery branch above already reassigned it to the
+          // canonical id when applicable. On a slot-numbered run a lost
+          // publish can still move it (`retargetHookCreatedClaim`), which
+          // indexes each later target itself.
           await writeHookCreatedIndexEntries(
             basedir,
             hookData.token,
