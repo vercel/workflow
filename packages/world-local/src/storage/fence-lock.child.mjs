@@ -1,5 +1,6 @@
 // Another OS process taking a run's fence file lock, for fence-lock.test.ts.
-// `hold`: take the lock, report `held`, release it when told to. `loop`: take
+// `hold`: take the lock, report `held`, release it when told to. `hold-claim`:
+// the same with a Hook token claim lock (`<dataDir> <token>`). `loop`: take
 // and release the lock over and over, logging `enter <pid>` and `exit <pid>`
 // to a file while holding it. It runs world-local's TypeScript source with
 // Node's type stripping, resolving the source's `.js` imports to their `.ts`
@@ -16,7 +17,15 @@ register(
 const { withFenceFileLock } = await import('./fence-lock.ts');
 const [mode, lockDir, logPath] = process.argv.slice(2);
 
-if (mode === 'hold') {
+if (mode === 'hold-claim') {
+  const { withHookTokenClaimLock } = await import('./helpers.ts');
+  await withHookTokenClaimLock(lockDir, logPath, async () => {
+    process.send('held');
+    // Held until killed: a referenced timer keeps the process from exiting
+    // (and its exit hook from removing the lock) before the kill lands.
+    await new Promise(() => setInterval(() => {}, 60_000));
+  });
+} else if (mode === 'hold') {
   await withFenceFileLock(lockDir, 'wrun_child', async () => {
     const release = new Promise((resolve) => process.once('message', resolve));
     process.send('held');
