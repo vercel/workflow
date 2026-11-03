@@ -1,4 +1,8 @@
-import { SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
+import {
+  type HeldQueueMessage,
+  type QueueResult,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { mockSend, MockQueueClient } = vi.hoisted(() => {
@@ -33,6 +37,15 @@ import {
 } from './queue.js';
 
 const sendOptionsOf = (call = 0) => mockSend.mock.calls[call][2];
+
+/** The held message of a result, failing the test when it was not held. */
+const heldOf = (result: QueueResult): HeldQueueMessage => {
+  const hold = result.experimental_hold;
+  if (hold?.status !== 'held') {
+    throw new Error(`expected a held message, got ${JSON.stringify(hold)}`);
+  }
+  return hold;
+};
 
 describe('send-and-hold (experimental_hold)', () => {
   const originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
@@ -79,7 +92,7 @@ describe('send-and-hold (experimental_hold)', () => {
     expect(sendOptionsOf().idempotencyKey).toBe('k');
     expect(result).toEqual({
       messageId: 'msg_1',
-      experimental_notHeld: { reason: 'unsupported' },
+      experimental_hold: { status: 'not_held', reason: 'unsupported' },
     });
   });
 
@@ -121,15 +134,17 @@ describe('send-and-hold (experimental_hold)', () => {
 
     it('is returned with its id and lease, and nothing that holds the token', async () => {
       const { result } = await sendHeld({ runId: 'wrun_1' });
-      expect(result.experimental_held).toMatchObject({
+      expect(result.experimental_hold).toMatchObject({
+        status: 'held',
         messageId: 'msg_1',
         leaseExpiresAt,
       });
-      expect(Object.keys(result.experimental_held ?? {}).sort()).toEqual([
+      expect(Object.keys(result.experimental_hold ?? {}).sort()).toEqual([
         'consume',
         'leaseExpiresAt',
         'messageId',
         'release',
+        'status',
       ]);
       expect(sendOptionsOf().experimental_hold).toEqual({
         consumerGroup: HOLD_CONSUMER_GROUP,
@@ -144,7 +159,7 @@ describe('send-and-hold (experimental_hold)', () => {
       };
       const { result, consume } = await sendHeld(payload);
       const handler = vi.fn().mockResolvedValue({ timeoutSeconds: 7 });
-      await result.experimental_held?.consume(handler);
+      await heldOf(result).consume(handler);
 
       expect(consume).toHaveBeenCalledTimes(1);
       const [callback, options] = consume.mock.calls[0];
@@ -201,7 +216,7 @@ describe('send-and-hold (experimental_hold)', () => {
       );
       const before = Date.now();
       const { result } = await sendHeld(payload, consume);
-      await result.experimental_held?.consume(async (_message, meta) => {
+      await heldOf(result).consume(async (_message, meta) => {
         metas.push(meta);
       });
       expect(metas).toHaveLength(2);
@@ -219,7 +234,7 @@ describe('send-and-hold (experimental_hold)', () => {
       expect(sendOptionsOf()).not.toHaveProperty('experimental_hold');
       expect(result).toEqual({
         messageId: 'msg_1',
-        experimental_notHeld: { reason: 'unsupported' },
+        experimental_hold: { status: 'not_held', reason: 'unsupported' },
       });
     });
 
@@ -237,7 +252,7 @@ describe('send-and-hold (experimental_hold)', () => {
 
     it('is released through the queue client', async () => {
       const { result, release } = await sendHeld({ runId: 'wrun_1' });
-      await result.experimental_held?.release(3);
+      await heldOf(result).release(3);
       expect(release).toHaveBeenCalledWith(3);
     });
   });

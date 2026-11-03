@@ -721,10 +721,11 @@ export interface WorldCapabilities {
   /**
    * **Experimental.** The World's queue can hold a message for its sender
    * (`QueueOptions.experimental_hold`): `queue()` may come back with
-   * `experimental_held`, a claim the sender runs itself in the request that
-   * sent it, with the queue as the crash backstop. Declares *support*: a
-   * given send can still come back not held (the queue service has
-   * send-and-hold off, local development), and is then delivered as usual.
+   * `experimental_hold.status: 'held'`, a claim the sender runs itself in
+   * the request that sent it, with the queue as the crash backstop.
+   * Declares *support*: a given send can still come back `not_held` (the
+   * queue service has send-and-hold off, local development), and is then
+   * delivered as usual.
    * A caller that runs work in process behind a delayed backstop message
    * where this is unset can send undelayed with a hold where it is set.
    *

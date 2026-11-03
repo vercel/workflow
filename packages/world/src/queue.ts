@@ -978,19 +978,22 @@ export interface QueueOptions {
    * `capabilities.experimental_queueHold`; other Worlds ignore it and send
    * the message as usual.
    *
-   * When the queue holds the message, the result carries `experimental_held`:
-   * run it with `experimental_held.consume(handler)`. Otherwise it carries
-   * `experimental_notHeld` (or neither, on a World that ignores the option)
-   * and the queue delivers the message as usual: do not process it here.
+   * The result's `experimental_hold` says what came of it
+   * ({@link QueueHoldResult}): `status: 'held'`, and this process runs the
+   * message with its `consume(handler)`; or `status: 'not_held'` with the
+   * reason, and the queue delivers the message as usual. It is absent on a
+   * World that ignores the option, which also means the queue delivers it.
+   * Either way short of `held`, do not process the message here.
    *
    * Cannot be combined with `delaySeconds`. Send an `idempotencyKey` with it:
    * a send that fails with a network error may already have enqueued the
    * message, and a retry without a key enqueues a second one.
    *
    * Only this deployment's messages are held: a send pinned to another
-   * deployment (`deploymentId`) is sent as usual and reports `notHeld:
-   * unsupported`, because its own deployment must run it. A batched send
-   * ({@link Queue.queueBatch}) never holds; its results carry neither field.
+   * deployment (`deploymentId`) is sent as usual and reports `not_held` /
+   * `unsupported`, because its own deployment must run it. A batched send
+   * ({@link Queue.queueBatch}) never holds; its results carry no
+   * `experimental_hold`.
    *
    * @experimental
    */
@@ -1065,6 +1068,7 @@ export type QueueNotHeldReason =
  * @experimental
  */
 export interface HeldQueueMessage {
+  readonly status: 'held';
   /** ID of the held message. The same ID a redelivery of it carries. */
   readonly messageId: MessageId;
   /** When the hold lapses unless `consume()` renews it. */
@@ -1099,23 +1103,35 @@ export interface HeldQueueMessage {
   release(delaySeconds?: number): Promise<void>;
 }
 
+/**
+ * **Experimental.** A send that asked for a hold and did not get it: the
+ * queue delivers the message (see {@link QueueNotHeldReason}).
+ *
+ * @experimental
+ */
+export interface NotHeldQueueMessage {
+  readonly status: 'not_held';
+  readonly reason: QueueNotHeldReason;
+}
+
+/**
+ * **Experimental.** What came of {@link QueueOptions.experimental_hold}, by
+ * `status`: the held message, to run here, or why it was not held.
+ *
+ * @experimental
+ */
+export type QueueHoldResult = HeldQueueMessage | NotHeldQueueMessage;
+
 /** What {@link Queue.queue} resolves with. */
 export interface QueueResult {
   messageId: MessageId | null;
   /**
-   * **Experimental.** The queue holds the message for this process
-   * ({@link QueueOptions.experimental_hold}).
+   * **Experimental.** Present when the send asked for a hold
+   * ({@link QueueOptions.experimental_hold}) on a World that supports it.
    *
    * @experimental
    */
-  experimental_held?: HeldQueueMessage;
-  /**
-   * **Experimental.** The send asked for a hold and did not get it: the
-   * queue delivers the message (see {@link QueueNotHeldReason}).
-   *
-   * @experimental
-   */
-  experimental_notHeld?: { reason: QueueNotHeldReason };
+  experimental_hold?: QueueHoldResult;
 }
 
 /** The handler {@link Queue.createQueueHandler} runs for each delivery. */
@@ -1198,7 +1214,7 @@ export interface Queue {
    * as the backing transport allows. Optional: callers MUST fall back to
    * per-message {@link Queue.queue} when a World does not implement it.
    * Never holds a message: `opts.experimental_hold` is ignored here, and a
-   * result carries neither `experimental_held` nor `experimental_notHeld`.
+   * result carries no `experimental_hold`.
    *
    * Exists for wide fan-outs. Publishing an N-branch `Promise.all` one message
    * at a time costs N round trips through a bounded connection pool, and that

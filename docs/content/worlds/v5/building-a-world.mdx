@@ -45,6 +45,7 @@ interface WorldCapabilities {
     active: boolean;
   };
   maxConcurrency?: boolean;
+  experimental_queueHold?: boolean;
   inBandFence?: boolean;
   hookForceClaim?: boolean;
   dynamicWorkflowCode?: boolean;
@@ -67,7 +68,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence). Set `atomicStartHook.active` only when the World implements [atomic start Hook admission](#optional-atomic-start-hook-admission). Without it, `start({ hook })` throws before it enqueues anything.
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook. Set `dynamicWorkflowCode` only when the World persists `dynamicWorkflowCode` from `run_created` (and from a `run_started` that creates the run), echoes it on the created run, and returns it from `runs.get` with `resolveData: 'all'`. Without it, `start()` refuses [dynamic workflows](/docs/advanced/dynamic-workflows). The code is sent inline unless the World also implements `uploadDynamicWorkflowCode` for large definitions. Set `inBandFence` only when the World implements the [in-band writer fence](#optional-the-in-band-writer-fence). Set `atomicStartHook.active` only when the World implements [atomic start Hook admission](#optional-atomic-start-hook-admission). Without it, `start({ hook })` throws before it enqueues anything. Set `experimental_queueHold` only when `queue()` implements [holding a message for its sender](#optional-holding-a-message-for-its-sender-experimental). Without it, callers keep their own fallback and never ask for a hold.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -325,7 +326,7 @@ interface Queue {
     queueName: ValidQueueName,
     message: QueuePayload,
     opts?: QueueOptions
-  ): Promise<{ messageId: MessageId | null }>;
+  ): Promise<QueueResult>; // { messageId: MessageId | null; experimental_hold?: QueueHoldResult }
 
   // Optional. Omit it and the runtime publishes one message at a time.
   queueBatch?(
@@ -434,6 +435,45 @@ type QueueBatchResult =
 `messageId: null` with no `error` means accepted without an ID yet, exactly as for `queue`, so callers test `error === undefined` for success rather than a non-null `messageId`.
 
 Every message targets one logical `queueName`, but you may split the batch internally — by a transport cap, or by any per-message routing dimension you derive from the payload — as long as the returned order still matches the input. The runtime passes a distinct `idempotencyKey` per message, because its recovery for both a request-level failure and a retryable entry is to republish the whole batch.
+
+### Optional: holding a message for its sender (experimental)
+
+`QueueOptions.experimental_hold` asks `queue()` to claim the message's first delivery for the process that sent it, before `queue()` returns. That process runs the message in the same request, and your queue is the crash backstop. The Workflow SDK runtime doesn't use it today; callers that drive a World directly do. Declare `capabilities.experimental_queueHold: true` only when you implement it. A World without it can ignore the option entirely: return `{ messageId }` with no `experimental_hold`, and callers treat the message as delivered by the queue.
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+interface QueueHoldOptions {
+  consumerGroup?: string; // the group that would otherwise receive it
+  visibilityTimeoutSeconds?: number; // the hold's lease
+}
+
+type QueueHoldResult = HeldQueueMessage | NotHeldQueueMessage;
+
+interface HeldQueueMessage {
+  readonly status: "held";
+  readonly messageId: MessageId;
+  readonly leaseExpiresAt: Date;
+  consume(handler: QueueHandler): Promise<void>;
+  release(delaySeconds?: number): Promise<void>;
+}
+
+interface NotHeldQueueMessage {
+  readonly status: "not_held";
+  readonly reason:
+    | "unsupported" | "deferred" | "lost" | "coalesced"
+    | "concurrency_limited" | "duplicate" | "error";
+}
+```
+
+When you implement it:
+
+- **Return exactly one outcome per hold request.** Return `held` only when this process now owns the message's first delivery. In every other case return `not_held` with a reason, and make sure the message still gets delivered (or is covered by a delivery that's running).
+- **Run `consume(handler)` as a delivery.** Use the same code path `createQueueHandler()` uses: the same `meta` (`deliveryCount: 1`), the same result rules (`{ timeoutSeconds }` redelivers the same message, a rejection retries), lease renewal while the handler runs, and an acknowledgment when it resolves.
+- **Deliver a lapsed hold as usual.** If nothing renews the lease, deliver the message to `consumerGroup` about `visibilityTimeoutSeconds` after the last renewal, with the same `messageId` and the next `deliveryCount`.
+- **Make `release(delaySeconds)` hand the message back.** It becomes visible again after `delaySeconds`.
+- **Refuse what can't be held.** Throw a `TypeError` for a hold with `delaySeconds`. Don't hold a message pinned to another deployment: send it as usual and return `not_held` / `unsupported`. `queueBatch()` never holds.
+
+`@workflow/world-vercel` implements this with Vercel Queues' send-and-hold. Its `queue()` and `createQueueHandler()` share one delivery callback, which is the simplest way to keep a held run and a pushed delivery identical.
 
 ### Queue names
 

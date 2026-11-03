@@ -19,6 +19,7 @@ import {
   type Queue,
   type QueueBatchResult,
   type QueueHandler,
+  type QueueHoldResult,
   type QueueOptions,
   type QueuePayload,
   QueuePayloadSchema,
@@ -1081,43 +1082,46 @@ export function createQueue(config?: APIConfig): Queue {
       ...(hold && { experimental_hold: hold }),
     });
     const { messageId, experimental_held, experimental_notHeld } = sent;
+    let holdResult: QueueHoldResult | undefined;
+    if (experimental_held) {
+      holdResult = {
+        status: 'held',
+        messageId: MessageId.parse(experimental_held.messageId),
+        leaseExpiresAt: experimental_held.leaseExpiresAt,
+        // The held message goes through the same callback and retry
+        // directives as a pushed delivery of it (`createQueueHandler`), so a
+        // `{ timeoutSeconds }` result, a handoff and a rejection mean what
+        // they mean there. Under an invocation context like a pushed
+        // delivery's, so its coalesced re-runs share one inline budget: the
+        // enclosing delivery's when it is consumed inside one, else one that
+        // starts now.
+        consume: (handler) =>
+          invocationStorage.run(
+            invocationStorage.getStore() ?? {
+              collectStepIds: false,
+              requestId: undefined,
+              stepIds: new Set(),
+              startedAt: Date.now(),
+            },
+            () =>
+              experimental_held.consume(
+                deliveryCallback(handler),
+                deliveryOptions
+              )
+          ),
+        release: (delaySeconds) => experimental_held.release(delaySeconds),
+      };
+    } else if (experimental_notHeld || pinnedElsewhere) {
+      holdResult = {
+        status: 'not_held',
+        reason: experimental_notHeld?.reason ?? 'unsupported',
+      };
+    }
     return {
       // messageId may be null when the queue fails over to a different region:
       // the event is ingested but the responding region cannot return an ID.
       messageId: messageId ? MessageId.parse(messageId) : null,
-      ...(experimental_held && {
-        experimental_held: {
-          messageId: MessageId.parse(experimental_held.messageId),
-          leaseExpiresAt: experimental_held.leaseExpiresAt,
-          // The held message goes through the same callback and retry
-          // directives as a pushed delivery of it (`createQueueHandler`), so
-          // a `{ timeoutSeconds }` result, a handoff and a rejection mean
-          // what they mean there. Under an invocation context like a pushed
-          // delivery's, so its coalesced re-runs share one inline budget:
-          // the enclosing delivery's when it is consumed inside one, else
-          // one that starts now.
-          consume: (handler) =>
-            invocationStorage.run(
-              invocationStorage.getStore() ?? {
-                collectStepIds: false,
-                requestId: undefined,
-                stepIds: new Set(),
-                startedAt: Date.now(),
-              },
-              () =>
-                experimental_held.consume(
-                  deliveryCallback(handler),
-                  deliveryOptions
-                )
-            ),
-          release: (delaySeconds) => experimental_held.release(delaySeconds),
-        },
-      }),
-      ...((experimental_notHeld || pinnedElsewhere) && {
-        experimental_notHeld: {
-          reason: experimental_notHeld?.reason ?? 'unsupported',
-        },
-      }),
+      ...(holdResult && { experimental_hold: holdResult }),
     };
   };
 
@@ -1219,7 +1223,7 @@ export function createQueue(config?: APIConfig): Queue {
   /**
    * The `@vercel/queue` callback that runs `handler` on one delivery: a
    * pushed one (`createQueueHandler`) or a message the queue held for its
-   * sender (`experimental_held.consume`), which runs the same way.
+   * sender (`experimental_hold.consume`), which runs the same way.
    */
   const deliveryCallback =
     (handler: QueueHandler): MessageHandler<unknown> =>
