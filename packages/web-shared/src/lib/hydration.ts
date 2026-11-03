@@ -530,9 +530,10 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
  */
 export async function hydrateResourceIOWithKey<T>(
   resource: T,
-  key: Uint8Array
+  key: Uint8Array,
+  extraRevivers?: Revivers
 ): Promise<T> {
-  return hydrateResourceIOAsync(resource, key);
+  return hydrateResourceIOAsync(resource, key, extraRevivers);
 }
 
 /**
@@ -541,11 +542,14 @@ export async function hydrateResourceIOWithKey<T>(
  * This follows the same resource-field mapping as {@link hydrateResourceIO},
  * but can also inflate compressed browser payloads through the registered
  * zstd WASM decoder. When a key is provided, encrypted fields are decrypted
- * first and then inflated/hydrated.
+ * first and then inflated/hydrated. `extraRevivers` are merged over the web
+ * revivers, for example a run's `workflow/state` revivers (see
+ * `createRunStateHydrator`).
  */
 export async function hydrateResourceIOAsync<T>(
   resource: T,
-  key?: Uint8Array
+  key?: Uint8Array,
+  extraRevivers?: Revivers
 ): Promise<T> {
   const { hydrateDataWithKey, deriveRunPayloadKeys } = await import(
     '@workflow/core/serialization-format'
@@ -563,7 +567,9 @@ export async function hydrateResourceIOAsync<T>(
   // run's X25519 scalar in addition to its AES key. Both derive from the same
   // 32 bytes the key-retrieval endpoint returns.
   const cryptoKey = key ? await deriveRunPayloadKeys(key) : undefined;
-  const revivers = getRevivers();
+  const revivers = extraRevivers
+    ? { ...getRevivers(), ...extraRevivers }
+    : getRevivers();
 
   async function hydrateField(value: unknown): Promise<unknown> {
     // Already-hydrated: encrypted marker with stored bytes

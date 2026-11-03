@@ -1,6 +1,8 @@
 ---
 "@workflow/core": minor
 "workflow": minor
+"@workflow/web-shared": minor
+"@workflow/web": patch
 ---
 
-Add `createStateResolver()` to `workflow/observability`, which rebuilds the actual values of `workflow/state` references and changes when inspecting a run.
+Add `createStateResolver()` to `workflow/observability` and `createRunStateHydrator()` to `@workflow/web-shared`, so run inspectors show the actual values of `workflow/state` inputs and outputs.
