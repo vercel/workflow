@@ -46,8 +46,13 @@ async function runState(fetcher: Fetcher, runId: string) {
 }
 
 // Waits for a settled run, so any log change after a forged /flow request is attributable to the forgery.
-/** Starts a run that parks on a hook, and waits until it is parked. */
-async function parkedRun(fetcher: Fetcher) {
+/**
+ * Starts a run that parks on a hook, and waits until it is parked. Exported
+ * for its own test (`test/parked-run.test.ts`).
+ */
+export async function parkedRun(
+  fetcher: Pick<Fetcher, 'invoke' | 'getEvents' | 'getRun'>
+) {
   const token = `queue-auth-${ulid()}`;
   const { runId } = await fetcher.invoke(
     'workflows/hooks.ts',
@@ -68,14 +73,31 @@ async function parkedRun(fetcher: Fetcher) {
   // into its `step_started` and writes no `step_created`, so we cannot compare
   // `step_created` to `step_completed` here. Stability is what we actually need:
   // a settled run to fire the forged request at.
+  //
+  // Quiet alone is not enough: a step still running writes nothing until it
+  // ends, so a step slower than one poll interval (seen on a Windows runner)
+  // reads as quiet and its `step_completed` lands after the snapshot. So also
+  // require no step in flight: every step the log names (by `step_created` or
+  // `step_started`, which both engines write) has ended in `step_completed` or
+  // `step_failed`.
   let last = '';
   await vi.waitFor(
     async () => {
-      const snapshot = (await fetcher.getEvents(runId))
-        .map((event) => event.eventType)
-        .join();
+      const events = await fetcher.getEvents(runId);
+      const snapshot = events.map((event) => event.eventType).join();
       const stable = snapshot === last;
       last = snapshot;
+      const steps = (types: string[]) =>
+        new Set(
+          events
+            .filter((event) => types.includes(event.eventType))
+            .map((event) => event.correlationId)
+        );
+      const ended = steps(['step_completed', 'step_failed']);
+      const inFlight = [...steps(['step_created', 'step_started'])].filter(
+        (stepId) => !ended.has(stepId)
+      );
+      expect(inFlight).toEqual([]);
       expect(stable).toBe(true);
     },
     { interval: 500, timeout: 25_000 }
