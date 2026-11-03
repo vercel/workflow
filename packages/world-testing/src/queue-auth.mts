@@ -397,20 +397,32 @@ export function queueAuth(world: string) {
 
       // The behavior the check exists to stop: a request from outside fails
       // the running run through the max-deliveries path.
-      const pastCap = await forge(
-        server,
-        { runId, requestedAt: new Date().toISOString() },
-        {
-          'x-vqs-queue-name': queueName,
-          'x-vqs-message-attempt': '49',
-          'x-vqs-message-delivery-count': '49',
-        }
-      );
-      expect(pastCap.status).not.toBe(401);
+      //
+      // Redelivered until it takes, as a queue would. On a spec 9 run the
+      // max-deliveries write is in-band, and the fence can refuse it while
+      // the run's own delivery is still settling (seen on a Windows runner:
+      // "Max-deliveries failure refused by the in-band fence; retrying via
+      // queue redelivery"). The runtime then answers 5xx and relies on the
+      // queue to redeliver, which a forged request has no queue to do. Every
+      // attempt must still get past the route: not a 401.
+      const statuses: number[] = [];
       await vi.waitFor(
-        async () => expect((await fetcher.getRun(runId)).status).toBe('failed'),
-        { interval: 200, timeout: 10_000 }
+        async () => {
+          const pastCap = await forge(
+            server,
+            { runId, requestedAt: new Date().toISOString() },
+            {
+              'x-vqs-queue-name': queueName,
+              'x-vqs-message-attempt': '49',
+              'x-vqs-message-delivery-count': '49',
+            }
+          );
+          statuses.push(pastCap.status);
+          expect((await fetcher.getRun(runId)).status).toBe('failed');
+        },
+        { interval: 500, timeout: 30_000 }
       );
+      expect(statuses).not.toContain(401);
       expect(server.getOutput()).toContain(
         'QUEUE DELIVERY AUTHENTICATION IS OFF'
       );
