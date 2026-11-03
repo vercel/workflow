@@ -1,5 +1,13 @@
 # @workflow/world-local
 
+## 4.4.5
+
+### Patch Changes
+
+- [#5069](https://github.com/vercel/workflow/pull/5069) [`ceaaa5c`](https://github.com/vercel/workflow/commit/ceaaa5c5666b2da198fcc5f020feeae423f712ae) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Deliver stream chunks in the order they were written. A reader that opened, or polled, while chunks were being written could get a later chunk before an earlier one, and could get a chunk twice. Writes to one stream now land in order, including a `writeToStreamMulti` group and concurrent writes, and the reader holds live chunks while it reads from disk.
+
+- [#4909](https://github.com/vercel/workflow/pull/4909) [`b065b0b`](https://github.com/vercel/workflow/commit/b065b0b59480826e92f0b799df8f268461e74e7d) Thanks [@fazxes](https://github.com/fazxes)! - Name each stream chunk as it lands, after every chunk already in the stream, so a write that stalled before landing no longer lands ahead of chunks a reader already read.
+
 ## 4.4.4
 
 ### Patch Changes
