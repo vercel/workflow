@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
+import { loadBuildersModule } from './builders-module.js';
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
@@ -69,11 +70,6 @@ function isResolvablePackageSpecifier(specifier: string): boolean {
   return true;
 }
 
-async function getBuildersModule(): Promise<typeof import('@workflow/builders')> {
-  // biome-ignore lint/security/noGlobalEval: Preserve the ESM import in this CommonJS package.
-  return eval('import("@workflow/builders")');
-}
-
 async function detectWorkflowPatterns(
   source: string
 ): Promise<WorkflowPatternMatch> {
@@ -83,7 +79,7 @@ async function detectWorkflowPatterns(
     workflowSerdeImportPattern,
     workflowSerdeSymbolPattern,
     workflowSerdeComputedPropertyPattern,
-  } = await getBuildersModule();
+  } = await loadBuildersModule();
   const hasUseWorkflow = useWorkflowPattern.test(source);
   const hasUseStep = useStepPattern.test(source);
   const hasSerdeImport = workflowSerdeImportPattern.test(source);
@@ -352,7 +348,7 @@ export function withWorkflow(
     }
 
     const { generatedWorkflowPathPattern, turbopackContentPattern } =
-      await getBuildersModule();
+      await loadBuildersModule();
     const loaderPath = require.resolve('./loader');
     let nextConfig: NextConfig;
 

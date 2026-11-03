@@ -8,7 +8,6 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { turbopackContentPattern } from '@workflow/builders';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -40,6 +39,12 @@ const {
 
 vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
+}));
+
+// Vitest cannot evaluate the eval'd dynamic import, so hand back the real
+// module through a regular import.
+vi.mock('./builders-module.js', () => ({
+  loadBuildersModule: () => import('@workflow/builders'),
 }));
 
 vi.mock('./swc-plugin-cache.js', () => ({
@@ -426,6 +431,7 @@ describe('withWorkflow builder config', () => {
     });
 
     it('uses the builders pattern itself, not a copy', async () => {
+      const { turbopackContentPattern } = await import('@workflow/builders');
       for (const [key, pattern] of await getRuleContentPatterns()) {
         expect(pattern, `rule ${key}`).toBe(turbopackContentPattern);
       }
