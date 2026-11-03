@@ -83,4 +83,34 @@ describe('createStateResolver', () => {
       resolver.revivers.StateRefV1({ kind: 'ref', logId: 'l', version: 'v9' })
     ).toBe('<workflow/state v9>');
   });
+
+  it('rebuilds dates and byte arrays inside state without any revivers', () => {
+    process.env.WORKFLOW_STATE_REFS = '1';
+    try {
+      const body = new StateContext();
+      const write = (value: unknown) =>
+        workflow.serialize(value, { stateContext: body });
+      const read = (bytes: Uint8Array) =>
+        workflow.deserialize(bytes, { stateContext: body }) as any;
+      const output1 = write({
+        state: produce(
+          { at: new Date(5), bytes: new Uint8Array([1, 2]), list: [1] },
+          (d) => {
+            d.list.push(2);
+          }
+        ),
+      });
+      const input2 = write({ state: read(output1).state });
+
+      const resolver = createStateResolver();
+      resolver.add(output1);
+      const shown = hydrateData(input2, resolver.revivers) as any;
+      expect(resolver.unresolved).toBe(0);
+      expect(shown.state.at).toEqual(new Date(5));
+      expect(shown.state.bytes).toEqual(new Uint8Array([1, 2]));
+      expect(shown.state.list).toEqual([1, 2]);
+    } finally {
+      delete process.env.WORKFLOW_STATE_REFS;
+    }
+  });
 });
