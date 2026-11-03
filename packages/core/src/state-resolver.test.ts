@@ -49,6 +49,9 @@ describe('createStateResolver', () => {
       });
 
       const resolver = createStateResolver(revivers);
+      // Hydrating before the records are added counts what was missing.
+      hydrateData(input2, { ...revivers, ...resolver.revivers });
+      expect(resolver.unresolved).toBe(1);
       for (const data of [hook, output1, output2]) resolver.add(data);
       const all = { ...revivers, ...resolver.revivers };
       expect(

@@ -1,0 +1,120 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// The SDK's own writers, so the fixtures are exactly what a run stores.
+import { StateContext } from '../../../core/src/serialization/state-refs';
+import * as workflow from '../../../core/src/serialization/workflow';
+import { produce } from '../../../core/src/state';
+import { hydrateResourceIOAsync } from './hydration';
+import { createRunStateHydrator } from './state-hydration';
+
+type Message = { role: string; content: string };
+
+/** A run whose second step's input refers to the first step's output. */
+function storedRun() {
+  const body = new StateContext();
+  const write = (value: unknown) =>
+    workflow.serialize(value, { stateContext: body });
+  const read = (bytes: Uint8Array) =>
+    workflow.deserialize(bytes, { stateContext: body }) as any;
+
+  const output1 = write({
+    history: produce([] as Message[], (d) => {
+      d.push({ role: 'user', content: 'hello' });
+    }),
+  });
+  const v1 = read(output1).history;
+  const input2 = write({ history: v1 });
+  const output2 = write({
+    history: produce(v1 as Message[], (d) => {
+      d.push({ role: 'assistant', content: 'hi' });
+    }),
+  });
+  const runInput = workflow.serialize(
+    { prompt: 'hello' },
+    { stateContext: new StateContext() }
+  );
+  const events = [
+    { eventId: 'e1', eventType: 'run_created', eventData: {} },
+    {
+      eventId: 'e2',
+      eventType: 'step_completed',
+      eventData: { result: output1 },
+    },
+    {
+      eventId: 'e3',
+      eventType: 'step_completed',
+      eventData: { result: output2 },
+    },
+  ];
+  return { runInput, input2, output2, events };
+}
+
+describe('createRunStateHydrator', () => {
+  beforeEach(() => {
+    process.env.WORKFLOW_STATE_REFS = '1';
+  });
+  afterEach(() => {
+    delete process.env.WORKFLOW_STATE_REFS;
+  });
+
+  it('shows the actual input and output of a step, reading the history once', async () => {
+    const run = storedRun();
+    const loadRunInput = vi.fn(async () => run.runInput);
+    const loadEvents = vi.fn(async () => ({
+      data: run.events,
+      hasMore: false,
+    }));
+    const hydrator = createRunStateHydrator({ loadRunInput, loadEvents });
+    const step = { stepId: 's2', input: run.input2, output: run.output2 };
+
+    // Without the history the input is only a placeholder.
+    const plain = (await hydrateResourceIOAsync(step)) as any;
+    expect(plain.input.history).toMatch(/^<workflow\/state /);
+
+    const shown = (await hydrator.hydrate(step)) as any;
+    expect(shown.input.history).toEqual([{ role: 'user', content: 'hello' }]);
+    expect(shown.output.history).toEqual([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi' },
+    ]);
+
+    // Later inspections reuse what was read.
+    await hydrator.hydrate(step);
+    expect(loadEvents).toHaveBeenCalledTimes(1);
+    expect(loadRunInput).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read the history for values that do not need it', async () => {
+    const loadEvents = vi.fn();
+    const hydrator = createRunStateHydrator({
+      loadRunInput: vi.fn(),
+      loadEvents,
+    });
+    const run = storedRun();
+    const shown = (await hydrator.hydrate({ input: run.runInput })) as any;
+    expect(shown.input).toEqual({ prompt: 'hello' });
+    expect(loadEvents).not.toHaveBeenCalled();
+  });
+
+  it('reads only newer events when a later step needs them', async () => {
+    const run = storedRun();
+    const pages = [
+      { data: run.events.slice(0, 1), cursor: 'c1', hasMore: false },
+      { data: run.events, cursor: 'c2', hasMore: false },
+    ];
+    const loadEvents = vi.fn(async () => pages.shift()!);
+    const hydrator = createRunStateHydrator({
+      loadRunInput: async () => run.runInput,
+      loadEvents,
+    });
+    const step = { input: run.input2 };
+
+    // The first read happened before the step that stored the state.
+    expect(((await hydrator.hydrate(step)) as any).input.history).toMatch(
+      /^<workflow\/state /
+    );
+    expect(((await hydrator.hydrate(step)) as any).input.history).toEqual([
+      { role: 'user', content: 'hello' },
+    ]);
+    expect(loadEvents).toHaveBeenNthCalledWith(2, 'c1');
+  });
+});
