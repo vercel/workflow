@@ -49,7 +49,7 @@ Set [`WORKFLOW_SPEC_VERSION=9`](/docs/configuration/runtime-tuning#workflow_spec
 
 Once spec 9 runs exist, do not roll back below this release. An older SDK fails writes to a spec 9 run: `RunNotSupportedError` on the Local and Postgres Worlds, an HTTP 400 on Vercel. Reads still work, and nothing is corrupted.
 
-- **On Vercel**, a spec 9 run's deliveries go only to the deployment that created it, so only an older process's `resumeHook()` and `cancel()` fail. The run itself keeps going.
+- **On Vercel**, a spec 9 run's deliveries go only to the deployment that created it, so only an older process's `cancel()` (and any other write besides a hook resume) fails. The run itself keeps going. An older process's `resumeHook()` and webhooks still work: the backend writes their `hook_received` out-of-band (see [An older SDK and a spec 9 run](#an-older-sdk-and-a-spec-9-run)).
 - **On a shared Local or Postgres queue**, an older process can also take the run's orchestrator, step and timer messages, and every write it makes for them fails, so the run stalls while it does.
 - **After re-upgrading**, the run continues, unless the older release used up a message's delivery budget ([`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries), 48 by default). Past it, the older release gives up on the message: its attempt to fail the run is refused too, so it logs that the run stays in its current state and acknowledges the message. On world-local the restart re-enqueues the run with a recovery marker, which re-sends its steps and timers. On world-postgres the re-enqueued message carries no such marker, so steps and timers whose messages the older release acknowledged stay lost until something else wakes the run, and the run can need a manual wake.
 
@@ -133,7 +133,7 @@ Settings that exist only for spec 9 runs:
 
 Before opting in:
 
-- **Upgrade the whole fleet first.** Every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release or later before anyone sets `WORKFLOW_SPEC_VERSION=9`. An older SDK fails writes to a spec 9 run: `RunNotSupportedError` on the Local and Postgres Worlds, an HTTP 400 on Vercel. Reads still work, and nothing is corrupted. On Vercel a run's deliveries go only to the deployment that created it, so there only an older process's `resumeHook()` and `cancel()` fail. On a shared Local or Postgres queue, an older process can also take the run's messages, and the run stalls while it does. The run continues after re-upgrading unless the older release used up a message's delivery budget ([`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries), 48 by default): it then gives up on that message, and the run can need a manual wake.
+- **Upgrade the whole fleet first.** Every deployment and process that calls `start()`, resumes hooks, receives webhooks, cancels runs or consumes the World's queue must run this release or later before anyone sets `WORKFLOW_SPEC_VERSION=9`. An older SDK fails writes to a spec 9 run: `RunNotSupportedError` on the Local and Postgres Worlds, an HTTP 400 on Vercel. Reads still work, and nothing is corrupted. On Vercel a run's deliveries go only to the deployment that created it, so there only an older process's `cancel()` and other non-resume writes fail; its `resumeHook()` and webhooks still reach the run. On a shared Local or Postgres queue, an older process can also take the run's messages, and the run stalls while it does. The run continues after re-upgrading unless the older release used up a message's delivery budget ([`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries), 48 by default): it then gives up on that message, and the run can need a manual wake.
 - **Set it on every caller of `start()`, not only the target.** A start that targets another deployment stamps the lower of the two deployments' versions, so a spec 9 run needs `WORKFLOW_SPEC_VERSION=9` on the caller and on the target.
 - **Rollback floor.** Once spec 9 runs exist, rolling a deployment back to a release older than this one stalls those runs as described above. To stop creating spec 9 runs, unset the variable (or set `8`) on a deployment of this release or later instead. That is safe for runs already created as spec 9: they keep their orchestrator, and hook resumes, webhooks, `cancel()` and `wakeUp()` from the deployment with the variable unset still work for them.
 - Spec 8 runs are unaffected: upgrading in place, rolling back and running old and new processes against one World work as on earlier releases.
@@ -1156,16 +1156,25 @@ Writes made outside a delivery (cancel, resume, wake-up, attributes) stamp the r
 
 ### An older SDK and a spec 9 run
 
-The world-vercel backend accepts writes to a spec 9 run only over its API version 5. Every older API version gets 400 `spec-version-requires-api-v5` on a write, while reads stay available. An older SDK (a deployment rolled back, or another deployment's `resumeHook()`) therefore fails on the write, before it sends any wake. It cannot resume a hook or cancel a spec 9 run. On the Local and Postgres Worlds the same write fails with `RunNotSupportedError`. See [The rollback floor](#the-rollback-floor) for what happens to the run.
+The world-vercel backend accepts writes to a spec 9 run over its API version 5, with one exception: a `hook_received` over an older API version. A deployment rolled back to an older SDK keeps receiving the webhooks and `resumeHook()` calls of the spec 9 runs its successor created, so the backend writes that event as an out-of-band writer and stamps it with the run's own spec version (an older SDK stamps 8). A hook payload is a plain append on spec 9 that moves no in-band position, so it needs no fence. Every other write over an older API version, such as `run_cancelled` or a hook disposal, gets 400 `spec-version-requires-api-v5`, before the SDK sends any wake. Reads stay available on every version.
+
+After its write, the older SDK sends its usual wake: no `runSpecVersion` stamp and no concurrency key. It reaches the spec 9 orchestrator through `runs.get` ([An unstamped message](#an-unstamped-message)), and can run beside a keyed delivery that is lingering after its last pass; the in-band fence keeps the log linear, at the cost described there. A retried resume that carries the `(resumeId, resumePayloadDigest)` claim, which `resumeHook()` sends by default, converges on the first `hook_received`.
+
+On the Local and Postgres Worlds an older SDK's writes, hook resumes included, still fail with `RunNotSupportedError`. See [The rollback floor](#the-rollback-floor) for what happens to the run.
 
 ```mermaid
 sequenceDiagram
     participant Old as Older SDK
     participant B as world-vercel backend
     participant Q as Vercel Queues
-    Old->>B: hook_received or run_cancelled on a spec 9 run, API below 5
+    participant O as Spec 9 orchestrator
+    Old->>B: hook_received on a spec 9 run, API below 5
+    B-->>Old: 200, written out-of-band, stamped with the run's spec
+    Old->>Q: wake, no stamp, no key
+    Q->>O: runs.get says 9, spec 9 orchestrator replays
+    Old->>B: run_cancelled on a spec 9 run, API below 5
     B-->>Old: 400 spec-version-requires-api-v5
-    Note over Old,Q: no wake is sent, the run is unchanged
+    Note over Old,Q: no wake is sent for a refused write
 ```
 
 ### Events API routing on world-vercel
@@ -1190,7 +1199,7 @@ The delivery bodies and step executors were left separate: they are mostly diffe
 - The in-band fence is checked where a spec 9 run is created (`start()`) and where its orchestrator delivery begins writing (the `InBandWriter`); a World that declares spec 8 creates spec 8 runs and is not checked (`assertWorldSupportsInBandFence`, `packages/core/src/runtime/world-compatibility.ts`).
 - On world-vercel, the events API route follows the run: spec 8 and below on v4, spec 9 on v5. Writes route by the version stamped on the event, reads by the `specVersion` hint the spec 9 orchestrator passes; a read without it uses v4. Spec 8 batches always go over HTTP (`eventsApiVersion`, `packages/world-vercel/src/events-v4.ts`).
 - `WORKFLOW_SPEC_VERSION` accepts an integer from 6 to 9; any other value is ignored with a one-time warning and the default (8) is minted, and 9 on a World without the fence mints 8 with a warning (`mintedSpecVersion`, `packages/world/src/spec-version.ts`).
-- An older SDK's 400 is answered on the write, so no stale wake is left queued for a spec 9 run.
+- An older SDK's 400 (any write but `hook_received`) is answered on the write, so a refused write leaves no stale wake queued for a spec 9 run. An admitted `hook_received` is followed by the older SDK's unstamped wake, which routing resolves through `runs.get`.
 
 ## World contract changes
 
@@ -3427,7 +3436,7 @@ sequenceDiagram
     Note over Old: no wake is sent, the run is unchanged
 ```
 
-**Outcome.** The older SDK cannot resume hooks on, or cancel, spec 9 runs. Reads still work. On Vercel the run's own deliveries stay on the deployment that created it, so the run keeps going; only callers on the older SDK fail. On a shared Local or Postgres queue the older process can also take the run's messages, and the run stalls until it is upgraded again (see [The rollback floor](#the-rollback-floor)). Mechanism: [Spec routing](#spec-8-and-spec-9-side-by-side).
+**Outcome.** The older SDK cannot cancel spec 9 runs. Reads still work. On Vercel its hook resumes and webhooks still reach the run, written out-of-band ([An older SDK and a spec 9 run](#an-older-sdk-and-a-spec-9-run)); on the Local and Postgres Worlds they fail too. On Vercel the run's own deliveries stay on the deployment that created it, so the run keeps going; only the older SDK's other writes fail. On a shared Local or Postgres queue the older process can also take the run's messages, and the run stalls until it is upgraded again (see [The rollback floor](#the-rollback-floor)). Mechanism: [Spec routing](#spec-8-and-spec-9-side-by-side).
 
 ### world-postgres resets `attempt`
 
