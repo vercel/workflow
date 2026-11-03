@@ -1,15 +1,6 @@
 import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import {
-  generatedWorkflowPathPattern,
-  turbopackContentPattern,
-  useStepPattern,
-  useWorkflowPattern,
-  workflowSerdeComputedPropertyPattern,
-  workflowSerdeImportPattern,
-  workflowSerdeSymbolPattern,
-} from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
@@ -78,7 +69,21 @@ function isResolvablePackageSpecifier(specifier: string): boolean {
   return true;
 }
 
-function detectWorkflowPatterns(source: string): WorkflowPatternMatch {
+async function getBuildersModule(): Promise<typeof import('@workflow/builders')> {
+  // biome-ignore lint/security/noGlobalEval: Preserve the ESM import in this CommonJS package.
+  return eval('import("@workflow/builders")');
+}
+
+async function detectWorkflowPatterns(
+  source: string
+): Promise<WorkflowPatternMatch> {
+  const {
+    useWorkflowPattern,
+    useStepPattern,
+    workflowSerdeImportPattern,
+    workflowSerdeSymbolPattern,
+    workflowSerdeComputedPropertyPattern,
+  } = await getBuildersModule();
   const hasUseWorkflow = useWorkflowPattern.test(source);
   const hasUseStep = useStepPattern.test(source);
   const hasSerdeImport = workflowSerdeImportPattern.test(source);
@@ -153,7 +158,7 @@ async function detectServerExternalPackage(
       paths: [workingDir],
     });
     const source = await readFile(entryPath, 'utf-8');
-    const patterns = detectWorkflowPatterns(source);
+    const patterns = await detectWorkflowPatterns(source);
     hasUseWorkflow = patterns.hasUseWorkflow;
     hasUseStep = patterns.hasUseStep;
     hasSerde ||= patterns.hasSerde;
@@ -346,6 +351,8 @@ export function withWorkflow(
       prewarmWorkflowSwcPluginCache(process.cwd());
     }
 
+    const { generatedWorkflowPathPattern, turbopackContentPattern } =
+      await getBuildersModule();
     const loaderPath = require.resolve('./loader');
     let nextConfig: NextConfig;
 
