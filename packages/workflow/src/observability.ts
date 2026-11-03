@@ -16,10 +16,12 @@
  * ```
  */
 export {
+  createStateResolver,
   hydrateData,
   hydrateResourceIO,
   observabilityRevivers,
   type Revivers,
+  type StateResolver,
 } from '@workflow/core/serialization-format';
 
 export {

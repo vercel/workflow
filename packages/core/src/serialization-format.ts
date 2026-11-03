@@ -345,6 +345,11 @@ async function decompressAsync(
 }
 
 // ---------------------------------------------------------------------------
+export {
+  createStateResolver,
+  type StateResolver,
+} from './state-resolver.js';
+
 // Revivers type (shared across all environments)
 // ---------------------------------------------------------------------------
 

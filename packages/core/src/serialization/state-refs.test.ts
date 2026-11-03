@@ -12,6 +12,7 @@ import {
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { decodeFormatPrefix } from './format.js';
+import { getCommonRevivers } from './reducers/common.js';
 import {
   bindStateContext,
   isFrozenState,
@@ -33,7 +34,10 @@ const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 const cold = (...payloads: Uint8Array[]) => {
   const context = new StateContext();
   for (const p of payloads)
-    context.ingest(decodeFormatPrefix(p).payload as Uint8Array);
+    context.ingest(
+      decodeFormatPrefix(p).payload as Uint8Array,
+      getCommonRevivers(globalThis) as Record<string, (v: unknown) => unknown>
+    );
   return context;
 };
 
