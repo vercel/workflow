@@ -261,16 +261,21 @@ else
   export WORKFLOW_TARGET_WORLD="local"
   export WORKFLOW_LOCAL_DATA_DIR="$DATA_DIR"
   export WORKFLOW_LOCAL_QUEUE_CONCURRENCY="${WORKFLOW_LOCAL_QUEUE_CONCURRENCY:-$LOCAL_QUEUE_CONCURRENCY}"
+  # The harness calls start() and resumeHook() in its own process, and
+  # world-local's queue delivers them from there, with that process's
+  # in-memory queue key, which the app's flow route refuses with queue auth
+  # on. The runtime refuses this while dynamic workflows are enabled, so do
+  # not export WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
+  export WORKFLOW_QUEUE_AUTH="off"
 fi
 
-# The harness calls start() and resumeHook() in its own process, so its
-# deliveries carry that process's in-memory queue key, which the app's flow
-# route refuses with queue auth on. That holds for both worlds: world-local's
-# queue delivers from the harness, and world-postgres's queue starts Graphile
-# workers in the harness that pick up jobs and deliver them to the app. The
-# runtime refuses this while dynamic workflows are enabled, so do not export
-# WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
-export WORKFLOW_QUEUE_AUTH="off"
+# world-postgres keeps queue auth on. Its queue would start Graphile workers
+# in the harness, which pick up the app's jobs and deliver them with the
+# harness's key, so the harness runs enqueue-only and the app's own worker
+# delivers everything. Set on the harness command only: the app must run its
+# worker.
+HARNESS_ENQUEUE_ONLY=""
+if [ "$WORLD" = "postgres" ]; then HARNESS_ENQUEUE_ONLY="1"; fi
 
 export PORT="$PORT"
 DEPLOYMENT_URL="http://localhost:$PORT"
@@ -482,6 +487,7 @@ set +e
 DEPLOYMENT_URL="$DEPLOYMENT_URL" \
 APP_NAME="$APP_NAME" \
 NODE_OPTIONS="--enable-source-maps" \
+WORKFLOW_POSTGRES_ENQUEUE_ONLY="$HARNESS_ENQUEUE_ONLY" \
   pnpm run test:e2e:event-log-race-repro --reporter=default
 harness_status=$?
 set -e
