@@ -133,7 +133,7 @@ function open(file: string): Connection {
     depth: 0,
   };
   state.connections.set(file, connection);
-  ensureSweeper();
+  if (keepsConnections()) ensureSweeper();
   return connection;
 }
 
@@ -251,6 +251,28 @@ export class Database {
       throw result.error;
     }
     return result;
+  }
+
+  /**
+   * Runs `fn`, a group of reads, against one consistent snapshot of the
+   * database (a deferred read transaction), so a write another process
+   * commits in between cannot be half seen. `fn` must be synchronous.
+   */
+  snapshot<T>(fn: () => T): T {
+    const connection = this.connection();
+    if (connection.depth > 0) return fn();
+    retryWhileBusy(() => connection.raw.exec('BEGIN'));
+    connection.depth++;
+    try {
+      return fn();
+    } finally {
+      connection.depth--;
+      try {
+        connection.raw.exec('COMMIT');
+      } catch {}
+      connection.lastUsed = Date.now();
+      if (!keepsConnections()) this.close();
+    }
   }
 
   /** Closes this process's connection to the file, if one is open. */

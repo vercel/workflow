@@ -4,7 +4,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { databaseFor } from './db/index.js';
 import { createStreamer } from './streamer.js';
 
@@ -62,8 +62,37 @@ async function waitFor(condition: () => boolean, timeoutMs = 5_000) {
 // Long enough for an unordered write or delivery to land first.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 
-const timeouts = () =>
-  process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+/**
+ * Tracks the intervals created from here on and whether each was cleared:
+ * counting the process's active timers instead would also count unrelated
+ * timers that start or end meanwhile.
+ */
+function trackIntervals() {
+  const created = new Set<unknown>();
+  const cleared = new Set<unknown>();
+  const set = vi.spyOn(globalThis, 'setInterval').mockImplementation(((
+    ...args: Parameters<typeof setInterval>
+  ) => {
+    const handle = setIntervalOriginal(...args);
+    created.add(handle);
+    return handle;
+  }) as typeof setInterval);
+  const clear = vi.spyOn(globalThis, 'clearInterval').mockImplementation(((
+    handle: Parameters<typeof clearInterval>[0]
+  ) => {
+    cleared.add(handle);
+    clearIntervalOriginal(handle);
+  }) as typeof clearInterval);
+  return {
+    open: () => [...created].filter((handle) => !cleared.has(handle)).length,
+    restore() {
+      set.mockRestore();
+      clear.mockRestore();
+    },
+  };
+}
+const setIntervalOriginal = globalThis.setInterval;
+const clearIntervalOriginal = globalThis.clearInterval;
 
 /** Listeners on the streamer's in-process wake-up signal, across all streams. */
 function signalListeners() {
@@ -623,7 +652,8 @@ describe('streamer', () => {
       const streamName = 'teardown-stream';
       // Open the database first so its own timers are counted in `before`.
       await streamer.streams.getInfo(TEST_RUN_ID, streamName);
-      const timersBefore = timeouts();
+      const intervals = trackIntervals();
+      onTestFinished(() => intervals.restore());
       const listenersBefore = signalListeners();
 
       // A reader on a stream with no chunks (the abort-stream shape) waits
@@ -634,12 +664,12 @@ describe('streamer', () => {
       const pending = reader.read();
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(signalListeners()).toBe(listenersBefore + 1);
-      expect(timeouts()).toBeGreaterThan(timersBefore);
+      expect(intervals.open()).toBe(1);
 
       await reader.cancel();
       await pending.catch(() => {});
 
-      expect(timeouts()).toBeLessThanOrEqual(timersBefore);
+      expect(intervals.open()).toBe(0);
       expect(signalListeners()).toBe(listenersBefore);
       // A later write must not reach the cancelled reader.
       await expect(
@@ -651,7 +681,8 @@ describe('streamer', () => {
       const { streamer } = await setupStreamer();
       const streamName = 'teardown-at-end';
       await streamer.streams.getInfo(TEST_RUN_ID, streamName);
-      const timersBefore = timeouts();
+      const intervals = trackIntervals();
+      onTestFinished(() => intervals.restore());
       const listenersBefore = signalListeners();
 
       const live = collect(await streamer.streams.get(TEST_RUN_ID, streamName));
@@ -660,7 +691,7 @@ describe('streamer', () => {
       await live.done;
 
       expect(live.received).toEqual(['data']);
-      expect(timeouts()).toBeLessThanOrEqual(timersBefore);
+      expect(intervals.open()).toBe(0);
       expect(signalListeners()).toBe(listenersBefore);
     });
 

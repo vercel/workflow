@@ -32,10 +32,19 @@ import {
  * and move it by hand (`clock.advance(ms)`): on a frozen clock, a delivery
  * that happens proves the message was not delayed.
  */
-const FAST = 50;
+// Slower on Windows, where every database operation opens its own
+// connection: a lease (30s of queue time) must outlast a delivery.
+/** `vi.waitFor` with room for a loaded (or Windows) runner. */
+const waitFor: typeof vi.waitFor = (callback, options) =>
+  vi.waitFor(callback, {
+    timeout: 10_000,
+    ...(typeof options === 'number' ? { timeout: options } : options),
+  });
+
+const FAST = process.platform === 'win32' ? 10 : 50;
 const clock = vi.hoisted(() => {
   const state = {
-    speed: 50,
+    speed: process.platform === 'win32' ? 10 : 50,
     origin: Date.now(),
     at: Date.now(),
     now(): number {
@@ -307,7 +316,7 @@ describe('queue timeout re-enqueue', () => {
 
     // Wait for the async queue processing to complete
     // The queue fires off processing asynchronously, so we need to wait
-    await vi.waitFor(
+    await waitFor(
       () => {
         expect(deliveredAt).toHaveLength(3);
       },
@@ -317,7 +326,7 @@ describe('queue timeout re-enqueue', () => {
     const [first = 0, second = 0, third = 0] = deliveredAt;
     expect(second - first).toBeGreaterThanOrEqual(5_000);
     expect(third - second).toBeGreaterThanOrEqual(5_000);
-    await vi.waitFor(() => expect(messageRows(dataDir)).toEqual([]));
+    await waitFor(() => expect(messageRows(dataDir)).toEqual([]));
   });
 
   it('redelivers the SAME message on timeoutSeconds: one id, one createdAt, increasing deliveryCount', async () => {
@@ -342,7 +351,7 @@ describe('queue timeout re-enqueue', () => {
       { idempotencyKey: 'step_01ABC', retentionSeconds: 3600 }
     );
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(metas).toHaveLength(3);
     });
     expect(metas.map((meta) => meta.messageId)).toEqual([
@@ -382,7 +391,7 @@ describe('queue timeout re-enqueue', () => {
       workflowPayload,
       { idempotencyKey: 'step_01ABC' }
     );
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(calls).toBe(1);
     });
     const second = await localQueue.queue(
@@ -392,7 +401,7 @@ describe('queue timeout re-enqueue', () => {
     );
     expect(second.messageId).toBe(first.messageId);
     release();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(calls).toBe(2);
     });
   });
@@ -411,7 +420,7 @@ describe('queue timeout re-enqueue', () => {
     const a = await localQueue.queue('__wkf_workflow_test' as any, wake);
     const b = await localQueue.queue('__wkf_workflow_test' as any, wake);
     expect(a.messageId).not.toBe(b.messageId);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(calls).toBe(2);
     });
   });
@@ -430,7 +439,7 @@ describe('queue timeout re-enqueue', () => {
     localQueue.registerHandler('__wkf_workflow_', handler);
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await vi.waitFor(
+    await waitFor(
       () => {
         expect(deliveredAt).toHaveLength(3);
       },
@@ -461,7 +470,7 @@ describe('queue timeout re-enqueue', () => {
       workflowPayload
     );
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handlerImpl).toHaveBeenCalledTimes(1);
     });
   });
@@ -475,7 +484,7 @@ describe('queue timeout re-enqueue', () => {
     localQueue.registerHandler('__wkf_workflow_', handler);
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(handler).toHaveBeenCalledTimes(1);
     });
 
@@ -504,7 +513,7 @@ describe('queue timeout re-enqueue', () => {
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
     // No delay: all three deliveries happen without the clock moving.
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(callCount).toBe(3);
     });
   });
@@ -521,7 +530,7 @@ describe('queue timeout re-enqueue', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining(
           '[local world] Queue operation failed: detected "Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer"'
@@ -580,7 +589,7 @@ describe('queue delaySeconds', () => {
     expect(calls.count).toBe(0);
 
     clock.advance(1);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(calls.count).toBe(1);
     });
   });
@@ -616,7 +625,7 @@ describe('queue delaySeconds', () => {
       delaySeconds: 0,
     });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(calls.count).toBe(1);
     });
   });
@@ -627,7 +636,7 @@ describe('queue delaySeconds', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(calls.count).toBe(1);
     });
   });
@@ -675,7 +684,7 @@ describe('transport-level delivery failures are retried (regression)', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await vi.waitFor(() => expect(calls).toBe(3), { timeout: 5_000 });
+    await waitFor(() => expect(calls).toBe(3), { timeout: 5_000 });
   });
 
   it('retries a "fetch failed"/ETIMEDOUT transport throw instead of dropping it', async () => {
@@ -693,7 +702,7 @@ describe('transport-level delivery failures are retried (regression)', () => {
 
     // Before the fix this stayed at 1 (the throw escaped the retry loop and the
     // message was dropped); now it retries until the transient timeout clears.
-    await vi.waitFor(() => expect(calls).toBe(3), { timeout: 5_000 });
+    await waitFor(() => expect(calls).toBe(3), { timeout: 5_000 });
   });
 
   it('does NOT advance the handler delivery attempt across transport failures', async () => {
@@ -714,7 +723,7 @@ describe('transport-level delivery failures are retried (regression)', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await vi.waitFor(() => expect(attempts.length).toBe(1), {
+    await waitFor(() => expect(attempts.length).toBe(1), {
       timeout: 5_000,
     });
     expect(attempts[0]).toBe(1);
@@ -792,7 +801,7 @@ describe('queue transport timeouts', () => {
     });
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-    await vi.waitFor(() => expect(requestReceived).toBe(true));
+    await waitFor(() => expect(requestReceived).toBe(true));
     const closePromise = localQueue.close();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
@@ -834,7 +843,7 @@ describe('queue transport timeouts', () => {
     });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await vi.waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
+      await waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining('Queue delivery failed at the transport'),
         expect.objectContaining({
@@ -872,7 +881,7 @@ describe('queue transport timeouts', () => {
     });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await vi.waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
+      await waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining('Queue delivery failed at the transport'),
         expect.objectContaining({
@@ -932,7 +941,7 @@ describe('node:http mode', () => {
     });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await vi.waitFor(() => expect(attempts.length).toBe(1), {
+      await waitFor(() => expect(attempts.length).toBe(1), {
         timeout: 5_000,
       });
       expect(attempts[0]).toBe('1');
@@ -967,7 +976,7 @@ describe('node:http mode', () => {
     });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await vi.waitFor(() => expect(calls).toBe(3), { timeout: 20_000 });
+      await waitFor(() => expect(calls).toBe(3), { timeout: 20_000 });
     } finally {
       await localQueue.close();
     }
@@ -1041,13 +1050,13 @@ describe('per-run orchestrator serialization', () => {
     const { started, releases, maxActive } = holdingHandler();
     await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
     await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
-    await vi.waitFor(() => expect(started).toHaveLength(1));
+    await waitFor(() => expect(started).toHaveLength(1));
     // Give the second delivery every chance to start: several consumer polls.
     await realDelay(IDLE_MS);
     expect(started).toHaveLength(1);
 
     releases[0]?.();
-    await vi.waitFor(() => expect(started).toHaveLength(2));
+    await waitFor(() => expect(started).toHaveLength(2));
     releases[1]?.();
     expect(maxActive.get('run_a')).toBe(1);
   });
@@ -1066,7 +1075,7 @@ describe('per-run orchestrator serialization', () => {
     });
     await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
     await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
-    await vi.waitFor(() => expect(started).toHaveLength(4));
+    await waitFor(() => expect(started).toHaveLength(4));
     for (const release of releases) release();
   });
 
@@ -1092,7 +1101,7 @@ describe('per-run orchestrator serialization', () => {
         runId: 'run_a',
       } as any
     );
-    await vi.waitFor(() => expect(started).toHaveLength(5));
+    await waitFor(() => expect(started).toHaveLength(5));
     for (const release of releases) release();
   });
 
@@ -1111,12 +1120,12 @@ describe('per-run orchestrator serialization', () => {
       otherSender.registerHandler('__wkf_workflow_', handler);
       await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
       await otherSender.queue('__wkf_workflow_test' as any, spec9('run_a'));
-      await vi.waitFor(() => expect(started).toHaveLength(1));
+      await waitFor(() => expect(started).toHaveLength(1));
       await realDelay(IDLE_MS);
       expect(started).toHaveLength(1);
 
       releases[0]?.();
-      await vi.waitFor(() => expect(started).toHaveLength(2));
+      await waitFor(() => expect(started).toHaveLength(2));
       releases[1]?.();
       expect(maxActive.get('run_a')).toBe(1);
     } finally {
@@ -1146,17 +1155,17 @@ describe('per-run orchestrator serialization', () => {
       '__wkf_workflow_test' as any,
       { ...spec9('run_a'), tag: 'first' } as any
     );
-    await vi.waitFor(() => expect(order).toEqual(['first']));
+    await waitFor(() => expect(order).toEqual(['first']));
     await localQueue.queue(
       '__wkf_workflow_test' as any,
       { ...spec9('run_a'), tag: 'second' } as any
     );
     // The first message is between deliveries, so the second one runs.
-    await vi.waitFor(() => expect(order).toEqual(['first', 'second']));
+    await waitFor(() => expect(order).toEqual(['first', 'second']));
     await realDelay(IDLE_MS);
     expect(order).toEqual(['first', 'second']);
     clock.advance(1_000);
-    await vi.waitFor(() => expect(order).toEqual(['first', 'second', 'first']));
+    await waitFor(() => expect(order).toEqual(['first', 'second', 'first']));
   });
 });
 
@@ -1192,7 +1201,7 @@ describe('handoff', () => {
     );
     localQueue.registerHandler('__wkf_workflow_', handler);
     await localQueue.queue('__wkf_workflow_test' as any, payload as any);
-    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    await waitFor(() => expect(seen).toHaveLength(3));
     return seen;
   }
 
@@ -1257,7 +1266,7 @@ describe('per-prefix delivery routes', () => {
         '__agent_wkf_workflow_session' as ValidQueueName,
         workflowPayload
       );
-      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      await waitFor(() => expect(requests).toHaveLength(1));
       expect(requests[0]).toEqual({
         path: '/.well-known/workflow/v1/flow',
         queueName: '__agent_wkf_workflow_session',
@@ -1282,7 +1291,7 @@ describe('per-prefix delivery routes', () => {
         '__wkf_workflow_myWorkflow' as ValidQueueName,
         workflowPayload
       );
-      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      await waitFor(() => expect(requests).toHaveLength(2));
       expect(requests).toEqual(
         expect.arrayContaining([
           {
@@ -1314,7 +1323,7 @@ describe('per-prefix delivery routes', () => {
         '__agent_wkf_workflow_session' as ValidQueueName,
         workflowPayload
       );
-      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      await waitFor(() => expect(requests).toHaveLength(1));
       expect(requests[0]?.path).toBe('/base/api/agent/queue');
     } finally {
       await localQueue.close();
@@ -1337,7 +1346,7 @@ describe('per-prefix delivery routes', () => {
         '__agent_wkf_workflow_session' as ValidQueueName,
         workflowPayload
       );
-      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
       expect(requests).toHaveLength(0);
     } finally {
       await localQueue.close();
@@ -1360,7 +1369,7 @@ describe('per-prefix delivery routes', () => {
       // The first attempt goes to the flow route, which this app doesn't have.
       // The server records the request before the client reads the 404 and
       // logs it, so wait for the log too.
-      await vi.waitFor(() => {
+      await waitFor(() => {
         expect(requests.length).toBeGreaterThan(0);
         expect(consoleError).toHaveBeenCalledWith(
           expect.stringContaining('HTTP 404'),
@@ -1372,7 +1381,7 @@ describe('per-prefix delivery routes', () => {
       expect(requests[0]?.path).toBe('/.well-known/workflow/v1/flow');
 
       localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
-      await vi.waitFor(() =>
+      await waitFor(() =>
         expect(requests.at(-1)?.path).toBe('/api/agent/queue')
       );
       const settled = requests.length;
@@ -1482,9 +1491,9 @@ describe('durable queue', () => {
       })
     );
     consumer.startConsumer();
-    await vi.waitFor(() => expect(metas).toHaveLength(1));
+    await waitFor(() => expect(metas).toHaveLength(1));
     expect(metas[0]).toEqual({ messageId, attempt: 1 });
-    await vi.waitFor(() => expect(messageRows(dataDir)).toEqual([]));
+    await waitFor(() => expect(messageRows(dataDir)).toEqual([]));
   });
 
   it('keeps a delayed message across a close and reopen, delivering it when due', async () => {
@@ -1525,9 +1534,9 @@ describe('durable queue', () => {
     expect(deliveredAfter).toBe(0);
     // ...and delivered once it is due.
     clock.advance(1_000);
-    await vi.waitFor(() => expect(deliveredAfter).toBe(1));
+    await waitFor(() => expect(deliveredAfter).toBe(1));
     expect(deliveredBefore).toBe(0);
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(after.runsWithMessages(['run_01ABC'])).toEqual(new Set())
     );
   });
@@ -1569,7 +1578,7 @@ describe('durable queue', () => {
     await b.queue('__wkf_workflow_test' as any, spec9('run_b'));
 
     // One delivery of run_a, and run_b's alongside it.
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect([...started].sort()).toEqual(['run_a', 'run_b'])
     );
     await realDelay(IDLE_MS);
@@ -1578,12 +1587,12 @@ describe('durable queue', () => {
     // Each release lets exactly the run's next message in.
     for (let delivered = 3; delivered <= 4; delivered++) {
       for (const release of releases.splice(0)) release();
-      await vi.waitFor(() => expect(started).toHaveLength(delivered));
+      await waitFor(() => expect(started).toHaveLength(delivered));
       await realDelay(IDLE_MS);
       expect(started).toHaveLength(delivered);
     }
     for (const release of releases.splice(0)) release();
-    await vi.waitFor(() => expect(messageRows(dataDir)).toEqual([]));
+    await waitFor(() => expect(messageRows(dataDir)).toEqual([]));
     expect(started.filter((runId) => runId === 'run_a')).toHaveLength(3);
     expect(maxActive.get('run_a')).toBe(1);
   });

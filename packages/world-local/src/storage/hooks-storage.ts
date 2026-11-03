@@ -44,8 +44,11 @@ export function createHooksStorage(
 
   async function get(hookId: string, params?: GetHookParams): Promise<Hook> {
     assertSafeEntityId('hookId', hookId);
-    const hook = store.getHook(hookId);
-    if (!hook || !isAvailable(hook)) throw new HookNotFoundError(hookId);
+    const hook = db.snapshot(() => {
+      const found = store.getHook(hookId);
+      return found && isAvailable(found) ? found : null;
+    });
+    if (!hook) throw new HookNotFoundError(hookId);
     return filterHookData(
       withDefaults(hook),
       params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION
@@ -53,11 +56,16 @@ export function createHooksStorage(
   }
 
   async function getByToken(token: string): Promise<Hook> {
-    const owner = store.getTokenOwner(token);
-    const hook = owner ? store.getHook(owner.hookId) : null;
-    if (!hook || hook.token !== token || !isAvailable(hook)) {
-      throw new HookNotFoundError(token);
-    }
+    // One snapshot: a takeover moves the token and deletes the old owner's
+    // row in one commit, so the token always resolves to one of them.
+    const hook = db.snapshot(() => {
+      const owner = store.getTokenOwner(token);
+      const found = owner ? store.getHook(owner.hookId) : null;
+      return found && found.token === token && isAvailable(found)
+        ? found
+        : null;
+    });
+    if (!hook) throw new HookNotFoundError(token);
     return withDefaults(hook);
   }
 
@@ -88,28 +96,30 @@ export function createHooksStorage(
     let hasMore = false;
     // Availability depends on the clock and on other rows, so it is applied
     // after the query, a batch at a time, until a page is full.
-    let offset = 0;
-    const batch = Math.max(limit + 1, 100);
-    while (true) {
-      const rows = db.all<{ doc: string }>(
-        `SELECT doc FROM hooks ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
-         ORDER BY created_at ${direction}, hook_id ${direction} LIMIT ? OFFSET ?`,
-        ...values,
-        batch,
-        offset
-      );
-      offset += rows.length;
-      for (const row of rows) {
-        const hook = decode<Hook>(row.doc);
-        if (!isAvailable(hook)) continue;
-        if (data.length === limit) {
-          hasMore = true;
-          break;
+    db.snapshot(() => {
+      let offset = 0;
+      const batch = Math.max(limit + 1, 100);
+      while (true) {
+        const rows = db.all<{ doc: string }>(
+          `SELECT doc FROM hooks ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+           ORDER BY created_at ${direction}, hook_id ${direction} LIMIT ? OFFSET ?`,
+          ...values,
+          batch,
+          offset
+        );
+        offset += rows.length;
+        for (const row of rows) {
+          const hook = decode<Hook>(row.doc);
+          if (!isAvailable(hook)) continue;
+          if (data.length === limit) {
+            hasMore = true;
+            break;
+          }
+          data.push(hook);
         }
-        data.push(hook);
+        if (hasMore || rows.length < batch) break;
       }
-      if (hasMore || rows.length < batch) break;
-    }
+    });
     const last = data.at(-1);
     return {
       data: data.map((hook) => filterHookData(hook, resolveData)),
