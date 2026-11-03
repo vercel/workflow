@@ -198,6 +198,8 @@ async function processInputStream(input: ReadableStream<Uint8Array>) {
 **Streams cannot be used directly in workflow context**
 
 You cannot read from or write to streams directly within a workflow function. All stream operations must happen in step functions.
+
+The exception is the body of a `Response` returned by the workflow [`fetch`](/docs/api-reference/workflow/fetch#reading-the-response-body). You can read it with `getReader()` or `for await` in a workflow function, because the read runs as a step.
 </Callout>
 
 Workflow functions must be deterministic to support replay. Streams bypass the [event log](/docs/how-it-works/event-sourcing) for performance, so reading stream data in a workflow would break determinism because each replay could see different data. Requiring all stream operations to happen in steps ensures consistent behavior.

@@ -138,7 +138,7 @@ export async function birthdayWorkflow(
 
 1. **`await` is durable**: When the workflow awaits a step, the runtime persists the step's input, suspends the workflow, runs the step, and replays the workflow with the step's result on resume. The same applies to `sleep()` and `createWebhook()`.
 2. **`Promise.all` runs steps concurrently**: Each promise in the array is suspended on its own, and the workflow resumes only when all have settled. If any promise rejects, the whole `Promise.all` rejects.
-3. **`Promise.race` resolves when the first promise settles**: The losing promises keep running in the background, but the workflow discards their results.
+3. **`Promise.race` resolves when the first promise settles**: The losing promises keep running in the background, but the workflow discards their results. If the workflow returns while a losing step is still running, the run can complete right away; that step finishes its current attempt but isn't retried. See [`WORKFLOW_INLINE_EARLY_ADVANCE`](/docs/configuration/runtime-tuning#workflow_inline_early_advance).
 4. **All primitives are promises**: `sleep("1 day")` and `createWebhook()` return promises, so they compose with `Promise.all` and `Promise.race` like steps do. This behavior enables patterns such as racing a webhook against a 24-hour deadline.
 
 ## Adapting to your use case
