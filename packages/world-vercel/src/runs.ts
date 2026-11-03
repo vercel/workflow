@@ -417,24 +417,24 @@ export async function waitForWorkflowRunTerminalStatus(
     )
   );
 
-  const signal = params?.signal ? { signal: params.signal } : {};
+  const signal = params?.signal;
 
   const { baseUrl } = getHttpUrl(config);
   const unsupportedUntil = longPoll.unsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
 
   if (waitMs === 0 || Date.now() < unsupportedUntil) {
-    return readRunOrNotFound(id, { resolveData, ...signal }, config);
+    return readRunOrNotFound(id, { resolveData, signal }, config);
   }
 
   try {
-    return await readRun(id, { resolveData, waitMs, ...signal }, config);
+    return await readRun(id, { resolveData, waitMs, signal }, config);
   } catch (error) {
     // The caller cancelled on purpose. That is not a verdict on the route, so
     // it propagates rather than degrading; otherwise an ordinary abort would
     // both cost an extra read and switch the fast path off for every run in
     // this process. Checked first because an abort surfaces with the same
     // `TIMEOUT` code as a request that ran out of time on its own.
-    if (params?.signal?.aborted) {
+    if (signal?.aborted) {
       throw error;
     }
     if (!(error instanceof WorkflowWorldError) || !isLongPollUnusable(error)) {
@@ -442,7 +442,7 @@ export async function waitForWorkflowRunTerminalStatus(
     }
 
     // Throws WorkflowRunNotFoundError when the run is what was missing.
-    const run = await readRunOrNotFound(id, { resolveData, ...signal }, config);
+    const run = await readRunOrNotFound(id, { resolveData, signal }, config);
     longPoll.unsupportedUntilByBaseUrl.set(
       baseUrl,
       Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS
