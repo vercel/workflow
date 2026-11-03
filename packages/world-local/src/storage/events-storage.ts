@@ -668,6 +668,24 @@ function startHookLog(message: string, detail: Record<string, string>): void {
   debugLog(`[world-local] start Hook: ${message}`, detail);
 }
 
+/**
+ * A `hook_created` retarget breadcrumb, under `DEBUG=workflow:*`: a lost
+ * publish moved the creation (an interrupted creation, or siblings that drew
+ * the same slot). Names the run and hook, never the token.
+ */
+function hookCreatedRetargetLog(
+  how: 'followed' | 'found' | 'drawn',
+  input: { runId: string; hookId: string; from: string },
+  to: string
+): void {
+  debugLog(`[world-local] hook_created retargeted (${how})`, {
+    runId: input.runId,
+    hookId: input.hookId,
+    from: input.from,
+    to,
+  });
+}
+
 function startHookRejected(
   message: string,
   reason: StartHookRejectionReason
@@ -1304,6 +1322,81 @@ export function createEventsStorage(
   }
 
   /**
+   * Where a slot-numbered `hook_created` publishes next, after its publish at
+   * `from` lost to an event that is not this hook's creation.
+   *
+   * The token claim names the one position every writer of the hook is
+   * publishing to, and it moves only here, under the claim lock:
+   * - The claim names another position: another writer moved it. Follow it.
+   * - `lookForExisting` and this hook's `hook_created` is in the log: an older
+   *   writer bumped past the claimed position without recording where it
+   *   published. Index that creation (the older writer indexed only the
+   *   claimed position) and point the claim there; the publish then collides
+   *   with it and reports the duplicate.
+   * - Otherwise: draw a fresh slot, index it, and point the claim there.
+   *
+   * Returns `null` when the claim no longer belongs to this hook (a disposal
+   * or a takeover), whose path answers for the creation.
+   */
+  async function retargetHookCreatedClaim(input: {
+    runId: string;
+    hookId: string;
+    token: string;
+    from: string;
+    lookForExisting: boolean;
+  }): Promise<string | null> {
+    const claimPath = hookTokenClaimPath(basedir, input.token);
+    return withHookTokenClaimLock(basedir, input.token, async (signal) => {
+      const claim = await readHookTokenClaim(claimPath);
+      if (claim?.runId !== input.runId || claim.hookId !== input.hookId) {
+        return null;
+      }
+      if (claim.eventId && claim.eventId !== input.from) {
+        hookCreatedRetargetLog('followed', input, claim.eventId);
+        return claim.eventId;
+      }
+      let target = input.lookForExisting
+        ? await findExistingHookCreatedEventId(
+            basedir,
+            input.runId,
+            input.hookId
+          )
+        : null;
+      const found = target !== null;
+      if (target === null) {
+        const slot = await drawEventSlot(input.runId, {
+          atLeast: (eventIdToSlot(input.from) ?? 0) + 1,
+        });
+        assert(slot !== null);
+        target = slotToEventId(slot);
+      }
+      // Index before the claim names it (see hook-index.ts crash-ordering
+      // invariant). A found creation needs this too: its older writer indexed
+      // the claimed position, not the one it published at, and the cache
+      // rebuild from the index would otherwise miss a live hook.
+      await writeHookCreatedIndexEntries(
+        basedir,
+        input.token,
+        input.runId,
+        input.hookId,
+        target,
+        tag
+      );
+      // A holder that lost the lock must not put its snapshot of the claim
+      // back over a takeover or disposal that happened meanwhile.
+      signal.throwIfAborted();
+      // HookTokenClaimSchema does not keep the token.
+      await write(
+        claimPath,
+        JSON.stringify({ token: input.token, ...claim, eventId: target }),
+        { overwrite: true }
+      );
+      hookCreatedRetargetLog(found ? 'found' : 'drawn', input, target);
+      return target;
+    });
+  }
+
+  /**
    * Refuse a `hook_received` to a hook whose disposal is committed. The
    * run's own disposal is the final `HookNotFoundError`; a takeover
    * (`experimental_force`, the lock names the claimer) is a redirect —
@@ -1611,6 +1704,11 @@ export function createEventsStorage(
         // drawn at function entry would sort after it.
         let eventId = '';
         let eventIdPinned = false;
+        // A `hook_created` that adopted an existing token claim rather than
+        // writing it. Its first lost publish looks for a creation an older
+        // writer published without recording it (see
+        // `retargetHookCreatedClaim`).
+        let hookCreatedAdoptedClaim = false;
         // The eventId currently recorded in this resume's `(runId, resumeId)`
         // claim, when one was written or read below. An unpinned publish is
         // free to land somewhere else, and the claim is the fast path other
@@ -3551,9 +3649,12 @@ export function createEventsStorage(
             }
 
             // Pinned: this id is the convergence point for every writer of
-            // this hook, so it must not be bumped past a slot collision. A
-            // collision here means the canonical event is already published,
-            // which is exactly the duplicate the handler below repairs from.
+            // this hook, so it must not be bumped past a slot collision. Under
+            // ULIDs a collision means the canonical event is already
+            // published, which is the duplicate the handler below repairs
+            // from. Under slot ids the claimed position may hold an unrelated
+            // event (its writer stopped before publishing), so a lost publish
+            // re-targets through the claim (`retargetHookCreatedClaim`).
             eventId = canonicalEventId;
             eventIdPinned = true;
             const canonicalCreatedAt =
@@ -3668,9 +3769,11 @@ export function createEventsStorage(
               : undefined;
 
           // Index entries before the event publish (see hook-index.ts
-          // crash-ordering invariant). `eventId` is final here: the
-          // dedup-recovery branch above already reassigned it to the
-          // canonical id when applicable.
+          // crash-ordering invariant). `eventId` is the first target here:
+          // the dedup-recovery branch above already reassigned it to the
+          // canonical id when applicable. On a slot-numbered run a lost
+          // publish can still move it (`retargetHookCreatedClaim`), which
+          // indexes each later target itself.
           await writeHookCreatedIndexEntries(
             basedir,
             hookData.token,
@@ -3679,6 +3782,8 @@ export function createEventsStorage(
             eventId,
             tag
           );
+
+          hookCreatedAdoptedClaim = claimResult.status === 'owned';
         } else if (data.eventType === 'hook_disposed') {
           // hook_disposed: Deletes hook entity, rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -3916,13 +4021,21 @@ export function createEventsStorage(
          *   `hook_received`'s resume claim), which exist precisely so two
          *   writers converge on ONE event (bumping would publish a second).
          *
-         * A pinned id is only ever read back from a claim its own writer
-         * recorded before publishing, and that writer bumps only when the
-         * position it recorded is already occupied. So an adopter that finds
-         * the claim stale finds the slot taken too: it collides, and the
-         * collision is the benign-duplicate path this dedup already has. It
-         * never publishes a second `hook_created` into a free slot.
+         * A slot-numbered `hook_created` never bumps here: it moves through
+         * its token claim (`retargetHookCreatedClaim`), so the claim always
+         * names the one position every writer of that hook is publishing to.
          */
+        const moveEventTo = (nextEventId: string): void => {
+          eventId = nextEventId;
+          event = { ...event, eventId };
+          eventPath = taggedPath(
+            basedir,
+            runEntityDir('events', effectiveRunId),
+            `${effectiveRunId}-${eventId}`,
+            tag
+          );
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+        };
         const bumpEventSlot = async (attempt: number): Promise<boolean> => {
           const current = eventIdToSlot(eventId);
           if (eventIdPinned || current === null) {
@@ -3939,15 +4052,7 @@ export function createEventsStorage(
           if (slot === null) {
             return false;
           }
-          eventId = slotToEventId(slot);
-          event = { ...event, eventId };
-          eventPath = taggedPath(
-            basedir,
-            runEntityDir('events', effectiveRunId),
-            `${effectiveRunId}-${eventId}`,
-            tag
-          );
-          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          moveEventTo(slotToEventId(slot));
           return true;
         };
 
@@ -4170,7 +4275,7 @@ export function createEventsStorage(
           // first while the owner is preparing its write. Converge on that
           // same hook before bumping, or the owner appends a second creation
           // and only then rejects at the deferred entity write. An unrelated
-          // occupant still needs the normal slot collision handling.
+          // occupant moves the creation to the claim's next target.
           if (data.eventType === 'hook_created' && data.correlationId) {
             const occupant = await readJSONWithFallback(
               basedir,
@@ -4184,6 +4289,22 @@ export function createEventsStorage(
               occupant.correlationId === data.correlationId
             ) {
               break;
+            }
+            if (isSlotEventId(eventId)) {
+              const target = await retargetHookCreatedClaim({
+                runId: effectiveRunId,
+                hookId: data.correlationId,
+                token: (data.eventData as HookCreatedEventRequest['eventData'])
+                  .token,
+                from: eventId,
+                lookForExisting: hookCreatedAdoptedClaim,
+              });
+              hookCreatedAdoptedClaim = false;
+              if (target === null) {
+                break;
+              }
+              moveEventTo(target);
+              continue;
             }
           }
           if (!(await bumpEventSlot(attempt))) {

@@ -8,7 +8,6 @@ import {
   type WorkflowRun,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
@@ -25,6 +24,7 @@ import {
   withWindowsRetry,
   writeExclusive,
 } from '../fs.js';
+import { OWNED_FILE_LOCK_STALE_MS, withOwnedFileLock } from './fence-lock.js';
 
 /**
  * Hash a hook token to produce a filesystem-safe constraint filename.
@@ -465,9 +465,10 @@ export async function readHookTokenClaim(
 
 /**
  * How long the token claim lock is a lease for: a holder that stalls past it
- * loses the lock to the next claimant (`proper-lockfile`'s `stale`).
+ * loses the lock to the next claimant. A holder known to be dead loses it at
+ * once (see `withOwnedFileLock`).
  */
-export const HOOK_TOKEN_CLAIM_LOCK_STALE_MS = 30_000;
+export const HOOK_TOKEN_CLAIM_LOCK_STALE_MS = OWNED_FILE_LOCK_STALE_MS;
 
 /**
  * How long a start Hook claim whose run record was never written keeps its
@@ -545,6 +546,11 @@ export async function fenceStartHookCandidate(
 /**
  * Serializes claim handoffs. Exclusive writes admit the first owner, but
  * cannot atomically replace a stale owner across local-world processes.
+ *
+ * The lock is at the `<claim>.lock` path proper-lockfile used before, so an
+ * older world-local on the same data directory still serializes against it.
+ * One left by a process that died (a restart mid-claim) is taken over at once
+ * rather than after {@link HOOK_TOKEN_CLAIM_LOCK_STALE_MS}.
  */
 export async function withHookTokenClaimLock<T>(
   basedir: string,
@@ -552,53 +558,16 @@ export async function withHookTokenClaimLock<T>(
   fn: (signal: AbortSignal) => Promise<T>
 ): Promise<T> {
   const claimPath = hookTokenClaimPath(basedir, token);
-  await fs.mkdir(path.dirname(claimPath), { recursive: true });
-  const controller = new AbortController();
-  let release: () => Promise<void>;
-  try {
-    release = await lock(claimPath, {
-      realpath: false,
-      stale: HOOK_TOKEN_CLAIM_LOCK_STALE_MS,
-      update: 1_000,
-      retries: {
-        retries: 350,
-        factor: 1,
-        minTimeout: 100,
-        maxTimeout: 100,
-      },
-      onCompromised(error) {
-        controller.abort(
-          new WorkflowWorldError('Hook token claim lock was compromised', {
-            cause: error,
-          })
-        );
-      },
-    });
-  } catch (error) {
-    throw new WorkflowWorldError('Could not acquire Hook token claim lock', {
-      cause: error,
-    });
-  }
-
-  let result: T;
-  try {
-    result = await fn(controller.signal);
-    controller.signal.throwIfAborted();
-  } catch (error) {
-    if (!controller.signal.aborted) {
-      await release().catch(() => {});
-    }
-    throw error;
-  }
-
-  try {
-    await release();
-  } catch (error) {
-    throw new WorkflowWorldError('Could not release Hook token claim lock', {
-      cause: error,
-    });
-  }
-  return result;
+  return withOwnedFileLock(`${claimPath}.lock`, fn, {
+    acquire: (cause) =>
+      new WorkflowWorldError('Could not acquire Hook token claim lock', {
+        cause,
+      }),
+    lost: (cause) =>
+      new WorkflowWorldError('Hook token claim lock was compromised', {
+        cause,
+      }),
+  });
 }
 
 /**
