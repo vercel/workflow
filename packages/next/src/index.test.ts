@@ -41,6 +41,12 @@ vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
 }));
 
+// Vitest cannot evaluate the eval'd dynamic import, so hand back the real
+// module through a regular import.
+vi.mock('./builders-module.js', () => ({
+  loadBuildersModule: () => import('@workflow/builders'),
+}));
+
 vi.mock('./swc-plugin-cache.js', () => ({
   prewarmWorkflowSwcPluginCache: prewarmWorkflowSwcPluginCacheMock,
 }));
@@ -369,5 +375,72 @@ describe('withWorkflow builder config', () => {
         `export async function step() {\n  'use step';\n}`
       )
     ).toBe(true);
+  });
+
+  describe('turbopack rule content condition', () => {
+    async function getRuleContentPatterns(): Promise<[string, RegExp][]> {
+      const nextConfig = await withWorkflow({})('phase-production-build', {
+        defaultConfig: {},
+      });
+      const rules = (nextConfig.turbopack?.rules ?? {}) as Record<
+        string,
+        { condition?: { all?: { content?: RegExp }[] } }
+      >;
+      const patterns = Object.entries(rules).flatMap(([key, rule]) =>
+        (rule.condition?.all ?? [])
+          .filter((entry) => entry.content instanceof RegExp)
+          .map((entry) => [key, entry.content as RegExp] as [string, RegExp])
+      );
+      expect(patterns.length).toBeGreaterThan(0);
+      return patterns;
+    }
+
+    // The shape @ai-sdk/openai and @ai-sdk/gateway ship: the serde symbols are
+    // imported constants used as computed keys, with no directive in the file.
+    // See https://github.com/vercel/workflow/issues/4897.
+    it.each([
+      [
+        'static [WORKFLOW_SERIALIZE]',
+        'class OpenAIResponsesLanguageModel {\n  static [WORKFLOW_SERIALIZE](model) {\n    return model.config;\n  }\n}',
+      ],
+      [
+        'static [WORKFLOW_DESERIALIZE]',
+        'class OpenAIResponsesLanguageModel {\n  static [ WORKFLOW_DESERIALIZE ](options) {\n    return new this(options);\n  }\n}',
+      ],
+    ])('sends files using %s to the workflow loader', async (_, source) => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test(source), `rule ${key}`).toBe(true);
+      }
+    });
+
+    it.each([
+      ['"use workflow"', 'export async function wf() {\n  "use workflow";\n}'],
+      ["'use step'", "export async function s() {\n  'use step';\n}"],
+      [
+        '@workflow/serde import',
+        "import { WORKFLOW_SERIALIZE } from '@workflow/serde';",
+      ],
+      [
+        'Symbol.for serde key',
+        'class Point {\n  static [Symbol.for("workflow-serialize")](p) {}\n}',
+      ],
+    ])('still sends files using %s to the workflow loader', async (_, source) => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test(source), `rule ${key}`).toBe(true);
+      }
+    });
+
+    it('uses the builders pattern itself, not a copy', async () => {
+      const { turbopackContentPattern } = await import('@workflow/builders');
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern, `rule ${key}`).toBe(turbopackContentPattern);
+      }
+    });
+
+    it('skips files with no workflow patterns', async () => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test('export const x = 1;'), `rule ${key}`).toBe(false);
+      }
+    });
   });
 });

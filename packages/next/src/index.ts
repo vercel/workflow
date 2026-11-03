@@ -4,17 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
-
-const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
-const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
-const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
-const workflowSerdeSymbolPattern =
-  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
-const workflowSerdeComputedPropertyPattern =
-  /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
-const generatedWorkflowPathPattern = /[/\\]\.well-known[/\\]workflow[/\\]/;
-const turbopackWorkflowContentPattern =
-  /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/;
+import { loadBuildersModule } from './builders-module.js';
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
@@ -80,7 +70,16 @@ function isResolvablePackageSpecifier(specifier: string): boolean {
   return true;
 }
 
-function detectWorkflowPatterns(source: string): WorkflowPatternMatch {
+async function detectWorkflowPatterns(
+  source: string
+): Promise<WorkflowPatternMatch> {
+  const {
+    useWorkflowPattern,
+    useStepPattern,
+    workflowSerdeImportPattern,
+    workflowSerdeSymbolPattern,
+    workflowSerdeComputedPropertyPattern,
+  } = await loadBuildersModule();
   const hasUseWorkflow = useWorkflowPattern.test(source);
   const hasUseStep = useStepPattern.test(source);
   const hasSerdeImport = workflowSerdeImportPattern.test(source);
@@ -155,7 +154,7 @@ async function detectServerExternalPackage(
       paths: [workingDir],
     });
     const source = await readFile(entryPath, 'utf-8');
-    const patterns = detectWorkflowPatterns(source);
+    const patterns = await detectWorkflowPatterns(source);
     hasUseWorkflow = patterns.hasUseWorkflow;
     hasUseStep = patterns.hasUseStep;
     hasSerde ||= patterns.hasSerde;
@@ -348,6 +347,8 @@ export function withWorkflow(
       prewarmWorkflowSwcPluginCache(process.cwd());
     }
 
+    const { generatedWorkflowPathPattern, turbopackContentPattern } =
+      await loadBuildersModule();
     const loaderPath = require.resolve('./loader');
     let nextConfig: NextConfig;
 
@@ -475,9 +476,11 @@ export function withWorkflow(
                   ...(existingRules[key]?.condition?.all || []),
                   // Exclude generated workflow route files from transformation
                   { not: { path: generatedWorkflowPathPattern } },
-                  // Match files with workflow directives or custom serialization patterns
-                  // Uses backreferences (\2, \3) to ensure matching quote types
-                  { content: turbopackWorkflowContentPattern },
+                  // Match files with workflow directives or custom serialization
+                  // patterns, including `static [WORKFLOW_SERIALIZE]` computed keys
+                  // (e.g. @ai-sdk/openai). Shared with the builders so the two
+                  // can't drift apart.
+                  { content: turbopackContentPattern },
                 ],
               },
             }
