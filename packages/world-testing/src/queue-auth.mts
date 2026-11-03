@@ -45,6 +45,7 @@ async function runState(fetcher: Fetcher, runId: string) {
   };
 }
 
+// Waits for a settled run, so any log change after a forged /flow request is attributable to the forgery.
 /** Starts a run that parks on a hook, and waits until it is parked. */
 async function parkedRun(fetcher: Fetcher) {
   const token = `queue-auth-${ulid()}`;
@@ -61,16 +62,20 @@ async function parkedRun(fetcher: Fetcher) {
     },
     { interval: 200, timeout: 25_000 }
   );
-  // Parked: every step it started has completed and nothing more is written.
+  // Parked: the run's event log has gone quiet (the same events across two
+  // consecutive polls). Engine-agnostic: spec 8 writes a `step_created` per
+  // step, but spec 9's single orchestrator folds an inline step's creation
+  // into its `step_started` and writes no `step_created`, so we cannot compare
+  // `step_created` to `step_completed` here. Stability is what we actually need:
+  // a settled run to fire the forged request at.
   let last = '';
   await vi.waitFor(
     async () => {
-      const types = (await fetcher.getEvents(runId)).map((e) => e.eventType);
-      const count = (type: string) => types.filter((t) => t === type).length;
-      const snapshot = types.join();
+      const snapshot = (await fetcher.getEvents(runId))
+        .map((event) => event.eventType)
+        .join();
       const stable = snapshot === last;
       last = snapshot;
-      expect(count('step_completed')).toBe(count('step_created'));
       expect(stable).toBe(true);
     },
     { interval: 500, timeout: 25_000 }
