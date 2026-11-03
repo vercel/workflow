@@ -35,7 +35,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "rollup": "^4.62.2",
+    "rollup": "^4.67.4",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
