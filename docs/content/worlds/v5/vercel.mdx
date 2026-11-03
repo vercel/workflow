@@ -408,10 +408,6 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-se
 
 Below the floor the deadline starts canceling requests that would have succeeded, since a cold route or a large event page can take seconds, and a canceled request is redriven through the queue rather than making progress. The ceiling matches the longest a backend route holds a response. Requests that legitimately outlast it (stream reads and writes, event batches) opt out of the deadline entirely rather than relying on this value.
 
-### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
-
-Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
-
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
 Stream writes upgrade to a WebSocket (`workflow-stream-ws/v1`) instead of one HTTP request per write group. Default: `ws`.

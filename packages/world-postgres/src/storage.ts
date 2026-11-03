@@ -98,7 +98,7 @@ import {
 } from './invocation-retention.js';
 import { purgeRunUserDataIfZeroRetention } from './retention.js';
 import {
-  getRunStatusPollIntervalMs,
+  RUN_STATUS_POLL_INTERVAL_MS,
   notifyRunTerminal,
   type RunStatusListener,
 } from './run-status.js';
@@ -918,7 +918,7 @@ export function createRunsStorage(
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0 || params?.signal?.aborted) return run;
 
-        const waitMs = Math.min(remainingMs, getRunStatusPollIntervalMs());
+        const waitMs = Math.min(remainingMs, RUN_STATUS_POLL_INTERVAL_MS);
         if (runStatusListener) {
           await runStatusListener.wait(id, waitMs, params?.signal);
         } else {

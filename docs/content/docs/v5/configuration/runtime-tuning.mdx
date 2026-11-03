@@ -254,12 +254,7 @@ What a snapshot contains, and how it is protected:
 
 ## Transport
 
-### `WORKFLOW_H2_MULTIPLEX`
-
-- Default: enabled
-- On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
-- Set `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
-- Has no effect when `WORKFLOW_NODE_HTTP` is enabled, which takes the whole HTTP/2 path away.
+The Vercel World's own transport settings (HTTP/2 multiplexing and the queue client's deadline and connection pool) are listed under [Vercel World](/docs/configuration/worlds#vercel-world).
 
 ### `WORKFLOW_NODE_HTTP`
 
@@ -277,21 +272,6 @@ Node's own modules do less than the client they replace, so enabling this drops 
 Connection pooling, keep-alive, and the request, header, and body deadlines are preserved. Node's agents configure pooling and keep-alive, and each request receives the deadlines from the Local World's two queue timeouts or the same defaults that the Vercel World's HTTP client currently applies. Queue sends are the partial exception: that client takes no transport override, so it cannot move to Node's modules. It does honor this variable, by dispatching through the runtime's own copy of the library rather than the copy the World bundles, which is the distinction that matters when the bundled copy is the thing that does not work.
 
 A `dispatcher` passed to `createVercelWorld()` still wins over this variable. The variable chooses which transport the World builds when you have not supplied one.
-
-### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
-
-- Default: `30000`
-- Total deadline for one request the Vercel World's queue client makes, measured from the moment it is handed to the transport, so it also covers time the request spends waiting for a free connection.
-- Clamped to `[5000, 120000]`.
-- This is the only request path the World cannot bound with `WORKFLOW_REQUEST_TIMEOUT_MS`, because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
-- Keep it below the queue's visibility-renewal interval (60 seconds) so a failed call has room to surface and be retried before the message lease lapses.
-
-### `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`
-
-- Default: `64`
-- Connections the Vercel World's queue client may open to the queue service.
-- Clamped to `[1, 1024]`.
-- Sized much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out. Lower it only if you have a reason to cap sockets; too low turns invocation concurrency into the limit on how fast messages can be acknowledged.
 
 ## Queue namespace
 

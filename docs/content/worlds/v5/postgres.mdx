@@ -285,7 +285,6 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_POSTGRES_POLL_INTERVAL_MS`](#workflow_postgres_poll_interval_ms) | `500` ms | Idle job polling |
 | [`WORKFLOW_POSTGRES_MAX_POOL_SIZE`](#workflow_postgres_max_pool_size) | `10` | Connection pool size |
 | [`WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`](#workflow_postgres_application_managed_shutdown) | off | Who coordinates shutdown |
-| [`WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`](#workflow_postgres_run_status_poll_interval_ms) | `1000` ms | Backstop for `await run.returnValue` |
 | [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](#workflow_postgres_headers_timeout_ms) | `0` ms (no deadline) | Hung delivery detection |
 | [`WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`](#workflow_postgres_body_timeout_ms) | `0` ms (no deadline) | Stalled response detection |
 | [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) | `0` s (off) | Redelivery after a process dies |
@@ -330,12 +329,6 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 ### `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`
 
 Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
-
-### `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`
-
-How often a wait for a terminal run status re-reads the run, in milliseconds. Default: `1000`.
-
-`await run.returnValue` asks the World to wait for the run to finish, and the Postgres World parks that wait on a `NOTIFY` issued by the run-terminal write. This interval is only the backstop: it bounds how long a lost notification can go unnoticed, so lowering it costs a query per waiting run per interval and buys nothing while notifications are arriving.
 
 ### `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`
 
