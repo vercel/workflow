@@ -14,8 +14,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EntityConflictError } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, type Storage } from '@workflow/world';
+import { EntityConflictError, TooEarlyError } from '@workflow/errors';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type Storage,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRun, updateRun } from '../test-helpers.js';
 import {
@@ -180,6 +184,11 @@ async function ageClaim(claimPath: string): Promise<void> {
   await fs.utimes(claimPath, past, past);
 }
 
+/** A claim owner like the ones this thread writes, with `changes` applied. */
+function ownerLikeThisProcess(changes: Record<string, unknown>): string {
+  return JSON.stringify({ ...JSON.parse(claimOwnerContent('x')), ...changes });
+}
+
 async function startStep(id: string): Promise<void> {
   await storage.events.create(runId, requests.stepCreated(id));
   await storage.events.create(runId, requests.stepStarted(id));
@@ -203,6 +212,36 @@ describe('a process killed after a claim and before its event', () => {
     await expect(
       storage.events.create(runId, requests.lazyStepStarted('s'))
     ).rejects.toThrow(EntityConflictError);
+  });
+
+  it.each([
+    ['after the claim', 'claim:.created'],
+    ['after the step entity', 'event:step_started'],
+  ])('a lazy step_started of a spec 9 run is finished by the next one (killed %s)', async (_, killAt) => {
+    // A single-orchestrator run records the creation on step_started alone,
+    // so a kill before that event leaves a `running` step with no event.
+    const run = await createRun(
+      storage,
+      { deploymentId: 'dpl_test', workflowName: 'workflow', input },
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
+    runId = run.runId;
+    await updateRun(storage, runId, 'run_started');
+    const request = {
+      ...requests.lazyStepStarted('s'),
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    } as EventRequest;
+    await writeAndKill(request, killAt);
+
+    const result = await storage.events.create(runId, request);
+
+    expect(result.stepCreated).toBe(true);
+    expect(result.step?.status).toBe('running');
+    expect(result.step?.attempt).toBe(1);
+    expect(await eventTypesOf('s')).toEqual(['step_started']);
+    await expect(storage.events.create(runId, request)).rejects.toThrow(
+      EntityConflictError
+    );
   });
 
   it.each([
@@ -376,6 +415,9 @@ describe('a process killed after a claim and before its event', () => {
       .value.step as { output: Uint8Array };
     const step = await storage.steps.get(runId, 's', { resolveData: 'all' });
     expect(step.output).toEqual(winner.output);
+    // The takeover markers are removed once the claim is rewritten.
+    const locks = await fs.readdir(path.join(testDir, '.locks', 'steps'));
+    expect(locks.filter((name) => name.includes('.takeover.'))).toEqual([]);
   });
 });
 
@@ -384,11 +426,9 @@ describe('a claim whose writer may still be working', () => {
     [
       'a live process on this host',
       () =>
-        JSON.stringify({
+        ownerLikeThisProcess({
           pid: process.ppid,
-          host: os.hostname(),
-          process: 'another-process',
-          instance: 'another-instance',
+          token: 'another-process',
         }),
     ],
     [
@@ -397,8 +437,23 @@ describe('a claim whose writer may still be working', () => {
         JSON.stringify({
           pid: 999_999,
           host: 'another-host',
-          process: 'another-process',
-          instance: 'another-instance',
+          token: 'another-process',
+        }),
+    ],
+    [
+      'another thread of this process',
+      () =>
+        ownerLikeThisProcess({
+          token: 'another-thread',
+        }),
+    ],
+    [
+      'a process in another pid namespace on this host',
+      () =>
+        ownerLikeThisProcess({
+          pid: 999_999,
+          pidNamespace: 'pid:[1]',
+          token: 'another-process',
         }),
     ],
     ['no one (written by an older version)', () => ''],
@@ -431,11 +486,9 @@ describe('a claim whose writer may still be working', () => {
     );
     await fs.writeFile(
       stepClaim('s', 'terminal'),
-      JSON.stringify({
+      ownerLikeThisProcess({
         pid: deadPid,
-        host: os.hostname(),
-        process: 'dead-process',
-        instance: 'dead-instance',
+        token: 'dead-process',
       })
     );
 
@@ -452,16 +505,56 @@ describe('a claim whose writer may still be working', () => {
     ]);
   });
 
+  it.each([
+    [
+      'a process on another host',
+      () =>
+        JSON.stringify({
+          pid: 999_999,
+          host: 'another-host',
+          token: 'another-process',
+        }),
+    ],
+    ['no one (written by an older version)', () => ''],
+  ])('redelivers a step_started that finds a finished step without its event until the claim is old, when it names %s', async (_, owner) => {
+    await startStep('s');
+    await writeAndKill(requests.stepCompleted('s', 1), 'event:step_completed');
+    const claim = stepClaim('s', 'terminal');
+    await fs.writeFile(claim, owner());
+
+    // Refused as `skipped`, the start would be dropped and nothing would
+    // deliver this step again; TooEarlyError has the runtime redeliver it.
+    const early = await storage.events
+      .create(runId, requests.stepStarted('s'))
+      .catch((error: unknown) => error);
+    expect(TooEarlyError.is(early)).toBe(true);
+    expect((early as TooEarlyError).retryAfter).toBeGreaterThan(0);
+    expect((early as TooEarlyError).retryAfter).toBeLessThanOrEqual(
+      CLAIM_ABANDONED_AFTER_MS / 1000
+    );
+    expect(await eventTypesOf('s')).toEqual(['step_created', 'step_started']);
+
+    await ageClaim(claim);
+    await expect(
+      storage.events.create(runId, requests.stepStarted('s'))
+    ).rejects.toThrow(EntityConflictError);
+    const events = await eventsOf('s');
+    expect(events.map((event) => event.eventType)).toEqual([
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+    expect(events[2]?.eventData).toMatchObject({ result: new Uint8Array([1]) });
+  });
+
   it('is not taken over from a wait whose writer is alive', async () => {
     await storage.events.create(runId, requests.waitCreated('w'));
     await writeAndKill(requests.waitCompleted('w'), 'claim:.completed');
     await fs.writeFile(
       waitClaim('w', 'completed'),
-      JSON.stringify({
+      ownerLikeThisProcess({
         pid: process.ppid,
-        host: os.hostname(),
-        process: 'another-process',
-        instance: 'another-instance',
+        token: 'another-process',
       })
     );
 
@@ -484,6 +577,33 @@ describe('takeOverAbandonedClaim', () => {
     expect(await takeOverAbandonedClaim(claim, 'second', orphaned)).toBe(true);
     expect(await isClaimHeldBy(claim, 'first')).toBe(false);
     expect(await isClaimHeldBy(claim, 'second')).toBe(true);
+  });
+
+  it('leaves a claim with this pid and another token to the age rule, like the fence lock', async () => {
+    // Another thread of this process, or an earlier process that had this
+    // pid: they can't be told apart.
+    const claim = path.join(testDir, 'claim');
+    await fs.writeFile(claim, ownerLikeThisProcess({ token: 'other' }));
+    expect(await takeOverAbandonedClaim(claim, 'second', orphaned)).toBe(false);
+
+    await ageClaim(claim);
+    expect(await takeOverAbandonedClaim(claim, 'second', orphaned)).toBe(true);
+  });
+
+  it('takes over a claim written before `abandonedBefore`, whoever wrote it', async () => {
+    const claim = path.join(testDir, 'claim');
+    await fs.writeFile(claim, ownerLikeThisProcess({ token: 'other' }));
+    const written = (await fs.stat(claim)).mtimeMs;
+    expect(
+      await takeOverAbandonedClaim(claim, 'second', orphaned, {
+        abandonedBefore: written,
+      })
+    ).toBe(false);
+    expect(
+      await takeOverAbandonedClaim(claim, 'second', orphaned, {
+        abandonedBefore: written + 1,
+      })
+    ).toBe(true);
   });
 
   it('takes over a claim of the same instance at once: its call has ended', async () => {

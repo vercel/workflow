@@ -98,6 +98,7 @@ import {
   CLAIM_ABANDONED_AFTER_MS,
   claimOwnerContent,
   isClaimHeldBy,
+  msUntilUncheckableClaimAbandoned,
   newClaimInstanceId,
   takeOverAbandonedClaim,
 } from './claim-owner.js';
@@ -1564,29 +1565,62 @@ export function createEventsStorage(
   const hookLocks = new Map<string, Promise<unknown>>();
   // Names this instance in the step and wait claim files it writes.
   const claimInstance = newClaimInstanceId();
+  // Claims this instance took whose event it has not written yet: a call
+  // that threw in between leaves its claim here, for the next call to take
+  // over. Every other claim this instance holds has its event in the log.
+  const unfinishedClaims = new Set<string>();
+  // Claims of other writers whose event this instance found in the log.
+  const landedClaims = new Set<string>();
+  const MAX_LANDED_CLAIMS = 10_000;
+  const holdClaim = (claimPath: string) => {
+    unfinishedClaims.add(claimPath);
+    return { path: claimPath, at: Date.now() };
+  };
 
   /**
    * Whether the run's log has an event for `correlationId`, of one of
    * `eventTypes` when given.
+   *
+   * Reads the log newest first and stops at the first match. A write that
+   * finds a claim taken is most often a duplicate of a change whose event
+   * landed recently, so this rarely reads more than the log's tail; only a
+   * claim a crash cut short reads the whole log.
    */
   async function hasCorrelatedEvent(
     runId: string,
     correlationId: string,
     eventTypes?: readonly string[]
   ): Promise<boolean> {
-    const result = await paginatedFileSystemQuery({
-      directory: path.join(basedir, runEntityDir('events', runId)),
-      schema: ReadEventSchema,
-      cachedItems: eventCache,
-      filePrefix: `${runId}-`,
-      filter: (event) =>
+    const directory = path.resolve(basedir, runEntityDir('events', runId));
+    const prefix = `${runId}-`;
+    const fileIds = (await listJSONFiles(directory))
+      .filter((fileId) => fileId.startsWith(prefix))
+      .sort()
+      .reverse();
+    const matches = async (fileId: string): Promise<boolean> => {
+      const filePath = path.join(directory, `${fileId}.json`);
+      let event: Event | null | undefined = eventCache.get(filePath);
+      if (event === undefined) {
+        try {
+          event = await readJSON(filePath, ReadEventSchema);
+        } catch (error) {
+          // Skipped like the log listing skips it.
+          if (error instanceof z.ZodError) return false;
+          throw error;
+        }
+      }
+      return (
+        event !== null &&
         event.correlationId === correlationId &&
-        (!eventTypes || eventTypes.includes(event.eventType)),
-      limit: 1,
-      getCreatedAt: getObjectCreatedAt('evnt'),
-      getId: (event) => event.eventId,
-    });
-    return result.data.length > 0;
+        (!eventTypes || eventTypes.includes(event.eventType))
+      );
+    };
+    const batchSize = 32;
+    for (let start = 0; start < fileIds.length; start += batchSize) {
+      const batch = fileIds.slice(start, start + batchSize);
+      if ((await Promise.all(batch.map(matches))).some(Boolean)) return true;
+    }
+    return false;
   }
 
   /**
@@ -1607,11 +1641,38 @@ export function createEventsStorage(
     correlationId: string,
     eventTypes?: readonly string[]
   ): Promise<boolean> {
-    return takeOverAbandonedClaim(
+    if (landedClaims.has(claimPath)) return false;
+    const adopted = await takeOverAbandonedClaim(
       claimPath,
       claimInstance,
-      async () => !(await hasCorrelatedEvent(runId, correlationId, eventTypes))
+      async () =>
+        !(await claimEventLanded(claimPath, runId, correlationId, eventTypes)),
+      { ownClaimUnfinished: unfinishedClaims.has(claimPath) }
     );
+    if (adopted) unfinishedClaims.add(claimPath);
+    return adopted;
+  }
+
+  /**
+   * Whether the event the claim at `claimPath` stands for is in the log (see
+   * `hasCorrelatedEvent`). The log only grows, so a claim found finished
+   * stays finished: it is remembered, and a later duplicate write after a
+   * restart (whose claims all name a dead writer) scans the log once, not on
+   * every duplicate.
+   */
+  async function claimEventLanded(
+    claimPath: string,
+    runId: string,
+    correlationId: string,
+    eventTypes?: readonly string[]
+  ): Promise<boolean> {
+    if (landedClaims.has(claimPath)) return true;
+    if (!(await hasCorrelatedEvent(runId, correlationId, eventTypes))) {
+      return false;
+    }
+    if (landedClaims.size >= MAX_LANDED_CLAIMS) landedClaims.clear();
+    landedClaims.add(claimPath);
+    return true;
   }
 
   /**
@@ -1687,23 +1748,43 @@ export function createEventsStorage(
    * built from the step entity, never from the write that found it, which is
    * still refused. The runtime maps that refusal to `skipped` and reloads the
    * log, where it now finds the step finished.
+   *
+   * With `redeliverWhileHeld` (a `step_started`), a missing event whose claim
+   * names a writer that cannot be checked from here (an older version's empty
+   * claim, another host or pid namespace) is refused with `TooEarlyError`
+   * until the claim is old enough to take over. The runtime redelivers that
+   * start rather than dropping it as `skipped`, so the event is still written
+   * when nothing else would deliver this step again.
    */
   async function repairTerminalStepEvent(
     runId: string,
-    step: Step
+    step: Step,
+    redeliverWhileHeld: boolean
   ): Promise<void> {
     if (step.status !== 'completed' && step.status !== 'failed') return;
+    const claimPath = stepClaimPath(runId, step.stepId, 'terminal');
+    const terminalEvents = ['step_completed', 'step_failed'] as const;
     if (
-      !(await adoptOrphanedClaim(
-        stepClaimPath(runId, step.stepId, 'terminal'),
-        runId,
-        step.stepId,
-        ['step_completed', 'step_failed']
-      ))
+      await adoptOrphanedClaim(claimPath, runId, step.stepId, terminalEvents)
+    ) {
+      await storeSavedTerminalStepEvent(runId, step);
+      return;
+    }
+    if (!redeliverWhileHeld) return;
+    const waitMs = await msUntilUncheckableClaimAbandoned(
+      claimPath,
+      claimInstance
+    );
+    if (
+      !waitMs ||
+      (await claimEventLanded(claimPath, runId, step.stepId, terminalEvents))
     ) {
       return;
     }
-    await storeSavedTerminalStepEvent(runId, step);
+    throw new TooEarlyError(
+      `Step "${step.stepId}" is ${step.status} but its terminal event is not in the log, and the writer of its claim may still be working`,
+      { retryAfter: Math.ceil(waitMs / 1000) }
+    );
   }
 
   /**
@@ -1735,9 +1816,15 @@ export function createEventsStorage(
             eventData: {
               stepName: step.stepName,
               error: step.error as Uint8Array,
+              // Recorded on spec >= 9 step_failed events, as the writer would.
+              ...((step.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR &&
+              step.attempt > 0
+                ? { attempt: step.attempt }
+                : {}),
             },
           }
     );
+    unfinishedClaims.delete(stepClaimPath(runId, step.stepId, 'terminal'));
   }
   const hookLockKey = (runId: string, hookId: string) =>
     tag ? `${runId}-${hookId}.hook.${tag}` : `${runId}-${hookId}.hook`;
@@ -2387,12 +2474,18 @@ export function createEventsStorage(
           // rely on that), so without this gate a loser would re-start a
           // running step and run the body a second time.
           //
-          // A step left `pending` with no step_created in the log is a
-          // creation cut short after its claim and entity, not a winner's:
-          // this call takes over the claim and finishes the creation.
+          // A step with no event of its own in the log is a creation cut
+          // short after its claim and entity, not a winner's: this call takes
+          // over the claim and finishes the creation. The step is `pending`
+          // when the creation stopped before its `step_created`, or `running`
+          // when a single-orchestrator run (whose `step_started` is the
+          // creation record) stopped before its `step_started`.
           if (lazyStepStart && validatedStep) {
             if (
-              validatedStep.status !== 'pending' ||
+              !(
+                validatedStep.status === 'pending' ||
+                (validatedStep.status === 'running' && creationOnStart())
+              ) ||
               !(await adoptOrphanedClaim(
                 stepClaimPath(effectiveRunId, data.correlationId, 'created'),
                 effectiveRunId,
@@ -2412,7 +2505,11 @@ export function createEventsStorage(
           // guard against in that case, so these checks are skipped.
           if (validatedStep) {
             if (isTerminalStepStatus(validatedStep.status)) {
-              await repairTerminalStepEvent(effectiveRunId, validatedStep);
+              await repairTerminalStepEvent(
+                effectiveRunId,
+                validatedStep,
+                data.eventType === 'step_started'
+              );
               throw new EntityConflictError(
                 `Cannot modify step in terminal state "${validatedStep.status}"`
               );
@@ -3185,7 +3282,7 @@ export function createEventsStorage(
               `Step "${data.correlationId}" already created`
             );
           }
-          heldClaim = { path: stepCreatedLockPath, at: Date.now() };
+          heldClaim = holdClaim(stepCreatedLockPath);
           const stepData = data.eventData as {
             stepName: string;
             input: any;
@@ -3265,7 +3362,7 @@ export function createEventsStorage(
                 `Step "${data.correlationId}" already created`
               );
             } else {
-              heldClaim = { path: stepCreatedLockPath, at: Date.now() };
+              heldClaim = holdClaim(stepCreatedLockPath);
               const createdStep: Step = {
                 runId: effectiveRunId,
                 stepId: data.correlationId,
@@ -3389,10 +3486,9 @@ export function createEventsStorage(
           const completedData = data.eventData as { result: any };
           if (validatedStep) {
             const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-            heldClaim = {
-              path: await claimStepTerminal(effectiveRunId, data.correlationId),
-              at: Date.now(),
-            };
+            heldClaim = holdClaim(
+              await claimStepTerminal(effectiveRunId, data.correlationId)
+            );
             step = {
               ...validatedStep,
               status: 'completed',
@@ -3420,10 +3516,9 @@ export function createEventsStorage(
           };
           if (validatedStep) {
             const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-            heldClaim = {
-              path: await claimStepTerminal(effectiveRunId, data.correlationId),
-              at: Date.now(),
-            };
+            heldClaim = holdClaim(
+              await claimStepTerminal(effectiveRunId, data.correlationId)
+            );
             // The error field is SerializedData (Uint8Array) produced by
             // dehydrateStepError. We store it verbatim. Consumers hydrate it
             // via hydrateStepError to reconstruct the original thrown value.
@@ -4114,7 +4209,7 @@ export function createEventsStorage(
               `Wait "${data.correlationId}" already exists`
             );
           }
-          heldClaim = { path: waitCreatedLockPath, at: Date.now() };
+          heldClaim = holdClaim(waitCreatedLockPath);
           const waitData = data.eventData as {
             resumeAt?: Date;
           };
@@ -4158,7 +4253,7 @@ export function createEventsStorage(
               `Wait "${data.correlationId}" already completed`
             );
           }
-          heldClaim = { path: lockPath, at: Date.now() };
+          heldClaim = holdClaim(lockPath);
           const existingWait = await readJSONWithFallback(
             basedir,
             'waits',
@@ -4594,6 +4689,7 @@ export function createEventsStorage(
         // The event is now committed; cache it so an immediate sequential
         // replay can serve it without rereading from disk.
         rememberStoredEvent(event, eventPath, serializedEvent);
+        if (heldClaim) unfinishedClaims.delete(heldClaim.path);
 
         // Point the resume claim at where the event actually landed. An
         // unpinned publish bumps past occupied slots, so the id the claim

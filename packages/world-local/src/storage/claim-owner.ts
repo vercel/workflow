@@ -7,76 +7,49 @@
  * without a way to tell a dead writer from a working one, the event is never
  * written and the run never advances.
  *
- * The claim therefore names its writer. A write that loses the claim and finds
- * no event in the log takes the claim over only when that writer is known to be
- * dead, or when the claim is older than {@link CLAIM_ABANDONED_AFTER_MS}.
+ * The claim therefore names its writer, with the owner the fence lock writes
+ * into a lock file (`fence-lock.ts`): its pid, host, pid namespace, and a
+ * token, here the id of the events storage instance that wrote it. A write
+ * that loses the claim and finds no event in the log takes the claim over only
+ * when that writer is known to be dead by the fence lock's rules, or when the
+ * claim is older than {@link CLAIM_ABANDONED_AFTER_MS}.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
-import os from 'node:os';
-import { globalSingleton } from '@workflow/utils';
 import { write, writeExclusive } from '../fs.js';
+import {
+  isLockHolderCheckable,
+  isLockHolderDead,
+  type LockOwner,
+  lockOwner,
+  OWNED_FILE_LOCK_STALE_MS,
+  parseLockOwner,
+} from './fence-lock.js';
 
 /**
  * Age after which a claim with no event is abandoned even when its writer may
- * still run (another host, another storage instance in this process, a pid in
- * use again, or a claim written before claims named their writer). A writer
- * takes milliseconds from its claim to its event, so this only decides how
- * long a crashed run waits when its writer's death cannot be proven. It is the
- * `stale` age of this World's lock files.
+ * still run (another host or pid namespace, this process's own pid, which
+ * another thread or an earlier process may have written, a pid in use again,
+ * or a claim written before claims named their writer). A writer takes
+ * milliseconds from its claim to its event, so this only decides how long a
+ * crashed run waits when its writer's death cannot be proven. It is the stale
+ * age of this World's lock files.
  */
-export const CLAIM_ABANDONED_AFTER_MS = 30_000;
+export const CLAIM_ABANDONED_AFTER_MS = OWNED_FILE_LOCK_STALE_MS;
 
-interface ClaimOwner {
-  pid: number;
-  host: string;
-  /** Random per process, so a later process that reuses the pid differs. */
-  process: string;
-  /** Random per events storage instance. */
-  instance: string;
-}
-
-// Process-wide: every copy of this module in one process must agree on it.
-const identity = globalSingleton(
-  '@workflow/world-local//claim-owner',
-  1,
-  () => ({
-    process: randomUUID(),
-    host: os.hostname(),
-  })
-);
-
-/** A new id for one events storage instance. */
+/** A new id for one events storage instance: the token its claims carry. */
 export function newClaimInstanceId(): string {
   return randomUUID();
 }
 
-/** The content of a claim file written by `instance` in this process. */
+/** The content of a claim file written by `instance` on this thread. */
 export function claimOwnerContent(instance: string): string {
-  const owner: ClaimOwner = {
-    pid: process.pid,
-    host: identity.host,
-    process: identity.process,
-    instance,
-  };
-  return JSON.stringify(owner);
+  return JSON.stringify(lockOwner(instance));
 }
 
-function parseClaimOwner(content: string): ClaimOwner | null {
-  try {
-    const value = JSON.parse(content);
-    if (
-      typeof value?.pid === 'number' &&
-      typeof value.host === 'string' &&
-      typeof value.process === 'string' &&
-      typeof value.instance === 'string'
-    ) {
-      return value;
-    }
-  } catch {
-    // An empty claim, from a version that did not name the writer.
-  }
-  return null;
+/** Whether `owner` is the events storage instance `instance` of this thread. */
+function isOwnClaim(owner: LockOwner | null, instance: string): boolean {
+  return owner?.token === instance && owner.pid === process.pid;
 }
 
 /**
@@ -84,22 +57,18 @@ function parseClaimOwner(content: string): ClaimOwner | null {
  * be working.
  *
  * The caller holds the per-step or per-wait in-process lock, so a claim this
- * same instance wrote belongs to a call that has already ended.
+ * same instance wrote belongs to a call that has already ended. It ended
+ * without its event only if `ownClaimUnfinished` says so. Any other writer is
+ * judged like a fence lock's holder.
  */
-function isClaimOwnerDead(owner: ClaimOwner | null, instance: string): boolean {
+function isClaimOwnerDead(
+  owner: LockOwner | null,
+  instance: string,
+  ownClaimUnfinished: boolean
+): boolean {
   if (!owner) return false;
-  if (owner.process === identity.process) {
-    return owner.instance === instance;
-  }
-  if (owner.host !== identity.host) return false;
-  // Another process with our pid can only be an earlier one, now dead.
-  if (owner.pid === process.pid) return true;
-  try {
-    process.kill(owner.pid, 0);
-    return false;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ESRCH';
-  }
+  if (isOwnClaim(owner, instance)) return ownClaimUnfinished;
+  return isLockHolderDead(owner);
 }
 
 async function readClaim(
@@ -125,6 +94,22 @@ async function readClaim(
   }
 }
 
+/** How a caller judges a claim, beyond its writer's liveness and its age. */
+export interface ClaimTakeoverOptions {
+  /**
+   * Whether a claim `instance` itself took is one whose call ended before its
+   * event. A claim of its own that did get its event is never taken over.
+   */
+  ownClaimUnfinished?: boolean;
+  /**
+   * A claim last written before this time (epoch ms) is abandoned whoever
+   * wrote it. Startup repair passes when this realm booted, under the
+   * contract that no other live process or thread writes to this data
+   * directory and tag (see `releaseOrphanedSteps`).
+   */
+  abandonedBefore?: number;
+}
+
 /**
  * Takes over the claim at `claimPath` for `instance` when the claim is
  * abandoned and `isOrphaned` confirms its event is not in the log, and
@@ -138,9 +123,16 @@ async function readClaim(
 export async function takeOverAbandonedClaim(
   claimPath: string,
   instance: string,
-  isOrphaned: () => Promise<boolean>
+  isOrphaned: () => Promise<boolean>,
+  options: ClaimTakeoverOptions = {}
 ): Promise<boolean> {
-  return takeOver(claimPath, instance, isOrphaned, 0);
+  return takeOver(
+    claimPath,
+    instance,
+    isOrphaned,
+    { ownClaimUnfinished: true, ...options },
+    0
+  );
 }
 
 /**
@@ -154,13 +146,23 @@ async function takeOver(
   claimPath: string,
   instance: string,
   isOrphaned: () => Promise<boolean>,
+  options: Required<Pick<ClaimTakeoverOptions, 'ownClaimUnfinished'>> &
+    ClaimTakeoverOptions,
   depth: number
 ): Promise<boolean> {
   const claim = await readClaim(claimPath);
   if (!claim) return false;
+  const owner = parseLockOwner(claim.content);
+  // This instance knows whether its own claim got its event: one that did
+  // is never abandoned, whatever its age, and costs no scan of the log.
+  if (isOwnClaim(owner, instance) && !options.ownClaimUnfinished) {
+    return false;
+  }
   const abandoned =
-    isClaimOwnerDead(parseClaimOwner(claim.content), instance) ||
-    Date.now() - claim.stat.mtimeMs >= CLAIM_ABANDONED_AFTER_MS;
+    isClaimOwnerDead(owner, instance, options.ownClaimUnfinished) ||
+    Date.now() - claim.stat.mtimeMs >= CLAIM_ABANDONED_AFTER_MS ||
+    (options.abandonedBefore !== undefined &&
+      claim.stat.mtimeMs < options.abandonedBefore);
   if (!abandoned || !(await isOrphaned())) return false;
   // One taker per abandoned claim. The marker is keyed by the claim as read,
   // and the takeover replaces the claim (a new inode naming the taker), so a
@@ -175,25 +177,57 @@ async function takeOver(
   const won =
     (await writeExclusive(marker, claimOwnerContent(instance))) ||
     (depth < MAX_TAKEOVER_DEPTH &&
-      (await takeOver(marker, instance, async () => true, depth + 1)));
+      (await takeOver(
+        marker,
+        instance,
+        async () => true,
+        { ...options, ownClaimUnfinished: true },
+        depth + 1
+      )));
   if (!won) return false;
   // Only the marker's holder rewrites the claim. If the claim is no longer
   // the one read above, an earlier taker already replaced it: back off.
   const current = await readClaim(claimPath);
-  if (
-    !current ||
-    current.content !== claim.content ||
-    current.stat.ino !== claim.stat.ino ||
-    current.stat.mtimeMs !== claim.stat.mtimeMs
-  ) {
-    return false;
+  const unchanged =
+    current !== null &&
+    current.content === claim.content &&
+    current.stat.ino === claim.stat.ino &&
+    current.stat.mtimeMs === claim.stat.mtimeMs;
+  if (unchanged) {
+    await write(claimPath, claimOwnerContent(instance), { overwrite: true });
   }
-  await write(claimPath, claimOwnerContent(instance), { overwrite: true });
-  return true;
+  // The marker has done its job once the claim no longer matches its key:
+  // a later taker that wins a new one finds the claim changed and backs off.
+  await fs.rm(marker, { force: true });
+  return unchanged;
 }
 
 /**
- * Whether the claim at `claimPath` still names `instance` in this process.
+ * How long until the claim at `claimPath` is {@link CLAIM_ABANDONED_AFTER_MS}
+ * old, for a claim whose writer cannot be checked from here: one that names
+ * no one (an older version wrote it), or a writer the fence lock's rules can't
+ * check (another host or pid namespace, or this process's pid written by
+ * another instance). Such a claim is taken over only by age. Null for any
+ * other claim, or when there is none; 0 once the claim is that old.
+ */
+export async function msUntilUncheckableClaimAbandoned(
+  claimPath: string,
+  instance: string
+): Promise<number | null> {
+  const claim = await readClaim(claimPath);
+  if (!claim) return null;
+  const owner = parseLockOwner(claim.content);
+  if (owner && (isOwnClaim(owner, instance) || isLockHolderCheckable(owner))) {
+    return null;
+  }
+  return Math.max(
+    0,
+    CLAIM_ABANDONED_AFTER_MS - (Date.now() - claim.stat.mtimeMs)
+  );
+}
+
+/**
+ * Whether the claim at `claimPath` still names `instance` on this thread.
  * Checked before the claim's event is written, so a writer that was taken over
  * as abandoned does not write a second event.
  */
@@ -202,6 +236,5 @@ export async function isClaimHeldBy(
   instance: string
 ): Promise<boolean> {
   const claim = await readClaim(claimPath);
-  const owner = claim && parseClaimOwner(claim.content);
-  return owner?.process === identity.process && owner.instance === instance;
+  return isOwnClaim(claim && parseLockOwner(claim.content), instance);
 }
