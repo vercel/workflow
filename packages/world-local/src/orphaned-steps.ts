@@ -1,5 +1,5 @@
 import { EntityConflictError } from '@workflow/errors';
-import { globalSingleton } from '@workflow/utils';
+import { debugLog } from '@workflow/utils';
 import {
   type Event,
   isStepEventType,
@@ -8,26 +8,17 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   type Storage,
 } from '@workflow/world';
-import type { LocalEventsStorage } from './storage/events-storage.js';
+import type {
+  LocalEventsStorage,
+  RepairUnloggedOptions,
+} from './storage/events-storage.js';
 
 export const ORPHANED_STEP_ERROR_MESSAGE =
   'The process running this step exited before it finished.';
 
-/**
- * When world-local first loaded in this JavaScript realm (process or worker
- * thread). Any step this realm starts is stamped after it, so a stamp at or
- * after it may belong to a live owner here and is never released.
- *
- * On `globalThis` (see `globalSingleton`) so every module copy in the realm
- * shares the earliest load time. `performance.timeOrigin` is not used because
- * Node shares it across a process's worker threads, so it can't mark a reload
- * into a new worker.
- */
-export const realmBoot = globalSingleton(
-  '@workflow/world-local//realmBoot',
-  1,
-  () => ({ bootedAt: Date.now() })
-);
+import { realmBoot } from './realm-boot.js';
+
+export { realmBoot };
 
 /**
  * The storage `releaseOrphanedSteps` reads and writes. world-local's own
@@ -36,7 +27,12 @@ export const realmBoot = globalSingleton(
  */
 type RecoveryStorage = Pick<Storage, 'runs' | 'steps'> & {
   events: Storage['events'] &
-    Partial<Pick<LocalEventsStorage, 'repairUnloggedTerminalEvents'>>;
+    Partial<
+      Pick<
+        LocalEventsStorage,
+        'abandonClaimsWrittenBefore' | 'repairUnloggedTerminalEvents'
+      >
+    >;
 };
 
 /**
@@ -73,7 +69,12 @@ export async function releaseOrphanedSteps(
   storage: RecoveryStorage,
   runId: string
 ): Promise<void> {
-  const running = await listRunningStepIds(storage.steps, runId);
+  // A claim written by a realm that booted before this one can only be a
+  // previous process's under this function's contract, so every later write
+  // treats it as abandoned too, not only the repair below.
+  const abandonedBefore = realmBoot.bootedAt;
+  storage.events.abandonClaimsWrittenBefore?.(abandonedBefore);
+  const { running, finished } = await listStepStates(storage.steps, runId);
   const repair = storage.events.repairUnloggedTerminalEvents;
   // Every releasable step is `running`, so without a repair to run most runs
   // need no event scan.
@@ -85,10 +86,24 @@ export async function releaseOrphanedSteps(
   // predates this realm, so under this function's contract its writer is gone
   // even where the fence lock's rules can't tell (this process's own pid
   // after a container restart, another host).
-  await repair?.call(storage.events, runId, {
-    abandonedBefore: realmBoot.bootedAt - FILE_TIME_SLACK_MS,
-  });
-  if (running.size === 0) return;
+  if (repair) {
+    await repairUnlogged(repair.bind(storage.events), runId, {
+      abandonedBefore,
+      finishedStepIds: finished,
+    });
+  }
+  if (running.size > 0) {
+    await releaseRunningSteps(storage, runId, run.specVersion, running);
+  }
+}
+
+/** Writes `step_retrying` for each of `running` that a previous realm owned. */
+async function releaseRunningSteps(
+  storage: RecoveryStorage,
+  runId: string,
+  runSpecVersion: number | undefined,
+  running: ReadonlySet<string>
+): Promise<void> {
   for (const [stepId, step] of await readStepOwnership(storage.events, runId)) {
     if (!running.has(stepId) || !isOrphaned(step)) continue;
     try {
@@ -97,7 +112,7 @@ export async function releaseOrphanedSteps(
         // The run's own version, so a reader of an older run never meets an
         // event stamped above what it supports.
         specVersion: Math.min(
-          run.specVersion ?? SPEC_VERSION_CURRENT,
+          runSpecVersion ?? SPEC_VERSION_CURRENT,
           SPEC_VERSION_MAX_SUPPORTED
         ),
         correlationId: stepId,
@@ -113,15 +128,19 @@ export async function releaseOrphanedSteps(
   }
 }
 
-/**
- * How far a file's mtime may lag the clock that `realmBoot` reads. Linux
- * stamps files from a coarse clock a tick behind `Date.now()`, and some file
- * systems keep whole seconds (or two), so a claim written just after this
- * realm booted can carry an earlier mtime. Startup repair only takes over a
- * claim at least this much older than the boot; a younger one is left to the
- * dead-writer and age rules.
- */
-const FILE_TIME_SLACK_MS = 2_000;
+/** Runs the events storage's startup repair of `runId`, and logs what it wrote. */
+async function repairUnlogged(
+  repair: LocalEventsStorage['repairUnloggedTerminalEvents'],
+  runId: string,
+  options: RepairUnloggedOptions
+): Promise<void> {
+  const repaired = await repair(runId, options);
+  if (repaired > 0) {
+    debugLog(
+      `[world-local] wrote ${repaired} missing step or wait event(s) of run ${runId} at startup`
+    );
+  }
+}
 
 /** How many runs startup recovery releases at once. */
 export const RELEASE_CONCURRENCY = 8;
@@ -211,11 +230,13 @@ function isOrphaned(step: StepOwnership): boolean {
   );
 }
 
-async function listRunningStepIds(
+/** The run's steps that are `running`, and those saved as finished. */
+async function listStepStates(
   steps: Storage['steps'],
   runId: string
-): Promise<Set<string>> {
+): Promise<{ running: Set<string>; finished: Set<string> }> {
   const running = new Set<string>();
+  const finished = new Set<string>();
   let cursor: string | undefined;
   do {
     // The largest page: each page re-reads the run's step files, so the
@@ -227,10 +248,13 @@ async function listRunningStepIds(
     });
     for (const step of page.data) {
       if (step.status === 'running') running.add(step.stepId);
+      if (step.status === 'completed' || step.status === 'failed') {
+        finished.add(step.stepId);
+      }
     }
     cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
   } while (cursor);
-  return running;
+  return { running, finished };
 }
 
 async function readStepOwnership(

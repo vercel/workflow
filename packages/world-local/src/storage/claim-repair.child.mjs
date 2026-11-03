@@ -19,8 +19,8 @@ register(
 
 // The parent forks this with `serialization: 'advanced'`, so the request's
 // Uint8Array and Date values arrive intact.
-const { dataDir, runId, request, killAt } = await new Promise((resolve) =>
-  process.once('message', resolve)
+const { dataDir, runId, request, params, killAt } = await new Promise(
+  (resolve) => process.once('message', resolve)
 );
 const [killKind, killWhat] = killAt.split(':');
 const kill = () => process.kill(process.pid, 'SIGKILL');
@@ -53,7 +53,7 @@ fs.writeFile = async (file, data, options) => {
 const { createStorage } = await import('../storage.ts');
 const storage = createStorage(dataDir);
 try {
-  await storage.events.create(runId, request);
+  await storage.events.create(runId, request, params);
   process.send({ status: 'written' }, () => process.exit(0));
 } catch (error) {
   process.send(

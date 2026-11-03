@@ -14,8 +14,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EntityConflictError, TooEarlyError } from '@workflow/errors';
+import { Worker } from 'node:worker_threads';
 import {
+  EntityConflictError,
+  InBandSupersededError,
+  TooEarlyError,
+} from '@workflow/errors';
+import {
+  IN_BAND_SEQ_AT_RUN_CREATION,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type Storage,
@@ -135,7 +141,8 @@ const childScript = fileURLToPath(
  */
 async function writeAndKill(
   request: EventRequest,
-  killAt: string
+  killAt: string,
+  params?: Parameters<Storage['events']['create']>[2]
 ): Promise<number> {
   const child = fork(childScript, [], {
     // Node's own type stripping, nothing inherited from the test runner.
@@ -147,14 +154,28 @@ async function writeAndKill(
   child.on('message', (message) => {
     answer = message;
   });
-  const exited = new Promise<NodeJS.Signals | null>((resolve, reject) => {
-    child.once('exit', (_code, signal) => resolve(signal));
+  const exited = new Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+  }>((resolve, reject) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
     child.once('error', reject);
   });
-  child.send({ dataDir: testDir, runId, request, killAt });
-  expect(await exited, `child answered ${JSON.stringify(answer)}`).toBe(
-    'SIGKILL'
-  );
+  child.send({ dataDir: testDir, runId, request, params, killAt });
+  const { code, signal } = await exited;
+  // On Windows a process's SIGKILL of itself is a TerminateProcess: it exits
+  // with code 1 and no signal. The child only ever answers when it was not
+  // killed, so no answer and that exit still mean it died at `killAt`.
+  const killed =
+    signal === 'SIGKILL' ||
+    (process.platform === 'win32' &&
+      code === 1 &&
+      signal === null &&
+      answer === undefined);
+  expect(
+    killed,
+    `child answered ${JSON.stringify(answer)}, exited with code ${code}, signal ${signal}`
+  ).toBe(true);
   return child.pid as number;
 }
 
@@ -590,18 +611,35 @@ describe('takeOverAbandonedClaim', () => {
     expect(await takeOverAbandonedClaim(claim, 'second', orphaned)).toBe(true);
   });
 
-  it('takes over a claim written before `abandonedBefore`, whoever wrote it', async () => {
+  it('takes over a claim from a realm that booted before `abandonedBefore`, whoever wrote it', async () => {
     const claim = path.join(testDir, 'claim');
-    await fs.writeFile(claim, ownerLikeThisProcess({ token: 'other' }));
-    const written = (await fs.stat(claim)).mtimeMs;
+    // Another instance of this process (this pid, another token) whose realm
+    // booted at 1000: the fence lock's rules can't tell if it is alive.
+    await fs.writeFile(claim, ownerLikeThisProcess({ token: '1000.other' }));
     expect(
       await takeOverAbandonedClaim(claim, 'second', orphaned, {
-        abandonedBefore: written,
+        abandonedBefore: 1000,
       })
     ).toBe(false);
     expect(
       await takeOverAbandonedClaim(claim, 'second', orphaned, {
-        abandonedBefore: written + 1,
+        abandonedBefore: 1001,
+      })
+    ).toBe(true);
+  });
+
+  it('dates a claim that names no realm by its mtime, with slack for a lagging file clock', async () => {
+    const claim = path.join(testDir, 'claim');
+    await fs.writeFile(claim, '');
+    const written = (await fs.stat(claim)).mtimeMs;
+    expect(
+      await takeOverAbandonedClaim(claim, 'second', orphaned, {
+        abandonedBefore: written + 1_000,
+      })
+    ).toBe(false);
+    expect(
+      await takeOverAbandonedClaim(claim, 'second', orphaned, {
+        abandonedBefore: written + 2_001,
       })
     ).toBe(true);
   });
@@ -610,5 +648,132 @@ describe('takeOverAbandonedClaim', () => {
     const claim = path.join(testDir, 'claim');
     await fs.writeFile(claim, claimOwnerContent('same'));
     expect(await takeOverAbandonedClaim(claim, 'same', orphaned)).toBe(true);
+  });
+});
+
+describe('a writer in another worker thread of this process', () => {
+  it('keeps its claim: the other thread is refused, and one step_completed lands', async () => {
+    await startStep('s');
+    const worker = new Worker(
+      new URL('./claim-repair.worker.mjs', import.meta.url),
+      {
+        // Node's own type stripping, nothing inherited from the test runner.
+        execArgv: [],
+        workerData: {
+          dataDir: testDir,
+          runId,
+          request: requests.stepCompleted('s', 2),
+          pauseAfter: `${runId}-s.terminal`,
+        },
+      }
+    );
+    const messages: { status: string; message?: string }[] = [];
+    const next = () =>
+      new Promise<{ status: string; message?: string }>((resolve, reject) => {
+        worker.once('message', (message) => {
+          messages.push(message);
+          resolve(message);
+        });
+        worker.once('error', reject);
+      });
+    try {
+      expect(await next()).toEqual({ status: 'claimed' });
+
+      // Same pid, another thread's token: the fence lock's rules can't tell
+      // it from a dead earlier process, so it is left to the age rule.
+      await expect(
+        storage.events.create(runId, requests.stepCompleted('s', 1))
+      ).rejects.toThrow(EntityConflictError);
+
+      const written = next();
+      worker.postMessage('go');
+      expect(await written).toEqual({ status: 'written' });
+    } finally {
+      await worker.terminate();
+    }
+    const completed = (await eventsOf('s')).filter(
+      (event) => event.eventType === 'step_completed'
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]?.eventData).toMatchObject({
+      result: new Uint8Array([2]),
+    });
+  });
+});
+
+describe('a spec 9 in-band write that repairs, then refuses', () => {
+  it('is refused as superseded, and the fence counts the event it wrote', async () => {
+    const run = await createRun(
+      storage,
+      { deploymentId: 'dpl_test', workflowName: 'workflow', input },
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
+    runId = run.runId;
+    const spec9 = <T extends EventRequest>(request: T): T => ({
+      ...request,
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    const seqInBand = async () =>
+      (await createStorage(testDir).events.list({ runId })).snapshot
+        ?.seqInBand ?? IN_BAND_SEQ_AT_RUN_CREATION;
+    const inBand = async () => ({
+      inBand: true,
+      expectedSeqInBand: await seqInBand(),
+    });
+    await storage.events.create(
+      runId,
+      spec9(requests.stepCreated('s')),
+      await inBand()
+    );
+    await storage.events.create(
+      runId,
+      spec9(requests.stepStarted('s')),
+      await inBand()
+    );
+
+    // The orchestrator's in-band step_completed dies after the step is saved
+    // as completed, before its event: the fence counted it as ambiguous.
+    const beforeCrash = await seqInBand();
+    await writeAndKill(
+      spec9(requests.stepCompleted('s', 1)),
+      'event:step_completed',
+      await inBand()
+    );
+    // The restarted orchestrator's first in-band write settles the crashed
+    // write as one that may have landed, and is superseded; it reloads.
+    await expect(
+      storage.events.create(runId, spec9(requests.stepStarted('s')), {
+        inBand: true,
+        expectedSeqInBand: beforeCrash,
+      })
+    ).rejects.toThrow(InBandSupersededError);
+    const afterCrash = await seqInBand();
+    expect(afterCrash).toBe(beforeCrash + 1);
+
+    // Its in-band step_started then writes the missing event from the saved
+    // step. The orchestrator hasn't seen that event: a conflict would fail
+    // the run, so the write is refused as superseded, and the fence counts
+    // the event, so the orchestrator reloads and finds the step finished.
+    await expect(
+      storage.events.create(
+        runId,
+        spec9(requests.stepStarted('s')),
+        await inBand()
+      )
+    ).rejects.toThrow(InBandSupersededError);
+    expect(await seqInBand()).toBe(afterCrash + 1);
+    expect((await eventsOf('s')).map((event) => event.eventType)).toEqual([
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+
+    // A writer that loaded the log after the repair writes in-band again.
+    await storage.events.create(
+      runId,
+      spec9(requests.waitCreated('w')),
+      await inBand()
+    );
+    expect(await seqInBand()).toBe(afterCrash + 2);
   });
 });

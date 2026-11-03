@@ -55,18 +55,20 @@ export type LocalWorld = World & {
   /**
    * Hand a run's steps that were running inline in a previous process back to
    * the queue, so the next delivery dispatches them at once instead of
-   * waiting out the inline-ownership lease. First, a step or wait the previous
-   * process saved as finished but died before logging gets its missing
-   * event, so the run doesn't wait for a redelivery to repair it. `start()` does this for every run
-   * it recovers; call it yourself before re-enqueueing a run when recovering
-   * with `recoverActiveRuns: false`. A run that has already finished is left
-   * alone.
+   * waiting out the inline-ownership lease. First, a step or wait the
+   * previous process saved as finished but died before logging gets its
+   * missing event, so the run doesn't wait for a redelivery to repair it.
+   * `start()` does this for every run it recovers; call it yourself before
+   * re-enqueueing a run when recovering with `recoverActiveRuns: false`. A
+   * run that has already finished is left alone.
    *
    * Steps started since world-local loaded in this process or worker thread
    * are never released, so calling it late, or while this process runs the
    * run, is safe. Steps started earlier are treated as abandoned: call it only
    * when no other live process or worker thread runs workflows on this data
-   * directory and tag, or a step still running there would run twice.
+   * directory and tag, or a step still running there would run twice. From
+   * the first call on, every write also takes over a claim that a realm
+   * booted before this one left (see `local.mdx`).
    */
   releaseOrphanedSteps(runId: string): Promise<void>;
 };

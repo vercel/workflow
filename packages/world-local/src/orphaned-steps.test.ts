@@ -502,7 +502,12 @@ describe('finished steps and waits whose event a crash cut short', () => {
     await world.close();
   });
 
-  it('leaves a claim written since this realm booted to its writer', async () => {
+  it.each([
+    ['since this realm booted', 0],
+    // File mtimes can lag the clock: within 2 s of the boot, a claim may be
+    // this realm's own.
+    ['less than 2 s before this realm booted', -1_000],
+  ])('leaves a claim written %s to its writer', async (_, offsetMs) => {
     const previous = createWorld({ dataDir });
     const runId = await startRun(previous);
     await finishStep(previous, runId, 'step_done');
@@ -511,20 +516,66 @@ describe('finished steps and waits whose event a crash cut short', () => {
     const world = createWorld({ dataDir, recoverActiveRuns: false });
     await bootNewRealm();
     await world.start();
-    // A writer of this realm took the claim after it booted, and may still be
-    // about to log the event.
+    // Another instance of this process (this pid, another token) took the
+    // claim, and may still be about to log the event.
     await cutShort(
       runId,
       'step_done',
       'step_completed',
       `steps/${runId}-step_done.terminal`,
-      new Date()
+      new Date(realmBoot.bootedAt + offsetMs)
     );
     await world.releaseOrphanedSteps(runId);
 
     expect(types(await stepEvents(world, runId, 'step_done'))).toEqual([
       'step_created',
       'step_started',
+    ]);
+    await world.close();
+  });
+
+  it('lets every later write take over a claim from before this realm booted', async () => {
+    // A container restart: the previous process took the step's terminal
+    // claim and died before saving the step, so the step is still `running`
+    // and startup repair has nothing to write. Its claim names a writer that
+    // can't be checked from here (this pid, another token).
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await createStep(previous, runId, {
+      stepId: 'step_running',
+      stepName: 'myStep',
+      input,
+    });
+    await updateStep(previous, runId, 'step_running', 'step_started');
+    await previous.close();
+    const claimPath = path.join(
+      dataDir,
+      '.locks',
+      'steps',
+      `${runId}-step_running.terminal`
+    );
+    await writeFile(claimPath, JSON.stringify(lockOwner('previous-process')));
+    const writtenAt = new Date(Date.now() - 10_000);
+    await utimes(claimPath, writtenAt, writtenAt);
+
+    const world = createWorld({ dataDir, recoverActiveRuns: false });
+    await bootNewRealm();
+    await world.start();
+    // Before startup recovery, the claim is only 10 s old: refused.
+    await expect(
+      updateStep(world, runId, 'step_running', 'step_completed', {
+        result: new Uint8Array([1]),
+      })
+    ).rejects.toThrow('terminal state');
+
+    await world.releaseOrphanedSteps(runId);
+    await updateStep(world, runId, 'step_running', 'step_completed', {
+      result: new Uint8Array([1]),
+    });
+    expect(types(await stepEvents(world, runId, 'step_running'))).toEqual([
+      'step_created',
+      'step_started',
+      'step_completed',
     ]);
     await world.close();
   });

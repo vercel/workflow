@@ -13,10 +13,18 @@
  * that loses the claim and finds no event in the log takes the claim over only
  * when that writer is known to be dead by the fence lock's rules, or when the
  * claim is older than {@link CLAIM_ABANDONED_AFTER_MS}.
+ *
+ * The age rule is a liveness rule, not a safety guarantee. A writer still
+ * alive but stalled for that long between its claim and its event (an event
+ * loop blocked by other work) re-checks that it still holds the claim right
+ * before it publishes, but a takeover can land between that check and the
+ * publish, and then both write the event. Closing that window would take an
+ * exclusive publish point per claim, an extra file on every claimed write.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { write, writeExclusive } from '../fs.js';
+import { FILE_TIME_SLACK_MS, realmBoot } from '../realm-boot.js';
 import {
   isLockHolderCheckable,
   isLockHolderDead,
@@ -37,9 +45,34 @@ import {
  */
 export const CLAIM_ABANDONED_AFTER_MS = OWNED_FILE_LOCK_STALE_MS;
 
-/** A new id for one events storage instance: the token its claims carry. */
+/**
+ * A new id for one events storage instance: the token its claims carry. It
+ * starts with when this realm booted, so a claim tells which realm wrote it.
+ */
 export function newClaimInstanceId(): string {
-  return randomUUID();
+  return `${realmBoot.bootedAt}.${randomUUID()}`;
+}
+
+/** When the realm that wrote a claim booted, if its token says. */
+function realmBootOf(owner: LockOwner | null): number | undefined {
+  const match = /^(\d+)\./.exec(owner?.token ?? '');
+  return match ? Number(match[1]) : undefined;
+}
+
+/**
+ * Whether the claim was written before `abandonedBefore`: by a realm that
+ * booted before it, as its token says, or, for a claim that names no realm (an
+ * older version's), by its mtime, which can lag the clock.
+ */
+function writtenBefore(
+  owner: LockOwner | null,
+  mtimeMs: number,
+  abandonedBefore: number
+): boolean {
+  const boot = realmBootOf(owner);
+  return boot !== undefined
+    ? boot < abandonedBefore
+    : mtimeMs < abandonedBefore - FILE_TIME_SLACK_MS;
 }
 
 /** The content of a claim file written by `instance` on this thread. */
@@ -102,13 +135,24 @@ export interface ClaimTakeoverOptions {
    */
   ownClaimUnfinished?: boolean;
   /**
-   * A claim last written before this time (epoch ms) is abandoned whoever
-   * wrote it. Startup repair passes when this realm booted, under the
+   * A claim written before this time (epoch ms) is abandoned whoever wrote
+   * it: by a realm that booted earlier, as the claim's token says, or, for a
+   * claim that names no realm, by its mtime with {@link FILE_TIME_SLACK_MS}
+   * of slack. Startup recovery passes when this realm booted, under the
    * contract that no other live process or thread writes to this data
    * directory and tag (see `releaseOrphanedSteps`).
    */
   abandonedBefore?: number;
+  /** Told why the claim was taken over, once it is. */
+  onTakeover?: (reason: ClaimTakeoverReason) => void;
 }
+
+/** Why an abandoned claim was taken over. */
+export type ClaimTakeoverReason =
+  | 'own-call-ended'
+  | 'writer-exited'
+  | 'claim-aged'
+  | 'written-before-boot';
 
 /**
  * Takes over the claim at `claimPath` for `instance` when the claim is
@@ -135,6 +179,27 @@ export async function takeOverAbandonedClaim(
   );
 }
 
+/** Why the claim is abandoned, or `undefined` while its writer may still work. */
+function abandonedBecause(
+  owner: LockOwner | null,
+  mtimeMs: number,
+  instance: string,
+  options: Required<Pick<ClaimTakeoverOptions, 'ownClaimUnfinished'>> &
+    ClaimTakeoverOptions
+): ClaimTakeoverReason | undefined {
+  if (isClaimOwnerDead(owner, instance, options.ownClaimUnfinished)) {
+    return isOwnClaim(owner, instance) ? 'own-call-ended' : 'writer-exited';
+  }
+  if (Date.now() - mtimeMs >= CLAIM_ABANDONED_AFTER_MS) return 'claim-aged';
+  if (
+    options.abandonedBefore !== undefined &&
+    writtenBefore(owner, mtimeMs, options.abandonedBefore)
+  ) {
+    return 'written-before-boot';
+  }
+  return undefined;
+}
+
 /**
  * How many takers in a row, each dead before it rewrote what it took, a
  * takeover looks past. Each one is a separate crash, so this is never reached
@@ -158,12 +223,8 @@ async function takeOver(
   if (isOwnClaim(owner, instance) && !options.ownClaimUnfinished) {
     return false;
   }
-  const abandoned =
-    isClaimOwnerDead(owner, instance, options.ownClaimUnfinished) ||
-    Date.now() - claim.stat.mtimeMs >= CLAIM_ABANDONED_AFTER_MS ||
-    (options.abandonedBefore !== undefined &&
-      claim.stat.mtimeMs < options.abandonedBefore);
-  if (!abandoned || !(await isOrphaned())) return false;
+  const reason = abandonedBecause(owner, claim.stat.mtimeMs, instance, options);
+  if (!reason || !(await isOrphaned())) return false;
   // One taker per abandoned claim. The marker is keyed by the claim as read,
   // and the takeover replaces the claim (a new inode naming the taker), so a
   // taker that dies after rewriting the claim leaves a claim with a new key.
@@ -181,7 +242,7 @@ async function takeOver(
         marker,
         instance,
         async () => true,
-        { ...options, ownClaimUnfinished: true },
+        { ...options, ownClaimUnfinished: true, onTakeover: undefined },
         depth + 1
       )));
   if (!won) return false;
@@ -195,6 +256,7 @@ async function takeOver(
     current.stat.mtimeMs === claim.stat.mtimeMs;
   if (unchanged) {
     await write(claimPath, claimOwnerContent(instance), { overwrite: true });
+    options.onTakeover?.(reason);
   }
   // The marker has done its job once the claim no longer matches its key:
   // a later taker that wins a new one finds the claim changed and backs off.

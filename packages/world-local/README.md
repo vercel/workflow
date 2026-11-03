@@ -29,6 +29,8 @@ holder. The next write takes it over once that writer is known to have exited
 On startup, `start()` (or `releaseOrphanedSteps(runId)` with
 `recoverActiveRuns: false`) also writes the missing event of every step or
 wait the previous process saved as finished, before the run is delivered again.
+After that, a claim that names a process or worker thread that loaded the Local
+World before this one is taken over at once by the next write.
 
 Its HTTP queue handler supports receiving `invoke: true` messages and returns
 the callback's value as `{ result }`. For example, a callback returning
