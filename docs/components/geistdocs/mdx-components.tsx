@@ -4,6 +4,13 @@ import { createMdxComponents } from '@vercel/geistdocs/mdx';
 import type { MDXComponents } from 'mdx/types';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import {
+  LanguageContent,
+  LanguageLink,
+  LanguageSwitcher,
+  LanguageSwitcherTab,
+  LanguageText,
+} from '@/components/custom/language-switcher';
 import { PerformanceExplainer } from '@/components/custom/performance/explainer';
 import { MetricVideo } from '@/components/custom/performance/metric-video';
 import { Details } from '@/components/geistdocs/details';
@@ -52,6 +59,11 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
   createMdxComponents({
     AgentTraces,
     FluidComputeCallout,
+    LanguageContent,
+    LanguageLink,
+    LanguageSwitcher,
+    LanguageSwitcherTab,
+    LanguageText,
     Badge,
     Details,
     MetricVideo,
