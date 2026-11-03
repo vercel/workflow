@@ -6,7 +6,11 @@ import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { z } from 'zod';
-import { writeExclusive } from '../fs.js';
+// Keep this module's imports light: no `../fs.js`, which pulls in
+// `@workflow/world` and its schemas. fence-lock.test.ts forks a child that
+// loads this import graph for every holder it SIGKILLs, and on a loaded CI
+// runner that load is what bounds how many kills fit in its deadline.
+import { withWindowsRetry } from '../windows-retry.js';
 
 /**
  * A cross-process file lock that knows its holder: a file at `<file>.lock`
@@ -15,7 +19,7 @@ import { writeExclusive } from '../fs.js';
  * lock (`withHookTokenClaimLock`).
  *
  * The lock comes into existence with its owner in it (an exclusive hard link
- * of a fully written file, `writeExclusive`), so there is no instant at which
+ * of a fully written file, `writeLockFile`), so there is no instant at which
  * it exists without naming who holds it. A process that exits mid-acquire
  * therefore leaves either no lock or one whose holder can be checked. Earlier
  * versions took the lock as a directory (proper-lockfile's, empty; then one
@@ -232,6 +236,39 @@ async function takeOverIfAbandoned(lockPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Publish a lock file holding `data` at `lockPath` unless something is there
+ * already: a fully written private file, hard-linked into place. The link is
+ * atomic and fails on any existing path, so the lock never exists without its
+ * owner and never replaces another. False when the path is taken. Makes the
+ * lock's directory if it is missing.
+ */
+async function writeLockFile(lockPath: string, data: string): Promise<boolean> {
+  const tempPath = `${lockPath}.tmp.${randomUUID()}`;
+  let tempFileCreated = false;
+  try {
+    try {
+      await fs.writeFile(tempPath, data, { flag: 'wx' });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      await fs.mkdir(path.dirname(lockPath), { recursive: true });
+      await fs.writeFile(tempPath, data, { flag: 'wx' });
+    }
+    tempFileCreated = true;
+    try {
+      await withWindowsRetry(() => fs.link(tempPath, lockPath));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+  } finally {
+    if (tempFileCreated) {
+      await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
+    }
+  }
+}
+
 async function acquire(
   lockPath: string,
   owner: Owner,
@@ -241,7 +278,7 @@ async function acquire(
     let held = false;
     let failure: unknown;
     try {
-      if (await writeExclusive(lockPath, JSON.stringify(owner))) return;
+      if (await writeLockFile(lockPath, JSON.stringify(owner))) return;
       held = true;
     } catch (error) {
       failure = error;
