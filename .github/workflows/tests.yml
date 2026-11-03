@@ -553,6 +553,89 @@ jobs:
           token: ${{ secrets.VERCEL_LABS_TOKEN }}
           e2e-start-ms: ${{ steps.e2eStart.outputs.ms }}
 
+  e2e-vercel-queue-hold:
+    # Send-and-hold (`QueueOptions.experimental_hold`) against the real
+    # queue service: packages/core/e2e/e2e-queue-hold.test.ts holds queue
+    # health checks from this runner and checks who ran them. A World and
+    # queue feature, the same for every framework, so one app is enough.
+    #
+    # Until send-and-hold is on for the target, every send comes back
+    # `not_held` and the suite proves only the fallback (the queue delivers
+    # the message). Set the repository variable
+    # WORKFLOW_E2E_EXPECT_QUEUE_HOLD=1 once it is on, so a send that is not
+    # held fails the job.
+    name: E2E Vercel Queue Hold Tests (nextjs-turbopack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    # One cell, so one group per slot. See e2e-vercel-prod's block above.
+    concurrency:
+      group: e2e-vercel-queue-hold-${{ needs.ci-scope.outputs.e2e-vercel-slot }}
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
+      VERCEL_PROJECT_ID: ${{ fromJSON(needs.ci-scope.outputs.vercel-projects)['nextjs-turbopack']['project-id'] }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      # See the note on e2e-vercel-prod's deployment step.
+      - name: Resolve Vercel deployment
+        id: deployment
+        uses: ./.github/actions/resolve-vercel-deployment
+        with:
+          project-id: ${{ env.VERCEL_PROJECT_ID }}
+          team-id: ${{ env.VERCEL_TEAM_ID }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
+
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
+      - name: Run Queue Hold E2E Tests
+        run: pnpm vitest run packages/core/e2e/e2e-queue-hold.test.ts --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-queue-hold-$APP_NAME.json"
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
+          APP_NAME: nextjs-turbopack
+          WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ env.VERCEL_PROJECT_ID }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ fromJSON(needs.ci-scope.outputs.vercel-projects)['nextjs-turbopack']['project-slug'] }}
+          WORKFLOW_E2E_EXPECT_QUEUE_HOLD: ${{ vars.WORKFLOW_E2E_EXPECT_QUEUE_HOLD }}
+          # See the note on e2e-vercel-prod.
+          VERCEL_WORKFLOW_SERVER_URL: ${{ steps.deployment.outputs.environment == 'preview' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      - name: Report E2E results
+        if: always()
+        uses: ./.github/actions/report-vercel-e2e
+        with:
+          results-name: vercel-queue-hold-nextjs-turbopack
+          app: nextjs-turbopack
+          summary-title: E2E Vercel Queue Hold (nextjs-turbopack)
+          capture-runtime-logs: ${{ job.status == 'failure' }}
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          environment: ${{ steps.deployment.outputs.environment }}
+          project-id: ${{ env.VERCEL_PROJECT_ID }}
+          team-id: ${{ env.VERCEL_TEAM_ID }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          e2e-start-ms: ${{ steps.e2eStart.outputs.ms }}
+
   e2e-vercel-ws-transport:
     # Dedicated coverage for world-vercel's WebSocket events transport
     # (WORKFLOW_EVENTS_TRANSPORT=ws — see events-v4.ts's
