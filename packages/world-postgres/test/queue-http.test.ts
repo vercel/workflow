@@ -41,7 +41,8 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     | 'reschedule'
     | 'reject-then-handoff'
     | 'auth-refused'
-    | 'bare-401';
+    | 'bare-401'
+    | 'accept';
   let serialStarts: string[] = [];
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
@@ -62,6 +63,10 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       response.on('close', () => disconnected.resolve());
       accepted.resolve();
       if (phase === 'abort') return;
+      if (phase === 'accept') {
+        response.end('{}');
+        return;
+      }
       if (phase === 'auth-refused') {
         // The runtime's queue auth refusal, as another process's route
         // answers this worker's delivery.
@@ -194,6 +199,118 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       await pool.query('TRUNCATE graphile_worker._private_jobs');
     }
   });
+
+  /** The Graphile job the queue stored for `messageId`, if it is still there. */
+  const jobFor = async (messageId: string | null) => {
+    const { rows } = await pool.query(
+      'SELECT attempts, locked_at FROM graphile_worker._private_jobs WHERE key = $1',
+      [messageId]
+    );
+    return rows[0] as { attempts: number; locked_at: Date | null } | undefined;
+  };
+
+  // Enqueue-only (`WORKFLOW_POSTGRES_ENQUEUE_ONLY`): a process that only
+  // enqueues runs no worker, so it never takes, or delivers, a job.
+  test('an enqueue-only queue stores its job but starts no worker', async () => {
+    phase = 'accept';
+    attempts = [];
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const producer = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 1,
+        applicationManagedShutdown: true,
+        enqueueOnly: true,
+      },
+      pool
+    );
+    try {
+      const { messageId } = await producer.queue(
+        `${getQueueTopicPrefix('workflow')}test`,
+        { runId: `run_${randomUUID()}` }
+      );
+      // Well past a worker's 500ms poll: a running worker would have taken it.
+      await sleep(3_000);
+      expect(attempts).toEqual([]);
+      expect(await jobFor(messageId)).toMatchObject({
+        attempts: 0,
+        locked_at: null,
+      });
+    } finally {
+      info.mockRestore();
+      await producer.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  }, 30_000);
+
+  // The default path is unchanged: a queue that enqueues starts its worker,
+  // which takes and delivers the job.
+  test('a default queue starts a worker that delivers its job', async () => {
+    phase = 'accept';
+    attempts = [];
+    const queue = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 1,
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+    try {
+      const { messageId } = await queue.queue(
+        `${getQueueTopicPrefix('workflow')}test`,
+        { runId: `run_${randomUUID()}` }
+      );
+      await expect.poll(() => attempts, { timeout: 10_000 }).toEqual(['1']);
+      await expect
+        .poll(() => jobFor(messageId), { timeout: 5_000 })
+        .toBe(undefined);
+    } finally {
+      await queue.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  }, 30_000);
+
+  // The split the mode is for: a producer process enqueues, and the app's
+  // own worker (another queue on the same database) delivers the job.
+  test("an enqueue-only producer's job is delivered by another queue's worker", async () => {
+    phase = 'accept';
+    attempts = [];
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const producer = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 1,
+        applicationManagedShutdown: true,
+        enqueueOnly: true,
+      },
+      pool
+    );
+    const app = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 1,
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+    try {
+      await app.start();
+      const { messageId } = await producer.queue(
+        `${getQueueTopicPrefix('workflow')}test`,
+        { runId: `run_${randomUUID()}` }
+      );
+      await expect.poll(() => attempts, { timeout: 10_000 }).toEqual(['1']);
+      await expect
+        .poll(() => jobFor(messageId), { timeout: 5_000 })
+        .toBe(undefined);
+    } finally {
+      info.mockRestore();
+      await producer.close();
+      await app.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  }, 30_000);
 
   // A marked 401 is permanent: the worker retires the job after one delivery
   // instead of throwing and letting Graphile retry it for days.

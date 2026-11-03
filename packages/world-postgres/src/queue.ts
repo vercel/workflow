@@ -914,7 +914,9 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await startRunnerWhenExecutorIsReady();
+          // Enqueue-only: the worker utilities and migrations above are all
+          // a producer needs; no runner, so this process never takes a job.
+          if (!config.enqueueOnly) await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;
           throw err;
@@ -922,7 +924,7 @@ export function createQueue(
       })();
     }
     await startPromise;
-    if (!closing && !runner && !runnerStart) {
+    if (!config.enqueueOnly && !closing && !runner && !runnerStart) {
       await startRunnerWhenExecutorIsReady();
     }
   }
