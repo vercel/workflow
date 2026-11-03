@@ -997,9 +997,8 @@ export interface InvokeOptions {
 }
 
 /**
- * How the runtime authenticates a delivery that reaches a queue route (the
- * Workflow SDK's flow route, or a consumer's own route), before it does any
- * work. See {@link Queue.queueAuth}.
+ * How the runtime authenticates a delivery that reaches the Workflow SDK's
+ * flow route, before it does any work. See {@link Queue.queueAuth}.
  *
  * - `'in-process-key'`: the World's queue runs in the app's own process and
  *   attaches the process's in-memory key (`getQueueAuthKey()` from
