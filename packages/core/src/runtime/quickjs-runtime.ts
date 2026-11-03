@@ -56,6 +56,10 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
+import {
+  RESPONSE_BODY_CHUNK_MAX_BYTES,
+  RESPONSE_BODY_CHUNK_MIN_BYTES,
+} from '../response-body-chunk.js';
 import { createSeededNanoid } from '../seeded-nanoid.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
@@ -778,11 +782,12 @@ if (typeof Request === "undefined") {
 // Readers over in-VM stream handles, mirroring the node:vm engine. A handle
 // is either a named stream stored in the World (e.g. the body of a Response
 // returned by the fetch step) or a body passed to the Response/Request
-// polyfills. The whole body is loaded once, through the arrayBuffer step for
-// named streams, and handed to the reader as a single chunk, so readers such
-// as the AI SDK's response size limit replay from the event log. Handles are
-// never locked or disturbed: every new reader loads the body again instead of
-// throwing, like json()/text()/arrayBuffer() on these handles.
+// polyfills. A named stream is read through one __builtin_response_read_chunk
+// step per chunk, sized by responseBodyChunkSize, so consumer byte limits and
+// cancel() stop the read before the whole body is loaded and every chunk
+// replays from the event log. In-memory bodies are resolved once per reader.
+// Handles are never locked or disturbed: every new reader starts again from
+// byte 0 instead of throwing, like json()/text()/arrayBuffer() on handles.
 (function() {
   var proto = globalThis.ReadableStream.prototype;
   if (typeof proto.getReader === "function") return;
@@ -793,44 +798,52 @@ if (typeof Request === "undefined") {
   function encode(text) {
     return new TextEncoder().encode(text);
   }
-  function readBytes(stream, seen) {
+  function chunkSize(offset) {
+    return Math.min(${RESPONSE_BODY_CHUNK_MAX_BYTES}, Math.max(${RESPONSE_BODY_CHUNK_MIN_BYTES}, offset));
+  }
+  function resolveSource(stream, seen) {
     if (seen.indexOf(stream) !== -1) unsupported();
     seen.push(stream);
-    if (Object.prototype.hasOwnProperty.call(stream, BODY_INIT)) {
-      var init = stream[BODY_INIT];
-      if (typeof init === "string") return Promise.resolve(encode(init));
-      if (typeof URLSearchParams !== "undefined" && init instanceof URLSearchParams) {
-        return Promise.resolve(encode(String(init)));
-      }
-      if (init instanceof ArrayBuffer) return Promise.resolve(new Uint8Array(init.slice(0)));
-      if (ArrayBuffer.isView(init)) {
-        return Promise.resolve(new Uint8Array(init.buffer.slice(init.byteOffset, init.byteOffset + init.byteLength)));
-      }
-      if (init !== null && typeof init === "object" && Object.getPrototypeOf(init) === proto) {
-        return readBytes(init, seen);
-      }
-      unsupported();
+    if (!Object.prototype.hasOwnProperty.call(stream, BODY_INIT)) return { named: stream };
+    var init = stream[BODY_INIT];
+    // Encoded once per reader, not once per chunk.
+    if (typeof init === "string") return { bytes: encode(init) };
+    if (typeof URLSearchParams !== "undefined" && init instanceof URLSearchParams) return { bytes: encode(String(init)) };
+    if (init instanceof ArrayBuffer) return { bytes: new Uint8Array(init) };
+    if (ArrayBuffer.isView(init)) return { bytes: new Uint8Array(init.buffer, init.byteOffset, init.byteLength) };
+    if (init !== null && typeof init === "object" && Object.getPrototypeOf(init) === proto) return resolveSource(init, seen);
+    unsupported();
+  }
+  function readChunk(source, offset) {
+    if (source.bytes) {
+      var bytes = source.bytes;
+      var end = Math.min(offset + chunkSize(offset), bytes.byteLength);
+      return Promise.resolve({ value: bytes.slice(offset, end), done: end === bytes.byteLength });
     }
+    // Only this byte range is materialized in the host and event log.
     var response = Object.create(globalThis.Response.prototype);
     response.status = 200;
     response.statusText = "";
     response.headers = new globalThis.Headers([]);
-    response.body = stream;
+    response.body = source.named;
     response.type = "default";
     response.url = "";
     response.redirected = false;
-    return response.arrayBuffer().then(function(buffer) { return new Uint8Array(buffer); });
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("__builtin_response_read_chunk").call(response, offset).then(function(result) {
+      return { value: new Uint8Array(result.buffer), done: result.done };
+    });
   }
   Object.defineProperty(proto, "locked", { get: function() { return false; }, configurable: true });
   proto.cancel = function() { return Promise.resolve(); };
   proto.getReader = function(options) {
     if (options && options.mode !== undefined) unsupported();
     var stream = this;
-    // Single chunk, claimed synchronously by the first read() so overlapping
-    // reads deliver it once; the closed promise settles with that read. Same contract
-    // as the node:vm engine.
-    var bytes = null;
-    var claimed = false;
+    var pending = Promise.resolve();
+    var source = null;
+    var offset = 0;
+    var done = false;
+    var failed = false;
+    var failure;
     var released = false;
     var resolveClosed;
     var rejectClosed;
@@ -839,26 +852,32 @@ if (typeof Request === "undefined") {
     return {
       closed: closed,
       read: function() {
-        if (released) {
-          return Promise.reject(new TypeError("This reader has been released and can no longer be read from."));
-        }
-        if (claimed) {
-          var pending = bytes || Promise.resolve();
-          return pending.then(function() { return { done: true, value: undefined }; });
-        }
-        claimed = true;
-        if (!bytes) bytes = readBytes(stream, []);
-        return bytes.then(function(value) {
-          resolveClosed();
-          if (value.byteLength > 0) return { done: false, value: value };
-          return { done: true, value: undefined };
-        }, function(error) {
-          rejectClosed(error);
-          throw error;
+        var result = pending.then(function() {
+          if (released) throw new TypeError("This reader has been released and can no longer be read from.");
+          if (failed) throw failure;
+          if (done) return { done: true, value: undefined };
+          return Promise.resolve().then(function() {
+            if (!source) source = resolveSource(stream, []);
+            return readChunk(source, offset);
+          }).then(function(chunk) {
+            if (done) return { done: true, value: undefined };
+            offset += chunk.value.byteLength;
+            done = chunk.done;
+            if (done) resolveClosed();
+            if (chunk.value.byteLength > 0) return { done: false, value: chunk.value };
+            return { done: true, value: undefined };
+          }, function(error) {
+            failed = true;
+            failure = error;
+            rejectClosed(error);
+            throw error;
+          });
         });
+        pending = result.then(function() {}, function() {});
+        return result;
       },
       cancel: function() {
-        claimed = true;
+        done = true;
         resolveClosed();
         return Promise.resolve();
       },
@@ -867,9 +886,22 @@ if (typeof Request === "undefined") {
   };
   proto.values = function() {
     var reader = this.getReader();
+    var finished = false;
+    function finish() {
+      if (finished) return Promise.resolve();
+      finished = true;
+      return reader.cancel().then(function() { reader.releaseLock(); }, function(error) { reader.releaseLock(); throw error; });
+    }
     var iterator = {
-      next: function() { return reader.read(); },
-      return: function() { return reader.cancel().then(function() { return { done: true, value: undefined }; }); },
+      next: function() {
+        return reader.read().then(function(result) {
+          if (!result.done) return result;
+          return finish().then(function() { return result; });
+        }, function(error) {
+          return finish().then(function() { throw error; }, function() { throw error; });
+        });
+      },
+      return: function() { return finish().then(function() { return { done: true, value: undefined }; }); },
     };
     iterator[Symbol.asyncIterator] = function() { return iterator; };
     return iterator;

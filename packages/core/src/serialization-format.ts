@@ -23,6 +23,14 @@ import { parse, unflatten } from 'devalue';
  * Everything below is Web Crypto only: `serialization/encryption.ts`,
  * `encryption.ts` and `sealed-box.ts` are all free of Node dependencies.
  */
+// Chunk sizing shared with the `__builtin_response_read_chunk` host step in
+// the `workflow` package, which must agree with the in-VM readers.
+export {
+  RESPONSE_BODY_CHUNK_MAX_BYTES,
+  RESPONSE_BODY_CHUNK_MIN_BYTES,
+  responseBodyChunkSize,
+} from './response-body-chunk.js';
+
 export {
   type DecryptionKey,
   decrypt as decryptEnvelope,
