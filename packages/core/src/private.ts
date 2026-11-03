@@ -513,27 +513,6 @@ function computeResolvesOnItsOwn(
  * that way.)
  */
 /**
- * Whether correlation-id draw order is pinned to event-log order. Default ON:
- * only the literal string `WORKFLOW_LOG_ORDER_DRAWS=0` opts out. `=false`,
- * `=off`, and every other value keep it enabled. Read per call so tests can
- * flip it.
- *
- * Off, a delivery that had to defer yields ONE macrotask after its
- * predecessors resolve. This is enough for short consumers, but a woken branch
- * whose path to its next draw crosses more hops (a `Promise.race` resolution, a
- * user-level semaphore, an async-iterator read) can still be overtaken by a
- * later-in-log delivery's shorter cascade, so the run's draw order, including
- * its correlation ids, depends on how much log this replay loaded.
- * On, the yield becomes a fixpoint: the delivery resolves only once every
- * earlier cascade has quiesced, making the draw sequence a pure function of
- * the dense log, stable under prefix extension, and concurrent writers'
- * duplicate creates identical (deduped) instead of colliding.
- */
-function isLogOrderDrawsEnabled(): boolean {
-  return process.env.WORKFLOW_LOG_ORDER_DRAWS !== '0';
-}
-
-/**
  * One quiescence turn: lets the entire pending microtask queue drain, then
  * yields to the event loop once. `setImmediate` (check phase) is used where
  * available because Node clamps `setTimeout(0)` to ~1ms while `setImmediate`
@@ -646,34 +625,16 @@ export async function awaitEarlierDeliveries(
   if (earlier.length > 0) {
     await Promise.all(earlier);
   }
-  if (isLogOrderDrawsEnabled()) {
-    // Unconditional, not just when a barrier was still registered: an earlier
-    // delivery's barrier deregisters when its resolve() runs, but the branch
-    // it woke may still be hops away from its next draw. A later delivery
-    // consumed after that deregistration sees an empty gate set, and without
-    // this it would resolve mid-cascade and overtake the draw. This is the exact
-    // arrival-order dependence this mode exists to remove. Costs one quiet
-    // macrotask turn when nothing is in flight.
-    await quiesceEarlierCascades(ctx, eventIndex);
-    return;
-  }
-  if (earlier.length > 0) {
-    // An earlier delivery being "delivered" only means its `resolve()` ran.
-    // The branch it woke may need an arbitrary number of further microtask
-    // hops before it reaches its next `useStep` call and draws a ULID: a
-    // `for await` over a hook, for instance, resumes the generator, settles
-    // the promise from `next()`, and only then runs the loop body. Resolving
-    // this delivery on a microtask would let it overtake that branch and
-    // reorder the ULID allocation anyway, turning the guarantee below into a
-    // hop-count race that holds only for the shortest consumers.
-    //
-    // Yielding a macrotask lets the earlier branch's entire microtask chain
-    // drain first, whatever its length, so log order survives regardless of
-    // how the workflow consumes the earlier delivery. Only deliveries that
-    // actually had to defer pay this, so the common single-delivery drain is
-    // unaffected.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
+  // Unconditional, not just when a barrier was still registered: an earlier
+  // delivery's barrier deregisters when its resolve() runs, but the branch it
+  // woke may still be hops away from its next draw. A later delivery consumed
+  // after that deregistration sees an empty gate set, and without this it
+  // would resolve mid-cascade and overtake the draw, making the run's
+  // correlation ids depend on how much log this replay loaded. Waiting for
+  // every earlier cascade to quiesce makes the draw sequence a pure function
+  // of the dense log, stable under prefix extension. Costs one quiet
+  // macrotask turn when nothing is in flight.
+  await quiesceEarlierCascades(ctx, eventIndex);
 }
 
 /** Handle for a registered branch-deciding delivery barrier. */

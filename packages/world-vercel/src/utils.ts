@@ -135,8 +135,8 @@ export interface APIConfig {
    * `createWorld`, which reads `mintedSpecVersion()` once; `run_started`
    * attests at most this value as `executorSpecVersion` (see
    * `executorSpecVersionFor`), so the attestation never exceeds what the
-   * runtime validated, even if `WORKFLOW_SPEC_VERSION` or
-   * `WORKFLOW_SEALED_LOG` changes in-process afterwards.
+   * runtime validated, even if `WORKFLOW_SPEC_VERSION` changes in-process
+   * afterwards.
    *
    * @internal
    */

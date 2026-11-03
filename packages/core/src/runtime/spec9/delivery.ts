@@ -113,7 +113,6 @@ import {
   findEventSlotGap,
   getWorkflowQueueName,
   isQueueSendFailure,
-  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   maxEventSlot,
@@ -2836,41 +2835,39 @@ async function runDelivery(
           // waits this one completed.
           if (due.length > 0) await armTimers(log.events, 'other-chains');
 
-          if (isSlotGapCheckEnabled()) {
-            // Run-ahead places an outcome at the slot its write
-            // will take, so the log can hold it above a
-            // position this delivery's writer is still about
-            // to fill (a sibling step's start queued ahead of
-            // it). That is no hole: let the speculative writes
-            // and everything queued before them commit, and
-            // fold them in, before judging the log.
-            if (
-              speculationsBySlot.size > 0 &&
-              findEventSlotGap(log.events) !== undefined
-            ) {
-              if ((await drainRunAhead()) === 'repair') {
-                await repairRunAhead();
-              }
-              await writer.idle();
-              flushPending();
+          // Run-ahead places an outcome at the slot its write
+          // will take, so the log can hold it above a
+          // position this delivery's writer is still about
+          // to fill (a sibling step's start queued ahead of
+          // it). That is no hole: let the speculative writes
+          // and everything queued before them commit, and
+          // fold them in, before judging the log.
+          if (
+            speculationsBySlot.size > 0 &&
+            findEventSlotGap(log.events) !== undefined
+          ) {
+            if ((await drainRunAhead()) === 'repair') {
+              await repairRunAhead();
             }
-            const settled = await settleEventSlotGap(
-              runId,
-              { events: log.events, cursor: log.cursor },
-              { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
+            await writer.idle();
+            flushPending();
+          }
+          const settled = await settleEventSlotGap(
+            runId,
+            { events: log.events, cursor: log.cursor },
+            { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
+          );
+          if (settled.log.events !== log.events) {
+            session = null;
+          }
+          log = {
+            events: settled.log.events,
+            cursor: settled.log.cursor,
+          };
+          if (settled.gap !== undefined) {
+            throw new CorruptedEventLogError(
+              `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
             );
-            if (settled.log.events !== log.events) {
-              session = null;
-            }
-            log = {
-              events: settled.log.events,
-              cursor: settled.log.cursor,
-            };
-            if (settled.gap !== undefined) {
-              throw new CorruptedEventLogError(
-                `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
-              );
-            }
           }
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
             forgetConsumedPosition(world, runId);

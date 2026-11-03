@@ -110,24 +110,6 @@ export function getReturnValueMaxLongPolls(): number {
 }
 
 /**
- * Whether `await run.returnValue` may use the World's long poll
- * (`runs.waitForTerminalStatus`) instead of interval-polling `runs.get`.
- *
- * Default **ON** wherever the World implements the method; a World that does
- * not is already on the interval path with nothing to switch off. Reads
- * `process.env.WORKFLOW_RETURN_VALUE_LONG_POLL` lazily; an explicit `'0'` /
- * `'false'` is the kill switch, restoring the fixed-interval poll exactly as
- * it behaved before the fast path existed.
- *
- * @internal
- */
-export function isReturnValueLongPollEnabled(): boolean {
-  const raw = process.env.WORKFLOW_RETURN_VALUE_LONG_POLL;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
-}
-
-/**
  * A `ReadableStream` extended with workflow-specific helpers.
  */
 export type WorkflowReadableStream<R = any> = ReadableStream<R> & {
@@ -681,11 +663,10 @@ export class Run<TResult> {
     // paying up to a full interval of quantization on a run that already
     // ended. Worlds that cannot wait do not implement it (see
     // `Storage['runs'].waitForTerminalStatus`) and this stays the exact
-    // fixed-interval poll it has always been, as does an operator who
-    // throws the `WORKFLOW_RETURN_VALUE_LONG_POLL=0` kill switch.
-    const waitForTerminalStatus = isReturnValueLongPollEnabled()
-      ? world.runs.waitForTerminalStatus?.bind(world.runs)
-      : undefined;
+    // fixed-interval poll it has always been.
+    const waitForTerminalStatus = world.runs.waitForTerminalStatus?.bind(
+      world.runs
+    );
 
     // Long polls spent so far. Once the cap is reached the loop keeps waiting
     // but on the interval path, which is the strategy we know is correct; see

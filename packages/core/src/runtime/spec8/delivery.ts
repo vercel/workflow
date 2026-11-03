@@ -100,7 +100,6 @@ import {
   appendEventLog,
   getWorkflowQueueName,
   insertEventByEventId,
-  isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   preconditionEventDelta,
@@ -139,8 +138,6 @@ import {
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
-  isInlineEarlyAdvanceEnabled,
-  isInlineOwnershipEnabled,
   SPEC8_EVENT_SPEC_VERSION,
 } from './constants.js';
 import { countStepStartedEvents } from './count-step-started-events.js';
@@ -1337,7 +1334,6 @@ async function runDelivery(
           // backstop. Fall through to the main loop, whose
           // dispatch table routes it to owned recovery.
           if (
-            isInlineOwnershipEnabled() &&
             hasPendingStepOwnedByMessage(
               loaded.events,
               pendingStepIds,
@@ -2489,7 +2485,6 @@ async function runDelivery(
     );
   };
 
-  const inlineEarlyAdvance = isInlineEarlyAdvanceEnabled();
   let inlineEarlyAdvances = 0;
   let inlineSlotsHeldBack = 0;
 
@@ -2820,20 +2815,18 @@ async function runDelivery(
       // A hole that is merely a write mid-commit fills in on
       // its own, so settleEventSlotGap re-reads before
       // concluding, and adopts whichever log it settled on.
-      if (isSlotGapCheckEnabled()) {
-        const settled = await settleEventSlotGap(runId, {
-          events: eventLog.events,
-          cursor: eventLog.cursor,
-        });
-        eventLog = {
-          ...settled.log,
-          type: 'ready',
-        };
-        if (settled.gap !== undefined) {
-          throw new CorruptedEventLogError(
-            `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
-          );
-        }
+      const settled = await settleEventSlotGap(runId, {
+        events: eventLog.events,
+        cursor: eventLog.cursor,
+      });
+      eventLog = {
+        ...settled.log,
+        type: 'ready',
+      };
+      if (settled.gap !== undefined) {
+        throw new CorruptedEventLogError(
+          `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+        );
       }
 
       // Completing elapsed waits refreshes the event snapshot.
@@ -3714,7 +3707,6 @@ async function runDelivery(
         // delay/key selection rationale.
         const traceCarrier = await nextTraceCarrier();
         const dispatches: Promise<unknown>[] = [];
-        const inlineOwnership = isInlineOwnershipEnabled();
         const dispatchNowMs = Date.now();
         const ownedRecoverySteps: StepInvocationQueueItem[] = [];
         let backstopWakesArmed = 0;
@@ -3762,7 +3754,6 @@ async function runDelivery(
           !pendingSteps.some(
             (step) =>
               !inlineCorrelationIds.has(step.correlationId) &&
-              inlineOwnership &&
               isStepOwnershipActive(step) &&
               step.ownerMessageId === metadata.messageId
           );
@@ -3782,8 +3773,7 @@ async function runDelivery(
           ) {
             continue;
           }
-          const ownershipActive =
-            inlineOwnership && isStepOwnershipActive(step);
+          const ownershipActive = isStepOwnershipActive(step);
           if (ownershipActive && step.ownerMessageId === metadata.messageId) {
             // Owned recovery: this delivery IS the owning
             // message; re-execute the step in this
@@ -4628,10 +4618,7 @@ async function runDelivery(
           // step. The others stay tracked; the next pass neither creates,
           // queues nor recovers them (they are left out of the suspension),
           // and a later pass settles them.
-          const round = await inlineStepsInFlight.settle(
-            inlineEarlyAdvance,
-            isEarlyAdvanceOutcome
-          );
+          const round = await inlineStepsInFlight.settle(isEarlyAdvanceOutcome);
           if (round.early) {
             runtimeLogger.debug(
               'Inline step settled; replaying while sibling inline steps run',
