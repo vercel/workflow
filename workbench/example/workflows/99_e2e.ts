@@ -489,44 +489,6 @@ export async function fetchWorkflow() {
   return data;
 }
 
-// Libraries such as the AI SDK call the global `fetch` and read the response
-// through `response.body.getReader()` (to enforce a download size limit).
-export async function fetchResponseBodyReaderWorkflow() {
-  'use workflow';
-  globalThis.fetch = fetch;
-  const response = await globalThis.fetch(
-    'https://jsonplaceholder.typicode.com/todos/1'
-  );
-  if (!response.body) throw new Error('response has no body');
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.length;
-      chunks.push(value);
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } finally {
-      reader.releaseLock();
-    }
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return {
-    status: response.status,
-    data: JSON.parse(new TextDecoder().decode(bytes)),
-  };
-}
-
 //////////////////////////////////////////////////////////
 
 export async function promiseRaceStressTestDelayStep(

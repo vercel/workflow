@@ -33,7 +33,6 @@ const registeredSteps = (globalSymbols[RegisteredStepsKey] ??= new Map<
 
 const BUILTIN_RESPONSE_STEP_NAMES = new Set([
   '__builtin_response_array_buffer',
-  '__builtin_response_read_chunk',
   '__builtin_response_json',
   '__builtin_response_text',
 ]);

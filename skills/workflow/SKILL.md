@@ -115,21 +115,31 @@ When you need logic directly in a workflow function (not in a step), these restr
 
 | Limitation | Workaround |
 |------------|------------|
-| No `fetch()` | `import { fetch } from "workflow"` then `globalThis.fetch = fetch` |
+| No `fetch()` | Make the request (and any AI SDK call) in a step function; for simple JSON/text requests, `import { fetch } from "workflow"` and call it directly |
 | No `setTimeout`/`setInterval` | Use `sleep("5s")` from `"workflow"` |
 | No Node.js modules (fs, crypto, etc.) | Move to a step function |
 
-**Example - Using fetch in workflow context:**
+**Example - AI SDK call in a workflow:**
 
 ```typescript
-import { fetch } from "workflow";
+import { generateText } from "ai";
 
-export async function myWorkflow() {
+async function summarize(text: string) {
+  "use step"; // generateText calls fetch and reads the response here
+  const { text: summary } = await generateText({
+    model: "spacexai/grok-4.6",
+    prompt: `Summarize: ${text}`,
+  });
+  return summary;
+}
+
+export async function myWorkflow(text: string) {
   "use workflow";
-  globalThis.fetch = fetch;  // Required for AI SDK and HTTP libraries
-  // Now generateText() and other libraries work
+  return await summarize(text);
 }
 ```
+
+Do not assign `fetch` from `"workflow"` to `globalThis.fetch` to run AI SDK calls in the workflow function. For agents, use `WorkflowAgent` (below), which runs model calls in steps.
 
 **Note:** Plain `"provider/model"` strings use Vercel AI Gateway. Do not construct a direct provider instance unless the user explicitly needs a provider-only feature.
 

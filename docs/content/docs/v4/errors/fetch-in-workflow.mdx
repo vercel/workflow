@@ -1,8 +1,8 @@
 ---
 title: fetch-in-workflow
-description: Use the workflow fetch step function instead of global fetch in workflows.
+description: Make HTTP requests, including AI SDK calls, from step functions instead of workflow functions.
 type: troubleshooting
-summary: Resolve the fetch-in-workflow error by using the workflow fetch function.
+summary: Resolve the fetch-in-workflow error by moving HTTP requests into a step function.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -29,7 +29,7 @@ Many libraries make HTTP requests under the hood. For example, the AI SDK's `gen
 
 ## Quick fix
 
-Import the `fetch` step function from the `workflow` package and assign it to `globalThis.fetch` inside your workflow function. This version of `fetch` is a step function that wraps the standard `fetch` API, automatically handling serialization and providing retry capabilities. This will also make `fetch()` available to all functions and libraries in the current workflow function.
+Move the code that makes the request into a step function, and call that step from the workflow. Steps run with full Node.js access, so the global `fetch()`, and libraries such as the AI SDK that call it, work as usual there. The step's return value is recorded in the event log, so the workflow replays deterministically without making the request again.
 
 **Before:**
 
@@ -53,14 +53,11 @@ export async function chatWorkflow(prompt: string) {
 
 ```typescript lineNumbers title="workflows/ai.ts"
 import { generateText } from "ai";
-import { fetch } from "workflow"; // [!code highlight]
 
-export async function chatWorkflow(prompt: string) {
-  "use workflow";
+async function generate(prompt: string) {
+  "use step"; // [!code highlight]
 
-  globalThis.fetch = fetch; // [!code highlight]
-
-  // Now generateText() can make HTTP requests via the fetch step
+  // Plain model strings route through Vercel AI Gateway
   const result = await generateText({
     model: "spacexai/grok-4.6",
     prompt,
@@ -68,36 +65,27 @@ export async function chatWorkflow(prompt: string) {
 
   return result.text;
 }
+
+export async function chatWorkflow(prompt: string) {
+  "use workflow";
+
+  return await generate(prompt); // [!code highlight]
+}
 ```
+
+Return only the values the workflow needs (here `result.text`): step return values must be [serializable](/docs/foundations/serialization), and smaller results keep the event log small.
 
 ## Common scenarios
 
 ### AI SDK integration
 
-This is the most common scenario - using AI SDK functions that make HTTP requests:
+For agents, use [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent), which runs each model call and step-backed tool as a step, so you don't call AI SDK functions from the workflow function yourself.
 
-```typescript lineNumbers
-import { generateText, streamText } from "ai";
-import { fetch } from "workflow"; // [!code highlight]
-
-export async function aiWorkflow(userMessage: string) {
-  "use workflow";
-
-  globalThis.fetch = fetch; // [!code highlight]
-
-  // Plain model strings route through Vercel AI Gateway
-  const response = await generateText({
-    model: "spacexai/grok-4.6",
-    prompt: userMessage,
-  });
-
-  return response.text;
-}
-```
+For a single `generateText()`, `generateObject()`, or `streamText()` call, wrap it in a step function as shown above. Reading the response, streaming included, then happens inside the step.
 
 ### Direct API calls
 
-You can also use the fetch step function directly for your own HTTP requests:
+For a plain HTTP request whose response you only need as JSON or text, you can use the `fetch` step function from `workflow` directly in the workflow function:
 
 ```typescript lineNumbers
 import { fetch } from "workflow";
@@ -112,5 +100,7 @@ export async function dataWorkflow() {
   return data;
 }
 ```
+
+If you need to process the response further, for example to read `response.body` as a stream, make the request and process the response together inside your own step function instead.
 
 For more details on the `fetch` step function, see the [fetch API reference](/docs/api-reference/workflow/fetch).
