@@ -8,6 +8,7 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   type Storage,
 } from '@workflow/world';
+import type { LocalEventsStorage } from './storage/events-storage.js';
 
 export const ORPHANED_STEP_ERROR_MESSAGE =
   'The process running this step exited before it finished.';
@@ -29,8 +30,20 @@ export const realmBoot = globalSingleton(
 );
 
 /**
+ * The storage `releaseOrphanedSteps` reads and writes. world-local's own
+ * events storage also finishes the writes a crash cut short (see
+ * `repairUnloggedTerminalEvents`).
+ */
+type RecoveryStorage = Pick<Storage, 'runs' | 'steps'> & {
+  events: Storage['events'] &
+    Partial<Pick<LocalEventsStorage, 'repairUnloggedTerminalEvents'>>;
+};
+
+/**
  * Hand every step still inline-owned by a queue message of a previous process
- * back to the queue, by writing `step_retrying` for it.
+ * back to the queue, by writing `step_retrying` for it, after writing the
+ * missing event of every step or wait the previous process saved as finished
+ * and died before logging.
  *
  * A step that runs inline records its queue message on `step_started`
  * (`ownerMessageId`), and until a lease expires, core defers to that owner
@@ -57,14 +70,25 @@ export const realmBoot = globalSingleton(
  * another process.
  */
 export async function releaseOrphanedSteps(
-  storage: Pick<Storage, 'events' | 'runs' | 'steps'>,
+  storage: RecoveryStorage,
   runId: string
 ): Promise<void> {
   const running = await listRunningStepIds(storage.steps, runId);
-  // Every releasable step is `running`, so most runs need no event scan.
-  if (running.size === 0) return;
+  const repair = storage.events.repairUnloggedTerminalEvents;
+  // Every releasable step is `running`, so without a repair to run most runs
+  // need no event scan.
+  if (running.size === 0 && !repair) return;
   const run = await storage.runs.get(runId, { resolveData: 'none' });
   if (isTerminalWorkflowRunStatus(run.status)) return;
+  // A step or wait the previous process saved as finished, and died before
+  // logging, gets its event now, before the run is delivered again. Its claim
+  // predates this realm, so under this function's contract its writer is gone
+  // even where the fence lock's rules can't tell (this process's own pid
+  // after a container restart, another host).
+  await repair?.call(storage.events, runId, {
+    abandonedBefore: realmBoot.bootedAt - FILE_TIME_SLACK_MS,
+  });
+  if (running.size === 0) return;
   for (const [stepId, step] of await readStepOwnership(storage.events, runId)) {
     if (!running.has(stepId) || !isOrphaned(step)) continue;
     try {
@@ -89,6 +113,16 @@ export async function releaseOrphanedSteps(
   }
 }
 
+/**
+ * How far a file's mtime may lag the clock that `realmBoot` reads. Linux
+ * stamps files from a coarse clock a tick behind `Date.now()`, and some file
+ * systems keep whole seconds (or two), so a claim written just after this
+ * realm booted can carry an earlier mtime. Startup repair only takes over a
+ * claim at least this much older than the boot; a younger one is left to the
+ * dead-writer and age rules.
+ */
+const FILE_TIME_SLACK_MS = 2_000;
+
 /** How many runs startup recovery releases at once. */
 export const RELEASE_CONCURRENCY = 8;
 
@@ -103,7 +137,7 @@ export const RELEASE_CONCURRENCY = 8;
  * recoverable, just only once the lease expires. So neither method rejects.
  */
 export function createReleasePipeline(
-  storage: Pick<Storage, 'events' | 'runs' | 'steps'>,
+  storage: RecoveryStorage,
   concurrency = RELEASE_CONCURRENCY
 ) {
   const limit = createLimiter(concurrency);

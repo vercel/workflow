@@ -1,17 +1,32 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  unlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { Event, Storage } from '@workflow/world';
+import {
+  type Event,
+  SPEC_VERSION_CURRENT,
+  type Storage,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runEntityDir } from './fs.js';
 import { createWorld, type LocalWorld } from './index.js';
 import {
   ORPHANED_STEP_ERROR_MESSAGE,
   RELEASE_CONCURRENCY,
   realmBoot,
 } from './orphaned-steps.js';
+import { lockOwner } from './storage/fence-lock.js';
 import {
   createRun,
   createStep,
+  createWait,
   updateRun,
   updateStep,
 } from './test-helpers.js';
@@ -366,6 +381,173 @@ describe('orphaned inline steps on restart', () => {
       )
     );
     expect(types(await stepEvents(world, runId, 'step_inline'))).toEqual([
+      'step_created',
+      'step_started',
+    ]);
+    await world.close();
+  });
+});
+
+describe('finished steps and waits whose event a crash cut short', () => {
+  let dataDir: string;
+
+  beforeEach(async () => {
+    vi.stubEnv('WORKFLOW_QUEUE_NAMESPACE', undefined);
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wf-unlogged-'));
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Leave the state of a process that died between saving the record as
+   * finished and logging its event: the event file is gone, and the claim
+   * names a writer the fence lock's rules can't check (this pid with another
+   * token, like a container restart that reuses the pid).
+   */
+  async function cutShort(
+    runId: string,
+    correlationId: string,
+    eventType: string,
+    claim: string,
+    // When the claim was written: by default 10 s ago, so before the next
+    // realm boots yet short of the 30 s age rule.
+    writtenAt = new Date(Date.now() - 10_000)
+  ) {
+    const dir = path.join(dataDir, runEntityDir('events', runId));
+    for (const file of await readdir(dir)) {
+      const event = JSON.parse(await readFile(path.join(dir, file), 'utf8'));
+      if (
+        event.eventType === eventType &&
+        event.correlationId === correlationId
+      ) {
+        await unlink(path.join(dir, file));
+      }
+    }
+    const claimPath = path.join(dataDir, '.locks', claim);
+    await writeFile(claimPath, JSON.stringify(lockOwner('previous-process')));
+    await utimes(claimPath, writtenAt, writtenAt);
+  }
+
+  async function finishStep(world: Storage, runId: string, stepId: string) {
+    await createStep(world, runId, { stepId, stepName: 'myStep', input });
+    await updateStep(world, runId, stepId, 'step_started');
+    await updateStep(world, runId, stepId, 'step_completed', {
+      result: new Uint8Array([7]),
+    });
+  }
+
+  it('writes the missing step_completed from the saved step before re-enqueueing its run', async () => {
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await finishStep(previous, runId, 'step_done');
+    await previous.close();
+    await cutShort(
+      runId,
+      'step_done',
+      'step_completed',
+      `steps/${runId}-step_done.terminal`
+    );
+
+    const { world, atDelivery } = await restart(
+      { dataDir },
+      { runId, stepId: 'step_done' }
+    );
+
+    expect(atDelivery).toEqual([
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+    const completed = (await stepEvents(world, runId, 'step_done')).find(
+      (e) => e.eventType === 'step_completed'
+    );
+    if (!completed) throw new Error('step_completed was not repaired');
+    const full = await world.events.get(runId, completed.eventId, {
+      resolveData: 'all',
+    });
+    expect(full.eventData).toMatchObject({ result: new Uint8Array([7]) });
+    await world.close();
+  });
+
+  it('writes the missing wait_completed of a wait saved as completed', async () => {
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await createWait(previous, runId, {
+      waitId: 'wait_1',
+      resumeAt: new Date(0),
+    });
+    await previous.events.create(runId, {
+      eventType: 'wait_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'wait_1',
+    });
+    await previous.close();
+    await cutShort(
+      runId,
+      'wait_1',
+      'wait_completed',
+      `waits/${runId}-wait_1.completed`
+    );
+
+    const { world, atDelivery } = await restart(
+      { dataDir },
+      { runId, stepId: 'wait_1' }
+    );
+
+    expect(atDelivery).toEqual(['wait_created', 'wait_completed']);
+    await world.close();
+  });
+
+  it('leaves a claim written since this realm booted to its writer', async () => {
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await finishStep(previous, runId, 'step_done');
+    await previous.close();
+
+    const world = createWorld({ dataDir, recoverActiveRuns: false });
+    await bootNewRealm();
+    await world.start();
+    // A writer of this realm took the claim after it booted, and may still be
+    // about to log the event.
+    await cutShort(
+      runId,
+      'step_done',
+      'step_completed',
+      `steps/${runId}-step_done.terminal`,
+      new Date()
+    );
+    await world.releaseOrphanedSteps(runId);
+
+    expect(types(await stepEvents(world, runId, 'step_done'))).toEqual([
+      'step_created',
+      'step_started',
+    ]);
+    await world.close();
+  });
+
+  it('leaves a finished run alone', async () => {
+    const previous = createWorld({ dataDir });
+    const runId = await startRun(previous);
+    await finishStep(previous, runId, 'step_done');
+    await updateRun(previous, runId, 'run_cancelled');
+    await previous.close();
+    await cutShort(
+      runId,
+      'step_done',
+      'step_completed',
+      `steps/${runId}-step_done.terminal`
+    );
+
+    const world = createWorld({ dataDir, recoverActiveRuns: false });
+    await bootNewRealm();
+    await world.start();
+    await world.releaseOrphanedSteps(runId);
+
+    expect(types(await stepEvents(world, runId, 'step_done'))).toEqual([
       'step_created',
       'step_started',
     ]);

@@ -23,8 +23,12 @@ failing the run still succeeds.
 
 A step or wait write that a killed process left unfinished, with its claim
 file written and its event not, is finished by the next write of that step or
-wait. The claim names its writer. The next write takes it over once that writer
-no longer runs on this host, or once the claim is 30 seconds old.
+wait. The claim names its writer the way the in-band fence lock names its
+holder. The next write takes it over once that writer is known to have exited
+(on this host and in this pid namespace), or once the claim is 30 seconds old.
+On startup, `start()` (or `releaseOrphanedSteps(runId)` with
+`recoverActiveRuns: false`) also writes the missing event of every step or
+wait the previous process saved as finished, before the run is delivered again.
 
 Its HTTP queue handler supports receiving `invoke: true` messages and returns
 the callback's value as `{ result }`. For example, a callback returning

@@ -77,6 +77,8 @@ import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
   deleteJSON,
+  hasTag,
+  isUntagged,
   jsonReplacer,
   jsonReviver,
   listJSONFiles,
@@ -1028,6 +1030,15 @@ function inBandCountPath(basedir: string, runId: string, tag?: string) {
 
 export type LocalEventsStorage = Storage['events'] & {
   clearCache(): void;
+  /**
+   * Write the missing event of every step or wait of `runId` saved as
+   * finished whose event a crash cut short. For startup recovery; see
+   * `releaseOrphanedSteps`.
+   */
+  repairUnloggedTerminalEvents(
+    runId: string,
+    options?: { abandonedBefore?: number }
+  ): Promise<number>;
 };
 
 export function createEventsStorage(
@@ -1578,6 +1589,46 @@ export function createEventsStorage(
   };
 
   /**
+   * Reads the run's log newest first, batch by batch, until `visit` returns
+   * true for an event, and reports whether it did. Malformed events are
+   * skipped, as the log listing skips them.
+   */
+  async function scanRunEvents(
+    runId: string,
+    visit: (event: Event) => boolean
+  ): Promise<boolean> {
+    const directory = path.resolve(basedir, runEntityDir('events', runId));
+    const prefix = `${runId}-`;
+    const fileIds = (await listJSONFiles(directory))
+      .filter((fileId) => fileId.startsWith(prefix))
+      .sort()
+      .reverse();
+    const read = async (fileId: string): Promise<Event | null> => {
+      const filePath = path.join(directory, `${fileId}.json`);
+      const cached = eventCache.get(filePath);
+      if (cached !== undefined) return cached;
+      try {
+        return await readJSON(filePath, ReadEventSchema);
+      } catch (error) {
+        if (error instanceof z.ZodError) return null;
+        throw error;
+      }
+    };
+    const batchSize = 32;
+    for (let start = 0; start < fileIds.length; start += batchSize) {
+      const batch = await Promise.all(
+        fileIds.slice(start, start + batchSize).map(read)
+      );
+      let found = false;
+      for (const event of batch) {
+        if (event && visit(event)) found = true;
+      }
+      if (found) return true;
+    }
+    return false;
+  }
+
+  /**
    * Whether the run's log has an event for `correlationId`, of one of
    * `eventTypes` when given.
    *
@@ -1586,41 +1637,17 @@ export function createEventsStorage(
    * landed recently, so this rarely reads more than the log's tail; only a
    * claim a crash cut short reads the whole log.
    */
-  async function hasCorrelatedEvent(
+  function hasCorrelatedEvent(
     runId: string,
     correlationId: string,
     eventTypes?: readonly string[]
   ): Promise<boolean> {
-    const directory = path.resolve(basedir, runEntityDir('events', runId));
-    const prefix = `${runId}-`;
-    const fileIds = (await listJSONFiles(directory))
-      .filter((fileId) => fileId.startsWith(prefix))
-      .sort()
-      .reverse();
-    const matches = async (fileId: string): Promise<boolean> => {
-      const filePath = path.join(directory, `${fileId}.json`);
-      let event: Event | null | undefined = eventCache.get(filePath);
-      if (event === undefined) {
-        try {
-          event = await readJSON(filePath, ReadEventSchema);
-        } catch (error) {
-          // Skipped like the log listing skips it.
-          if (error instanceof z.ZodError) return false;
-          throw error;
-        }
-      }
-      return (
-        event !== null &&
+    return scanRunEvents(
+      runId,
+      (event) =>
         event.correlationId === correlationId &&
         (!eventTypes || eventTypes.includes(event.eventType))
-      );
-    };
-    const batchSize = 32;
-    for (let start = 0; start < fileIds.length; start += batchSize) {
-      const batch = fileIds.slice(start, start + batchSize);
-      if ((await Promise.all(batch.map(matches))).some(Boolean)) return true;
-    }
-    return false;
+    );
   }
 
   /**
@@ -1639,7 +1666,8 @@ export function createEventsStorage(
     claimPath: string,
     runId: string,
     correlationId: string,
-    eventTypes?: readonly string[]
+    eventTypes?: readonly string[],
+    options: { abandonedBefore?: number } = {}
   ): Promise<boolean> {
     if (landedClaims.has(claimPath)) return false;
     const adopted = await takeOverAbandonedClaim(
@@ -1647,7 +1675,7 @@ export function createEventsStorage(
       claimInstance,
       async () =>
         !(await claimEventLanded(claimPath, runId, correlationId, eventTypes)),
-      { ownClaimUnfinished: unfinishedClaims.has(claimPath) }
+      { ...options, ownClaimUnfinished: unfinishedClaims.has(claimPath) }
     );
     if (adopted) unfinishedClaims.add(claimPath);
     return adopted;
@@ -1826,6 +1854,171 @@ export function createEventsStorage(
     );
     unfinishedClaims.delete(stepClaimPath(runId, step.stepId, 'terminal'));
   }
+
+  /** The in-process lock key of a run's step or wait, as `create` takes it. */
+  const entityLockKey = (runId: string, correlationId: string) =>
+    tag ? `${runId}-${correlationId}.${tag}` : `${runId}-${correlationId}`;
+
+  /** Whether `fileId` is this storage's own file of `runId`'s entities. */
+  const isOwnRunFile = (runId: string, fileId: string) =>
+    fileId.startsWith(`${runId}-`) &&
+    (tag ? hasTag(fileId, tag) : isUntagged(fileId));
+
+  /** A run's saved records of one kind that are finished, by correlation id. */
+  async function listFinishedRecords<T>(
+    runId: string,
+    directory: string,
+    schema: z.ZodType<T>,
+    correlationIdOf: (record: T) => string,
+    isFinished: (record: T) => boolean
+  ): Promise<string[]> {
+    const fileIds = (await listJSONFiles(directory)).filter((fileId) =>
+      isOwnRunFile(runId, fileId)
+    );
+    const finished: string[] = [];
+    for (const fileId of fileIds) {
+      let record: T | null;
+      try {
+        record = await readJSON(path.join(directory, `${fileId}.json`), schema);
+      } catch (error) {
+        if (error instanceof z.ZodError) continue;
+        throw error;
+      }
+      if (record && isFinished(record)) finished.push(correlationIdOf(record));
+    }
+    return finished;
+  }
+
+  /**
+   * Finishes the step and wait writes of `runId` that a crash cut short after
+   * the record was saved as finished and before its event: a step saved
+   * `completed` or `failed` with no `step_completed` / `step_failed` in the
+   * log, or a wait saved `completed` with no `wait_completed`. The missing
+   * event is built from the saved record. Returns how many it wrote.
+   *
+   * Run at startup, before the run is delivered again (see
+   * `releaseOrphanedSteps`). A claim written before `abandonedBefore` is
+   * taken over whoever wrote it, which is right only while no other live
+   * process or thread writes to this data directory and tag. Otherwise only
+   * a claim whose writer is dead or that is 30 s old is, as on any write.
+   */
+  async function repairUnloggedTerminalEvents(
+    runId: string,
+    options: { abandonedBefore?: number } = {}
+  ): Promise<number> {
+    assertSafeEntityId('runId', runId);
+    const [steps, waits] = await Promise.all([
+      listFinishedRecords(
+        runId,
+        path.join(basedir, runEntityDir('steps', runId)),
+        StepSchema,
+        (step) => step.stepId,
+        (step) => step.status === 'completed' || step.status === 'failed'
+      ),
+      listFinishedRecords(
+        runId,
+        path.join(basedir, 'waits'),
+        WaitSchema,
+        // A wait's id is its `${runId}-${correlationId}` key.
+        (wait) => wait.waitId.slice(runId.length + 1),
+        (wait) => wait.status === 'completed'
+      ),
+    ]);
+    if (steps.length === 0 && waits.length === 0) return 0;
+
+    // One pass over the log for every finished record's event.
+    const loggedSteps = new Set<string>();
+    const loggedWaits = new Set<string>();
+    await scanRunEvents(runId, (event) => {
+      if (!event.correlationId) return false;
+      if (
+        event.eventType === 'step_completed' ||
+        event.eventType === 'step_failed'
+      ) {
+        loggedSteps.add(event.correlationId);
+      } else if (event.eventType === 'wait_completed') {
+        loggedWaits.add(event.correlationId);
+      }
+      return false;
+    });
+
+    let repaired = 0;
+    for (const stepId of steps) {
+      if (loggedSteps.has(stepId)) continue;
+      await withInProcessLock(
+        stepLocks,
+        entityLockKey(runId, stepId),
+        async () => {
+          const step = await readJSONWithFallback(
+            basedir,
+            runEntityDir('steps', runId),
+            `${runId}-${stepId}`,
+            StepSchema,
+            tag
+          );
+          if (step?.status !== 'completed' && step?.status !== 'failed') {
+            return;
+          }
+          if (
+            await adoptOrphanedClaim(
+              stepClaimPath(runId, stepId, 'terminal'),
+              runId,
+              stepId,
+              ['step_completed', 'step_failed'],
+              options
+            )
+          ) {
+            await storeSavedTerminalStepEvent(runId, step);
+            repaired++;
+          }
+        }
+      );
+    }
+    for (const waitId of waits) {
+      if (loggedWaits.has(waitId)) continue;
+      await withInProcessLock(
+        waitLocks,
+        entityLockKey(runId, waitId),
+        async () => {
+          const waitCompositeKey = `${runId}-${waitId}`;
+          const wait = await readJSONWithFallback(
+            basedir,
+            'waits',
+            waitCompositeKey,
+            WaitSchema,
+            tag
+          );
+          if (wait?.status !== 'completed') return;
+          const claimPath = waitClaimPath(waitCompositeKey, 'completed');
+          if (
+            !(await adoptOrphanedClaim(
+              claimPath,
+              runId,
+              waitId,
+              ['wait_completed'],
+              options
+            ))
+          ) {
+            return;
+          }
+          await storeEvent({
+            eventType: 'wait_completed',
+            runId,
+            correlationId: waitId,
+            eventId: await mintEventId(runId),
+            createdAt: new Date(),
+            specVersion: wait.specVersion ?? SPEC_VERSION_CURRENT,
+            ...(wait.resumeAt
+              ? { eventData: { resumeAt: wait.resumeAt } }
+              : {}),
+          });
+          unfinishedClaims.delete(claimPath);
+          repaired++;
+        }
+      );
+    }
+    return repaired;
+  }
   const hookLockKey = (runId: string, hookId: string) =>
     tag ? `${runId}-${hookId}.hook.${tag}` : `${runId}-${hookId}.hook`;
 
@@ -1863,6 +2056,7 @@ export function createEventsStorage(
 
   const storage: LocalEventsStorage = {
     clearCache,
+    repairUnloggedTerminalEvents,
     async create(
       runId: string | null,
       data: AnyEventRequest,

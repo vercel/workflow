@@ -55,7 +55,9 @@ export type LocalWorld = World & {
   /**
    * Hand a run's steps that were running inline in a previous process back to
    * the queue, so the next delivery dispatches them at once instead of
-   * waiting out the inline-ownership lease. `start()` does this for every run
+   * waiting out the inline-ownership lease. First, a step or wait the previous
+   * process saved as finished but died before logging gets its missing
+   * event, so the run doesn't wait for a redelivery to repair it. `start()` does this for every run
    * it recovers; call it yourself before re-enqueueing a run when recovering
    * with `recoverActiveRuns: false`. A run that has already finished is left
    * alone.
