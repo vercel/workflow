@@ -7,7 +7,6 @@ import {
   isTerminalWorkflowRunStatus,
   type WorkflowRun,
 } from '@workflow/world';
-import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { Button } from '../ui/button';
@@ -346,7 +345,7 @@ export function EntityDetailPanel({
                   disabled={stoppingSleep}
                   aria-busy={stoppingSleep}
                 >
-                  {stoppingSleep ? <Spinner size={16} /> : <Zap />}
+                  {stoppingSleep ? <Spinner size={16} /> : null}
                   Wake Up Sleep
                 </Button>
               )}
@@ -361,7 +360,7 @@ export function EntityDetailPanel({
                   disabled={resolvingHook}
                   aria-busy={resolvingHook}
                 >
-                  {resolvingHook ? <Spinner size={16} /> : <Send />}
+                  {resolvingHook ? <Spinner size={16} /> : null}
                   Resolve Hook
                 </Button>
               )}
