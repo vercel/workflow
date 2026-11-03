@@ -3,22 +3,25 @@ import os from 'node:os';
 import path from 'node:path';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { listJSONFiles, stripTag } from './fs.js';
+import { databaseFor } from './db/index.js';
+import { createWorld } from './index.js';
 import { createStorage } from './storage.js';
+import { createStreamer } from './streamer.js';
 import {
   createHook,
   createRun,
   createStep,
   disposeHook,
   updateRun,
-  updateStep,
 } from './test-helpers.js';
 
 /**
- * File tagging functionality is used to allow world-local to contain multiple sub-directories
- * for different runners, usually the main app + the vitest test runner.
+ * Tags let several World instances share one data directory without seeing
+ * each other's data: usually the app and the vitest test runner. A tagged
+ * World writes rows with its tag, reads its own and untagged ones, and its
+ * `clear()` deletes only its own.
  */
-describe('File tagging', () => {
+describe('tags', () => {
   let testDir: string;
 
   beforeEach(async () => {
@@ -26,445 +29,119 @@ describe('File tagging', () => {
   });
 
   afterEach(async () => {
+    databaseFor(testDir).close();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
-  describe('stripTag', () => {
-    it('should strip a tag suffix from a fileId', () => {
-      expect(stripTag('wrun_ABC123.vitest-0')).toBe('wrun_ABC123');
-      expect(stripTag('wrun_ABC-evnt_DEF.mytag')).toBe('wrun_ABC-evnt_DEF');
+  const newRun = (storage: Parameters<typeof createRun>[0], name = 'wf') =>
+    createRun(storage, {
+      deploymentId: 'dep-1',
+      workflowName: name,
+      input: new Uint8Array(),
     });
 
-    it('should not strip from fileIds without tags', () => {
-      expect(stripTag('wrun_ABC123')).toBe('wrun_ABC123');
-      expect(stripTag('wrun_ABC-step_0')).toBe('wrun_ABC-step_0');
-    });
+  const runTags = () =>
+    databaseFor(testDir)
+      .all<{ tag: string | null }>('SELECT tag FROM runs')
+      .map((row) => row.tag);
 
-    it('should not strip numeric-only suffixes (not valid tags)', () => {
-      // Tags must start with a letter
-      expect(stripTag('wrun_ABC.123')).toBe('wrun_ABC.123');
-    });
-  });
-
-  describe('tagged writes produce tagged filenames', () => {
-    it('should write run files with tag suffix', async () => {
+  describe('reads', () => {
+    it('writes rows with its tag and reads them back', async () => {
       const storage = createStorage(testDir, 'vitest-0');
-      const run = await createRun(storage, {
-        deploymentId: 'dep-1',
-        workflowName: 'test-wf',
-        input: new Uint8Array(),
-      });
-
-      const runsDir = path.join(testDir, 'runs');
-      const files = await fs.readdir(runsDir);
-      expect(files).toHaveLength(1);
-      expect(files[0]).toMatch(/\.vitest-0\.json$/);
-      expect(files[0]).toContain(run.runId);
+      const run = await newRun(storage, 'tagged-wf');
+      expect(runTags()).toEqual(['vitest-0']);
+      expect((await storage.runs.get(run.runId)).workflowName).toBe(
+        'tagged-wf'
+      );
     });
 
-    it('should write event files with tag suffix', async () => {
-      const storage = createStorage(testDir, 'vitest-0');
-      const run = await createRun(storage, {
-        deploymentId: 'dep-1',
-        workflowName: 'test-wf',
-        input: new Uint8Array(),
-      });
-
-      const eventsDir = path.join(testDir, 'events', run.runId);
-      const files = await fs.readdir(eventsDir);
-      expect(files).toHaveLength(1);
-      expect(files[0]).toMatch(/\.vitest-0\.json$/);
-    });
-
-    it('should write step files with tag suffix', async () => {
-      const storage = createStorage(testDir, 'vitest-0');
-      const run = await createRun(storage, {
-        deploymentId: 'dep-1',
-        workflowName: 'test-wf',
-        input: new Uint8Array(),
-      });
-      await updateRun(storage, run.runId, 'run_started');
-      await createStep(storage, run.runId, {
-        stepId: 'step_0',
-        stepName: 'my-step',
-        input: new Uint8Array(),
-      });
-
-      const stepsDir = path.join(testDir, 'steps', run.runId);
-      const files = await fs.readdir(stepsDir);
-      expect(files).toHaveLength(1);
-      expect(files[0]).toMatch(/\.vitest-0\.json$/);
-    });
-  });
-
-  describe('tagged reads with fallback', () => {
-    it('should read its own tagged files', async () => {
-      const storage = createStorage(testDir, 'vitest-0');
-      const run = await createRun(storage, {
-        deploymentId: 'dep-1',
-        workflowName: 'test-wf',
-        input: new Uint8Array(),
-      });
-
-      const fetched = await storage.runs.get(run.runId);
-      expect(fetched.runId).toBe(run.runId);
-      expect(fetched.workflowName).toBe('test-wf');
-    });
-
-    it('should fall back to reading untagged files', async () => {
-      // Write with untagged storage
-      const untagged = createStorage(testDir);
-      const run = await createRun(untagged, {
-        deploymentId: 'dep-1',
-        workflowName: 'untagged-wf',
-        input: new Uint8Array(),
-      });
-
-      // Read with tagged storage — should find the untagged file via fallback
+    it('a tagged World also reads untagged runs', async () => {
+      const run = await newRun(createStorage(testDir), 'untagged-wf');
       const tagged = createStorage(testDir, 'vitest-0');
-      const fetched = await tagged.runs.get(run.runId);
-      expect(fetched.runId).toBe(run.runId);
-      expect(fetched.workflowName).toBe('untagged-wf');
-    });
-  });
-
-  describe('listing returns all files regardless of tag', () => {
-    it('should list runs from both tagged and untagged sources', async () => {
-      const untagged = createStorage(testDir);
-      const tagged0 = createStorage(testDir, 'vitest-0');
-      const tagged1 = createStorage(testDir, 'vitest-1');
-
-      await createRun(untagged, {
-        deploymentId: 'dep-1',
-        workflowName: 'untagged-wf',
-        input: new Uint8Array(),
-      });
-      await createRun(tagged0, {
-        deploymentId: 'dep-2',
-        workflowName: 'tagged0-wf',
-        input: new Uint8Array(),
-      });
-      await createRun(tagged1, {
-        deploymentId: 'dep-3',
-        workflowName: 'tagged1-wf',
-        input: new Uint8Array(),
-      });
-
-      // Any storage instance should see all 3 runs
-      const result = await untagged.runs.list({
-        pagination: { limit: 10 },
-      });
-      expect(result.data).toHaveLength(3);
-
-      const names = result.data.map((r) => r.workflowName).sort();
-      expect(names).toEqual(['tagged0-wf', 'tagged1-wf', 'untagged-wf']);
+      expect((await tagged.runs.get(run.runId)).workflowName).toBe(
+        'untagged-wf'
+      );
     });
 
-    it('should list events from both tagged and untagged sources', async () => {
-      const untagged = createStorage(testDir);
-      const tagged = createStorage(testDir, 'vitest-0');
+    it("an untagged World and another tag do not read a tag's runs", async () => {
+      const run = await newRun(createStorage(testDir, 'vitest-0'));
+      await expect(
+        createStorage(testDir).runs.get(run.runId)
+      ).rejects.toThrow();
+      await expect(
+        createStorage(testDir, 'vitest-1').runs.get(run.runId)
+      ).rejects.toThrow();
+    });
 
-      const run1 = await createRun(untagged, {
-        deploymentId: 'dep-1',
-        workflowName: 'wf-1',
-        input: new Uint8Array(),
-      });
-      const run2 = await createRun(tagged, {
-        deploymentId: 'dep-2',
-        workflowName: 'wf-2',
-        input: new Uint8Array(),
-      });
-
-      // Each run_created produces one event
-      const allEvents1 = await untagged.events.list({
-        runId: run1.runId,
-        pagination: { limit: 10 },
-      });
-      expect(allEvents1.data).toHaveLength(1);
-
-      // Tagged storage can read the tagged run's events
-      const allEvents2 = await tagged.events.list({
-        runId: run2.runId,
-        pagination: { limit: 10 },
-      });
-      expect(allEvents2.data).toHaveLength(1);
+    it('lists runs of every tag', async () => {
+      await newRun(createStorage(testDir), 'untagged-wf');
+      await newRun(createStorage(testDir, 'vitest-0'), 'tagged-wf');
+      const { data } = await createStorage(testDir, 'vitest-0').runs.list();
+      expect(data.map((run) => run.workflowName).sort()).toEqual([
+        'tagged-wf',
+        'untagged-wf',
+      ]);
     });
   });
 
   describe('tagged clear()', () => {
-    it('should only delete files with the matching tag', async () => {
-      // Import createWorld to test clear()
-      const { createWorld } = await import('./index.js');
-
+    it("deletes only its own tag's runs, and everything they own", async () => {
       const untaggedWorld = createWorld({ dataDir: testDir });
-      const taggedWorld = createWorld({
-        dataDir: testDir,
-        tag: 'vitest-0',
-      });
-      await untaggedWorld.start?.();
+      const taggedWorld = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const otherWorld = createWorld({ dataDir: testDir, tag: 'vitest-1' });
 
-      // Create runs with both
-      const untaggedRun = await createRun(untaggedWorld, {
-        deploymentId: 'dep-1',
-        workflowName: 'untagged-wf',
+      const kept = await newRun(untaggedWorld, 'untagged-wf');
+      const other = await newRun(otherWorld, 'other-wf');
+      const cleared = await newRun(taggedWorld, 'tagged-wf');
+      await updateRun(taggedWorld, cleared.runId, 'run_started');
+      await createStep(taggedWorld, cleared.runId, {
+        stepId: 'step_1',
+        stepName: 'add',
         input: new Uint8Array(),
       });
-      await createRun(taggedWorld, {
-        deploymentId: 'dep-2',
-        workflowName: 'tagged-wf',
-        input: new Uint8Array(),
+      await createHook(taggedWorld, cleared.runId, {
+        hookId: 'hook_tagged',
+        token: 'tagged-token',
       });
+      await taggedWorld.streams.write(cleared.runId, 'strm_tagged', 'chunk');
 
-      // Verify both exist
-      const runsDir = path.join(testDir, 'runs');
-      const before = await fs.readdir(runsDir);
-      expect(before).toHaveLength(2);
-
-      // Clear tagged world — should only delete tagged files
       await taggedWorld.clear();
 
-      const after = await fs.readdir(runsDir);
-      expect(after).toHaveLength(1);
-      expect(after[0]).not.toContain('vitest-0');
-
-      // The untagged run should still be readable
-      const fetched = await untaggedWorld.runs.get(untaggedRun.runId);
-      expect(fetched.workflowName).toBe('untagged-wf');
-
-      await untaggedWorld.close?.();
-      await taggedWorld.close?.();
-    });
-
-    it('should not interfere with other tags', async () => {
-      const { createWorld } = await import('./index.js');
-
-      const world0 = createWorld({ dataDir: testDir, tag: 'vitest-0' });
-      const world1 = createWorld({ dataDir: testDir, tag: 'vitest-1' });
-      // Ensure data dir is initialized
-      await world0.start?.();
-
-      await createRun(world0, {
-        deploymentId: 'dep-1',
-        workflowName: 'wf-0',
-        input: new Uint8Array(),
-      });
-      const run1 = await createRun(world1, {
-        deploymentId: 'dep-2',
-        workflowName: 'wf-1',
-        input: new Uint8Array(),
-      });
-
-      // Clear tag 0
-      await world0.clear();
-
-      // Tag 1 data should still exist
-      const runsDir = path.join(testDir, 'runs');
-      const remaining = await fs.readdir(runsDir);
-      expect(remaining).toHaveLength(1);
-      expect(remaining[0]).toContain('vitest-1');
-
-      const fetched = await world1.runs.get(run1.runId);
-      expect(fetched.workflowName).toBe('wf-1');
-
-      await world0.close?.();
-      await world1.close?.();
-    });
-
-    it('should clear events, steps, hooks, and waits', async () => {
-      const { createWorld } = await import('./index.js');
-
-      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
-      await world.start?.();
-
-      const run = await createRun(world, {
-        deploymentId: 'dep-1',
-        workflowName: 'test-wf',
-        input: new Uint8Array(),
-      });
-      await updateRun(world, run.runId, 'run_started');
-      const step = await createStep(world, run.runId, {
-        stepId: 'step_0',
-        stepName: 'my-step',
-        input: new Uint8Array(),
-      });
-      await updateStep(world, run.runId, step.stepId, 'step_started');
-      await updateStep(world, run.runId, step.stepId, 'step_completed', {
-        result: 'ok',
-      });
-
-      // Verify files exist
-      const runsDir = path.join(testDir, 'runs');
-      const eventsDir = path.join(testDir, 'events');
-      const stepsDir = path.join(testDir, 'steps');
-      expect((await fs.readdir(runsDir)).length).toBeGreaterThan(0);
-      expect((await fs.readdir(eventsDir)).length).toBeGreaterThan(0);
-      expect((await fs.readdir(stepsDir)).length).toBeGreaterThan(0);
-
-      await world.clear();
-
-      // All tagged files should be gone
-      expect(await fs.readdir(runsDir)).toHaveLength(0);
-      expect(await fs.readdir(eventsDir)).toHaveLength(0);
-      expect(await fs.readdir(stepsDir)).toHaveLength(0);
-
-      await world.close?.();
-    });
-
-    it('should clear hook token constraint files', async () => {
-      const { createWorld } = await import('./index.js');
-
-      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
-      await world.start?.();
-
-      const run = await createRun(world, {
-        deploymentId: 'dep-1',
-        workflowName: 'hook-wf',
-        input: new Uint8Array(),
-      });
-      await updateRun(world, run.runId, 'run_started');
-      await createHook(world, run.runId, {
-        hookId: 'hook_0',
-        token: 'my-unique-token',
-      });
-
-      // Verify constraint file was created
-      const tokensDir = path.join(testDir, 'hooks', 'tokens');
-      const constraintsBefore = await fs.readdir(tokensDir);
-      expect(constraintsBefore).toHaveLength(1);
-
-      // Verify hook file was created with tag
-      const hooksDir = path.join(testDir, 'hooks');
-      const hookFiles = (await fs.readdir(hooksDir)).filter((f) =>
-        f.endsWith('.json')
-      );
-      expect(hookFiles).toHaveLength(1);
-      expect(hookFiles[0]).toMatch(/\.vitest-0\.json$/);
-
-      await world.clear();
-
-      // Both the tagged hook file and the untagged constraint file should be gone
-      const hookFilesAfter = (await fs.readdir(hooksDir)).filter((f) =>
-        f.endsWith('.json')
-      );
-      expect(hookFilesAfter).toHaveLength(0);
-
-      const constraintsAfter = await fs.readdir(tokensDir);
-      expect(constraintsAfter).toHaveLength(0);
-
-      await world.close?.();
-    });
-
-    it('should clear tagged stream chunks in the sharded layout', async () => {
-      const { createWorld } = await import('./index.js');
-
-      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
-      await world.start?.();
-
-      const run = await createRun(world, {
-        deploymentId: 'dep-1',
-        workflowName: 'stream-wf',
-        input: new Uint8Array(),
-      });
-      await updateRun(world, run.runId, 'run_started');
-
-      // Chunks land under a per-stream subdirectory as `<chunkId>.vitest-0.bin`.
-      await world.streams.write(run.runId, 'strm_a', 'hello');
-      await world.streams.write(run.runId, 'strm_b', 'world');
-
-      const chunksDir = path.join(testDir, 'streams', 'chunks');
-      const streamADir = path.join(chunksDir, 'strm_a');
-      const taggedBin = (files: string[]) =>
-        files.filter((f) => f.endsWith('.vitest-0.bin'));
-      const readOrEmpty = (d: string) =>
-        fs.readdir(d).catch(() => [] as string[]);
-      expect(taggedBin(await fs.readdir(streamADir))).toHaveLength(1);
-
-      await world.clear();
-
-      // Regression: the tag-scoped clear previously listed only the top-level
-      // chunks dir, which after sharding holds only subdirectories, so tagged
-      // chunk files leaked across test sessions.
-      expect(taggedBin(await readOrEmpty(streamADir))).toHaveLength(0);
-      expect(
-        taggedBin(await readOrEmpty(path.join(chunksDir, 'strm_b')))
-      ).toHaveLength(0);
-
-      await world.close?.();
-    });
-
-    // Regression: the streamer's cache of registered streams outlived clear(),
-    // so writing a stream again after clear() never re-registered it.
-    it('should list a stream written again after clear()', async () => {
-      const { createWorld } = await import('./index.js');
-      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
-      await world.start?.();
-      const runId = 'wrun_clearedstream';
-
-      await world.streams.write(runId, 'strm_a', 'before');
-      await world.clear();
-      expect(await world.streams.list(runId)).toEqual([]);
-
-      await world.streams.write(runId, 'strm_a', 'after');
-      expect(await world.streams.list(runId)).toEqual(['strm_a']);
-
-      await world.close?.();
-    });
-
-    it("should delete only its own tag's lock files", async () => {
-      const { createWorld } = await import('./index.js');
-
-      const world0 = createWorld({ dataDir: testDir, tag: 'vitest-0' });
-      const world1 = createWorld({ dataDir: testDir, tag: 'vitest-1' });
-      await world0.start?.();
-
-      for (const [world, hookId] of [
-        [world0, 'hook_0'],
-        [world1, 'hook_1'],
-      ] as const) {
-        const run = await createRun(world, {
-          deploymentId: 'dep-1',
-          workflowName: 'hook-wf',
-          input: new Uint8Array(),
-        });
-        await updateRun(world, run.runId, 'run_started');
-        await createHook(world, run.runId, {
-          hookId,
-          token: `token-${hookId}`,
-        });
-        await disposeHook(world, run.runId, hookId);
+      expect(runTags().sort()).toEqual(['vitest-1', null].sort());
+      const db = databaseFor(testDir);
+      for (const table of ['events', 'steps', 'hooks', 'stream_chunks']) {
+        expect(
+          db.all(`SELECT 1 FROM ${table} WHERE run_id = ?`, cleared.runId)
+        ).toEqual([]);
       }
+      expect(
+        db.all('SELECT 1 FROM hook_tokens WHERE token = ?', 'tagged-token')
+      ).toEqual([]);
+      expect((await untaggedWorld.runs.get(kept.runId)).workflowName).toBe(
+        'untagged-wf'
+      );
+      expect((await otherWorld.runs.get(other.runId)).workflowName).toBe(
+        'other-wf'
+      );
+      // Its token is free again.
+      const next = await newRun(untaggedWorld);
+      await updateRun(untaggedWorld, next.runId, 'run_started');
+      const hook = await createHook(untaggedWorld, next.runId, {
+        hookId: 'hook_next',
+        token: 'tagged-token',
+      });
+      expect(hook.hookId).toBe('hook_next');
 
-      const hookLocksDir = path.join(testDir, '.locks', 'hooks');
-      expect((await fs.readdir(hookLocksDir)).sort()).toEqual([
-        'hook_0.disposed.vitest-0',
-        'hook_1.disposed.vitest-1',
-      ]);
-
-      await world0.clear();
-
-      expect(await fs.readdir(hookLocksDir)).toEqual([
-        'hook_1.disposed.vitest-1',
-      ]);
-
-      await world0.close?.();
-      await world1.close?.();
+      await Promise.all(
+        [untaggedWorld, taggedWorld, otherWorld].map((world) => world.close())
+      );
     });
 
-    // Regression: clear() deleted all of `.locks`, so another vitest worker
-    // starting a test file reopened this worker's disposed hook, and the run
-    // recreating its token conflicted with itself (hook-token-reuse.test.ts).
-    it("should not reopen another tag's disposed hook", async () => {
-      const { createWorld } = await import('./index.js');
-
+    it("does not reopen another tag's disposed hook", async () => {
       const world0 = createWorld({ dataDir: testDir, tag: 'vitest-0' });
       const world1 = createWorld({ dataDir: testDir, tag: 'vitest-1' });
-      await world0.start?.();
 
-      const run = await createRun(world1, {
-        deploymentId: 'dep-1',
-        workflowName: 'hook-wf',
-        input: new Uint8Array(),
-      });
+      const run = await newRun(world1, 'hook-wf');
       await updateRun(world1, run.runId, 'run_started');
       const token = 'reused-token';
       await createHook(world1, run.runId, { hookId: 'hook_0', token });
@@ -480,129 +157,102 @@ describe('File tagging', () => {
       });
       expect(result.event?.eventType).toBe('hook_created');
       expect(result.hook?.hookId).toBe('hook_1');
+      // hook_0 stays disposed.
+      await expect(
+        world1.events.create(run.runId, {
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: 'hook_0',
+          eventData: { payload: new Uint8Array() },
+        })
+      ).rejects.toThrow();
 
-      await world0.close?.();
-      await world1.close?.();
+      await world0.close();
+      await world1.close();
+    });
+
+    it('deletes only its own queue messages', async () => {
+      const tagged = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const db = databaseFor(testDir);
+      for (const tag of ['vitest-0', null]) {
+        db.run(
+          `INSERT INTO messages (id, tag, queue_name, prefix, transport, body, visible_at, created_at)
+           VALUES (?, ?, '__wkf_workflow_wf', '__wkf_workflow_', 'http', '{}', ?, ?)`,
+          `msg_${tag ?? 'none'}`,
+          tag,
+          Date.now() + 3_600_000,
+          new Date().toISOString()
+        );
+      }
+
+      await tagged.clear();
+
+      expect(db.all('SELECT id FROM messages')).toEqual([{ id: 'msg_none' }]);
+      await tagged.close();
+    });
+
+    it('lists a stream written again after clear()', async () => {
+      const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
+      const run = await newRun(world);
+      await world.streams.write(run.runId, 'strm_again', 'one');
+      await world.clear();
+      const again = await newRun(world);
+      await world.streams.write(again.runId, 'strm_again', 'two');
+      expect(await world.streams.list(again.runId)).toEqual(['strm_again']);
+      await world.close();
     });
   });
 
   describe('untagged clear()', () => {
-    it('can write new entities after clearing cached directories', async () => {
-      const { createWorld } = await import('./index.js');
-      const world = createWorld({ dataDir: testDir });
-      await world.start?.();
+    it('deletes every tag, and the World stays usable', async () => {
+      const untagged = createWorld({ dataDir: testDir });
+      await newRun(untagged);
+      await newRun(createStorage(testDir, 'vitest-0'));
+      await createStreamer(testDir).streams.write('wrun_x', 'strm_x', 'chunk');
 
-      await createRun(world, {
-        deploymentId: 'dep-before-clear',
-        workflowName: 'before-clear',
-        input: new Uint8Array(),
-      });
-      await world.clear();
+      await untagged.clear();
 
-      const run = await createRun(world, {
-        deploymentId: 'dep-after-clear',
-        workflowName: 'after-clear',
-        input: new Uint8Array(),
-      });
-
-      expect((await world.runs.get(run.runId)).workflowName).toBe(
+      expect(runTags()).toEqual([]);
+      expect(databaseFor(testDir).all('SELECT 1 FROM stream_chunks')).toEqual(
+        []
+      );
+      const run = await newRun(untagged, 'after-clear');
+      expect((await untagged.runs.get(run.runId)).workflowName).toBe(
         'after-clear'
       );
-      await world.close?.();
-    });
-
-    it('should list a stream written again after clear()', async () => {
-      const { createWorld } = await import('./index.js');
-      const world = createWorld({ dataDir: testDir });
-      await world.start?.();
-      const runId = 'wrun_clearedstream';
-
-      await world.streams.write(runId, 'strm_a', 'before');
-      await world.clear();
-      expect(await world.streams.list(runId)).toEqual([]);
-
-      await world.streams.write(runId, 'strm_a', 'after');
-      expect(await world.streams.list(runId)).toEqual(['strm_a']);
-
-      await world.close?.();
+      await untagged.close();
     });
   });
 
-  describe('full lifecycle with tags', () => {
-    it('should support complete run lifecycle through tagged storage', async () => {
-      const storage = createStorage(testDir, 'vitest-0');
-
-      // Create and start run
-      const run = await createRun(storage, {
-        deploymentId: 'dep-1',
-        workflowName: 'lifecycle-wf',
-        input: new Uint8Array([1, 2, 3]),
-      });
-      expect(run.status).toBe('pending');
-
-      await updateRun(storage, run.runId, 'run_started');
-      const startedRun = await storage.runs.get(run.runId);
-      expect(startedRun.status).toBe('running');
-
-      // Create and complete a step
-      const step = await createStep(storage, run.runId, {
-        stepId: 'step_0',
-        stepName: 'process-data',
-        input: new Uint8Array([4, 5]),
-      });
-      expect(step.status).toBe('pending');
-
-      await updateStep(storage, run.runId, step.stepId, 'step_started');
-      await updateStep(storage, run.runId, step.stepId, 'step_completed', {
-        result: { processed: true },
-      });
-
-      const completedStep = await storage.steps.get(run.runId, step.stepId);
-      expect(completedStep.status).toBe('completed');
-
-      // Complete the run
-      await updateRun(storage, run.runId, 'run_completed', {
-        output: { success: true },
-      });
-      const completedRun = await storage.runs.get(run.runId);
-      expect(completedRun.status).toBe('completed');
-
-      // Verify all files are tagged
-      const runsDir = path.join(testDir, 'runs');
-      const eventsDir = path.join(testDir, 'events');
-      const stepsDir = path.join(testDir, 'steps');
-      for (const dir of [
-        runsDir,
-        path.join(eventsDir, run.runId),
-        path.join(stepsDir, run.runId),
-      ]) {
-        const files = await fs.readdir(dir);
-        for (const file of files) {
-          expect(file).toMatch(/\.vitest-0\.json$/);
-        }
-      }
-    });
-  });
-
-  describe('listJSONFiles with tagged files', () => {
-    it('should return fileIds including tag for correct path construction', async () => {
-      const dir = path.join(testDir, 'runs');
-      await fs.mkdir(dir, { recursive: true });
-
-      // Write tagged and untagged files
-      await fs.writeFile(
-        path.join(dir, 'wrun_ABC.json'),
-        JSON.stringify({ id: 'wrun_ABC' })
-      );
-      await fs.writeFile(
-        path.join(dir, 'wrun_DEF.vitest-0.json'),
-        JSON.stringify({ id: 'wrun_DEF' })
+  describe('startup recovery', () => {
+    it("recovers only its own tag's runs, and only those without a message", async () => {
+      const app = createStorage(testDir);
+      const tests = createStorage(testDir, 'vitest-0');
+      const appRun = await newRun(app, 'app-wf');
+      const queuedRun = await newRun(app, 'queued-wf');
+      const testRun = await newRun(tests, 'test-wf');
+      const db = databaseFor(testDir);
+      db.run(
+        `INSERT INTO messages (id, tag, queue_name, prefix, transport, body, run_id, visible_at, created_at)
+         VALUES ('msg_queued', NULL, '__wkf_workflow_queued-wf', '__wkf_workflow_', 'http', '{}', ?, ?, ?)`,
+        queuedRun.runId,
+        Date.now() + 3_600_000,
+        new Date().toISOString()
       );
 
-      const fileIds = await listJSONFiles(dir);
-      expect(fileIds).toHaveLength(2);
-      // fileIds include the tag so paginatedFileSystemQuery can construct correct paths
-      expect(fileIds.sort()).toEqual(['wrun_ABC', 'wrun_DEF.vitest-0']);
+      const recovering = createWorld({
+        dataDir: testDir,
+        baseUrl: 'http://127.0.0.1:1',
+      });
+      await recovering.start();
+      const queued = db
+        .all<{ run_id: string }>('SELECT run_id FROM messages')
+        .map((row) => row.run_id);
+      expect(queued.filter((id) => id === appRun.runId)).toHaveLength(1);
+      expect(queued.filter((id) => id === queuedRun.runId)).toHaveLength(1);
+      expect(queued).not.toContain(testRun.runId);
+
+      await recovering.close();
     });
   });
 });

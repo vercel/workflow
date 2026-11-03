@@ -42,7 +42,7 @@ The Local World requires no configuration, but you can customize its behavior th
 
 ### `WORKFLOW_LOCAL_DATA_DIR`
 
-Directory for storing workflow data as JSON files. Default: `.workflow-data/`
+Directory for the workflow database, `world.db` (SQLite). Default: `.workflow-data/`
 
 ### `PORT`
 
@@ -64,7 +64,7 @@ Maximum number of seconds a local queue message can stay hidden before the handl
 
 ### `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS`
 
-How often a wait for a terminal run status re-reads the run file, in milliseconds. Default: `100`.
+How often a wait for a terminal run status re-reads the run, in milliseconds. Default: `100`.
 
 `await run.returnValue` asks the World to wait for the run to finish. When the run and the caller share a process (the usual development server case), an in-process signal resolves the wait as soon as the run ends, and this interval never comes into play. The interval covers activity the signal cannot detect, primarily a second process awaiting a run over the same data directory, so it is set far below Workflow's own polling interval.
 
@@ -84,13 +84,11 @@ Whether queue deliveries go out through Node's built-in `node:http` and `node:ht
 
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
-Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
+Whether, when the World starts, pending and running runs that have no queued message are re-enqueued. Set to `0` or `false` to skip recovery and leave such runs untouched. Default: `true`.
 
-Recovery also hands back to the queue any step that was running inline when the previous process exited. The step runs again right away instead of after the inline-ownership lease (about 14 minutes), and the interrupted attempt counts toward its retries. A step with `maxRetries: 0` that was interrupted mid-body therefore fails on restart with an "exceeded max retries" error instead of running again once the lease expires, as it already does after a crash on the Vercel World.
+The queue is stored in the data directory, so a run's queued messages (its deliveries, wait timers and retries) survive a restart and are delivered by the next process that uses the World, including a delivery the previous process had in flight. Recovery only re-enqueues the runs that have no message at all, such as runs written by a release whose queue was in memory, and hands back to the queue the steps they had running inline, so those run again right away instead of after the inline-ownership lease (about 14 minutes). The interrupted attempt counts toward the step's retries.
 
-If you turn recovery off and re-enqueue runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it.
-
-A step counts as abandoned only if it started before the Local World loaded in the current process or worker thread. Steps started since then are never released, so runs this process picks up during or after recovery are not affected, and calling `releaseOrphanedSteps()` late is safe. Recovery assumes that nothing else is running workflows on the same data directory and `tag`. That includes an earlier worker thread of the same process: some dev servers reload into a new worker thread, and until the old one stops, the new one may dispatch a step the old one is still running, so the step can run twice. If several processes or workers run workflows on one data directory, turn recovery off or give each one its own `tag`.
+If you turn recovery off and re-enqueue such runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it. A step counts as abandoned only if it started before the Local World loaded in the current process or worker thread.
 
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
@@ -121,7 +119,7 @@ export default createWorld({
 WORKFLOW_TARGET_WORLD="./my-world.ts"
 ```
 
-`createWorld()` also accepts `tag`, which scopes local storage files to a suffix. It is mainly used by test harnesses that share one `.workflow-data` directory.
+`createWorld()` also accepts `tag`, which scopes the runs, queue messages and streams a World writes, so several Worlds can share one data directory without seeing each other's data. A tagged World also reads untagged runs, and its `clear()` deletes only its own data. It is mainly used by test harnesses that share one `.workflow-data` directory with the app.
 
 ### Queue consumers other than the Workflow SDK
 
@@ -143,21 +141,29 @@ export async function registerAgentQueue(
 }
 ```
 
-`registerHandler()` takes precedence over `registerRoute()` for the same prefix. A prefix with neither still goes to the flow route, which answers `400` for a prefix it does not handle, and the Local World retries the message every five seconds, so a route registered later takes the next attempt. When the World restarts, `start()` re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`), so register the route or handler before calling `start()`.
+`registerHandler()` takes precedence over `registerRoute()` for the same prefix. A prefix with neither still goes to the flow route, which answers `400` for a prefix it does not handle, and the Local World retries the message every five seconds, so a route registered later takes the next attempt. A message for a prefix with a handler registered in one process is delivered only by a process that has a handler for that prefix. When the World restarts, `start()` re-enqueues each active run without a queued message to the queue namespace it recorded at creation (`executionContext.queueNamespace`), so register the route or handler before calling `start()`.
 
 ## Data directory layout
 
-Each run's event and step files are stored in their own directory (`events/<runId>/`, `steps/<runId>/`). Data written by `@workflow/world-local` releases before 5.1.0 uses a flat layout and is not migrated: when the World starts on a data directory that holds only flat-layout files, it logs a warning, deletes the directory, and starts with an empty one. The CLI and web UI only read the data directory and never delete it. Older releases see no events or steps in the new layout, so clear `.workflow-data` by hand before downgrading.
+Everything the Local World stores is in one SQLite database, `world.db` in the data directory (with SQLite's `world.db-wal` and `world.db-shm` files next to it): runs, their event logs, steps, waits, hooks, queue messages, stream chunks and snapshots. It is opened with the runtime's built-in driver, `node:sqlite` on Node.js 22.13 or later and `bun:sqlite` on Bun, so there is no native dependency to install.
 
-A directory that mixes both layouts, or holds `.json` files in `events/` or `steps/` that the World did not write, is never deleted: starting fails with a `DataDirLayoutError` that lists the files.
+Each World write is one transaction: an event and every change it makes to its run, step, wait and hook commit together or not at all, so a process that is killed mid-write leaves nothing half-written behind. Several processes can use one data directory at once (an app and a test runner, say). SQLite orders their writes, and the lock it takes is released by the operating system when a process exits, however it exits.
+
+To look at the data directly, open it with any SQLite client:
+
+```bash
+sqlite3 .workflow-data/world.db "select seq, event_type, correlation_id from events where run_id = 'wrun_…' order by seq"
+```
+
+Earlier releases stored one JSON file per entity (`runs/`, `events/`, `steps/`, `hooks/`, `.locks/` and so on). That data is not migrated: when the World starts on a data directory that holds it, it logs a warning, deletes those directories, and starts with an empty database. Older releases do not read `world.db`, so clear `.workflow-data` by hand before downgrading.
+
+The database needs a filesystem that supports SQLite's shared-memory file. A data directory on a network filesystem (NFS, SMB), or shared between a host and a container through a VM-backed mount, is not supported when more than one machine or VM writes to it.
 
 ## Limitations
 
 The Local World is designed for development, not production:
 
-- **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
-- **Filesystem storage**: Data is stored in local JSON files.
-- **Single instance**: The Local World cannot handle distributed deployments.
+- **Single machine**: The data directory is a local SQLite database, so the Local World cannot handle distributed deployments.
 - **No authentication**: The Local World is suitable only for local development.
 
 For production deployments, use the [Vercel World](/worlds/vercel), which handles execution, persistence, multi-tenancy, scale, observability, and security for you on Vercel, or check out the [Postgres World](/worlds/postgres) - a tested reference implementation that implements the complete World spec and can be used to deploy workflows anywhere.

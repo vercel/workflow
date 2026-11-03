@@ -1,486 +1,122 @@
-import path from 'node:path';
 import { HookNotFoundError } from '@workflow/errors';
 import type {
-  Event,
   GetHookParams,
   Hook,
-  HookCreatedEvent,
   ListHooksParams,
   PaginatedResponse,
   Storage,
 } from '@workflow/world';
-import {
-  HookSchema,
-  isStartHookId,
-  isTerminalWorkflowRunStatus,
-} from '@workflow/world';
-import { z } from 'zod';
+import { isTerminalWorkflowRunStatus } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
-import {
-  assertSafeEntityId,
-  deleteJSON,
-  jsonReplacer,
-  listJSONFiles,
-  paginatedFileSystemQuery,
-  readJSON,
-  readJSONWithFallback,
-  taggedPath,
-  UnsafeEntityIdError,
-  writeExclusive,
-} from '../fs.js';
+import { decode } from '../db/codec.js';
+import type { Database } from '../db/index.js';
+import { assertSafeEntityId } from '../ids.js';
 import { filterHookData } from './filters.js';
-import {
-  hookRecoveryMarkerPath,
-  hookTokenClaimPath,
-  isHookDisposalCommitted,
-  RunRecordSchema,
-  readHookDisposeLock,
-  readHookTokenClaim,
-  releaseHookTokenClaimIfOwnedBy,
-} from './helpers.js';
-import {
-  deleteHookByRunMarkerFile,
-  ensureHookIndexes,
-  findIndexedHookCreatedEvent,
-  listHookByRunMarkers,
-  writeHookByRunMarker,
-} from './hook-index.js';
-import { runIdOfStartHookId, startHookRecord } from './start-hook.js';
-
-function getHookCreatedToken(event: Event): string | undefined {
-  if (event.eventType !== 'hook_created') return undefined;
-  const token = (event.eventData as { token?: unknown }).token;
-  return typeof token === 'string' ? token : undefined;
-}
-
-export function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
-  const {
-    token,
-    metadata,
-    isWebhook,
-    isSystem,
-    tokenRetentionUntil,
-    forceClaimedFrom,
-  } = event.eventData;
-  return {
-    runId: event.runId,
-    hookId: event.correlationId,
-    token,
-    // The journaled row is the durable record of a takeover; a rebuilt
-    // entity must say where its token came from just as the original did.
-    ...(forceClaimedFrom !== undefined && { claimedFrom: forceClaimedFrom }),
-    metadata,
-    ownerId: 'local-owner',
-    projectId: 'local-project',
-    environment: 'local',
-    createdAt: event.createdAt,
-    specVersion: event.specVersion,
-    isWebhook: isWebhook ?? true,
-    isSystem: isSystem ?? false,
-    tokenRetentionUntil,
-  };
-}
-
-function isMatchingHookCreatedEvent(
-  event: Event,
-  matches: (event: Event) => boolean
-): event is HookCreatedEvent {
-  return (
-    event.eventType === 'hook_created' &&
-    typeof event.correlationId === 'string' &&
-    matches(event)
-  );
-}
-
-async function isTerminalRunCache(
-  basedir: string,
-  runId: string,
-  tag?: string
-): Promise<boolean> {
-  const run = await readJSONWithFallback(
-    basedir,
-    'runs',
-    runId,
-    RunRecordSchema,
-    tag
-  );
-  return run ? isTerminalWorkflowRunStatus(run.status) : false;
-}
+import { entityCursor, entityCursorClause, Store } from './store.js';
 
 /**
- * Find the available `hook_created` event for a token or hookId via the
- * durable hook indexes (instead of scanning the whole event log).
- *
- * The liveness checks below subsume the old scan's in-log closure
- * replay: the dispose lock is written before `hook_disposed` is
- * appended, the run entity is terminal before any terminal run event
- * is appended, and neither is ever deleted, so any closure visible
- * in the log is also visible to these checks.
- */
-async function findAvailableHookCreatedEvent(
-  basedir: string,
-  index: { kind: 'token'; token: string } | { kind: 'id'; hookId: string },
-  matches: (event: Event) => boolean,
-  tag?: string
-): Promise<HookCreatedEvent | null> {
-  // Liveness is decided per entry, inside the iteration: a token's index
-  // can name several runs' hooks (a disposed one beside its successor, a
-  // force-claim victim beside its claimer) and at most one of them is live,
-  // so the first entry to pass is the answer and a closed one must not end
-  // the search.
-  const isLive = async (event: HookCreatedEvent): Promise<boolean> => {
-    if (await isTerminalRunCache(basedir, event.runId, tag)) {
-      const retainedUntil = event.eventData.tokenRetentionUntil;
-      if (!retainedUntil || retainedUntil.getTime() <= Date.now()) {
-        return false;
-      }
-    }
-    // A committed disposal (dispose lock on disk) closes the hook even when
-    // its `hook_disposed` event has not landed in the log yet: the disposer
-    // writes the lock, releases the token claim and hook entity, and only
-    // then appends the event. Rebuilding the caches from the log in that
-    // window would resurrect a claim for a hook that is being torn down. A
-    // force-claim takeover writes the same lock for the victim.
-    return !(await isHookDisposalCommitted(basedir, event.correlationId, tag));
-  };
-  const found = await findIndexedHookCreatedEvent(
-    basedir,
-    index,
-    (event) => isMatchingHookCreatedEvent(event, matches) && isLive(event),
-    tag
-  );
-  return found && isMatchingHookCreatedEvent(found, matches) ? found : null;
-}
-
-async function restoreHookCachesFromEvent(
-  basedir: string,
-  event: HookCreatedEvent,
-  tag?: string
-): Promise<Hook> {
-  const hook = hookFromCreatedEvent(event);
-
-  const claimPath = hookTokenClaimPath(basedir, hook.token);
-  await writeExclusive(
-    claimPath,
-    JSON.stringify({
-      token: hook.token,
-      hookId: hook.hookId,
-      runId: hook.runId,
-      eventId: event.eventId,
-      tokenRetentionUntil: event.eventData.tokenRetentionUntil,
-      ...(hook.claimedFrom && { claimedFrom: hook.claimedFrom }),
-    })
-  );
-  // Marker before entity (see hook-index.ts crash-ordering invariant).
-  await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
-  await writeExclusive(
-    taggedPath(basedir, 'hooks', hook.hookId, tag),
-    JSON.stringify(hook, jsonReplacer, 2)
-  );
-
-  return hook;
-}
-
-export async function rebuildLiveHookByTokenFromEventLog(
-  basedir: string,
-  token: string,
-  tag?: string
-): Promise<Hook | null> {
-  const event = await findAvailableHookCreatedEvent(
-    basedir,
-    { kind: 'token', token },
-    (candidate) => getHookCreatedToken(candidate) === token,
-    tag
-  );
-  return event ? restoreHookCachesFromEvent(basedir, event, tag) : null;
-}
-
-async function rebuildLiveHookByIdFromEventLog(
-  basedir: string,
-  hookId: string,
-  tag?: string
-): Promise<Hook | null> {
-  const event = await findAvailableHookCreatedEvent(
-    basedir,
-    { kind: 'id', hookId },
-    (candidate) => candidate.correlationId === hookId,
-    tag
-  );
-  return event ? restoreHookCachesFromEvent(basedir, event, tag) : null;
-}
-
-/**
- * Creates a hooks storage implementation using the filesystem.
- * Implements the Storage['hooks'] interface with hook CRUD operations.
+ * Hook reads. A hook row exists while its hook is live, and past its run's
+ * end while its token retention lasts; disposal deletes it. A retained hook
+ * is readable until its retention ends, then reads as not found.
  */
 export function createHooksStorage(
-  basedir: string,
+  db: Database,
   tag?: string
 ): Storage['hooks'] {
-  async function isHookAvailable(hook: Hook): Promise<boolean> {
-    if (await isHookDisposalCommitted(basedir, hook.hookId, tag)) {
-      return false;
-    }
+  const store = new Store(db, tag);
+
+  function isAvailable(hook: Hook): boolean {
+    if (store.getDisposal(hook.hookId)) return false;
     if (
       hook.tokenRetentionUntil &&
-      hook.tokenRetentionUntil.getTime() > Date.now()
+      new Date(hook.tokenRetentionUntil).getTime() > Date.now()
     ) {
       return true;
     }
-    return !(await isTerminalRunCache(basedir, hook.runId, tag));
+    const run = store.getRunAnyTag(hook.runId);
+    return run !== null && !isTerminalWorkflowRunStatus(run.run.status);
   }
 
-  /**
-   * A hook whose token another run took over (`experimental_force`): its
-   * disposal lock names the claimer. The token then belongs to that claimer's
-   * hook, which the takeover wrote before locking this one, so a lookup that
-   * lands on this hook falls through to the entity that holds the token now
-   * instead of answering not-found for a token that has an owner.
-   */
-  async function isForceDisposed(hook: Hook): Promise<boolean> {
-    const lock = await readHookDisposeLock(basedir, hook.hookId, tag);
-    return lock.committed && lock.forceClaimedBy !== undefined;
-  }
-
-  /**
-   * The start Hook of `runId` rebuilt from its run record, for the window in
-   * which an admission has written the run but not the Hook entity (or a
-   * crash left it unwritten). Written back so the next read takes the fast
-   * path. Null unless the run exists, was admitted with a start Hook that
-   * is still available (not disposed, run live or in retention), and its
-   * claim still names it.
-   */
-  async function readStartHookFromRun(
-    runId: string | null
-  ): Promise<Hook | null> {
-    if (!runId) return null;
-    let run: Awaited<ReturnType<typeof readRun>>;
-    try {
-      run = await readRun(runId);
-    } catch (error) {
-      if (UnsafeEntityIdError.is(error)) return null;
-      throw error;
-    }
-    const hook = run && startHookRecord(run);
-    if (!hook || !(await isHookAvailable(hook))) return null;
-    const claim = await readHookTokenClaim(
-      hookTokenClaimPath(basedir, hook.token)
-    );
-    if (claim?.runId !== hook.runId || claim.hookId !== hook.hookId) {
-      return null;
-    }
-    // Marker before entity (see hook-index.ts crash-ordering invariant).
-    await writeHookByRunMarker(basedir, hook.runId, hook.hookId, tag);
-    await writeExclusive(
-      taggedPath(basedir, 'hooks', hook.hookId, tag),
-      JSON.stringify(hook, jsonReplacer, 2)
-    );
-    return hook;
-  }
-
-  function readRun(runId: string) {
-    return readJSONWithFallback(basedir, 'runs', runId, RunRecordSchema, tag);
-  }
-
-  async function findHookByToken(token: string): Promise<Hook | null> {
-    // Fast path: the token claim file points at the owning hookId.
-    const claim = await readHookTokenClaim(hookTokenClaimPath(basedir, token));
-    if (claim?.hookId) {
-      try {
-        const hook = await readJSONWithFallback(
-          basedir,
-          'hooks',
-          claim.hookId,
-          HookSchema,
-          tag
-        );
-        if (hook?.token === token) {
-          if (await isHookAvailable(hook)) {
-            return { ...hook, isWebhook: hook.isWebhook ?? true };
-          }
-          if (!(await isForceDisposed(hook))) {
-            throw new HookNotFoundError(token);
-          }
-          // Taken over mid-flight: the claim still names the old owner for
-          // an instant. Resolve to whoever holds the token now (below).
-        } else if (hook) {
-          return null;
-        } else if (isStartHookId(claim.runId, claim.hookId)) {
-          // A start Hook whose admission wrote the claim and the run but not
-          // yet (or, after a crash, never) the entity: the run record holds
-          // it.
-          const recovered = await readStartHookFromRun(claim.runId);
-          if (recovered?.token === token) return recovered;
-        }
-      } catch (error) {
-        if (!UnsafeEntityIdError.is(error)) {
-          throw error;
-        }
-        return null;
-      }
-    }
-
-    // Slow path for legacy states (e.g. a lost claim file while the
-    // entity is still on disk) and for a token mid-takeover: skip the
-    // force-disposed owner, return the live successor.
-    const hooksDir = path.join(basedir, 'hooks');
-    const files = await listJSONFiles(hooksDir);
-
-    let disposedMatch = false;
-    for (const file of files) {
-      const hookPath = path.join(hooksDir, `${file}.json`);
-      const hook = await readJSON(hookPath, HookSchema);
-      if (hook?.token === token) {
-        if (await isHookAvailable(hook)) {
-          return { ...hook, isWebhook: hook.isWebhook ?? true };
-        }
-        if (await isForceDisposed(hook)) {
-          disposedMatch = true;
-          continue;
-        }
-        throw new HookNotFoundError(token);
-      }
-    }
-    if (disposedMatch) {
-      throw new HookNotFoundError(token);
-    }
-
-    return null;
-  }
+  const withDefaults = (hook: Hook): Hook => ({
+    ...hook,
+    isWebhook: hook.isWebhook ?? true,
+  });
 
   async function get(hookId: string, params?: GetHookParams): Promise<Hook> {
     assertSafeEntityId('hookId', hookId);
-    const stored = await readJSONWithFallback(
-      basedir,
-      'hooks',
-      hookId,
-      HookSchema,
-      tag
-    );
-    if (stored && !(await isHookAvailable(stored))) {
-      throw new HookNotFoundError(hookId);
-    }
-    const hook =
-      stored ??
-      (await rebuildLiveHookByIdFromEventLog(basedir, hookId, tag)) ??
-      (await readStartHookFromRun(runIdOfStartHookId(hookId)));
-    if (!hook) {
-      throw new HookNotFoundError(hookId);
-    }
-    const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
+    const hook = store.getHook(hookId);
+    if (!hook || !isAvailable(hook)) throw new HookNotFoundError(hookId);
     return filterHookData(
-      { ...hook, isWebhook: hook.isWebhook ?? true },
-      resolveData
+      withDefaults(hook),
+      params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION
     );
   }
 
   async function getByToken(token: string): Promise<Hook> {
-    const hook =
-      (await findHookByToken(token)) ??
-      (await rebuildLiveHookByTokenFromEventLog(basedir, token, tag));
-    if (!hook) {
+    const owner = store.getTokenOwner(token);
+    const hook = owner ? store.getHook(owner.hookId) : null;
+    if (!hook || hook.token !== token || !isAvailable(hook)) {
       throw new HookNotFoundError(token);
     }
-    return hook;
+    return withDefaults(hook);
   }
 
   async function list(
     params: ListHooksParams
   ): Promise<PaginatedResponse<Hook>> {
-    const hooksDir = path.join(basedir, 'hooks');
     const resolveData = params.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
-
-    const result = await paginatedFileSystemQuery({
-      directory: hooksDir,
-      schema: HookSchema,
-      sortOrder: params.pagination?.sortOrder ?? 'asc',
-      limit: params.pagination?.limit,
-      cursor: params.pagination?.cursor,
-      filePrefix: undefined, // Hooks don't have ULIDs, so we can't optimize by filename
-      filter: async (hook) => {
-        // Filter by runId if provided
-        if (params.runId && hook.runId !== params.runId) {
-          return false;
+    const sortOrder: 'asc' | 'desc' = params.pagination?.sortOrder ?? 'asc';
+    const limit = Math.max(1, params.pagination?.limit ?? 20);
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (params.runId) {
+      clauses.push('run_id = ?');
+      values.push(params.runId);
+    }
+    const cursor = entityCursorClause(
+      params.pagination?.cursor,
+      sortOrder,
+      'created_at',
+      'hook_id'
+    );
+    if (cursor) {
+      clauses.push(cursor.sql);
+      values.push(...cursor.params);
+    }
+    const direction = sortOrder === 'asc' ? 'ASC' : 'DESC';
+    const data: Hook[] = [];
+    let hasMore = false;
+    // Availability depends on the clock and on other rows, so it is applied
+    // after the query, a batch at a time, until a page is full.
+    let offset = 0;
+    const batch = Math.max(limit + 1, 100);
+    while (true) {
+      const rows = db.all<{ doc: string }>(
+        `SELECT doc FROM hooks ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
+         ORDER BY created_at ${direction}, hook_id ${direction} LIMIT ? OFFSET ?`,
+        ...values,
+        batch,
+        offset
+      );
+      offset += rows.length;
+      for (const row of rows) {
+        const hook = decode<Hook>(row.doc);
+        if (!isAvailable(hook)) continue;
+        if (data.length === limit) {
+          hasMore = true;
+          break;
         }
-        return isHookAvailable(hook);
-      },
-      getCreatedAt: () => {
-        // Hook files don't have ULID timestamps in filename, so return null
-        // to skip the filename-based optimization and defer to JSON-based
-        // cursor filtering which uses the actual createdAt from the file.
-        return null;
-      },
-      getId: (hook) => hook.hookId,
-    });
-
-    // Transform the data after pagination
+        data.push(hook);
+      }
+      if (hasMore || rows.length < batch) break;
+    }
+    const last = data.at(-1);
     return {
-      ...result,
-      data: result.data.map((hook) => filterHookData(hook, resolveData)),
+      data: data.map((hook) => filterHookData(hook, resolveData)),
+      cursor: last ? entityCursor(last.createdAt, last.hookId) : null,
+      hasMore,
     };
   }
 
   return { get, getByToken, list };
-}
-
-/**
- * Cleans up a terminal run's Hooks while preserving active retention.
- */
-export async function deleteAllHooksForRun(
-  basedir: string,
-  runId: string
-): Promise<void> {
-  // Discover this run's hooks via by-run markers (a prefix readdir)
-  // instead of reading every live hook entity in the world.
-  await ensureHookIndexes(basedir);
-
-  for (const marker of await listHookByRunMarkers(basedir, runId)) {
-    if (marker.hookId) {
-      let hook: Hook | null = null;
-      let hookPath: string | null = null;
-      try {
-        hookPath = taggedPath(basedir, 'hooks', marker.hookId, marker.tag);
-        hook = await readJSON(hookPath, HookSchema);
-      } catch (error) {
-        if (
-          !UnsafeEntityIdError.is(error) &&
-          !(error instanceof SyntaxError || error instanceof z.ZodError)
-        ) {
-          throw error;
-        }
-      }
-      if (!hook && hookPath && isStartHookId(runId, marker.hookId)) {
-        // The run's start Hook, admitted but with its entity never written
-        // (a crash between the run record and the entity): the run record
-        // holds it, and its claim is released the same way.
-        const run = await readJSON(
-          taggedPath(basedir, 'runs', runId, marker.tag),
-          RunRecordSchema
-        ).catch(() => null);
-        hook = run ? startHookRecord(run) : null;
-      }
-      if (hook && hookPath && hook.runId === runId) {
-        if (
-          hook.tokenRetentionUntil &&
-          hook.tokenRetentionUntil.getTime() > Date.now()
-        ) {
-          continue;
-        }
-        // Release the claim only if it still points at this hook, since a
-        // claimant may already hold a fresh claim for the token (see
-        // `isHookTokenClaimReleasable`).
-        await releaseHookTokenClaimIfOwnedBy(
-          basedir,
-          hook.token,
-          hook.runId,
-          hook.hookId
-        );
-        await deleteJSON(
-          hookRecoveryMarkerPath(basedir, hook.token, hook.runId, hook.hookId)
-        );
-        await deleteJSON(hookPath);
-      }
-    }
-    await deleteHookByRunMarkerFile(basedir, marker.fileId);
-  }
 }

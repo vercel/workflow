@@ -1,1165 +1,805 @@
+import { fork } from 'node:child_process';
+import type { EventEmitter } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { decodeTime } from 'ulid';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import {
-  createStreamer,
-  deserializeChunk,
-  serializeChunk,
-} from './streamer.js';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { databaseFor } from './db/index.js';
+import { createStreamer } from './streamer.js';
 
 const TEST_RUN_ID = 'wrun_test12345678901234';
 
+/** A fresh data directory and a streamer on it, removed after the test. */
+async function setupStreamer(tag?: string) {
+  const testDir = await fs.mkdtemp(path.join(os.tmpdir(), 'wl-stream-'));
+  onTestFinished(async () => {
+    databaseFor(testDir).close();
+    await fs.rm(testDir, { recursive: true, force: true });
+  });
+  return { testDir, streamer: createStreamer(testDir, tag) };
+}
+
+async function readAll(stream: ReadableStream<Uint8Array>) {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of stream) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
+async function readText(stream: ReadableStream<Uint8Array>) {
+  return (await readAll(stream)).map((chunk) => Buffer.from(chunk).toString());
+}
+
+/** Reads `stream` in the background, collecting chunks as they arrive. */
+function collect(stream: ReadableStream<Uint8Array>) {
+  const received: string[] = [];
+  const done = (async () => {
+    for await (const chunk of stream) {
+      received.push(Buffer.from(chunk).toString());
+    }
+  })();
+  return { received, done };
+}
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('timed out waiting');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+// Long enough for an unordered write or delivery to land first.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+const timeouts = () =>
+  process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+
+/** Listeners on the streamer's in-process wake-up signal, across all streams. */
+function signalListeners() {
+  const signals = (globalThis as Record<symbol, unknown>)[
+    Symbol.for('@workflow/world-local//streamSignals/v1')
+  ] as { emitter: EventEmitter } | undefined;
+  if (!signals) return 0;
+  return signals.emitter
+    .eventNames()
+    .reduce((sum, event) => sum + signals.emitter.listenerCount(event), 0);
+}
+
 describe('streamer', () => {
-  describe('serializeChunk and deserializeChunk', () => {
-    it('should serialize and deserialize non-EOF chunks correctly', () => {
-      const input = { eof: false, chunk: Buffer.from('hello world') };
-      const serialized = serializeChunk(input);
-      const deserialized = deserializeChunk(serialized);
+  describe('write and read', () => {
+    it('round-trips string chunks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'string-stream';
 
-      expect(deserialized).toEqual(input);
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'hello ');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'world');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(['hello ', 'world']);
     });
 
-    it('should serialize and deserialize EOF chunks correctly', () => {
-      const input = { eof: true, chunk: Buffer.from('final data') };
-      const serialized = serializeChunk(input);
-      const deserialized = deserializeChunk(serialized);
+    it('round-trips Buffer chunks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'buffer-stream';
 
-      expect(deserialized).toEqual(input);
+      await streamer.streams.write(
+        TEST_RUN_ID,
+        streamName,
+        Buffer.from('chunk1')
+      );
+      await streamer.streams.write(
+        TEST_RUN_ID,
+        streamName,
+        Buffer.from('chunk2')
+      );
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(['chunk1', 'chunk2']);
     });
 
-    it('should handle empty chunks', () => {
-      const input = { eof: false, chunk: Buffer.from([]) };
-      const serialized = serializeChunk(input);
-      const deserialized = deserializeChunk(serialized);
+    it('round-trips binary data byte for byte', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'binary-stream';
 
-      expect(deserialized).toEqual(input);
+      await streamer.streams.write(
+        TEST_RUN_ID,
+        streamName,
+        new Uint8Array([0, 1, 2, 255])
+      );
+      await streamer.streams.write(
+        TEST_RUN_ID,
+        streamName,
+        new Uint8Array([254, 253, 0, 6])
+      );
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const chunks = await readAll(
+        await streamer.streams.get(TEST_RUN_ID, streamName)
+      );
+      expect(chunks.map((chunk) => Array.from(chunk))).toEqual([
+        [0, 1, 2, 255],
+        [254, 253, 0, 6],
+      ]);
     });
 
-    it('should handle empty EOF chunks', () => {
-      const input = { eof: true, chunk: Buffer.from([]) };
-      const serialized = serializeChunk(input);
-      const deserialized = deserializeChunk(serialized);
+    it('preserves multi-byte UTF-8 strings', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'utf8-stream';
+      const text = 'special chars: ñáéíóú ✓ 😀';
 
-      expect(deserialized).toEqual(input);
+      await streamer.streams.write(TEST_RUN_ID, streamName, text);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const [chunk] = await readAll(
+        await streamer.streams.get(TEST_RUN_ID, streamName)
+      );
+      expect(new TextDecoder().decode(chunk)).toBe(text);
     });
 
-    it('should handle binary data', () => {
-      const binaryData = Buffer.from([0, 1, 2, 255, 254, 253]);
-      const input = { eof: false, chunk: binaryData };
-      const serialized = serializeChunk(input);
-      const deserialized = deserializeChunk(serialized);
+    it('keeps streams independent', async () => {
+      const { streamer } = await setupStreamer();
 
-      expect(deserialized).toEqual(input);
+      await streamer.streams.write(TEST_RUN_ID, 'stream1', 'data1');
+      await streamer.streams.write(TEST_RUN_ID, 'stream2', 'data2');
+      await streamer.streams.write(TEST_RUN_ID, 'stream1', 'data3');
+      await streamer.streams.close(TEST_RUN_ID, 'stream1');
+      await streamer.streams.close(TEST_RUN_ID, 'stream2');
+
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, 'stream1'))
+      ).toEqual(['data1', 'data3']);
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, 'stream2'))
+      ).toEqual(['data2']);
     });
 
-    it('should preserve buffer contents exactly', () => {
-      const originalData = Buffer.from('test data with special chars: ñáéíóú');
-      const input = { eof: false, chunk: originalData };
-      const serialized = serializeChunk(input);
-      const deserialized = deserializeChunk(serialized);
+    it('resumes with startIndex after a cancelled read (reproduces vibe platform bug)', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'resumption-stream';
 
-      expect(deserialized.chunk.equals(originalData)).toBe(true);
-      expect(deserialized.eof).toBe(false);
+      for (let i = 0; i < 4; i++) {
+        await streamer.streams.write(TEST_RUN_ID, streamName, `chunk${i}`);
+      }
+
+      // First read, interrupted after 2 chunks while the stream is open.
+      const reader1 = (
+        await streamer.streams.get(TEST_RUN_ID, streamName, 0)
+      ).getReader();
+      const result1 = await reader1.read();
+      const result2 = await reader1.read();
+      expect(Buffer.from(result1.value ?? []).toString()).toBe('chunk0');
+      expect(Buffer.from(result2.value ?? []).toString()).toBe('chunk1');
+      await reader1.cancel();
+
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      // Every delivered chunk must be usable (not a detached ArrayBuffer).
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName, 2))
+      ).toEqual(['chunk2', 'chunk3']);
     });
 
-    it('should create correct binary format (1 byte EOF + chunk data)', () => {
-      const chunkData = Buffer.from('test');
-      const input = { eof: false, chunk: chunkData };
-      const serialized = serializeChunk(input);
+    it('reads the same chunks from every instance on the data directory', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      const other = createStreamer(testDir);
+      const streamName = 'cross-instance';
 
-      // First byte should be 0 (false)
-      expect(serialized[0]).toBe(0);
-      // Rest should be the chunk data
-      expect(serialized.subarray(1)).toEqual(chunkData);
+      // A live reader on the second instance, opened before any write.
+      const live = collect(await other.streams.get(TEST_RUN_ID, streamName));
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'a');
+      await streamer.streams.writeMulti(TEST_RUN_ID, streamName, ['b', 'c']);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+      await live.done;
+      expect(live.received).toEqual(['a', 'b', 'c']);
 
-      const eofInput = { eof: true, chunk: chunkData };
-      const eofSerialized = serializeChunk(eofInput);
-
-      // First byte should be 1 (true)
-      expect(eofSerialized[0]).toBe(1);
-      // Rest should be the chunk data
-      expect(eofSerialized.subarray(1)).toEqual(chunkData);
+      // And a fresh instance sees the finished stream.
+      const fresh = createStreamer(testDir);
+      expect(
+        await readText(await fresh.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(['a', 'b', 'c']);
+      const page = await fresh.streams.getChunks(TEST_RUN_ID, streamName);
+      expect(page.data.map((c) => Buffer.from(c.data).toString())).toEqual([
+        'a',
+        'b',
+        'c',
+      ]);
+      expect(page.done).toBe(true);
+      expect(await fresh.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: 2,
+        done: true,
+      });
+      expect(await fresh.streams.list(TEST_RUN_ID)).toEqual([streamName]);
     });
   });
 
-  describe('createStreamer', () => {
-    async function setupStreamer({
-      cleanupTimeout,
-    }: {
-      cleanupTimeout?: number;
-    } = {}) {
-      const testDir = await fs.mkdtemp(
-        path.join(os.tmpdir(), 'streamer-test-')
+  describe('writeMulti', () => {
+    it('preserves chunk ordering', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'ordered-multi-stream';
+
+      await streamer.streams.writeMulti(TEST_RUN_ID, streamName, [
+        'first',
+        'second',
+        'third',
+      ]);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(['first', 'second', 'third']);
+    });
+
+    it('writes nothing for an empty chunks array', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'empty-multi-stream';
+
+      await streamer.streams.writeMulti(TEST_RUN_ID, streamName, []);
+
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: -1,
+        done: false,
+      });
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([]);
+    });
+
+    it('handles mixed string and Uint8Array chunks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'mixed-multi-stream';
+
+      await streamer.streams.writeMulti(TEST_RUN_ID, streamName, [
+        'string-chunk',
+        new Uint8Array([1, 2, 3, 4]),
+        Buffer.from('buffer-chunk'),
+      ]);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const chunks = await readAll(
+        await streamer.streams.get(TEST_RUN_ID, streamName)
       );
-      const streamer = createStreamer(testDir);
+      expect(chunks).toHaveLength(3);
+      expect(new TextDecoder().decode(chunks[0])).toBe('string-chunk');
+      expect(Array.from(chunks[1])).toEqual([1, 2, 3, 4]);
+      expect(new TextDecoder().decode(chunks[2])).toBe('buffer-chunk');
+    });
 
-      onTestFinished(async (ctx) => {
-        if (!ctx.task.result?.errors?.length) {
-          await fs.rm(testDir, { recursive: true, force: true });
-        } else {
-          const chunksPath = `${testDir}/streams/chunks`;
-          // Chunks are sharded one directory per stream:
-          // streams/chunks/<streamName>/<chunkId><tagSuffix>.bin
-          let files: string[];
-          try {
-            const streamDirs = await fs.readdir(chunksPath);
-            files = (
-              await Promise.all(
-                streamDirs.map(async (streamDir) =>
-                  (
-                    await fs.readdir(`${chunksPath}/${streamDir}`)
-                  ).map((f) => `${streamDir}/${f}`)
-                )
-              )
-            ).flat();
-          } catch {
-            // chunks directory may not exist if the test failed before any writes
-            files = [];
-          }
-          const chunks = [] as unknown[];
-          let lastTime = 0;
-          for (const file of files) {
-            const chunk = deserializeChunk(
-              await fs.readFile(`${chunksPath}/${file}`)
-            );
-            // Filename is "<chunkId><tagSuffix>.bin"; chunkId is "chnk_ULID".
-            const ulid = String(file.split('/').at(-1))
-              .split('.')[0]
-              .replace('chnk_', '');
-            const time = decodeTime(ulid);
-            const timeDiff = time - lastTime;
-            lastTime = time;
+    it('lands a group whole and in order for a reader that opens mid-write', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'write-multi-order';
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'zero\n');
+      const runId = deferred<string>();
 
-            chunks.push({
-              file,
-              timeDiff,
-              eof: chunk.eof,
-              text: chunk.chunk.toString('utf8'),
-            });
-          }
-          console.log(
-            `Test failed, here are the chunks that were generated`,
-            chunks
-          );
-        }
-      }, cleanupTimeout);
+      const writing = streamer.streams.writeMulti(runId.promise, streamName, [
+        'first\n',
+        'second\n',
+        'third\n',
+      ]);
+      await settle();
+      // The reader opens while the group is still waiting to be written.
+      const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+      runId.resolve(TEST_RUN_ID);
+      await writing;
+      await streamer.streams.close(TEST_RUN_ID, streamName);
 
-      return {
-        testDir,
-        streamer,
-      };
+      expect(await readText(stream)).toEqual([
+        'zero\n',
+        'first\n',
+        'second\n',
+        'third\n',
+      ]);
+    });
+
+    it('keeps each group contiguous when instances write at once', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      const other = createStreamer(testDir);
+      const streamName = 'write-multi-groups';
+      const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+
+      await Promise.all([
+        streamer.streams.writeMulti(TEST_RUN_ID, streamName, [
+          'a0',
+          'a1',
+          'a2',
+        ]),
+        other.streams.writeMulti(TEST_RUN_ID, streamName, ['b0', 'b1', 'b2']),
+        streamer.streams.writeMulti(TEST_RUN_ID, streamName, [
+          'c0',
+          'c1',
+          'c2',
+        ]),
+      ]);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const received = await readText(stream);
+      expect(received).toHaveLength(9);
+      // Groups never interleave, and one instance's groups keep call order.
+      const groups = [0, 3, 6].map((i) => received.slice(i, i + 3));
+      for (const group of groups) {
+        const prefix = group[0][0];
+        expect(group).toEqual([`${prefix}0`, `${prefix}1`, `${prefix}2`]);
+      }
+      const prefixes = groups.map((group) => group[0][0]);
+      expect(prefixes.indexOf('a')).toBeLessThan(prefixes.indexOf('c'));
+      expect([...prefixes].sort()).toEqual(['a', 'b', 'c']);
+    });
+  });
+
+  describe('close', () => {
+    it('closes a stream with no chunks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'empty-stream';
+
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual([]);
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: -1,
+        done: true,
+      });
+      const page = await streamer.streams.getChunks(TEST_RUN_ID, streamName);
+      expect(page.data).toEqual([]);
+      expect(page.done).toBe(true);
+    });
+
+    it('closes a stream with existing chunks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'existing-stream';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk1');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk2');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: 1,
+        done: true,
+      });
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(['chunk1', 'chunk2']);
+    });
+
+    it('closing twice is harmless', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      const other = createStreamer(testDir);
+      const streamName = 'double-close';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+      await expect(
+        streamer.streams.close(TEST_RUN_ID, streamName)
+      ).resolves.toBeUndefined();
+      await expect(
+        other.streams.close(TEST_RUN_ID, streamName)
+      ).resolves.toBeUndefined();
+
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: 0,
+        done: true,
+      });
+      const page = await streamer.streams.getChunks(TEST_RUN_ID, streamName);
+      expect(page.data.map((c) => Buffer.from(c.data).toString())).toEqual([
+        'data',
+      ]);
+      expect(page.done).toBe(true);
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(['data']);
+    });
+
+    it('ends a live reader when the stream closes', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'live-close';
+      const live = collect(await streamer.streams.get(TEST_RUN_ID, streamName));
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'one');
+      await waitFor(() => live.received.length === 1);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+      await live.done;
+
+      expect(live.received).toEqual(['one']);
+    });
+
+    it('closes a stream behind a write still waiting for its run id', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'close-behind-write';
+      const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+      const runId = deferred<string>();
+
+      const writing = streamer.streams.write(
+        runId.promise,
+        streamName,
+        'data\n'
+      );
+      const closing = streamer.streams.close(TEST_RUN_ID, streamName);
+      await Promise.race([closing, settle()]);
+      runId.resolve(TEST_RUN_ID);
+      await Promise.all([writing, closing]);
+
+      expect(await readText(stream)).toEqual(['data\n']);
+    });
+  });
+
+  describe('get with startIndex', () => {
+    async function writeChunks(
+      streamer: ReturnType<typeof createStreamer>,
+      streamName: string,
+      count: number,
+      { close = true } = {}
+    ) {
+      for (let i = 0; i < count; i++) {
+        await streamer.streams.write(TEST_RUN_ID, streamName, `chunk${i}`);
+      }
+      if (close) await streamer.streams.close(TEST_RUN_ID, streamName);
     }
 
-    describe('streams.write', () => {
-      it('should write string chunks to a stream', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'test-stream';
+    it('skips that many chunks from the start', async () => {
+      const { streamer } = await setupStreamer();
+      await writeChunks(streamer, 'positive', 4);
 
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'hello');
-        await streamer.streams.write(TEST_RUN_ID, streamName, ' world');
-
-        // Verify the per-stream chunk directory was created
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const files = await fs.readdir(chunksDir);
-
-        expect(files).toHaveLength(2);
-        expect(files.every((f) => f.startsWith('chnk_'))).toBe(true);
-        expect(files.every((f) => f.endsWith('.bin'))).toBe(true);
-      });
-
-      it('should write Buffer chunks to a stream', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'buffer-stream';
-        const buffer1 = Buffer.from('chunk1');
-        const buffer2 = Buffer.from('chunk2');
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, buffer1);
-        await streamer.streams.write(TEST_RUN_ID, streamName, buffer2);
-
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const files = await fs.readdir(chunksDir);
-
-        expect(files).toHaveLength(2);
-        expect(files.every((f) => f.startsWith('chnk_'))).toBe(true);
-      });
-
-      it('should write Uint8Array chunks to a stream', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'uint8-stream';
-        const uint8Array = new Uint8Array([1, 2, 3, 4]);
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, uint8Array);
-
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const files = await fs.readdir(chunksDir);
-
-        expect(files).toHaveLength(1);
-        expect(files[0]).toMatch('chnk_');
-      });
-
-      it('should handle multiple streams independently', async () => {
-        const { testDir, streamer } = await setupStreamer();
-
-        await streamer.streams.write(TEST_RUN_ID, 'stream1', 'data1');
-        await streamer.streams.write(TEST_RUN_ID, 'stream2', 'data2');
-        await streamer.streams.write(TEST_RUN_ID, 'stream1', 'data3');
-
-        // Each stream gets its own sharded directory.
-        const chunksDir = path.join(testDir, 'streams', 'chunks');
-        const stream1Files = await fs.readdir(path.join(chunksDir, 'stream1'));
-        const stream2Files = await fs.readdir(path.join(chunksDir, 'stream2'));
-
-        expect(stream1Files).toHaveLength(2);
-        expect(stream2Files).toHaveLength(1);
-      });
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, 'positive', 1))
+      ).toEqual(['chunk1', 'chunk2', 'chunk3']);
     });
 
-    describe('streams.writeMulti', () => {
-      it('should write multiple chunks in a single call', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'multi-stream';
+    it('ends at once when it starts past the tail of a finished stream', async () => {
+      const { streamer } = await setupStreamer();
+      await writeChunks(streamer, 'past-tail', 2);
 
-        await streamer.streams.writeMulti!(TEST_RUN_ID, streamName, [
-          'chunk1',
-          'chunk2',
-          'chunk3',
-        ]);
-
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const files = await fs.readdir(chunksDir);
-
-        expect(files).toHaveLength(3);
-        expect(files.every((f) => f.startsWith('chnk_'))).toBe(true);
-      });
-
-      it('should preserve chunk ordering', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'ordered-multi-stream';
-
-        await streamer.streams.writeMulti!(TEST_RUN_ID, streamName, [
-          'first',
-          'second',
-          'third',
-        ]);
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const readable = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = readable.getReader();
-        const decoder = new TextDecoder();
-        const chunks: string[] = [];
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(decoder.decode(value));
-        }
-
-        expect(chunks).toEqual(['first', 'second', 'third']);
-      });
-
-      it('should handle empty chunks array', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'empty-multi-stream';
-
-        await streamer.streams.writeMulti!(TEST_RUN_ID, streamName, []);
-
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const dirExists = await fs
-          .access(chunksDir)
-          .then(() => true)
-          .catch(() => false);
-
-        // Directory might not exist if no chunks were written
-        if (dirExists) {
-          const files = await fs.readdir(chunksDir);
-          expect(files).toHaveLength(0);
-        }
-      });
-
-      it('should handle mixed string and Uint8Array chunks', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'mixed-multi-stream';
-
-        await streamer.streams.writeMulti!(TEST_RUN_ID, streamName, [
-          'string-chunk',
-          new Uint8Array([1, 2, 3, 4]),
-          Buffer.from('buffer-chunk'),
-        ]);
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const readable = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = readable.getReader();
-        const chunks: Uint8Array[] = [];
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-        }
-
-        expect(chunks).toHaveLength(3);
-        expect(new TextDecoder().decode(chunks[0])).toBe('string-chunk');
-        expect(chunks[1]).toEqual(new Uint8Array([1, 2, 3, 4]));
-        expect(new TextDecoder().decode(chunks[2])).toBe('buffer-chunk');
-      });
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, 'past-tail', 5))
+      ).toEqual([]);
     });
 
-    describe('streams.close', () => {
-      it('should close an empty stream', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'empty-stream';
+    it('supports a negative startIndex to read from the end', async () => {
+      const { streamer } = await setupStreamer();
+      await writeChunks(streamer, 'negative', 4);
 
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const files = await fs.readdir(chunksDir);
-
-        expect(files).toHaveLength(1);
-        expect(files[0]).toMatch('chnk_');
-      });
-
-      it('should close a stream with existing chunks', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'existing-stream';
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk1');
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk2');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const files = await fs.readdir(chunksDir);
-
-        expect(files).toHaveLength(3); // 2 data chunks + 1 EOF chunk
-      });
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, 'negative', -2))
+      ).toEqual(['chunk2', 'chunk3']);
     });
 
-    describe('streams.get', () => {
-      it('should read chunks from a completed stream', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'read-stream';
-        const chunk1 = 'hello ';
-        const chunk2 = 'world';
+    it('resolves a negative startIndex against an open stream, then reads live', async () => {
+      const { streamer } = await setupStreamer();
+      await writeChunks(streamer, 'negative-open', 3, { close: false });
 
-        await streamer.streams.write(TEST_RUN_ID, streamName, chunk1);
-        // Add a small delay to ensure different ULID timestamps
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, chunk2);
-        await streamer.streams.close(TEST_RUN_ID, streamName);
+      const stream = await streamer.streams.get(
+        TEST_RUN_ID,
+        'negative-open',
+        -1
+      );
+      await streamer.streams.write(TEST_RUN_ID, 'negative-open', 'chunk3');
+      await streamer.streams.close(TEST_RUN_ID, 'negative-open');
 
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = stream.getReader();
-
-        const chunks: Uint8Array[] = [];
-        let done = false;
-
-        while (!done) {
-          const result = await reader.read();
-          done = result.done;
-          if (result.value) {
-            chunks.push(result.value);
-          }
-        }
-
-        const combined = Buffer.concat(chunks).toString();
-        expect(combined).toBe('hello world');
-      });
-
-      it('should read binary data correctly', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'binary-stream';
-        const binaryData1 = new Uint8Array([1, 2, 3]);
-        const binaryData2 = new Uint8Array([4, 5, 6]);
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, binaryData1);
-        // Add delay to ensure different ULID timestamps
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, binaryData2);
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = stream.getReader();
-
-        const chunks: Uint8Array[] = [];
-        let done = false;
-
-        while (!done) {
-          const result = await reader.read();
-          done = result.done;
-          if (result.value) {
-            chunks.push(result.value);
-          }
-        }
-
-        const combined = new Uint8Array(
-          chunks.reduce((acc, chunk) => acc + chunk.length, 0)
-        );
-        let offset = 0;
-        for (const chunk of chunks) {
-          combined.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        expect(Array.from(combined)).toEqual([1, 2, 3, 4, 5, 6]);
-      });
-
-      it('should preserve chunk order based on ULID timestamps', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'ordered-stream';
-
-        // Write chunks with small delays to ensure different ULID timestamps
-        await streamer.streams.write(TEST_RUN_ID, streamName, '1');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, '2');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, '3');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = stream.getReader();
-
-        const chunks: string[] = [];
-        let done = false;
-
-        while (!done) {
-          const result = await reader.read();
-          done = result.done;
-          if (result.value) {
-            chunks.push(Buffer.from(result.value).toString());
-          }
-        }
-
-        expect(chunks.join('')).toBe('123');
-      });
-
-      it('should handle stream resumption with startIndex after cancellation (reproduces vibe platform bug)', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'resumption-stream';
-
-        // Write multiple chunks to simulate a DurableAgent streaming output
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk0');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk1');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk2');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk3');
-
-        // First read: Simulate initial connection that gets interrupted after 2 chunks
-        // Note: Stream is NOT closed yet - simulates reading while workflow is still running
-        const stream1 = await streamer.streams.get(TEST_RUN_ID, streamName, 0);
-        const reader1 = stream1.getReader();
-
-        // Read first 2 chunks
-        const result1 = await reader1.read();
-        const result2 = await reader1.read();
-        expect(Buffer.from(result1.value!).toString()).toBe('chunk0');
-        expect(Buffer.from(result2.value!).toString()).toBe('chunk1');
-
-        // Cancel the first stream (simulating connection loss / timeout)
-        await reader1.cancel();
-
-        // Workflow continues and finishes
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        // Second read: Resume from startIndex=2 (this is where ArrayBuffer detachment bug occurs)
-        // Without the fix, this would fail with "Cannot perform Construct on a detached ArrayBuffer"
-        const stream2 = await streamer.streams.get(TEST_RUN_ID, streamName, 2);
-        const reader2 = stream2.getReader();
-
-        const chunks: string[] = [];
-        let done = false;
-
-        while (!done) {
-          const result = await reader2.read();
-          done = result.done;
-          if (result.value) {
-            // This operation would fail if ArrayBuffer is detached
-            chunks.push(Buffer.from(result.value).toString());
-          }
-        }
-
-        // Should successfully read remaining chunks
-        expect(chunks.join('')).toBe('chunk2chunk3');
-      });
-
-      it('should support negative startIndex to read from the end', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'negative-index-stream';
-
-        // Write 4 chunks
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk0');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk1');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk2');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk3');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        // Read with startIndex=-2 → last 2 chunks
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName, -2);
-        const reader = stream.getReader();
-
-        const chunks: string[] = [];
-        let done = false;
-        while (!done) {
-          const result = await reader.read();
-          done = result.done;
-          if (result.value) {
-            chunks.push(Buffer.from(result.value).toString());
-          }
-        }
-
-        expect(chunks.join('')).toBe('chunk2chunk3');
-      });
-
-      it('should clamp negative startIndex that exceeds chunk count to 0', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'negative-clamped-stream';
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk0');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk1');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        // -100 exceeds total count, should clamp to 0 and return all chunks
-        const stream = await streamer.streams.get(
-          TEST_RUN_ID,
-          streamName,
-          -100
-        );
-        const reader = stream.getReader();
-
-        const chunks: string[] = [];
-        let done = false;
-        while (!done) {
-          const result = await reader.read();
-          done = result.done;
-          if (result.value) {
-            chunks.push(Buffer.from(result.value).toString());
-          }
-        }
-
-        expect(chunks.join('')).toBe('chunk0chunk1');
-      });
+      expect(await readText(stream)).toEqual(['chunk2', 'chunk3']);
     });
 
-    describe('cross-process polling', () => {
-      it('should deliver chunks via filesystem polling when EventEmitter is bypassed', async () => {
-        // Simulate cross-process streaming: write chunk files directly to
-        // disk (bypassing streamer.streams.write and thus the EventEmitter)
-        // and verify the polling-based reader picks them up.
-        const testDir = await fs.mkdtemp(
-          path.join(os.tmpdir(), 'streamer-poll-test-')
-        );
-        onTestFinished(async (ctx) => {
-          if (!ctx.task.result?.errors?.length) {
-            await fs.rm(testDir, { recursive: true, force: true });
+    it('clamps a negative startIndex beyond the chunk count to 0', async () => {
+      const { streamer } = await setupStreamer();
+      await writeChunks(streamer, 'negative-clamped', 2);
+
+      expect(
+        await readText(
+          await streamer.streams.get(TEST_RUN_ID, 'negative-clamped', -100)
+        )
+      ).toEqual(['chunk0', 'chunk1']);
+    });
+
+    it('never delivers a chunk before startIndex, even one written live', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'start-index-live';
+
+      const stream = await streamer.streams.get(TEST_RUN_ID, streamName, 1);
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'c0\n');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'c1\n');
+      await settle();
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await readText(stream)).toEqual(['c1\n']);
+    });
+  });
+
+  describe('chunk order', () => {
+    it('lands concurrent writes in the order they were called', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'concurrent-write-order';
+      const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
+      const runId = deferred<string>();
+
+      const first = streamer.streams.write(
+        runId.promise,
+        streamName,
+        'first\n'
+      );
+      const second = streamer.streams.write(
+        TEST_RUN_ID,
+        streamName,
+        'second\n'
+      );
+      await Promise.race([second, settle()]);
+      runId.resolve(TEST_RUN_ID);
+      await Promise.all([first, second]);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await readText(stream)).toEqual(['first\n', 'second\n']);
+    });
+
+    it('lands many writes issued at once in call order', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'burst-order';
+      const expected = Array.from({ length: 50 }, (_, i) => `${i}\n`);
+
+      await Promise.all(
+        expected.map((chunk) =>
+          streamer.streams.write(TEST_RUN_ID, streamName, chunk)
+        )
+      );
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(expected);
+    });
+
+    it('does not lose or duplicate chunks written while a reader opens', async () => {
+      for (let iteration = 0; iteration < 3; iteration++) {
+        const { streamer } = await setupStreamer();
+        const streamName = `race-${iteration}`;
+
+        await streamer.streams.write(TEST_RUN_ID, streamName, '0\n');
+        await streamer.streams.write(TEST_RUN_ID, streamName, '1\n');
+
+        // Keep writing while the reader opens.
+        const writeTask = (async () => {
+          for (let i = 2; i < 10; i++) {
+            await streamer.streams.write(TEST_RUN_ID, streamName, `${i}\n`);
           }
-        });
-
-        const streamer = createStreamer(testDir);
-        const streamName = 'poll-test';
-        // Simulate a cross-process writer landing chunks straight on disk in
-        // the stream's sharded directory.
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        await fs.mkdir(chunksDir, { recursive: true });
-
-        // Start reading — sets up EventEmitter listeners + polling interval
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = stream.getReader();
-        const chunks: string[] = [];
-
-        const readPromise = (async () => {
-          let done = false;
-          while (!done) {
-            const result = await reader.read();
-            done = result.done;
-            if (result.value) {
-              chunks.push(Buffer.from(result.value).toString());
-            }
-          }
+          await streamer.streams.close(TEST_RUN_ID, streamName);
         })();
 
-        // Let polling start
-        await new Promise((resolve) => setTimeout(resolve, 50));
-
-        // Write chunk files directly — no EventEmitter involved
-        const chunk1 = serializeChunk({
-          eof: false,
-          chunk: Buffer.from('hello'),
-        });
-        await fs.writeFile(
-          path.join(chunksDir, `chnk_01ARZ3NDEKTSV4RRFFQ69G5FAV.bin`),
-          chunk1
-        );
-
-        await new Promise((resolve) => setTimeout(resolve, 200));
-
-        const chunk2 = serializeChunk({
-          eof: false,
-          chunk: Buffer.from(' world'),
-        });
-        await fs.writeFile(
-          path.join(chunksDir, `chnk_01ARZ3NDEKTSV4RRFFQ69G5FAW.bin`),
-          chunk2
-        );
-
-        await new Promise((resolve) => setTimeout(resolve, 200));
-
-        // Write EOF chunk to close the stream
-        const eofChunk = serializeChunk({
-          eof: true,
-          chunk: Buffer.from([]),
-        });
-        await fs.writeFile(
-          path.join(chunksDir, `chnk_01ARZ3NDEKTSV4RRFFQ69G5FAX.bin`),
-          eofChunk
-        );
-
-        await readPromise;
-
-        expect(chunks.join('')).toBe('hello world');
-      }, 10000);
-    });
-
-    describe('reader lifecycle (vercel/workflow#2795, #2797)', () => {
-      it('tears down emitter listeners and the poll interval on cancel', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'teardown-stream';
-
-        // Open a reader on a stream with no chunks (the abort-stream shape):
-        // start() reads an empty directory, then arms the 100ms poll and
-        // registers chunk/close emitter listeners.
-        const before = process
-          .getActiveResourcesInfo()
-          .filter((r) => r === 'Timeout').length;
-
-        const readable = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = readable.getReader();
-        // Kick off a read so start() runs to completion (arms the poll).
-        const pending = reader.read();
-        await new Promise((resolve) => setTimeout(resolve, 20));
-
-        // Cancelling must release everything the reader holds open.
-        await reader.cancel();
-        await pending.catch(() => {});
-
-        const after = process
-          .getActiveResourcesInfo()
-          .filter((r) => r === 'Timeout').length;
-        expect(after).toBeLessThanOrEqual(before);
-
-        // A subsequent write must not reach the cancelled reader's listeners
-        // (a leaked listener would still try to enqueue on a closed stream).
-        await expect(
-          streamer.streams.write(TEST_RUN_ID, streamName, 'after-cancel')
-        ).resolves.toBeUndefined();
-      });
-
-      it('scopes chunk listing to the stream, not the whole world', async () => {
-        const { testDir, streamer } = await setupStreamer({
-          // Removing the 2,000-file fixture can exceed Vitest's default hook
-          // timeout on Windows runners.
-          cleanupTimeout: 30_000,
-        });
-
-        // One real chunk on the stream under test.
-        await streamer.streams.write(TEST_RUN_ID, 'target', 'hi');
-
-        // Thousands of unrelated chunks in *other* streams. Under the old flat
-        // layout these all lived in one directory and every tail-reader poll
-        // re-listed them (O(world chunks)); now each stream is sharded so the
-        // target's listing is unaffected.
-        const chunksBase = path.join(testDir, 'streams', 'chunks');
-        const otherDir = path.join(chunksBase, 'noise');
-        await fs.mkdir(otherDir, { recursive: true });
-        await Promise.all(
-          Array.from({ length: 2000 }, (_, i) =>
-            fs.writeFile(path.join(otherDir, `chnk_seed${i}.bin`), '')
-          )
-        );
-
-        // The target stream's own directory holds exactly its one chunk.
-        const targetEntries = await fs.readdir(path.join(chunksBase, 'target'));
-        expect(targetEntries).toHaveLength(1);
-
-        // And reads return only the target's data, never the noise.
-        const info = await streamer.streams.getInfo(TEST_RUN_ID, 'target');
-        expect(info.tailIndex).toBe(0);
-        const { data } = await streamer.streams.getChunks(
-          TEST_RUN_ID,
-          'target'
-        );
-        expect(data).toHaveLength(1);
-        expect(Buffer.from(data[0].data).toString()).toBe('hi');
-      });
-    });
-
-    describe('integration scenarios', () => {
-      it('should handle complete write-close-read cycle', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'integration-stream';
-
-        // Write chunks with proper timing
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'start ');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'middle ');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'end');
-
-        // Close the stream
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        // Read complete stream
-        const completeStream = await streamer.streams.get(
-          TEST_RUN_ID,
-          streamName
-        );
-        const completeReader = completeStream.getReader();
-        const completeChunks: Uint8Array[] = [];
-        let completeDone = false;
-
-        while (!completeDone) {
-          const completeResult = await completeReader.read();
-          completeDone = completeResult.done;
-          if (completeResult.value) {
-            completeChunks.push(completeResult.value);
-          }
-        }
-
-        const completeContent = Buffer.concat(completeChunks).toString();
-        expect(completeContent).toBe('start middle end');
-      });
-
-      it('should not lose or duplicate chunks written during stream initialization (race condition test)', async () => {
-        // Run multiple iterations to increase probability of catching race conditions.
-        // Keep the count low — each iteration creates a fresh streamer with its own
-        // temp directory, and per-chunk I/O on Windows CI can be ~100-200ms which
-        // easily blows the timeout at higher counts.
-        for (let iteration = 0; iteration < 3; iteration++) {
-          const { streamer } = await setupStreamer();
-          const streamName = `race-${iteration}`;
-
-          // Write a few chunks to disk first
-          await streamer.streams.write(TEST_RUN_ID, streamName, '0\n');
-          await streamer.streams.write(TEST_RUN_ID, streamName, '1\n');
-
-          // Start writing chunks in background IMMEDIATELY before reading
-          const writeTask = (async () => {
-            for (let i = 2; i < 10; i++) {
-              await streamer.streams.write(TEST_RUN_ID, streamName, `${i}\n`);
-              // No delay - fire them off as fast as possible to hit the race window
-            }
-            await streamer.streams.close(TEST_RUN_ID, streamName);
-          })();
-
-          // Start reading - this triggers start() which should set up listeners
-          // BEFORE listing files to avoid missing chunks, and track delivered
-          // chunk IDs to avoid duplicates
-          const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-          const reader = stream.getReader();
-          const chunks: string[] = [];
-
-          let done = false;
-          while (!done) {
-            const result = await reader.read();
-            done = result.done;
-            if (result.value) {
-              chunks.push(Buffer.from(result.value).toString());
-            }
-          }
-
-          await writeTask;
-
-          // Verify exactly 10 chunks were received (no duplicates, no missing)
-          const content = chunks.join('');
-          const lines = content.split('\n').filter((l) => l !== '');
-
-          // Check for duplicates
-          if (lines.length !== 10) {
-            const numbers = lines.map(Number);
-            throw new Error(
-              `Expected 10 chunks but got ${lines.length}. ` +
-                (lines.length > 10
-                  ? 'Duplicates detected!'
-                  : 'Missing chunks!') +
-                ` Received: ${numbers.join(',')}`
-            );
-          }
-
-          // Check all numbers 0-9 are present
-          const numbers = lines.map(Number).sort((a, b) => a - b);
-          for (let i = 0; i < 10; i++) {
-            if (numbers[i] !== i) {
-              throw new Error(
-                `Race condition detected! Missing or incorrect chunk at position ${i}. ` +
-                  `Expected ${i}, got ${numbers[i]}. Full list: ${numbers.join(',')}`
-              );
-            }
-          }
-        }
-      }, 20000);
-
-      it('should maintain chronological order when chunks arrive during disk reading', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'ordering-test';
-
-        // Write chunks 0-4 to disk
-        for (let i = 0; i < 5; i++) {
-          await streamer.streams.write(TEST_RUN_ID, streamName, `${i}\n`);
-          await new Promise((resolve) => setTimeout(resolve, 2));
-        }
-
-        // Start reading
         const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = stream.getReader();
-        const chunks: string[] = [];
+        const chunks = await readText(stream);
+        await writeTask;
 
-        const readPromise = (async () => {
-          let done = false;
-          while (!done) {
-            const result = await reader.read();
-            done = result.done;
-            if (result.value) {
-              chunks.push(Buffer.from(result.value).toString());
-            }
-          }
-        })();
-
-        // Immediately write more chunks (5-9) while disk reading might be in progress
-        for (let i = 5; i < 10; i++) {
-          await streamer.streams.write(TEST_RUN_ID, streamName, `${i}\n`);
-        }
-
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-        await readPromise;
-
-        // Verify chunks are in exact chronological order (not just all present)
-        const content = chunks.join('');
-        expect(content).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
-      });
+        expect(chunks).toEqual(Array.from({ length: 10 }, (_, i) => `${i}\n`));
+      }
     });
 
-    describe('chunk order', () => {
-      function gate() {
-        let open = () => {};
-        const opened = new Promise<void>((resolve) => {
-          open = resolve;
-        });
-        return { open, opened };
+    it('keeps order when chunks arrive while a reader is catching up', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'ordering-test';
+
+      for (let i = 0; i < 5; i++) {
+        await streamer.streams.write(TEST_RUN_ID, streamName, `${i}\n`);
       }
 
-      async function readAll(stream: ReadableStream<Uint8Array>) {
-        const chunks: string[] = [];
-        for await (const chunk of stream) {
-          chunks.push(Buffer.from(chunk).toString());
-        }
-        return chunks;
+      const live = collect(await streamer.streams.get(TEST_RUN_ID, streamName));
+      for (let i = 5; i < 10; i++) {
+        await streamer.streams.write(TEST_RUN_ID, streamName, `${i}\n`);
       }
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+      await live.done;
 
-      function holdWhen<A extends unknown[], R>(
-        method: 'readdir' | 'readFile' | 'writeFile',
-        matches: (...args: A) => boolean,
-        { fail = false } = {}
-      ) {
-        const reached = gate();
-        const released = gate();
-        const original = fs[method] as unknown as (...args: A) => Promise<R>;
-        let armed = true;
-        const spy = vi.spyOn(fs, method).mockImplementation((async (
-          ...args: A
-        ) => {
-          if (armed && matches(...args)) {
-            armed = false;
-            reached.open();
-            await released.opened;
-            if (fail) {
-              throw Object.assign(new Error('Transient read failure'), {
-                code: 'EIO',
-              });
-            }
-          }
-          return original(...args);
-        }) as never);
-        onTestFinished(() => spy.mockRestore());
-        return { reached: reached.opened, release: released.open };
-      }
-
-      // Long enough for an unordered write or delivery to land first.
-      const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
-
-      it('writeMulti lands a group in id order for a reader that opens mid-group', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'write-multi-order';
-        const held = holdWhen(
-          'writeFile',
-          (_file: unknown, data: unknown) =>
-            Buffer.isBuffer(data) && data.subarray(1).toString() === 'first\n'
-        );
-
-        const writing = streamer.streams.writeMulti(TEST_RUN_ID, streamName, [
-          'first\n',
-          'second\n',
-          'third\n',
-        ]);
-        await held.reached;
-        await settle();
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        held.release();
-        await writing;
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        expect(await readAll(stream)).toEqual([
-          'first\n',
-          'second\n',
-          'third\n',
-        ]);
-      });
-
-      it('lands concurrent writes in the order they were called', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'concurrent-write-order';
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        let resolveRunId: (runId: string) => void = () => {};
-        const runId = new Promise<string>((resolve) => {
-          resolveRunId = resolve;
-        });
-
-        const first = streamer.streams.write(runId, streamName, 'first\n');
-        const second = streamer.streams.write(
-          TEST_RUN_ID,
-          streamName,
-          'second\n'
-        );
-        await Promise.race([second, settle()]);
-        resolveRunId(TEST_RUN_ID);
-        await Promise.all([first, second]);
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
-      });
-
-      it('closes a stream behind a write still waiting for its run id', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'close-behind-write';
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        let resolveRunId: (runId: string) => void = () => {};
-        const runId = new Promise<string>((resolve) => {
-          resolveRunId = resolve;
-        });
-
-        const writing = streamer.streams.write(runId, streamName, 'data\n');
-        const closing = streamer.streams.close(TEST_RUN_ID, streamName);
-        await Promise.race([closing, settle()]);
-        resolveRunId(TEST_RUN_ID);
-        await Promise.all([writing, closing]);
-
-        expect(await readAll(stream)).toEqual(['data\n']);
-      });
-
-      it('never delivers a chunk before startIndex, even as a live copy', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const streamName = 'start-index-live-copy';
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const listing = holdWhen(
-          'readdir',
-          (dir: unknown) => dir === chunksDir
-        );
-
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName, 1);
-        await listing.reached;
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'c0\n');
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'c1\n');
-        listing.release();
-        await settle();
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        expect(await readAll(stream)).toEqual(['c1\n']);
-      });
-
-      it('keeps a listed chunk whose live copy arrived during the first disk read in place', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        // A second instance on the same directory writes like another
-        // process: its chunks reach the reader only through the filesystem.
-        const otherProcess = createStreamer(testDir);
-        const streamName = 'startup-order';
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        const listing = holdWhen(
-          'readdir',
-          (dir: unknown) => dir === chunksDir
-        );
-
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        await listing.reached;
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'first\n');
-        await otherProcess.streams.write(TEST_RUN_ID, streamName, 'second\n');
-        listing.release();
-        await settle();
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
-      });
-
-      it('holds live chunks while a poll is reading an earlier chunk', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const otherProcess = createStreamer(testDir);
-        const streamName = 'poll-order';
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        // Let the first disk read finish so the poll picks up the next file.
-        await settle();
-        // Only a reader reads chunk files; writers write them.
-        const read = holdWhen('readFile', (file: unknown) =>
-          String(file).startsWith(chunksDir)
-        );
-        await otherProcess.streams.write(TEST_RUN_ID, streamName, 'first\n');
-
-        await read.reached;
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'second\n');
-        await settle();
-        read.release();
-        await settle();
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
-      });
-
-      it('keeps holding live chunks after a poll fails partway', async () => {
-        const { testDir, streamer } = await setupStreamer();
-        const otherProcess = createStreamer(testDir);
-        const streamName = 'poll-failure-order';
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        await settle();
-        const read = holdWhen(
-          'readFile',
-          (file: unknown) => String(file).startsWith(chunksDir),
-          { fail: true }
-        );
-        await otherProcess.streams.write(TEST_RUN_ID, streamName, 'first\n');
-
-        await read.reached;
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'second\n');
-        read.release();
-        // Long enough for the next poll to read the file the failed one missed.
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
-      });
+      expect(live.received.join('')).toBe('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n');
     });
 
-    describe('streams.list', () => {
-      it('should return empty array when no streams exist', async () => {
-        const { streamer } = await setupStreamer();
+    it('delivers writes from two instances in commit order', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      const other = createStreamer(testDir);
+      const streamName = 'two-writers';
+      const live = collect(await streamer.streams.get(TEST_RUN_ID, streamName));
 
-        const streams = await streamer.streams.list(TEST_RUN_ID);
-        expect(streams).toEqual([]);
-      });
+      await streamer.streams.write(TEST_RUN_ID, streamName, '0\n');
+      await other.streams.write(TEST_RUN_ID, streamName, '1\n');
+      await settle();
+      await other.streams.write(TEST_RUN_ID, streamName, '2\n');
+      await streamer.streams.write(TEST_RUN_ID, streamName, '3\n');
+      await other.streams.close(TEST_RUN_ID, streamName);
+      await live.done;
 
-      it('should return streams associated with the runId', async () => {
-        const { streamer } = await setupStreamer();
+      expect(live.received).toEqual(['0\n', '1\n', '2\n', '3\n']);
+    });
+  });
 
-        // Stream names can be anything - they're tracked via explicit mapping
-        const streamName1 = 'my-stdout-stream';
-        const streamName2 = 'my-stderr-stream';
+  describe('reader lifecycle (vercel/workflow#2795, #2797)', () => {
+    it('tears down signal listeners and the poll interval on cancel', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'teardown-stream';
+      // Open the database first so its own timers are counted in `before`.
+      await streamer.streams.getInfo(TEST_RUN_ID, streamName);
+      const timersBefore = timeouts();
+      const listenersBefore = signalListeners();
 
-        await streamer.streams.write(TEST_RUN_ID, streamName1, 'stdout output');
-        await streamer.streams.write(TEST_RUN_ID, streamName2, 'stderr output');
-        await streamer.streams.close(TEST_RUN_ID, streamName1);
-        await streamer.streams.close(TEST_RUN_ID, streamName2);
+      // A reader on a stream with no chunks (the abort-stream shape) waits
+      // on the signal and the poll.
+      const reader = (
+        await streamer.streams.get(TEST_RUN_ID, streamName)
+      ).getReader();
+      const pending = reader.read();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(signalListeners()).toBe(listenersBefore + 1);
+      expect(timeouts()).toBeGreaterThan(timersBefore);
 
-        const streams = await streamer.streams.list(TEST_RUN_ID);
+      await reader.cancel();
+      await pending.catch(() => {});
 
-        expect(streams).toHaveLength(2);
-        expect(streams).toContain(streamName1);
-        expect(streams).toContain(streamName2);
-      });
-
-      it('should not return streams from different runIds', async () => {
-        const { streamer } = await setupStreamer();
-
-        const otherRunId = 'wrun_other1234567890123';
-
-        const targetStream = 'target-stdout';
-        const otherStream = 'other-stdout';
-
-        await streamer.streams.write(
-          TEST_RUN_ID,
-          targetStream,
-          'target output'
-        );
-        await streamer.streams.write(otherRunId, otherStream, 'other output');
-
-        const streams = await streamer.streams.list(TEST_RUN_ID);
-
-        expect(streams).toHaveLength(1);
-        expect(streams).toContain(targetStream);
-        expect(streams).not.toContain(otherStream);
-
-        // Also verify the other run has only its stream
-        const otherStreams = await streamer.streams.list(otherRunId);
-        expect(otherStreams).toHaveLength(1);
-        expect(otherStreams).toContain(otherStream);
-      });
-
-      it('should return unique stream names even with multiple chunks', async () => {
-        const { streamer } = await setupStreamer();
-
-        const streamName = 'chunked-output';
-
-        // Write multiple chunks to the same stream
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk1');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk2');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk3');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const streams = await streamer.streams.list(TEST_RUN_ID);
-
-        // Should only return the stream name once, not once per chunk
-        expect(streams).toHaveLength(1);
-        expect(streams).toContain(streamName);
-      });
-
-      it('should handle stream names with dashes', async () => {
-        const { streamer } = await setupStreamer();
-
-        const streamName = 'my-complex-stream-name';
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const streams = await streamer.streams.list(TEST_RUN_ID);
-
-        expect(streams).toHaveLength(1);
-        expect(streams).toContain(streamName);
-      });
-
-      it('should register stream even if only close is called', async () => {
-        const { streamer } = await setupStreamer();
-
-        const streamName = 'close-only-stream';
-
-        // Only call close without write
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const streams = await streamer.streams.list(TEST_RUN_ID);
-
-        expect(streams).toHaveLength(1);
-        expect(streams).toContain(streamName);
-      });
+      expect(timeouts()).toBeLessThanOrEqual(timersBefore);
+      expect(signalListeners()).toBe(listenersBefore);
+      // A later write must not reach the cancelled reader.
+      await expect(
+        streamer.streams.write(TEST_RUN_ID, streamName, 'after-cancel')
+      ).resolves.toBeUndefined();
     });
 
-    // A run's stream names live in one file, `streams/runs/<runId>.json`.
-    // Registering a name is a read-modify-write of that file, so two streams
-    // of one run that first write at the same time each read the old list
-    // and the second rename drops the first name.
-    describe('concurrent stream registration', () => {
+    it('tears down signal listeners and the poll interval at the end of the stream', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'teardown-at-end';
+      await streamer.streams.getInfo(TEST_RUN_ID, streamName);
+      const timersBefore = timeouts();
+      const listenersBefore = signalListeners();
+
+      const live = collect(await streamer.streams.get(TEST_RUN_ID, streamName));
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+      await live.done;
+
+      expect(live.received).toEqual(['data']);
+      expect(timeouts()).toBeLessThanOrEqual(timersBefore);
+      expect(signalListeners()).toBe(listenersBefore);
+    });
+
+    it('reads only the stream asked for, however busy the others are', async () => {
+      const { streamer } = await setupStreamer();
+
+      await streamer.streams.write(TEST_RUN_ID, 'target', 'hi');
+      await streamer.streams.writeMulti(
+        TEST_RUN_ID,
+        'noise',
+        Array.from({ length: 2000 }, (_, i) => `noise${i}`)
+      );
+
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, 'target')).toEqual({
+        tailIndex: 0,
+        done: false,
+      });
+      const { data } = await streamer.streams.getChunks(TEST_RUN_ID, 'target');
+      expect(data.map((c) => Buffer.from(c.data).toString())).toEqual(['hi']);
+    });
+  });
+
+  describe('runId as a promise', () => {
+    it('holds writes until the run id resolves, then writes them in order', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'promise-runid-test';
+      const runId = deferred<string>();
+
+      let writes1Complete = false;
+      let writes2Complete = false;
+      const writePromise1 = streamer.streams
+        .write(runId.promise, streamName, 'chunk1\n')
+        .then(() => {
+          writes1Complete = true;
+        });
+      const writePromise2 = streamer.streams
+        .write(runId.promise, streamName, 'chunk2\n')
+        .then(() => {
+          writes2Complete = true;
+        });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(writes1Complete).toBe(false);
+      expect(writes2Complete).toBe(false);
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: -1,
+        done: false,
+      });
+
+      runId.resolve(TEST_RUN_ID);
+      await writePromise1;
+      await writePromise2;
+
+      const closeRunId = deferred<string>();
+      const closePromise = streamer.streams.close(
+        closeRunId.promise,
+        streamName
+      );
+      closeRunId.resolve(TEST_RUN_ID);
+      await closePromise;
+
+      expect(
+        await readText(await streamer.streams.get(TEST_RUN_ID, streamName))
+      ).toEqual(['chunk1\n', 'chunk2\n']);
+      // The resolved run id is the one the stream is listed under.
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([streamName]);
+    });
+  });
+
+  describe('list', () => {
+    it('returns an empty array when no streams exist', async () => {
+      const { streamer } = await setupStreamer();
+
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([]);
+    });
+
+    it('returns the streams of the run', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName1 = 'my-stdout-stream';
+      const streamName2 = 'my-stderr-stream';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName1, 'stdout output');
+      await streamer.streams.write(TEST_RUN_ID, streamName2, 'stderr output');
+      await streamer.streams.close(TEST_RUN_ID, streamName1);
+      await streamer.streams.close(TEST_RUN_ID, streamName2);
+
+      expect((await streamer.streams.list(TEST_RUN_ID)).sort()).toEqual(
+        [streamName1, streamName2].sort()
+      );
+    });
+
+    it('does not return streams of other runs', async () => {
+      const { streamer } = await setupStreamer();
+      const otherRunId = 'wrun_other1234567890123';
+
+      await streamer.streams.write(TEST_RUN_ID, 'target-stdout', 'target');
+      await streamer.streams.write(otherRunId, 'other-stdout', 'other');
+
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([
+        'target-stdout',
+      ]);
+      expect(await streamer.streams.list(otherRunId)).toEqual(['other-stdout']);
+    });
+
+    it('returns each stream name once, however many chunks it has', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'chunked-output';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'chunk1');
+      await streamer.streams.writeMulti(TEST_RUN_ID, streamName, [
+        'chunk2',
+        'chunk3',
+      ]);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([streamName]);
+    });
+
+    it('handles stream names with dashes', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'my-complex-stream-name';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([streamName]);
+    });
+
+    it('lists a stream that was only closed', async () => {
+      const { streamer } = await setupStreamer();
+
+      await streamer.streams.close(TEST_RUN_ID, 'close-only-stream');
+
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([
+        'close-only-stream',
+      ]);
+    });
+
+    describe('concurrent first writes', () => {
       const names = (prefix: string, count: number) =>
         Array.from({ length: count }, (_, i) => `${prefix}-${i}`);
 
@@ -1200,8 +840,6 @@ describe('streamer', () => {
         ]);
       });
 
-      // Two streamers on one data directory share no memory, so this is the
-      // same race as two processes writing one `.workflow-data`.
       it.each([
         { label: 'untagged', tag: undefined },
         { label: 'tagged', tag: 'vitest-x' },
@@ -1228,322 +866,246 @@ describe('streamer', () => {
           );
         }
       });
+    });
+  });
 
-      it('takes over the lock of a writer that crashed holding it', async () => {
-        const { streamer, testDir } = await setupStreamer();
-        const lockDir = path.join(
-          testDir,
-          'streams',
-          'runs',
-          `${TEST_RUN_ID}.json.lock`
-        );
-        await fs.mkdir(lockDir, { recursive: true });
-        const longAgo = new Date(Date.now() - 60_000);
-        await fs.utimes(lockDir, longAgo, longAgo);
+  describe('getChunks', () => {
+    it('paginates through all chunks', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'paginated-stream';
 
-        const startedAt = Date.now();
-        await streamer.streams.write(TEST_RUN_ID, 'after-crash', 'data');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'a');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'c');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
 
-        expect(Date.now() - startedAt).toBeLessThan(5_000);
-        expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([
-          'after-crash',
-        ]);
-        await expect(fs.stat(lockDir)).rejects.toMatchObject({
-          code: 'ENOENT',
-        });
+      const page1 = await streamer.streams.getChunks(TEST_RUN_ID, streamName, {
+        limit: 2,
       });
+      expect(page1.data.map((c) => c.index)).toEqual([0, 1]);
+      expect(page1.data.map((c) => Buffer.from(c.data).toString())).toEqual([
+        'a',
+        'b',
+      ]);
+      expect(page1.hasMore).toBe(true);
+      expect(page1.done).toBe(false);
+      expect(page1.cursor).not.toBeNull();
 
-      // A world-local from before this fix, writing the same data directory,
-      // still registers without the lock and can drop a name this streamer
-      // already wrote. Closing the stream puts it back.
-      it('close() restores a name that another writer dropped', async () => {
-        const { streamer, testDir } = await setupStreamer();
-        await streamer.streams.write(TEST_RUN_ID, 'kept', 'data');
-        await streamer.streams.write(TEST_RUN_ID, 'dropped', 'data');
-
-        await fs.writeFile(
-          path.join(testDir, 'streams', 'runs', `${TEST_RUN_ID}.json`),
-          JSON.stringify({ streams: ['kept'] })
-        );
-        await streamer.streams.close(TEST_RUN_ID, 'dropped');
-
-        expect((await streamer.streams.list(TEST_RUN_ID)).sort()).toEqual([
-          'dropped',
-          'kept',
-        ]);
+      const page2 = await streamer.streams.getChunks(TEST_RUN_ID, streamName, {
+        limit: 2,
+        cursor: page1.cursor ?? undefined,
       });
+      expect(page2.data.map((c) => c.index)).toEqual([2]);
+      expect(Buffer.from(page2.data[0].data).toString()).toBe('c');
+      expect(page2.hasMore).toBe(false);
+      expect(page2.cursor).toBeNull();
+      expect(page2.done).toBe(true);
+    });
 
-      // The re-check is a repair. A close() of a registered stream never read
-      // the index before, so a failed read must not fail it now: the stream
-      // would never get its EOF and its readers would wait forever.
-      it('close() still closes a registered stream when the index cannot be read', async () => {
-        const { streamer, testDir } = await setupStreamer();
-        await streamer.streams.write(TEST_RUN_ID, 'stream', 'data');
-        await fs.writeFile(
-          path.join(testDir, 'streams', 'runs', `${TEST_RUN_ID}.json`),
-          '{not json'
-        );
+    it('reports done on a page that ends exactly at the end of the stream', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'exact-page';
 
-        await streamer.streams.close(TEST_RUN_ID, 'stream');
+      await streamer.streams.writeMulti(TEST_RUN_ID, streamName, ['a', 'b']);
+      await streamer.streams.close(TEST_RUN_ID, streamName);
 
-        const chunks = await streamer.streams.getChunks(TEST_RUN_ID, 'stream');
-        expect(chunks.done).toBe(true);
+      const page = await streamer.streams.getChunks(TEST_RUN_ID, streamName, {
+        limit: 2,
+      });
+      expect(page.data).toHaveLength(2);
+      expect(page.hasMore).toBe(false);
+      expect(page.cursor).toBeNull();
+      expect(page.done).toBe(true);
+    });
+
+    it('continues from a cursor as an open stream grows', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'growing';
+
+      await streamer.streams.writeMulti(TEST_RUN_ID, streamName, ['a', 'b']);
+      const page1 = await streamer.streams.getChunks(TEST_RUN_ID, streamName, {
+        limit: 1,
+      });
+      expect(page1.hasMore).toBe(true);
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'c');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const page2 = await streamer.streams.getChunks(TEST_RUN_ID, streamName, {
+        cursor: page1.cursor ?? undefined,
+      });
+      expect(page2.data.map((c) => c.index)).toEqual([1, 2]);
+      expect(page2.data.map((c) => Buffer.from(c.data).toString())).toEqual([
+        'b',
+        'c',
+      ]);
+      expect(page2.done).toBe(true);
+    });
+
+    it('returns done=false for an in-progress stream', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'in-progress';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
+
+      const result = await streamer.streams.getChunks(TEST_RUN_ID, streamName);
+      expect(result.data).toHaveLength(1);
+      expect(result.hasMore).toBe(false);
+      expect(result.done).toBe(false);
+    });
+
+    it('returns empty data for a nonexistent stream', async () => {
+      const { streamer } = await setupStreamer();
+
+      const result = await streamer.streams.getChunks(
+        TEST_RUN_ID,
+        'nonexistent'
+      );
+      expect(result.data).toEqual([]);
+      expect(result.hasMore).toBe(false);
+      expect(result.cursor).toBeNull();
+      expect(result.done).toBe(false);
+    });
+
+    it('restarts from the beginning on an invalid cursor', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'bad-cursor';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      const result = await streamer.streams.getChunks(TEST_RUN_ID, streamName, {
+        cursor: 'not-valid-base64-json',
+      });
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0].index).toBe(0);
+    });
+  });
+
+  describe('getInfo', () => {
+    it('returns tailIndex and done for a completed stream', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'info-completed';
+
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'a');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: 1,
+        done: true,
       });
     });
 
-    describe('getChunks', () => {
-      it('should paginate through all chunks', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'paginated-stream';
+    it('returns tailIndex for an in-progress stream', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'info-progress';
 
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'a');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'c');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'a');
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
 
-        // Page 1: limit=2
-        const page1 = await streamer.streams.getChunks(
-          TEST_RUN_ID,
-          streamName,
-          {
-            limit: 2,
-          }
-        );
-        expect(page1.data).toHaveLength(2);
-        expect(page1.data[0].index).toBe(0);
-        expect(page1.data[1].index).toBe(1);
-        expect(page1.hasMore).toBe(true);
-        expect(page1.cursor).not.toBeNull();
-
-        // Page 2: remaining chunks
-        const page2 = await streamer.streams.getChunks(
-          TEST_RUN_ID,
-          streamName,
-          {
-            limit: 2,
-            cursor: page1.cursor!,
-          }
-        );
-        expect(page2.data).toHaveLength(1);
-        expect(page2.data[0].index).toBe(2);
-        expect(page2.hasMore).toBe(false);
-        expect(page2.done).toBe(true);
-      });
-
-      it('prefers tagged chunks over untagged and legacy files', async () => {
-        const { testDir } = await setupStreamer();
-        const streamName = 'mixed-format-stream';
-        const taggedStreamer = createStreamer(testDir, 'vitest-0');
-        // Chunks live in the stream's sharded directory; the filename is just
-        // the chunk id plus its format/tag suffix (no stream-name prefix).
-        const chunksDir = path.join(testDir, 'streams', 'chunks', streamName);
-        await fs.mkdir(chunksDir, { recursive: true });
-
-        const writeChunk = (fileName: string, text: string, eof = false) =>
-          fs.writeFile(
-            path.join(chunksDir, fileName),
-            serializeChunk({ chunk: Buffer.from(text), eof })
-          );
-
-        await Promise.all([
-          writeChunk(`chnk_01.json`, 'legacy-shadowed'),
-          writeChunk(`chnk_01.bin`, 'untagged-shadowed'),
-          writeChunk(`chnk_01.vitest-0.bin`, 'tagged'),
-          writeChunk(`chnk_02.json`, 'legacy-shadowed'),
-          writeChunk(`chnk_02.bin`, 'untagged'),
-          writeChunk(`chnk_03.json`, 'legacy'),
-          writeChunk(`chnk_04.vitest-0.bin`, '', true),
-        ]);
-
-        const result = await taggedStreamer.streams.getChunks(
-          TEST_RUN_ID,
-          streamName
-        );
-
-        expect(
-          result.data.map((chunk) => Buffer.from(chunk.data).toString())
-        ).toEqual(['tagged', 'untagged', 'legacy']);
-        expect(result.done).toBe(true);
-      });
-
-      it('should return done=false for in-progress stream', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'in-progress';
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
-
-        const result = await streamer.streams.getChunks(
-          TEST_RUN_ID,
-          streamName
-        );
-        expect(result.data).toHaveLength(1);
-        expect(result.done).toBe(false);
-      });
-
-      it('should return empty data for nonexistent stream', async () => {
-        const { streamer } = await setupStreamer();
-
-        const result = await streamer.streams.getChunks(
-          TEST_RUN_ID,
-          'nonexistent'
-        );
-        expect(result.data).toEqual([]);
-        expect(result.hasMore).toBe(false);
-      });
-
-      it('should handle invalid cursor gracefully', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'bad-cursor';
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        // Invalid cursor should reset to beginning
-        const result = await streamer.streams.getChunks(
-          TEST_RUN_ID,
-          streamName,
-          {
-            cursor: 'not-valid-base64-json',
-          }
-        );
-        expect(result.data).toHaveLength(1);
-        expect(result.data[0].index).toBe(0);
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: 1,
+        done: false,
       });
     });
 
-    describe('getInfo', () => {
-      it('should return tailIndex and done for completed stream', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'info-completed';
+    it('returns -1 for a nonexistent stream', async () => {
+      const { streamer } = await setupStreamer();
 
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'a');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const info = await streamer.streams.getInfo(TEST_RUN_ID, streamName);
-        expect(info.tailIndex).toBe(1);
-        expect(info.done).toBe(true);
-      });
-
-      it('should return tailIndex for in-progress stream', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'info-progress';
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'a');
-        await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
-
-        const info = await streamer.streams.getInfo(TEST_RUN_ID, streamName);
-        expect(info.tailIndex).toBe(1);
-        expect(info.done).toBe(false);
-      });
-
-      it('should return -1 for nonexistent stream', async () => {
-        const { streamer } = await setupStreamer();
-
-        const info = await streamer.streams.getInfo(TEST_RUN_ID, 'nonexistent');
-        expect(info.tailIndex).toBe(-1);
-        expect(info.done).toBe(false);
-      });
-
-      it('should return 0 tailIndex for single-chunk stream', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'single-chunk';
-
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'only');
-        await streamer.streams.close(TEST_RUN_ID, streamName);
-
-        const info = await streamer.streams.getInfo(TEST_RUN_ID, streamName);
-        expect(info.tailIndex).toBe(0);
-        expect(info.done).toBe(true);
-      });
+      expect(
+        await streamer.streams.getInfo(TEST_RUN_ID, 'nonexistent')
+      ).toEqual({ tailIndex: -1, done: false });
     });
 
-    describe('integration scenarios', () => {
-      it('should handle runId as a promise and flush correctly when promise resolves', async () => {
-        const { streamer } = await setupStreamer();
-        const streamName = 'promise-runid-test';
+    it('returns tailIndex 0 for a single-chunk stream', async () => {
+      const { streamer } = await setupStreamer();
+      const streamName = 'single-chunk';
 
-        // Create a promise that we'll resolve later
-        let resolveRunId: (value: string) => void = () => {};
-        const runIdPromise = new Promise<string>((resolve) => {
-          resolveRunId = resolve;
+      await streamer.streams.write(TEST_RUN_ID, streamName, 'only');
+      await streamer.streams.close(TEST_RUN_ID, streamName);
+
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: 0,
+        done: true,
+      });
+    });
+  });
+
+  describe('across OS processes on one data directory', () => {
+    const child = fileURLToPath(
+      new URL('./streamer-writer.child.mjs', import.meta.url)
+    );
+    type Answer = { status: 'ready' | 'done' | 'error'; message?: string };
+
+    /** A process writing `name` on `testDir` as the test directs it. */
+    async function otherProcess(testDir: string, name: string) {
+      const proc = fork(child, [testDir, TEST_RUN_ID, name], {
+        // Node's own type stripping, nothing inherited from the test runner.
+        execArgv: [],
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+      });
+      const exited = new Promise<void>((resolve) => {
+        proc.once('exit', () => resolve());
+      });
+      onTestFinished(async () => {
+        if (proc.exitCode === null) proc.kill();
+        await exited;
+      });
+      const next = () =>
+        new Promise<Answer>((resolve, reject) => {
+          const onExit = (code: number | null) =>
+            reject(new Error(`child exited (${code}) without answering`));
+          proc.once('exit', onExit);
+          proc.once('message', (m) => {
+            proc.off('exit', onExit);
+            resolve(m as Answer);
+          });
         });
-
-        // Write chunks with the promise (before it's resolved)
-        const writePromise1 = streamer.streams.write(
-          runIdPromise,
-          streamName,
-          'chunk1\n'
-        );
-        const writePromise2 = streamer.streams.write(
-          runIdPromise,
-          streamName,
-          'chunk2\n'
-        );
-
-        // Verify that writes are pending (not yet flushed)
-        let writes1Complete = false;
-        let writes2Complete = false;
-        writePromise1.then(() => {
-          writes1Complete = true;
-        });
-        writePromise2.then(() => {
-          writes2Complete = true;
-        });
-
-        // Give a small delay to ensure writes are initiated but blocked
-        await new Promise((resolve) => setTimeout(resolve, 10));
-
-        // At this point, writes should be pending
-        expect(writes1Complete).toBe(false);
-        expect(writes2Complete).toBe(false);
-
-        // Now resolve the runId promise
-        resolveRunId(TEST_RUN_ID);
-
-        // Wait for writes to complete
-        await writePromise1;
-        await writePromise2;
-
-        expect(writes1Complete).toBe(true);
-        expect(writes2Complete).toBe(true);
-
-        // Close the stream with another promise
-        let resolveCloseRunId: (value: string) => void = () => {};
-        const closeRunIdPromise = new Promise<string>((resolve) => {
-          resolveCloseRunId = resolve;
-        });
-
-        const closePromise = streamer.streams.close(
-          closeRunIdPromise,
-          streamName
-        );
-
-        // Resolve the close promise
-        resolveCloseRunId(TEST_RUN_ID);
-        await closePromise;
-
-        // Now read and verify all chunks were written correctly
-        const stream = await streamer.streams.get(TEST_RUN_ID, streamName);
-        const reader = stream.getReader();
-        const chunks: string[] = [];
-
-        let done = false;
-        while (!done) {
-          const result = await reader.read();
-          done = result.done;
-          if (result.value) {
-            chunks.push(Buffer.from(result.value).toString());
-          }
+      expect(await next()).toEqual({ status: 'ready' });
+      const send = async (message: object) => {
+        const answer = next();
+        proc.send(message);
+        const result = await answer;
+        if (result.status !== 'done') {
+          throw new Error(`child failed: ${result.message}`);
         }
+      };
+      return {
+        write: (chunks: string[]) => send({ op: 'write', chunks }),
+        writeMulti: (chunks: string[]) => send({ op: 'writeMulti', chunks }),
+        close: async () => {
+          await send({ op: 'close' });
+          await exited;
+        },
+      };
+    }
 
-        const content = chunks.join('');
-        expect(content).toBe('chunk1\nchunk2\n');
+    it('reads a stream written by another process live and in order', async () => {
+      const { testDir, streamer } = await setupStreamer();
+      const streamName = 'other-process';
+      const writer = await otherProcess(testDir, streamName);
+      const live = collect(await streamer.streams.get(TEST_RUN_ID, streamName));
+
+      await writer.write(['0\n', '1\n', '2\n']);
+      // Delivered while the stream is still open: the reader is live.
+      await waitFor(() => live.received.length === 3);
+      expect(live.received).toEqual(['0\n', '1\n', '2\n']);
+
+      await writer.writeMulti(['3\n', '4\n', '5\n']);
+      await waitFor(() => live.received.length === 6);
+      await writer.write(['6\n']);
+      await writer.close();
+      await live.done;
+
+      expect(live.received).toEqual(
+        Array.from({ length: 7 }, (_, i) => `${i}\n`)
+      );
+      expect(await streamer.streams.getInfo(TEST_RUN_ID, streamName)).toEqual({
+        tailIndex: 6,
+        done: true,
       });
-    });
+      expect(await streamer.streams.list(TEST_RUN_ID)).toEqual([streamName]);
+    }, 20_000);
   });
 });

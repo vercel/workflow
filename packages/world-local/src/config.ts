@@ -71,8 +71,8 @@ export function resolveRecoverActiveRuns(config: Partial<Config>): boolean {
 
 export function resolveDirectBaseUrl(config: Partial<Config>): string {
   return (
-    config.baseUrl ??
-    process.env.WORKFLOW_LOCAL_BASE_URL ??
+    config.baseUrl ||
+    process.env.WORKFLOW_LOCAL_BASE_URL ||
     createWorkflowBaseUrl('http://localhost')
   );
 }

@@ -173,7 +173,7 @@ describe('cancelRun', () => {
 });
 
 describe('Run.cancel against world-local', () => {
-  it('cancels an admitted start Hook candidate that never became a run', async () => {
+  it('cancels an admitted start Hook candidate before its first delivery', async () => {
     const { createWorld } = await import('@workflow/world-local');
     const { mkdtemp, rm } = await import('node:fs/promises');
     const os = await import('node:os');
@@ -194,13 +194,11 @@ describe('Run.cancel against world-local', () => {
         specVersion: SPEC_VERSION_CURRENT,
         eventData: creation,
       } as never);
-      // The writer died after the admission's claim, before its run record.
-      await rm(path.join(dataDir, 'runs', `${runId}.json`));
       vi.mocked(getWorldLazy).mockResolvedValue(world as unknown as World);
 
       await new Run(runId).cancel();
 
-      // Fenced: neither copy can create it any more.
+      // Its queued copy cannot start it any more.
       const started = await world.events
         .create(runId, {
           eventType: 'run_started',

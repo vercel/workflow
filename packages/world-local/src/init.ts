@@ -2,17 +2,15 @@ import {
   access,
   constants,
   mkdir,
-  opendir,
   readFile,
   rm,
+  stat,
   unlink,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { globalSingleton } from '@workflow/utils';
-import { clearCreatedFilesCache, RUN_SCOPED_ENTITY_DIRS } from './fs.js';
-import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 
 /** Package name - hardcoded since it doesn't change */
 const PACKAGE_NAME = '@workflow/world-local';
@@ -312,62 +310,34 @@ async function writeVersionFile(
 }
 
 /**
- * Name of an event or step file in the old flat layout:
- * `wrun_<id>-<eventId|stepId>[.<tag>].json`.
+ * What earlier releases stored as JSON files, one per entity. This release
+ * stores everything in `world.db` and does not read them.
  */
-const FLAT_ENTITY_FILE = /^wrun_[0-9A-Za-z]+-[^/\\]+\.json$/;
+const LEGACY_ENTRIES = [
+  'runs',
+  'events',
+  'steps',
+  'hooks',
+  'waits',
+  'streams',
+  'snapshots',
+  '.locks',
+];
 
-interface EntityDirsLayout {
-  /** Root-level files named like old flat-layout event/step files. */
-  flat: string[];
-  /** Root-level `.json` entries that are neither of the above. */
-  unrecognized: string[];
-  /** Whether any per-run subdirectory exists. */
-  runScoped: boolean;
-}
-
-function classifyEntityDirEntry(
-  layout: EntityDirsLayout,
-  entityDir: string,
-  entry: import('node:fs').Dirent
-): void {
-  if (entry.isDirectory()) {
-    layout.runScoped = true;
-    return;
-  }
-  if (!entry.name.endsWith('.json')) return;
-  const relative = path.join(entityDir, entry.name);
-  if (entry.isFile() && FLAT_ENTITY_FILE.test(entry.name)) {
-    layout.flat.push(relative);
-  } else {
-    layout.unrecognized.push(relative);
-  }
-}
-
-/**
- * What `events/` and `steps/` hold at their root: per-run subdirectories,
- * old flat-layout event/step files, or `.json` entries this package did not
- * write (non-JSON entries such as `.DS_Store` or temp files are ignored).
- */
-async function inspectEntityDirs(dataDir: string): Promise<EntityDirsLayout> {
-  const layout: EntityDirsLayout = {
-    flat: [],
-    unrecognized: [],
-    runScoped: false,
-  };
-  for (const entityDir of RUN_SCOPED_ENTITY_DIRS) {
-    // A missing directory is reported by opendir() on Node, but only on the
-    // first read on Bun, so both are inside the try.
+async function legacyEntriesIn(dataDir: string): Promise<string[]> {
+  const found: string[] = [];
+  for (const entry of LEGACY_ENTRIES) {
     try {
-      for await (const entry of await opendir(path.join(dataDir, entityDir))) {
-        classifyEntityDirEntry(layout, entityDir, entry);
+      if ((await stat(path.join(dataDir, entry))).isDirectory()) {
+        found.push(entry);
       }
     } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
       throw error;
     }
   }
-  return layout;
+  return found;
 }
 
 /**
@@ -421,30 +391,26 @@ export async function initDataDir(dataDir: string): Promise<void> {
   // First ensure the directory exists and is accessible
   await ensureDataDir(dataDir);
 
-  // Local run data from the old flat layout is not migrated: a directory that
-  // holds only such data is wiped and started over. Anything else outside
-  // the per-run layout is refused rather than deleted.
-  const layout = await inspectEntityDirs(dataDir);
-  if (
-    layout.unrecognized.length > 0 ||
-    (layout.runScoped && layout.flat.length > 0)
-  ) {
-    throw new DataDirLayoutError(dataDir, [
-      ...layout.unrecognized,
-      ...layout.flat,
-    ]);
-  }
-  if (layout.flat.length > 0) {
+  // Local run data written by earlier releases (one JSON file per entity)
+  // is not migrated: it is deleted, and the directory starts over with the
+  // database.
+  const legacy = await legacyEntriesIn(dataDir);
+  if (legacy.length > 0) {
     console.warn(
-      `[world-local] Deleting local workflow data in "${path.resolve(dataDir)}": ` +
-        `it was written by an older version of ${PACKAGE_NAME} with an ` +
-        `incompatible storage layout.`
+      `[world-local] Deleting local workflow data in "${path.resolve(dataDir)}" ` +
+        `(${legacy.join(', ')}): it was written by an older version of ${PACKAGE_NAME}, ` +
+        `which stored runs as JSON files. This version stores them in ${path.join(path.resolve(dataDir), 'world.db')}.`
     );
-    clearCreatedFilesCache();
-    resetHookIndexEnsureCache();
-    // Retries ENOTEMPTY from another process writing into it meanwhile.
-    await rm(dataDir, { recursive: true, force: true, maxRetries: 3 });
-    await ensureDataDir(dataDir);
+    await Promise.all(
+      legacy.map((entry) =>
+        // Retries ENOTEMPTY from another process writing into it meanwhile.
+        rm(path.join(dataDir, entry), {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+        })
+      )
+    );
   }
 
   const packageInfo = await getPackageInfo();
