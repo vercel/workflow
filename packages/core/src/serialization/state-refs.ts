@@ -96,33 +96,51 @@ export class StateSourceRef {
 const OPAQUE = Symbol.for('@workflow/core//state-refs-opaque');
 /**
  * Tags devalue decodes itself, such as `null` for null-prototype objects.
- * Recovery must leave them to devalue; only unknown custom types become
+ * Recovery leaves them to devalue; only unknown custom types become
  * placeholders.
  */
-const DEVALUE_BUILTIN_TAGS = new Set([
-  'null',
-  'Object',
-  'Date',
-  'Set',
-  'Map',
-  'RegExp',
-  'BigInt',
-  'URL',
-  'URLSearchParams',
-  'ArrayBuffer',
-  'Int8Array',
-  'Uint8Array',
-  'Uint8ClampedArray',
-  'Int16Array',
-  'Uint16Array',
-  'Int32Array',
-  'Uint32Array',
-  'Float16Array',
-  'Float32Array',
-  'Float64Array',
-  'BigInt64Array',
-  'BigUint64Array',
-]);
+const DEVALUE_BUILTIN_TAGS = new Set(['null', 'Object', 'DataView']);
+
+function base64Bytes(value: string): ArrayBuffer {
+  const text = globalThis.atob(value === '.' ? '' : value);
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+  return bytes.buffer;
+}
+
+const typedArray =
+  (Ctor: new (buffer: ArrayBuffer) => unknown) => (value: string) =>
+    new Ctor(base64Bytes(value));
+
+/**
+ * Plain data types in the formats Workflow's own reducers write them, decoded
+ * without Node built-ins, so state rebuilds the same way in a browser.
+ * Callers' revivers take precedence.
+ */
+const VALUE_REVIVERS: Record<string, (value: any) => unknown> = {
+  ArrayBuffer: base64Bytes,
+  BigInt: (value: string) => BigInt(value),
+  BigInt64Array: typedArray(BigInt64Array),
+  BigUint64Array: typedArray(BigUint64Array),
+  DataViewBytes: typedArray(DataView),
+  Date: (value: string) => new Date(value),
+  Float32Array: typedArray(Float32Array),
+  Float64Array: typedArray(Float64Array),
+  Int8Array: typedArray(Int8Array),
+  Int16Array: typedArray(Int16Array),
+  Int32Array: typedArray(Int32Array),
+  Map: (value: Iterable<[unknown, unknown]>) => new Map(value),
+  RegExp: (value: { source: string; flags: string }) =>
+    new RegExp(value.source, value.flags),
+  Set: (value: Iterable<unknown>) => new Set(value),
+  URL: (value: string) => new URL(value),
+  URLSearchParams: (value: string) =>
+    new URLSearchParams(value === '.' ? '' : value),
+  Uint8Array: typedArray(Uint8Array),
+  Uint8ClampedArray: typedArray(Uint8ClampedArray),
+  Uint16Array: typedArray(Uint16Array),
+  Uint32Array: typedArray(Uint32Array),
+};
 
 function deepFreeze(value: unknown): void {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
@@ -728,9 +746,11 @@ export class StateContext {
             ? this.reviveSourceRef
             : Object.hasOwn(common, key)
               ? common[key]
-              : DEVALUE_BUILTIN_TAGS.has(key)
-                ? undefined
-                : opaque;
+              : Object.hasOwn(VALUE_REVIVERS, key)
+                ? VALUE_REVIVERS[key]
+                : DEVALUE_BUILTIN_TAGS.has(key)
+                  ? undefined
+                  : opaque;
     const revivers = new Proxy({} as Record<string, (v: any) => unknown>, {
       get: (_t, key) => pick(key),
       has: (_t, key) => pick(key) !== undefined,
