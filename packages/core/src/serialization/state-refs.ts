@@ -7,7 +7,6 @@ import {
   opsBytes,
   type StateOp,
 } from '../state.js';
-import { getCommonRevivers } from './reducers/common.js';
 
 /**
  * Stores frozen values passed between steps by reference.
@@ -804,7 +803,11 @@ export class StateContext {
     return v;
   }
 
+  /** Inspection tools display values that recovery would refuse to rebuild. */
+  allowPlaceholders = false;
+
   private assertKnownTypes(value: unknown, depth = 0): void {
+    if (this.allowPlaceholders) return;
     if (depth > 256 || value === null || typeof value !== 'object') return;
     if ((value as Dict)[OPAQUE as unknown as string] === true)
       throw new Error(
@@ -831,27 +834,30 @@ export class StateContext {
    * the format prefix) without running workflow code. Other custom types become
    * placeholders, which fail loudly if they end up inside tracked state.
    */
-  ingest(payload: Uint8Array, source?: string): void {
+  ingest(
+    payload: Uint8Array,
+    common: Record<string, (value: any) => unknown> = {},
+    source?: string
+  ): void {
     const text = new TextDecoder().decode(payload);
     if (source === undefined && !text.includes(STATE_REF_REDUCER)) return;
     const opaque = () => ({ [OPAQUE]: true });
-    // Workflow's own encodings of Date, Map, typed arrays and the like revive as
-    // usual; anything that needs workflow code (streams, class instances) does not.
-    const common = getCommonRevivers(globalThis) as Record<
-      string,
-      (v: any) => unknown
-    >;
+    // `common` revives types encoded by Workflow's own reducers (dates, maps,
+    // typed arrays, or display versions of them); anything else that needs
+    // workflow code (streams, class instances) becomes a placeholder.
+    // State records always go to this context, even if `common` has its own
+    // (display) revivers for them.
     const pick = (key: string | symbol) =>
       typeof key !== 'string'
         ? undefined
-        : Object.hasOwn(common, key)
-          ? common[key]
-          : DEVALUE_BUILTIN_TAGS.has(key)
-            ? undefined
-            : key === STATE_REF_REDUCER
-              ? this.revive
-              : key === STATE_SOURCE_REDUCER
-                ? this.reviveSourceRef
+        : key === STATE_REF_REDUCER
+          ? this.revive
+          : key === STATE_SOURCE_REDUCER
+            ? this.reviveSourceRef
+            : Object.hasOwn(common, key)
+              ? common[key]
+              : DEVALUE_BUILTIN_TAGS.has(key)
+                ? undefined
                 : opaque;
     const revivers = new Proxy({} as Record<string, (v: any) => unknown>, {
       get: (_t, key) => pick(key),

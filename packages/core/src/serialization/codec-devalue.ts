@@ -180,11 +180,14 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraRevivers
     );
-    const state = stateContextFor(options);
-    revivers[STATE_REF_REDUCER] = options?.stateInput
-      ? state.reviveInput
-      : state.revive;
-    revivers[STATE_SOURCE_REDUCER] = state.reviveSourceRef;
+    // Caller-supplied state revivers (an inspection resolver) take precedence.
+    if (!options?.extraRevivers?.[STATE_REF_REDUCER]) {
+      const state = stateContextFor(options);
+      revivers[STATE_REF_REDUCER] = options?.stateInput
+        ? state.reviveInput
+        : state.revive;
+      revivers[STATE_SOURCE_REDUCER] = state.reviveSourceRef;
+    }
     const str = decoder.decode(data);
     return parse(str, revivers, parseOptions);
   },
