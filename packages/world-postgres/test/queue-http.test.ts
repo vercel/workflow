@@ -7,7 +7,7 @@ import {
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
-import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue } from '../src/queue.js';
 import { TestPool } from './pool.js';
 
@@ -39,10 +39,7 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
     | 'hook'
     | 'serial'
     | 'reschedule'
-    | 'reject-then-handoff'
-    | 'auth-refused'
-    | 'bare-401'
-    | 'accept';
+    | 'reject-then-handoff';
   let serialStarts: string[] = [];
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
@@ -63,31 +60,6 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       response.on('close', () => disconnected.resolve());
       accepted.resolve();
       if (phase === 'abort') return;
-      if (phase === 'accept') {
-        response.end('{}');
-        return;
-      }
-      if (phase === 'auth-refused') {
-        // The runtime's queue auth refusal, as another process's route
-        // answers this worker's delivery.
-        response.writeHead(401, {
-          'content-type': 'application/json',
-          'x-workflow-auth-refused': '1',
-        });
-        response.end(
-          JSON.stringify({
-            error: 'Unauthorized queue delivery',
-            code: 'QUEUE_AUTH_REFUSED',
-          })
-        );
-        return;
-      }
-      if (phase === 'bare-401') {
-        // A 401 from something in front of the app, without the marker.
-        response.statusCode = 401;
-        response.end('Unauthorized');
-        return;
-      }
       if (phase === 'reschedule') {
         // Ask for the same message again twice, then acknowledge it.
         response.end(
@@ -199,197 +171,6 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       await pool.query('TRUNCATE graphile_worker._private_jobs');
     }
   });
-
-  /** The Graphile job the queue stored for `messageId`, if it is still there. */
-  const jobFor = async (messageId: string | null) => {
-    const { rows } = await pool.query(
-      'SELECT attempts, locked_at FROM graphile_worker._private_jobs WHERE key = $1',
-      [messageId]
-    );
-    return rows[0] as { attempts: number; locked_at: Date | null } | undefined;
-  };
-
-  // Enqueue-only (`WORKFLOW_POSTGRES_ENQUEUE_ONLY`): a process that only
-  // enqueues runs no worker, so it never takes, or delivers, a job.
-  test('an enqueue-only queue stores its job but starts no worker', async () => {
-    phase = 'accept';
-    attempts = [];
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const producer = createQueue(
-      {
-        connectionString,
-        queueConcurrency: 1,
-        applicationManagedShutdown: true,
-        enqueueOnly: true,
-      },
-      pool
-    );
-    try {
-      const { messageId } = await producer.queue(
-        `${getQueueTopicPrefix('workflow')}test`,
-        { runId: `run_${randomUUID()}` }
-      );
-      // Well past a worker's 500ms poll: a running worker would have taken it.
-      await sleep(3_000);
-      expect(attempts).toEqual([]);
-      expect(await jobFor(messageId)).toMatchObject({
-        attempts: 0,
-        locked_at: null,
-      });
-    } finally {
-      warn.mockRestore();
-      await producer.close();
-      await pool.query('TRUNCATE graphile_worker._private_jobs');
-    }
-  }, 30_000);
-
-  // The default path is unchanged: a queue that enqueues starts its worker,
-  // which takes and delivers the job.
-  test('a default queue starts a worker that delivers its job', async () => {
-    phase = 'accept';
-    attempts = [];
-    const queue = createQueue(
-      {
-        connectionString,
-        queueConcurrency: 1,
-        applicationManagedShutdown: true,
-      },
-      pool
-    );
-    try {
-      const { messageId } = await queue.queue(
-        `${getQueueTopicPrefix('workflow')}test`,
-        { runId: `run_${randomUUID()}` }
-      );
-      await expect.poll(() => attempts, { timeout: 10_000 }).toEqual(['1']);
-      await expect
-        .poll(() => jobFor(messageId), { timeout: 5_000 })
-        .toBe(undefined);
-    } finally {
-      await queue.close();
-      await pool.query('TRUNCATE graphile_worker._private_jobs');
-    }
-  }, 30_000);
-
-  // The split the mode is for: a producer process enqueues, and the app's
-  // own worker (another queue on the same database) delivers the job.
-  test("an enqueue-only producer's job is delivered by another queue's worker", async () => {
-    phase = 'accept';
-    attempts = [];
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const producer = createQueue(
-      {
-        connectionString,
-        queueConcurrency: 1,
-        applicationManagedShutdown: true,
-        enqueueOnly: true,
-      },
-      pool
-    );
-    const app = createQueue(
-      {
-        connectionString,
-        queueConcurrency: 1,
-        applicationManagedShutdown: true,
-      },
-      pool
-    );
-    try {
-      await app.start();
-      const { messageId } = await producer.queue(
-        `${getQueueTopicPrefix('workflow')}test`,
-        { runId: `run_${randomUUID()}` }
-      );
-      await expect.poll(() => attempts, { timeout: 10_000 }).toEqual(['1']);
-      await expect
-        .poll(() => jobFor(messageId), { timeout: 5_000 })
-        .toBe(undefined);
-    } finally {
-      warn.mockRestore();
-      await producer.close();
-      await app.close();
-      await pool.query('TRUNCATE graphile_worker._private_jobs');
-    }
-  }, 30_000);
-
-  // A marked 401 is permanent: the worker retires the job after one delivery
-  // instead of throwing and letting Graphile retry it for days.
-  test('retires a job whose delivery the runtime refused (marked 401)', async () => {
-    phase = 'auth-refused';
-    attempts = [];
-    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const queue = createQueue(
-      {
-        connectionString,
-        queueConcurrency: 1,
-        applicationManagedShutdown: true,
-      },
-      pool
-    );
-    try {
-      const runId = `run_${randomUUID()}`;
-      const { messageId } = await queue.queue(
-        `${getQueueTopicPrefix('workflow')}test`,
-        { runId }
-      );
-      await expect.poll(() => attempts, { timeout: 10_000 }).toHaveLength(1);
-      // Gone at once: a failed (retried) job would stay in the table, waiting
-      // for its next attempt.
-      await expect
-        .poll(
-          async () => {
-            const jobs = await pool.query(
-              'SELECT count(*)::int AS count FROM graphile_worker._private_jobs WHERE key = $1',
-              [messageId]
-            );
-            return jobs.rows[0].count;
-          },
-          { timeout: 2_500 }
-        )
-        .toBe(0);
-      // Past Graphile's first retry delay (about 2.7s): still one delivery.
-      await sleep(4_000);
-      expect(attempts).toEqual(['1']);
-      const lines = errors.mock.calls.filter(([message]) =>
-        String(message).includes('refused by the app as unauthenticated')
-      );
-      expect(lines).toHaveLength(1);
-      expect(lines[0]?.[1]).toMatchObject({
-        runId,
-        refusedSinceLastLog: 1,
-        hint: expect.stringContaining('WORKFLOW_QUEUE_AUTH=off'),
-      });
-    } finally {
-      errors.mockRestore();
-      await queue.close();
-      await pool.query('TRUNCATE graphile_worker._private_jobs');
-    }
-  }, 30_000);
-
-  // A bare 401 is not the runtime's refusal (a proxy, say) and keeps
-  // Graphile's ordinary retries.
-  test('retries a job whose delivery got a bare 401', async () => {
-    phase = 'bare-401';
-    attempts = [];
-    const queue = createQueue(
-      {
-        connectionString,
-        queueConcurrency: 1,
-        applicationManagedShutdown: true,
-      },
-      pool
-    );
-    try {
-      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
-        runId: `run_${randomUUID()}`,
-      });
-      await expect.poll(() => attempts, { timeout: 30_000 }).toHaveLength(2);
-      expect(attempts).toEqual(['1', '2']);
-    } finally {
-      await queue.close();
-      await pool.query('TRUNCATE graphile_worker._private_jobs');
-    }
-  }, 60_000);
 
   // `{ timeoutSeconds: 0 }` on a spec 9 run is a handoff: redelivered at
   // once, and not counted as an attempt.

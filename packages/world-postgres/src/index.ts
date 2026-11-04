@@ -47,14 +47,6 @@ function getDefaultConnectionString(): string {
   );
 }
 
-/** Runs this process as a producer only (`enqueueOnly`): no worker. */
-export const ENQUEUE_ONLY_ENV = 'WORKFLOW_POSTGRES_ENQUEUE_ONLY';
-
-function isEnqueueOnlyEnabled(): boolean {
-  const value = process.env[ENQUEUE_ONLY_ENV]?.trim().toLowerCase();
-  return value === '1' || value === 'true';
-}
-
 export function createWorld(
   config: PostgresWorldConfig = {
     connectionString: getDefaultConnectionString(),
@@ -66,7 +58,6 @@ export function createWorld(
     applicationManagedShutdown:
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
-    enqueueOnly: isEnqueueOnlyEnabled(),
   }
 ): World &
   Required<Pick<Queue, 'registerHandler' | 'registerRoute'>> & {
@@ -79,14 +70,6 @@ export function createWorld(
     config.pool || createOwnedPool(config, maxPoolSize, () => closing);
 
   const drizzle = createClient(pool);
-  if (config.enqueueOnly) {
-    // stderr, not stdout: a CLI printing `--json` results to stdout runs
-    // enqueue-only too, and a line there would corrupt its output.
-    console.warn(
-      '[world-postgres] Enqueue-only: this process enqueues but starts no worker; ' +
-        "the app's own worker delivers its jobs."
-    );
-  }
   const queue = createQueue(config, pool);
   // Opens its `LISTEN` connection lazily, on the first `waitForTerminalStatus`
   // call, so a deployment that never awaits a run never pays for it.

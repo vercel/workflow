@@ -46,17 +46,6 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    */
   applicationManagedShutdown?: boolean;
   /**
-   * Run this process as a producer only: it enqueues (and invokes) but starts
-   * no Graphile worker, so it never picks up a job. For a process that does
-   * not serve the flow route, such as a script, CLI or test runner calling
-   * `start()` or `resumeHook()` against a running app: a worker there would
-   * pick up the app's jobs and deliver them with its own process's queue key,
-   * which the app refuses. The app's own worker delivers everything instead.
-   * Defaults to false. The package's default createWorld() configuration
-   * enables it when WORKFLOW_POSTGRES_ENQUEUE_ONLY is `1` or `true`.
-   */
-  enqueueOnly?: boolean;
-  /**
    * Override the flush interval (in ms) for buffered stream writes.
    * Default is 10ms. Set to 0 for immediate flushing.
    */

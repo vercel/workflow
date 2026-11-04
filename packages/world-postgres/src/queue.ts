@@ -9,13 +9,9 @@ import {
 } from '@workflow/errors/invocation';
 import {
   createAppRouteUrl,
-  createLogLimiter,
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
-  getQueueAuthKey,
-  isQueueAuthRefusal,
-  QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
@@ -198,24 +194,12 @@ const GraphileHelpers = z.compile(
 type HttpExecutionResult =
   | { type: 'completed' }
   | { type: 'reschedule'; timeoutSeconds: number }
-  // The runtime's queue auth refusal (see `isQueueAuthRefusal`): permanent.
-  | { type: 'refused' }
   | {
       type: 'error';
       status: number;
       text: string;
       headers: Record<string, string>;
     };
-
-/** A message's `runId`, for logs. */
-function runIdOf(message: unknown): string | undefined {
-  return typeof message === 'object' &&
-    message !== null &&
-    'runId' in message &&
-    typeof message.runId === 'string'
-    ? message.runId
-    : undefined;
-}
 
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
@@ -309,9 +293,6 @@ export function createQueue(
    */
   const ownPrefix = () =>
     getQueueTopicPrefix('workflow', resolveQueueNamespace(config.namespace));
-  // One line for the first queue auth refusal, then at most one a minute
-  // with a count, however many jobs are refused.
-  const logAuthRefusal = createLogLimiter();
   /** In-process handlers by queue prefix (`registerHandler`). */
   const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
@@ -743,11 +724,6 @@ export function createQueue(
     headers.delete(EXECUTOR_JOB_HEADER);
     headers.delete(EXECUTOR_WORKER_HEADER);
     headers.delete(EXECUTOR_ATTEMPT_HEADER);
-    // This process's in-memory key, set at delivery time and never stored on
-    // the job: the worker delivering a job is in the process whose routes it
-    // reaches, and the runtime refuses a delivery without it (`queueAuth:
-    // 'in-process-key'`). `set` replaces any caller-supplied copy.
-    headers.set(QUEUE_AUTH_HEADER, getQueueAuthKey());
     if (executorDelivery) {
       headers.set(EXECUTOR_JOB_HEADER, executorDelivery.id);
       headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
@@ -792,8 +768,6 @@ export function createQueue(
       );
     }
     const text = await response.text();
-
-    if (isQueueAuthRefusal(response)) return { type: 'refused' };
 
     if (!response.ok) {
       return {
@@ -914,9 +888,7 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          // Enqueue-only: the worker utilities and migrations above are all
-          // a producer needs; no runner, so this process never takes a job.
-          if (!config.enqueueOnly) await startRunnerWhenExecutorIsReady();
+          await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;
           throw err;
@@ -924,7 +896,7 @@ export function createQueue(
       })();
     }
     await startPromise;
-    if (!config.enqueueOnly && !closing && !runner && !runnerStart) {
+    if (!closing && !runner && !runnerStart) {
       await startRunnerWhenExecutorIsReady();
     }
   }
@@ -1091,9 +1063,7 @@ export function createQueue(
           attempt: graphileHelpers.data.job.attempts,
         });
       }
-      const executeTask = async (): Promise<
-        'completed' | 'rescheduled' | 'refused'
-      > => {
+      const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const result = await deliverMessage({
           queueName,
           prefix,
@@ -1112,31 +1082,6 @@ export function createQueue(
 
         if (result.type === 'completed') {
           return 'completed';
-        }
-
-        if (result.type === 'refused') {
-          // Permanent: this worker and the routes of its own process read the
-          // same key, so the refusing route is another process's (a separate
-          // web tier, say), and every retry would be refused the same way.
-          // Throwing would have Graphile retry it for days. Returning retires
-          // the job at once; the refusing route touched no run.
-          logAuthRefusal((refusedSinceLastLog) => {
-            console.error(
-              '[world-postgres] Queue delivery refused by the app as unauthenticated; retiring the job (not retried)',
-              {
-                queueName,
-                messageId: messageData.messageId,
-                ...(runIdOf(body) && { runId: runIdOf(body) }),
-                refusedSinceLastLog,
-                hint:
-                  'A delivery is only accepted by the process whose worker sent it (it carries ' +
-                  "that process's in-memory key), so a worker cannot deliver to a route served by " +
-                  'another process or host. On a trusted network, set WORKFLOW_QUEUE_AUTH=off on ' +
-                  'the app serving the route (refused while dynamic workflows are enabled).',
-              }
-            );
-          });
-          return 'refused';
         }
 
         if (result.type === 'reschedule') {
@@ -1263,9 +1208,11 @@ export function createQueue(
   }
 
   return {
-    // Every delivery carries this process's in-memory key (see
-    // `deliverMessage`); the handler is world-local's.
-    queueAuth: 'in-process-key',
+    // The runtime does not check the flow route. A worker may deliver a job
+    // another process enqueued, so deliveries cannot carry a process key; the
+    // database credentials control who can enqueue, and the route is
+    // protected at the network edge (see the Security section of the docs).
+    queueAuth: 'skip',
     createQueueHandler,
     getDeploymentId,
     queue,
