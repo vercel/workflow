@@ -91,6 +91,11 @@ export function isQueueAuthRefusal(response: {
  * included). For a condition that can repeat at request rate, such as refused
  * queue deliveries, so it cannot flood the logs. Hold one per long-lived owner
  * (a World's queue, a route), not at module scope.
+ *
+ * The lines can undercount: calls suppressed after the last line are reported
+ * only by the next line, so if none follows they are never logged. Where an
+ * exact count matters, count separately; for refused deliveries the
+ * `workflow.queue.delivery.refused` counter is the source of truth.
  */
 export function createLogLimiter(
   intervalMs = 60_000
