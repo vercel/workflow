@@ -211,7 +211,11 @@ describe('frozen values stored by reference', () => {
     expect(text(output2)).not.toContain('Weather in Oslo');
     expect(read(output2, body).session.history.at(-1).content).toBe(message);
     const recovered = cold(output1);
-    recovered.ingest(decodeFormatPrefix(hook).payload as Uint8Array, source);
+    recovered.ingest(
+      decodeFormatPrefix(hook).payload as Uint8Array,
+      {},
+      source
+    );
     expect(read(output2, recovered).session.history.at(-1).content).toBe(
       message
     );

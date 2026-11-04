@@ -618,6 +618,10 @@ export class StateContext {
       value = applyStateOps(base.value, ops);
       bytesSinceFull = base.bytesSinceFull + opsBytes(ops);
     }
+    // A value built around a placeholder (inspection only) is not the stored
+    // value: keep it out of the context so a later read can rebuild it.
+    if (this.placeholders.size > 0 && this.holdsPlaceholder(value))
+      return value;
     deepFreeze(value);
     if (register) this.register(version, { logId, value, bytesSinceFull });
     return value;
@@ -707,6 +711,26 @@ export class StateContext {
 
   /** Inspection tools display values that recovery would refuse to rebuild. */
   allowPlaceholders = false;
+
+  /** Placeholders handed out for records this context could not rebuild (inspection only). */
+  private readonly placeholders = new Set<string>();
+
+  /** The display placeholder for a record that could not be rebuilt yet. */
+  placeholderFor(record: Dict): unknown {
+    if (record.kind === 'source' || record.kind === 'full') return record.value;
+    const text = `<workflow/state ${String(record.version)}>`;
+    this.placeholders.add(text);
+    return text;
+  }
+
+  private holdsPlaceholder(value: unknown, depth = 0): boolean {
+    if (typeof value === 'string') return this.placeholders.has(value);
+    if (depth > 256 || value === null || typeof value !== 'object')
+      return false;
+    for (const key of Object.keys(value))
+      if (this.holdsPlaceholder((value as Dict)[key], depth + 1)) return true;
+    return false;
+  }
 
   private assertKnownTypes(value: unknown, depth = 0): void {
     if (this.allowPlaceholders) return;
