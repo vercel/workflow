@@ -139,6 +139,19 @@ describe('spec 9 run-ahead beside a child run (node engine)', () => {
     expect(unconfirmed).toEqual(RAN_AHEAD);
   });
 
+  it('runs ahead after a wait, with the completion hook still open', async () => {
+    finished = ['wrun_child'];
+    const world = await run(`
+      const id = await startChild();
+      await returnValue(id);
+      return await loop(steps);
+    `);
+    expect(await runResult(world)).toBe(STEPS);
+    expect(eventsOf(world, 'hook_created')).toHaveLength(1);
+    expect(eventsOf(world, 'hook_disposed')).toHaveLength(0);
+    expect(unconfirmed).toEqual(RAN_AHEAD);
+  });
+
   it('drains while the workflow is actually waiting on the child', async () => {
     // The child's completion schedules `readReturnValue` at whichever
     // boundary it lands on, so every boundary of the wait is path-changing.

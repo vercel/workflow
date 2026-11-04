@@ -67,9 +67,9 @@ export async function processDocumentBatch(documentIds: string[]) {
 Awaiting `returnValue` of a run the workflow started does not poll. The SDK waits on a **system hook**, the same handshake you would otherwise write by hand, but with one hook for the whole parent rather than one per child:
 
 1. `start()` records the parent's run ID on the child, and remembers the parent on the returned `Run`.
-2. When the parent awaits a child, it registers its completion hook (a system hook whose token is derived from the parent's run ID) if it is not already open, then reads every child it started waiting on since its last read, in one step. A child that already finished is answered from that read.
+2. When the parent first awaits a child, it registers its completion hook (a system hook whose token is derived from the parent's run ID), which stays open for the rest of the run. Reading `run.returnValue` without awaiting it does nothing yet: the wait starts at the first `await`, `then`, `catch` or `finally`. On each await the parent reads every child it started waiting on since its last read, in one step. A child that already finished is answered from that read.
 3. Otherwise the parent suspends on the hook. When a child completes, fails, or is canceled, its runtime resumes the parent's hook with that child's run ID, and the parent reads that child's result.
-4. Once the parent is no longer waiting on any child, it disposes the hook, so children it never awaits do not wake it.
+4. Between waits the hook stays open but the parent does not listen on it, so it does not hold up run-ahead on the single-orchestrator runtime. A child the parent never awaits still resumes the hook when it finishes, which wakes the parent briefly without changing what it does.
 
 This gives you:
 

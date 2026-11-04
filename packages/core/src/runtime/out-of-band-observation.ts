@@ -19,6 +19,7 @@ import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
  * | webhook / `resumeHook()` | `hook_received` | workflow code is waiting on that hook's next payload |
  * | another run's `createHook({ experimental_force })` | `hook_disposed` | same: it rejects waiting payload awaiters, and later awaits |
  * | a step's `AbortController.abort()` | `hook_received` on a system hook | always: `signal.aborted` and abort listeners are read synchronously, with no `then` to observe |
+ * | a child run that finished (`child-run-completion.ts`) | `hook_received` on the parent's completion hook | like a user hook: while the parent's dispatcher is waiting on it |
  * | wait timer | `wait_completed` | the wait is due (see below) |
  * | `run.wakeUp()` / dashboard "cancel sleeps" | `wait_completed` | written in-band on single-orchestrator runs, see below |
  * | step executors in other invocations | `step_completed` / `step_failed` / `step_retrying` | unknown: step promises are native, so their awaiters are invisible |
@@ -139,8 +140,10 @@ export interface OutOfBandObservation {
   abortSignalHookCount: number;
   /**
    * Open SDK-internal hooks of any kind (`AbortController` signals and the
-   * child-run completion hook): always path-changing. A superset of
-   * {@link abortSignalHookCount}.
+   * child-run completion hook), for telemetry. A superset of
+   * {@link abortSignalHookCount}. The completion hook is path-changing only
+   * while observed, and is also counted in the observed/unobserved/unknown
+   * counts like a user hook (see {@link isAlwaysObservedHook}).
    */
   systemHookCount: number;
   /**
@@ -158,6 +161,23 @@ export interface OutOfBandObservation {
    * single-orchestrator runs; see the module documentation.
    */
   inert: boolean;
+}
+
+/**
+ * Whether an open hook is path-changing whether or not workflow code awaits
+ * it. True for `AbortController` hooks only. The child-run completion hook is
+ * also a system hook, but its payloads only reach workflow code through the
+ * dispatcher's `then()` (`child-run-completion.ts`), so it is observed exactly
+ * like a user hook: while that `then()` is pending.
+ */
+export function isAlwaysObservedHook(item: {
+  isSystem?: boolean;
+  token: string;
+}): boolean {
+  return (
+    item.isSystem === true &&
+    !item.token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX)
+  );
 }
 
 export function observeOutOfBandWriters(input: {
@@ -185,14 +205,11 @@ export function observeOutOfBandWriters(input: {
     }
     // A hook this suspension disposes is closed by its own write.
     if (item.type !== 'hook' || item.disposed) continue;
-    if (item.isSystem) {
-      // SDK-internal hooks (abort signals, the child-run completion hook)
-      // are resumed by other runs and steps, whether or not workflow code is
-      // awaiting them right now.
-      systemHookCount++;
-      if (!item.token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX)) {
-        abortSignalHookCount++;
-      }
+    if (item.isSystem) systemHookCount++;
+    if (isAlwaysObservedHook(item)) {
+      // An `AbortController` hook: `signal.aborted` and abort listeners are
+      // read synchronously, with no `then` to observe.
+      abortSignalHookCount++;
     } else if (input.observedHookIds === undefined) {
       unknownHookCount++;
     } else if (input.observedHookIds.has(item.correlationId)) {
@@ -212,7 +229,7 @@ export function observeOutOfBandWriters(input: {
     inert:
       observedHookCount === 0 &&
       unknownHookCount === 0 &&
-      systemHookCount === 0 &&
+      abortSignalHookCount === 0 &&
       externalStepCount === 0 &&
       !input.waitDue,
   };

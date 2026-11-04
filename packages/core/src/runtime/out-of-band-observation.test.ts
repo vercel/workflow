@@ -65,18 +65,26 @@ describe('observeOutOfBandWriters', () => {
     });
   });
 
-  it('treats the child-run completion hook as observed, apart from abort signals', () => {
-    const result = observe([
-      hook('cmpl', {
-        token: childRunCompletionToken('wrun_parent'),
-        isSystem: true,
-      }),
-    ]);
-    expect(result).toMatchObject({
+  it('classifies the child-run completion hook like a user hook', () => {
+    const completion = hook('cmpl', {
+      token: childRunCompletionToken('wrun_parent'),
+      isSystem: true,
+    });
+    // Open, nothing waiting on it: inert.
+    expect(observe([completion])).toMatchObject({
       abortSignalHookCount: 0,
       systemHookCount: 1,
-      inert: false,
+      unobservedHookCount: 1,
+      inert: true,
     });
+    // The dispatcher waiting on its next payload: path-changing.
+    expect(
+      observe([completion], { observedHookIds: new Set(['cmpl']) })
+    ).toMatchObject({ systemHookCount: 1, observedHookCount: 1, inert: false });
+    // No observation recorded (QuickJS): path-changing.
+    expect(observe([completion], { observedHookIds: undefined })).toMatchObject(
+      { unknownHookCount: 1, inert: false }
+    );
   });
 
   it('ignores a hook this suspension disposes', () => {

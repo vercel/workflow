@@ -10,16 +10,19 @@
  *    stamps the parent's run id on the child
  *    (`executionContext.completionParentRunId`) and records it on the
  *    returned `Run`.
- * 2. When the parent awaits a child's `returnValue`, a per-run dispatcher
- *    registers the system hook {@link childRunCompletionToken}(parent) if it
- *    is not already open, then reads every child awaited since its last read
- *    in one step. Children that already finished are answered from that read.
+ * 2. When the parent first awaits a child's `returnValue`, a per-run
+ *    dispatcher registers the system hook {@link childRunCompletionToken}
+ *    (parent), which then stays open for the rest of the run. On every await
+ *    it reads the children awaited since its last read in one step. Children
+ *    that already finished are answered from that read.
  * 3. The runtime that records a child's terminal event (or the SDK call that
  *    cancels it) resumes the parent's token with `{ runId, status }`. The
  *    dispatcher hands each payload to the waiting child, which then reads its
- *    result. Once no child is waiting, the hook is disposed, so children the
- *    parent never awaits do not wake it. Resuming a token nobody registered
- *    is a no-op.
+ *    result. A payload for a child nobody waits on is dropped. Between waits
+ *    the dispatcher stops listening, so the open hook is inert to spec 9
+ *    run-ahead; a child finishing then still wakes the parent, and its
+ *    payload is buffered and dropped at the next wait. Resuming a token
+ *    nobody registered (the parent never awaited a child) is a no-op.
  *
  * The parent registers *before* it reads, and a child resumes *after* its
  * terminal write, so whichever way the two interleave one of them sees the
@@ -109,8 +112,19 @@ interface Dispatcher {
   toCheck: string[];
   /** Nudges a parked dispatch loop when `toCheck` grows. */
   wake: (() => void) | undefined;
-  /** Whether a dispatch loop (and its hook) is active. */
+  /** Whether a dispatch loop is active. */
   running: boolean;
+  /**
+   * The parent's completion hook, registered by the first await and kept
+   * open for the rest of the run (see {@link dispatch}).
+   */
+  hook: Hook<ChildRunCompletionPayload> | undefined;
+  /** Whether the hook's registration is committed. */
+  registered: boolean;
+  /** Whether a `then()` on the hook is waiting for the next payload. */
+  armed: boolean;
+  /** Bumped per `then()`, so a superseded one does not clear `armed`. */
+  armGeneration: number;
   /** The token is held by another run: every child polls instead. */
   conflicted: boolean;
   /** The outstanding safety-net sleep, kept across dispatch loops. */
@@ -161,6 +175,10 @@ export function awaitChildRunCompletion<T>(
       toCheck: [],
       wake: undefined,
       running: false,
+      hook: undefined,
+      registered: false,
+      armed: false,
+      armGeneration: 0,
       conflicted: false,
       safety: undefined,
       safetyIndex: 0,
@@ -224,10 +242,50 @@ function release(d: Dispatcher, runId: string): void {
   resolve();
 }
 
-type Wakeup =
-  | { kind: 'payload'; payload: ChildRunCompletionPayload }
-  | { kind: 'safety' }
-  | { kind: 'nudge' };
+// Same symbol as `HOOK_RELEASE_AWAITER` in `workflow/hook.ts` (and the
+// QuickJS engine's hooks): drops the pending `then()` without disposing.
+const HOOK_RELEASE_AWAITER = Symbol.for('WORKFLOW_HOOK_RELEASE_AWAITER');
+
+/**
+ * Waits for the hook's next payload, unless already waiting. The payload
+ * releases its child (a child nobody waits on is a no-op) and nudges the
+ * parked loop, which re-arms while children are still waiting.
+ */
+function arm(d: Dispatcher, hook: Hook<ChildRunCompletionPayload>): void {
+  if (d.armed) return;
+  d.armed = true;
+  const generation = ++d.armGeneration;
+  hook.then(
+    (payload) => {
+      if (d.armGeneration === generation) d.armed = false;
+      release(d, payload.runId);
+      d.wake?.();
+    },
+    () => {
+      // Taken over by another run, or a payload that cannot be read: stop
+      // using the hook, and let every waiting child poll its own result.
+      if (d.armGeneration === generation) d.armed = false;
+      d.conflicted = true;
+      for (const runId of [...d.waiting.keys()]) release(d, runId);
+      d.wake?.();
+    }
+  );
+}
+
+/**
+ * Stops waiting for the next payload. A payload landing from now on is
+ * buffered on the hook for the next `arm()`. Without this, the leftover
+ * `then()` would keep the hook observed, and spec 9 would drain instead of
+ * running ahead until some child resumed it.
+ */
+function disarm(d: Dispatcher, hook: Hook<ChildRunCompletionPayload>): void {
+  if (!d.armed) return;
+  d.armed = false;
+  d.armGeneration++;
+  (hook as unknown as Record<symbol, (() => void) | undefined>)[
+    HOOK_RELEASE_AWAITER
+  ]?.();
+}
 
 async function dispatch(
   d: Dispatcher,
@@ -236,33 +294,43 @@ async function dispatch(
   sleep: Sleep,
   readFinished: (runIds: string[]) => Promise<string[]>
 ): Promise<void> {
-  const hook = createHook({
+  // One hook for the rest of the run, opened by the first await. It is not
+  // disposed between waits: re-registering it would cost a serial
+  // `hook_created` (and `hook_disposed`) per wait, and an open completion
+  // hook nobody is waiting on is inert to spec 9's run-ahead, like any
+  // unawaited hook (`isAlwaysObservedHook` in `out-of-band-observation.ts`).
+  // The cost is that a child the parent never awaits still resumes it when
+  // it finishes, which wakes the parent for a replay that changes nothing.
+  d.hook ??= createHook({
     token: childRunCompletionToken(parentRunId),
     isSystem: true,
   });
+  const hook = d.hook;
   try {
-    // Commit the registration before reading any child: a resume a child
-    // issues from here on lands on this hook, and one it issued earlier means
-    // it was already terminal, which the read below observes. `getConflict()`
-    // rejects instead of resolving when it cannot construct the conflicting
-    // `Run`; either way the token is held elsewhere.
-    const conflict = await hook.getConflict().catch(() => true);
-    if (conflict !== null) {
-      d.conflicted = true;
-      for (const runId of [...d.waiting.keys()]) release(d, runId);
-      d.toCheck.length = 0;
-      return;
+    if (!d.registered) {
+      // Commit the registration before reading any child: a resume a child
+      // issues from here on lands on this hook, and one it issued earlier
+      // means it was already terminal, which the read below observes.
+      // `getConflict()` rejects instead of resolving when it cannot construct
+      // the conflicting `Run`; either way the token is held elsewhere.
+      const conflict = await hook.getConflict().catch(() => true);
+      if (conflict !== null) {
+        d.conflicted = true;
+        for (const runId of [...d.waiting.keys()]) release(d, runId);
+        d.toCheck.length = 0;
+        return;
+      }
+      d.registered = true;
     }
     if (d.safety === undefined) d.safetyIndex = 0;
 
-    let nextPayload: Promise<Wakeup> | undefined;
-    while (d.waiting.size > 0) {
+    while (d.waiting.size > 0 && !d.conflicted) {
       if (d.toCheck.length > 0) {
         const runIds = d.toCheck.splice(0);
         for (const runId of await readFinished(runIds)) release(d, runId);
         continue;
       }
-      nextPayload ??= hook.then((payload) => ({ kind: 'payload', payload }));
+      arm(d, hook);
       if (d.safety === undefined) {
         const safety = sleep(safetyCheckDelayMs(d.safetyIndex));
         d.safety = safety;
@@ -271,19 +339,16 @@ async function dispatch(
         });
       }
       const safety = d.safety;
-      const nudge = new Promise<Wakeup>((resolve) => {
-        d.wake = () => resolve({ kind: 'nudge' });
+      // Settled by a payload (see `arm`) or by a newly awaited child.
+      const nudge = new Promise<'nudge'>((resolve) => {
+        d.wake = () => resolve('nudge');
       });
-      const wakeup = await Promise.race<Wakeup>([
-        nextPayload,
-        safety.then(() => ({ kind: 'safety' })),
+      const wakeup = await Promise.race([
+        safety.then(() => 'safety' as const),
         nudge,
       ]);
       d.wake = undefined;
-      if (wakeup.kind === 'payload') {
-        nextPayload = undefined;
-        release(d, wakeup.payload.runId);
-      } else if (wakeup.kind === 'safety') {
+      if (wakeup === 'safety') {
         // A notification may have been lost: read every pending child again.
         if (d.safety === safety) d.safety = undefined;
         d.safetyIndex++;
@@ -298,13 +363,8 @@ async function dispatch(
     d.toCheck.length = 0;
     for (const runId of [...d.waiting.keys()]) release(d, runId);
   } finally {
-    // Close the hook between waits. While it is open, every suspension of the
-    // parent counts as path-changing (system hooks are resumed by other runs
-    // whether or not anything awaits them, `out-of-band-observation.ts`), so
-    // spec 9 would drain instead of running ahead for the rest of the run
-    // (`spec9/run-ahead.runtime.test.ts`). Closing it also stops children the
-    // parent never awaits from waking it. The next await registers it again.
-    hook.dispose();
+    // The hook stays open, but nothing waits on it between waits.
+    disarm(d, hook);
     d.running = false;
   }
 }
