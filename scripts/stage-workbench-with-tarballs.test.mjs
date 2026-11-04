@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   parseCatalogEntries,
   rewriteDependencySpecs,
+  stageLockfile,
 } from './stage-workbench-with-tarballs.mjs';
 
 const temporaryDirectories = [];
@@ -71,5 +73,114 @@ overrides: {}
       'dependencies.ai',
       'dependencies.zod',
     ]);
+  });
+});
+
+describe('staged workbench lockfile', () => {
+  const lockfile = `lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+
+overrides:
+  devalue@^5: 5.9.2
+
+importers:
+
+  .:
+    devDependencies:
+      turbo:
+        specifier: ^2.0.0
+        version: 2.0.0
+
+  workbench/app:
+    dependencies:
+      next:
+        specifier: 16.0.0
+        version: 16.0.0
+      workflow:
+        specifier: workspace:*
+        version: link:../../packages/workflow
+
+  workbench/other:
+    dependencies:
+      vite:
+        specifier: ^7.0.0
+        version: 7.0.0
+
+packages:
+
+  next@16.0.0:
+    resolution: {integrity: sha512-next}
+
+snapshots:
+
+  next@16.0.0: {}
+`;
+
+  it('keeps only the workbench importer, as the staged root, and every locked package', () => {
+    expect(
+      stageLockfile(lockfile, 'workbench/app')
+    ).toBe(`lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+
+overrides:
+  devalue@^5: 5.9.2
+
+importers:
+
+  .:
+    dependencies:
+      next:
+        specifier: 16.0.0
+        version: 16.0.0
+      workflow:
+        specifier: workspace:*
+        version: link:../../packages/workflow
+
+packages:
+
+  next@16.0.0:
+    resolution: {integrity: sha512-next}
+
+snapshots:
+
+  next@16.0.0: {}
+`);
+  });
+
+  it('keeps the last importer up to the packages section', () => {
+    expect(stageLockfile(lockfile, 'workbench/other')).toContain(`importers:
+
+  .:
+    dependencies:
+      vite:
+        specifier: ^7.0.0
+        version: 7.0.0
+
+packages:`);
+  });
+
+  it('fails for a workbench the lockfile has no importer for', () => {
+    expect(() => stageLockfile(lockfile, 'workbench/missing')).toThrow(
+      /no importer for workbench\/missing/
+    );
+  });
+
+  // The CI lanes stage these two; a lockfile without their importers would
+  // silently fall back to resolving everything fresh.
+  it.each([
+    'workbench/nextjs-turbopack',
+    'workbench/nextjs-webpack',
+  ])('finds the %s importer in the repo lockfile', (importer) => {
+    const repoLockfile = fs.readFileSync(
+      fileURLToPath(new URL('../pnpm-lock.yaml', import.meta.url)),
+      'utf8'
+    );
+    expect(stageLockfile(repoLockfile, importer)).toMatch(
+      /\nimporters:\n\n {2}\.:\n {4}dependencies:/
+    );
   });
 });
