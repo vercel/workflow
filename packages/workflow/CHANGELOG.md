@@ -1,5 +1,22 @@
 # workflow
 
+## 5.4.0
+
+### Patch Changes
+
+- [#5226](https://github.com/vercel/workflow/pull/5226) [`50d425f`](https://github.com/vercel/workflow/commit/50d425fac77ec212422d57a832411c4515c0ba3c) Thanks [@pranaygp](https://github.com/pranaygp)! - **Removed:** reading `response.body` with `getReader()`, `values()` or `for await` inside workflow functions (added in 5.3.0) throws again. Use `response.json()`, `response.text()` or `response.arrayBuffer()`, or make the request and read the response in a step function. If you assigned `globalThis.fetch = fetch` to run AI SDK calls in a workflow function, move those calls into a step function, or use AI SDK's `WorkflowAgent` for agents.
+- Updated dependencies [[`e1bce44`](https://github.com/vercel/workflow/commit/e1bce44d3faacff855a35265d47afe3819abed1a), [`9bed0a7`](https://github.com/vercel/workflow/commit/9bed0a7138f5988cdda6ede33a77c0317b7aea9f), [`9bed0a7`](https://github.com/vercel/workflow/commit/9bed0a7138f5988cdda6ede33a77c0317b7aea9f), [`6291260`](https://github.com/vercel/workflow/commit/629126060cca6313e4ac3df8489402a86f41c362), [`50d425f`](https://github.com/vercel/workflow/commit/50d425fac77ec212422d57a832411c4515c0ba3c), [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289), [`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41)]:
+  - @workflow/core@5.4.0
+  - @workflow/cli@5.0.8
+  - @workflow/nitro@5.0.8
+  - @workflow/nuxt@5.0.8
+  - @workflow/next@5.0.8
+  - @workflow/astro@5.0.8
+  - @workflow/nest@5.1.6
+  - @workflow/rollup@5.0.8
+  - @workflow/sveltekit@5.0.8
+  - @workflow/typescript-plugin@5.0.0
+
 ## 5.3.0
 
 ### Minor Changes
