@@ -1,5 +1,5 @@
 /**
- * A step that calls `start({ hook })`, gets an uncertain outcome, and retries:
+ * A step that calls `start({ experimental_hook })`, gets an uncertain outcome, and retries:
  * the token makes the retry safe, so the run ends with exactly one owner.
  * Runs against world-local's real storage, with the admission's response
  * lost after it committed.
@@ -66,7 +66,7 @@ afterEach(async () => {
   });
 });
 
-describe('a step retrying start({ hook })', () => {
+describe('a step retrying start({ experimental_hook })', () => {
   /** world-local, losing the first `lose` `run_created` responses. */
   function lossyWorld(lose: number) {
     const local = createLocalWorld({ dataDir: dir });
@@ -90,7 +90,7 @@ describe('a step retrying start({ hook })', () => {
 
     // Re-posting the same candidate learns its decision: admitted.
     const run = await stepAttempt(1, () =>
-      start(workflow, ['a'], { hook: { token: TOKEN } })
+      start(workflow, ['a'], { experimental_hook: { token: TOKEN } })
     );
 
     const runs = await local.runs.list({});
@@ -105,7 +105,7 @@ describe('a step retrying start({ hook })', () => {
 
     // Attempt 1: admitted, but every confirmation was lost. Retryable.
     const first = await stepAttempt(1, () =>
-      start(workflow, ['a'], { hook: { token: TOKEN } })
+      start(workflow, ['a'], { experimental_hook: { token: TOKEN } })
     ).catch((e: unknown) => e);
     expect(WorkflowStartError.is(first)).toBe(true);
     expect(FatalError.is(first)).toBe(false);
@@ -113,7 +113,7 @@ describe('a step retrying start({ hook })', () => {
 
     // Attempt 2: a new candidate, refused in favor of the first, and final.
     const second = await stepAttempt(2, () =>
-      start(workflow, ['a'], { hook: { token: TOKEN } })
+      start(workflow, ['a'], { experimental_hook: { token: TOKEN } })
     ).catch((e: unknown) => e);
     expect(HookConflictError.is(second)).toBe(true);
     expect(second).toMatchObject({ conflictingRunId: candidate });
@@ -128,7 +128,7 @@ describe('a step retrying start({ hook })', () => {
     const { local } = lossyWorld(4);
 
     const first = await stepAttempt(1, () =>
-      start(workflow, ['a'], { hook: { token: TOKEN } })
+      start(workflow, ['a'], { experimental_hook: { token: TOKEN } })
     ).catch((e: unknown) => e);
     expect(WorkflowStartError.is(first)).toBe(true);
     const candidate = (first as WorkflowStartError).runId;
@@ -147,7 +147,7 @@ describe('a step retrying start({ hook })', () => {
     } as never);
 
     const second = await stepAttempt(2, () =>
-      start(workflow, ['a'], { hook: { token: TOKEN } })
+      start(workflow, ['a'], { experimental_hook: { token: TOKEN } })
     );
     expect(second.runId).not.toBe(candidate);
     const runs = await local.runs.list({});
@@ -169,7 +169,7 @@ describe('a step retrying start({ hook })', () => {
     setWorld({ ...local, queue } as any);
 
     const run = await stepAttempt(1, () =>
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     const runs = await local.runs.list({});

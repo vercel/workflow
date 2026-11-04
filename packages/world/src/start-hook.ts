@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { SerializedDataSchema } from './serialization.js';
 
 /**
- * Atomic start Hook admission: `start(workflow, args, { hook: { token } })`.
+ * Atomic start Hook admission: `start(workflow, args, { experimental_hook: { token } })`.
  *
  * The World creates a Hook for the token while it admits the run, so at most
  * one run owns the token and a duplicate start is refused before it becomes a

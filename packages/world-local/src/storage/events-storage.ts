@@ -208,7 +208,7 @@ export function createEventsStorage(
   type Admission = { status: 'created' } | { status: 'existing'; run: RunRow };
 
   /**
-   * Admits a `start({ hook })` candidate: in this transaction, the start
+   * Admits a `start({ experimental_hook })` candidate: in this transaction, the start
    * Hook's token is taken, and the run, its Hook and its `run_created` are
    * written; or the refusal is recorded (and committed) so every later
    * attempt for the candidate answers the same. See `start-hook.ts` in

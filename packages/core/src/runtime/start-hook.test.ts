@@ -139,11 +139,13 @@ describe('normalizeStartHook', () => {
   });
 });
 
-describe('start({ hook })', () => {
+describe('start({ experimental_hook })', () => {
   it('publishes the candidate first, then admits it, both carrying the reservation', async () => {
     admittingWorld();
 
-    const run = await start(workflow, ['a'], { hook: { token: TOKEN } });
+    const run = await start(workflow, ['a'], {
+      experimental_hook: { token: TOKEN },
+    });
 
     expect(calls).toEqual(['queue', 'create']);
     const [runId, event] = eventsCreate.mock.calls[0];
@@ -157,7 +159,7 @@ describe('start({ hook })', () => {
   it('admits a single-orchestrator run the same way', async () => {
     admittingWorld({ specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR });
 
-    await start(workflow, ['a'], { hook: { token: TOKEN } });
+    await start(workflow, ['a'], { experimental_hook: { token: TOKEN } });
 
     expect(calls).toEqual(['queue', 'create']);
     const [, event] = eventsCreate.mock.calls[0];
@@ -173,7 +175,7 @@ describe('start({ hook })', () => {
     it('sets none by default: the token is released when the run ends', async () => {
       admittingWorld();
 
-      await start(workflow, [], { hook: { token: TOKEN } });
+      await start(workflow, [], { experimental_hook: { token: TOKEN } });
 
       expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
         token: TOKEN,
@@ -187,7 +189,7 @@ describe('start({ hook })', () => {
       admittingWorld();
 
       await start(workflow, [], {
-        hook: { token: TOKEN, experimental_minRetention: 0 },
+        experimental_hook: { token: TOKEN, experimental_minRetention: 0 },
       });
 
       expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
@@ -200,7 +202,7 @@ describe('start({ hook })', () => {
         capabilities: { inBandFence: true, atomicStartHook: { active: true } },
       });
 
-      await start(workflow, [], { hook: { token: TOKEN } });
+      await start(workflow, [], { experimental_hook: { token: TOKEN } });
 
       expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
         token: TOKEN,
@@ -212,7 +214,7 @@ describe('start({ hook })', () => {
     admittingWorld();
 
     await start(workflow, [], {
-      hook: { token: TOKEN, metadata: { sessionId: 's_1' } },
+      experimental_hook: { token: TOKEN, metadata: { sessionId: 's_1' } },
     });
 
     const [runId, event] = eventsCreate.mock.calls[0];
@@ -253,7 +255,9 @@ describe('start({ hook })', () => {
       );
 
       const error = await rejection(
-        inStep(() => start(workflow, [], { hook: { token: TOKEN } }))
+        inStep(() =>
+          start(workflow, [], { experimental_hook: { token: TOKEN } })
+        )
       );
 
       expect(HookConflictError.is(error)).toBe(true);
@@ -270,7 +274,9 @@ describe('start({ hook })', () => {
       );
 
       const error = await rejection(
-        inStep(() => start(workflow, [], { hook: { token: TOKEN } }))
+        inStep(() =>
+          start(workflow, [], { experimental_hook: { token: TOKEN } })
+        )
       );
 
       expect(FatalError.is(error)).toBe(true);
@@ -283,7 +289,9 @@ describe('start({ hook })', () => {
       );
 
       const error = await rejection(
-        inStep(() => start(workflow, [], { hook: { token: TOKEN } }))
+        inStep(() =>
+          start(workflow, [], { experimental_hook: { token: TOKEN } })
+        )
       );
 
       expect(WorkflowStartError.is(error)).toBe(true);
@@ -297,7 +305,7 @@ describe('start({ hook })', () => {
       );
 
       const error = await rejection(
-        start(workflow, [], { hook: { token: TOKEN } })
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
       );
 
       expect(FatalError.is(error)).toBe(false);
@@ -309,7 +317,7 @@ describe('start({ hook })', () => {
     const until = new Date(Date.now() + 60_000);
 
     await start(workflow, [], {
-      hook: { token: TOKEN, experimental_minRetention: until },
+      experimental_hook: { token: TOKEN, experimental_minRetention: until },
     });
 
     expect(eventsCreate.mock.calls[0][1].eventData.startHook).toEqual({
@@ -324,7 +332,7 @@ describe('start({ hook })', () => {
     });
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(WorkflowWorldError.is(error)).toBe(true);
@@ -340,7 +348,7 @@ describe('start({ hook })', () => {
 
     const error = await rejection(
       start(workflow, [], {
-        hook: { token: TOKEN, experimental_minRetention: '1h' },
+        experimental_hook: { token: TOKEN, experimental_minRetention: '1h' },
       })
     );
 
@@ -355,7 +363,7 @@ describe('start({ hook })', () => {
     const error = await rejection(
       start('async function w() { "use workflow"; }', [], {
         experimental_dynamic: { steps: {} },
-        hook: { token: TOKEN },
+        experimental_hook: { token: TOKEN },
       } as any)
     );
 
@@ -368,7 +376,7 @@ describe('start({ hook })', () => {
     eventsCreate.mockRejectedValue(new HookConflictError(TOKEN, 'wrun_owner'));
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(HookConflictError.is(error)).toBe(true);
@@ -406,7 +414,7 @@ describe('start({ hook })', () => {
       refusingWorld(get);
 
       const error = await rejection(
-        start(workflow, [], { hook: { token: TOKEN } })
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
       );
 
       expect(HookConflictError.is(error)).toBe(true);
@@ -441,7 +449,9 @@ describe('start({ hook })', () => {
         );
       refusingWorld(get);
 
-      await rejection(start(workflow, [], { hook: { token: TOKEN } }));
+      await rejection(
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
+      );
 
       await vi.waitFor(() => expect(queue).toHaveBeenCalledTimes(2));
       const [, payload, opts] = queue.mock.calls[1];
@@ -515,7 +525,7 @@ describe('start({ hook })', () => {
       refusingWorld(get);
 
       const error = await rejection(
-        start(workflow, [], { hook: { token: TOKEN } })
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
       );
 
       expect(HookConflictError.is(error)).toBe(true);
@@ -530,7 +540,7 @@ describe('start({ hook })', () => {
       refusingWorld(vi.fn().mockResolvedValue(holderRun(status, age)));
 
       const error = await rejection(
-        start(workflow, [], { hook: { token: TOKEN } })
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
       );
 
       expect(HookConflictError.is(error)).toBe(true);
@@ -545,7 +555,7 @@ describe('start({ hook })', () => {
       );
 
       const error = await rejection(
-        start(workflow, [], { hook: { token: TOKEN } })
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
       );
 
       expect(HookConflictError.is(error)).toBe(true);
@@ -570,7 +580,7 @@ describe('start({ hook })', () => {
       });
 
       const error = await rejection(
-        start(workflow, [], { hook: { token: TOKEN } })
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
       );
 
       expect(HookConflictError.is(error)).toBe(true);
@@ -595,7 +605,7 @@ describe('start({ hook })', () => {
     eventsCreate.mockRejectedValue(new HookConflictError(TOKEN));
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
@@ -606,7 +616,7 @@ describe('start({ hook })', () => {
     eventsCreate.mockRejectedValue(new EntityConflictError('exists'));
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
@@ -624,7 +634,7 @@ describe('start({ hook })', () => {
     queue.mockRejectedValue(cause);
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(WorkflowStartError.is(error)).toBe(true);
@@ -642,7 +652,7 @@ describe('start({ hook })', () => {
     queue.mockRejectedValue(new WorkflowWorldError('down', { status: 503 }));
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(WorkflowStartError.is(error)).toBe(true);
@@ -683,7 +693,9 @@ describe('start({ hook })', () => {
     queue.mockRejectedValue(cause);
 
     expect(
-      await rejection(start(workflow, [], { hook: { token: TOKEN } }))
+      await rejection(
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
+      )
     ).toBe(cause);
   });
 
@@ -711,7 +723,7 @@ describe('start({ hook })', () => {
     eventsCreate.mockRejectedValue(cause);
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(WorkflowStartError.is(error)).toBe(true);
@@ -735,7 +747,9 @@ describe('start({ hook })', () => {
     eventsCreate.mockRejectedValue(cause);
 
     expect(
-      await rejection(start(workflow, [], { hook: { token: TOKEN } }))
+      await rejection(
+        start(workflow, [], { experimental_hook: { token: TOKEN } })
+      )
     ).toBe(cause);
   });
 
@@ -746,7 +760,7 @@ describe('start({ hook })', () => {
     }));
 
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
 
     expect(error).toMatchObject({ code: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR });
@@ -789,9 +803,9 @@ describe('start({ hook })', () => {
       eventsCreate.mockRejectedValue(error());
       const { stream, reads } = oneShotSource();
 
-      await start(workflow, [stream], { hook: { token: TOKEN } }).catch(
-        () => {}
-      );
+      await start(workflow, [stream], {
+        experimental_hook: { token: TOKEN },
+      }).catch(() => {});
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       expect(reads.count).toBe(0);
@@ -807,7 +821,9 @@ describe('start({ hook })', () => {
       );
       const sink = new WritableStream<string>();
 
-      await start(workflow, [sink], { hook: { token: TOKEN } }).catch(() => {});
+      await start(workflow, [sink], {
+        experimental_hook: { token: TOKEN },
+      }).catch(() => {});
       await new Promise((resolve) => setTimeout(resolve, 20));
 
       expect(sink.locked).toBe(false);
@@ -825,7 +841,9 @@ describe('start({ hook })', () => {
         .mockImplementation(accept);
       const { stream, reads } = oneShotSource();
 
-      const run = await start(workflow, [stream], { hook: { token: TOKEN } });
+      const run = await start(workflow, [stream], {
+        experimental_hook: { token: TOKEN },
+      });
 
       expect(run.runId).toBe(queue.mock.calls[0][1].runId);
       expect(eventsCreate).toHaveBeenCalledTimes(2);
@@ -842,7 +860,7 @@ describe('start({ hook })', () => {
       const { stream, reads } = oneShotSource();
 
       const error = await rejection(
-        start(workflow, [stream], { hook: { token: TOKEN } })
+        start(workflow, [stream], { experimental_hook: { token: TOKEN } })
       );
       await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -860,7 +878,9 @@ describe('start({ hook })', () => {
         .mockResolvedValue(undefined);
       const { stream, reads } = oneShotSource();
 
-      const run = await start(workflow, [stream], { hook: { token: TOKEN } });
+      const run = await start(workflow, [stream], {
+        experimental_hook: { token: TOKEN },
+      });
 
       expect(queue).toHaveBeenCalledTimes(2);
       expect(queue.mock.calls[1][1].runId).toBe(run.runId);
@@ -876,7 +896,7 @@ describe('start({ hook })', () => {
       const { stream } = oneShotSource();
 
       const error = await rejection(
-        start(workflow, [stream], { hook: { token: TOKEN } })
+        start(workflow, [stream], { experimental_hook: { token: TOKEN } })
       );
 
       expect(WorkflowStartError.is(error)).toBe(true);
@@ -897,7 +917,9 @@ describe('start({ hook })', () => {
       );
       const { stream, reads } = oneShotSource();
 
-      const pending = start(workflow, [stream], { hook: { token: TOKEN } });
+      const pending = start(workflow, [stream], {
+        experimental_hook: { token: TOKEN },
+      });
       await vi.waitFor(() => expect(eventsCreate).toHaveBeenCalledOnce());
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(reads.count).toBe(0);
@@ -917,7 +939,7 @@ describe('start({ hook })', () => {
       const error = await rejection(
         start(workflow, [], {
           deploymentId: 'dpl_other',
-          hook: { token: TOKEN },
+          experimental_hook: { token: TOKEN },
         })
       );
 
@@ -955,7 +977,7 @@ describe('start({ hook })', () => {
       const error = await rejection(
         start(workflow, [], {
           deploymentId: 'dpl_other',
-          hook: { token: TOKEN },
+          experimental_hook: { token: TOKEN },
         })
       );
 
@@ -976,7 +998,7 @@ describe('start({ hook })', () => {
       const error = await rejection(
         start(workflow, [], {
           deploymentId: 'dpl_other',
-          hook: { token: TOKEN },
+          experimental_hook: { token: TOKEN },
         })
       );
 
@@ -996,7 +1018,7 @@ describe('start({ hook })', () => {
 
       await start(workflow, [], {
         deploymentId: 'dpl_other',
-        hook: { token: TOKEN },
+        experimental_hook: { token: TOKEN },
       });
 
       expect(calls).toEqual(['queue', 'create']);

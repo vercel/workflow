@@ -90,7 +90,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   const capabilities = {
     hookRetention: { active: true },
-    // `start({ hook })`: the start Hook's token, the run, its Hook and its
+    // `start({ experimental_hook })`: the start Hook's token, the run, its Hook and its
     // run_created commit in one transaction, or the refusal is recorded.
     atomicStartHook: { active: true },
     // Stored whole on the run record; no upload path, so `start()` always

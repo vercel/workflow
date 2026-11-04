@@ -1758,7 +1758,7 @@ async function runDelivery(
               // Without the key, a run this event creates could never
               // receive sealed writes.
               encryptionPublicKey: runInput.encryptionPublicKey,
-              // The queued copy of `start({ hook })`: this
+              // The queued copy of `start({ experimental_hook })`: this
               // write may be the one that admits or refuses
               // the candidate.
               startHook: runInput.startHook,
@@ -1957,7 +1957,7 @@ async function runDelivery(
         }
         startWorkflowCompile(workflowRun);
       } catch (err) {
-        // A refused `start({ hook })` candidate's queued copy: nothing
+        // A refused `start({ experimental_hook })` candidate's queued copy: nothing
         // ran, ack. Narrowed to the two admission answers.
         if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
           return;
@@ -2967,7 +2967,7 @@ async function runDelivery(
             inlineStepsInFlight.ids
           ),
           worldCapabilities: world.capabilities,
-          // `start({ hook })` runs: the body's createHook with the start
+          // `start({ experimental_hook })` runs: the body's createHook with the start
           // token binds to the Hook the admission created. Undefined for
           // every other run.
           startHook: resolveRunStartHook({

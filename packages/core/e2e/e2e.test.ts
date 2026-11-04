@@ -2638,7 +2638,7 @@ describe.concurrent('e2e', () => {
   };
 
   /**
-   * `start(workflow, args, { hook: { token } })`. The World creates the run's
+   * `start(workflow, args, { experimental_hook: { token } })`. The World creates the run's
    * start Hook (id `startHookId(runId)`) atomically with admitting it, so the
    * Hook exists, and is resumable, as soon as `start()` returns: payloads
    * resumed before the workflow calls `createHook({ token })` wait in its log
@@ -2646,14 +2646,13 @@ describe.concurrent('e2e', () => {
    * ordinary Hook lifecycle: disposing it, or the run ending without a
    * retention, frees the token.
    */
-  describe('start({ hook })', () => {
+  describe('start({ experimental_hook })', () => {
     /**
-     * The World behind this lane admits start Hooks. The Vercel lanes run
-     * against whichever workflow-server is deployed and opt in with
-     * WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK, so they skip until both are in
-     * place; the local and Postgres lanes always run these. A lane that sets
-     * WORKFLOW_E2E_EXPECT_START_HOOK=1 must run them, so there a World
-     * without the capability fails the test instead of skipping it.
+     * The World behind this lane admits start Hooks. The local, Postgres and
+     * Vercel Worlds all declare the capability; a custom World without it
+     * skips these. A lane that sets WORKFLOW_E2E_EXPECT_START_HOOK=1 must run
+     * them, so there a World without the capability fails the test instead
+     * of skipping it.
      */
     const skipUnlessStartHookSupported = async (ctx: TestContext) => {
       const world = await getWorld();
@@ -2790,14 +2789,14 @@ describe.concurrent('e2e', () => {
     }
 
     /**
-     * The token is free: a new `start({ hook })` is admitted as a new run,
+     * The token is free: a new `start({ experimental_hook })` is admitted as a new run,
      * which owns it and receives a resume.
      */
     async function expectAdmittedAgain(token: string, previousRunId: string) {
       const next = await startHooked(
         await e2e('startHookOwnerWorkflow'),
         [token, 1],
-        { hook: { token } }
+        { experimental_hook: { token } }
       );
       expect(next.runId).not.toBe(previousRunId);
       const hook = await resumeHook(token, { message: 'next' });
@@ -2821,7 +2820,7 @@ describe.concurrent('e2e', () => {
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
           const run = await startHooked(workflow, [token, expected], {
-            hook: { token },
+            experimental_hook: { token },
           });
           return { attempt, message, run };
         } catch (error) {
@@ -2878,7 +2877,10 @@ describe.concurrent('e2e', () => {
             [token, `${token}-gate`, 1],
             {
               world: queue.world,
-              hook: { token, metadata: { sessionId: 'session-1' } },
+              experimental_hook: {
+                token,
+                metadata: { sessionId: 'session-1' },
+              },
             }
           );
           const hookId = startHookId(owner.runId);
@@ -2930,7 +2932,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookGateThenClaimWorkflow'),
           [token, gate, messages.length],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         const hookId = startHookId(owner.runId);
         for (const message of messages) {
@@ -2972,7 +2974,7 @@ describe.concurrent('e2e', () => {
         const workflow = await e2e('startHookUnclaimedWorkflow');
 
         const owner = await startHooked(workflow, [gate, 'only-once'], {
-          hook: { token, metadata: { from: 'start' } },
+          experimental_hook: { token, metadata: { from: 'start' } },
         });
         const hookId = startHookId(owner.runId);
         // Resumed right after start(), then again while it runs.
@@ -2981,7 +2983,9 @@ describe.concurrent('e2e', () => {
         // The run's other Hook is an ordinary one: no start metadata.
         expect(await gateHook.metadata).toBeUndefined();
         await expectRefusedNaming(
-          startHooked(workflow, [`${gate}-dup`, 'dup'], { hook: { token } }),
+          startHooked(workflow, [`${gate}-dup`, 'dup'], {
+            experimental_hook: { token },
+          }),
           owner.runId
         );
         await resumeHook(token, { message: 'during' });
@@ -3012,7 +3016,7 @@ describe.concurrent('e2e', () => {
 
         const results = await Promise.allSettled(
           Array.from({ length: 6 }, () =>
-            startHooked(workflow, [token, 1], { hook: { token } })
+            startHooked(workflow, [token, 1], { experimental_hook: { token } })
           )
         );
 
@@ -3097,14 +3101,14 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookOwnerWorkflow'),
           [token, 1],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         // A different workflow, with steps, under the same token.
         const queue = interceptQueue(world, { hold: false });
         await expectRefusedNaming(
           startHooked(await e2e('addTenWorkflow'), [1], {
             world: queue.world,
-            hook: { token },
+            experimental_hook: { token },
           }),
           owner.runId
         );
@@ -3192,7 +3196,7 @@ describe.concurrent('e2e', () => {
 
         const pending = startHooked(workflow, [token, 1], {
           world: late,
-          hook: { token },
+          experimental_hook: { token },
         });
         let refusal: unknown;
         try {
@@ -3225,7 +3229,7 @@ describe.concurrent('e2e', () => {
           // A duplicate is refused naming the candidate the queued copy
           // admitted, while the direct write is still held.
           refusal = await startHooked(workflow, [token, 1], {
-            hook: { token },
+            experimental_hook: { token },
           }).then(
             () => undefined,
             (e: unknown) => e
@@ -3263,7 +3267,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookRetainedOwnerWorkflow'),
           [token],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         await resumeHook(token, { message: 'done' });
         expect(await owner.returnValue).toEqual({ message: 'done' });
@@ -3285,7 +3289,7 @@ describe.concurrent('e2e', () => {
         const workflow = await e2e('startHookRetainedOwnerWorkflow');
 
         const owner = await startHooked(workflow, [token], {
-          hook: { token, experimental_minRetention: '1h' },
+          experimental_hook: { token, experimental_minRetention: '1h' },
         });
         await resumeHook(token, { message: 'done' });
         expect(await owner.returnValue).toEqual({ message: 'done' });
@@ -3304,7 +3308,7 @@ describe.concurrent('e2e', () => {
           String(late)
         ).toBe(true);
         await expectRefusedNaming(
-          startHooked(workflow, [token], { hook: { token } }),
+          startHooked(workflow, [token], { experimental_hook: { token } }),
           owner.runId
         );
       }
@@ -3323,7 +3327,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookOwnerWorkflow'),
           [token, 1],
-          { hook: { token, experimental_minRetention: '1h' } }
+          { experimental_hook: { token, experimental_minRetention: '1h' } }
         );
         await resumeHook(token, { message: 'done' });
         expect(await owner.returnValue).toEqual({
@@ -3348,7 +3352,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookReclaimWorkflow'),
           [token, gate],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         const hookId = startHookId(owner.runId);
         await resumeHook(token, { message: 'first' });
@@ -3360,7 +3364,7 @@ describe.concurrent('e2e', () => {
         const duplicate = await startHooked(
           await e2e('startHookOwnerWorkflow'),
           [token, 1],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         expect(duplicate.runId).not.toBe(owner.runId);
 
@@ -3401,7 +3405,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookReclaimWorkflow'),
           [token, gate],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         const hookId = startHookId(owner.runId);
         await resumeHook(token, { message: 'first' });
@@ -3447,7 +3451,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookClaimUnreadWorkflow'),
           [token, gate],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         const first = await resumeHook(token, { message: 'unread-1' });
         expect(first).toMatchObject({
@@ -3468,7 +3472,7 @@ describe.concurrent('e2e', () => {
     );
 
     testJsOnly(
-      'createHook() on the start token refuses options that belong on start({ hook })',
+      'createHook() on the start token refuses options that belong on start({ experimental_hook })',
       { timeout: 120_000 },
       async (ctx) => {
         await skipUnlessStartHookSupported(ctx);
@@ -3478,7 +3482,7 @@ describe.concurrent('e2e', () => {
           (['metadata', 'retention'] as const).map(async (option) => {
             const token = randomToken(`start-hook-option-${option}`);
             const run = await startHooked(workflow, [token, option], {
-              hook: { token },
+              experimental_hook: { token },
             });
             return run.returnValue.catch((e: unknown) => e);
           })
@@ -3487,7 +3491,7 @@ describe.concurrent('e2e', () => {
           expect(WorkflowRunFailedError.is(failure)).toBe(true);
           assert(WorkflowRunFailedError.is(failure));
           assert(failure.cause instanceof Error);
-          expect(failure.cause.message).toContain('{ hook }');
+          expect(failure.cause.message).toContain('{ experimental_hook }');
         }
       }
     );
@@ -3502,7 +3506,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookSecondCreateWorkflow'),
           [token],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         const hookId = startHookId(owner.runId);
         const hook = await resumeHook(token, { message: 'to-start-hook' });
@@ -3541,7 +3545,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookClaimUnreadWorkflow'),
           [token, gate],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         await waitForHook(gate, { runId: owner.runId });
         await resumeHook(token, { message: 'leftover' });
@@ -3561,7 +3565,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookUnclaimedWorkflow'),
           [gate, 'never'],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         await resumeHook(token, { message: 'leftover' });
         await waitForHook(gate, { runId: owner.runId });
@@ -3611,7 +3615,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookLateClaimWorkflow'),
           [token, gate],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         const { claimer, claimerHook } = await forceClaimUnopenedStartHook(
           owner,
@@ -3649,7 +3653,7 @@ describe.concurrent('e2e', () => {
         const owner = await startHooked(
           await e2e('startHookUnclaimedWorkflow'),
           [gate, 'unbothered'],
-          { hook: { token } }
+          { experimental_hook: { token } }
         );
         const { claimer, claimerHook } = await forceClaimUnopenedStartHook(
           owner,

@@ -137,7 +137,7 @@ export interface WorkflowOrchestratorContext {
   encryptionKey: PayloadKey | undefined;
   worldCapabilities?: WorldCapabilities;
   /**
-   * The run's start Hook (`start(workflow, args, { hook })`), fixed when the
+   * The run's start Hook (`start(workflow, args, { experimental_hook })`), fixed when the
    * session is created; `undefined` for a run started without one. The first
    * `createHook({ token })` with this token binds to `hookId` (setting
    * `bound`) instead of minting an id and writing `hook_created`: the
@@ -146,7 +146,7 @@ export interface WorkflowOrchestratorContext {
   startHook?: {
     token: string;
     hookId: string;
-    /** `start({ hook })`'s retention deadline, when one was set. */
+    /** `start({ experimental_hook })`'s retention deadline, when one was set. */
     tokenRetentionUntil?: Date;
     bound: boolean;
   };

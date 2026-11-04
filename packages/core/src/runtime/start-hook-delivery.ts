@@ -11,7 +11,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 
 /**
  * Whether a delivery may take the turbo fast path for this `runInput`. The
- * queued copy of a `start({ hook })` candidate may be refused by the
+ * queued copy of a `start({ experimental_hook })` candidate may be refused by the
  * `run_started` it writes, so nothing of its may run before that write
  * returns: turbo, which backgrounds `run_started` and starts inline step
  * bodies first, is off for it on every engine.
@@ -21,7 +21,7 @@ export function admitsTurboStart(runInput: RunInput | undefined): boolean {
 }
 
 /**
- * The queued copy of a `start({ hook })` candidate the World refused: another
+ * The queued copy of a `start({ experimental_hook })` candidate the World refused: another
  * run owns the token (`HookConflictError`), or the World will never admit the
  * request (`START_HOOK_ADMISSION_REJECTED`). Nothing of the candidate ran and
  * it never becomes a run, so the delivery acknowledges. Returns whether it
@@ -76,7 +76,7 @@ export function ackRefusedStartHookCandidate(
 }
 
 /**
- * The queued copy of a `start({ hook })` candidate whose `run_started` the
+ * The queued copy of a `start({ experimental_hook })` candidate whose `run_started` the
  * World accepted, on the invocation span: the candidate owns the token,
  * whether this write admitted it or replayed the admission its `run_created`
  * won.

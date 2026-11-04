@@ -96,7 +96,7 @@ const MIGRATIONS: string[] = [
     PRIMARY KEY (run_id, resume_id)
   ) WITHOUT ROWID;
 
-  -- A refused start({ hook }) candidate: its decision is permanent.
+  -- A refused start({ experimental_hook }) candidate: its decision is permanent.
   CREATE TABLE start_hook_rejections (
     run_id TEXT PRIMARY KEY,
     tag TEXT,

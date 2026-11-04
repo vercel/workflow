@@ -1,5 +1,5 @@
 /**
- * `start({ hook })` admission in the Local World: the start Hook's token,
+ * `start({ experimental_hook })` admission in the Local World: the start Hook's token,
  * the run, its Hook and its run_created commit in one transaction, and a
  * refusal is recorded per candidate.
  */
