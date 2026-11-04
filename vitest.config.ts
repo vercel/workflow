@@ -27,5 +27,13 @@ export default defineConfig({
     // other branches: they would run their own version of the suite against the
     // same backend and overwrite the same result files.
     exclude: [...configDefaults.exclude, '**/.claude/**'],
+    // On Windows an open SQLite file cannot be deleted, and tests remove
+    // their Local World data directory right after using it: give every
+    // world-local operation its own connection there (see `connectionMode`
+    // in packages/world-local/src/db/index.ts).
+    env:
+      process.platform === 'win32'
+        ? { WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS: '0' }
+        : {},
   },
 });
