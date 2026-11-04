@@ -226,33 +226,27 @@ The Postgres World is not compatible with Vercel deployments. On Vercel, workflo
 
 ## Security
 
-Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/docs/how-it-works/encryption) workflow traffic automatically, the Postgres World authenticates only the deliveries that reach its queue route, and only within one process. Securing the rest of your app is your responsibility and should be in place before an app using this World is used in production and reachable by untrusted clients. We also recommend [enabling encryption](/docs/how-it-works/encryption#custom-world-implementations).
+Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/docs/how-it-works/encryption) workflow traffic automatically, the Postgres World does **not** automatically authenticate requests that drive workflow execution. Adding that is your responsibility and should be in place before an app using this World is used in production and reachable by untrusted clients. We also recommend [enabling encryption](/docs/how-it-works/encryption#custom-world-implementations).
 
-### The queue route
+### Protect the queue route
 
-`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default. Every delivery the worker sends carries a random key that its process generates on first use and holds only in memory. The route refuses a request that does not carry that key with a `401`, before it reads the body, and does not touch any run. A request from outside the app cannot start a run, fail a running one, re-trigger a step, or replay a delivery.
-
-This check protects only the Workflow SDK's flow route: it runs in the route handler `@workflow/core` generates. A queue consumer's own route, served with `world.createQueueHandler()` and registered with [`registerRoute()`](#queue-consumers-other-than-the-workflow-sdk), is not checked, and accepts forged deliveries even with `WORKFLOW_QUEUE_AUTH=on`. Authenticate those deliveries in the route yourself, before handling them: the worker attaches the same key to every delivery, so a route can refuse a request when `isQueueAuthKey(req.headers.get(QUEUE_AUTH_HEADER))` from `@workflow/utils` is false. Otherwise, keep the route unreachable from outside, as described in [Defense in depth](#defense-in-depth).
-
-The key belongs to one process. A worker accepts its own deliveries, which it sends to its own loopback address, and refuses deliveries sent by any other process. If a worker delivers to a route served by another process or host (`WORKFLOW_LOCAL_BASE_URL` pointing at a separate web tier, for example), the route refuses those deliveries. The worker logs the refusal once and retires each refused job instead of retrying it. Refusals also show up on the `workflow.queue.delivery.refused` counter. Until the World supports that topology, set [`WORKFLOW_QUEUE_AUTH=off`](/docs/configuration/runtime-tuning#workflow_queue_auth) on the app that serves the route, and protect the route at the network as described below. `off` is refused while dynamic workflows are enabled.
-
-The same refusal happens during a rolling upgrade if a route on this release receives deliveries from a sender that predates the key: `workflow` / `@workflow/core` upgraded before `@workflow/world-postgres`, or one tier of a split deployment still on the old release. Upgrade the runtime and `@workflow/world-postgres` together. If a rollout cannot avoid the overlap, set `WORKFLOW_QUEUE_AUTH=off` on the upgraded routes for the rollout, then remove it. A single-process deployment's rolling restart is not affected, because each process's worker delivers to its own process.
-
-A separate process that enqueues on this World, such as a script or a test runner calling `start()` or `resumeHook()`, would by default also start Graphile workers once it can reach the app's workflow endpoint (`WORKFLOW_LOCAL_BASE_URL`, `PORT`, or a detected port). Those workers would pick up the app's jobs and deliver them with their own process's key, so the app would refuse them and retire each refused job. Run that process with [`WORKFLOW_POSTGRES_ENQUEUE_ONLY=1`](#workflow_postgres_enqueue_only) so it starts no worker and only the app's worker delivers. Queue auth stays on.
+`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default, and it accepts any request whose headers and body are well-formed: there is no signature, shared secret, or caller check. Anyone who can reach it can forge or replay a workflow or step invocation, including steps your application would only reach after its own gating. Restrict it before you expose the app.
 
 The other routes under `/.well-known/workflow/v1/` differ:
 
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
 - `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
-- `flow?__health` answers a static health response (the SDK and Node.js versions) without authentication. It touches no run.
 
-### Defense in depth
+A queue consumer that registered its own route with [`registerRoute()`](#queue-consumers-other-than-the-workflow-sdk) receives deliveries the same way, so protect that route like the flow route.
 
-Keep the flow route, and any queue consumer's own route, behind your network edge as well:
+### Bringing your own auth
+
+Workflow does not prescribe an auth mechanism for self-hosted Worlds, so restrict the flow route at the network edge rather than inside the application:
 
 - **Keep the flow route unreachable from outside.** By default the worker delivers to a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology nothing outside the container needs to reach it. Blocking external requests to `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall costs you nothing, because loopback delivery never traverses that layer. Do not block the whole `/.well-known/workflow/` prefix if you use [`createWebhook()`](/docs/api-reference/workflow/create-webhook): its `webhook/:token` route sits under the same prefix and has to stay reachable by whoever calls it.
-- **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments (and you therefore run with `WORKFLOW_QUEUE_AUTH=off`), require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
+- **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments, require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
 - **Do not gate these paths in framework middleware.** The [Next.js setup guide](/docs/getting-started/next) tells you to exclude `/.well-known/workflow/*` from your proxy matcher, because a handler that consumes the internal request body breaks execution. Adding the paths back in order to gate them reintroduces that failure mode.
+- **Do not expect the World to present a credential.** It does not sign its delivery requests or attach a secret to them, so an in-application check that requires one will reject the World's own deliveries.
 
 ### Data at rest
 
@@ -291,7 +285,6 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_POSTGRES_POLL_INTERVAL_MS`](#workflow_postgres_poll_interval_ms) | `500` ms | Idle job polling |
 | [`WORKFLOW_POSTGRES_MAX_POOL_SIZE`](#workflow_postgres_max_pool_size) | `10` | Connection pool size |
 | [`WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`](#workflow_postgres_application_managed_shutdown) | off | Who coordinates shutdown |
-| [`WORKFLOW_POSTGRES_ENQUEUE_ONLY`](#workflow_postgres_enqueue_only) | off | A producer-only process that runs no worker |
 | [`WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`](#workflow_postgres_run_status_poll_interval_ms) | `1000` ms | Backstop for `await run.returnValue` |
 | [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](#workflow_postgres_headers_timeout_ms) | `0` ms (no deadline) | Hung delivery detection |
 | [`WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`](#workflow_postgres_body_timeout_ms) | `0` ms (no deadline) | Stalled response detection |
@@ -337,10 +330,6 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 ### `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`
 
 Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).
-
-### `WORKFLOW_POSTGRES_ENQUEUE_ONLY`
-
-Set to `1` or `true` in a process that enqueues work but does not serve the flow route, such as a script, the CLI, or a test runner calling `start()` or `resumeHook()` against a running app. That process starts no Graphile worker, so it never picks up a job; the app's own worker delivers everything. Enqueueing, `invoke()` and `world.close()` work as usual. It logs one line when the World is created. Never set it on the app that serves the flow route: then nothing delivers its jobs. Programmatic equivalent: `enqueueOnly: true`. Default: unset (`false`).
 
 ### `WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`
 

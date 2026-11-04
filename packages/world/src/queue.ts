@@ -1005,8 +1005,11 @@ export interface InvokeOptions {
  *   `@workflow/utils`) as the `QUEUE_AUTH_HEADER` header of every delivery it
  *   sends, over HTTP or to an in-process handler. The runtime refuses, with a
  *   401 and without touching any run, a delivery that does not carry it.
- * - `'skip'`: the World's transport authenticates deliveries itself (Vercel
- *   Queues reaches a private route), so the runtime does not check.
+ * - `'skip'`: the runtime does not check. For a World whose transport
+ *   authenticates deliveries itself (Vercel Queues reaches a private route),
+ *   or whose deliveries cannot carry a process key (world-postgres's workers
+ *   may deliver a job another process enqueued; its database controls who
+ *   can enqueue, and its route must be protected at the network edge).
  */
 export type QueueAuthMode = 'in-process-key' | 'skip';
 
@@ -1017,8 +1020,8 @@ export interface Queue {
    * How the runtime authenticates the deliveries this World's queue sends
    * (see {@link QueueAuthMode}). A World that declares nothing is treated as
    * `'in-process-key'`, so it fails closed: unless its queue attaches the key,
-   * every delivery is refused. A World whose transport authenticates
-   * deliveries itself declares `'skip'`.
+   * every delivery is refused. A World whose route is protected some other
+   * way declares `'skip'`.
    *
    * `WORKFLOW_QUEUE_AUTH=off` turns the check off for `'in-process-key'`
    * Worlds (a trusted network, or a sender in another process), except while

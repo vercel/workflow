@@ -171,12 +171,10 @@ world-postgres it first brings up the container and applies migrations, and
 leaves Postgres running for the next iteration unless `--teardown` is passed;
 the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
 under `--world local`, whose only state is a data directory the script clears
-before each run. The harness calls `start()` and `resumeHook()` from its own
-process, whose in-memory queue key the app's flow route would refuse. Under
-`--world local` the script therefore exports `WORKFLOW_QUEUE_AUTH=off`: world-local's
-queue delivers from the harness. Under world-postgres queue auth stays on and the
-harness runs with `WORKFLOW_POSTGRES_ENQUEUE_ONLY=1`, so it starts no Graphile
-worker and only the app's worker delivers.
+before each run. Under `--world local` it also exports `WORKFLOW_QUEUE_AUTH=off`:
+the harness's `start()` and `resumeHook()` deliveries come from its own process,
+whose in-memory queue key the app's flow route would refuse. world-postgres needs
+no such setting: it declares `queueAuth: 'skip'`, so its flow route is not checked.
 
 Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates
