@@ -3902,7 +3902,19 @@ Every spec 9 orchestrator delivery on world-postgres goes through a Graphile nam
 
 ### 6. Incremental log state in the node engine
 
-Each in-band write rescans the whole log (`maxEventSlot`, `appendUniqueEvents`, a full sort in `mergeReportedEvents`, `findEventSlotGap`), so CPU per step grows with log length, about O(n) per write and O(n²) per delivery. The duplicate `slotSnapshot()` is gone (`b489e7561b`). Before default-on: a running max slot, an id `Set` owned by the log and a dense-prefix watermark, reset on full load and repair, plus a ms-per-step benchmark at 250 against 2000 steps. Spec 8 has the same linear shape at a smaller constant. [4365355561](https://github.com/vercel/workflow/pull/4661#discussion_r4365355561).
+**Done.** The node engine keeps an `EventLogIndex` (`spec9/log-index.ts`) beside its loaded log: the id `Set`, a running max slot and a dense-prefix watermark. It is updated as events are merged and built again when the log is replaced (a full load, a gap settle) or changed outside it (a run-ahead repair removing speculative events). A write's slot snapshot, `absorbWrite`, the incremental read, the live feed's merge and `consumeOwnResolvingWrite` now read and merge through it. A merge appends events above the tail, inserts a few below it in place, and sorts only a large out-of-order batch. The per-pass hole check answers from the watermark and runs `settleEventSlotGap` only when the log has a hole. A slot snapshot taken while run-ahead holds speculative events walks down past them from the tail instead of filtering the whole log.
+
+Measured with `spec9/log-growth.bench.runtime.test.ts` (opt-in, `WORKFLOW_LOG_GROWTH_BENCH=1`): one delivery of sequential inline steps on the in-memory World, two runs each on a devbox. Most of a step's time there is the in-memory World's own work, so the totals overstate the runtime's share.
+
+| Steps | ms per step, before | ms per step, after |
+|---:|---:|---:|
+| 250 | 9.9 to 10.3 | 9.8 |
+| 2000 | 18.0 to 18.7 | 11.8 to 12.4 |
+| 2000 / 250 | 1.82 | 1.20 to 1.26 |
+
+What still grows with the log is per pass, not per write: `analyzeLogSteps`, `openWaits`, `dueWaits` and the terminal-event check each read the replayed log once or twice a pass. In the 2000-step profile they were about 2 s of 13 s of busy CPU, against about 11 s for the per-write scans before. Spec 8 keeps its linear shape at a smaller constant.
+
+Before: each in-band write rescanned the whole log (`maxEventSlot`, `appendUniqueEvents`, a full sort in `mergeReportedEvents`, `findEventSlotGap`), so CPU per step grew with log length, about O(n) per write and O(n²) per delivery. [4365355561](https://github.com/vercel/workflow/pull/4661#discussion_r4365355561).
 
 ### 7. Monitor full-log reads on background step retry hops and redeliveries
 

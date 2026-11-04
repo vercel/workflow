@@ -110,14 +110,12 @@ import { readDynamicWorkflowMetadata } from '../dynamic-workflow.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import {
   type EventCreator,
-  findEventSlotGap,
   getWorkflowQueueName,
   isQueueSendFailure,
   isSlotGapCheckEnabled,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   maxEventSlot,
-  mergeReportedEvents,
   queueMessage,
   REPLAY_RESOLVE_DATA,
   resolveRunEncryptionKey,
@@ -184,6 +182,7 @@ import {
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
 } from './live-feed.js';
+import { EventLogIndex } from './log-index.js';
 import {
   analyzeLogSteps,
   dueWaits,
@@ -695,6 +694,18 @@ async function runDelivery(
   // first full load.
   let log: LoadedEventLog | undefined;
   /**
+   * What each write reads of the log (its ids, highest slot and whether it
+   * has a hole), kept up to date as events are merged so that a write costs
+   * O(1) rather than a pass over the log (see `EventLogIndex`). Built again
+   * whenever the log is replaced (a full load, a gap settle) or changed
+   * outside it (a run-ahead repair removing speculative events).
+   */
+  let logIndex: EventLogIndex | undefined;
+  const indexOf = (events: Event[]): EventLogIndex => {
+    if (!logIndex?.covers(events)) logIndex = new EventLogIndex(events);
+    return logIndex;
+  };
+  /**
    * The slot snapshot for a write: how much of the log the
    * decision behind it was made against. Understating is safe
    * (the World reports a wider span), so it is taken from
@@ -704,18 +715,19 @@ async function runDelivery(
   // never a speculative event's predicted slot, which another
   // writer may have taken. The World then reports whatever
   // took one, which is what a run-ahead repair rebuilds from.
-  const slotSnapshot = (): SlotSnapshotParams =>
-    log
-      ? slotSnapshotParams(
-          speculativeSlots.size === 0 && speculativeEvents.size === 0
-            ? log.events
-            : log.events.filter((event) => {
-                if (speculativeEvents.has(event)) return false;
-                const slot = eventIdToSlot(event.eventId);
-                return slot === null || !speculativeSlots.has(slot);
-              })
-        )
-      : {};
+  const slotSnapshot = (): SlotSnapshotParams => {
+    if (!log) return {};
+    const index = indexOf(log.events);
+    const eventCount =
+      speculativeSlots.size === 0 && speculativeEvents.size === 0
+        ? index.maxSlot()
+        : index.maxSlotExcept((event) => {
+            if (speculativeEvents.has(event)) return true;
+            const slot = eventIdToSlot(event.eventId);
+            return slot !== null && speculativeSlots.has(slot);
+          });
+    return eventCount === undefined ? {} : { eventCount };
+  };
   /**
    * The events speculative writes placed in the log at
    * their predicted slots, until their writes confirm them
@@ -799,7 +811,7 @@ async function runDelivery(
       (event) => event.eventId !== own.eventId
     );
     const below = Math.max(
-      maxEventSlot(log.events) ?? 0,
+      indexOf(log.events).maxSlot() ?? 0,
       maxEventSlot(report) ?? 0
     );
     const ownSlot = eventIdToSlot(own.eventId);
@@ -816,7 +828,7 @@ async function runDelivery(
     // their payloads through the same cache.
     for (const event of report) prepareReplayEvent(event);
     prepareReplayEvent(own);
-    mergeReportedEvents(log.events, [...report, own]);
+    indexOf(log.events).merge([...report, own]);
   };
   /** A write's events, with their payloads prepared for replay. */
   const preparedResult = <R extends EventResult>(result: R): R => {
@@ -908,7 +920,7 @@ async function runDelivery(
     for (const event of page.events) {
       prepareReplayEvent(event);
     }
-    mergeReportedEvents(log.events, page.events);
+    indexOf(log.events).merge(page.events);
     log.cursor = page.cursor ?? log.cursor;
     return log;
   };
@@ -1988,7 +2000,7 @@ async function runDelivery(
           return !runAheadRepair;
         });
         for (const event of events) prepareReplayEvent(event);
-        mergeReportedEvents(log.events, events);
+        indexOf(log.events).merge(events);
       }
       if (pendingAbsorbs.length > 0) {
         const results = pendingAbsorbs.splice(0);
@@ -2026,7 +2038,7 @@ async function runDelivery(
     const ensureLiveFeed = (): void => {
       if (liveFeed || !log) return;
       liveFeed = new LiveLogFeed(world, runId, {
-        afterSlot: maxEventSlot(log.events) ?? 0,
+        afterSlot: indexOf(log.events).maxSlot() ?? 0,
         cursor: log.cursor,
         pollIntervalMs: getOrchestratorPollIntervalMs(),
         feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
@@ -2415,9 +2427,9 @@ async function runDelivery(
           const slot = eventIdToSlot(write.event.eventId);
           if (slot !== null) ownSlots.add(slot);
         }
-        mergeReportedEvents(log.events, merged);
+        indexOf(log.events).merge(merged);
       }
-      const readLog = !complete || findEventSlotGap(log.events) !== undefined;
+      const readLog = !complete || indexOf(log.events).slotGap() !== undefined;
       if (readLog) {
         runAheadStats.repairReads++;
         await loadAfter();
@@ -2651,7 +2663,7 @@ async function runDelivery(
           });
         }
       });
-      mergeReportedEvents(log.events, speculative);
+      indexOf(log.events).merge(speculative);
       return starts;
     }
     const inlineDeadlineMs = invocationStartTime + noInlineReplayAfterMs;
@@ -2815,8 +2827,10 @@ async function runDelivery(
               { requestId }
             );
             if (
-              consumeOwnResolvingWrite(log.events, preparedResult(completed))
-                .type === 'reload'
+              consumeOwnResolvingWrite(
+                indexOf(log.events),
+                preparedResult(completed)
+              ).type === 'reload'
             ) {
               session = null;
               await fullLoad();
@@ -2839,7 +2853,7 @@ async function runDelivery(
             // fold them in, before judging the log.
             if (
               speculationsBySlot.size > 0 &&
-              findEventSlotGap(log.events) !== undefined
+              indexOf(log.events).slotGap() !== undefined
             ) {
               if ((await drainRunAhead()) === 'repair') {
                 await repairRunAhead();
@@ -2847,22 +2861,26 @@ async function runDelivery(
               await writer.idle();
               flushPending();
             }
-            const settled = await settleEventSlotGap(
-              runId,
-              { events: log.events, cursor: log.cursor },
-              { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
-            );
-            if (settled.log.events !== log.events) {
-              session = null;
-            }
-            log = {
-              events: settled.log.events,
-              cursor: settled.log.cursor,
-            };
-            if (settled.gap !== undefined) {
-              throw new CorruptedEventLogError(
-                `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+            // A dense log, which the index answers without a pass, has
+            // nothing to settle.
+            if (indexOf(log.events).slotGap() !== undefined) {
+              const settled = await settleEventSlotGap(
+                runId,
+                { events: log.events, cursor: log.cursor },
+                { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
               );
+              if (settled.log.events !== log.events) {
+                session = null;
+              }
+              log = {
+                events: settled.log.events,
+                cursor: settled.log.cursor,
+              };
+              if (settled.gap !== undefined) {
+                throw new CorruptedEventLogError(
+                  `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+                );
+              }
             }
           }
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
@@ -2909,7 +2927,7 @@ async function runDelivery(
             workflowRun,
             log.events
           );
-          passConsumedSlot = maxEventSlot(log.events) ?? 0;
+          passConsumedSlot = indexOf(log.events).maxSlot() ?? 0;
           const rebase = pendingRebase;
           pendingRebase = undefined;
           let workflowResult: WorkflowResumeResult = session
@@ -3775,7 +3793,7 @@ async function runDelivery(
       await armNearDueTimers(log.events);
       await armTimers(log.events);
       recordConsumedPosition(world, runId, {
-        slot: maxEventSlot(log.events) ?? 0,
+        slot: indexOf(log.events).maxSlot() ?? 0,
         ...nextTimerAt(log.events),
       });
       return { type: 'return', result: undefined };
@@ -4059,8 +4077,10 @@ async function runDelivery(
           // speculative writes settle.
           reload = true;
         } else if (
-          consumeOwnResolvingWrite(log.events, preparedResult(result.result))
-            .type === 'reload'
+          consumeOwnResolvingWrite(
+            indexOf(log.events),
+            preparedResult(result.result)
+          ).type === 'reload'
         ) {
           reload = true;
         }
