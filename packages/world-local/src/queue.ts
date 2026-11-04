@@ -501,6 +501,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         let claimed: MessageRow[] = [];
         if (capacity > 0) {
           const canHttp = (await httpBaseUrl()) !== undefined;
+          // Closed while resolving: touch nothing more (the data directory
+          // may be on its way out).
+          if (closeSignal.aborted) return;
           claimed = claim(Math.min(capacity, 100), canHttp);
           for (const message of claimed) {
             const controller = new AbortController();
@@ -557,6 +560,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       failures?: number;
     }
   ): void {
+    // After close() the message was handed back already; a delivery that
+    // finishes afterwards leaves it to the next consumer.
+    if (closeSignal.aborted) return;
     db().run(
       `UPDATE messages SET visible_at = ?, lease_owner = NULL, lease_until = NULL,
          deliveries = COALESCE(?, deliveries), handoffs = COALESCE(?, handoffs),
@@ -572,6 +578,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   }
 
   function remove(id: string): void {
+    if (closeSignal.aborted) return;
     db().run(
       'DELETE FROM messages WHERE id = ? AND lease_owner = ?',
       id,
