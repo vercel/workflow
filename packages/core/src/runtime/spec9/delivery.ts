@@ -46,7 +46,6 @@ import {
   isRetryableWorldError,
   isWorldContractError,
 } from '../../classify-error.js';
-
 import type { WorkflowSuspension } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -73,6 +72,7 @@ import {
   type WorkflowSession,
   type WorkflowSessionRebase,
 } from '../../workflow.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -126,10 +126,6 @@ import {
   settleEventSlotGap,
   slotSnapshotParams,
 } from '../helpers.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
@@ -2193,6 +2189,7 @@ async function runDelivery(
       observedHook: 0,
       unknownHook: 0,
       abortSignal: 0,
+      systemHook: 0,
       externalStep: 0,
       waitDue: 0,
     };
@@ -2205,6 +2202,8 @@ async function runDelivery(
           outOfBandBoundaries.unknownHook,
         'workflow.out_of_band.abort_signal_boundaries':
           outOfBandBoundaries.abortSignal,
+        'workflow.out_of_band.system_hook_boundaries':
+          outOfBandBoundaries.systemHook,
         'workflow.out_of_band.external_step_boundaries':
           outOfBandBoundaries.externalStep,
         'workflow.out_of_band.wait_due_boundaries': outOfBandBoundaries.waitDue,
@@ -3002,7 +3001,11 @@ async function runDelivery(
               );
               return undefined;
             }
-            dispatchRunCompletedHooks(runId, workflowName);
+            await afterRunCompleted(
+              world,
+              completed.run ?? workflowRun ?? runId,
+              workflowName
+            );
             span?.setAttributes({
               ...Attribute.WorkflowRunStatus('completed'),
             });
@@ -3214,6 +3217,9 @@ async function runDelivery(
           }
           if (observation.abortSignalHookCount > 0) {
             outOfBandBoundaries.abortSignal++;
+          }
+          if (observation.systemHookCount > 0) {
+            outOfBandBoundaries.systemHook++;
           }
           if (observation.externalStepCount > 0) {
             outOfBandBoundaries.externalStep++;
@@ -4578,8 +4584,9 @@ async function runDelivery(
     if (recordedStatus !== undefined && recordedStatus !== 'failed') {
       return undefined;
     }
-    dispatchRunFailedHooks(
-      runId,
+    await afterRunFailed(
+      world,
+      failedResult?.run ?? workflowRun ?? runId,
       workflowName,
       dehydratedError,
       failureKey,
@@ -4615,7 +4622,7 @@ export const spec9Orchestrator: Orchestrator = {
     const writer = new InBandWriter(world, runId);
     writer.adoptSnapshot(requireLoadSnapshot(runId, loaded));
     try {
-      await writer.create(
+      const written = await writer.create(
         {
           eventType: 'run_failed',
           specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -4623,11 +4630,11 @@ export const spec9Orchestrator: Orchestrator = {
         },
         { requestId, ...slotSnapshotParams(loaded.events) }
       );
+      return { run: written?.run };
     } catch (err) {
       if (OrchestratorSupersededError.is(err)) return 'superseded';
       throw err;
     }
-    return 'written';
   },
   runDelivery: runSpec9Delivery,
 };
