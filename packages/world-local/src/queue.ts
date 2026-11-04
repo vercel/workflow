@@ -152,7 +152,7 @@ const LEASE_RENEW_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 
 /** How long a consumer that cannot reach the app waits before trying again. */
-const BASE_URL_RETRY_MS = 5_000;
+const BASE_URL_RETRY_MS = 1_000;
 
 /**
  * Default time-to-first-byte deadline for local queue deliveries: none. A
