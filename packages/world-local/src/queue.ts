@@ -25,7 +25,7 @@
  * in-memory queue this replaced.
  */
 
-import { readlinkSync } from 'node:fs';
+import { existsSync, readlinkSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
@@ -153,6 +153,7 @@ const POLL_INTERVAL_MS = 100;
 
 /** How long a consumer that cannot reach the app waits before trying again. */
 const BASE_URL_RETRY_MS = 1_000;
+const MAX_BASE_URL_RETRY_MS = 5_000;
 
 /**
  * Default time-to-first-byte deadline for local queue deliveries: none. A
@@ -268,6 +269,7 @@ export function createRunGate() {
 
 interface MessageRow {
   id: string;
+  route: string | null;
   queue_name: string;
   prefix: string;
   transport: string;
@@ -352,8 +354,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
    * to the Workflow SDK's flow route. Read on every delivery.
    */
   const routes = new Map<string, string>();
-  const deliveryUrl = (baseUrl: string, prefix: string) => {
-    const route = routes.get(prefix);
+  const deliveryUrl = (
+    baseUrl: string,
+    prefix: string,
+    enqueuedRoute?: string | null
+  ) => {
+    // The route registered in this process, else the one the enqueuing
+    // process had registered (persisted on the message).
+    const route = routes.get(prefix) ?? enqueuedRoute ?? undefined;
     return route
       ? createAppRouteUrl(baseUrl, route)
       : createWorkflowUrl(baseUrl, { type: 'flow' });
@@ -363,7 +371,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
   const leaseOwner = `${leaseOwnerPrefix()}${generateId()}`;
   const inflight = new Map<string, AbortController>();
+  /** In-flight messages whose delivery reached a handler (or was sent). */
+  const handedOff = new Set<string>();
   let consumerStarted = false;
+  /** Consecutive transport failures of HTTP deliveries from this process. */
+  let transportFailures = 0;
   let wake: (() => void) | null = null;
   let baseUrl: { value?: string; retryAt: number } = { retryAt: 0 };
   let lastDeadOwnerSweep = 0;
@@ -386,12 +398,20 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     return baseUrl.value;
   }
 
+  /**
+   * Hands back at once the leases of `direct` deliveries whose process is
+   * gone: their handler ran in that process, so nothing is still executing
+   * them. An HTTP delivery's handler runs in the app, which may outlive the
+   * process that sent it (and keeps the lease alive, see
+   * `createQueueHandler`), so its lease is only ever left to lapse.
+   */
   function releaseDeadOwnersLeases(now: number): void {
     if (now - lastDeadOwnerSweep < 2_000) return;
     lastDeadOwnerSweep = now;
     const leased = db().all<{ id: string; lease_owner: string }>(
       `SELECT id, lease_owner FROM messages
-       WHERE lease_until >= ? AND lease_owner IS NOT NULL AND lease_owner <> ?`,
+       WHERE lease_until >= ? AND lease_owner IS NOT NULL AND lease_owner <> ?
+         AND transport = 'direct'`,
       now,
       leaseOwner
     );
@@ -424,9 +444,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         : []),
     ];
     if (deliverable.length === 0) return [];
-    return db().transact(() => {
-      const candidates = db().all<MessageRow & { lane: string | null }>(
-        `SELECT m.* FROM messages m
+    const candidatesSql = `SELECT m.* FROM messages m
          WHERE COALESCE(m.tag, '') = ? AND m.visible_at <= ?
            AND (m.lease_until IS NULL OR m.lease_until < ?)
            AND (${deliverable.join(' OR ')})
@@ -434,13 +452,21 @@ export function createQueue(config: Partial<Config>): LocalQueue {
              SELECT 1 FROM messages o
              WHERE o.lane = m.lane AND o.id <> m.id AND o.lease_until >= ?))
          ORDER BY m.visible_at, m.id
-         LIMIT ?`,
-        tag ?? '',
-        now,
-        now,
-        ...prefixes,
-        now,
-        limit * 2
+         LIMIT ?`;
+    const candidateParams = (n: number) => [
+      tag ?? '',
+      now,
+      now,
+      ...prefixes,
+      now,
+      n,
+    ];
+    // A read first: an idle poll takes no write lock.
+    if (db().all(candidatesSql, ...candidateParams(1)).length === 0) return [];
+    return db().transact(() => {
+      const candidates = db().all<MessageRow & { lane: string | null }>(
+        candidatesSql,
+        ...candidateParams(limit * 2)
       );
       const lanes = new Set<string>();
       const claimed: MessageRow[] = [];
@@ -462,12 +488,26 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     });
   }
 
-  /** Delay until the next message becomes visible, capped at the poll. */
+  /**
+   * Delay until a message becomes visible or a lease lapses, capped at the
+   * poll. A message that is visible now but was not claimed (its lane is
+   * busy, or this process cannot deliver it) waits for the poll, or for an
+   * in-process wake when a delivery ends or a message is enqueued.
+   */
   function nextWakeMs(): number {
+    const now = queueNow();
     const row = db().get<{ next: number | null }>(
-      `SELECT MIN(MAX(visible_at, COALESCE(lease_until, 0))) AS next FROM messages
-       WHERE COALESCE(tag, '') = ?`,
-      tag ?? ''
+      `SELECT MIN(t) AS next FROM (
+         SELECT MIN(visible_at) AS t FROM messages
+           WHERE COALESCE(tag, '') = ? AND visible_at > ?
+         UNION ALL
+         SELECT MIN(lease_until) AS t FROM messages
+           WHERE COALESCE(tag, '') = ? AND lease_until > ?
+       )`,
+      tag ?? '',
+      now,
+      tag ?? '',
+      now
     );
     if (row?.next === null || row?.next === undefined) return POLL_INTERVAL_MS;
     return Math.max(
@@ -504,7 +544,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           // Closed while resolving: touch nothing more (the data directory
           // may be on its way out).
           if (closeSignal.aborted) return;
-          claimed = claim(Math.min(capacity, 100), canHttp);
+          // After a transport failure, probe with one message until a
+          // delivery reaches the app again, rather than claiming a batch.
+          const batch = transportFailures > 0 ? 1 : Math.min(capacity, 100);
+          claimed = claim(batch, canHttp);
           for (const message of claimed) {
             const controller = new AbortController();
             inflight.set(message.id, controller);
@@ -516,22 +559,26 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               })
               .finally(() => {
                 inflight.delete(message.id);
+                handedOff.delete(message.id);
                 wakeConsumer();
               });
           }
-          if (claimed.length === Math.min(capacity, 100)) continue;
+          if (claimed.length === batch && transportFailures === 0) continue;
         }
         const delay = capacity > 0 ? nextWakeMs() : POLL_INTERVAL_MS;
         await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, Math.max(delay, 1));
+          const done = () => {
+            clearTimeout(timer);
+            closeSignal.removeEventListener('abort', done);
+            if (wake === done) wake = null;
+            resolve();
+          };
+          const timer = setTimeout(done, Math.max(delay, 1));
           // An idle consumer never keeps the process alive: a message is
           // durable, and the next process to use the World delivers it.
           timer.unref?.();
-          wake = () => {
-            clearTimeout(timer);
-            resolve();
-          };
-          closeSignal.addEventListener('abort', wake, { once: true });
+          wake = done;
+          closeSignal.addEventListener('abort', done, { once: true });
         });
       } catch (error) {
         if (closeSignal.aborted) return;
@@ -628,17 +675,28 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     let response: Response;
     let text: string;
+    // From here on the delivery may be executing somewhere; close() leaves
+    // its lease to lapse rather than handing the message to another
+    // consumer while it runs.
+    handedOff.add(messageId);
     try {
       if (directHandler) {
         response = await directHandler(
-          new Request(deliveryUrl(resolveDirectBaseUrl(config), prefix), {
-            method: 'POST',
-            headers,
-            body,
-          })
+          new Request(
+            deliveryUrl(resolveDirectBaseUrl(config), prefix, message.route),
+            {
+              method: 'POST',
+              headers,
+              body,
+            }
+          )
         );
       } else {
-        const url = deliveryUrl(await resolveBaseUrl(config), prefix);
+        const url = deliveryUrl(
+          await resolveBaseUrl(config),
+          prefix,
+          message.route
+        );
         const abort = AbortSignal.any([closeSignal, signal]);
         response = nodeHttpAgents
           ? await nodeHttpFetch(url, {
@@ -688,10 +746,24 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         '[world-local] Queue delivery failed at the transport, retrying',
         { ...context, error: String(error) }
       );
-      if (!directHandler) baseUrl = { retryAt: 0 };
+      if (!directHandler) {
+        // The URL resolved but the app did not answer: stop claiming HTTP
+        // messages for a while (backing off) instead of pushing every
+        // message back 5s at a time.
+        transportFailures++;
+        baseUrl = {
+          retryAt:
+            queueNow() +
+            Math.min(
+              MAX_BASE_URL_RETRY_MS,
+              BASE_URL_RETRY_MS * 2 ** (transportFailures - 1)
+            ),
+        };
+      }
       settle(messageId, { visibleAt: queueNow() + TRANSPORT_RETRY_DELAY_MS });
       return;
     }
+    if (!directHandler) transportFailures = 0;
 
     const delivered = deliveries + 1;
     if (response.ok) {
@@ -783,14 +855,15 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
       const id = MessageId.parse(`msg_${generateId()}`);
       db().run(
-        `INSERT INTO messages (id, tag, queue_name, prefix, transport, body, headers,
+        `INSERT INTO messages (id, tag, queue_name, prefix, transport, route, body, headers,
            idempotency_key, lane, hands_off, run_id, step_id, visible_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         tag ?? null,
         queueName,
         prefix,
         directHandlers.has(prefix) ? 'direct' : 'http',
+        routes.get(prefix) ?? null,
         body,
         opts?.headers ? JSON.stringify(opts.headers) : null,
         opts?.idempotencyKey ?? null,
@@ -823,6 +896,34 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       'x-vqs-message-created-at': z.iso.datetime().optional(),
     })
   );
+
+  /**
+   * Keeps the lease of a message alive while its handler runs here. The
+   * process that delivered it over HTTP holds the lease and renews it, but it
+   * may exit (a script, a test runner) while the app is still executing the
+   * delivery; renewing from the handler too means the message is not
+   * delivered again before this execution ends. Only for a data directory
+   * whose database exists: a handler serving another World's queue (as
+   * world-postgres reuses this one) finds no such message and creates
+   * nothing.
+   */
+  function keepLeaseWhileHandling(messageId: string): () => void {
+    if (!existsSync(databaseFor(dataDir).file)) return () => {};
+    const renew = () => {
+      try {
+        db().run(
+          'UPDATE messages SET lease_until = ? WHERE id = ? AND lease_owner IS NOT NULL',
+          queueNow() + LEASE_MS,
+          messageId
+        );
+      } catch {
+        // Best effort: the sender renews the lease too.
+      }
+    };
+    const timer = setInterval(renew, LEASE_RENEW_MS);
+    timer.unref?.();
+    return () => clearInterval(timer);
+  }
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return async (req) => {
@@ -860,6 +961,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         orchestratorRunId === undefined
           ? undefined
           : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
+      const stopRenewing = keepLeaseWhileHandling(messageId);
       try {
         const result = await handler(body, {
           attempt,
@@ -897,6 +999,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       } catch (error) {
         return Response.json(String(error), { status: 500 });
       } finally {
+        stopRenewing();
         releaseRun?.();
       }
     };
@@ -935,9 +1038,16 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       closeController.abort();
       wakeConsumer();
       for (const controller of inflight.values()) controller.abort();
-      if (database && inflight.size > 0) {
-        // Hand in-flight messages back at once rather than after the lease.
-        const ids = [...inflight.keys()];
+      // Hand back at once only the claimed messages that never reached a
+      // handler. One being delivered may still be executing (a direct
+      // handler is not interrupted, and an aborted HTTP request does not stop
+      // the app): its lease lapses instead, so no other consumer delivers it
+      // meanwhile (one orchestrator delivery per run holds across a close).
+      const notStarted = [...inflight.keys()].filter(
+        (id) => !handedOff.has(id)
+      );
+      if (database && notStarted.length > 0) {
+        const ids = notStarted;
         try {
           db().run(
             `UPDATE messages SET lease_owner = NULL, lease_until = NULL

@@ -16,7 +16,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { globalSingleton } from '@workflow/utils';
+import { debugLog, globalSingleton } from '@workflow/utils';
 import { openRawDatabase, type RawDatabase, type Statement } from './driver.js';
 import { migrate } from './schema.js';
 
@@ -90,7 +90,31 @@ function isBusyError(error: unknown): boolean {
   );
 }
 
-/** Runs `fn`, retrying (with a short synchronous pause) while SQLite is busy. */
+/** Lock waits longer than this are logged under `DEBUG=workflow:*`. */
+const SLOW_LOCK_DEBUG_MS = 250;
+/** Lock waits longer than this are warned about. */
+const SLOW_LOCK_WARN_MS = 5_000;
+
+/**
+ * Reports a long wait for the write lock: the thread was blocked meanwhile,
+ * so a dev server that froze shows up here with the database it waited on.
+ */
+function reportLockWait(file: string, waitedMs: number): void {
+  if (waitedMs >= SLOW_LOCK_WARN_MS) {
+    console.warn(
+      `[world-local] Waited ${waitedMs}ms for the write lock of ${file}: another process held it.`
+    );
+  } else if (waitedMs >= SLOW_LOCK_DEBUG_MS) {
+    debugLog(`[world-local] waited ${waitedMs}ms for the write lock`, { file });
+  }
+}
+
+/**
+ * Runs `fn`, retrying (with a short synchronous pause) while SQLite reports
+ * the database busy without waiting (it does not for a few operations, such
+ * as switching to WAL). Bounded by the busy timeout overall: a statement
+ * that already waited `busy_timeout` is not retried.
+ */
 function retryWhileBusy<T>(fn: () => T): T {
   const deadline = Date.now() + BUSY_TIMEOUT_MS;
   const pause = new Int32Array(new SharedArrayBuffer(4));
@@ -122,6 +146,9 @@ function open(file: string): Connection {
       }
     });
     raw.exec('PRAGMA synchronous = NORMAL');
+    // Freed pages are zeroed, so data a zero-retention purge deletes does not
+    // linger in the file.
+    raw.exec('PRAGMA secure_delete = ON');
     raw.exec('PRAGMA foreign_keys = ON');
     retryWhileBusy(() => migrate(raw));
   } catch (error) {
@@ -225,7 +252,11 @@ export class Database {
     const nested = connection.depth > 0;
     const savepoint = `sp_${connection.depth}`;
     if (nested) connection.raw.exec(`SAVEPOINT ${savepoint}`);
-    else retryWhileBusy(() => connection.raw.exec('BEGIN IMMEDIATE'));
+    else {
+      const waitStarted = Date.now();
+      retryWhileBusy(() => connection.raw.exec('BEGIN IMMEDIATE'));
+      reportLockWait(this.file, Date.now() - waitStarted);
+    }
     connection.depth++;
     let result: T;
     try {
@@ -247,7 +278,21 @@ export class Database {
       throw error;
     }
     connection.depth--;
-    connection.raw.exec(nested ? `RELEASE ${savepoint}` : 'COMMIT');
+    try {
+      connection.raw.exec(nested ? `RELEASE ${savepoint}` : 'COMMIT');
+    } catch (error) {
+      // COMMIT can fail (disk full, I/O error) with the transaction still
+      // open on this connection: roll back and drop the connection, so the
+      // next write starts clean instead of failing with "cannot start a
+      // transaction within a transaction".
+      if (!nested) {
+        try {
+          connection.raw.exec('ROLLBACK');
+        } catch {}
+        closeConnection(connection);
+      }
+      throw error;
+    }
     connection.lastUsed = Date.now();
     if (!nested) this.afterOperation();
     if (result instanceof CommitThenThrow) {
@@ -294,6 +339,19 @@ export class Database {
       if (state.connections.get(this.file) === connection) this.close();
     }, BRIEF_IDLE_MS);
     connection.closeTimer.unref?.();
+  }
+
+  /**
+   * Copies the WAL into the database and truncates it, so pages a write
+   * replaced are gone from both files. Best effort: a reader in another
+   * process can keep part of the WAL alive until it finishes.
+   */
+  checkpoint(): void {
+    try {
+      this.released(() =>
+        this.connection().raw.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+      );
+    } catch {}
   }
 
   /** Closes this process's connection to the file, if one is open. */

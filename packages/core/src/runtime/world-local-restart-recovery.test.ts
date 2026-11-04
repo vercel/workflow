@@ -54,7 +54,15 @@ vi.mock('./quickjs-runtime.js', async (importOriginal) => {
  * silently targets a stale object and the test times out like an unfixed run;
  * update the key here.
  */
-async function simulateProcessRestart() {
+async function simulateProcessRestart(dataDir: string) {
+  // The dead process's queue leases die with it. Across real processes
+  // world-local hands a dead process's in-process deliveries back at once
+  // (its pid is gone); within this one test process it cannot tell, so the
+  // test releases them as the exit would.
+  const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+  const db = new DatabaseSync(join(dataDir, 'world.db'));
+  db.exec('UPDATE messages SET lease_owner = NULL, lease_until = NULL');
+  db.close();
   // A new process has none of the dead one's in-flight step executions.
   globalSingleton('@workflow/core//stepSingleFlight', 1, () => ({
     inFlight: new Map(),
@@ -187,7 +195,7 @@ describe('world-local restart recovery of an inline step', () => {
         : { ownerMessageId: expect.stringMatching(/^msg_/) },
     });
     await previous.close();
-    await simulateProcessRestart();
+    await simulateProcessRestart(dataDir);
 
     const restarted = bootWorld();
     const restartedAt = Date.now();
@@ -321,7 +329,7 @@ describe('world-local restart recovery of a run suspended on queued work', () =>
     );
     // The process exits with the wait's timer in its queue.
     await previous.close();
-    await simulateProcessRestart();
+    await simulateProcessRestart(dataDir);
 
     const restarted = bootWorld(code);
     await restarted.start();
@@ -387,7 +395,7 @@ describe('world-local restart recovery of a run suspended on queued work', () =>
       specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR ? { inline: false } : {}
     );
     await previous.close();
-    await simulateProcessRestart();
+    await simulateProcessRestart(dataDir);
 
     const restarted = bootWorld(code);
     await restarted.start();

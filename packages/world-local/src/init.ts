@@ -2,6 +2,7 @@ import {
   access,
   constants,
   mkdir,
+  readdir,
   readFile,
   rm,
   stat,
@@ -341,26 +342,90 @@ async function legacyEntriesIn(dataDir: string): Promise<string[]> {
 }
 
 /**
- * Thrown by {@link initDataDir} for a data directory it can neither use nor
- * safely identify as old flat-layout data: per-run directories mixed with
- * flat event/step files (an older release, or another implementation, is
- * still writing to it), or `.json` entries it did not write.
+ * Whether a file under a legacy entry is one an earlier world-local wrote:
+ * entity and event JSON, stream chunks, snapshots, and the lock, claim,
+ * marker and temp files around them. Anything else (a user's notes, another
+ * tool's data) means the directory is not only ours.
+ */
+function isLegacyArtifact(relative: string, name: string): boolean {
+  if (relative.split(path.sep)[0] === '.locks') return true;
+  return (
+    /\.(json|bin|snapshot)$/.test(name) ||
+    /\.(lock|tmp|abandoned|takeover)(\.|-|$)/.test(name) ||
+    name === '.hook-index-complete'
+  );
+}
+
+/** Files under the legacy entries this package did not write, up to `limit`. */
+async function unrecognizedLegacyFiles(
+  dataDir: string,
+  entries: string[],
+  limit = 20
+): Promise<string[]> {
+  const found: string[] = [];
+  const walk = async (relative: string): Promise<void> => {
+    let children: import('node:fs').Dirent[];
+    try {
+      children = await readdir(path.join(dataDir, relative), {
+        withFileTypes: true,
+      });
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    for (const child of children) {
+      if (found.length >= limit) return;
+      const childPath = path.join(relative, child.name);
+      if (child.isDirectory()) {
+        await walk(childPath);
+      } else if (!isLegacyArtifact(childPath, child.name)) {
+        found.push(childPath);
+      }
+    }
+  };
+  for (const entry of entries) await walk(entry);
+  return found;
+}
+
+/**
+ * Thrown by {@link initDataDir} for a data directory that holds entries an
+ * earlier release used (`runs/`, `events/`, …) that it cannot safely identify
+ * as that release's data: files it did not write, or no `version.txt` naming
+ * this package. Nothing is deleted.
  */
 export class DataDirLayoutError extends Error {
-  constructor(
-    public readonly dataDir: string,
-    public readonly files: string[]
-  ) {
+  readonly dataDir: string;
+  readonly files: string[];
+
+  constructor(dataDir: string, files: string[], reason?: 'shared') {
     const shown = files.slice(0, 5).join(', ');
     super(
-      `[world-local] ${path.resolve(dataDir)} holds ${files.length} event/step ` +
-        `file(s) this version does not read (${shown}${files.length > 5 ? ', …' : ''}). ` +
-        `If an older version of ${PACKAGE_NAME} is using this directory, stop it. ` +
-        `Then delete the directory, or move or remove those files.`
+      reason === 'shared'
+        ? `[world-local] ${path.resolve(dataDir)} holds both ${DATABASE_FILE} and ` +
+            `JSON data of an earlier release (${shown}): an older version of ${PACKAGE_NAME} ` +
+            `is still using this directory. Stop it, then delete those entries.`
+        : `[world-local] ${path.resolve(dataDir)} holds ${files.length} ` +
+            `file(s) this version does not recognize (${shown}${files.length > 5 ? ', …' : ''}), ` +
+            `so it deletes nothing. If an older version of ${PACKAGE_NAME} is using this directory, stop it. ` +
+            `Then delete the directory, or move or remove those files.`
     );
     this.name = 'DataDirLayoutError';
+    this.dataDir = dataDir;
+    this.files = files;
   }
 }
+
+async function pathExists(file: string): Promise<boolean> {
+  try {
+    await stat(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The database file (see `db/index.ts`), named here to keep init free of it. */
+const DATABASE_FILE = 'world.db';
 
 /**
  * Gets the suggested downgrade version based on the old version.
@@ -396,6 +461,23 @@ export async function initDataDir(dataDir: string): Promise<void> {
   // database.
   const legacy = await legacyEntriesIn(dataDir);
   if (legacy.length > 0) {
+    // Only data identifiably ours is deleted: the directory carries this
+    // package's version file, and every file under those entries is one an
+    // earlier release wrote. Anything else is refused, untouched.
+    // And only once: legacy entries next to an existing database mean an
+    // older release is still writing to this directory, whose data must not
+    // be deleted on every start.
+    if (await pathExists(path.join(dataDir, DATABASE_FILE))) {
+      throw new DataDirLayoutError(dataDir, legacy, 'shared');
+    }
+    const versionFile = await readVersionFile(dataDir).catch(() => null);
+    const unrecognized =
+      versionFile?.packageName === PACKAGE_NAME
+        ? await unrecognizedLegacyFiles(dataDir, legacy)
+        : legacy;
+    if (unrecognized.length > 0) {
+      throw new DataDirLayoutError(dataDir, unrecognized);
+    }
     console.warn(
       `[world-local] Deleting local workflow data in "${path.resolve(dataDir)}" ` +
         `(${legacy.join(', ')}): it was written by an older version of ${PACKAGE_NAME}, ` +

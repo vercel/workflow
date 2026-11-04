@@ -112,6 +112,10 @@ const MIGRATIONS: string[] = [
     -- 'http' (any consumer that can reach the app delivers it) or 'direct'
     -- (only a consumer with an in-process handler for its prefix does).
     transport TEXT NOT NULL,
+    -- The HTTP route the enqueuing process had registered for the prefix
+    -- (\`registerRoute\`), so any consumer delivers it there; NULL for the
+    -- flow route.
+    route TEXT,
     body TEXT NOT NULL,
     headers TEXT,
     idempotency_key TEXT,
@@ -156,12 +160,28 @@ const MIGRATIONS: string[] = [
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
+/**
+ * The database was migrated by a newer release of world-local, whose schema
+ * this release does not know: refuse rather than read or write it.
+ */
+export class NewerSchemaError extends Error {
+  readonly schemaVersion: number;
+  constructor(schemaVersion: number) {
+    super(
+      `[world-local] The workflow database was written by a newer version of @workflow/world-local (schema ${schemaVersion}; this version knows schema ${MIGRATIONS.length}). Upgrade @workflow/world-local, or delete the data directory to start over.`
+    );
+    this.name = 'NewerSchemaError';
+    this.schemaVersion = schemaVersion;
+  }
+}
+
 export function migrate(db: RawDatabase): void {
   const current = Number(
     (db.prepare('PRAGMA user_version').get() as { user_version?: number })
       ?.user_version ?? 0
   );
-  if (current >= MIGRATIONS.length) return;
+  if (current > MIGRATIONS.length) throw new NewerSchemaError(current);
+  if (current === MIGRATIONS.length) return;
   db.exec('BEGIN IMMEDIATE');
   try {
     // Re-read under the write lock: another process may have migrated.
@@ -169,6 +189,7 @@ export function migrate(db: RawDatabase): void {
       (db.prepare('PRAGMA user_version').get() as { user_version?: number })
         ?.user_version ?? 0
     );
+    if (locked > MIGRATIONS.length) throw new NewerSchemaError(locked);
     for (let i = locked; i < MIGRATIONS.length; i++) {
       db.exec(MIGRATIONS[i]);
     }

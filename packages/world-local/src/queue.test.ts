@@ -816,8 +816,11 @@ describe('queue transport timeouts', () => {
       await closePromise;
     }
     expect(outcome).toBe('closed');
-    // The message is handed back, unleased, for the next consumer.
-    expect(messageRows(dataDir)).toMatchObject([{ lease_owner: null }]);
+    // The request reached the app, which may still be executing it: the
+    // message stays leased (it lapses) rather than going to another consumer.
+    expect(messageRows(dataDir)).toMatchObject([
+      { lease_owner: expect.any(String) },
+    ]);
   });
 
   it('redelivers when a handler exceeds an opt-in headers deadline', async () => {
@@ -1595,5 +1598,122 @@ describe('durable queue', () => {
     await waitFor(() => expect(messageRows(dataDir)).toEqual([]));
     expect(started.filter((runId) => runId === 'run_a')).toHaveLength(3);
     expect(maxActive.get('run_a')).toBe(1);
+  });
+});
+
+describe('queue review follow-ups', () => {
+  const queues: ReturnType<typeof createQueue>[] = [];
+  function queueOn(dataDir: string, config: { baseUrl?: string } = {}) {
+    const queue = createQueue({ dataDir, ...config });
+    queues.push(queue);
+    return queue;
+  }
+  afterEach(async () => {
+    for (const queue of queues.splice(0)) await queue.close();
+    vi.restoreAllMocks();
+  });
+
+  const orchestratorMessage = {
+    runId: 'wrun_lane',
+    runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  } as unknown as WorkflowInvokePayload;
+
+  it('keeps the lane across a close: another queue does not start a run whose delivery is still executing', async () => {
+    const dataDir = tempDataDir();
+    const events: string[] = [];
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const a = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
+    a.registerHandler(
+      '__wkf_workflow_',
+      a.createQueueHandler('__wkf_workflow_', async () => {
+        events.push('a start');
+        await held;
+        events.push('a end');
+        return undefined;
+      })
+    );
+    await a.queue('__wkf_workflow_test' as any, orchestratorMessage);
+    await waitFor(() => expect(events).toEqual(['a start']));
+    await a.close();
+
+    const b = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
+    b.registerHandler(
+      '__wkf_workflow_',
+      b.createQueueHandler('__wkf_workflow_', async () => {
+        events.push('b start');
+        return undefined;
+      })
+    );
+    b.startConsumer();
+    await realDelay(IDLE_MS);
+    // A's delivery is still running: B waits for its lease to lapse.
+    expect(events).toEqual(['a start']);
+    release();
+    await waitFor(() => expect(events).toEqual(['a start', 'a end']));
+  });
+
+  it('delivers to the route the enqueuing process registered, from any process', async () => {
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? '');
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+    try {
+      vi.stubEnv('WORKFLOW_LOCAL_BASE_URL', '');
+      vi.stubEnv('PORT', '');
+      const dataDir = tempDataDir();
+      // The sender registered the route but cannot reach the app.
+      const sender = queueOn(dataDir);
+      sender.registerRoute('__agent_wkf_workflow_' as any, '/api/agent/queue');
+      await sender.queue('__agent_wkf_workflow_test' as any, workflowPayload);
+      await sender.close();
+
+      const consumer = queueOn(dataDir, {
+        baseUrl: `http://127.0.0.1:${port}`,
+      });
+      consumer.startConsumer();
+      await waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]).toBe('/api/agent/queue');
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it('stays idle, without write transactions, while a lane is busy', async () => {
+    const dataDir = tempDataDir();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const q = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
+    let deliveries = 0;
+    q.registerHandler(
+      '__wkf_workflow_',
+      q.createQueueHandler('__wkf_workflow_', async () => {
+        deliveries++;
+        if (deliveries === 1) await held;
+        return undefined;
+      })
+    );
+    await q.queue('__wkf_workflow_test' as any, orchestratorMessage);
+    await waitFor(() => expect(deliveries).toBe(1));
+    // A second orchestrator message of the run waits behind the first.
+    await q.queue('__wkf_workflow_test' as any, orchestratorMessage);
+    const db = databaseFor(dataDir);
+    const transact = vi.spyOn(Object.getPrototypeOf(db), 'transact');
+    await realDelay(300);
+    // Polling (about every 100ms) reads; it never takes the write lock.
+    expect(transact.mock.calls.length).toBeLessThan(5);
+    release();
+    await waitFor(() => expect(deliveries).toBe(2));
   });
 });

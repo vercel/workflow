@@ -11,6 +11,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DataDirAccessError,
+  DataDirLayoutError,
   DataDirVersionError,
   ensureDataDir,
   formatVersion,
@@ -486,14 +487,21 @@ describe('initDataDir legacy JSON layout', () => {
     );
   });
 
-  it('wipes the per-run JSON layout of 5.1 and later, keeping world.db', async () => {
+  it('wipes the per-run JSON layout of 5.1 and later', async () => {
     mkdirSync(path.join(dataDir, 'events', 'wrun_A'), { recursive: true });
     writeFileSync(
       path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'),
       '{}'
     );
     mkdirSync(path.join(dataDir, '.locks', 'runs'), { recursive: true });
-    writeFileSync(path.join(dataDir, 'world.db'), '');
+    writeFileSync(path.join(dataDir, '.locks', 'runs', 'wrun_A.terminal'), '');
+    mkdirSync(path.join(dataDir, 'streams', 'chunks', 'strm_A'), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(dataDir, 'streams', 'chunks', 'strm_A', 'chnk_1.bin'),
+      ''
+    );
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await initDataDir(dataDir);
@@ -501,10 +509,45 @@ describe('initDataDir legacy JSON layout', () => {
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('Deleting local workflow data')
     );
-    for (const gone of ['runs', 'events', '.locks']) {
+    for (const gone of ['runs', 'events', '.locks', 'streams']) {
       expect(existsSync(path.join(dataDir, gone))).toBe(false);
     }
-    expect(existsSync(path.join(dataDir, 'world.db'))).toBe(true);
+  });
+
+  it('refuses, deleting nothing, a legacy entry holding a file it did not write', async () => {
+    mkdirSync(path.join(dataDir, 'streams'));
+    writeFileSync(path.join(dataDir, 'streams', 'user-notes.txt'), 'x');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const error = await initDataDir(dataDir).catch((e) => e);
+
+    expect(error).toBeInstanceOf(DataDirLayoutError);
+    expect(error.message).toContain(path.join('streams', 'user-notes.txt'));
+    expect(existsSync(path.join(dataDir, 'streams', 'user-notes.txt'))).toBe(
+      true
+    );
+    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
+  });
+
+  it('refuses legacy entries in a directory without its version file', async () => {
+    rmSync(path.join(dataDir, 'version.txt'));
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(initDataDir(dataDir)).rejects.toBeInstanceOf(
+      DataDirLayoutError
+    );
+    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
+  });
+
+  it('refuses legacy entries next to a database: an older release still uses the directory', async () => {
+    writeFileSync(path.join(dataDir, 'world.db'), '');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const error = await initDataDir(dataDir).catch((e) => e);
+
+    expect(error).toBeInstanceOf(DataDirLayoutError);
+    expect(error.message).toContain('still using this directory');
+    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
   });
 
   it('leaves a data directory without legacy entries alone', async () => {

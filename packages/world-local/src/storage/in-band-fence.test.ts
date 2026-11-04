@@ -170,6 +170,46 @@ describe('in-band fence (world-local)', () => {
     expect(first.snapshot?.seq).toBe(4);
   });
 
+  it('allocates nothing for an in-band hook_received that converges on its committed resume', async () => {
+    const runId = await createRun();
+    await storage.events.create(
+      runId,
+      { eventType: 'run_started', specVersion: SPEC } as AnyEventRequest,
+      { inBand: true, expectedSeqInBand: 1 }
+    );
+    await storage.events.create(
+      runId,
+      {
+        eventType: 'hook_created',
+        correlationId: 'hook_1',
+        specVersion: SPEC,
+        eventData: { token: `tok-${runId}` },
+      } as AnyEventRequest,
+      { inBand: true, expectedSeqInBand: 2 }
+    );
+    const resume = {
+      eventType: 'hook_received',
+      correlationId: 'hook_1',
+      specVersion: SPEC,
+      eventData: { payload: serialized({ n: 1 }) },
+    } as AnyEventRequest;
+    const first = await storage.events.create(runId, resume, {
+      inBand: true,
+      expectedSeqInBand: 3,
+      resumeId: 'resume_1',
+    });
+    expect(first.allocated).toBe(1);
+    const replay = await storage.events.create(runId, resume, {
+      inBand: true,
+      expectedSeqInBand: 4,
+      resumeId: 'resume_1',
+    });
+    expect(replay.event?.eventId).toBe(first.event?.eventId);
+    expect(replay.allocated).toBe(0);
+    const { snapshot } = await snapshotOf(runId);
+    expect(snapshot).toEqual({ seq: 4, seqInBand: 4 });
+  });
+
   it('keeps the count in the database: another storage instance reads it', async () => {
     const runId = await createRun();
     await storage.events.create(runId, attrSet('one'), {

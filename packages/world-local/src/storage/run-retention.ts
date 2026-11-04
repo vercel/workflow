@@ -7,7 +7,9 @@
  * (`withRunPayloadsPurged` in `events-storage.ts`); everything else it owns
  * (step payloads, event payloads, hook metadata, stream chunks) is scrubbed
  * by `purgeRunData` in the same transaction, so a purged run is never
- * observable with any of its data left.
+ * observable with any of its data left. The connection zeroes freed pages
+ * (`secure_delete`), and the WAL, which still holds the old pages, is
+ * checkpointed and truncated right after the purge commits.
  */
 
 import type { Event, Hook, Step } from '@workflow/world';
@@ -95,6 +97,14 @@ export function purgeRunData(db: Database, runId: string): void {
       row.hook_id
     );
   }
+
+  // Queued messages of a finished run carry its payloads (step inputs, hook
+  // payloads) and nothing will act on them: those not being delivered go.
+  db.run(
+    'DELETE FROM messages WHERE run_id = ? AND (lease_until IS NULL OR lease_until < ?)',
+    runId,
+    Date.now()
+  );
 
   purgeRunStreams(db, runId);
 }

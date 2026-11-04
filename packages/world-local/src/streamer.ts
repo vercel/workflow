@@ -69,9 +69,11 @@ export function createStreamer(
     const previous = turns.get(name) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(fn);
     turns.set(name, next);
-    void next.finally(() => {
+    const forget = () => {
       if (turns.get(name) === next) turns.delete(name);
-    });
+    };
+    // Both outcomes handled: a failed write rejects for its caller only.
+    next.then(forget, forget);
     return next;
   }
 

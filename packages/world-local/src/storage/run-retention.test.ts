@@ -116,6 +116,54 @@ describe('run retention (world-local)', () => {
   // ---------------------------------------------------------------------
 
   describe("$retention: '0'", () => {
+    it('leaves no trace of the payloads in the database files, and drops queued messages', async () => {
+      // A payload long and distinctive enough to find as raw bytes.
+      const marker = 'purge-marker-'.repeat(40);
+      const created = await storage.events.create(null, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'dpl_test',
+          workflowName: 'retention-workflow',
+          input: new TextEncoder().encode(marker),
+          attributes: { [RETENTION_ATTRIBUTE]: '0' },
+          allowReservedAttributes: true,
+        },
+      });
+      const runId = created.run?.runId as string;
+      await storage.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      } as never);
+      const db = databaseFor(testDir);
+      db.run(
+        `INSERT INTO messages (id, queue_name, prefix, transport, body, run_id, visible_at, created_at)
+         VALUES ('msg_delayed', '__wkf_workflow_w', '__wkf_workflow_', 'http', ?, ?, ?, ?)`,
+        JSON.stringify({ runId, marker }),
+        runId,
+        Date.now() + 3_600_000,
+        new Date().toISOString()
+      );
+
+      await complete(runId);
+
+      expect(db.all('SELECT id FROM messages WHERE run_id = ?', runId)).toEqual(
+        []
+      );
+      const needles = [
+        Buffer.from(marker),
+        Buffer.from(Buffer.from(marker).toString('base64').slice(0, 64)),
+      ];
+      for (const file of ['world.db', 'world.db-wal']) {
+        const bytes = await fs
+          .readFile(path.join(testDir, file))
+          .catch(() => Buffer.alloc(0));
+        for (const needle of needles) {
+          expect(bytes.includes(needle)).toBe(false);
+        }
+      }
+    });
+
     it('drops the run payloads and stamps expiredAt', async () => {
       const run = await startRun({ [RETENTION_ATTRIBUTE]: '0' });
       const before = Date.now();

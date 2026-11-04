@@ -986,6 +986,8 @@ export function createEventsStorage(
 
     if (runPurged) {
       purgeRunData(db, runId);
+      // The scrubbed bytes are still in the WAL until it is checkpointed.
+      effects.push(() => db.checkpoint());
     }
 
     return finish(stored, resultRun, { step, hook, wait, stepCreatedLazily });
@@ -1285,12 +1287,14 @@ export function createEventsStorage(
             );
           }
         }
+        const seqBefore = fenced ? store.topSeq(runId!) : 0;
         const created = createInTransaction(runId, data, params, effects);
         let result = created;
         if (fenced) {
-          // One position per accepted create; a create that appended nothing
-          // (run_started on a running run) moves nothing.
-          const allocated = created.event ? 1 : 0;
+          // One position per create that appended to this run's log. One that
+          // appended nothing (run_started on a running run, a hook_received
+          // converging on the event its resumeId already holds) moves nothing.
+          const allocated = store.topSeq(runId!) > seqBefore ? 1 : 0;
           if (allocated > 0) store.advanceInBand(runId!);
           result = { ...created, allocated } as EventResult;
         }
