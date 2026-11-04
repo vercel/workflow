@@ -38,6 +38,8 @@ interface Connection {
   lastUsed: number;
   /** Transaction nesting depth (savepoints below the outermost). */
   depth: number;
+  /** A pending close (`brief` mode). */
+  closeTimer?: ReturnType<typeof setTimeout>;
 }
 
 const state = globalSingleton('@workflow/world-local//sqlite', 1, () => ({
@@ -55,6 +57,7 @@ function fileIdentity(file: string): string | null {
 }
 
 function closeConnection(connection: Connection): void {
+  if (connection.closeTimer) clearTimeout(connection.closeTimer);
   state.connections.delete(connection.file);
   try {
     connection.raw.close();
@@ -133,7 +136,7 @@ function open(file: string): Connection {
     depth: 0,
   };
   state.connections.set(file, connection);
-  if (keepsConnections()) ensureSweeper();
+  if (connectionMode() === 'keep') ensureSweeper();
   return connection;
 }
 
@@ -199,13 +202,13 @@ export class Database {
 
   /**
    * Runs one top-level operation and, when connections are not kept (see
-   * {@link keepsConnections}), closes the connection after it.
+   * {@link connectionMode}), releases the connection after it.
    */
   private released<T>(fn: () => T): T {
     try {
       return fn();
     } finally {
-      if (!keepsConnections()) this.close();
+      this.afterOperation();
     }
   }
 
@@ -240,13 +243,13 @@ export class Database {
         // The transaction was already rolled back (for example by SQLite on
         // a disk-full error).
       }
-      if (!nested && !keepsConnections()) this.close();
+      if (!nested) this.afterOperation();
       throw error;
     }
     connection.depth--;
     connection.raw.exec(nested ? `RELEASE ${savepoint}` : 'COMMIT');
     connection.lastUsed = Date.now();
-    if (!nested && !keepsConnections()) this.close();
+    if (!nested) this.afterOperation();
     if (result instanceof CommitThenThrow) {
       throw result.error;
     }
@@ -271,8 +274,26 @@ export class Database {
         connection.raw.exec('COMMIT');
       } catch {}
       connection.lastUsed = Date.now();
-      if (!keepsConnections()) this.close();
+      this.afterOperation();
     }
+  }
+
+  /** Releases the connection after a top-level operation, per {@link connectionMode}. */
+  private afterOperation(): void {
+    const mode = connectionMode();
+    if (mode === 'keep') return;
+    if (mode === 'none') {
+      this.close();
+      return;
+    }
+    const connection = state.connections.get(this.file);
+    if (!connection) return;
+    if (connection.closeTimer) clearTimeout(connection.closeTimer);
+    connection.closeTimer = setTimeout(() => {
+      connection.closeTimer = undefined;
+      if (state.connections.get(this.file) === connection) this.close();
+    }, BRIEF_IDLE_MS);
+    connection.closeTimer.unref?.();
   }
 
   /** Closes this process's connection to the file, if one is open. */
@@ -282,18 +303,27 @@ export class Database {
   }
 }
 
+/** How long a connection stays open after its last operation, on Windows. */
+const BRIEF_IDLE_MS = 25;
+
 /**
- * Whether connections stay open between operations (until idle). On Windows
- * an open SQLite file cannot be deleted or renamed, so a connection kept open
- * would stop a data directory from being removed (by `rm`, a test's cleanup,
- * or the user) while the process runs; there, every operation opens and
- * closes its own. `WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS=0|1` overrides.
+ * How long a connection stays open between operations:
+ *
+ * - `keep` (default): until idle for a few seconds.
+ * - `brief` (default on Windows): until the burst of operations using it is
+ *   over. An open SQLite file cannot be deleted or renamed on Windows, so a
+ *   connection kept open would stop a data directory from being removed (by
+ *   `rm`, a test's cleanup, or the user) while the process runs.
+ * - `none`: every operation opens and closes its own connection.
+ *
+ * `WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS=1|brief|0` overrides.
  */
-export function keepsConnections(): boolean {
+export function connectionMode(): 'keep' | 'brief' | 'none' {
   const raw = process.env.WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS;
-  if (raw === '0') return false;
-  if (raw === '1') return true;
-  return process.platform !== 'win32';
+  if (raw === '0') return 'none';
+  if (raw === '1') return 'keep';
+  if (raw === 'brief') return 'brief';
+  return process.platform === 'win32' ? 'brief' : 'keep';
 }
 
 /** Closes every connection this process holds (none mid-transaction). */
