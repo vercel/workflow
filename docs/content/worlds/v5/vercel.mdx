@@ -158,7 +158,7 @@ The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. T
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.
-- **Hook minimum retention**: `experimental_minRetention` cannot exceed 30 days, on both [`createHook()`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) and [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts).
+- **Hook minimum retention**: `experimental_minRetention` cannot exceed 30 days, on both [`createHook()`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) and [`start({ experimental_hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts).
 
 ## Observability
 

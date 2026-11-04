@@ -82,10 +82,10 @@ export function createWorld(
 
   const capabilities = {
     hookRetention: { active: true },
-    // `start({ hook })`: the decision, the start Hook and the run it
+    // `start({ experimental_hook })`: the decision, the start Hook and the run it
     // admits commit in one transaction; see start-hook.ts. Every worker
     // serving the database must run a version with start Hook support before
-    // a caller passes `hook` (an older one would create a candidate's run
+    // a caller passes `experimental_hook` (an older one would create a candidate's run
     // without its start Hook).
     atomicStartHook: { active: true },
     // Stored in the runs table's `dynamic_workflow_code_cbor` column; no

@@ -61,7 +61,7 @@
  *
  * A `503 start-hook-run-pending` has a third policy, also for every event type.
  * The backend answers it to a write that reaches a run's start Hook (the
- * Hook a `start({ hook })` admission created) while the run itself is not
+ * Hook a `start({ experimental_hook })` admission created) while the run itself is not
  * stored yet: admission across regions is two writes, and the second one has
  * not landed. Like a 429 it is a definitive no-write, and the run appears
  * shortly, so the POST is re-sent in-process after each Retry-After for up to

@@ -671,7 +671,7 @@ export function createQuickJSSerde(
 
   /**
    * `HookConflictError`'s third constructor argument for a reduced value:
-   * `{ kind: 'start' }` for a refused `start({ hook })`, else undefined.
+   * `{ kind: 'start' }` for a refused `start({ experimental_hook })`, else undefined.
    */
   const startConflictOptions = (value: JSValueHandle): JSValueHandle => {
     if (ownString(value, 'kind') !== 'start') return vm.undefined;

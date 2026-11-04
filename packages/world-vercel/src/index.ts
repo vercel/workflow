@@ -64,7 +64,7 @@ export function createWorld(config?: APIConfig): World {
     specVersion,
     capabilities: {
       hookRetention: { active: true },
-      // `start({ hook })` admission. Only used when a caller passes `hook` to
+      // `start({ experimental_hook })` admission. Only used when a caller passes `experimental_hook` to
       // `start()`. See `start-hook.ts` in @workflow/world for the contract the
       // server implements.
       atomicStartHook: { active: true },

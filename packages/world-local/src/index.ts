@@ -145,7 +145,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   const capabilities = {
     hookRetention: { active: true },
-    // `start({ hook })`: the start Hook's token claim, the run and the Hook
+    // `start({ experimental_hook })`: the start Hook's token claim, the run and the Hook
     // entity are written under the claim lock; a refusal is recorded per
     // candidate. See `admitStartHook` in storage/events-storage.ts.
     atomicStartHook: { active: true },

@@ -1081,7 +1081,7 @@ describe('a by-token lookup', () => {
   });
 
   it('finds a start Hook at once, asking the World only once', async () => {
-    // A start({ hook }) run's Hook exists from its admission: the lookup is an
+    // A start({ experimental_hook }) run's Hook exists from its admission: the lookup is an
     // ordinary one, with no waiting and no retry.
     const hook = {
       runId: 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',

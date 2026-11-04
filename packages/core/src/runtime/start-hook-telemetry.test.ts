@@ -23,7 +23,7 @@ import {
 import { setWorld } from './world.js';
 
 /**
- * What `start({ hook })`, its queued copy and the holder wake record for an
+ * What `start({ experimental_hook })`, its queued copy and the holder wake record for an
  * operator: the start span's outcome attributes, the invocation span of a
  * queued copy, and the logs that say why.
  */
@@ -92,10 +92,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('the workflow.start span of start({ hook })', () => {
+describe('the workflow.start span of start({ experimental_hook })', () => {
   it('records the run id, the outcome and no confirmation for a clean admission', async () => {
     admittingWorld();
-    const run = await start(workflow, [], { hook: { token: TOKEN } });
+    const run = await start(workflow, [], {
+      experimental_hook: { token: TOKEN },
+    });
     expect(spanAttributes).toMatchObject({
       'workflow.run.id': run.runId,
       'workflow.start_hook': true,
@@ -113,7 +115,7 @@ describe('the workflow.start span of start({ hook })', () => {
       .mockRejectedValueOnce(new ThrottleError('busy'))
       .mockResolvedValue(undefined);
     admittingWorld();
-    await start(workflow, [], { hook: { token: TOKEN } });
+    await start(workflow, [], { experimental_hook: { token: TOKEN } });
     expect(queue).toHaveBeenCalledTimes(2);
     expect(spanAttributes).toMatchObject({
       'workflow.start_hook.outcome': 'accepted',
@@ -126,7 +128,7 @@ describe('the workflow.start span of start({ hook })', () => {
       .mockRejectedValueOnce(new WorkflowWorldError('lost', { status: 503 }))
       .mockImplementation(accept);
     admittingWorld();
-    await start(workflow, [], { hook: { token: TOKEN } });
+    await start(workflow, [], { experimental_hook: { token: TOKEN } });
     expect(spanAttributes).toMatchObject({
       'workflow.start_hook.outcome': 'accepted',
       'workflow.start_hook.confirm_attempts': 1,
@@ -138,7 +140,9 @@ describe('the workflow.start span of start({ hook })', () => {
     admittingWorld();
     expect(
       HookConflictError.is(
-        await rejection(start(workflow, [], { hook: { token: TOKEN } }))
+        await rejection(
+          start(workflow, [], { experimental_hook: { token: TOKEN } })
+        )
       )
     ).toBe(true);
     expect(spanAttributes).toMatchObject({
@@ -151,7 +155,9 @@ describe('the workflow.start span of start({ hook })', () => {
   it('records a refusal that names no owner as a contract failure, not a rejection', async () => {
     eventsCreate.mockRejectedValue(new HookConflictError(TOKEN));
     admittingWorld();
-    await rejection(start(workflow, [], { hook: { token: TOKEN } }));
+    await rejection(
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
+    );
     expect(spanAttributes).toMatchObject({
       'workflow.start_hook.outcome': 'failed',
       'workflow.start_hook.error_code': RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
@@ -160,7 +166,9 @@ describe('the workflow.start span of start({ hook })', () => {
 
   it('records an outcome on a capability throw before anything is written', async () => {
     admittingWorld({ capabilities: { inBandFence: true } });
-    await rejection(start(workflow, [], { hook: { token: TOKEN } }));
+    await rejection(
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
+    );
     expect(spanAttributes).toMatchObject({
       'workflow.start_hook.outcome': 'failed',
       'workflow.start_hook.error_code': RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
@@ -177,7 +185,9 @@ describe('the workflow.start span of start({ hook })', () => {
       })
     );
     admittingWorld();
-    await rejection(start(workflow, [], { hook: { token: TOKEN } }));
+    await rejection(
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
+    );
     expect(spanAttributes).toMatchObject({
       'workflow.start_hook.outcome': 'failed',
       'workflow.start_hook.error_code': START_HOOK_ADMISSION_REJECTED,
@@ -198,7 +208,7 @@ describe('the workflow.start span of start({ hook })', () => {
     );
     admittingWorld();
     const error = await rejection(
-      start(workflow, [], { hook: { token: TOKEN } })
+      start(workflow, [], { experimental_hook: { token: TOKEN } })
     );
     expect(WorkflowStartError.is(error)).toBe(true);
     expect(spanAttributes).toMatchObject({

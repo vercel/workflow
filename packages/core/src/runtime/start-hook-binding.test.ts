@@ -1,5 +1,5 @@
 /**
- * The node:vm engine's side of a `start(workflow, args, { hook })` run: the
+ * The node:vm engine's side of a `start(workflow, args, { experimental_hook })` run: the
  * World created the run's start Hook (id `startHookId(runId)`) when it
  * admitted the run, so payloads can be in the log before the body opens the
  * Hook, before `run_started` even, or the body may never open it at all.
@@ -328,7 +328,7 @@ describe('createHook with the start token (node:vm)', () => {
     });
   });
 
-  it('throws on options only a write could apply, naming start({ hook })', async () => {
+  it('throws on options only a write could apply, naming start({ experimental_hook })', async () => {
     for (const option of [
       `metadata: { a: 1 }`,
       `experimental_minRetention: '1h'`,

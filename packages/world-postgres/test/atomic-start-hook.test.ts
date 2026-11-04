@@ -20,7 +20,7 @@ import {
 import { TestPool } from './pool.js';
 
 /**
- * `start({ hook })` admission: the decision, the run's start Hook (an
+ * `start({ experimental_hook })` admission: the decision, the run's start Hook (an
  * ordinary `workflow_hooks` row with id `startHookId(runId)`) and the run it
  * admits commit in one transaction. From then on the start Hook is an
  * ordinary Hook, and nothing on a plain `createHook()` changes.
