@@ -915,7 +915,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // cross-deployment target is checked again below, from its probe.
         if (world.capabilities?.atomicStartHook?.active !== true) {
           throw startHookContractError(
-            'start({ hook }) requires a World that supports atomic start Hooks, and the configured World does not. On the Postgres World, set WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1; on the Vercel World, WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1.'
+            'start({ hook }) requires a World that supports atomic start Hooks, and the configured World does not.'
           );
         }
         if (

@@ -43,7 +43,6 @@ describe('atomic start Hook (world-postgres)', () => {
     const dbUrl = container.getConnectionUri();
     process.env.DATABASE_URL = dbUrl;
     process.env.WORKFLOW_POSTGRES_URL = dbUrl;
-    process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK = '1';
     execSync('pnpm db:push', {
       stdio: 'inherit',
       cwd: process.cwd(),
@@ -62,20 +61,10 @@ describe('atomic start Hook (world-postgres)', () => {
     await container.stop();
   });
 
-  test('declares atomicStartHook only with WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK', () => {
-    const previous = process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK;
-    try {
-      delete process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK;
-      expect(
-        createWorld({ pool }).capabilities?.atomicStartHook
-      ).toBeUndefined();
-      process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK = '1';
-      expect(createWorld({ pool }).capabilities?.atomicStartHook?.active).toBe(
-        true
-      );
-    } finally {
-      process.env.WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK = previous;
-    }
+  test('always declares atomicStartHook', () => {
+    expect(createWorld({ pool }).capabilities?.atomicStartHook?.active).toBe(
+      true
+    );
   });
 
   atomicStartHookConformance({

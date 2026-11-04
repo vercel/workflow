@@ -310,7 +310,7 @@ The conformance suite in [`packages/world/src/test-support/in-band-fence-conform
 - **Cancelling an uncreated candidate.** A `run_cancelled` for a run ID with no run but an accepted decision fences the candidate (no copy can create it any more), releases its token as for an ended run, and throws `WorkflowWorldError` with `code: START_HOOK_CANDIDATE_CANCELLED`. With no decision, throw `WorkflowRunNotFoundError` as for any missing run.
 - **Switching admission off.** If you can switch admission off, either record the refusal as the candidate's decision and answer `START_HOOK_ADMISSION_REJECTED`, or throw `WorkflowWorldError` with `code: START_HOOK_ADMISSION_DISABLED` and record nothing. The second is not final: `start()` reports it as `WorkflowStartError`, and the queued copy is redelivered, because another copy may be admitted once admission is back on.
 
-`world-local` declares it; `world-postgres` declares it only with `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK=1`, and `world-vercel` only with `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1`. The conformance suite in [`packages/world/src/test-support/atomic-start-hook-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/atomic-start-hook-conformance.ts) checks these rules against a World's storage.
+`world-local`, `world-postgres` and `world-vercel` declare it. The conformance suite in [`packages/world/src/test-support/atomic-start-hook-conformance.ts`](https://github.com/vercel/workflow/blob/main/packages/world/src/test-support/atomic-start-hook-conformance.ts) checks these rules against a World's storage.
 
 ## Queue interface
 

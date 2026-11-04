@@ -2648,12 +2648,11 @@ describe.concurrent('e2e', () => {
    */
   describe('start({ hook })', () => {
     /**
-     * The World behind this lane admits start Hooks. The Vercel lanes run
-     * against whichever workflow-server is deployed and opt in with
-     * WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK, so they skip until both are in
-     * place; the local and Postgres lanes always run these. A lane that sets
-     * WORKFLOW_E2E_EXPECT_START_HOOK=1 must run them, so there a World
-     * without the capability fails the test instead of skipping it.
+     * The World behind this lane admits start Hooks. The local, Postgres and
+     * Vercel Worlds all declare the capability; a custom World without it
+     * skips these. A lane that sets WORKFLOW_E2E_EXPECT_START_HOOK=1 must run
+     * them, so there a World without the capability fails the test instead
+     * of skipping it.
      */
     const skipUnlessStartHookSupported = async (ctx: TestContext) => {
       const world = await getWorld();
