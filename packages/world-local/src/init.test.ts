@@ -11,7 +11,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DataDirAccessError,
-  DataDirLayoutError,
   DataDirVersionError,
   ensureDataDir,
   formatVersion,
@@ -466,28 +465,7 @@ describe('initDataDir legacy JSON layout', () => {
     vi.restoreAllMocks();
   });
 
-  it.each([
-    'events',
-    'steps',
-  ])('wipes a data directory with flat %s files', async (entityDir) => {
-    mkdirSync(path.join(dataDir, entityDir));
-    writeFileSync(path.join(dataDir, entityDir, 'wrun_A-x_1.json'), '{}');
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await initDataDir(dataDir);
-
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Deleting local workflow data')
-    );
-    expect(existsSync(path.join(dataDir, 'runs'))).toBe(false);
-    expect(existsSync(path.join(dataDir, entityDir))).toBe(false);
-    const packageInfo = await getPackageInfo();
-    expect(readFileSync(path.join(dataDir, 'version.txt'), 'utf-8')).toBe(
-      `${packageInfo.name}@${packageInfo.version}`
-    );
-  });
-
-  it('wipes the per-run JSON layout of 5.1 and later', async () => {
+  it('leaves the JSON data of earlier releases in place', async () => {
     mkdirSync(path.join(dataDir, 'events', 'wrun_A'), { recursive: true });
     writeFileSync(
       path.join(dataDir, 'events', 'wrun_A', 'wrun_A-evnt_1.json'),
@@ -495,72 +473,31 @@ describe('initDataDir legacy JSON layout', () => {
     );
     mkdirSync(path.join(dataDir, '.locks', 'runs'), { recursive: true });
     writeFileSync(path.join(dataDir, '.locks', 'runs', 'wrun_A.terminal'), '');
-    mkdirSync(path.join(dataDir, 'streams', 'chunks', 'strm_A'), {
-      recursive: true,
-    });
-    writeFileSync(
-      path.join(dataDir, 'streams', 'chunks', 'strm_A', 'chnk_1.bin'),
-      ''
-    );
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await initDataDir(dataDir);
-
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Deleting local workflow data')
-    );
-    for (const gone of ['runs', 'events', '.locks', 'streams']) {
-      expect(existsSync(path.join(dataDir, gone))).toBe(false);
-    }
-  });
-
-  it('refuses, deleting nothing, a legacy entry holding a file it did not write', async () => {
     mkdirSync(path.join(dataDir, 'streams'));
     writeFileSync(path.join(dataDir, 'streams', 'user-notes.txt'), 'x');
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const error = await initDataDir(dataDir).catch((e) => e);
-
-    expect(error).toBeInstanceOf(DataDirLayoutError);
-    expect(error.message).toContain(path.join('streams', 'user-notes.txt'));
-    expect(existsSync(path.join(dataDir, 'streams', 'user-notes.txt'))).toBe(
-      true
-    );
-    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
-  });
-
-  it('refuses legacy entries in a directory without its version file', async () => {
-    rmSync(path.join(dataDir, 'version.txt'));
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await expect(initDataDir(dataDir)).rejects.toBeInstanceOf(
-      DataDirLayoutError
-    );
-    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
-  });
-
-  it('refuses legacy entries next to a database: an older release still uses the directory', async () => {
-    writeFileSync(path.join(dataDir, 'world.db'), '');
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const error = await initDataDir(dataDir).catch((e) => e);
-
-    expect(error).toBeInstanceOf(DataDirLayoutError);
-    expect(error.message).toContain('still using this directory');
-    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
-  });
-
-  it('leaves a data directory without legacy entries alone', async () => {
-    rmSync(path.join(dataDir, 'runs'), { recursive: true, force: true });
-    writeFileSync(path.join(dataDir, 'notes.json'), '{}');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     await initDataDir(dataDir);
 
+    for (const kept of [
+      path.join('runs', 'wrun_A.json'),
+      path.join('events', 'wrun_A', 'wrun_A-evnt_1.json'),
+      path.join('.locks', 'runs', 'wrun_A.terminal'),
+      path.join('streams', 'user-notes.txt'),
+    ]) {
+      expect(existsSync(path.join(dataDir, kept))).toBe(true);
+    }
     expect(warn).not.toHaveBeenCalledWith(
       expect.stringContaining('Deleting local workflow data')
     );
-    expect(existsSync(path.join(dataDir, 'notes.json'))).toBe(true);
+  });
+
+  it('starts next to the JSON data, with or without a version file or database', async () => {
+    rmSync(path.join(dataDir, 'version.txt'));
+    writeFileSync(path.join(dataDir, 'world.db'), '');
+
+    await expect(initDataDir(dataDir)).resolves.toBeUndefined();
+    expect(existsSync(path.join(dataDir, 'runs', 'wrun_A.json'))).toBe(true);
   });
 });
 

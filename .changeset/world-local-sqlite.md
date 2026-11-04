@@ -8,4 +8,4 @@ Store the Local World in one SQLite database (`<dataDir>/world.db`, opened with 
 - The queue is stored in the database too. Delayed deliveries, wait timers and retries survive a restart, a delivery whose process died is delivered again once its lease lapses, and a single-orchestrator (spec 9) run's orchestrator deliveries go one at a time across every process on the data directory. A process that cannot reach the app only enqueues; the app's process delivers.
 - Stream chunks are numbered in the transaction that writes them, so readers always get them in order.
 
-Requires Node.js 22.13 or later, or Bun. Local run data written by earlier releases is deleted on upgrade.
+Requires Node.js 22.13 or later, or Bun. Local run data written by earlier releases is not migrated: it is left in place in the data directory, unread, and new runs start in an empty database.

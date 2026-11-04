@@ -2,16 +2,14 @@ import {
   access,
   constants,
   mkdir,
-  readdir,
   readFile,
-  rm,
   stat,
   unlink,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { globalSingleton } from '@workflow/utils';
+import { debugLog, globalSingleton } from '@workflow/utils';
 
 /** Package name - hardcoded since it doesn't change */
 const PACKAGE_NAME = '@workflow/world-local';
@@ -312,7 +310,7 @@ async function writeVersionFile(
 
 /**
  * What earlier releases stored as JSON files, one per entity. This release
- * stores everything in `world.db` and does not read them.
+ * stores everything in `world.db` and neither reads nor deletes them.
  */
 const LEGACY_ENTRIES = [
   'runs',
@@ -342,90 +340,23 @@ async function legacyEntriesIn(dataDir: string): Promise<string[]> {
 }
 
 /**
- * Whether a file under a legacy entry is one an earlier world-local wrote:
- * entity and event JSON, stream chunks, snapshots, and the lock, claim,
- * marker and temp files around them. Anything else (a user's notes, another
- * tool's data) means the directory is not only ours.
- */
-function isLegacyArtifact(relative: string, name: string): boolean {
-  if (relative.split(path.sep)[0] === '.locks') return true;
-  return (
-    /\.(json|bin|snapshot)$/.test(name) ||
-    /\.(lock|tmp|abandoned|takeover)(\.|-|$)/.test(name) ||
-    name === '.hook-index-complete'
-  );
-}
-
-/** Files under the legacy entries this package did not write, up to `limit`. */
-async function unrecognizedLegacyFiles(
-  dataDir: string,
-  entries: string[],
-  limit = 20
-): Promise<string[]> {
-  const found: string[] = [];
-  const walk = async (relative: string): Promise<void> => {
-    let children: import('node:fs').Dirent[];
-    try {
-      children = await readdir(path.join(dataDir, relative), {
-        withFileTypes: true,
-      });
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
-      throw error;
-    }
-    for (const child of children) {
-      if (found.length >= limit) return;
-      const childPath = path.join(relative, child.name);
-      if (child.isDirectory()) {
-        await walk(childPath);
-      } else if (!isLegacyArtifact(childPath, child.name)) {
-        found.push(childPath);
-      }
-    }
-  };
-  for (const entry of entries) await walk(entry);
-  return found;
-}
-
-/**
- * Thrown by {@link initDataDir} for a data directory that holds entries an
- * earlier release used (`runs/`, `events/`, …) that it cannot safely identify
- * as that release's data: files it did not write, or no `version.txt` naming
- * this package. Nothing is deleted.
+ * @deprecated No longer thrown: `initDataDir` leaves the JSON data of
+ * earlier releases in place and never refuses a data directory for it. Kept
+ * so imports of it keep compiling.
  */
 export class DataDirLayoutError extends Error {
   readonly dataDir: string;
   readonly files: string[];
 
-  constructor(dataDir: string, files: string[], reason?: 'shared') {
-    const shown = files.slice(0, 5).join(', ');
+  constructor(dataDir: string, files: string[]) {
     super(
-      reason === 'shared'
-        ? `[world-local] ${path.resolve(dataDir)} holds both ${DATABASE_FILE} and ` +
-            `JSON data of an earlier release (${shown}): an older version of ${PACKAGE_NAME} ` +
-            `is still using this directory. Stop it, then delete those entries.`
-        : `[world-local] ${path.resolve(dataDir)} holds ${files.length} ` +
-            `file(s) this version does not recognize (${shown}${files.length > 5 ? ', …' : ''}), ` +
-            `so it deletes nothing. If an older version of ${PACKAGE_NAME} is using this directory, stop it. ` +
-            `Then delete the directory, or move or remove those files.`
+      `[world-local] ${path.resolve(dataDir)} holds files this version does not read (${files.slice(0, 5).join(', ')}).`
     );
     this.name = 'DataDirLayoutError';
     this.dataDir = dataDir;
     this.files = files;
   }
 }
-
-async function pathExists(file: string): Promise<boolean> {
-  try {
-    await stat(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** The database file (see `db/index.ts`), named here to keep init free of it. */
-const DATABASE_FILE = 'world.db';
 
 /**
  * Gets the suggested downgrade version based on the old version.
@@ -456,42 +387,13 @@ export async function initDataDir(dataDir: string): Promise<void> {
   // First ensure the directory exists and is accessible
   await ensureDataDir(dataDir);
 
-  // Local run data written by earlier releases (one JSON file per entity)
-  // is not migrated: it is deleted, and the directory starts over with the
-  // database.
+  // Run data written by earlier releases (one JSON file per entity) is not
+  // migrated, and not deleted either: it stays where it is, unread, for the
+  // user to keep or remove. This release only uses `world.db`.
   const legacy = await legacyEntriesIn(dataDir);
   if (legacy.length > 0) {
-    // Only data identifiably ours is deleted: the directory carries this
-    // package's version file, and every file under those entries is one an
-    // earlier release wrote. Anything else is refused, untouched.
-    // And only once: legacy entries next to an existing database mean an
-    // older release is still writing to this directory, whose data must not
-    // be deleted on every start.
-    if (await pathExists(path.join(dataDir, DATABASE_FILE))) {
-      throw new DataDirLayoutError(dataDir, legacy, 'shared');
-    }
-    const versionFile = await readVersionFile(dataDir).catch(() => null);
-    const unrecognized =
-      versionFile?.packageName === PACKAGE_NAME
-        ? await unrecognizedLegacyFiles(dataDir, legacy)
-        : legacy;
-    if (unrecognized.length > 0) {
-      throw new DataDirLayoutError(dataDir, unrecognized);
-    }
-    console.warn(
-      `[world-local] Deleting local workflow data in "${path.resolve(dataDir)}" ` +
-        `(${legacy.join(', ')}): it was written by an older version of ${PACKAGE_NAME}, ` +
-        `which stored runs as JSON files. This version stores them in ${path.join(path.resolve(dataDir), 'world.db')}.`
-    );
-    await Promise.all(
-      legacy.map((entry) =>
-        // Retries ENOTEMPTY from another process writing into it meanwhile.
-        rm(path.join(dataDir, entry), {
-          recursive: true,
-          force: true,
-          maxRetries: 3,
-        })
-      )
+    debugLog(
+      `[world-local] ${path.resolve(dataDir)} holds run data of an earlier release (${legacy.join(', ')}); it is left in place and not read`
     );
   }
 
