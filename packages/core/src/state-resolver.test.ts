@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { markStateSource, StateContext } from './serialization/state-refs.js';
+import { StateContext, stateSourceId } from './serialization/state-refs.js';
 import * as workflow from './serialization/workflow.js';
 import { hydrateData, observabilityRevivers } from './serialization-format.js';
 import { produce } from './state.js';
@@ -19,12 +19,15 @@ describe('createStateResolver', () => {
 
       const message =
         'Weather in Oslo for the next three days, please. '.repeat(4);
-      const payload = { message };
-      markStateSource(payload, 'hook:1');
-      const hook = workflow.serialize(payload, {
-        stateContext: new StateContext(),
+      const hook = workflow.serialize(
+        { message },
+        { stateContext: new StateContext() }
+      );
+      const source = stateSourceId({
+        eventType: 'hook_received',
+        eventId: 'evnt_1',
       });
-      read(hook);
+      body.addSource(source as string, read(hook));
 
       const output1 = write({
         history: produce([] as Message[], (d) => {
@@ -52,7 +55,8 @@ describe('createStateResolver', () => {
       // Hydrating before the records are added counts what was missing.
       hydrateData(input2, { ...revivers, ...resolver.revivers });
       expect(resolver.unresolved).toBe(1);
-      for (const data of [hook, output1, output2]) resolver.add(data);
+      resolver.add(hook, source);
+      for (const data of [output1, output2]) resolver.add(data);
       const all = { ...revivers, ...resolver.revivers };
       expect(
         (hydrateData(input2, all) as { history: Message[] }).history
@@ -109,6 +113,38 @@ describe('createStateResolver', () => {
       expect(shown.state.at).toEqual(new Date(5));
       expect(shown.state.bytes).toEqual(new Uint8Array([1, 2]));
       expect(shown.state.list).toEqual([1, 2]);
+    } finally {
+      delete process.env.WORKFLOW_STATE_REFS;
+    }
+  });
+
+  it('rebuilds a whole value around a reference once the reference is added', () => {
+    process.env.WORKFLOW_STATE_REFS = '1';
+    try {
+      const body = new StateContext();
+      const output1 = workflow.serialize(
+        { inner: produce({ n: 0 }, (d) => void (d.n = 1)) },
+        { stateContext: body }
+      );
+      const inner = (
+        workflow.deserialize(output1, { stateContext: body }) as {
+          inner: { n: number };
+        }
+      ).inner;
+      // A new value holding the earlier one: stored whole, the inner one as a
+      // reference.
+      const outer = produce({ inner, label: 'a' }, (d) => void (d.label = 'b'));
+      const input2 = workflow.serialize({ outer }, { stateContext: body });
+
+      const resolver = createStateResolver();
+      const all = { ...observabilityRevivers, ...resolver.revivers };
+      expect(
+        (hydrateData(input2, all) as { outer: { inner: unknown } }).outer.inner
+      ).toMatch(/^<workflow\/state /);
+      resolver.add(output1);
+      expect(hydrateData(input2, all)).toEqual({
+        outer: { inner: { n: 1 }, label: 'b' },
+      });
     } finally {
       delete process.env.WORKFLOW_STATE_REFS;
     }
