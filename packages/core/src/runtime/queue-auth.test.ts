@@ -266,6 +266,38 @@ describe('workflowEntrypoint queue auth', () => {
     expect(counterAdds).toHaveBeenNthCalledWith(2, 1, attributes('wrong-key'));
   });
 
+  // The route label must not come from the request: a router can send many
+  // path spellings to one handler, and each would be a new metric series.
+  it('labels every refusal with the route template, whatever the request path', async () => {
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    counterAdds.mockClear();
+    const { route } = installWorld('in-process-key');
+
+    for (const path of [
+      '/.well-known/workflow/v1/flow',
+      '/.well-known/workflow/v1/flow/',
+      '/.well-known/workflow/v1/flow//',
+      '/.well-known/workflow/v1/flow/x/../',
+      '/anything-a-forger-picks',
+    ]) {
+      const response = await route(
+        new Request(`http://localhost:3000${path}`, {
+          method: 'POST',
+          body: '{}',
+        })
+      );
+      expect(response.status).toBe(401);
+    }
+    await vi.waitFor(() => expect(counterAdds).toHaveBeenCalledTimes(5));
+
+    const routes = new Set(
+      counterAdds.mock.calls.map(
+        ([, attributes]) => (attributes as Record<string, string>)['http.route']
+      )
+    );
+    expect([...routes]).toEqual(['/.well-known/workflow/v1/flow']);
+  });
+
   it('counts each refusal even while the log is rate-limited', async () => {
     const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     counterAdds.mockClear();

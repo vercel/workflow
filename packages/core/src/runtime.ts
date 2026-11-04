@@ -15,6 +15,7 @@ import {
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  WORKFLOW_FLOW_ROUTE,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -683,7 +684,7 @@ export function workflowEntrypoint(
             ? {}
             : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
           ...Attribute.HttpRequestMethod(req.method),
-          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+          ...Attribute.HttpRoute(WORKFLOW_FLOW_ROUTE),
         },
       },
       async (span) => {
@@ -719,10 +720,13 @@ export function workflowEntrypoint(
         const refusal = authorizeQueueDelivery(cachedRoute.world, req);
         if (refusal) {
           cachedRoute.logQueueAuthRefusal();
-          // Counted, not awaited: the 401 does not wait on a meter.
+          // Counted, not awaited: the 401 does not wait on a meter. The route
+          // label is the route template, never the request's path: routers
+          // send `/flow/`, `/flow//` and the like to this same handler, so the
+          // path would let a forgery flood mint unbounded series.
           void recordQueueDeliveryRefused({
             world: resolveWorkflowTargetWorld(),
-            route: new URL(req.url).pathname,
+            route: WORKFLOW_FLOW_ROUTE,
             reason: refusal.reason,
           });
           span?.setAttributes(
