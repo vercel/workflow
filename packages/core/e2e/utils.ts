@@ -674,9 +674,78 @@ const manifestRetryTimeoutMs = Number(
 const manifestRetryIntervalMs = 250;
 
 /**
+ * How long a manifest fetch keeps retrying a failure that says nothing about
+ * the manifest: a request a dev server reset while it restarted its worker
+ * after a rebuild (Nitro's dev runner closes the old worker with requests in
+ * flight), a 5xx or 429, or a request that never answered.
+ */
+const manifestTransientRetryMs = Number(
+  process.env.WORKFLOW_E2E_MANIFEST_TRANSIENT_RETRY_MS ?? '30000'
+);
+/** Bounds one manifest request, so one a reload swallowed is retried. */
+const manifestAttemptTimeoutMs = 10_000;
+
+/** Statuses a manifest fetch retries: the server, not the manifest, failed. */
+function isTransientManifestStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+/** A manifest fetch the server answered definitively: not retried. */
+class ManifestFetchError extends Error {}
+
+let manifestRequest: Promise<WorkflowManifest> | null = null;
+
+/**
+ * One manifest request: the manifest, or why a retry may still get it.
+ * Throws a {@link ManifestFetchError} when one cannot.
+ */
+async function attemptManifest(
+  url: string
+): Promise<{ manifest: WorkflowManifest } | { failure: string }> {
+  try {
+    const res = await fetchWithTrustedSources(url, {
+      signal: AbortSignal.timeout(manifestAttemptTimeoutMs),
+    });
+    if (res.ok) return { manifest: (await res.json()) as WorkflowManifest };
+    const failure = `${res.status} ${await res.text()}`;
+    if (isTransientManifestStatus(res.status)) return { failure };
+    throw new ManifestFetchError(
+      `Failed to fetch manifest from ${url}: ${failure}`
+    );
+  } catch (error) {
+    if (error instanceof ManifestFetchError) throw error;
+    // A thrown fetch: the connection was reset or refused, or the attempt
+    // timed out.
+    const cause =
+      error instanceof Error && error.cause instanceof Error
+        ? ` (${error.cause.message})`
+        : '';
+    return {
+      failure: `${error instanceof Error ? error.message : String(error)}${cause}`,
+    };
+  }
+}
+
+async function requestManifest(url: string): Promise<WorkflowManifest> {
+  const deadline = Date.now() + manifestTransientRetryMs;
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await attemptManifest(url);
+    if ('manifest' in outcome) return outcome.manifest;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Failed to fetch manifest from ${url} after ${attempt} attempts over ${manifestTransientRetryMs}ms: ${outcome.failure}`
+      );
+    }
+    await sleep(manifestRetryIntervalMs);
+  }
+}
+
+/**
  * Fetches the workflow manifest from the deployment URL.
  * The manifest is served at /.well-known/workflow/v1/manifest.json by each
- * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
+ * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set. Concurrent callers
+ * share one request, which retries transient failures (see
+ * `manifestTransientRetryMs`); a 4xx fails at once.
  */
 export async function fetchManifest(
   deploymentUrl: string,
@@ -684,15 +753,14 @@ export async function fetchManifest(
 ): Promise<WorkflowManifest> {
   const forceRefresh = options?.forceRefresh ?? false;
   if (cachedManifest && !forceRefresh) return cachedManifest;
-
-  const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
-  const res = await fetchWithTrustedSources(url);
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
-    );
+  if (!manifestRequest) {
+    const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
+    const request = requestManifest(url).finally(() => {
+      if (manifestRequest === request) manifestRequest = null;
+    });
+    manifestRequest = request;
   }
-  cachedManifest = (await res.json()) as WorkflowManifest;
+  cachedManifest = await manifestRequest;
   return cachedManifest;
 }
 

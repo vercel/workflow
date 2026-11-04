@@ -415,6 +415,11 @@ describe.each([
          return all.reduce((sum, x) => sum + x, 0);
        }${transform('workflow')}`;
       const expectedSum = (width * (width + 1)) / 2;
+      // How long the inline bodies of a fan-out may take to start while its
+      // background dispatch is held. Locally they start within ~300ms; on a
+      // loaded CI runner (Windows especially) over 2s, and over 10s for the
+      // file's first run. Within the 60s test timeout.
+      const INLINE_BODIES_STARTED_TIMEOUT_MS = 30_000;
       const stepBatchesOf = (world: AppendOnlyWorld) =>
         world.queueBatches.filter((batch) =>
           batch.every(
@@ -500,9 +505,13 @@ describe.each([
           (error: unknown) => error
         );
         try {
-          // Every inline body ran while no step message went out.
+          // Every inline body ran while no step message went out. The step
+          // batch is held until `release()`, so waiting longer cannot let a
+          // step message out first: the budget only has to cover a loaded
+          // runner, where the first run in the file starts its inline
+          // bodies seconds late (module loading, not the dispatch).
           await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
-            timeout: 2_000,
+            timeout: INLINE_BODIES_STARTED_TIMEOUT_MS,
           });
           expect(stepBatchesOf(world).length).toBeGreaterThan(0);
           expect(stepMessagesOf(world)).toEqual([]);
@@ -569,7 +578,7 @@ describe.each([
             if (failed || !isStepBatch(messages)) return;
             // Fail only once the inline bodies ran.
             await vi.waitFor(() => expect(calls.so_add ?? 0).toBe(inline), {
-              timeout: 2_000,
+              timeout: INLINE_BODIES_STARTED_TIMEOUT_MS,
             });
             failed = true;
             throw new Error('queue unavailable');
