@@ -10,7 +10,17 @@ import {
   getInlineStepDeadlineMarginMs,
   mayStartInlineStep,
 } from './deadline.js';
-import { analyzeLogSteps, awaitsExternalWork } from './log-state.js';
+import {
+  DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS,
+  DEFAULT_ORCHESTRATOR_LINGER_MS,
+  getOrchestratorHookLingerMs,
+  getOrchestratorLingerMsFor,
+} from './live-feed.js';
+import {
+  analyzeLogSteps,
+  awaitsExternalWork,
+  externalWorkOf,
+} from './log-state.js';
 import {
   MAX_STEP_MESSAGE_RETENTION_SECONDS,
   retryOutlivesMessage,
@@ -136,5 +146,81 @@ describe('inline steps in the log', () => {
     });
     // The same rule as the run's external work.
     expect(awaitsExternalWork(restarted)).toBe(true);
+    expect(externalWorkOf(restarted)).toBe('step');
+  });
+});
+
+describe('linger windows', () => {
+  let slot = 0;
+  const event = (
+    eventType: string,
+    correlationId: string,
+    eventData: Record<string, unknown> = {}
+  ): Event =>
+    ({
+      eventType,
+      correlationId,
+      eventId: `evnt_${String(++slot).padStart(26, '0')}`,
+      runId: 'wrun_a',
+      createdAt: new Date(slot * 1000),
+      eventData,
+    }) as unknown as Event;
+  const hook = () => event('hook_created', 'hook_a', { token: 't' });
+  const background = () => event('step_created', 'step_b', { stepName: 'b' });
+
+  it('classifies what the run waits on, a background step over a hook', () => {
+    expect(externalWorkOf([])).toBeUndefined();
+    expect(externalWorkOf([hook()])).toBe('hook');
+    expect(
+      externalWorkOf([hook(), event('hook_disposed', 'hook_a')])
+    ).toBeUndefined();
+    expect(externalWorkOf([background()])).toBe('step');
+    expect(externalWorkOf([hook(), background()])).toBe('step');
+    expect(
+      externalWorkOf([
+        hook(),
+        background(),
+        event('step_completed', 'step_b', { result: 1 }),
+      ])
+    ).toBe('hook');
+  });
+
+  it('lingers 5 s on hooks alone and the full window on a background step', () => {
+    expect(DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS).toBe(5_000);
+    expect(getOrchestratorLingerMsFor('hook', {})).toBe(5_000);
+    expect(getOrchestratorLingerMsFor('step', {})).toBe(
+      DEFAULT_ORCHESTRATOR_LINGER_MS
+    );
+    expect(getOrchestratorLingerMsFor(undefined, {})).toBe(0);
+  });
+
+  it('reads the hook window from its own setting, capped by the linger', () => {
+    expect(
+      getOrchestratorHookLingerMs({
+        WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS: '200',
+      })
+    ).toBe(200);
+    expect(
+      getOrchestratorHookLingerMs({ WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS: '0' })
+    ).toBe(0);
+    expect(
+      getOrchestratorHookLingerMs({ WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS: 'x' })
+    ).toBe(5_000);
+    // Never longer than the linger, and off with it.
+    expect(
+      getOrchestratorHookLingerMs({ WORKFLOW_ORCHESTRATOR_LINGER_MS: '1000' })
+    ).toBe(1_000);
+    expect(
+      getOrchestratorHookLingerMs({
+        WORKFLOW_ORCHESTRATOR_LINGER_MS: '0',
+        WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS: '5000',
+      })
+    ).toBe(0);
+    expect(
+      getOrchestratorHookLingerMs({
+        WORKFLOW_ORCHESTRATOR_LINGER_MS: '60000',
+        WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS: '20000',
+      })
+    ).toBe(20_000);
   });
 });

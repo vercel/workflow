@@ -180,14 +180,14 @@ import {
 } from './in-band-writer.js';
 import {
   getOrchestratorFeedPollIntervalMs,
-  getOrchestratorLingerMs,
+  getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
 } from './live-feed.js';
 import {
   analyzeLogSteps,
-  awaitsExternalWork,
   dueWaits,
+  externalWorkOf,
   type InlineStepSpec,
   nextTimerAt,
   openWaits,
@@ -1792,10 +1792,7 @@ async function runDelivery(
           stepResends,
           onStepResent: noteResent,
           recovery: recoveryDelivery,
-          lingerDeadlineMs:
-            invocationStartTime +
-            noInlineReplayAfterMs -
-            getInlineStepDeadlineMarginMs(),
+          inlineDeadlineMs: invocationStartTime + noInlineReplayAfterMs,
           continueInNextDelivery: () => {
             continuation.exit = 'quickjs-continue';
             return wakeSelf();
@@ -2663,7 +2660,7 @@ async function runDelivery(
     /**
      * Keeps a delivery that has nothing left to run live
      * while the run waits on work done elsewhere (see
-     * `getOrchestratorLingerMs`). Resolves `true` once
+     * `getOrchestratorLingerMsFor`). Resolves `true` once
      * another writer appended an event or a wait fell due,
      * so the caller runs another pass, and `false` when the
      * time ran out without either, or the live feed is not
@@ -2671,15 +2668,11 @@ async function runDelivery(
      * alone holds the invocation for a poll's latency.
      */
     const lingerForExternalWork = async (): Promise<boolean> => {
-      const lingerMs = getOrchestratorLingerMs();
-      if (
-        lingerMs <= 0 ||
-        !world.events.subscribe ||
-        !log ||
-        !awaitsExternalWork(log.events)
-      ) {
-        return false;
-      }
+      if (!world.events.subscribe || !log) return false;
+      // A background step gets the full window, open hooks alone the
+      // shorter hook window.
+      const lingerMs = getOrchestratorLingerMsFor(externalWorkOf(log.events));
+      if (lingerMs <= 0) return false;
       const untilMs = Math.min(
         Date.now() + lingerMs,
         inlineDeadlineMs - inlineMarginMs

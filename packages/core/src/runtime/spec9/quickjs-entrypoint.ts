@@ -117,18 +117,23 @@ import {
   withRetryCreator,
 } from './creator-rules.js';
 import {
+  getInlineStepDeadlineMarginMs,
+  mayStartInlineStep,
+} from './deadline.js';
+import {
   type InBandWriter,
   OrchestratorSupersededError,
 } from './in-band-writer.js';
 import {
   getOrchestratorFeedPollIntervalMs,
-  getOrchestratorLingerMs,
+  getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
 } from './live-feed.js';
 import {
   analyzeLogSteps,
-  awaitsExternalWork,
+  type ExternalWork,
+  externalWorkOf,
   type LogStepState,
   MAX_STEP_MESSAGE_INPUT_BYTES,
   openWaits,
@@ -365,11 +370,17 @@ export async function runWorkflowWithQuickJS(params: {
    */
   armsNearDueWaits?: boolean;
   /**
-   * Epoch ms past which a delivery with nothing left to run does not linger
-   * for work done elsewhere (see `getOrchestratorLingerMs`): the invocation's
-   * inline deadline. Absent: no lingering.
+   * Epoch ms of the invocation's inline deadline: its start plus its inline
+   * window (`WORKFLOW_V2_TIMEOUT_MS`), as on the node engine. A turn that
+   * begins at or past it starts nothing more and continues the run in the
+   * next delivery (`continueInNextDelivery`). Within the inline-start margin
+   * before it (`WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`), new steps are
+   * background steps instead of inline ones, and a delivery with nothing
+   * left to run does not linger for work done elsewhere (see
+   * `getOrchestratorLingerMsFor`). Absent (standalone callers): no deadline
+   * and no lingering.
    */
-  lingerDeadlineMs?: number;
+  inlineDeadlineMs?: number;
   /**
    * Continues the run in a fresh delivery once this one ends: a handoff of
    * the delivery's message (`{ timeoutSeconds: 0 }`). Absent (standalone
@@ -1390,6 +1401,17 @@ export async function runWorkflowWithQuickJS(params: {
   // Waits for which THIS invocation already completed/scheduled work.
   const completedWaitIds2 = new Set<string>();
   const maxInlineSteps = getMaxInlineSteps();
+  const inlineMarginMs = getInlineStepDeadlineMarginMs();
+  /** Whether an inline step may still start (see `inlineDeadlineMs`). */
+  const mayInlineNow = (): boolean =>
+    mayStartInlineStep({
+      nowMs: Date.now(),
+      deadlineMs: params.inlineDeadlineMs,
+      marginMs: inlineMarginMs,
+    });
+  // Set when a turn began at or past the invocation's inline deadline: the
+  // run continues in the next delivery.
+  let deadlineReached = false;
   const budget = new ReplayBudget();
   const workflowStartedAt = workflowRun.startedAt
     ? +workflowRun.startedAt
@@ -1861,26 +1883,56 @@ export async function runWorkflowWithQuickJS(params: {
   };
 
   /**
+   * What this pass's run waits on outside the orchestrator (see
+   * `externalWorkOf`): `'step'` for a step running from its own message
+   * (queued by this delivery, its retry included, or created by an earlier
+   * one and not run here), else `'hook'` for an open hook.
+   */
+  const externalWorkOfPass = (
+    pendingOperations: PendingOperation[]
+  ): ExternalWork | undefined => {
+    if (
+      pendingOperations.some(
+        (op) =>
+          op.type === 'step' &&
+          (queuedStepIds.has(op.correlationId) ||
+            ((op as PendingStep).hasCreatedEvent &&
+              !executedStepIds.has(op.correlationId)))
+      )
+    ) {
+      return 'step';
+    }
+    const logged = externalWorkOf(fullLog());
+    if (logged !== undefined) return logged;
+    if (pendingOperations.some((op) => op.type === 'hook')) return 'hook';
+    return undefined;
+  };
+
+  /**
    * Keeps this delivery live while the run waits on work done elsewhere (see
-   * `getOrchestratorLingerMs`). `true` once the feed delivered an event or a
-   * wait fell due, so the loop takes another turn; `false` when the time ran
-   * out without either, or the live feed is not (or stops being) live.
+   * `getOrchestratorLingerMsFor`: the full window for a background step, the
+   * hook window for open hooks alone). `true` once the feed delivered an
+   * event or a wait fell due, so the loop takes another turn; `false` when
+   * the time ran out without either, or the live feed is not (or stops being)
+   * live.
    */
   const lingerForExternalWork = async (
-    awaitsExternal: boolean,
+    external: ExternalWork | undefined,
     pendingOperations: PendingOperation[]
   ): Promise<boolean> => {
-    const lingerMs = getOrchestratorLingerMs();
+    const lingerMs = getOrchestratorLingerMsFor(external);
     if (
-      !awaitsExternal ||
       lingerMs <= 0 ||
-      params.lingerDeadlineMs === undefined ||
+      params.inlineDeadlineMs === undefined ||
       !world.events.subscribe ||
       !logView.tracking
     ) {
       return false;
     }
-    const untilMs = Math.min(Date.now() + lingerMs, params.lingerDeadlineMs);
+    const untilMs = Math.min(
+      Date.now() + lingerMs,
+      params.inlineDeadlineMs - inlineMarginMs
+    );
     if (untilMs <= Date.now()) return false;
     ensureInlineFeed();
     if (!inlineFeed?.isLive) {
@@ -1951,6 +2003,21 @@ export async function runWorkflowWithQuickJS(params: {
           maxEventsLimit
         );
       }
+      // Hand off before the function's deadline, as the node engine does: a
+      // turn that begins past it starts nothing more, the bodies still
+      // running settle, and the next delivery continues from the log.
+      if (
+        params.inlineDeadlineMs !== undefined &&
+        Date.now() >= params.inlineDeadlineMs
+      ) {
+        deadlineReached = true;
+        wfdiag('inline_iteration', {
+          iteration,
+          phase: 'deadline',
+          inFlight: inFlightInline.size,
+        });
+        break;
+      }
       await processSettledInline();
       if (throttledReplaySeconds !== undefined || runGone) break;
       const pendingOperations = result.suspended.pendingOperations;
@@ -2003,8 +2070,11 @@ export async function runWorkflowWithQuickJS(params: {
           return [{ step: op as PendingStep, state }];
         }
       );
+      // Within the inline-start margin, fresh steps go to the background, as
+      // on the node engine, so no body starts that the function's deadline
+      // would cut off.
       const inlineCandidates =
-        maxInlineSteps <= 0
+        maxInlineSteps <= 0 || !mayInlineNow()
           ? []
           : healthySteps.slice(
               0,
@@ -2329,17 +2399,7 @@ export async function runWorkflowWithQuickJS(params: {
         // it instead of leaving it to a queued wake.
         if (
           await lingerForExternalWork(
-            pendingOperations.some(
-              (op) =>
-                op.type === 'hook' ||
-                (op.type === 'step' &&
-                  // Running from its own message: queued by this delivery
-                  // (its retry included), or created by an earlier one and
-                  // not run here.
-                  (queuedStepIds.has(op.correlationId) ||
-                    ((op as PendingStep).hasCreatedEvent &&
-                      !executedStepIds.has(op.correlationId))))
-            ) || awaitsExternalWork(fullLog()),
+            externalWorkOfPass(pendingOperations),
             pendingOperations
           )
         ) {
@@ -2735,6 +2795,18 @@ export async function runWorkflowWithQuickJS(params: {
         { specVersion: workflowRun.specVersion }
       );
     };
+
+    if (deadlineReached) {
+      // The loop stopped at the invocation's inline deadline: continue in
+      // the next delivery, which gets a fresh inline window.
+      runtimeLogger.info(
+        'Invocation deadline reached, handing the run to the next delivery',
+        { workflowRunId: runId, inlineStepsExecuted }
+      );
+      wfdiag('exit_suspended', { action: 'deadline_handoff' });
+      await requeueImmediately();
+      return;
+    }
 
     if (budget.isExhausted()) {
       // The loop stopped on the replay budget with progress still
