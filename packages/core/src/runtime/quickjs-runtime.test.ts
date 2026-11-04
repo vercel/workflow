@@ -1491,6 +1491,24 @@ describe('global surface parity', () => {
     expect(value.message).toContain('step function');
   });
 
+  it.each([
+    ['getReader()', 'res.body.getReader();'],
+    ['for await', 'for await (const _ of res.body) {}'],
+  ])('reading response.body with %s throws', async (_label, read) => {
+    const result = await runToCompletion(`
+      const res = new Response("Hello, world!");
+      try {
+        ${read}
+        return { threw: false };
+      } catch (e) {
+        return { threw: true, message: e.message };
+      }
+    `);
+    const value = unwrapResult(result.completed!.result) as any;
+    expect(value.threw).toBe(true);
+    expect(value.message).toContain('not available inside a workflow function');
+  });
+
   it('process.env is present (frozen copy, matching the node engine)', async () => {
     const result = await runToCompletion(`
       return {

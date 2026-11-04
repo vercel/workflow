@@ -4,63 +4,11 @@
  * them. The runtime uses these steps internally.
  */
 
-import { responseBodyChunkSize } from '@workflow/core/serialization-format';
-
 export async function __builtin_response_array_buffer(
   this: Request | Response
 ) {
   'use step';
   return this.arrayBuffer();
-}
-
-/**
- * Read the byte range `[offset, offset + responseBodyChunkSize(offset))` of a
- * stored body. Backs `response.body` readers in workflow functions.
- *
- * The output is bounded by the chunk size. The body is re-read from byte zero
- * and the prefix is discarded without being retained, so beyond the output
- * the step holds at most one frame of the stored stream at a time. Frames of
- * bodies returned by `fetch` are network-sized, but a step that returned a
- * single large buffer stores it as one frame, which hydration yields whole.
- */
-export async function __builtin_response_read_chunk(
-  this: Request | Response,
-  offset: number
-): Promise<{ buffer: ArrayBuffer; done: boolean }> {
-  'use step';
-  if (!Number.isSafeInteger(offset) || offset < 0) {
-    throw new RangeError('Invalid response body offset');
-  }
-  if (!this.body) return { buffer: new ArrayBuffer(0), done: true };
-  const output = new Uint8Array(responseBodyChunkSize(offset));
-  const reader = this.body.getReader();
-  let skipped = 0;
-  let written = 0;
-  try {
-    while (written < output.length) {
-      const { done, value } = await reader.read();
-      if (done) return { buffer: output.buffer.slice(0, written), done: true };
-      // A fresh hydration starts at byte zero. Discard the prefix rather than
-      // retaining it; byte offsets are stable across transport chunk boundaries.
-      const start = Math.min(value.byteLength, offset - skipped);
-      skipped += start;
-      const count = Math.min(value.byteLength - start, output.length - written);
-      output.set(value.subarray(start, start + count), written);
-      written += count;
-    }
-    return { buffer: output.buffer, done: false };
-  } finally {
-    try {
-      // Hydrated bodies have a background pipe. Mark intentional early
-      // cancellation as an abort, which step executors already treat as
-      // successful cleanup rather than a failed background stream operation.
-      await reader.cancel(
-        new DOMException('Response chunk read complete', 'AbortError')
-      );
-    } finally {
-      reader.releaseLock();
-    }
-  }
 }
 
 export async function __builtin_response_json(this: Request | Response) {

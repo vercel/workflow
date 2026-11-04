@@ -1417,15 +1417,6 @@ describe.concurrent('e2e', () => {
     });
   });
 
-  test('fetchResponseBodyReaderWorkflow', { timeout: 60_000 }, async () => {
-    const run = await start(await e2e('fetchResponseBodyReaderWorkflow'), []);
-    const returnValue = await run.returnValue;
-    expect(returnValue).toMatchObject({
-      status: 200,
-      data: { userId: 1, id: 1, title: 'delectus aut autem' },
-    });
-  });
-
   test('promiseRaceStressTestWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('promiseRaceStressTestWorkflow'), []);
     const returnValue = await run.returnValue;
