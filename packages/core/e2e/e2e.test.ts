@@ -3491,7 +3491,7 @@ describe.concurrent('e2e', () => {
           expect(WorkflowRunFailedError.is(failure)).toBe(true);
           assert(WorkflowRunFailedError.is(failure));
           assert(failure.cause instanceof Error);
-          expect(failure.cause.message).toContain('{ hook }');
+          expect(failure.cause.message).toContain('{ experimental_hook }');
         }
       }
     );

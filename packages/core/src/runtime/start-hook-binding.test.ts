@@ -346,7 +346,9 @@ describe('createHook with the start token (node:vm)', () => {
       );
       const message = await output(result);
       expect(message).toMatch(/start token/);
-      expect(message).toMatch(/start\(workflow, args, \{ hook \}\)/);
+      expect(message).toMatch(
+        /start\(workflow, args, \{ experimental_hook \}\)/
+      );
     }
   });
 
