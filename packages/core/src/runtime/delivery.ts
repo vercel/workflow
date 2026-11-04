@@ -55,6 +55,7 @@ import {
 import { memoizeEncryptionKey, queueMessage } from './helpers.js';
 import type { RunInputActivity } from './invocations.js';
 import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import type { PrebuiltQuickJSBaseline } from './quickjs-runtime.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -106,6 +107,12 @@ export interface WorkflowDelivery {
    * reads the run's spec off the payload never sees an unstamped one.
    */
   readonly runSpecVersion: number;
+  /**
+   * The deployment bundle's prebuilt QuickJS baseline heap (see
+   * `workflowEntrypoint`'s `quickjsBaseline` option), handed to the QuickJS
+   * engine so this instance restores it instead of building it.
+   */
+  readonly quickjsBaseline: PrebuiltQuickJSBaseline | undefined;
 }
 
 /**

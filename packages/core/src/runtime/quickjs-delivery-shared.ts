@@ -227,6 +227,25 @@ export async function listRunLogFrom(
   return { events, cursor, pages, covered };
 }
 
+/**
+ * The live QuickJS heap of a session (`memoryUsedSize`), for snapshot size
+ * tracking: unlike the snapshot's length, a high-water mark of the WASM
+ * memory, it falls when the VM frees memory. Undefined when unavailable;
+ * tracking never fails a capture.
+ */
+export function liveHeapBytes(session: {
+  memoryUsage?: () => { memoryUsedSize: number };
+}): number | undefined {
+  try {
+    const bytes = session.memoryUsage?.().memoryUsedSize;
+    return Number.isSafeInteger(bytes) && (bytes as number) >= 0
+      ? bytes
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Log a snapshot-configuration warning once per process per key. */
 export function warnOnce(key: string, log: () => void): void {
   if (snapshotWarnings.has(key)) return;

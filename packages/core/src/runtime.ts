@@ -31,6 +31,7 @@ import {
 } from './runtime/helpers.js';
 import { withRunInputs } from './runtime/invocations.js';
 import { dispatchRunFailedHooks } from './runtime/lifecycle-hooks.js';
+import type { PrebuiltQuickJSBaseline } from './runtime/quickjs-runtime.js';
 import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
@@ -284,6 +285,13 @@ export function workflowEntrypoint(
     namespace?: string;
     routeModuleBodyStartedAt?: number;
     basePath?: string;
+    /**
+     * The QuickJS engine's baseline heap for `workflowCode`, prebuilt by
+     * the workflow builder (`WORKFLOW_QUICKJS_PREBUILT_BASELINE`). Only
+     * read by runs on the QuickJS engine; ignored when it was built by
+     * different engine code or for different workflow code.
+     */
+    quickjsBaseline?: PrebuiltQuickJSBaseline;
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
@@ -624,6 +632,7 @@ export function workflowEntrypoint(
                     replayBudget,
                     prefetchedRun: runSpec.run,
                     runSpecVersion: runSpec.specVersion,
+                    quickjsBaseline: options?.quickjsBaseline,
                   });
                 }
               );

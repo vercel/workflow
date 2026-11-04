@@ -28,8 +28,15 @@ vi.mock('./get-port-lazy.js', () => ({
 }));
 
 const startQuickJSWorkflow = vi.fn();
+const quickjsBaselineStubs = vi.hoisted(() => ({
+  // The VM is mocked, so there is no baseline heap: snapshots are
+  // compressed without a dictionary.
+  registerPrebuiltQuickJSBaseline: () => {},
+  getQuickJSBaselineDictionary: async () => undefined,
+}));
 vi.mock('./quickjs-runtime.js', () => ({
   startQuickJSWorkflow: (...args: unknown[]) => startQuickJSWorkflow(...args),
+  ...quickjsBaselineStubs,
 }));
 
 async function runQuickJSScenario(options: {

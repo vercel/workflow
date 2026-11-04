@@ -107,6 +107,17 @@ describe('createWorkflowEntrypointOptionsCode', () => {
     );
   });
 
+  it('passes the prebuilt QuickJS baseline by identifier', () => {
+    expect(
+      createWorkflowEntrypointOptionsCode({
+        routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+        quickjsBaseline: 'workflowQuickJSBaseline',
+      })
+    ).toBe(
+      ', { routeModuleBodyStartedAt: workflowRouteModuleBodyStartedAt, quickjsBaseline: workflowQuickJSBaseline }'
+    );
+  });
+
   it('inlines route module timing with namespace options', () => {
     expect(
       createWorkflowEntrypointOptionsCode({
