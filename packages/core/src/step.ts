@@ -36,9 +36,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       };
 
       // Capture `this` value for method invocations (e.g., MyClass.method()).
-      // A call through the global object, such as `globalThis.fetch(url)`
-      // after `globalThis.fetch = fetch`, has no receiver to capture: the
-      // workflow VM's global object is not serializable.
+      // A step called through the global object (e.g. `globalThis.myStep()`)
+      // has no receiver to capture: the workflow VM's global object is not
+      // serializable.
       if (
         this !== undefined &&
         this !== null &&

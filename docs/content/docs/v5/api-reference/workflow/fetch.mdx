@@ -91,13 +91,7 @@ We call `fetch()` with a URL and optional request options, like the standard fet
 
 This API lets you use `fetch` in a workflow. You can also implement a custom fetch for different error handling and retry logic.
 
-### Reading the response body
-
-Inside a workflow function, `response.json()`, `response.text()`, and `response.arrayBuffer()` each read the body through a step, so the result is recorded in the event log and replays deterministically.
-
-`response.body` can also be read with `getReader()` or `for await`, which is how libraries such as the AI SDK read responses. Each `read()` runs one step that returns the next chunk of the stored body, so a size limit or `cancel()` stops reading before the whole body is loaded. Chunks start at 64 KiB and grow with the bytes already read, doubling up to 8 MiB, so a 1 MiB body takes 6 steps and a 10 MiB body takes 9. Each step reads the stored body again from the start and skips the bytes already delivered.
-
-The body is not marked as used after a read: each new reader starts again from the first byte and runs its own steps, and each body method runs its own step, so read the body once and reuse the result. Incremental streaming APIs such as `pipeThrough()` and `tee()` are not available in workflow functions. To stream a large response, or to process it as a stream, read it inside a step function.
+Libraries that call `fetch` internally, like AI SDK calls, should be called from a step function. For agents, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent). See [`fetch-in-workflow`](/docs/errors/fetch-in-workflow).
 
 ### Customizing fetch behavior
 
