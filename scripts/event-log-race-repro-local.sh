@@ -269,14 +269,6 @@ else
   export WORKFLOW_QUEUE_AUTH="off"
 fi
 
-# world-postgres keeps queue auth on. Its queue would start Graphile workers
-# in the harness, which pick up the app's jobs and deliver them with the
-# harness's key, so the harness runs enqueue-only and the app's own worker
-# delivers everything. Set on the harness command only: the app must run its
-# worker.
-HARNESS_ENQUEUE_ONLY=""
-if [ "$WORLD" = "postgres" ]; then HARNESS_ENQUEUE_ONLY="1"; fi
-
 export PORT="$PORT"
 DEPLOYMENT_URL="http://localhost:$PORT"
 MANIFEST_URL="$DEPLOYMENT_URL/.well-known/workflow/v1/manifest.json"
@@ -487,7 +479,6 @@ set +e
 DEPLOYMENT_URL="$DEPLOYMENT_URL" \
 APP_NAME="$APP_NAME" \
 NODE_OPTIONS="--enable-source-maps" \
-WORKFLOW_POSTGRES_ENQUEUE_ONLY="$HARNESS_ENQUEUE_ONLY" \
   pnpm run test:e2e:event-log-race-repro --reporter=default
 harness_status=$?
 set -e

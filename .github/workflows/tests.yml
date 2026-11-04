@@ -1256,14 +1256,7 @@ jobs:
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
           (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
-          # The runner calls start()/resumeHook() but does not serve the flow
-          # route, so it runs no Graphile worker: a worker here would pick up
-          # the app's jobs and deliver them with this process's queue key,
-          # which the app (queue auth on) refuses. The app's own worker
-          # delivers every job. Set on this command only, not in the step env,
-          # because the app server above is started from this step's shell and
-          # must run its worker.
-          WORKFLOW_POSTGRES_ENQUEUE_ONLY=1 pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
@@ -1306,8 +1299,7 @@ jobs:
           if listening >/dev/null; then echo "port 3000 is still in use"; exit 1; fi
           (cd "$WORKBENCH_APP_PATH" && pnpm start > "$GITHUB_WORKSPACE/prod-server-postgres-spec9-${{ matrix.app.artifactSuffix }}.log" 2>&1) &
           for _ in $(seq 1 60); do curl -s -o /dev/null http://localhost:3000/ && break; sleep 1; done
-          # Runner only enqueues; the app's worker delivers (see the step above).
-          WORKFLOW_POSTGRES_ENQUEUE_ONLY=1 pnpm vitest run packages/core/e2e/e2e.test.ts -t 'start\(\{ hook \}\)' --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-spec9-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          pnpm vitest run packages/core/e2e/e2e.test.ts -t 'start\(\{ hook \}\)' --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-spec9-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}

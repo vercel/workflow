@@ -10,16 +10,6 @@ export async function register() {
     // resolve `fs` (breaks this workbench's webpack build).
     const { registerE2eLifecycleHooks } = await import('./lifecycle-hooks-e2e');
     registerE2eLifecycleHooks();
-    // Start the Postgres World's worker when the app boots, as the Postgres
-    // World's setup guide says and the other workbenches' start-pg-world
-    // plugins do. Without it the app's worker only started lazily, on the
-    // app's first enqueue, so a run started from another process (the e2e
-    // runner, which runs enqueue-only) was never delivered.
-    if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-      const { getWorld } = await import('workflow/runtime');
-      const world = await getWorld();
-      await world.start?.();
-    }
   }
   registerOTel({
     serviceName: 'nextjs-webpack',
