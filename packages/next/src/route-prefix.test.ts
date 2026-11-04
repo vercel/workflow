@@ -41,6 +41,11 @@ describe('normalizeWorkflowRoutePrefix', () => {
     // and then 404.
     ['/_ship'],
     ['/ship/_flows'],
+    // The stale-route sweep never descends into dot directories, so routes
+    // below one would outlive a later prefix change.
+    ['/.internal'],
+    ['/.well-known/ship'],
+    ['/ship/.hidden'],
   ])('rejects %o', (input) => {
     expect(() => normalizeWorkflowRoutePrefix(input)).toThrowError(
       /workflows\.experimentalRoutePrefix/
@@ -49,6 +54,10 @@ describe('normalizeWorkflowRoutePrefix', () => {
 
   it('allows an underscore inside a segment', () => {
     expect(normalizeWorkflowRoutePrefix('/my_ship')).toBe('/my_ship');
+  });
+
+  it('allows a dot inside a segment', () => {
+    expect(normalizeWorkflowRoutePrefix('/ship.v1')).toBe('/ship.v1');
   });
 });
 

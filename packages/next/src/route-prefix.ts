@@ -36,6 +36,16 @@ function assertSegment(prefix: string, segment: string): void {
   if (segment === '.' || segment === '..') {
     throw invalid(prefix, 'relative path segments are not allowed');
   }
+  // The builder's stale-route sweep skips dot directories (`.next`, `.git`)
+  // and stops at the first `.well-known`, so routes generated below a
+  // `.`-prefixed segment would survive a later prefix change as a second
+  // queue consumer.
+  if (segment.startsWith('.')) {
+    throw invalid(
+      prefix,
+      `the segment ${JSON.stringify(segment)} starts with "."`
+    );
+  }
   // Next.js opts `_`-prefixed folders and everything below them out of
   // routing, so such a prefix would build and then answer 404 for every queue
   // delivery and webhook.
