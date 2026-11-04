@@ -1386,9 +1386,12 @@ async function initWorkflowVM(
 // run-seeded PRNG and the run's deterministic clock. A restored heap
 // carries whatever module scope computed at HYDRATE time, so the
 // optimization is only sound when module scope consumed neither
-// randomness nor time. Both are detected during hydrate (the placeholder
-// host fns count draws, the hydrate clock counts reads) and a bundle
-// that used either is marked ineligible: every invocation falls back to
+// randomness, time, nor the host's timezone (local-date operations such
+// as `new Date(2024, 0, 1)` or `getHours()` read it without reading the
+// clock, and a prebuilt baseline would bake the build machine's offset).
+// All three are detected during hydrate (the placeholder host fns count
+// draws, the hydrate clock counts reads, the hydrate timezone hook counts
+// lookups) and a bundle that used any of them is marked ineligible: every invocation falls back to
 // fresh evaluation, preserving exact node:vm-parity semantics. When the
 // gate passes, restore is byte-equivalent to fresh eval (verified by the
 // parity tests): the per-run host fns are re-registered by name on the
@@ -1655,6 +1658,7 @@ async function prepareBaselineSnapshot(
 ): Promise<BaselineEntry> {
   const hydrateStart = Date.now();
   let clockReads = 0;
+  let timezoneReads = 0;
   const budget: InterruptBudget = { start: Date.now() };
   const assets = await getCompiledAssets();
   const vm = await QuickJS.create({
@@ -1668,7 +1672,14 @@ async function prepareBaselineSnapshot(
     // lets the baseline double as the per-run snapshots' compression
     // dictionary (see getQuickJSBaselineDictionary). The engine reads both
     // while booting (its own PRNG seed); module scope reading the clock
-    // makes the bundle ineligible below anyway.
+    // makes the bundle ineligible below anyway. The timezone is held at UTC
+    // for the same reason, and any module-scope lookup of it (a local-date
+    // operation) makes the bundle ineligible: a heap restored on a host in
+    // another timezone would otherwise carry the hydrating host's values.
+    timezoneOffset: () => {
+      timezoneReads++;
+      return 0;
+    },
     wasi: ((memory) => ({
       clock_time_get(_clockId: number, _precision: bigint, resultPtr: number) {
         clockReads++;
@@ -1725,7 +1736,9 @@ async function prepareBaselineSnapshot(
     // freeing individual boxes).
     const serdeRoot = captureSerdeRoot(vm);
 
-    clockReads = 0; // only count reads made by the bundle itself
+    // Only count reads made by the bundle itself.
+    clockReads = 0;
+    timezoneReads = 0;
     try {
       // Workflow-independent filename. See BASELINE_BUNDLE_FILENAME.
       vm.evalCode(workflowCode, BASELINE_BUNDLE_FILENAME).dispose();
@@ -1738,14 +1751,14 @@ async function prepareBaselineSnapshot(
       };
     }
 
-    if (draws > 0 || clockReads > 0) {
+    if (draws > 0 || clockReads > 0 || timezoneReads > 0) {
       runtimeLogger.info(
         'QuickJS baseline snapshot disabled for this bundle: module scope consumed nondeterministic inputs; every invocation will evaluate the bundle fresh',
-        { workflowId, draws, clockReads }
+        { workflowId, draws, clockReads, timezoneReads }
       );
       return {
         state: 'ineligible',
-        reason: `module scope consumed ${draws} PRNG draw(s) and ${clockReads} clock read(s)`,
+        reason: `module scope consumed ${draws} PRNG draw(s), ${clockReads} clock read(s) and ${timezoneReads} timezone lookup(s)`,
       };
     }
 
