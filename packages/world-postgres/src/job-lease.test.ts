@@ -559,6 +559,103 @@ describe('createJobLeases', () => {
     await leases.stop();
   });
 
+  // The registration commits, its response stalls past the window, a peer
+  // releases the unrenewed lock and a successor claims the job. The delivery
+  // must not then acknowledge it: Graphile's completion is an unfenced delete
+  // that would remove the successor's row.
+  it('renews while the registration is pending, and refuses to acknowledge a job a successor took meanwhile', async () => {
+    const registration = Promise.withResolvers<{ rows: [] }>();
+    let successor = false;
+    const pool = renewingPool(
+      async (sql, params) => {
+        if (isRenewal(sql))
+          return successor ? { rows: [] } : renewedRows(params);
+        return { rows: [] };
+      },
+      () => registration.promise
+    );
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const task = vi.fn(async () => {});
+    const delivery = leases.wrap(task)('payload', job('7'));
+    const settled = delivery.then(
+      () => 'acknowledged',
+      (error) => error
+    );
+    await advance(0);
+    expect(task).not.toHaveBeenCalled();
+    // Renewed every quarter window while the registration is pending.
+    await advance(5_000);
+    expect(
+      pool.query.mock.calls.filter(([sql]) => isRenewal(sql))
+    ).toHaveLength(1);
+    successor = true;
+    await advance(25_000);
+
+    registration.resolve({ rows: [] });
+    expect(await settled).toBeInstanceOf(JobLockLostError);
+    await leases.stop();
+  });
+
+  it('shows the lock is still held before acknowledging when only the registration stalled it', async () => {
+    const registration = Promise.withResolvers<{ rows: [] }>();
+    const stalledRenewal = Promise.withResolvers<{ rows: [] }>();
+    let lost = false;
+    const pool = renewingPool(
+      async (sql) => {
+        if (isRenewal(sql)) {
+          // Renewals stall on the pool while the registration holds it.
+          if (!lost) return stalledRenewal.promise;
+          return { rows: [] };
+        }
+        return { rows: [] };
+      },
+      () => registration.promise
+    );
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const delivery = leases.wrap(async () => {})('payload', job('7'));
+    const settled = delivery.then(
+      () => 'acknowledged',
+      (error) => error
+    );
+    await advance(30_000);
+    lost = true;
+    registration.resolve({ rows: [] });
+    // The lock was last shown to be ours at the claim, 30 seconds ago, so the
+    // delivery renews once more before acknowledging, and finds it gone.
+    expect(await settled).toBeInstanceOf(JobLockLostError);
+    stalledRenewal.resolve({ rows: [] });
+    await leases.stop();
+  });
+
+  it('keeps renewing while a renewal tick retries a registration that stalls', async () => {
+    let fail = true;
+    const stalled = Promise.withResolvers<{ rows: [] }>();
+    const pool = renewingPool(undefined, async () => {
+      if (fail) throw new Error('connection terminated');
+      return stalled.promise;
+    });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const { task, done } = pendingTask();
+    const delivery = leases.wrap(task)('payload', job('7'));
+    await advance(0);
+    fail = false;
+    // The retry minute passes; the next tick starts a registration that
+    // never returns.
+    await advance(65_000);
+    expect(pool.register).toHaveBeenCalledTimes(2);
+    const renewals = () =>
+      pool.query.mock.calls.filter(([sql]) => isRenewal(sql)).length;
+    const before = renewals();
+    await advance(20_000);
+    // Four more renewals, and no second registration for the same worker.
+    expect(renewals()).toBe(before + 4);
+    expect(pool.register).toHaveBeenCalledTimes(2);
+    done.resolve();
+    await delivery;
+    stalled.resolve({ rows: [] });
+    await leases.stop();
+  });
+
   it('under the named-queue scope, sweeps only per-run named-queue jobs of registered holders', async () => {
     const pool = renewingPool();
     const leases = createJobLeases(routed(pool), {

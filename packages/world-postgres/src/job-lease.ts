@@ -365,6 +365,21 @@ export function createJobLeases(
     );
   }
 
+  /** Registrations started off the renewal path, awaited by `stop()`. */
+  const registering = new Set<Promise<void>>();
+  /** Workers one of those registrations is for, so a tick does not repeat it. */
+  const registeringWorkers = new Set<string>();
+  function registerInBackground(workerIds: string[]) {
+    const pendingIds = workerIds.filter((id) => !registeringWorkers.has(id));
+    if (pendingIds.length === 0) return;
+    for (const id of pendingIds) registeringWorkers.add(id);
+    const pending = register(pendingIds).finally(() => {
+      for (const id of pendingIds) registeringWorkers.delete(id);
+      registering.delete(pending);
+    });
+    registering.add(pending);
+  }
+
   const needsRegistration = (workerId: string) => {
     const at = registeredAt.get(workerId);
     return at === undefined || now() - at > REREGISTER_MS;
@@ -434,8 +449,10 @@ export function createJobLeases(
         renewFailing = false;
         warn('[world-postgres] Renewing Graphile job locks recovered');
       }
-      // A worker whose registration failed on start gets another try here.
-      await register([
+      // A worker whose registration failed on start gets another try here,
+      // without holding up the next renewal: a stalled registration must not
+      // let a live delivery's lock go stale.
+      registerInBackground([
         ...new Set(
           jobs
             .filter(
@@ -547,15 +564,19 @@ export function createJobLeases(
           await task(payload, helpers);
           return;
         }
-        // Before the delivery runs, so that a process killed mid-delivery is
-        // known to have renewed. Once an hour per worker.
-        if (needsRegistration(identity.workerId)) {
-          await register([identity.workerId]);
-        }
+        // Held, and renewed, from the claim on: a registration that stalls
+        // must neither keep the lock from being renewed nor make it look
+        // more recently shown to be ours than it is, or a delivery could
+        // acknowledge, unfenced, a job that a successor holds by then.
         const job: HeldJob = { ...identity, lost: false, confirmedAt: now() };
         held.add(job);
         scheduleRenewal();
         try {
+          // Before the delivery runs, so that a process killed mid-delivery
+          // is known to have renewed. Once an hour per worker.
+          if (needsRegistration(identity.workerId)) {
+            await register([identity.workerId]);
+          }
           await task(payload, helpers);
           await confirm(job);
         } finally {
@@ -579,7 +600,7 @@ export function createJobLeases(
       clearTimeout(sweepTimer);
       renewTimer = undefined;
       sweepTimer = undefined;
-      await Promise.all([renewing, sweeping]);
+      await Promise.all([renewing, sweeping, ...registering]);
     },
   };
 }
