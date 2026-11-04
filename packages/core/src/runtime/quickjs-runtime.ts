@@ -789,7 +789,7 @@ if (typeof Request === "undefined") {
 globalThis.__startHookOptionsError = function(rejected) {
   return "\`createHook()\` was called with this run's start token and " +
     rejected.map(function(name) { return "\`" + name + "\`"; }).join(", ") +
-    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
+    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
 };
 // Hook correlation ids are minted from the run's ULID sequence, skipping the
 // one id a run must never mint: its start Hook's (see __startHook). A redraw is
@@ -809,7 +809,7 @@ globalThis.__mintHookCorrelationId = function() {
 // The promise is resolved when a hook_received event arrives.
 globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
-  // The run's start Hook (start(workflow, args, { hook })), injected by the
+  // The run's start Hook (start(workflow, args, { experimental_hook })), injected by the
   // host as __startHook, was created by the run's admission: the first
   // createHook with its token opens it (no hook_created, no suspension).
   // Mirrors workflow/hook.ts.
@@ -1776,7 +1776,7 @@ export async function startQuickJSWorkflow(
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
 
-  // The run's start Hook (start(workflow, args, { hook })), or undefined.
+  // The run's start Hook (start(workflow, args, { experimental_hook })), or undefined.
   const runStartHook = (): RunStartHook | undefined =>
     options.startHook === undefined
       ? resolveRunStartHook({
@@ -1952,7 +1952,7 @@ export async function startQuickJSWorkflow(
         vm.registerHostCallback(callback.name, callback.fn(vm));
       }
 
-      // A start({ hook }) run's heap must have booted with the start Hook
+      // A start({ experimental_hook }) run's heap must have booted with the start Hook
       // binding (and the run's __startHook). One captured by an older engine
       // build would mint a fresh id for the start token, so it is refused
       // here and the entrypoint falls back to a full replay. Checked only for
@@ -2116,7 +2116,7 @@ export async function startQuickJSWorkflow(
       `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
     ).dispose();
 
-    // The run's start Hook (start(workflow, args, { hook })), for the guest's
+    // The run's start Hook (start(workflow, args, { experimental_hook })), for the guest's
     // createHook binding. Not set at all for a run without one, which boots
     // exactly as before.
     const startHook = runStartHook();

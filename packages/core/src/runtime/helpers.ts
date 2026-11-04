@@ -150,7 +150,7 @@ export interface HealthCheckResult {
   /**
    * The responding deployment's `World.capabilities`, so a cross-deployment
    * `start()` can check that the World which will execute the run supports a
-   * feature before relying on it (`start({ hook })` checks
+   * feature before relying on it (`start({ experimental_hook })` checks
    * `atomicStartHook`). Parsed tolerantly: an unknown capability is dropped
    * and a malformed one reads as unsupported, so a peer on a different SDK
    * version can only ever lose a feature, never its health. Omitted when the

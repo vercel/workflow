@@ -165,7 +165,7 @@ export const runs = schema.table(
      */
     jobPrefix: varchar('job_prefix'),
     /**
-     * The start Hook this run was admitted with through `start({ hook })`,
+     * The start Hook this run was admitted with through `start({ experimental_hook })`,
      * without its metadata (which lives on the start Hook's own row in
      * `workflow_hooks`). Echo only: the Hook row is what holds the token.
      * Null on every other run.
@@ -265,7 +265,7 @@ export const eventSlots = schema.table('workflow_event_slots', {
 });
 
 /**
- * One immutable `start({ hook })` admission decision per candidate run (see
+ * One immutable `start({ experimental_hook })` admission decision per candidate run (see
  * `start-hook.ts` in @workflow/world, and `../start-hook.ts` here).
  *
  * - `accepted` rows are written in the same transaction as the run they
@@ -362,7 +362,7 @@ export const hooks = schema.table(
     // each by-token lookup, never persisted), so it must not become a column.
     /**
      * This row's claim on `token` is unique: at most one row per token has
-     * it (`workflow_hooks_token_claim_unique`), so two `start({ hook })`
+     * it (`workflow_hooks_token_claim_unique`), so two `start({ experimental_hook })`
      * admissions racing for a token conflict on the insert instead of both
      * winning, and an admission racing another run's `createHook` leaves
      * one owner. Every Hook written since migration 0028 sets it; rows

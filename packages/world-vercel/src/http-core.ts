@@ -389,7 +389,7 @@ export function inBandCounter(value: unknown): number | undefined {
  * truth for the status → error-type contract the runtime branches on:
  *
  *   - 409 with code `start-hook-conflict` → HookConflictError naming the
- *     token's owner (a refused `start({ hook })` candidate)
+ *     token's owner (a refused `start({ experimental_hook })` candidate)
  *   - 409 → EntityConflictError (start() dedupe, terminal-state transitions)
  *   - 400 with code `start-hook-admission-rejected` → WorkflowWorldError with
  *     code START_HOOK_ADMISSION_REJECTED (permanent)

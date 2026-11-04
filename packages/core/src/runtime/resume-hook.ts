@@ -319,7 +319,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
 
 /**
  * `world.hooks.getByToken`, recording what the lookup found on the
- * `hook.resume` span. A start Hook (`start(workflow, args, { hook })`) is an
+ * `hook.resume` span. A start Hook (`start(workflow, args, { experimental_hook })`) is an
  * ordinary Hook here: it resolves from the moment its run is admitted.
  */
 async function lookupByToken(

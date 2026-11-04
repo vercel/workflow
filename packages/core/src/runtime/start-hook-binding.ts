@@ -7,7 +7,7 @@ import {
 } from '@workflow/world';
 
 /**
- * The start Hook of a run created with `start(workflow, args, { hook })`.
+ * The start Hook of a run created with `start(workflow, args, { experimental_hook })`.
  *
  * The admission that creates the run also creates this Hook, under an id
  * derived from the run's id, so it exists (and can be resumed) before the
@@ -19,7 +19,7 @@ export interface RunStartHook {
   readonly token: string;
   readonly hookId: string;
   /**
-   * `start({ hook: { experimental_minRetention } })`'s deadline, when set.
+   * `start({ experimental_hook: { experimental_minRetention } })`'s deadline, when set.
    * Only decides whether a disposal still has to be written when the run
    * ends (a retained token is not released by the run's end), exactly as a
    * `hook_created`'s `tokenRetentionUntil` does for an ordinary Hook.

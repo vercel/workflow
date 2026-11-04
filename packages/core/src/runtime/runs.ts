@@ -230,7 +230,7 @@ export async function wakeRunAfterOutOfBandWrite(
  * Cancel a workflow run.
  *
  * A run that does not exist (yet) is still cancelled through the World: a
- * `start({ hook })` candidate that was admitted but never created a run (the
+ * `start({ experimental_hook })` candidate that was admitted but never created a run (the
  * recovery `WorkflowStartError` points at) is fenced by it, so no copy of it
  * can create the run any more. Otherwise the World answers not found, which
  * is thrown as `WorkflowRunNotFoundError`.

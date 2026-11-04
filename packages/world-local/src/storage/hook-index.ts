@@ -46,7 +46,7 @@ import { hookCreatedFromRunCreated } from './start-hook.js';
  * dangling entry pointing at a write that never landed. Readers skip
  * those. A committed event/entity invisible to the index cannot occur.
  *
- * A run's `start({ hook })` Hook has no `hook_created`: its admission writes
+ * A run's `start({ experimental_hook })` Hook has no `hook_created`: its admission writes
  * the entries pointing at the run's `run_created` (its first slot), which
  * readers take as the creation it stands for (`hookCreatedFromRunCreated`).
  *

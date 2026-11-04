@@ -645,7 +645,7 @@ async function runDelivery(
   // does a re-run of a delivery whose queue coalesced other
   // messages into it, which the World reports as one too.
   // A restart in place (see `MAX_RUN_AHEAD_RESTARTS`) is not turbo.
-  // Never for a `start({ hook })` candidate: its `run_started`
+  // Never for a `start({ experimental_hook })` candidate: its `run_started`
   // may refuse it, and turbo runs inline step bodies before that
   // write returns (see `admitsTurboStart`).
   let turbo =
@@ -1366,7 +1366,7 @@ async function runDelivery(
               // Without the key, a run this event creates could never
               // receive sealed writes.
               encryptionPublicKey: runInput.encryptionPublicKey,
-              // The queued copy of `start({ hook })`: this write may
+              // The queued copy of `start({ experimental_hook })`: this write may
               // be the one that admits or refuses the candidate.
               startHook: runInput.startHook,
             },
@@ -1589,7 +1589,7 @@ async function runDelivery(
             resumeTracking.setupSource = 'run_started';
           }
         } catch (err) {
-          // A refused `start({ hook })` candidate: nothing ran and
+          // A refused `start({ experimental_hook })` candidate: nothing ran and
           // it never becomes a run. Narrowed to the two admission
           // answers; every other error keeps its handling below.
           if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
@@ -2951,7 +2951,7 @@ async function runDelivery(
               drainPendingQueue: pendingQueueDrain(world, (data, params) =>
                 writeInBand(data, params)
               ),
-              // `start({ hook })` runs: the body's createHook with the start
+              // `start({ experimental_hook })` runs: the body's createHook with the start
               // token binds to the Hook the admission created. Undefined for
               // every other run.
               startHook: resolveRunStartHook({
