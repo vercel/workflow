@@ -8,7 +8,7 @@ import {
 } from '@workflow/utils';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createQueue } from './queue';
+import { createQueue, MAX_QUEUE_AUTH_REFUSALS } from './queue';
 
 // Retry backoffs resolve at once.
 vi.mock('node:timers/promises', () => ({
@@ -155,7 +155,7 @@ describe('queue auth refusal', () => {
     }
   };
 
-  it('gives the message up after one marked 401, logging one line', async () => {
+  it('retries a marked 401 a bounded number of times, then gives up with one line', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     localQueue = createQueue({});
     const handler = vi.fn(async (_req: Request) => refusal());
@@ -166,10 +166,11 @@ describe('queue auth refusal', () => {
     });
     await drain();
 
-    expect(handler).toHaveBeenCalledTimes(1);
+    // MAX_QUEUE_AUTH_REFUSALS deliveries, not the 256 of the safety limit.
+    expect(handler).toHaveBeenCalledTimes(MAX_QUEUE_AUTH_REFUSALS);
     expect(errors).toHaveBeenCalledTimes(1);
     expect(errors.mock.calls[0]?.[0]).toContain(
-      'refused by the app as unauthenticated; giving up the message (not retried)'
+      `refused by the app as unauthenticated ${MAX_QUEUE_AUTH_REFUSALS} times; giving up the message`
     );
     expect(errors.mock.calls[0]?.[1]).toMatchObject({
       queueName: '__wkf_workflow_test',
@@ -177,6 +178,44 @@ describe('queue auth refusal', () => {
       refusedSinceLastLog: 1,
       hint: expect.stringContaining('WORKFLOW_QUEUE_AUTH=off'),
     });
+  });
+
+  // Cluster mode: several processes on one port, each with its own key, so a
+  // loopback delivery round-robins and can land on a sibling first. Each
+  // message here is refused by "siblings" on its first three deliveries and
+  // reaches the process whose key matches on the fourth.
+  it('delivers through sibling refusals in cluster mode, counting none as an attempt', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    localQueue = createQueue({});
+    const deliveries = new Map<string, number>();
+    const accepted: { messageId: string; attempt: string | null }[] = [];
+    const handler = vi.fn(async (req: Request) => {
+      const messageId = req.headers.get('x-vqs-message-id') ?? '';
+      const n = (deliveries.get(messageId) ?? 0) + 1;
+      deliveries.set(messageId, n);
+      if (n < 4) return refusal();
+      accepted.push({
+        messageId,
+        attempt: req.headers.get('x-vqs-message-attempt'),
+      });
+      return Response.json({ ok: true });
+    });
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    for (let i = 0; i < 40; i++) {
+      await localQueue.queue('__wkf_workflow_test' as any, {
+        runId: `wrun_${i}`,
+      });
+    }
+    await drain();
+
+    // Every message delivered exactly once, none lost, nothing logged. The
+    // refused deliveries reached no handler, so the accepted one is attempt 1.
+    expect(accepted).toHaveLength(40);
+    expect(new Set(accepted.map((a) => a.messageId)).size).toBe(40);
+    expect(accepted.every((a) => a.attempt === '1')).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(40 * 4);
+    expect(errors).not.toHaveBeenCalled();
   });
 
   it('rate-limits the line across many refused messages', async () => {
@@ -192,8 +231,8 @@ describe('queue auth refusal', () => {
     }
     await drain();
 
-    // One delivery per message, one log line for all of them.
-    expect(handler).toHaveBeenCalledTimes(25);
+    // A bounded number of deliveries per message, one log line for all.
+    expect(handler).toHaveBeenCalledTimes(25 * MAX_QUEUE_AUTH_REFUSALS);
     expect(errors).toHaveBeenCalledTimes(1);
   });
 
@@ -219,6 +258,6 @@ describe('queue auth refusal', () => {
     // The given-up message no longer holds the key, so a later send is a new
     // message rather than deduped onto one that will never be delivered.
     expect(second.messageId).not.toBe(first.messageId);
-    expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenCalledTimes(2 * MAX_QUEUE_AUTH_REFUSALS);
   });
 });

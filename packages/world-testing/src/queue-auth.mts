@@ -311,8 +311,8 @@ export function queueAuth(world: string) {
   // every job; its worker's fail-fast is covered by world-postgres's
   // queue-http integration test.
   test.skipIf(world !== 'local')(
-    'a delivery from another process is refused once, given up, and leaves its run pending',
-    { timeout: 60_000 },
+    'a delivery from another process is refused a bounded number of times, given up, and leaves its run pending',
+    { timeout: 90_000 },
     async () => {
       const server = await startServer({
         world,
@@ -350,14 +350,18 @@ export function queueAuth(world: string) {
           requestedAt: new Date(),
         });
 
+        // world-local retries a refused delivery MAX_QUEUE_AUTH_REFUSALS (5)
+        // times, 5s apart (so in cluster mode a retry can reach the process
+        // whose key matches), then gives the message up.
+        const refusals = 5;
         await vi.waitFor(
           async () =>
             expect(
               (await refusalCounts(server)).reduce((n, s) => n + s.sum, 0)
-            ).toBe(1),
-          { interval: 100, timeout: 20_000 }
+            ).toBe(refusals),
+          { interval: 200, timeout: 45_000 }
         );
-        // Past world-local's 5s retry delay: a sender that retried would have
+        // Past one more retry delay: a sender that kept retrying would have
         // been refused again by now.
         await new Promise((resolve) => setTimeout(resolve, 7_000));
         expect(await refusalCounts(server)).toEqual([
@@ -367,7 +371,7 @@ export function queueAuth(world: string) {
               'workflow.queue.refusal_reason': 'wrong-key',
               'workflow.world': world,
             },
-            sum: 1,
+            sum: refusals,
           },
         ]);
         // One actionable line from the sender, not one per attempt.

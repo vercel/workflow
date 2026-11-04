@@ -79,6 +79,15 @@ const MAX_SAFE_TIMEOUT_MS = 2147483647;
  */
 export const MAX_LOCAL_SAFETY_LIMIT = 256;
 
+/**
+ * Deliveries of one message the runtime may refuse as unauthenticated (its
+ * marked 401) before world-local gives the message up. More than one, so in
+ * cluster mode (several processes on one port, each with its own key) a
+ * retry can reach the process whose key matches; few, because a sender in
+ * another process is refused every time.
+ */
+export const MAX_QUEUE_AUTH_REFUSALS = 5;
+
 /** Failed deliveries retried 5s apart, before the backoff grows. */
 const LINEAR_RETRY_DELIVERIES = 32;
 const LINEAR_RETRY_DELAY_MS = 5_000;
@@ -397,6 +406,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       let handoffs = 0;
       // Deliveries whose handler answered with an error.
       let failedDeliveries = 0;
+      // Deliveries the runtime refused as unauthenticated (see
+      // `MAX_QUEUE_AUTH_REFUSALS`).
+      let authRefusals = 0;
       let releaseDelivery: (() => void) | undefined;
       const endDelivery = () => {
         releaseDelivery?.();
@@ -516,15 +528,32 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
           if (isQueueAuthRefusal(response)) {
             // The runtime's own queue auth refusal (marked, unlike a proxy's
-            // bare 401). Permanent: this process's queue and its routes read
-            // the same key, so the route that refused it is another
-            // process's, and every redelivery would be refused the same way.
-            // Give the message up rather than retry it for hours. Its run is
-            // left as it is (the refusing route touched nothing), and the
-            // app's startup recovery re-enqueues a pending or running run.
+            // bare 401). This process's queue and its routes read the same
+            // key, so the route that refused it is another process's. That is
+            // permanent for a sender in another process, but not in cluster
+            // mode (several processes on one port: PM2 -i N, node:cluster,
+            // Nitro's node-cluster), where a loopback delivery can land on a
+            // sibling with a different key and a retry can reach this one.
+            // So retry a few times with the short backoff, then give the
+            // message up rather than retry it for hours. Retrying is safe: a
+            // refused delivery reached no handler and touched no run, so it
+            // is not counted as an attempt either. A given-up message's run is
+            // left as it is, and the app's startup recovery re-enqueues a
+            // pending or running run.
+            delivery--;
+            authRefusals++;
+            if (authRefusals < MAX_QUEUE_AUTH_REFUSALS) {
+              debugLog(
+                `[world-local]: delivery refused as unauthenticated (${authRefusals}/${MAX_QUEUE_AUTH_REFUSALS}), retrying`
+              );
+              await setTimeout(localRetryDelayMs(authRefusals), undefined, {
+                signal: closeSignal,
+              });
+              continue;
+            }
             logAuthRefusal((refusedSinceLastLog) => {
               console.error(
-                '[world-local] Queue delivery refused by the app as unauthenticated; giving up the message (not retried)',
+                `[world-local] Queue delivery refused by the app as unauthenticated ${MAX_QUEUE_AUTH_REFUSALS} times; giving up the message`,
                 {
                   queueName,
                   messageId,
