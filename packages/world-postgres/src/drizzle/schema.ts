@@ -448,6 +448,18 @@ export const snapshots = schema.table('workflow_snapshots', {
   createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
 });
 
+/**
+ * Graphile workers of processes that renew their job locks (`job-lease.ts`).
+ * The default stale-lock sweep releases a per-run named-queue job only when
+ * its holder is listed here, so a process on an earlier version, which
+ * neither renews nor fences its acknowledgement, is never released under.
+ * `renewed_at` only ages out the rows of workers that hold no job.
+ */
+export const jobLockHolders = schema.table('workflow_job_lock_holders', {
+  workerId: text('worker_id').primaryKey(),
+  renewedAt: timestamptz('renewed_at').default(sql`now()`).notNull(),
+});
+
 export const streams = schema.table(
   'workflow_stream_chunks',
   {
