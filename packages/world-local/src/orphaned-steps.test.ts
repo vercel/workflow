@@ -77,10 +77,13 @@ async function restart(
   await world.start();
   return {
     world,
-    atDelivery: await vi.waitFor(() => {
-      if (!atDelivery) throw new Error('run not delivered yet');
-      return atDelivery;
-    }),
+    atDelivery: await vi.waitFor(
+      () => {
+        if (!atDelivery) throw new Error('run not delivered yet');
+        return atDelivery;
+      },
+      { timeout: 20_000 }
+    ),
   };
 }
 

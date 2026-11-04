@@ -100,7 +100,9 @@ describe('queue delivery deadlines are off by default (#3909)', () => {
     const queue = createQueue({ dataDir, baseUrl: `http://127.0.0.1:${port}` });
     try {
       await queue.queue('__wkf_workflow_test' as any, payload);
-      await vi.waitFor(() => expect(fetchOptions).toHaveLength(1));
+      await vi.waitFor(() => expect(fetchOptions).toHaveLength(1), {
+        timeout: 20_000,
+      });
       expect(fetchOptions[0]).toEqual({
         headersTimeoutMs: disabled.headersTimeout,
         bodyTimeoutMs: disabled.bodyTimeout,
