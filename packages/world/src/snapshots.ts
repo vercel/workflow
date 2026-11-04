@@ -76,6 +76,14 @@ export const SnapshotMetadataSchema = z.object({
    */
   clockMs: z.number().optional(),
   /**
+   * SHA-256 (lowercase hex) of the zstd dictionary the snapshot bytes were
+   * compressed against: the deployment's baseline VM heap, which a run's
+   * heap mostly repeats. Absent when the bytes were compressed without one.
+   * Readers that cannot produce a dictionary with this digest MUST treat
+   * the snapshot as a clean miss.
+   */
+  baselineDigest: z.string().optional(),
+  /**
    * Snapshot format tag. A reader that doesn't recognize the version
    * treats the snapshot as a clean miss (full replay) instead of handing
    * an incompatible heap to the WASM engine.
@@ -101,9 +109,14 @@ export const SnapshotMetadataSchema = z.object({
  * of an append-only array). v3 heaps carry the old bookkeeping layout and
  * are treated as a miss.
  *
+ * v5: the bytes may be compressed against the deployment's baseline heap,
+ * named by `baselineDigest`, which is sealed with the rest of the metadata.
+ * A v4 reader would not know to look for that dictionary, so v4 snapshots
+ * are treated as a miss.
+ *
  * @experimental See `Storage.experimental_snapshots`.
  */
-export const SNAPSHOT_FORMAT_VERSION = 4;
+export const SNAPSHOT_FORMAT_VERSION = 5;
 
 /** @experimental See `Storage.experimental_snapshots`. */
 export type SnapshotMetadata = z.infer<typeof SnapshotMetadataSchema>;

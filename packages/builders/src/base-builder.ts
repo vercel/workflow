@@ -326,6 +326,66 @@ export abstract class BaseBuilder {
    * any workflow code runs. The banner defines them from `import.meta.url`,
    * pointing at the bundle location (the function root at runtime).
    */
+  /**
+   * Whether to prebuild the QuickJS engine's baseline heap into the flow
+   * route (see {@link createQuickJSBaselineCode}).
+   * `WORKFLOW_QUICKJS_PREBUILT_BASELINE=1|0` forces it on or off; by default
+   * it is on when the build itself selects the QuickJS engine
+   * (`WORKFLOW_VM=quickjs`), since only QuickJS runs read it and it adds the
+   * compressed heap (typically 0.5-3 MB) to the route. Never in watch mode,
+   * where the bundle changes on every edit.
+   */
+  private shouldPrebuildQuickJSBaseline(): boolean {
+    if (this.config.watch) return false;
+    const raw = process.env.WORKFLOW_QUICKJS_PREBUILT_BASELINE?.toLowerCase();
+    if (raw === '1' || raw === 'true') return true;
+    if (raw === '0' || raw === 'false') return false;
+    return process.env.WORKFLOW_VM?.toLowerCase() === 'quickjs';
+  }
+
+  /**
+   * Prebuild the QuickJS baseline heap for a flow bundle: the bundle
+   * evaluated in a fresh VM, which the runtime otherwise builds on every
+   * cold instance before its first QuickJS run, and which also serves as
+   * the compression dictionary for per-run VM snapshots. Returns the
+   * declaration to emit into the route and the identifier to pass to
+   * `workflowEntrypoint`, or undefined when disabled or unavailable (the
+   * runtime then builds it itself; the result is identical).
+   */
+  protected async createQuickJSBaselineCode(
+    workflowVMCode: string
+  ): Promise<{ declaration: string; identifier: string } | undefined> {
+    if (!this.shouldPrebuildQuickJSBaseline()) return undefined;
+    const startedAt = Date.now();
+    try {
+      const { createPrebuiltQuickJSBaseline } = await import(
+        '@workflow/core/runtime/quickjs-baseline'
+      );
+      const baseline = await createPrebuiltQuickJSBaseline(workflowVMCode);
+      if (!baseline) return undefined;
+      if (baseline.ineligible !== undefined) {
+        console.warn(
+          chalk.yellow('⚠ QuickJS baseline not prebuilt: ') +
+            `${baseline.ineligible}. QuickJS runs will evaluate the workflow bundle on every invocation.`
+        );
+      }
+      this.logBaseBuilderInfo(
+        'Prebuilt QuickJS baseline',
+        `${Date.now() - startedAt}ms, ${Math.round((baseline.data?.length ?? 0) / 1024)} KiB`
+      );
+      return {
+        declaration: `const workflowQuickJSBaseline = ${JSON.stringify(baseline)};`,
+        identifier: 'workflowQuickJSBaseline',
+      };
+    } catch (error) {
+      console.warn(
+        chalk.yellow('⚠ Failed to prebuild the QuickJS baseline: ') +
+          (error instanceof Error ? error.message : String(error))
+      );
+      return undefined;
+    }
+  }
+
   private getEsmRequireBanner(format: string): string {
     if (format !== 'esm') return '';
     return (
@@ -1557,6 +1617,15 @@ export const __steps_registered = true;
 
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
+        const quickjsBaseline =
+          await this.createQuickJSBaselineCode(workflowBundleCode);
+        const entrypointOptionsCode = quickjsBaseline
+          ? createWorkflowEntrypointOptionsCode({
+              basePath: this.config.basePath,
+              routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+              quickjsBaseline: quickjsBaseline.identifier,
+            })
+          : workflowEntrypointOptionsCode;
 
         const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
@@ -1564,8 +1633,8 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-
-${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
+${quickjsBaseline ? `\n${quickjsBaseline.declaration}\n` : ''}
+${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${entrypointOptionsCode})`)}`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {
@@ -1764,9 +1833,12 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     // 3. Generate combined route file
     const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
+    const quickjsBaseline =
+      await this.createQuickJSBaselineCode(workflowVMCode);
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
       basePath: this.config.basePath,
       routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
+      quickjsBaseline: quickjsBaseline?.identifier,
     });
 
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
@@ -1780,7 +1852,7 @@ const workflowRouteModuleBodyStartedAt = Date.now();
 void __steps_registered;
 
 const workflowCode = \`${escapedVMCode}\`;
-
+${quickjsBaseline ? `\n${quickjsBaseline.declaration}\n` : ''}
 ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
     if (!bundleFinalOutput) {

@@ -25,7 +25,16 @@ import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 vi.mock('./get-port-lazy.js', () => ({ getPortLazy: async () => 3000 }));
-vi.mock('./quickjs-runtime.js', () => ({ startQuickJSWorkflow: vi.fn() }));
+const quickjsBaselineStubs = vi.hoisted(() => ({
+  // The VM is mocked, so there is no baseline heap: snapshots are
+  // compressed without a dictionary.
+  registerPrebuiltQuickJSBaseline: () => {},
+  getQuickJSBaselineDictionary: async () => undefined,
+}));
+vi.mock('./quickjs-runtime.js', () => ({
+  startQuickJSWorkflow: vi.fn(),
+  ...quickjsBaselineStubs,
+}));
 vi.mock('./lifecycle-hooks.js', () => ({
   dispatchRunFailedHooks: vi.fn(),
   dispatchRunCompletedHooks: vi.fn(),
