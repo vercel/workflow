@@ -1024,6 +1024,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   // Symbol.dispose for explicit resource management
   hook[Symbol.dispose] = disposeHook;
 
+  // SDK-internal (the child-run completion dispatcher): stop waiting for the
+  // next payload without disposing the hook, so one landing later is
+  // buffered for the next then() instead. See workflow/hook.ts.
+  hook[Symbol.for("WORKFLOW_HOOK_RELEASE_AWAITER")] = function() {
+    delete globalThis.__resolvers[correlationId];
+  };
+
   // AsyncIterable — yields payloads until disposed
   hook[Symbol.asyncIterator] = function() {
     return {

@@ -1,4 +1,5 @@
 import type { Event, SerializedData } from '@workflow/world';
+import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from '../child-run-completion.js';
 
 /**
  * Upper bound on a step input carried on its queue message. Larger inputs are
@@ -183,16 +184,32 @@ export type ExternalWork = 'step' | 'hook';
  * open for its whole life (a cancel or approval hook beside a polling loop)
  * makes every pass that finds nothing to run linger for the hook window,
  * even one that just armed a timer much longer than it.
+ *
+ * The exception is the parent's child-run completion hook, which stays open
+ * for the rest of the run once the parent awaited a child
+ * (`child-run-completion.ts`). It is external work only while a child is
+ * awaited, which is when the dispatcher waits on its next payload. Given the
+ * suspension's `observedHookIds`, an open completion hook not among them does
+ * not count. Without them (QuickJS) every open hook counts.
  */
 export function externalWorkOf(
-  events: readonly Event[]
+  events: readonly Event[],
+  observedHookIds?: ReadonlySet<string>
 ): ExternalWork | undefined {
   const openHooks = new Set<string>();
   const retried = new Set<string>();
   for (const event of events) {
     if (!event.correlationId) continue;
-    if (event.eventType === 'hook_created') openHooks.add(event.correlationId);
-    else if (event.eventType === 'hook_disposed') {
+    if (event.eventType === 'hook_created') {
+      const token = (event as { eventData?: { token?: unknown } }).eventData
+        ?.token;
+      const idleCompletionHook =
+        observedHookIds !== undefined &&
+        typeof token === 'string' &&
+        token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX) &&
+        !observedHookIds.has(event.correlationId);
+      if (!idleCompletionHook) openHooks.add(event.correlationId);
+    } else if (event.eventType === 'hook_disposed') {
       openHooks.delete(event.correlationId);
     } else if (event.eventType === 'step_retrying') {
       retried.add(event.correlationId);
@@ -214,8 +231,11 @@ export function externalWorkOf(
  * open hook, or a step running from its own message (see
  * {@link externalWorkOf}).
  */
-export function awaitsExternalWork(events: readonly Event[]): boolean {
-  return externalWorkOf(events) !== undefined;
+export function awaitsExternalWork(
+  events: readonly Event[],
+  observedHookIds?: ReadonlySet<string>
+): boolean {
+  return externalWorkOf(events, observedHookIds) !== undefined;
 }
 
 /** An open wait: created and not completed. */

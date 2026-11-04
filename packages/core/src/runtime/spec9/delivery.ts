@@ -2678,11 +2678,15 @@ async function runDelivery(
      * (or stops being) live: lingering on the tail poll
      * alone holds the invocation for a poll's latency.
      */
-    const lingerForExternalWork = async (): Promise<boolean> => {
+    const lingerForExternalWork = async (
+      observedHookIds?: ReadonlySet<string>
+    ): Promise<boolean> => {
       if (!world.events.subscribe || !log) return false;
       // A background step gets the full window, open hooks alone the
-      // shorter hook window.
-      const lingerMs = getOrchestratorLingerMsFor(externalWorkOf(log.events));
+      // shorter hook window. An idle completion hook is not external work.
+      const lingerMs = getOrchestratorLingerMsFor(
+        externalWorkOf(log.events, observedHookIds)
+      );
       if (lingerMs <= 0) return false;
       const untilMs = Math.min(
         Date.now() + lingerMs,
@@ -3793,7 +3797,7 @@ async function runDelivery(
       }
       // Stay warm for what the run waits on instead of
       // leaving it to a queued wake.
-      if (await lingerForExternalWork()) {
+      if (await lingerForExternalWork(suspension.observedHookIds)) {
         return { type: 'continue', retainSession: retain };
       }
       await armNearDueTimers(log.events);
