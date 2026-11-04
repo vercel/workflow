@@ -76,6 +76,7 @@ describe.each([
       specVersion: SPEC_VERSION_CURRENT,
       capabilities: {},
       getDeploymentId: vi.fn(async () => workflowRun.deploymentId),
+      queueAuth: 'skip',
       createQueueHandler:
         (_prefix: string, handler: (m: unknown, meta: unknown) => unknown) =>
         async () => {

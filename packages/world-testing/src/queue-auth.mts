@@ -130,25 +130,51 @@ async function refusalCounts(server: Server) {
   return series;
 }
 
+/**
+ * Skips the running test unless the server's World has its flow route
+ * checked with the in-process key. A World that declares `queueAuth: 'skip'`
+ * (its transport authenticates deliveries: world-vercel's private route,
+ * world-postgres's database) leaves the route unchecked, so there is no
+ * refusal to assert. A World that declares nothing is checked (fails closed),
+ * so it runs these tests.
+ */
+async function skipUnlessKeyChecked(
+  server: Server,
+  ctx: { skip: (note?: string) => void }
+) {
+  const { queueAuth } = (await fetch(
+    `http://localhost:${server.info.port}/_queue-auth`
+  ).then((response) => response.json())) as { queueAuth: string | null };
+  if (queueAuth === 'skip') {
+    ctx.skip(
+      "this World declares queueAuth: 'skip', so its flow route is not checked"
+    );
+  }
+}
+
 /** Long enough for an accepted forged delivery to have written something. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 1_500));
 
 /**
- * The flow route (`/.well-known/workflow/v1/flow`) accepts only deliveries
- * sent by the app's own queue, which carry the process's in-memory key.
- * Everything a request from outside could do with it, start a run, fail a
- * running one through the max-deliveries path, re-trigger a step, or replay a
- * real delivery, is refused with a 401 and changes no run state.
+ * On a World checked with the in-process key (world-local), the flow route
+ * (`/.well-known/workflow/v1/flow`) accepts only deliveries sent by the app's
+ * own queue, which carry the process's in-memory key. Everything a request
+ * from outside could do with it, start a run, fail a running one through the
+ * max-deliveries path, re-trigger a step, or replay a real delivery, is
+ * refused with a 401 and changes no run state. The refusal tests skip on a
+ * World that declares `queueAuth: 'skip'` (world-postgres); the health-check
+ * test runs on every World.
  */
 export function queueAuth(world: string) {
   test(
     'forged flow-route requests are refused and change no run state',
     { timeout: 60_000 },
-    async () => {
+    async (ctx) => {
       const server = await startServer({
         world,
         env: { WORKFLOW_QUEUE_AUTH: 'on' },
       });
+      await skipUnlessKeyChecked(server, ctx);
       const fetcher = createFetcher(server);
 
       // A real delivery is accepted and the workflow completes.
@@ -387,11 +413,12 @@ export function queueAuth(world: string) {
   test(
     'WORKFLOW_QUEUE_AUTH=off accepts unauthenticated requests again',
     { timeout: 60_000 },
-    async () => {
+    async (ctx) => {
       const server = await startServer({
         world,
         env: { WORKFLOW_QUEUE_AUTH: 'off' },
       });
+      await skipUnlessKeyChecked(server, ctx);
       const fetcher = createFetcher(server);
       const { runId, queueName } = await parkedRun(fetcher);
 
@@ -432,7 +459,7 @@ export function queueAuth(world: string) {
   test(
     'WORKFLOW_QUEUE_AUTH=off is refused while dynamic workflows are enabled',
     { timeout: 60_000 },
-    async () => {
+    async (ctx) => {
       const server = await startServer({
         world,
         env: {
@@ -440,6 +467,7 @@ export function queueAuth(world: string) {
           WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS: '1',
         },
       });
+      await skipUnlessKeyChecked(server, ctx);
       const fetcher = createFetcher(server);
       const { runId, queueName } = await parkedRun(fetcher);
       const before = await runState(fetcher, runId);
