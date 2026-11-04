@@ -166,3 +166,52 @@ describe('spec 9 run-ahead beside a child run (node engine)', () => {
     expect(unconfirmed).toEqual(DRAINED);
   });
 });
+
+/**
+ * A delivery with nothing left to run lingers while the run waits on a hook
+ * (`awaitsExternalWork`). The parent's completion hook stays open between
+ * waits, but it is only external work while a child is awaited.
+ */
+describe.each([
+  'node',
+  'quickjs',
+] as const)('orchestrator linger beside the completion hook (%s engine)', (engine) => {
+  const LINGER_MS = 700;
+
+  async function firstDelivery(body: string) {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', String(LINGER_MS));
+    const setup = await setupOrchestratorRun(
+      workflowCode(body),
+      [0],
+      { subscribe: true },
+      engine
+    );
+    const startedAt = Date.now();
+    await setup.world.deliver(setup.start);
+    return { world: setup.world, ms: Date.now() - startedAt };
+  }
+
+  it('does not linger on an idle completion hook', async () => {
+    finished = ['wrun_child'];
+    const { world, ms } = await firstDelivery(`
+      const id = await startChild();
+      await returnValue(id);
+      await globalThis[Symbol.for("WORKFLOW_SLEEP")]("1d");
+      return 1;
+    `);
+    // Waited, then parked on a day-long sleep with the hook still open.
+    expect(eventsOf(world, 'hook_created')).toHaveLength(1);
+    expect(eventsOf(world, 'hook_disposed')).toHaveLength(0);
+    expect(eventsOf(world, 'wait_created').length).toBeGreaterThan(0);
+    expect(ms).toBeLessThan(LINGER_MS);
+  });
+
+  it('lingers while a child is awaited', async () => {
+    const { world, ms } = await firstDelivery(`
+      const id = await startChild();
+      return await returnValue(id);
+    `);
+    expect(eventsOf(world, 'hook_created')).toHaveLength(1);
+    expect(ms).toBeGreaterThanOrEqual(LINGER_MS);
+  });
+});

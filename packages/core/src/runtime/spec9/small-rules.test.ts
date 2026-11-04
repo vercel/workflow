@@ -138,3 +138,28 @@ describe('inline steps in the log', () => {
     expect(awaitsExternalWork(restarted)).toBe(true);
   });
 });
+
+describe('external work: open hooks', () => {
+  const created = (correlationId: string, token: string): Event =>
+    ({
+      eventType: 'hook_created',
+      correlationId,
+      eventId: `evnt_${correlationId}`,
+      runId: 'wrun_a',
+      createdAt: new Date(0),
+      eventData: { token },
+    }) as unknown as Event;
+  const completion = created('hook_c', 'wkf_child_run_completion:wrun_a');
+  const user = created('hook_u', 'approval');
+
+  it('counts an open user hook whether or not it is awaited', () => {
+    expect(awaitsExternalWork([user], new Set())).toBe(true);
+  });
+
+  it('counts the completion hook only while a child is awaited', () => {
+    expect(awaitsExternalWork([completion], new Set())).toBe(false);
+    expect(awaitsExternalWork([completion], new Set(['hook_c']))).toBe(true);
+    // No observation recorded (QuickJS): every open hook counts.
+    expect(awaitsExternalWork([completion])).toBe(true);
+  });
+});

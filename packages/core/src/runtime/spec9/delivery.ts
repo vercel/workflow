@@ -2669,13 +2669,15 @@ async function runDelivery(
      * (or stops being) live: lingering on the tail poll
      * alone holds the invocation for a poll's latency.
      */
-    const lingerForExternalWork = async (): Promise<boolean> => {
+    const lingerForExternalWork = async (
+      observedHookIds?: ReadonlySet<string>
+    ): Promise<boolean> => {
       const lingerMs = getOrchestratorLingerMs();
       if (
         lingerMs <= 0 ||
         !world.events.subscribe ||
         !log ||
-        !awaitsExternalWork(log.events)
+        !awaitsExternalWork(log.events, observedHookIds)
       ) {
         return false;
       }
@@ -3782,7 +3784,7 @@ async function runDelivery(
       }
       // Stay warm for what the run waits on instead of
       // leaving it to a queued wake.
-      if (await lingerForExternalWork()) {
+      if (await lingerForExternalWork(suspension.observedHookIds)) {
         return { type: 'continue', retainSession: retain };
       }
       await armNearDueTimers(log.events);

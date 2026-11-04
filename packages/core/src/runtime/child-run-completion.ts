@@ -224,6 +224,7 @@ function lazyPromise<T>(start: () => Promise<T>): Promise<T> {
   const run = () => (started ??= start());
   const lazy = Object.create(Promise.prototype) as Promise<T>;
   Object.defineProperties(lazy, {
+    // biome-ignore lint/suspicious/noThenProperty: intentionally a lazy thenable; waiting starts on the first then()
     then: {
       value: (onFulfilled?: any, onRejected?: any) =>
         run().then(onFulfilled, onRejected),
