@@ -2,6 +2,7 @@
   "title": "Internal",
   "pages": [
     "index",
+    "quickjs-snapshotting",
     "nitro-web-ui",
     "nitro-native-build",
     "serializable-abort-controller"

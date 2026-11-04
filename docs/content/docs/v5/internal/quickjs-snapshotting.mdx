@@ -1,0 +1,45 @@
+---
+title: Forever workflow runs with QuickJS snapshotting
+description: Workflow runs on the QuickJS runtime with snapshotting are exempt from the default 25,000-event limit, so long-lived runs can keep going indefinitely.
+type: overview
+---
+
+# Forever workflow runs with QuickJS snapshotting
+
+{/* TODO: draft. Set the publish date before publishing. */}
+<span className="text-sm text-fd-muted-foreground">Unreleased</span>
+
+Workflow runs can now run indefinitely. Runs on the experimental QuickJS runtime with snapshotting enabled are exempt from the default per-run limit of 25,000 events, so agents, chat sessions, and other long-lived loops no longer have to end or be split up as their event log grows.
+
+## When to use it
+
+On the default `node:vm` runtime, each resume replays the run's full event log, and a run fails with [`MAX_EVENTS_EXCEEDED`](/docs/errors/max-events-exceeded) once the log reaches 25,000 events. Switch to QuickJS with snapshotting when a single run needs to outlive that limit:
+
+- **Long-running agents and chat sessions** that wait on a hook for each new message and can stay open for weeks or months
+- **Polling and monitoring loops** that `sleep()` and check something on a schedule, with no fixed end
+- **Entity-style workflows** that manage one subscription, account, or device for its whole lifetime
+- **Runs with many steps** whose replay time grows with the event log
+
+If the work splits naturally into independent units, [child workflows](/cookbook/advanced/child-workflows) on the default runtime are still a good fit.
+
+## How it works
+
+At a suspension, the runtime saves a snapshot of the workflow's VM memory. The next invocation restores that snapshot and replays only the events recorded since, so resume cost stays flat no matter how long the run has been going. The event log remains the source of truth: if a snapshot is missing or incompatible, the run falls back to a full replay.
+
+## Enable it
+
+Set `WORKFLOW_VM=quickjs` in your project's environment variables and redeploy:
+
+```bash
+WORKFLOW_VM=quickjs
+```
+
+Snapshotting is on by default under QuickJS. Only runs started after the change use the new runtime, and each run keeps the runtime it started on.
+
+QuickJS doesn't expose the same globals as `node:vm`. For example, `Intl` and `crypto.subtle` aren't available inside workflow functions. Move that code into a step, and review the [differences](/docs/configuration/runtime-tuning#workflow_vm) before switching an existing deployment.
+
+## Learn more
+
+- [`WORKFLOW_VM`](/docs/configuration/runtime-tuning#workflow_vm): Runtime differences between `node` and `quickjs`
+- [`WORKFLOW_SNAPSHOT_THRESHOLD`](/docs/configuration/runtime-tuning#workflow_snapshot_threshold): Tune how often snapshots are taken
+- [max-events-exceeded](/docs/errors/max-events-exceeded): Eligibility details for the event limit exemption
