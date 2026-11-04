@@ -89,7 +89,8 @@ function resolveLocalBaseUrl(
 
 async function testHttpHealthEndpoint(
   baseUrl: string,
-  verbose: boolean
+  verbose: boolean,
+  timeoutMs: number
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
     const healthUrl = `${baseUrl}/.well-known/workflow/v1/flow?__health`;
@@ -98,7 +99,9 @@ async function testHttpHealthEndpoint(
     }
     const response = await fetch(healthUrl, {
       method: 'POST',
-      signal: AbortSignal.timeout(5000),
+      // A dev server answers its first request to the flow route only once
+      // it compiled it, so the probe gets the whole `--timeout`.
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.ok) {
       return { ok: true, status: response.status };
@@ -120,9 +123,10 @@ async function testHttpHealthEndpoint(
  * For local backend, verify the server is accessible before attempting health check.
  * Returns the base URL if accessible, or throws an error with a helpful message.
  */
-async function verifyLocalServerAccessible(
+export async function verifyLocalServerAccessible(
   verbose: boolean,
-  explicitPort?: number
+  explicitPort: number | undefined,
+  timeoutMs: number
 ): Promise<string> {
   const detectedPort = explicitPort ?? (await getWorkflowPort());
 
@@ -136,9 +140,17 @@ async function verifyLocalServerAccessible(
     logger.debug(`Resolved base URL: ${baseUrl}`);
   }
 
-  const result = await testHttpHealthEndpoint(baseUrl, verbose);
+  const result = await testHttpHealthEndpoint(baseUrl, verbose, timeoutMs);
   if (result.ok) {
     return baseUrl;
+  }
+
+  // The server is there but its workflow endpoint is not healthy: a port
+  // hint would send the user looking in the wrong place.
+  if (result.status !== undefined) {
+    throw new Error(
+      `The local server at ${baseUrl} answered the workflow health check with HTTP ${result.status}.`
+    );
   }
 
   const portHint =
@@ -146,7 +158,7 @@ async function verifyLocalServerAccessible(
       ? 'If your server runs on a different port, use --port <port> or set WORKFLOW_LOCAL_BASE_URL'
       : `Hint: Use --port <port> or set WORKFLOW_LOCAL_BASE_URL=http://localhost:<port>`;
   throw new Error(
-    `Cannot reach local server at ${baseUrl}. Make sure your development server is running.\n` +
+    `Cannot reach local server at ${baseUrl} (${result.error}). Make sure your development server is running.\n` +
       portHint
   );
 }
@@ -258,7 +270,8 @@ export default class Health extends BaseCommand {
       const accessible = await this.verifyLocalServer(
         flags.json,
         flags.verbose,
-        flags.port
+        flags.port,
+        flags.timeout
       );
       if (!accessible) {
         process.exit(1);
@@ -297,13 +310,18 @@ export default class Health extends BaseCommand {
   private async verifyLocalServer(
     jsonMode: boolean,
     verbose: boolean,
-    port?: number
+    port: number | undefined,
+    timeoutMs: number
   ): Promise<boolean> {
     if (!jsonMode) {
       logger.log(chalk.gray('Checking local server accessibility...'));
     }
     try {
-      const baseUrl = await verifyLocalServerAccessible(verbose, port);
+      const baseUrl = await verifyLocalServerAccessible(
+        verbose,
+        port,
+        timeoutMs
+      );
       if (!jsonMode) {
         logger.log(chalk.green(`  ✓ Local server accessible at ${baseUrl}`));
         logger.log('');

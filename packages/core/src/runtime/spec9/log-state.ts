@@ -167,17 +167,23 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
   return out;
 }
 
+/** What a run waits on outside its orchestrator (see {@link externalWorkOf}). */
+export type ExternalWork = 'step' | 'hook';
+
 /**
- * Whether the run waits on work that happens outside its orchestrator: an
- * open hook (created, not disposed), or a step running from its own message
- * that has no outcome yet. That is a background step, or an inline step that
- * retried: an inline step's retry moves it to its own message, which runs
- * every later attempt.
+ * What the run waits on outside its orchestrator, if anything: `'step'` for
+ * a step running from its own message that has no outcome yet (a background
+ * step, or an inline step that retried: an inline step's retry moves it to
+ * its own message, which runs every later attempt), else `'hook'` for an
+ * open hook (created, not disposed), else `undefined`. A step outranks a
+ * hook: it decides how long a delivery lingers (see
+ * `getOrchestratorLingerMsFor`), and a step's outcome is due soon while a
+ * hook may never be resumed.
  *
  * Any open hook counts, however rarely it is resumed: a run that keeps a hook
  * open for its whole life (a cancel or approval hook beside a polling loop)
- * makes every pass that finds nothing to run linger, even one that just
- * armed a timer much longer than the linger window.
+ * makes every pass that finds nothing to run linger for the hook window,
+ * even one that just armed a timer much longer than it.
  *
  * The exception is the parent's child-run completion hook, which stays open
  * for the rest of the run once the parent awaited a child
@@ -186,10 +192,10 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
  * suspension's `observedHookIds`, an open completion hook not among them does
  * not count. Without them (QuickJS) every open hook counts.
  */
-export function awaitsExternalWork(
+export function externalWorkOf(
   events: readonly Event[],
   observedHookIds?: ReadonlySet<string>
-): boolean {
+): ExternalWork | undefined {
   const openHooks = new Set<string>();
   const retried = new Set<string>();
   for (const event of events) {
@@ -209,11 +215,27 @@ export function awaitsExternalWork(
       retried.add(event.correlationId);
     }
   }
-  if (openHooks.size > 0) return true;
-  return analyzeLogSteps(events).some(
-    (step) =>
-      !step.terminal && (!step.inline || retried.has(step.correlationId))
-  );
+  if (
+    analyzeLogSteps(events).some(
+      (step) =>
+        !step.terminal && (!step.inline || retried.has(step.correlationId))
+    )
+  ) {
+    return 'step';
+  }
+  return openHooks.size > 0 ? 'hook' : undefined;
+}
+
+/**
+ * Whether the run waits on work that happens outside its orchestrator: an
+ * open hook, or a step running from its own message (see
+ * {@link externalWorkOf}).
+ */
+export function awaitsExternalWork(
+  events: readonly Event[],
+  observedHookIds?: ReadonlySet<string>
+): boolean {
+  return externalWorkOf(events, observedHookIds) !== undefined;
 }
 
 /** An open wait: created and not completed. */
