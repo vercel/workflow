@@ -1,5 +1,15 @@
 # @workflow/next
 
+## 4.1.20
+
+### Patch Changes
+
+- [#5063](https://github.com/vercel/workflow/pull/5063) [`e4dbc29`](https://github.com/vercel/workflow/commit/e4dbc29d69e67e1fe8471c180944712abfc16df7) Thanks [@joelfickson](https://github.com/joelfickson)! - Run the Turbopack workflow loader on files that use `static [WORKFLOW_SERIALIZE]` computed keys (such as `@ai-sdk/openai` models), fixing "Class … not found" errors in steps.
+
+- Updated dependencies [[`e4dbc29`](https://github.com/vercel/workflow/commit/e4dbc29d69e67e1fe8471c180944712abfc16df7)]:
+  - @workflow/builders@4.1.21
+  - @workflow/core@4.8.16
+
 ## 4.1.19
 
 ### Patch Changes

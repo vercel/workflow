@@ -1,5 +1,17 @@
 # @workflow/cli
 
+## 4.3.20
+
+### Patch Changes
+
+- [#5182](https://github.com/vercel/workflow/pull/5182) [`f3d6142`](https://github.com/vercel/workflow/commit/f3d614284a3b9f3317f4d30b35bd848e6bb13845) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Respect `--project` and `--team` over the inferred `.vercel` link, and prefer the nearest `.vercel/project.json` in monorepos
+
+- Updated dependencies [[`e4dbc29`](https://github.com/vercel/workflow/commit/e4dbc29d69e67e1fe8471c180944712abfc16df7), [`dbfd1ba`](https://github.com/vercel/workflow/commit/dbfd1ba90e97bd444a95996e589d47e3552f338b), [`ceaaa5c`](https://github.com/vercel/workflow/commit/ceaaa5c5666b2da198fcc5f020feeae423f712ae), [`b065b0b`](https://github.com/vercel/workflow/commit/b065b0b59480826e92f0b799df8f268461e74e7d)]:
+  - @workflow/builders@4.1.21
+  - @workflow/web@4.1.32
+  - @workflow/world-local@4.4.5
+  - @workflow/core@4.8.16
+
 ## 4.3.19
 
 ### Patch Changes
