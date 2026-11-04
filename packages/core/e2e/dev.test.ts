@@ -466,15 +466,32 @@ export function createDevTests(config?: DevTestConfig) {
      * (a rebuild that writes nothing new leaves them alone, so this is a
      * quiet window rather than a count), and the manifest to answer.
      */
-    const DEV_SERVER_SETTLE_QUIET_MS = 12_000;
+    // The quiet window is at least this long, and at least 1.5x the longest
+    // gap seen between two output writes while waiting: consecutive
+    // rebuilds write one build apart, so a slow runner's longer builds
+    // widen the window instead of ending it mid-build.
+    const DEV_SERVER_SETTLE_MIN_QUIET_MS = 12_000;
     const DEV_SERVER_SETTLE_TIMEOUT_MS =
-      hmrRediscoveryTimeoutMs + DEV_SERVER_SETTLE_QUIET_MS * 4;
+      hmrRediscoveryTimeoutMs + DEV_SERVER_SETTLE_MIN_QUIET_MS * 4;
+    const MANIFEST_SETTLE_TIMEOUT_MS = 30_000;
+    const DEV_SERVER_SETTLE_HOOK_TIMEOUT_MS =
+      // One bound per wait, plus headroom, so each wait's own error reports
+      // a timeout rather than vitest's generic hook timeout.
+      hmrRediscoveryTimeoutMs +
+      DEV_SERVER_SETTLE_TIMEOUT_MS +
+      MANIFEST_SETTLE_TIMEOUT_MS +
+      10_000;
     const waitForGeneratedArtifactsToGoQuiet = async () => {
       const deadline = Date.now() + DEV_SERVER_SETTLE_TIMEOUT_MS;
-      const snapshot = () => readGeneratedArtifactSnapshot().catch(() => null);
+      const snapshot = async () => {
+        const next = await readGeneratedArtifactSnapshot().catch(() => null);
+        return `${next?.stepMtimeMs}/${next?.workflowMtimeMs}`;
+      };
       let previous = await snapshot();
+      let lastChange: number | undefined;
       let quietSince = Date.now();
-      while (Date.now() - quietSince < DEV_SERVER_SETTLE_QUIET_MS) {
+      let quietMs = DEV_SERVER_SETTLE_MIN_QUIET_MS;
+      while (Date.now() - quietSince < quietMs) {
         if (Date.now() > deadline) {
           throw new Error(
             `The dev server was still rebuilding ${DEV_SERVER_SETTLE_TIMEOUT_MS}ms after the suite's last fixture restore`
@@ -482,13 +499,14 @@ export function createDevTests(config?: DevTestConfig) {
         }
         await sleep(250);
         const next = await snapshot();
-        if (
-          next?.stepMtimeMs !== previous?.stepMtimeMs ||
-          next?.workflowMtimeMs !== previous?.workflowMtimeMs
-        ) {
-          quietSince = Date.now();
+        if (next === previous) continue;
+        const now = Date.now();
+        if (lastChange !== undefined) {
+          quietMs = Math.max(quietMs, 1.5 * (now - lastChange));
         }
         previous = next;
+        lastChange = now;
+        quietSince = now;
       }
     };
     const waitForDevServerToSettle = async () => {
@@ -500,7 +518,7 @@ export function createDevTests(config?: DevTestConfig) {
       }
       await pollUntil({
         description: 'the workflow manifest to answer after the last rebuild',
-        timeoutMs: DEV_SERVER_SETTLE_TIMEOUT_MS,
+        timeoutMs: MANIFEST_SETTLE_TIMEOUT_MS,
         intervalMs: 250,
         check: async () => {
           const response = await fetchWithTimeout(
@@ -516,7 +534,7 @@ export function createDevTests(config?: DevTestConfig) {
       await prewarm();
     }, CLEANUP_HOOK_TIMEOUT_MS);
 
-    afterAll(waitForDevServerToSettle, DEV_SERVER_SETTLE_TIMEOUT_MS * 2);
+    afterAll(waitForDevServerToSettle, DEV_SERVER_SETTLE_HOOK_TIMEOUT_MS);
 
     afterEach(async () => {
       // Restore file contents before deleting any files. If a deletion races

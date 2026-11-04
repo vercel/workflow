@@ -183,13 +183,16 @@ test('forwards caller headers on every hop', async () => {
 
 /**
  * A fresh copy of the module that mints from a fake runner token endpoint
- * answering each request with the next of `replies` (a status, or a JWT).
+ * answering each request with the next of `replies` (a status, a JWT, or
+ * `'hang'` for a request it never answers).
  */
 async function withMintEndpoint(replies, run) {
   let requests = 0;
   const endpoint = await listen((request, response) => {
     request.resume();
     const reply = replies[Math.min(requests++, replies.length - 1)];
+    // Accepts the request and never answers.
+    if (reply === 'hang') return;
     if (typeof reply === 'number') {
       response.writeHead(reply).end();
       return;
@@ -201,6 +204,7 @@ async function withMintEndpoint(replies, run) {
   process.env.ACTIONS_ID_TOKEN_REQUEST_URL = `${endpoint}/mint`;
   process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'request-token';
   process.env.WORKFLOW_OIDC_MINT_RETRY_BASE_DELAY_MS = '1';
+  process.env.WORKFLOW_OIDC_MINT_ATTEMPT_TIMEOUT_MS = '100';
   try {
     const module = await import(
       `./trusted-sources-headers.mjs?mint=${Math.random()}`
@@ -256,15 +260,29 @@ test('gives up after a bounded number of attempts', async () => {
   });
 });
 
-test('keeps a still-valid token when an early refresh fails', async () => {
+test('retries an attempt the token endpoint never answers', async () => {
+  const minted = jwt(300, 'after-hang');
+  const origin = await recordingOrigin();
+
+  await withMintEndpoint(['hang', minted], async (module, requests) => {
+    const response = await module.fetchWithTrustedSources(origin.url);
+    assert.equal(response.status, 200);
+    assert.equal(requests(), 2);
+  });
+  assert.deepEqual(origin.seen, [minted]);
+});
+
+test('keeps a still-valid token when an early refresh fails, after one attempt', async () => {
   // Inside the early-refresh window, so the next request refreshes.
   const first = jwt(30, 'first');
   const origin = await recordingOrigin();
 
-  await withMintEndpoint([first, 503], async (module) => {
+  await withMintEndpoint([first, 503], async (module, requests) => {
     await module.fetchWithTrustedSources(origin.url);
     const response = await module.fetchWithTrustedSources(origin.url);
     assert.equal(response.status, 200);
+    // The refresh tried once instead of backing off with a token in hand.
+    assert.equal(requests(), 2);
   });
   assert.deepEqual(origin.seen, [first, first]);
 });

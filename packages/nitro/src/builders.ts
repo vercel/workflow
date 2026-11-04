@@ -101,9 +101,10 @@ export class LocalBuilder extends BaseBuilder {
   // and reads the input files then, so it covers all of their changes. In
   // dev, Nitro asks for a build on every `dev:reload`, and a burst of file
   // events (a save-all, a branch switch, a test restoring its fixtures)
-  // would otherwise queue one full rebuild per event — each ending in a
-  // worker restart that resets in-flight requests — long after the last
-  // change.
+  // would otherwise queue one full rebuild per event, long after the last
+  // change. This only merges builds: Nitro still restarts its dev worker
+  // once per `dev:reload`, but those restarts now follow the shared build
+  // back to back instead of one build apart.
   #running: Promise<void> | undefined;
   #queued: Promise<void> | undefined;
 
