@@ -56,7 +56,14 @@ beforeEach(async () => {
 
 afterEach(async () => {
   setWorld(undefined);
-  await fs.rm(dir, { recursive: true, force: true });
+  await fs.rm(dir, {
+    recursive: true,
+    force: true,
+    // Windows: world-local closes its connection to the database a moment
+    // after the last operation; until then the file cannot be deleted.
+    maxRetries: 10,
+    retryDelay: 100,
+  });
 });
 
 describe('a step retrying start({ hook })', () => {

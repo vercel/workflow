@@ -210,7 +210,14 @@ describe('Run.cancel against world-local', () => {
       expect(WorkflowRunNotFoundError.is(started)).toBe(false);
     } finally {
       await world.close?.();
-      await rm(dataDir, { recursive: true, force: true });
+      await rm(dataDir, {
+        recursive: true,
+        force: true,
+        // Windows: world-local closes its connection to the database a moment
+        // after the last operation; until then the file cannot be deleted.
+        maxRetries: 10,
+        retryDelay: 100,
+      });
     }
   });
 });

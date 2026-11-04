@@ -25,8 +25,8 @@ import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
-// On Windows world-local opens a connection per operation in tests (see the
-// root vitest config), which makes this fan-out run several times slower.
+// Windows runners are much slower at this fan-out (every database open and
+// close is), so give it room there.
 const SLOW_RUNNER = process.platform === 'win32';
 if (SLOW_RUNNER) vi.setConfig({ testTimeout: 180_000, hookTimeout: 60_000 });
 
