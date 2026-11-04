@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createJobLeases,
-  DEFAULT_JOB_LOCK_STALE_SECONDS,
+  DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS,
   JOB_LOCK_STALE_SECONDS_ENV,
   JobLockLostError,
+  resolveJobLeasePolicy,
   resolveJobLockStaleSeconds,
 } from './job-lease.js';
 
@@ -14,6 +15,10 @@ type Query = (
 
 const isRenewal = (sql: string) => sql.includes('unnest(');
 const isSweep = (sql: string) => sql.includes('_private_tasks');
+const isRegistration = (sql: string) =>
+  sql.startsWith('INSERT INTO "workflow"."workflow_job_lock_holders"');
+const isCleanup = (sql: string) =>
+  sql.startsWith('DELETE FROM "workflow"."workflow_job_lock_holders"');
 
 function job(id: string, worker = 'worker-a') {
   return { job: { id, locked_by: worker, attempts: 1 } };
@@ -25,8 +30,11 @@ function renewedRows(params?: unknown[]) {
   return { rows: ids.map((id, i) => ({ id, worker: workers[i] })) };
 }
 
-/** A pool whose renewals renew every job they are asked about. */
-function renewingPool(query?: Query) {
+/**
+ * A pool whose renewals renew every job they are asked about. Registrations
+ * of renewing workers go to `register`, so `query` sees the rest.
+ */
+function renewingPool(query?: Query, register?: Query) {
   return {
     query: vi.fn<Query>(
       query ??
@@ -35,7 +43,18 @@ function renewingPool(query?: Query) {
           return { rows: [] };
         })
     ),
+    register: vi.fn<Query>(register ?? (async () => ({ rows: [] }))),
   };
+}
+
+/** The pool `createJobLeases` sees: registrations routed to `register`. */
+function routed(pool: ReturnType<typeof renewingPool>) {
+  return {
+    query: (sql: string, params?: unknown[]) =>
+      isRegistration(sql)
+        ? pool.register(sql, params)
+        : pool.query(sql, params),
+  } as any;
 }
 
 function pendingTask() {
@@ -50,9 +69,8 @@ describe('resolveJobLockStaleSeconds', () => {
     vi.restoreAllMocks();
   });
 
-  it('defaults to 0 (off)', () => {
-    expect(resolveJobLockStaleSeconds()).toBe(0);
-    expect(DEFAULT_JOB_LOCK_STALE_SECONDS).toBe(0);
+  it('is unset by default', () => {
+    expect(resolveJobLockStaleSeconds()).toBeUndefined();
   });
 
   it('reads WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS, where 0 disables', () => {
@@ -68,19 +86,53 @@ describe('resolveJobLockStaleSeconds', () => {
     expect(resolveJobLockStaleSeconds(0)).toBe(0);
   });
 
-  it('warns and falls back to the default (off) for an invalid environment value', () => {
+  it('warns and falls back to the default for an invalid environment value', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     for (const raw of ['-1', '0.5', 'soon']) {
       process.env[JOB_LOCK_STALE_SECONDS_ENV] = raw;
-      expect(resolveJobLockStaleSeconds()).toBe(0);
+      expect(resolveJobLockStaleSeconds()).toBeUndefined();
+      expect(resolveJobLeasePolicy()).toEqual({
+        scope: 'named-queues',
+        staleSeconds: DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS,
+      });
     }
-    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(6);
   });
 
   it('rejects an invalid option', () => {
     expect(() => resolveJobLockStaleSeconds(-5)).toThrow(RangeError);
     expect(() => resolveJobLockStaleSeconds(0.5)).toThrow(RangeError);
     expect(() => resolveJobLockStaleSeconds(Number.NaN)).toThrow(RangeError);
+  });
+});
+
+describe('resolveJobLeasePolicy', () => {
+  afterEach(() => {
+    delete process.env[JOB_LOCK_STALE_SECONDS_ENV];
+  });
+
+  it('defaults to releasing only named-queue jobs of renewing holders after 300 seconds', () => {
+    expect(DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS).toBe(300);
+    expect(resolveJobLeasePolicy()).toEqual({
+      scope: 'named-queues',
+      staleSeconds: 300,
+    });
+    expect(resolveJobLeasePolicy(undefined, 2)).toEqual({
+      scope: 'named-queues',
+      staleSeconds: 2,
+    });
+  });
+
+  it('releases every job of the World under an explicit window, and nothing under 0', () => {
+    expect(resolveJobLeasePolicy(30)).toEqual({
+      scope: 'all',
+      staleSeconds: 30,
+    });
+    expect(resolveJobLeasePolicy(0)).toEqual({ scope: 'off', staleSeconds: 0 });
+    process.env[JOB_LOCK_STALE_SECONDS_ENV] = '45';
+    expect(resolveJobLeasePolicy()).toEqual({ scope: 'all', staleSeconds: 45 });
+    process.env[JOB_LOCK_STALE_SECONDS_ENV] = '0';
+    expect(resolveJobLeasePolicy()).toEqual({ scope: 'off', staleSeconds: 0 });
   });
 });
 
@@ -106,10 +158,16 @@ describe('createJobLeases', () => {
 
   it('renews a running delivery every quarter of the stale window and stops when it finishes', async () => {
     const pool = renewingPool();
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
 
     const delivery = leases.wrap(task)('payload', job('7'));
+    // The worker registers as renewing before its delivery runs.
+    await advance(0);
+    expect(pool.register).toHaveBeenCalledWith(
+      expect.stringContaining('ON CONFLICT (worker_id)'),
+      [['worker-a']]
+    );
     expect(task).toHaveBeenCalledWith('payload', job('7'));
     expect(pool.query).not.toHaveBeenCalled();
 
@@ -134,7 +192,7 @@ describe('createJobLeases', () => {
 
   it('caps the renewal interval at 10 seconds', async () => {
     const pool = renewingPool();
-    const leases = createJobLeases(pool as any, { staleSeconds: 300, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 300, now });
     const { task, done } = pendingTask();
     const delivery = leases.wrap(task)('payload', job('7'));
 
@@ -147,7 +205,7 @@ describe('createJobLeases', () => {
 
   it('renews concurrent deliveries in one statement', async () => {
     const pool = renewingPool();
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const first = pendingTask();
     const second = pendingTask();
     const wrapped = leases.wrap(async (payload, helpers) => {
@@ -173,7 +231,7 @@ describe('createJobLeases', () => {
 
   it('refuses to acknowledge a delivery whose lock was taken away', async () => {
     const pool = renewingPool(async () => ({ rows: [] }));
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
     const delivery = leases.wrap(task)('payload', job('7'));
     const outcome = delivery.catch((error: unknown) => error);
@@ -202,7 +260,7 @@ describe('createJobLeases', () => {
       const { rows } = renewedRows(params);
       return { rows: rows.filter((row) => row.worker === 'worker-b') };
     });
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const stale = pendingTask();
     const successor = pendingTask();
     const wrapped = leases.wrap(async (payload) => {
@@ -234,7 +292,7 @@ describe('createJobLeases', () => {
       if (fail) throw new Error('connection terminated');
       return renewedRows(params);
     });
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
     const delivery = leases.wrap(task)('payload', job('7'));
 
@@ -250,7 +308,7 @@ describe('createJobLeases', () => {
   it('does not count a delivery that finished while its renewal was in flight as lost', async () => {
     const answer = Promise.withResolvers<{ rows: Array<{ id: string }> }>();
     const pool = renewingPool(() => answer.promise);
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
     const delivery = leases.wrap(task)('payload', job('7'));
 
@@ -274,9 +332,10 @@ describe('createJobLeases', () => {
       if (renewals === 1) return stalled.promise;
       return renewedRows(params);
     });
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
     const delivery = leases.wrap(task)('payload', job('7'));
+    await advance(0);
 
     await advance(15_000);
     done.resolve();
@@ -289,7 +348,7 @@ describe('createJobLeases', () => {
 
   it('refuses to acknowledge when that final check finds the lock gone', async () => {
     const pool = renewingPool(async () => ({ rows: [] }));
-    const leases = createJobLeases(pool as any, {
+    const leases = createJobLeases(routed(pool), {
       staleSeconds: 20,
       now,
     });
@@ -306,7 +365,7 @@ describe('createJobLeases', () => {
 
   it('passes a delivery whose job it cannot identify through untouched', async () => {
     const pool = renewingPool();
-    const leases = createJobLeases(pool as any, { staleSeconds: 20, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
     const wrapped = leases.wrap(task);
     const deliveries = [
@@ -324,7 +383,7 @@ describe('createJobLeases', () => {
 
   it('does nothing when the stale window is 0', async () => {
     const pool = renewingPool();
-    const leases = createJobLeases(pool as any, { staleSeconds: 0, now });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 0, now });
     const task = vi.fn(async () => {});
 
     expect(leases.enabled).toBe(false);
@@ -337,7 +396,7 @@ describe('createJobLeases', () => {
 
   it("sweeps this World's stale locks every half window until stopped", async () => {
     const pool = renewingPool();
-    const leases = createJobLeases(pool as any, {
+    const leases = createJobLeases(routed(pool), {
       staleSeconds: 20,
       now,
       random: () => 0.5,
@@ -368,7 +427,7 @@ describe('createJobLeases', () => {
   it('keeps sweep and renewal delays within what setTimeout accepts for a very long window', async () => {
     // Node runs a timer whose delay exceeds 2^31 - 1 ms after 1 ms instead.
     const pool = renewingPool();
-    const leases = createJobLeases(pool as any, {
+    const leases = createJobLeases(routed(pool), {
       staleSeconds: 10_000_000,
       now,
       random: () => 1,
@@ -394,7 +453,7 @@ describe('createJobLeases', () => {
       if (down) throw new Error('connection refused');
       return { rows: [] };
     });
-    const leases = createJobLeases(pool as any, {
+    const leases = createJobLeases(routed(pool), {
       staleSeconds: 20,
       now,
       random: () => 0.5,
@@ -416,7 +475,7 @@ describe('createJobLeases', () => {
     process.env.GRAPHILE_WORKER_SCHEMA = 'jobs"q';
     try {
       const pool = renewingPool();
-      const leases = createJobLeases(pool as any, {
+      const leases = createJobLeases(routed(pool), {
         staleSeconds: 20,
         now,
         random: () => 0.5,
@@ -433,10 +492,169 @@ describe('createJobLeases', () => {
     }
   });
 
+  it('registers each worker once an hour, and still runs the delivery when registration fails', async () => {
+    let fail = true;
+    const pool = renewingPool(undefined, async () => {
+      if (fail) {
+        throw Object.assign(new Error('relation does not exist'), {
+          code: '42P01',
+        });
+      }
+      return { rows: [] };
+    });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const wrapped = leases.wrap(async () => {});
+
+    await expect(wrapped('payload', job('7'))).resolves.toBeUndefined();
+    expect(pool.register).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('run `bootstrap`')
+    );
+    // Within a minute of a failure deliveries do not try again.
+    await expect(wrapped('payload', job('8'))).resolves.toBeUndefined();
+    expect(pool.register).toHaveBeenCalledTimes(1);
+
+    fail = false;
+    await advance(60_001);
+    await wrapped('payload', job('9'));
+    expect(pool.register).toHaveBeenCalledTimes(2);
+    // Registered: the worker's next deliveries in the hour do not register.
+    await wrapped('payload', job('10'));
+    expect(pool.register).toHaveBeenCalledTimes(2);
+    await advance(60 * 60 * 1000 + 1);
+    await wrapped('payload', job('11'));
+    expect(pool.register).toHaveBeenCalledTimes(3);
+    // A failure is reported once, and so is the recovery.
+    expect(
+      vi
+        .mocked(console.warn)
+        .mock.calls.filter(([message]) => /regist/i.test(String(message)))
+    ).toHaveLength(2);
+    await leases.stop();
+  });
+
+  it('registers on a renewal tick a running worker whose registration failed on start', async () => {
+    let fail = true;
+    const pool = renewingPool(undefined, async () => {
+      if (fail) throw new Error('connection terminated');
+      return { rows: [] };
+    });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
+    const { task, done } = pendingTask();
+    const delivery = leases.wrap(task)('payload', job('7'));
+    await advance(0);
+    expect(task).toHaveBeenCalled();
+    fail = false;
+
+    // Ticks within the retry minute renew without registering.
+    await advance(55_000);
+    expect(pool.register).toHaveBeenCalledTimes(1);
+    await advance(10_000);
+    expect(pool.register).toHaveBeenCalledTimes(2);
+    expect(pool.register.mock.calls[1][1]).toEqual([['worker-a']]);
+    await advance(10_000);
+    expect(pool.register).toHaveBeenCalledTimes(2);
+    done.resolve();
+    await delivery;
+    await leases.stop();
+  });
+
+  it('under the named-queue scope, sweeps only per-run named-queue jobs of registered holders', async () => {
+    const pool = renewingPool();
+    const leases = createJobLeases(routed(pool), {
+      staleSeconds: 300,
+      scope: 'named-queues',
+      now,
+      random: () => 0.5,
+    });
+    leases.startSweeper(['workflow_flows', 'workflow_flows_executor'], {
+      prefix: 'workflow_flows:',
+      suffix: ':executor',
+    });
+
+    await advance(150_000);
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    const [sql, params] = pool.query.mock.calls[0];
+    expect(isSweep(sql)).toBe(true);
+    expect(sql).toContain('JOIN "graphile_worker"._private_job_queues');
+    expect(sql).toContain('FROM "workflow"."workflow_job_lock_holders"');
+    expect(sql).toContain('FOR UPDATE OF jobs SKIP LOCKED');
+    expect(params).toEqual([
+      300,
+      ['workflow_flows', 'workflow_flows_executor'],
+      'workflow_flows:',
+      ':executor',
+    ]);
+    await leases.stop();
+  });
+
+  it('under the named-queue scope, does not sweep without named queues', async () => {
+    const pool = renewingPool();
+    const leases = createJobLeases(routed(pool), {
+      staleSeconds: 300,
+      scope: 'named-queues',
+      now,
+      random: () => 0.5,
+    });
+    leases.startSweeper(['workflow_flows']);
+    await advance(600_000);
+    expect(pool.query).not.toHaveBeenCalled();
+    await leases.stop();
+  });
+
+  it('explains a missing holders table once when sweeping', async () => {
+    const pool = renewingPool(async () => {
+      throw Object.assign(new Error('relation does not exist'), {
+        code: '42P01',
+      });
+    });
+    const leases = createJobLeases(routed(pool), {
+      staleSeconds: 20,
+      scope: 'named-queues',
+      now,
+      random: () => 0.5,
+    });
+    leases.startSweeper(['workflow_flows'], {
+      prefix: 'workflow_flows:',
+      suffix: ':executor',
+    });
+    await advance(10_000);
+    await advance(20_000);
+    expect(console.warn).toHaveBeenCalledTimes(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        'workflow.workflow_job_lock_holders does not exist'
+      )
+    );
+    await leases.stop();
+  });
+
+  it('forgets the workers of exited processes at most once an hour', async () => {
+    const pool = renewingPool();
+    const leases = createJobLeases(routed(pool), {
+      staleSeconds: 20,
+      now,
+      random: () => 0.5,
+    });
+    leases.startSweeper(['workflow_flows']);
+    await advance(60 * 60 * 1000);
+    const cleanups = () =>
+      pool.query.mock.calls.filter(([sql]) => isCleanup(sql)).length;
+    expect(cleanups()).toBe(1);
+    expect(
+      pool.query.mock.calls.find(([sql]) => isCleanup(sql))?.[0]
+    ).toContain("renewed_at < now() - interval '1 day'");
+    await advance(30 * 60 * 1000);
+    expect(cleanups()).toBe(1);
+    await advance(30 * 60 * 1000);
+    expect(cleanups()).toBe(2);
+    await leases.stop();
+  });
+
   it('waits for queries in flight when stopped', async () => {
     const answer = Promise.withResolvers<{ rows: Array<{ id: string }> }>();
     const pool = renewingPool(() => answer.promise);
-    const leases = createJobLeases(pool as any, {
+    const leases = createJobLeases(routed(pool), {
       staleSeconds: 20,
       now,
       random: () => 0.5,

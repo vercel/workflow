@@ -1,26 +1,48 @@
 import type { Pool } from 'pg';
 
 /**
- * Seconds a claimed Graphile job's lock may go unrenewed before another
- * process releases it for redelivery. Off (`0`) by default: during a rolling
- * upgrade, a process on an earlier version neither renews its locks nor fences
- * its acknowledgement, so if an upgraded process released one of its long
- * deliveries, the old holder's unfenced `completeJob` could delete the
- * successor's row when it finished. Deployments with more than one process
- * should turn it on (30 seconds is a good value) once every process runs a
- * version that renews.
+ * The stale window when neither `jobLockStaleSeconds` nor
+ * `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS` is set: every delivery renews its
+ * lock, and the release of stale locks covers only the per-run named queues
+ * (a spec 9 run's orchestrator deliveries, invoke mode's executor lane) and
+ * only jobs whose holder registered itself as renewing (see
+ * {@link JobLeasePolicy}). Well above an inline step's longest synchronous
+ * stretch, so a blocked event loop does not turn into a second owner of a
+ * running inline step, and far below Graphile Worker's fixed 4 hours.
  */
-export const DEFAULT_JOB_LOCK_STALE_SECONDS = 0;
+export const DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS = 300;
 export const JOB_LOCK_STALE_SECONDS_ENV =
   'WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS';
 
 /**
- * Resolve the stale window: the `jobLockStaleSeconds` option, then
- * `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`, then the default. `0` turns
- * renewal and the stale-lock sweep off, which leaves recovery to Graphile
- * Worker's fixed 4 hour reset and to `reenqueueActiveRuns` on start.
+ * What this process renews and releases.
+ *
+ * - `'all'`: `jobLockStaleSeconds` (or the environment variable) set above
+ *   `0`. Releases every job of this World's tasks whose lock went unrenewed
+ *   for the window, whoever holds it. The operator asserts that every process
+ *   sharing the database renews.
+ * - `'named-queues'`: the default. Releases only jobs in this World's per-run
+ *   named queues, and only those whose holder is a worker registered in
+ *   `workflow.workflow_job_lock_holders`, which only a renewing process
+ *   writes. A process on an earlier version (5.1.0 renews only when the
+ *   window is set) never registers, so its long deliveries are never released
+ *   under it and its unfenced acknowledgement cannot delete a redelivery's
+ *   row. Its jobs keep Graphile Worker's 4 hour reset.
+ * - `'off'`: `0` set explicitly. Neither renews nor releases.
  */
-export function resolveJobLockStaleSeconds(configured?: number): number {
+export type JobLeasePolicy =
+  | { scope: 'off'; staleSeconds: 0 }
+  | { scope: 'all' | 'named-queues'; staleSeconds: number };
+
+/**
+ * Resolve the explicitly configured stale window: the `jobLockStaleSeconds`
+ * option, then `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`. `undefined` when
+ * neither is set (or the environment value is invalid), which selects the
+ * default policy (see {@link resolveJobLeasePolicy}).
+ */
+export function resolveJobLockStaleSeconds(
+  configured?: number
+): number | undefined {
   if (configured !== undefined) {
     if (!isValidStaleSeconds(configured)) {
       throw new RangeError(
@@ -30,17 +52,34 @@ export function resolveJobLockStaleSeconds(configured?: number): number {
     return configured;
   }
   const raw = process.env[JOB_LOCK_STALE_SECONDS_ENV];
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_JOB_LOCK_STALE_SECONDS;
-  }
+  if (raw === undefined || raw.trim() === '') return undefined;
   const parsed = Number(raw);
   if (!isValidStaleSeconds(parsed)) {
-    console.warn(
-      `[world-postgres] Ignoring ${JOB_LOCK_STALE_SECONDS_ENV}=${JSON.stringify(raw)}: expected 0 (disabled) or a number of seconds of at least 1. Using ${DEFAULT_JOB_LOCK_STALE_SECONDS} (disabled).`
+    warn(
+      `[world-postgres] Ignoring ${JOB_LOCK_STALE_SECONDS_ENV}=${JSON.stringify(raw)}: expected 0 (disabled) or a number of seconds of at least 1. Using the default: renew every delivery and release only per-run named-queue jobs of renewing holders after ${DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS}s.`
     );
-    return DEFAULT_JOB_LOCK_STALE_SECONDS;
+    return undefined;
   }
   return parsed;
+}
+
+/**
+ * The lease policy: an explicit window above `0` releases every job of this
+ * World (`'all'`), an explicit `0` turns renewal and release off, and no
+ * setting renews every delivery and releases only per-run named-queue jobs of
+ * registered (renewing) holders after
+ * {@link DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS} (`'named-queues'`).
+ */
+export function resolveJobLeasePolicy(
+  configured?: number,
+  defaultStaleSeconds = DEFAULT_NAMED_QUEUE_LOCK_STALE_SECONDS
+): JobLeasePolicy {
+  const explicit = resolveJobLockStaleSeconds(configured);
+  if (explicit === undefined) {
+    return { scope: 'named-queues', staleSeconds: defaultStaleSeconds };
+  }
+  if (explicit === 0) return { scope: 'off', staleSeconds: 0 };
+  return { scope: 'all', staleSeconds: explicit };
 }
 
 function isValidStaleSeconds(value: number): boolean {
@@ -118,6 +157,91 @@ const sweepSql = (schema: string) => `WITH stale AS (
 )
 SELECT id::text AS id FROM released`;
 
+/**
+ * The workers of renewing processes: what tells the default sweep a holder
+ * apart from one on an earlier version, which neither renews nor fences its
+ * acknowledgement. Migration 0030.
+ */
+const HOLDERS_TABLE = '"workflow"."workflow_job_lock_holders"';
+
+// Mark workers as renewing. `renewed_at` only ages the row out once its worker
+// holds no job (see `cleanupSql`); it is not a liveness signal, which is the
+// job's own `locked_at`.
+const registerSql = `INSERT INTO ${HOLDERS_TABLE} AS holders (worker_id, renewed_at)
+SELECT DISTINCT unnest($1::text[]), now()
+ON CONFLICT (worker_id) DO UPDATE SET renewed_at = excluded.renewed_at`;
+
+// The default sweep: the stale-lock reset above, restricted to jobs in this
+// World's per-run named queues (`<prefix><runId><suffix>`) whose holder is
+// registered as renewing. A job held by any other worker keeps its lock until
+// Graphile Worker's own 4 hour reset.
+const namedQueueSweepSql = (schema: string) => `WITH stale AS (
+  SELECT jobs.id, jobs.job_queue_id, jobs.locked_by
+  FROM ${schema}._private_jobs AS jobs
+  JOIN ${schema}._private_tasks AS tasks ON tasks.id = jobs.task_id
+  JOIN ${schema}._private_job_queues AS job_queues
+    ON job_queues.id = jobs.job_queue_id
+  WHERE jobs.locked_at < now() - make_interval(secs => $1::double precision)
+    AND tasks.identifier = ANY($2::text[])
+    AND length(job_queues.queue_name) > length($3::text) + length($4::text)
+    AND left(job_queues.queue_name, length($3::text)) = $3::text
+    AND right(job_queues.queue_name, length($4::text)) = $4::text
+    AND EXISTS (
+      SELECT 1 FROM ${HOLDERS_TABLE} AS holders
+      WHERE holders.worker_id = jobs.locked_by
+    )
+  FOR UPDATE OF jobs SKIP LOCKED
+), released AS (
+  UPDATE ${schema}._private_jobs AS jobs
+  SET locked_at = NULL, locked_by = NULL, run_at = greatest(jobs.run_at, now())
+  FROM stale
+  WHERE jobs.id = stale.id
+  RETURNING jobs.id
+), released_queues AS (
+  UPDATE ${schema}._private_job_queues AS job_queues
+  SET locked_at = NULL, locked_by = NULL
+  FROM stale
+  WHERE job_queues.id = stale.job_queue_id
+    AND job_queues.locked_by = stale.locked_by
+)
+SELECT id::text AS id FROM released`;
+
+// Forget workers that hold no job and have not registered for a day: workers
+// of processes that exited. A live worker re-registers well within that (see
+// `REREGISTER_MS`) before it next relies on its row.
+const cleanupSql = (schema: string) => `DELETE FROM ${HOLDERS_TABLE} AS holders
+WHERE holders.renewed_at < now() - interval '1 day'
+  AND NOT EXISTS (
+    SELECT 1 FROM ${schema}._private_jobs AS jobs
+    WHERE jobs.locked_by = holders.worker_id
+  )`;
+
+/** How often a worker refreshes its registration; well below the cleanup's day. */
+const REREGISTER_MS = 60 * 60 * 1000;
+/** How long a failed registration keeps deliveries from trying again on start. */
+const REGISTRATION_RETRY_MS = 60_000;
+/** How often a sweeping process forgets the workers of exited processes. */
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+
+/** Postgres `undefined_table`: migration 0030 has not run. */
+const isMissingTable = (error: unknown) =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { code?: unknown }).code === '42P01';
+
+const MISSING_TABLE_HINT =
+  "workflow.workflow_job_lock_holders does not exist; run `bootstrap` (`npx --package=@workflow/world-postgres bootstrap`, migration 0030). Until then, the per-run named-queue jobs of a process that dies are recovered only by the next start() or after Graphile Worker's 4 hours";
+
+/**
+ * `console.warn`, except in the CLI's JSON mode (`WORKFLOW_JSON_MODE=1`),
+ * whose output must stay machine-readable; the queue's Graphile logger is
+ * silent there too.
+ */
+function warn(...args: unknown[]): void {
+  if (process.env.WORKFLOW_JSON_MODE === '1') return;
+  console.warn(...args);
+}
+
 type GraphileTask = (payload: unknown, helpers: unknown) => Promise<void>;
 type RenewedRow = { id: string; worker: string };
 
@@ -141,14 +265,27 @@ export interface JobLeases {
   readonly enabled: boolean;
   /** Renew a task's job lock while it runs, and refuse to acknowledge a delivery whose lock was lost. */
   wrap(task: GraphileTask): GraphileTask;
-  /** Start releasing this World's jobs whose locks went unrenewed. Idempotent. */
-  startSweeper(taskIdentifiers: string[]): void;
+  /**
+   * Start releasing this World's jobs whose locks went unrenewed. Idempotent.
+   * Under the `'named-queues'` scope only jobs in a named queue
+   * `<namedQueues.prefix><runId><namedQueues.suffix>` are released, and
+   * without `namedQueues` nothing is.
+   */
+  startSweeper(
+    taskIdentifiers: string[],
+    namedQueues?: { prefix: string; suffix: string }
+  ): void;
   /** Stop renewing and sweeping, and wait for queries in flight. */
   stop(): Promise<void>;
 }
 
 export interface JobLeaseOptions {
   staleSeconds: number;
+  /**
+   * What the sweep releases (see {@link JobLeasePolicy}). Defaults to
+   * `'all'`. Renewal and holder registration are the same in both scopes.
+   */
+  scope?: 'all' | 'named-queues';
   /** Monotonic clock in milliseconds; injectable for tests. */
   now?: () => number;
   random?: () => number;
@@ -164,11 +301,20 @@ export interface JobLeaseOptions {
  * hosts nothing redelivers it until a process restarts and re-enqueues active
  * runs. A healthy delivery that runs longer than 4 hours is reset while it
  * runs and delivered twice.
+ *
+ * Every renewing worker also registers itself in
+ * `workflow.workflow_job_lock_holders` before its delivery runs (once an hour
+ * per worker, and again on a renewal tick if that failed). Under the
+ * `'named-queues'` scope, the sweep releases only jobs of registered workers,
+ * so a process that does not renew (an earlier version) is never released
+ * under. A missing table never fails a delivery: the job's own lock renewal
+ * and the acknowledgement fence do not read it.
  */
 export function createJobLeases(
   pool: Pool,
   {
     staleSeconds,
+    scope = 'all',
     now = () => performance.now(),
     random = Math.random,
   }: JobLeaseOptions
@@ -187,7 +333,9 @@ export function createJobLeases(
     process.env.GRAPHILE_WORKER_SCHEMA || 'graphile_worker'
   );
   const renewQuery = renewSql(schema);
-  const sweepQuery = sweepSql(schema);
+  const sweepQuery =
+    scope === 'all' ? sweepSql(schema) : namedQueueSweepSql(schema);
+  const cleanupQuery = cleanupSql(schema);
 
   const held = new Set<HeldJob>();
   let stopped = false;
@@ -197,6 +345,12 @@ export function createJobLeases(
   let sweepTimer: ReturnType<typeof setTimeout> | undefined;
   let sweeping: Promise<void> | undefined;
   let sweepIdentifiers: string[] | undefined;
+  let sweepNamedQueues: { prefix: string; suffix: string } | undefined;
+  let lastCleanupAt = now();
+  /** Monotonic ms of each worker's last successful registration. */
+  const registeredAt = new Map<string, number>();
+  let registrationRetryAt = Number.NEGATIVE_INFINITY;
+  let registrationFailing = false;
   let sweepFailing = false;
   // Cleared when this process's own renewal or sweep fails. After an outage,
   // the first successful sweep only re-arms, so that holders get a renewal in
@@ -206,9 +360,45 @@ export function createJobLeases(
   function markLost(job: HeldJob) {
     if (job.lost) return;
     job.lost = true;
-    console.warn(
+    warn(
       `[world-postgres] Lost the lock on Graphile job ${job.id}${job.taskIdentifier ? ` (${job.taskIdentifier})` : ''}: it is no longer locked by ${job.workerId}, usually because it went unrenewed for ${staleSeconds}s and another process released it for redelivery. This delivery will not be acknowledged.`
     );
+  }
+
+  const needsRegistration = (workerId: string) => {
+    const at = registeredAt.get(workerId);
+    return at === undefined || now() - at > REREGISTER_MS;
+  };
+
+  /**
+   * Mark these workers as renewing, so the default sweep may release their
+   * jobs once they go unrenewed. Never throws: a worker left unregistered
+   * only keeps Graphile Worker's 4 hour reset for its named-queue jobs.
+   */
+  async function register(workerIds: string[]) {
+    if (workerIds.length === 0 || now() < registrationRetryAt) return;
+    const sentAt = now();
+    try {
+      await pool.query(registerSql, [workerIds]);
+      for (const workerId of workerIds) registeredAt.set(workerId, sentAt);
+      if (registrationFailing) {
+        registrationFailing = false;
+        warn(
+          '[world-postgres] Registering Graphile workers as renewing recovered'
+        );
+      }
+    } catch (error) {
+      registrationRetryAt = now() + REGISTRATION_RETRY_MS;
+      if (!registrationFailing) {
+        registrationFailing = true;
+        warn(
+          isMissingTable(error)
+            ? `[world-postgres] Could not register Graphile workers as renewing: ${MISSING_TABLE_HINT}.`
+            : '[world-postgres] Failed to register Graphile workers as renewing; retrying:',
+          ...(isMissingTable(error) ? [] : [error])
+        );
+      }
+    }
   }
 
   function scheduleRenewal() {
@@ -242,14 +432,25 @@ export function createJobLeases(
       }
       if (renewFailing) {
         renewFailing = false;
-        console.warn('[world-postgres] Renewing Graphile job locks recovered');
+        warn('[world-postgres] Renewing Graphile job locks recovered');
       }
+      // A worker whose registration failed on start gets another try here.
+      await register([
+        ...new Set(
+          jobs
+            .filter(
+              (job) =>
+                held.has(job) && !job.lost && needsRegistration(job.workerId)
+            )
+            .map((job) => job.workerId)
+        ),
+      ]);
     } catch (error) {
       // Not a lost lock: keep the jobs and try again on the next tick.
       sweepArmed = false;
       if (!renewFailing) {
         renewFailing = true;
-        console.warn(
+        warn(
           '[world-postgres] Failed to renew Graphile job locks; retrying:',
           error
         );
@@ -296,25 +497,43 @@ export function createJobLeases(
         sweepArmed = true;
         return;
       }
+      if (scope === 'named-queues' && !sweepNamedQueues) return;
       const { rows } = await pool.query<{ id: string }>(sweepQuery, [
         staleSeconds,
         sweepIdentifiers,
+        ...(scope === 'named-queues' && sweepNamedQueues
+          ? [sweepNamedQueues.prefix, sweepNamedQueues.suffix]
+          : []),
       ]);
       sweepFailing = false;
       if (rows.length > 0) {
-        console.warn(
+        warn(
           `[world-postgres] Released ${rows.length} Graphile job(s) whose locks went unrenewed for ${staleSeconds}s, for redelivery: ${rows.map((row) => row.id).join(', ')}`
         );
       }
+      await cleanup();
     } catch (error) {
       sweepArmed = false;
       if (!sweepFailing) {
         sweepFailing = true;
-        console.warn(
-          '[world-postgres] Failed to release stale Graphile job locks; retrying:',
-          error
+        warn(
+          isMissingTable(error)
+            ? `[world-postgres] Could not release stale Graphile job locks: ${MISSING_TABLE_HINT}.`
+            : '[world-postgres] Failed to release stale Graphile job locks; retrying:',
+          ...(isMissingTable(error) ? [] : [error])
         );
       }
+    }
+  }
+
+  /** Forget the workers of exited processes, at most once an hour. */
+  async function cleanup() {
+    if (now() - lastCleanupAt < CLEANUP_INTERVAL_MS) return;
+    lastCleanupAt = now();
+    try {
+      await pool.query(cleanupQuery);
+    } catch {
+      // Harmless: the rows of exited workers only wait for the next try.
     }
   }
 
@@ -327,6 +546,11 @@ export function createJobLeases(
         if (!identity || stopped) {
           await task(payload, helpers);
           return;
+        }
+        // Before the delivery runs, so that a process killed mid-delivery is
+        // known to have renewed. Once an hour per worker.
+        if (needsRegistration(identity.workerId)) {
+          await register([identity.workerId]);
         }
         const job: HeldJob = { ...identity, lost: false, confirmedAt: now() };
         held.add(job);
@@ -343,9 +567,10 @@ export function createJobLeases(
         }
       };
     },
-    startSweeper(taskIdentifiers) {
+    startSweeper(taskIdentifiers, namedQueues) {
       if (!enabled || stopped) return;
       sweepIdentifiers = [...new Set(taskIdentifiers)];
+      sweepNamedQueues = namedQueues;
       scheduleSweep();
     },
     async stop() {
