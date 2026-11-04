@@ -13,6 +13,7 @@ import {
   decodePayloadWithKey,
   deriveRunPayloadKeys,
   type StateResolver,
+  stateSourceId,
 } from '@workflow/core/serialization-format';
 import { getWebRevivers, hydrateResourceIOAsync } from './hydration';
 
@@ -43,13 +44,26 @@ export interface RunStateHydrator {
 
 type Dict = Record<string, unknown>;
 
-/** The payload of an event that `workflow/state` values can build on. */
-function stateSourceOf(event: unknown): unknown {
+/**
+ * The payload of an event that `workflow/state` values can build on, and the
+ * id later state refers to its strings by (hook payloads only).
+ */
+function stateSourceOf(
+  event: unknown
+): { value: unknown; source?: string } | undefined {
   if (event === null || typeof event !== 'object') return undefined;
-  const { eventType, eventData } = event as Dict;
+  const { eventType, eventData, eventId } = event as Dict;
   if (eventData === null || typeof eventData !== 'object') return undefined;
-  if (eventType === 'hook_received') return (eventData as Dict).payload;
-  if (eventType === 'step_completed') return (eventData as Dict).result;
+  if (eventType === 'hook_received')
+    return {
+      value: (eventData as Dict).payload,
+      source: stateSourceId({
+        eventType,
+        eventId: typeof eventId === 'string' ? eventId : undefined,
+      }),
+    };
+  if (eventType === 'step_completed')
+    return { value: (eventData as Dict).result };
   return undefined;
 }
 
@@ -88,11 +102,12 @@ export function createRunStateHydrator(
   const add = async (
     resolver: StateResolver,
     value: unknown,
-    key: Awaited<ReturnType<typeof deriveRunPayloadKeys>> | undefined
+    key: Awaited<ReturnType<typeof deriveRunPayloadKeys>> | undefined,
+    source?: string
   ) => {
     if (value === undefined || value === null) return;
     try {
-      resolver.add(await decodePayloadWithKey(value, key));
+      resolver.add(await decodePayloadWithKey(value, key), source);
     } catch {
       // A payload that cannot be read leaves the values built on it as
       // placeholders.
@@ -105,7 +120,12 @@ export function createRunStateHydrator(
       ? await deriveRunPayloadKeys(current.key)
       : undefined;
     if (!current.startedInput) {
-      await add(current.resolver, await options.loadRunInput(), key);
+      await add(
+        current.resolver,
+        await options.loadRunInput(),
+        key,
+        stateSourceId('run-input')
+      );
       current.startedInput = true;
     }
     for (;;) {
@@ -117,7 +137,9 @@ export function createRunStateHydrator(
           if (current.seen.has(id)) continue;
           current.seen.add(id);
         }
-        await add(current.resolver, stateSourceOf(event), key);
+        const payload = stateSourceOf(event);
+        if (payload)
+          await add(current.resolver, payload.value, key, payload.source);
       }
       if (page.cursor) current.cursor = page.cursor;
       if (!page.hasMore || !page.cursor) return;

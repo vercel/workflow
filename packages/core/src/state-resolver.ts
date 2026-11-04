@@ -25,8 +25,12 @@ export interface StateResolver {
    * Adds one persisted payload of the run, decrypted and decompressed: the run
    * input, a hook payload or a step output. Add them in event-log order. Other
    * payloads, and payloads without state records, are ignored.
+   *
+   * Pass `source` for the run input and hook payloads: the id later state
+   * may refer to their strings by, from `stateSourceId('run-input')` or
+   * `stateSourceId(event)`.
    */
-  add(data: unknown): void;
+  add(data: unknown, source?: string): void;
   /**
    * Revivers that rebuild references and changes from what was added. Merge
    * them over the revivers you hydrate with, for example
@@ -51,19 +55,15 @@ export function createStateResolver(revivers: Revivers = {}): StateResolver {
   const context = new StateContext();
   context.allowPlaceholders = true;
   let unresolved = 0;
-  const placeholder = (record: Record<string, unknown>) =>
-    record.kind === 'source' || record.kind === 'full'
-      ? record.value
-      : `<workflow/state ${String(record.version)}>`;
   return {
     get unresolved() {
       return unresolved;
     },
-    add(data) {
+    add(data, source) {
       if (!(data instanceof Uint8Array) || peekFormatPrefix(data) !== 'devl')
         return;
       try {
-        context.ingest(decodeFormatPrefix(data).payload, revivers);
+        context.ingest(decodeFormatPrefix(data).payload, revivers, source);
       } catch {
         // A payload that cannot be read leaves later values as placeholders.
       }
@@ -74,7 +74,7 @@ export function createStateResolver(revivers: Revivers = {}): StateResolver {
           return context.revive(record);
         } catch {
           unresolved++;
-          return placeholder(record);
+          return context.placeholderFor(record);
         }
       },
       [STATE_SOURCE_REDUCER]: context.reviveSourceRef,

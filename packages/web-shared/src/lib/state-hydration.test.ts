@@ -117,4 +117,50 @@ describe('createRunStateHydrator', () => {
     ]);
     expect(loadEvents).toHaveBeenNthCalledWith(2, 'c1');
   });
+
+  it('resolves strings later state takes from a hook payload', async () => {
+    const message = 'Weather in Oslo for the next three days, please. '.repeat(
+      4
+    );
+    const hook = workflow.serialize(
+      { message },
+      { stateContext: new StateContext() }
+    );
+    const replay = new StateContext();
+    replay.addSource(
+      'hook:evnt_h',
+      workflow.deserialize(hook, { stateContext: replay })
+    );
+    const output = workflow.serialize(
+      {
+        history: produce([] as Message[], (d) => {
+          d.push({ role: 'user', content: message });
+        }),
+      },
+      { stateContext: replay }
+    );
+    const v1 = (workflow.deserialize(output, { stateContext: replay }) as any)
+      .history;
+    const input = workflow.serialize({ history: v1 }, { stateContext: replay });
+    const hydrator = createRunStateHydrator({
+      loadRunInput: async () => undefined,
+      loadEvents: async () => ({
+        data: [
+          {
+            eventId: 'evnt_h',
+            eventType: 'hook_received',
+            eventData: { payload: hook },
+          },
+          {
+            eventId: 'e2',
+            eventType: 'step_completed',
+            eventData: { result: output },
+          },
+        ],
+        hasMore: false,
+      }),
+    });
+    const shown = (await hydrator.hydrate({ input })) as any;
+    expect(shown.input.history).toEqual([{ role: 'user', content: message }]);
+  });
 });
