@@ -683,14 +683,14 @@ export interface WorldCapabilities {
   };
 
   /**
-   * Admits `start({ hook })`: `events.create` creates the start Hook
+   * Admits `start({ experimental_hook })`: `events.create` creates the start Hook
    * `startHookId(runId)` for `eventData.startHook.token` atomically with
    * creating the run on `run_created` and on a resilient `run_started`
    * (resumable at once, even while the run is pending), makes one immutable
    * accept-or-reject decision per candidate `runId`, and refuses a duplicate
    * with `HookConflictError` naming the owner. The full contract is in
    * `start-hook.ts`; `test-support/atomic-start-hook-conformance.ts` checks
-   * it. Missing or inactive means `start({ hook })` fails before it publishes
+   * it. Missing or inactive means `start({ experimental_hook })` fails before it publishes
    * anything. A start that also sets a retention requires `hookRetention`.
    *
    * Like every capability, this describes the complete World: a World whose

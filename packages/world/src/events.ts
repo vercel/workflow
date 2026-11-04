@@ -492,7 +492,7 @@ const HookConflictEventSchema = BaseEventSchema.extend({
      * understand the involuntary disposal — the forced hook gets the
      * ordinary `HookConflictError` it opted out of instead of stranding
      * that run. Absent on a conflict answered by a World that does not
-     * implement forcing at all. (A run's `start({ hook })` Hook is taken like
+     * implement forcing at all. (A run's `start({ experimental_hook })` Hook is taken like
      * any other Hook, so it is never a reason to refuse.)
      */
     forceRefusedReason: z.literal('victim-spec-version').optional(),

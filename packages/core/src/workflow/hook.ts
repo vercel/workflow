@@ -12,7 +12,7 @@ import {
 } from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
 import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
-import type { Hook, HookOptions } from '../create-hook.js';
+import type { Hook, HookOptions, SystemHookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { webhookLogger } from '../logger.js';
 import {
@@ -70,7 +70,7 @@ function createConflictingRun(
  * options only a write could apply. Shared with the QuickJS guest's message.
  */
 export function startHookOptionsError(rejected: readonly string[]): string {
-  return `\`createHook()\` was called with this run's start token and ${rejected.map((name) => `\`${name}\``).join(', ')}, but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.`;
+  return `\`createHook()\` was called with this run's start token and ${rejected.map((name) => `\`${name}\``).join(', ')}, but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.`;
 }
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
@@ -87,7 +87,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       );
     }
 
-    // The run's start Hook (`start(workflow, args, { hook })`) was created by
+    // The run's start Hook (`start(workflow, args, { experimental_hook })`) was created by
     // the run's admission, so the first `createHook` with its token opens that
     // Hook instead of creating one: no `hook_created`, no suspension. Whether
     // this call binds depends only on the token and on earlier calls in the
@@ -174,6 +174,10 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
+    // SDK-internal hooks (see `SystemHookOptions`) are marked so the runtime
+    // and observability tooling can tell them apart from user hooks.
+    const isSystem =
+      (options as SystemHookOptions).isSystem === true && !isWebhook;
 
     ctx.invocationsQueue.set(
       correlationId,
@@ -196,6 +200,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             ...(options.experimental_force === true && { force: true }),
             metadata: options.metadata,
             isWebhook,
+            ...(isSystem && { isSystem: true }),
           }
     );
 

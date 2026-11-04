@@ -215,7 +215,7 @@ export interface EventsConsumerOptions {
   isDeliveryIdle: () => boolean;
   /**
    * The run's start Hook id (`startHookId(runId)`), for a run started with
-   * `start(workflow, args, { hook })`. That Hook exists from the run's
+   * `start(workflow, args, { experimental_hook })`. That Hook exists from the run's
    * admission, so payloads can be resumed into it before the body calls
    * `createHook` (even before `run_started`), and another run can force-claim
    * it before then too.

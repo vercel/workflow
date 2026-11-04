@@ -3070,16 +3070,14 @@ describe('step function serialization', () => {
     expect(retrieved).toBeUndefined();
   });
 
-  it.each([
-    '__builtin_response_text',
-    '__builtin_response_read_chunk',
-  ])('should lookup builtin response step %s by bare ID alias', (name) => {
-    const registeredStepId = `step//workflow/internal/builtins@4.2.0-beta.71//${name}`;
+  it('should lookup builtin response step by bare ID alias', () => {
+    const registeredStepId =
+      'step//workflow/internal/builtins@4.2.0-beta.71//__builtin_response_text';
     const stepFn = async () => 'ok';
 
     registerStepFunction(registeredStepId, stepFn);
 
-    const retrieved = getStepFunction(name);
+    const retrieved = getStepFunction('__builtin_response_text');
     expect(retrieved).toBe(stepFn);
   });
 

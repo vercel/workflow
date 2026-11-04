@@ -409,6 +409,7 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - READMEs should not contain outdated or incorrect information about package capabilities
 - When modifying package functionality, ensure corresponding README updates are included
 - Document every user-configurable environment variable in the docs.
+- Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
 ### Docs preview links in PR descriptions

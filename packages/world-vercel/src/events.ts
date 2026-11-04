@@ -942,7 +942,7 @@ async function createWorkflowRunEventInner(
   if (data.eventType === 'run_created') {
     const validationError = validateWorkflowRunIdTimestamp(id);
     if (validationError) {
-      // A `start({ hook })` candidate gets the answer the backend gives it
+      // A `start({ experimental_hook })` candidate gets the answer the backend gives it
       // (a permanent admission rejection), so its queued copy stops retrying.
       if ((data.eventData as { startHook?: unknown }).startHook) {
         throw new WorkflowWorldError(validationError, {
@@ -1156,7 +1156,7 @@ function reconstructRunFromReplayEvents(events: Event[]) {
       input: runCreated.eventData.input,
       attributes,
       encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-      // The start Hook echo (`start({ hook })`): the backend keeps it on
+      // The start Hook echo (`start({ experimental_hook })`): the backend keeps it on
       // `run_created`, without its metadata.
       ...(runCreated.eventData.startHook
         ? { startHook: runCreated.eventData.startHook }

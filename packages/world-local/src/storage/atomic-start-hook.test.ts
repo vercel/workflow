@@ -1,5 +1,5 @@
 /**
- * `start({ hook })` admission in the Local World: the start Hook's token
+ * `start({ experimental_hook })` admission in the Local World: the start Hook's token
  * claim, the run and the Hook entity are written under the claim lock, and a
  * refusal is recorded per candidate.
  */

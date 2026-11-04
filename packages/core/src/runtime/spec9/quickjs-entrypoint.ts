@@ -51,6 +51,7 @@ import {
 import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import { DEFAULT_STEP_MAX_RETRIES, getMaxInlineSteps } from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
@@ -62,10 +63,6 @@ import {
   REPLAY_RESOLVE_DATA,
 } from '../helpers.js';
 import { republishOwedForceClaimVictimWakes } from '../hook-wake.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import { quickjsWasiVersion } from '../quickjs-assets.generated.js';
 import {
   type EventCreator,
@@ -2651,7 +2648,7 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
-    dispatchRunCompletedHooks(runId, workflowName);
+    await afterRunCompleted(world, workflowRun, workflowName);
   } else if (result.suspended) {
     // Workflow still suspended after the inline loop. All durable side
     // effects for the final suspension state were already dispatched by
@@ -3054,8 +3051,9 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
-    dispatchRunFailedHooks(
-      runId,
+    await afterRunFailed(
+      world,
+      workflowRun,
       workflowName,
       dehydratedError,
       encryptionKey,
