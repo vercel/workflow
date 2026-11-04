@@ -1,14 +1,14 @@
 ---
 title: Child Workflows
-description: Spawn child workflows from a parent and wait for completion via hook resume.
+description: Spawn child workflows from a parent and wait for them without polling.
 type: guide
-summary: Orchestrate independent child workflows from a parent using start(), defineHook(), and startAndWait(). The child resumes the parent's hook when done instead of polling getRun().status.
+summary: Orchestrate independent child workflows from a parent with start() and await run.returnValue. The parent suspends on a system hook the child resumes when it finishes, so waiting costs no compute and never polls.
 related:
   - /docs/api-reference/workflow-api/start
 ---
 
 <CopyPrompt
-  text="Refactor this workflow to use child workflows. Keep the parent as an exported `&quot;use workflow&quot;` function. Move independent units of durable work into separate exported child workflow functions. From the parent, call `start(childWorkflow, [args])` from `workflow/api` or the documented `startAndWait`/hook pattern where completion must resume the parent. Pass only serializable state to children. For fan-out, start children in parallel with `Promise.all` or bounded batches, collect run IDs, handle partial failures with `Promise.allSettled`, and use `getRun(runId)` when status, cancellation, streams, or return values are needed. Verify child start, completion, failure, and parent resume behavior."
+  text="Refactor this workflow to use child workflows. Keep the parent as an exported `&quot;use workflow&quot;` function. Move independent units of durable work into separate exported child workflow functions. From the parent, call `start(childWorkflow, [args])` from `workflow/api` and `await run.returnValue` where the parent needs the child's result: the parent suspends on a system hook the child resumes when it finishes, so no polling or hand-written completion hook is needed. Pass only serializable state to children. For fan-out, start children in parallel with `Promise.all` or bounded batches, handle partial failures with `Promise.allSettled`, and catch `WorkflowRunFailedError` / `WorkflowRunCancelledError` for failed or canceled children. Verify child start, completion, failure, and parent resume behavior."
 />
 
 Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope. If one child fails, it doesn't take down the parent or siblings.
@@ -25,68 +25,16 @@ Child workflows are the right choice when:
 
 For simpler cases where steps share a single event log, use [direct await composition](/cookbook/common-patterns/workflow-composition#direct-await-flattening) instead.
 
-## Basic pattern: spawn and wait via hook
+## Waiting for a child
 
-The recommended pattern has four parts:
-
-1. A **completion hook** the parent creates and awaits, with zero compute while waiting
-2. A **wrapped child export** that runs the real child in try/catch/finally and resumes the parent's hook from a step in `finally`
-3. A **`start()` call** that spawns the wrapped child with the hook token (directly from the workflow in v5)
-4. A **`startAndWait()` helper** that ties the hook, spawn, and typed result together
+Start the child with [`start()`](/docs/api-reference/workflow-api/start) and await its `returnValue`:
 
 ```typescript
-import { defineHook, getWorkflowMetadata } from "workflow";
 import { start } from "workflow/api";
-import { z } from "zod";
 
 declare function fetchDocument(documentId: string): Promise<string>; // @setup
 declare function analyzeContent(content: string): Promise<string>; // @setup
 declare function generateSummary(analysis: string): Promise<string>; // @setup
-
-const childCompletionHook = defineHook({
-  schema: z.discriminatedUnion("status", [
-    z.object({ status: z.literal("completed"), value: z.unknown() }),
-    z.object({ status: z.literal("failed"), error: z.string() }),
-  ]),
-});
-
-function completionToken(parentRunId: string, key: string) {
-  return `child-completion:${parentRunId}:${key}`;
-}
-
-async function resumeParentCompletion(
-  token: string,
-  result:
-    | { status: "completed"; value: unknown }
-    | { status: "failed"; error: string }
-) {
-  "use step";
-  await childCompletionHook.resume(token, result);
-}
-
-async function withChildCompletionHook<TResult>(
-  runChild: () => Promise<TResult>,
-  completionTokenArg: string
-) {
-  let result:
-    | { status: "completed"; value: TResult }
-    | { status: "failed"; error: string }
-    | undefined;
-
-  try {
-    const value = await runChild();
-    result = { status: "completed", value };
-  } catch (error) {
-    result = {
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-    };
-  } finally {
-    if (result) {
-      await resumeParentCompletion(completionTokenArg, result);
-    }
-  }
-}
 
 // Child workflow -- processes a single document
 export async function processDocument(documentId: string) {
@@ -99,76 +47,85 @@ export async function processDocument(documentId: string) {
   return { documentId, summary };
 }
 
-// Spawnable wrapper -- explicit export so `start()` can register it
-export async function processDocumentWithCompletion(
-  documentId: string,
-  completionTokenArg: string
-) {
-  "use workflow";
-
-  await withChildCompletionHook(
-    () => processDocument(documentId),
-    completionTokenArg
-  );
-}
-
-async function startAndWait<TResult>(
-  key: string,
-  startChild: (completionTokenArg: string) => Promise<void>
-): Promise<TResult> {
-  const { workflowRunId } = getWorkflowMetadata();
-  const token = completionToken(workflowRunId, key);
-  const hook = childCompletionHook.create({ token }); // [!code highlight]
-
-  await startChild(token);
-
-  const completion = await hook; // [!code highlight]
-  if (completion.status === "failed") {
-    throw new Error(completion.error);
-  }
-  return completion.value as TResult;
-}
-
 // Parent workflow -- orchestrates document processing
 export async function processDocumentBatch(documentIds: string[]) {
   "use workflow";
 
-  const results = await Promise.all(
-    documentIds.map((documentId) =>
-      startAndWait<{ documentId: string; summary: string }>(documentId, (token) =>
-        start(processDocumentWithCompletion, [documentId, token]).then(() => undefined) // [!code highlight]
-      )
-    )
+  const runs = await Promise.all(
+    documentIds.map((documentId) => start(processDocument, [documentId])) // [!code highlight]
   );
+  const results = await Promise.all(runs.map((run) => run.returnValue)); // [!code highlight]
 
   return { processed: results.length, results };
 }
 ```
 
-### Why hooks instead of polling?
+`returnValue` is typed from the child's return type. A child that fails or is canceled rejects it with [`WorkflowRunFailedError`](/docs/api-reference/workflow-errors/workflow-run-failed-error) or [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error).
 
-Polling with `getRun().status` in a `sleep()` loop works, but hook resume is preferable because:
+### How the parent waits
 
-- **Zero compute while waiting**: The parent suspends on the hook instead of waking every poll interval.
-- **Immediate wake-up**: The parent resumes as soon as the child finishes, not on the next poll tick.
-- **Typed payloads**: The child sends `{ status, value | error }` directly, with no separate `returnValue` fetch step.
-- **No worker-pool pressure**: `Run#returnValue` polling inside steps can hold worker slots while waiting for children (see [Eager Processing](/docs/changelog/eager-processing)).
+Awaiting `returnValue` of a run the workflow started does not poll. The SDK waits on a **system hook**, the same handshake you would otherwise write by hand, but with one hook for the whole parent rather than one per child:
 
-When a parent calls a child workflow inline with `await` (flattened into the same run), the same wrapper and hook handshake still works: pass the token and `await processDocumentWithCompletion(...)` inside `startAndWait()` instead of calling `start()`.
+1. `start()` records the parent's run ID on the child, and remembers the parent on the returned `Run`.
+2. When the parent awaits a child, it registers its completion hook (a system hook whose token is derived from the parent's run ID) if it is not already open, then reads every child it started waiting on since its last read, in one step. A child that already finished is answered from that read.
+3. Otherwise the parent suspends on the hook. When a child completes, fails, or is canceled, its runtime resumes the parent's hook with that child's run ID, and the parent reads that child's result.
+4. Once the parent is no longer waiting on any child, it disposes the hook, so children it never awaits do not wake it.
+
+This gives you:
+
+- **Zero compute while waiting**: The parent is suspended rather than waking on a poll interval, and holds no worker slot. Worker-based Worlds such as [Postgres](/worlds/postgres) do not need a slot per waiting parent.
+- **Immediate wake-up**: The parent resumes as soon as a child finishes, not on the next poll tick.
+- **A slim parent log**: Fanning out to many children adds one system hook and one status read to the parent, plus, per child, the notification and the read of its result.
+- **No wiring**: There is no hook to define, no token to pass, and no wrapper workflow to export.
+
+The `Run` keeps this behavior when it travels within the parent: a step of the parent that calls `start()` and returns the `Run` hands the parent a handle it can await the same way. Awaiting the same child twice shares one wait.
+
+### Cancellations that bypass the SDK
+
+<Callout type="warn">
+A parent is notified **immediately** only when the child's own runtime records its outcome, or when the child is canceled through the SDK. A cancellation written to the World without going through the SDK is not delivered to the parent, which keeps waiting until its next safety-net check.
+</Callout>
+
+| How the child finished | Parent resumes |
+| --- | --- |
+| The child completed or failed | Immediately |
+| Canceled with `run.cancel()`, `cancelRun()`, or `cancelRuns()` | Immediately |
+| Canceled with `workflow cancel` or from `workflow web` | Immediately (both call `cancelRun()`) |
+| Canceled by any other tool that writes the cancellation to the World or its backend directly, without the SDK | At the next safety-net check |
+| The child's invocation crashed after recording its outcome but before resuming the parent | At the next safety-net check |
+
+The safety net: while a parent waits on children, it keeps one sleep open and, when it fires, reads every child it is still waiting on. The first check runs 5 minutes after the parent starts waiting, then the interval doubles up to every 6 hours. A missed notification therefore delays the parent but never strands it. Each check costs the parent one sleep and one step, so a child that runs for a day adds about a dozen of each.
+
+If a parent must react to a cancellation faster than that, cancel children through the SDK.
+
+### When `returnValue` polls instead
+
+`returnValue` falls back to polling the child, inside a step that holds its worker slot until the child finishes, when the waiting code is not the workflow that started it:
+
+- a step, API route, or other server code (for example, a step that calls `start()` and awaits the result itself)
+- a different workflow that was handed the `Run` as an argument
+
+It also polls for a child started on another deployment (`deploymentId`) whose SDK predates the system hook, and for every child started while [`WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0`](/docs/configuration/runtime-tuning#workflow_child_run_completion_hook) is set.
 
 ## Fan-out pattern: chunked spawning
 
-When spawning hundreds of children, batch the `start()` calls to avoid overwhelming the system. Each child still gets its own completion hook keyed by a stable identifier (document ID, report ID, index).
+When spawning hundreds of children, batch the `start()` calls to avoid overwhelming the system. Each awaited child gets its own system hook, so a chunk costs nothing while it waits.
 
 ```typescript
 import { start } from "workflow/api";
 
-declare function startAndWait<TResult>(
-  key: string,
-  startChild: (completionTokenArg: string) => Promise<void>
-): Promise<TResult>; // @setup
+declare function queryDatabase(reportId: string, query: string): Promise<string>; // @setup
+declare function formatReport(reportId: string, data: string): Promise<string>; // @setup
 
 const CHUNK_SIZE = 10;
+
+export async function generateReport(reportId: string, query: string) {
+  "use workflow";
+
+  const data = await queryDatabase(reportId, query);
+  const formatted = await formatReport(reportId, data);
+  return { reportId, formatted };
+}
 
 export async function largeReportBatch(
   reportConfigs: Array<{ id: string; query: string }>
@@ -178,82 +135,36 @@ export async function largeReportBatch(
   const results = [];
   for (let i = 0; i < reportConfigs.length; i += CHUNK_SIZE) {
     const chunk = reportConfigs.slice(i, i + CHUNK_SIZE);
-    const chunkResults = await Promise.all(
-      chunk.map((config) =>
-        startAndWait<{ reportId: string; formatted: string }>(config.id, (token) =>
-          start(generateReportWithCompletion, [
-            config.id,
-            config.query,
-            token,
-          ]).then(() => undefined)
-        )
-      )
+    const runs = await Promise.all(
+      chunk.map((config) => start(generateReport, [config.id, config.query]))
     );
-    results.push(...chunkResults);
+    results.push(...(await Promise.all(runs.map((run) => run.returnValue))));
   }
 
   return { total: results.length, results };
 }
-
-async function generateReportWithCompletion(
-  reportId: string,
-  query: string,
-  completionTokenArg: string
-) {
-  "use workflow";
-
-  await withChildCompletionHook(
-    () => generateReport(reportId, query),
-    completionTokenArg
-  );
-}
-
-async function generateReport(reportId: string, query: string) {
-  "use workflow";
-
-  const data = await queryDatabase(reportId, query);
-  const formatted = await formatReport(reportId, data);
-  return { reportId, formatted };
-}
-
-declare function queryDatabase(reportId: string, query: string): Promise<string>; // @setup
-declare function formatReport(reportId: string, data: string): Promise<string>; // @setup
-declare function withChildCompletionHook<TResult>(
-  runChild: () => Promise<TResult>,
-  completionTokenArg: string
-): Promise<void>; // @setup
 ```
 
 ## Error handling
 
 ### Tolerating partial failures
 
-Use `Promise.allSettled` with `startAndWait()` so one failing child doesn't abort siblings. The hook payload already carries `{ status: "failed", error }`, so no status polling is required.
+Use `Promise.allSettled` over the children's `returnValue` so one failing child doesn't abort its siblings. A failed child's entry is rejected with `WorkflowRunFailedError`, whose `cause` is the error the child threw.
 
 ```typescript
 import { start } from "workflow/api";
 
-declare function startAndWait<TResult>(
-  key: string,
-  startChild: (completionTokenArg: string) => Promise<void>
-): Promise<TResult>; // @setup
-declare function processDocumentWithCompletion(
-  documentId: string,
-  completionTokenArg: string
-): Promise<void>; // @setup
+declare function processDocument(
+  documentId: string
+): Promise<{ documentId: string; summary: string }>; // @setup
 
 export async function processDocumentBatchTolerant(documentIds: string[]) {
   "use workflow";
 
-  const settled = await Promise.allSettled(
-    documentIds.map((documentId) =>
-      startAndWait<{ documentId: string; summary: string }>(documentId, (token) =>
-        start(processDocumentWithCompletion, [documentId, token]).then(
-          () => undefined
-        )
-      )
-    )
+  const runs = await Promise.all(
+    documentIds.map((documentId) => start(processDocument, [documentId]))
   );
+  const settled = await Promise.allSettled(runs.map((run) => run.returnValue));
 
   const results = settled
     .filter(
@@ -270,52 +181,81 @@ export async function processDocumentBatchTolerant(documentIds: string[]) {
 
 ### Retrying failed children
 
-When a child fails, spawn a replacement with a fresh hook token. Track restart counts to prevent infinite retry loops.
+When a child fails, start a replacement. Track restart counts to prevent infinite retry loops.
 
 ```typescript
-declare function startAndWait<TResult>(
-  key: string,
-  startChild: (completionTokenArg: string) => Promise<void>
-): Promise<TResult>; // @setup
-declare function spawnProcessDocument(
-  documentId: string,
-  completionTokenArg: string
-): Promise<void>; // @setup
+import { start } from "workflow/api";
 
-async function startAndWaitWithRetries(
+declare function processDocument(
+  documentId: string
+): Promise<{ documentId: string; summary: string }>; // @setup
+
+async function processDocumentWithRetries(
   documentId: string,
   maxRestarts: number
 ): Promise<{ documentId: string; summary: string }> {
-  for (let attempt = 0; attempt <= maxRestarts; attempt++) {
+  for (let attempt = 0; ; attempt++) {
+    const run = await start(processDocument, [documentId]);
     try {
-      return await startAndWait<{ documentId: string; summary: string }>(
-        `${documentId}:${attempt}`,
-        (token) => spawnProcessDocument(documentId, token)
-      );
+      return await run.returnValue;
     } catch (error) {
-      if (attempt === maxRestarts) throw error;
+      if (attempt >= maxRestarts) throw error;
     }
   }
+}
+```
 
-  throw new Error("unreachable");
+## Signaling the parent before the child finishes
+
+The system hook fires only when the child finishes. When the parent needs to hear from a child mid-run (a progress milestone, an approval request, a partial result), create a [hook](/docs/foundations/hooks) in the parent and pass its token to the child, which resumes it from a step:
+
+```typescript
+import { createHook } from "workflow";
+import { resumeHook, start } from "workflow/api";
+
+declare function prepareDraft(documentId: string): Promise<string>; // @setup
+declare function publishDraft(draft: string): Promise<void>; // @setup
+
+async function notifyDraftReady(token: string, draft: string) {
+  "use step";
+  await resumeHook(token, { draft });
+}
+
+export async function draftDocument(documentId: string, draftToken: string) {
+  "use workflow";
+
+  const draft = await prepareDraft(documentId);
+  await notifyDraftReady(draftToken, draft); // the parent continues from here
+  await publishDraft(draft);
+  return { documentId, published: true };
+}
+
+export async function reviewDocument(documentId: string) {
+  "use workflow";
+
+  const draftReady = createHook<{ draft: string }>();
+  const run = await start(draftDocument, [documentId, draftReady.token]);
+
+  const { draft } = await draftReady; // mid-run signal from the child
+  const result = await run.returnValue; // completion, via the system hook
+  return { draft, ...result };
 }
 ```
 
 ## Tips
 
-- **Call `defineHook().resume()` from a step**: The wrapped child's `finally` block calls a step that resumes the parent hook.
-- **Export wrapped children at module scope**: The SDK registers `"use workflow"` functions statically, so a runtime higher-order function returned from `withChildCompletionHook()` cannot be passed to `start()`.
-- **Use stable hook keys**: Document IDs, job IDs, or indexes prevent token collisions between parallel children in one parent run.
+- **Await only the children you need**: A child whose parent is not waiting on any child when it finishes costs one extra hook lookup and nothing in the parent. One that finishes while the parent waits on its siblings adds a notification to the parent's log.
 - **Use chunked spawning for large batches**: Starting 500 children at once can create a large burst of work. Break the work into chunks of 10–50.
-- **Watch the parent's log too**: The parent records events for spawning and collecting every child. On the default runtime, count those events against the parent's [event limit](/worlds/vercel#per-run-limits) and consider another layer of intermediate runs if needed. QuickJS with snapshotting reduces replay overhead and exempts eligible parent runs from the default event cap, but does not reduce their event count or remove payload and storage limits.
-- **Account for each child's retry semantics**: Steps inside child workflows retry independently. The parent sees the final `{ status, value | error }` payload from the hook.
+- **Watch the parent's log too**: The parent records events for spawning and collecting every child (the spawn step, the child's notification on the parent's completion hook, and the step that reads its result). On the default runtime, count those events against the parent's [event limit](/worlds/vercel#per-run-limits) and consider another layer of intermediate runs if needed. QuickJS with snapshotting reduces replay overhead and exempts eligible parent runs from the default event cap, but does not reduce their event count or remove payload and storage limits.
+- **Account for each child's retry semantics**: Steps inside child workflows retry independently. The parent only sees the child's final result or error.
+- **Cancel children through the SDK**: [`run.cancel()`](/docs/api-reference/workflow-api/get-run), `cancelRun()`, `cancelRuns()`, `workflow cancel`, and `workflow web` resume a waiting parent immediately. Any other cancellation reaches the parent only at its next safety-net check; see [Cancellations that bypass the SDK](#cancellations-that-bypass-the-sdk).
 - **Use `deploymentId: "latest"` when children should run on the most recent deployment**: See [Versioning](/docs/foundations/versioning) for the full model and the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
 
 ## Key APIs
 
-- [`start()`](/docs/api-reference/workflow-api/start): Spawns a new workflow run and returns its run ID.
-- [`defineHook()`](/docs/api-reference/workflow/define-hook): Defines a typed hook for parent-child completion handshakes.
-- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resumes a waiting parent from a step called by the child wrapper.
-- [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata): Returns the parent run ID for deterministic hook tokens.
+- [`start()`](/docs/api-reference/workflow-api/start): Spawns a new workflow run and returns a `Run` whose `returnValue` the parent can await.
+- [`getRun()`](/docs/api-reference/workflow-api/get-run): Documents the `Run` handle, with `returnValue`, `status`, and `cancel()`.
+- [`createHook()`](/docs/api-reference/workflow/create-hook): Creates a hook for signals from a child before it finishes.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resumes a parent's hook from a step in the child.
 - [`"use workflow"`](/docs/foundations/workflows-and-steps): Marks the orchestrator function.
 - [`"use step"`](/docs/foundations/workflows-and-steps): Marks functions with full Node.js access.

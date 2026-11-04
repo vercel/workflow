@@ -45,6 +45,13 @@ The runtime reads these variables where workflows execute. Set them on the deplo
 - The kill switch for the wait. Worlds that do not implement waiting are already on the interval path, so this changes nothing for them.
 - Read by the process awaiting `Run.returnValue`, like the interval above.
 
+### `WORKFLOW_CHILD_RUN_COMPLETION_HOOK`
+
+- Default: enabled
+- Inside a workflow, awaiting `returnValue` of a run that workflow started suspends the parent on a system hook the child resumes when it finishes, instead of polling. See [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits).
+- Set to `0` or `false` to stop `start()` from marking new child runs for the hook, so their parents poll `returnValue` inside a step on the variables above.
+- Read by the deployment calling `start()` from a workflow. A child already marked keeps resuming its parent, so a parent waiting on it is never stranded.
+
 ## Replay and queue delivery
 
 ### `WORKFLOW_REPLAY_TIMEOUT_MS`

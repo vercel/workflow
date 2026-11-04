@@ -148,6 +148,19 @@ const withAbortSignal = `const inc = ${step};
     return controller.signal.aborted ? -1 : n;
   }${registerWorkflow()}`;
 
+// The child-run completion system hook (`child-run-completion.ts`), left
+// open after a wait or disposed once the wait is over.
+const withCompletionHook = (dispose: boolean) => `const inc = ${step};
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow(steps) {
+    const hook = createHook({ token: "wkf_child_run_completion:ra-parent", isSystem: true });
+    await hook.getConflict();
+    ${dispose ? 'hook.dispose();' : ''}
+    let n = 0;
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return n;
+  }${registerWorkflow()}`;
+
 const withSleep = (duration: string) => `const inc = ${step};
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow(steps) {
@@ -779,6 +792,23 @@ describe('run-ahead against an append-only World (node engine)', () => {
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
+  });
+
+  // Why the parent disposes its completion hook once no child is awaited
+  // (`child-run-completion.ts`): an open system hook is always path-changing,
+  // so leaving it open would drain every later boundary of the parent.
+  it('drains with the child-run completion hook open', async () => {
+    const { world } = await run(withCompletionHook(false), [STEPS]);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(STEPS);
+    expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
+  });
+
+  it('runs ahead once the child-run completion hook is disposed', async () => {
+    const { world } = await run(withCompletionHook(true), [STEPS]);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(STEPS);
+    expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
   });
 
   it('treats an inline step retried on its own message as another writer, so the run replays to its own result', async () => {

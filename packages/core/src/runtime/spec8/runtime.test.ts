@@ -3986,8 +3986,12 @@ describe('workflowEntrypoint max-deliveries terminal write', () => {
   }
 
   it('fails the run and acks once the terminal write lands', async () => {
+    // The write returns the run, so notifying a parent needs no read.
     const { result, created, queue, runsGet, eventsList } =
-      await deliverPastCeiling(async () => ({ event: {} }));
+      await deliverPastCeiling(async () => ({
+        event: {},
+        run: { runId: 'wrun_max_deliveries', executionContext: {} },
+      }));
 
     await expect(result).resolves.toBeInstanceOf(Response);
     expect(created).toEqual(['run_failed']);
