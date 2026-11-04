@@ -123,7 +123,11 @@ describe('createStateResolver', () => {
     try {
       const body = new StateContext();
       const output1 = workflow.serialize(
-        { inner: produce({ n: 0 }, (d) => void (d.n = 1)) },
+        {
+          inner: produce({ n: 0 }, (d) => {
+            d.n = 1;
+          }),
+        },
         { stateContext: body }
       );
       const inner = (
@@ -133,7 +137,9 @@ describe('createStateResolver', () => {
       ).inner;
       // A new value holding the earlier one: stored whole, the inner one as a
       // reference.
-      const outer = produce({ inner, label: 'a' }, (d) => void (d.label = 'b'));
+      const outer = produce({ inner, label: 'a' }, (d) => {
+        d.label = 'b';
+      });
       const input2 = workflow.serialize({ outer }, { stateContext: body });
 
       const resolver = createStateResolver();
