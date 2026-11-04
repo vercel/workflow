@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+## 5.4.0
+
+### Patch Changes
+
+- [#5238](https://github.com/vercel/workflow/pull/5238) [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289) Thanks [@pranaygp](https://github.com/pranaygp)! - Rename the `start()` option `hook` to `experimental_hook`, and enable it by default on the Postgres and Vercel Worlds. `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK` and `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK` are removed, along with the `EXPERIMENTAL_START_HOOK_ENV` exports; the capability is only used when a caller passes `experimental_hook` to `start()`.
+
+- [#5058](https://github.com/vercel/workflow/pull/5058) [`c805b90`](https://github.com/vercel/workflow/commit/c805b906e251198bc9b9f4a5340ec144fa288b62) Thanks [@bluepegasus123](https://github.com/bluepegasus123)! - Honor the caller's abort signal when `runs.waitForTerminalStatus` falls back to a plain run read.
+
 ## 5.3.0
 
 ### Minor Changes
