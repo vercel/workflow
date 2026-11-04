@@ -230,7 +230,7 @@ const isMissingTable = (error: unknown) =>
   (error as { code?: unknown }).code === '42P01';
 
 const MISSING_TABLE_HINT =
-  "workflow.workflow_job_lock_holders does not exist; run `bootstrap` (`npx --package=@workflow/world-postgres bootstrap`, migration 0030). Until then, the per-run named-queue jobs of a process that dies are recovered only by the next start() or after Graphile Worker's 4 hours";
+  "workflow.workflow_job_lock_holders does not exist; run `bootstrap` (`npx --package=@workflow/world-postgres bootstrap`, migration 0030). Until then, no process on the default policy (`jobLockStaleSeconds` unset) releases a per-run named-queue job of a process that dies; such a job is recovered by the next start() or after Graphile Worker's 4 hours";
 
 /**
  * `console.warn`, except in the CLI's JSON mode (`WORKFLOW_JSON_MODE=1`),

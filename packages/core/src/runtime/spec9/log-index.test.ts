@@ -107,6 +107,13 @@ describe('EventLogIndex', () => {
     expect(index.covers(events)).toBe(false);
   });
 
+  it('no longer covers its log once an outside change keeps the length but replaces the tail', () => {
+    const events = slots(1, 2, 3);
+    const index = new EventLogIndex(events);
+    events.splice(2, 1, at(4));
+    expect(index.covers(events)).toBe(false);
+  });
+
   it('throws for an event id without a slot, as maxEventSlot does', () => {
     const events = [
       ...slots(1),

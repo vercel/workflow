@@ -50,6 +50,8 @@ export class EventLogIndex {
   /** Whether `events` is in event id order. */
   private sorted = true;
   private trackedLength = 0;
+  /** The last event of `events` as of the last change made through the index. */
+  private trackedTail: Event | undefined;
 
   constructor(events: Event[]) {
     this.events = events;
@@ -63,11 +65,20 @@ export class EventLogIndex {
     }
     this.advanceWatermark();
     this.trackedLength = events.length;
+    this.trackedTail = events[events.length - 1];
   }
 
-  /** Whether this index still describes `events`. */
+  /**
+   * Whether this index still describes `events`: the same array, with the
+   * length and last event the index left it with. A change made outside the
+   * index (a run-ahead repair's removals) changes one or the other.
+   */
   covers(events: readonly Event[]): boolean {
-    return events === this.events && events.length === this.trackedLength;
+    return (
+      events === this.events &&
+      events.length === this.trackedLength &&
+      events[events.length - 1] === this.trackedTail
+    );
   }
 
   has(eventId: string): boolean {
@@ -157,6 +168,7 @@ export class EventLogIndex {
     }
     this.advanceWatermark();
     this.trackedLength = target.length;
+    this.trackedTail = target[target.length - 1];
     return added.length;
   }
 
