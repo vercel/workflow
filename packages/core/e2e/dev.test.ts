@@ -1,7 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { afterEach, assert, beforeAll, describe, expect, test } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  assert,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from 'vitest';
 import { start } from '../src/runtime';
 import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
 
@@ -446,9 +454,69 @@ export function createDevTests(config?: DevTestConfig) {
       return after;
     };
 
+    /**
+     * Hand the dev server on settled. Whatever runs after this suite shares
+     * the server (in CI, the e2e suite, seconds later), and every fixture
+     * write and restore above makes it rebuild. On the Nitro-based
+     * frameworks a finished rebuild ends in a dev worker restart, which
+     * resets every request in flight, so a suite that starts while the
+     * restores are still rebuilding loses its first requests. Wait for those
+     * rebuilds: the HMR pipeline (where it logs) to drain, the generated
+     * workflow outputs to stop changing for longer than one rebuild takes
+     * (a rebuild that writes nothing new leaves them alone, so this is a
+     * quiet window rather than a count), and the manifest to answer.
+     */
+    const DEV_SERVER_SETTLE_QUIET_MS = 12_000;
+    const DEV_SERVER_SETTLE_TIMEOUT_MS =
+      hmrRediscoveryTimeoutMs + DEV_SERVER_SETTLE_QUIET_MS * 4;
+    const waitForGeneratedArtifactsToGoQuiet = async () => {
+      const deadline = Date.now() + DEV_SERVER_SETTLE_TIMEOUT_MS;
+      const snapshot = () => readGeneratedArtifactSnapshot().catch(() => null);
+      let previous = await snapshot();
+      let quietSince = Date.now();
+      while (Date.now() - quietSince < DEV_SERVER_SETTLE_QUIET_MS) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `The dev server was still rebuilding ${DEV_SERVER_SETTLE_TIMEOUT_MS}ms after the suite's last fixture restore`
+          );
+        }
+        await sleep(250);
+        const next = await snapshot();
+        if (
+          next?.stepMtimeMs !== previous?.stepMtimeMs ||
+          next?.workflowMtimeMs !== previous?.workflowMtimeMs
+        ) {
+          quietSince = Date.now();
+        }
+        previous = next;
+      }
+    };
+    const waitForDevServerToSettle = async () => {
+      await waitForHmrQuiescence();
+      await waitForGeneratedArtifactsToGoQuiet();
+      // The manifest route only exists when the app serves it publicly.
+      if (!deploymentUrl || process.env.WORKFLOW_PUBLIC_MANIFEST !== '1') {
+        return;
+      }
+      await pollUntil({
+        description: 'the workflow manifest to answer after the last rebuild',
+        timeoutMs: DEV_SERVER_SETTLE_TIMEOUT_MS,
+        intervalMs: 250,
+        check: async () => {
+          const response = await fetchWithTimeout(
+            '/.well-known/workflow/v1/manifest.json'
+          );
+          await response?.body?.cancel();
+          expect(response?.status).toBe(200);
+        },
+      });
+    };
+
     beforeAll(async () => {
       await prewarm();
     }, CLEANUP_HOOK_TIMEOUT_MS);
+
+    afterAll(waitForDevServerToSettle, DEV_SERVER_SETTLE_TIMEOUT_MS * 2);
 
     afterEach(async () => {
       // Restore file contents before deleting any files. If a deletion races

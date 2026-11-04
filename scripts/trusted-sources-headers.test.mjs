@@ -180,3 +180,91 @@ test('forwards caller headers on every hop', async () => {
 
   assert.deepEqual(accepts, ['text/markdown', 'text/markdown']);
 });
+
+/**
+ * A fresh copy of the module that mints from a fake runner token endpoint
+ * answering each request with the next of `replies` (a status, or a JWT).
+ */
+async function withMintEndpoint(replies, run) {
+  let requests = 0;
+  const endpoint = await listen((request, response) => {
+    request.resume();
+    const reply = replies[Math.min(requests++, replies.length - 1)];
+    if (typeof reply === 'number') {
+      response.writeHead(reply).end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ value: reply }));
+  });
+  const saved = { ...process.env };
+  process.env.ACTIONS_ID_TOKEN_REQUEST_URL = `${endpoint}/mint`;
+  process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'request-token';
+  process.env.WORKFLOW_OIDC_MINT_RETRY_BASE_DELAY_MS = '1';
+  try {
+    const module = await import(
+      `./trusted-sources-headers.mjs?mint=${Math.random()}`
+    );
+    return await run(module, () => requests);
+  } finally {
+    process.env = saved;
+  }
+}
+
+/** An unsigned JWT whose `exp` is `secondsFromNow` away. */
+function jwt(secondsFromNow, id) {
+  const payload = Buffer.from(
+    JSON.stringify({ exp: Math.floor(Date.now() / 1000) + secondsFromNow, id })
+  ).toString('base64url');
+  return `e30.${payload}.sig`;
+}
+
+test('retries the runner token endpoint through 5xx and 429 answers', async () => {
+  const minted = jwt(300, 'retried');
+  const origin = await recordingOrigin();
+
+  await withMintEndpoint([503, 500, 429, minted], async (module, requests) => {
+    const response = await module.fetchWithTrustedSources(origin.url);
+    assert.equal(response.status, 200);
+    assert.equal(requests(), 4);
+  });
+  assert.deepEqual(origin.seen, [minted]);
+});
+
+test('does not retry a 4xx from the runner token endpoint', async () => {
+  const origin = await recordingOrigin();
+
+  await withMintEndpoint([403, jwt(300, 'never')], async (module, requests) => {
+    await assert.rejects(
+      module.fetchWithTrustedSources(origin.url),
+      /Failed to mint GitHub Actions OIDC token: 403/
+    );
+    assert.equal(requests(), 1);
+  });
+  assert.deepEqual(origin.seen, []);
+});
+
+test('gives up after a bounded number of attempts', async () => {
+  const origin = await recordingOrigin();
+
+  await withMintEndpoint([503], async (module, requests) => {
+    await assert.rejects(
+      module.fetchWithTrustedSources(origin.url),
+      /after 5 attempts: 503/
+    );
+    assert.equal(requests(), 5);
+  });
+});
+
+test('keeps a still-valid token when an early refresh fails', async () => {
+  // Inside the early-refresh window, so the next request refreshes.
+  const first = jwt(30, 'first');
+  const origin = await recordingOrigin();
+
+  await withMintEndpoint([first, 503], async (module) => {
+    await module.fetchWithTrustedSources(origin.url);
+    const response = await module.fetchWithTrustedSources(origin.url);
+    assert.equal(response.status, 200);
+  });
+  assert.deepEqual(origin.seen, [first, first]);
+});
