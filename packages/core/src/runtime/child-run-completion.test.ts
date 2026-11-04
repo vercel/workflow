@@ -487,6 +487,40 @@ describe('awaitChildRunCompletion', () => {
     expect(await log.replay()).toEqual({ done: true, value: ['A', 'B'] });
   });
 
+  it('starts waiting on the first then, not when returnValue is read', async () => {
+    const log = new Log(
+      workflowCode(`
+        const pending = ${awaitChild('wrun_a')};
+        const isPromise = pending instanceof Promise;
+        const before = await readReturnValue('wrun_before');
+        return [isPromise, before, await pending];
+      `)
+    );
+    // Read, not yet awaited: no hook and no status read, only the step.
+    let s = await log.suspend();
+    expect(s.hooks).toHaveLength(0);
+    expect(s.steps.map((step) => [step.stepName, step.args])).toEqual([
+      [READ_VALUE, ['wrun_before']],
+    ]);
+    await log.stepCompleted(s.steps[0], 'B');
+
+    // Awaited: the hook is registered, then the batched read.
+    s = await log.suspend();
+    expect(s.hooks).toHaveLength(1);
+    expect(s.hooks[0]).toMatchObject({ token: TOKEN, isSystem: true });
+    expect(s.steps).toHaveLength(0);
+    log.hookCreated(s.hooks[0]);
+    s = await log.suspend();
+    expect(s.steps[0].args).toEqual([['wrun_a']]);
+    await log.stepCompleted(s.steps[0], ['wrun_a']);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], 'A');
+    expect(await log.replay()).toEqual({
+      done: true,
+      value: [true, 'B', 'A'],
+    });
+  });
+
   it('shares one wait between repeated awaits of the same child', async () => {
     const log = new Log(
       workflowCode(

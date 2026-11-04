@@ -125,8 +125,9 @@ type Sleep = (durationMs: number) => Promise<void>;
 
 /**
  * When called inside the workflow VM of the run that started `childRunId`,
- * waits for the child through the parent's completion hook and returns its
- * return value. Returns `undefined` everywhere else (host code, steps, a
+ * returns a promise of the child's return value that, once awaited, waits for
+ * the child through the parent's completion hook. Nothing starts until the
+ * first `then`, `catch` or `finally` (see {@link lazyPromise}). Returns `undefined` everywhere else (host code, steps, a
  * workflow that was handed someone else's `Run`), where the caller polls.
  *
  * `readValue` is the child's return-value step (it polls until the child is
@@ -170,7 +171,8 @@ export function awaitChildRunCompletion<T>(
   if (existing) return existing;
 
   const dispatcher = d;
-  const wait = (async () => {
+  const parent = parentRunId;
+  const begin = async (): Promise<T> => {
     if (!dispatcher.conflicted) {
       const done = new Promise<void>((resolve) => {
         dispatcher.waiting.set(childRunId, resolve);
@@ -179,15 +181,39 @@ export function awaitChildRunCompletion<T>(
       dispatcher.wake?.();
       if (!dispatcher.running) {
         dispatcher.running = true;
-        void dispatch(dispatcher, parentRunId, createHook, sleep, readFinished);
+        void dispatch(dispatcher, parent, createHook, sleep, readFinished);
       }
       await done;
     }
     // Finished (or, after a conflict, the plain poll returnValue always was).
     return await readValue();
-  })();
+  };
+  const wait = lazyPromise(begin);
   dispatcher.waits.set(childRunId, wait);
   return wait;
+}
+
+/**
+ * A promise that runs `start` on its first `then`, `catch` or `finally`
+ * rather than when it is created. Reading `run.returnValue` without
+ * awaiting it yet must not open the completion hook: while the hook is
+ * waited on, every boundary of the parent is path-changing, so spec 9 would
+ * stop running ahead for the steps between the read and the await.
+ * `instanceof Promise` still holds.
+ */
+function lazyPromise<T>(start: () => Promise<T>): Promise<T> {
+  let started: Promise<T> | undefined;
+  const run = () => (started ??= start());
+  const lazy = Object.create(Promise.prototype) as Promise<T>;
+  Object.defineProperties(lazy, {
+    then: {
+      value: (onFulfilled?: any, onRejected?: any) =>
+        run().then(onFulfilled, onRejected),
+    },
+    catch: { value: (onRejected?: any) => run().catch(onRejected) },
+    finally: { value: (onFinally?: any) => run().finally(onFinally) },
+  });
+  return lazy;
 }
 
 /** Hands a child its "done" signal, once. */
