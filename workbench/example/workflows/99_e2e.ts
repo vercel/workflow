@@ -975,7 +975,7 @@ export async function hookSignalOwnerWorkflow(token: string, message: string) {
 }
 
 /**
- * The owner of a `start({ hook })` token. The start Hook exists from
+ * The owner of a `start({ experimental_hook })` token. The start Hook exists from
  * admission; `createHook()` with the start token binds this run to it (no
  * write, never a conflict) and collects `expected` payloads, including any
  * resumed before the body got here.
@@ -1000,7 +1000,7 @@ export async function startHookOwnerWorkflow(token: string, expected: number) {
 }
 
 /**
- * A `start({ hook })` run that waits on a separate gate token before it opens
+ * A `start({ experimental_hook })` run that waits on a separate gate token before it opens
  * its start Hook, then reads `expected` payloads from it: payloads resumed
  * before the gate opens are already in the log when `createHook()` runs.
  */
@@ -1025,7 +1025,7 @@ export async function startHookGateThenClaimWorkflow(
 }
 
 /**
- * A `start({ hook })` run that never opens its start Hook: the token is only
+ * A `start({ experimental_hook })` run that never opens its start Hook: the token is only
  * its idempotency key. It waits on a separate gate token so a test can
  * observe it while it runs.
  */
@@ -1041,7 +1041,7 @@ export async function startHookUnclaimedWorkflow(
 }
 
 /**
- * A `start({ hook })` run that opens its start Hook late: it first waits on
+ * A `start({ experimental_hook })` run that opens its start Hook late: it first waits on
  * a gate token, then calls `createHook()` with the start token and awaits one
  * payload. If another run force-claimed the token meanwhile, the await
  * rejects with HookForceClaimedError, which this reports.
@@ -1073,7 +1073,7 @@ export async function startHookLateClaimWorkflow(
 }
 
 /**
- * A `start({ hook })` run that reads one payload from its start Hook and
+ * A `start({ experimental_hook })` run that reads one payload from its start Hook and
  * disposes it (which frees the token), waits on a gate token, then calls
  * `createHook()` with the same token again: an ordinary new Hook, which
  * conflicts if another run took the token in between.
@@ -1103,7 +1103,7 @@ export async function startHookReclaimWorkflow(
 }
 
 /**
- * A `start({ hook })` run that opens its start Hook but never reads from it:
+ * A `start({ experimental_hook })` run that opens its start Hook but never reads from it:
  * payloads resumed to it stay unconsumed, and the run still completes.
  */
 export async function startHookClaimUnreadWorkflow(
@@ -1120,7 +1120,7 @@ export async function startHookClaimUnreadWorkflow(
 
 /**
  * Reads one payload from its start Hook and ends without disposing it, so a
- * retention set on `start({ hook })` keeps the token past the run's end.
+ * retention set on `start({ experimental_hook })` keeps the token past the run's end.
  */
 export async function startHookRetainedOwnerWorkflow(token: string) {
   'use workflow';
@@ -1132,7 +1132,7 @@ export async function startHookRetainedOwnerWorkflow(token: string) {
 }
 
 /**
- * Passes an option that belongs on `start({ hook })` to `createHook()` with
+ * Passes an option that belongs on `start({ experimental_hook })` to `createHook()` with
  * the start token, which throws.
  */
 export async function startHookOptionsOnStartTokenWorkflow(

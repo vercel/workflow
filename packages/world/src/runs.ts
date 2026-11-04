@@ -124,7 +124,7 @@ export const WorkflowRunBaseSchema = z.compile(
      */
     encryptionPublicKey: z.string().optional(),
     /**
-     * The start Hook this run was admitted with through `start({ hook })`,
+     * The start Hook this run was admitted with through `start({ experimental_hook })`,
      * echoed by a World that admitted it (see `start-hook.ts`), with its
      * `hookId` (`startHookId(runId)`). Required on the `run_created` response,
      * on `runs.get` and on the `run_started` response. Never forwarded when a

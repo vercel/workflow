@@ -322,7 +322,7 @@ export class Run<TResult> {
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
     // A run that does not exist is cancelled through the World all the same:
-    // a `start({ hook })` candidate that was admitted but never created its
+    // a `start({ experimental_hook })` candidate that was admitted but never created its
     // run (the one a `WorkflowStartError` names) is fenced by it, so it can
     // never start. Otherwise the World answers `WorkflowRunNotFoundError`.
     const run = await world.runs
