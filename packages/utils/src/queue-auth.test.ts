@@ -199,6 +199,21 @@ describe('verifyQueueAuthKey with a key source', () => {
     expect(await verifyQueueAuthKey(key)).toBe(false);
   });
 
+  it('keeps its sources under a name an older @workflow/utils copy never reads', () => {
+    setQueueAuthKeySource('/data/a', {
+      current: () => undefined,
+      reload: async () => undefined,
+    });
+    const g = globalThis as Record<symbol, unknown>;
+    expect(
+      g[Symbol.for('@workflow/utils//queueAuthKeySources/v1')]
+    ).toBeDefined();
+    // The single-source state of the earlier shape stays untouched.
+    expect(
+      g[Symbol.for('@workflow/utils//queueAuthKeySource/v1')]
+    ).toBeUndefined();
+  });
+
   it('without a source, checks the in-memory key', async () => {
     expect(await verifyQueueAuthKey(getQueueAuthKey())).toBe(true);
     expect(await verifyQueueAuthKey(generateQueueAuthKey())).toBe(false);
