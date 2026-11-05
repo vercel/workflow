@@ -195,9 +195,12 @@ export function createQueueAuthRefusalLogger(): () => void {
   return () =>
     refusalLog().limit((refusedSinceLastLog) => {
       runtimeLogger.warn(
-        'Refused an unauthenticated queue delivery with a 401; no run was touched. ' +
-          'Only deliveries sent by this app’s own processes are accepted. If the ' +
-          `request came from a trusted network, set ${QUEUE_AUTH_ENV}=off on this app.`,
+        'Refused a queue delivery with a 401: it did not carry the app’s current ' +
+          'queue key. No run was touched. Right after the app, the CLI or a script ' +
+          'starts, this is expected: it wrote a new key, and the sender reloads it ' +
+          'and retries on its own. If refusals persist, the sender cannot get the ' +
+          'app’s key (another data directory, user or release); only then, and on ' +
+          `a trusted network only, set ${QUEUE_AUTH_ENV}=off on this app.`,
         { refusedSinceLastLog }
       );
     });

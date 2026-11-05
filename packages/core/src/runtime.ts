@@ -648,7 +648,8 @@ export function workflowEntrypoint(
     );
 
   // The handler, with the World it was built for (which declares how its
-  // deliveries are authenticated) and this route's refusal log.
+  // deliveries are authenticated) and the refusal log (process-wide; see
+  // `createQueueAuthRefusalLogger`).
   let cachedRoute:
     | {
         handler: (req: Request) => Promise<Response>;

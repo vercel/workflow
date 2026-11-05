@@ -407,7 +407,7 @@ describe('workflowEntrypoint queue auth', () => {
 
     expect(
       warn.mock.calls.filter(([message]) =>
-        String(message).startsWith('Refused an unauthenticated queue delivery')
+        String(message).startsWith('Refused a queue delivery with a 401')
       )
     ).toHaveLength(1);
   });
