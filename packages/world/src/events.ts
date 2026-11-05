@@ -635,6 +635,11 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
  * when the run_created event failed (e.g., storage outage during start()), the
  * runtime passes the run input through the queue so the server can create the run
  * on the run_started call if it doesn't exist yet.
+ *
+ * On a spec >= 9 run, a `run_started` that created its run may also be stored
+ * with that data at the run's first slot, standing for the run's creation, with
+ * no `run_created` in the log. Readers accept that shape (`isRunCreationEvent`);
+ * nothing in this SDK asks a World to write it yet.
  */
 const RunStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_started'),
@@ -1114,7 +1119,9 @@ export interface CreateEventParams {
    * - `run` (with `run.startedAt`) and `maxEvents` are present: this
    *   response plays `run_started`'s role, including the event-ceiling
    *   handshake.
-   * - The log contains `run_created`, `run_started`, and the canonical
+   * - The log contains the run's creation (`run_created`, or a creating
+   *   `run_started` at the first slot: `isRunCreationEvent`), `run_started`,
+   *   and the canonical
    *   `hook_received` carrying the requested {@link resumeId}.
    * - `events` uses the same ascending ordering semantics as `events.list`.
    * - The log is read atomically/consistently WITH (i.e. no earlier than)
@@ -1420,7 +1427,10 @@ export interface EventLogSnapshot {
  * `run_created` counts as the run's first in-band position, so the run's
  * first orchestrator write (`run_started`) expects this value. It is the same
  * when `run_created` never landed and `run_started` creates the run (resilient
- * start): the creation the World performs for it counts in its place.
+ * start): the creation the World performs for it counts in its place, also
+ * when that `run_started` holds the first slot as the creation itself
+ * (`isRunCreationEvent`). The log then has one event where the count says
+ * two, which is why a count is only ever read from a snapshot.
  *
  * The runtime adopts it in place of a load snapshot when it knows the log
  * holds nothing but the run's creation: a run with no events yet, and turbo

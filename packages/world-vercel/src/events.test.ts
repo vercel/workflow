@@ -533,6 +533,76 @@ describe('createWorkflowRunEvent run_started start Hook echo', () => {
   });
 });
 
+describe('createWorkflowRunEvent run_started replay run', () => {
+  // A log whose creation is recorded on its first `run_started` (slot 1, with
+  // the creation data) and has no `run_created`.
+  it('reconstructs the run from a creating run_started at the first slot', async () => {
+    const agent = mockAgent();
+    const runId = 'wrun_1';
+    const frames = Buffer.concat([
+      encodeFrame(
+        {
+          eventId: 'evnt_00000000000000000000000001',
+          runId,
+          eventType: 'run_started',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          specVersion: 2,
+          eventData: {
+            deploymentId: 'dpl_1',
+            workflowName: 'workflow',
+            attributes: { phase: 'queued' },
+            startHook: { token: 'order:1', hookId: 'hook_1' },
+          },
+        },
+        new Uint8Array()
+      ),
+      encodeFrame(
+        {
+          _end: 1,
+          next: 'eid:evnt_00000000000000000000000001',
+          hasMore: false,
+        },
+        new Uint8Array()
+      ),
+    ]);
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/${runId}/events/run_started`,
+        method: 'POST',
+      })
+      .reply(200, () => frames, {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_00000000000000000000000001',
+          'x-wf-run-id': runId,
+          'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    const result = await createWorkflowRunEvent(
+      runId,
+      {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.run).toMatchObject({
+      runId,
+      status: 'running',
+      deploymentId: 'dpl_1',
+      workflowName: 'workflow',
+      attributes: { phase: 'queued' },
+      startHook: { token: 'order:1', hookId: 'hook_1' },
+    });
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 /**
  * `run_started` attests the spec version this SDK runs, separately from the
  * `specVersion` it repeats from the queue message (the stamp of whoever called
