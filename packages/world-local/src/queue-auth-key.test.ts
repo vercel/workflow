@@ -165,6 +165,45 @@ describe('the regenerating World (the app, a script calling start())', () => {
     expect(readFileSync(path.join(dataDir, '.gitignore'), 'utf8')).toBe('*\n');
   });
 
+  it('writes back the same key, never a new one, however often keyless deliveries arrive', async () => {
+    const dataDir = path.join(base, 'data');
+    const key = await createQueueAuthKey(dataDir, 'regenerate').current();
+
+    for (let round = 0; round < 3; round++) {
+      rmSync(keyFile(dataDir));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(await verifyQueueAuthKey(undefined)).toBe(false);
+      expect(readKey(dataDir)).toBe(key);
+    }
+    // The key it accepts is still that one.
+    expect(await verifyQueueAuthKey(key)).toBe(true);
+  });
+
+  it('rewrites the key file at most every 250ms under a flood of keyless deliveries', async () => {
+    const dataDir = path.join(base, 'data');
+    const key = await createQueueAuthKey(dataDir, 'regenerate').current();
+
+    // The first keyless delivery reloads and rewrites the deleted file.
+    rmSync(keyFile(dataDir));
+    expect(await verifyQueueAuthKey(undefined)).toBe(false);
+    expect(readKey(dataDir)).toBe(key);
+
+    // Within the interval, keyless (and empty, and malformed) deliveries
+    // compare against memory only: a file deleted meanwhile stays deleted.
+    rmSync(keyFile(dataDir));
+    for (let i = 0; i < 100; i++) {
+      for (const value of [undefined, '', 'not-a-key']) {
+        expect(await verifyQueueAuthKey(value)).toBe(false);
+      }
+    }
+    expect(existsSync(keyFile(dataDir))).toBe(false);
+
+    // After the interval, the next one rewrites it, with the same key.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(await verifyQueueAuthKey(undefined)).toBe(false);
+    expect(readKey(dataDir)).toBe(key);
+  });
+
   it('replaces a corrupt or empty key file with its own key', async () => {
     for (const content of ['', 'not-a-key\n', `${generateQueueAuthKey()}x`]) {
       resetGlobalSingletonForTest(
