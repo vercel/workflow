@@ -191,6 +191,51 @@ describe.skipIf(process.platform === 'win32')(
       sub.unsubscribe();
     });
 
+    it("wakes a force-claim victim's feed with the hook_disposed the takeover wrote to its log", async () => {
+      const token = `feed-force-${ulid()}`;
+      const victim = await createRun();
+      await writer.create(victim, {
+        eventType: 'run_started',
+        specVersion: SPEC,
+      } as AnyEventRequest);
+      await writer.create(victim, {
+        eventType: 'hook_created',
+        correlationId: 'hook_victim',
+        specVersion: SPEC,
+        eventData: { token },
+      } as AnyEventRequest);
+      const claimer = await createRun();
+      await writer.create(claimer, {
+        eventType: 'run_started',
+        specVersion: SPEC,
+      } as AnyEventRequest);
+      const victimFeed = subscribe(victim, 3);
+      // The subscription's own first read happens once LISTEN is up.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(victimFeed.received).toEqual([]);
+
+      const taken = await writer.create(claimer, {
+        eventType: 'hook_created',
+        correlationId: 'hook_claimer',
+        specVersion: SPEC,
+        eventData: { token, force: true },
+      } as AnyEventRequest);
+      expect(taken.hook?.claimedFrom?.runId).toBe(victim);
+
+      await until(
+        () => victimFeed.received.length,
+        (n) => n === 1,
+        // Well under the runtime's fallback poll.
+        2_000
+      );
+      expect(victimFeed.received[0]).toMatchObject({
+        eventType: 'hook_disposed',
+        correlationId: 'hook_victim',
+      });
+      expect(victimFeed.slots()).toEqual([4]);
+      victimFeed.unsubscribe();
+    });
+
     it('refuses subscriptions past the per-process cap, through onError', async () => {
       const runId = await createRun();
       const live = [

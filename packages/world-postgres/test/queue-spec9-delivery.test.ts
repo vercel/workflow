@@ -224,6 +224,104 @@ describe.skipIf(process.platform === 'win32')(
       expect(rerun!.invocationStartedAt).toBe(first!.invocationStartedAt);
     });
 
+    it("delivers an absorbed hook wake's resume timing on the re-run, and never re-sends the first run's own", async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery, response) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        response.end('{}');
+      };
+      const ownTiming = {
+        resumeRequestedAtMs: 1,
+        queuePublishRequestedAtMs: 2,
+        strategy: 'sequential',
+      };
+      await wake(runId, { hookResumeTiming: ownTiming });
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      // A plain wake, then a resume's wake with its timing, queue behind it.
+      await wake(runId);
+      const absorbedTiming = {
+        resumeRequestedAtMs: 10,
+        queuePublishRequestedAtMs: 20,
+        strategy: 'sequential',
+      };
+      const traceCarrier = { traceparent: '00-abc-def-01' };
+      await wake(runId, { hookResumeTiming: absorbedTiming, traceCarrier });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 2
+      );
+      await until(
+        () => jobsOnRunQueue(runId),
+        (jobs) => jobs.length === 0
+      );
+      const [first, rerun] = runDeliveries(runId);
+      expect(first!.body.hookResumeTiming).toEqual(ownTiming);
+      expect(rerun!.body).toMatchObject({
+        runId,
+        runSpecVersion: SPEC,
+        hookResumeTiming: absorbedTiming,
+        traceCarrier,
+      });
+      expect(rerun).toMatchObject({ attempt: 1, deliveryCount: 2 });
+
+      // A re-run that absorbs no timed wake carries no timing at all.
+      const secondRunId = `wrun_${ulid()}`;
+      const secondGate = held();
+      respond = async (delivery, response) => {
+        if (runDeliveries(secondRunId).length === 1) await secondGate.released;
+        response.end('{}');
+      };
+      await wake(secondRunId, { hookResumeTiming: ownTiming });
+      await until(
+        () => runDeliveries(secondRunId).length,
+        (n) => n === 1
+      );
+      await wake(secondRunId);
+      secondGate.release();
+      await until(
+        () => runDeliveries(secondRunId).length,
+        (n) => n === 2
+      );
+      expect(runDeliveries(secondRunId)[1]!.body).not.toHaveProperty(
+        'hookResumeTiming'
+      );
+    });
+
+    it('leaves a legacy hook resume (hookInput) queued behind a delivery to its own delivery', async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery, response) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        response.end('{}');
+      };
+      await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      await wake(runId, {
+        hookInput: {
+          token: 'tok',
+          resumeId: 'res_1',
+          hookId: 'hook_1',
+          payload: 'x',
+          payloadDigest: 'digest',
+        },
+      });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 2
+      );
+      expect(runDeliveries(runId)[1]!.body.hookInput).toBeDefined();
+      expect(runDeliveries(runId)[1]!.deliveryCount).toBe(1);
+    });
+
     it('leaves a start message queued behind a delivery to its own delivery', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();

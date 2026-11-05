@@ -1217,8 +1217,9 @@ export function createEventsStorage(
     params?: CreateEventParams
   ): Promise<EventResult> => {
     const result = await createFenced(runId, data, params);
-    // Wakes the run's live feed (see run-events.ts), in any process. Only
-    // a spec 9 run has subscribers, and every write to one is stamped 9.
+    // Wakes the live feed (see run-events.ts), in any process, of every
+    // spec 9 run the write committed an event to. Only a spec 9 run has
+    // subscribers, and every write to one is stamped 9.
     const announcedRunId = result.event?.runId ?? runId;
     if (
       announcedRunId &&
@@ -1226,6 +1227,10 @@ export function createEventsStorage(
       (data.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
     ) {
       announceRunEvents(drizzle, announcedRunId);
+    }
+    const victimRunId = forceClaimVictimRunId(result);
+    if (victimRunId !== undefined && victimRunId !== announcedRunId) {
+      announceRunEvents(drizzle, victimRunId);
     }
     return result;
   };
@@ -1330,6 +1335,28 @@ export function createEventsStorage(
       return snapshot ? { ...page, snapshot } : page;
     },
   } as Storage['events'];
+}
+
+/**
+ * The spec 9 run a forced `hook_created` took its token from, when the same
+ * transaction committed `hook_disposed{forceClaimedBy}` to that run's log:
+ * the victim was still running, which is exactly when `claimedFrom` carries
+ * its `runSpecVersion` (see the `hook_created` branch). Its live feed is
+ * announced too, so the victim sees the takeover at once rather than at its
+ * next poll.
+ */
+function forceClaimVictimRunId(result: EventResult): string | undefined {
+  const claimedFrom =
+    result.hook?.claimedFrom ??
+    (
+      result.event?.eventData as
+        | { forceClaimedFrom?: Hook['claimedFrom'] }
+        | undefined
+    )?.forceClaimedFrom;
+  return claimedFrom?.runId !== undefined &&
+    (claimedFrom.runSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ? claimedFrom.runId
+    : undefined;
 }
 
 /**

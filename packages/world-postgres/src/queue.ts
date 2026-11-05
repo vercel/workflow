@@ -238,6 +238,18 @@ type HttpExecutionResult =
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
 
+/** A hook resume's timing, carried from a coalesced wake to the re-run. */
+interface CoalescedResume {
+  hookResumeTiming: unknown;
+  traceCarrier?: unknown;
+}
+
+/** What one coalescing check removed (see `takeCoalescedJobs`). */
+interface CoalescedJobs {
+  removed: number;
+  resume?: CoalescedResume;
+}
+
 /** Whether a queue message is a step's execution message. */
 function isStepMessage(message: unknown): boolean {
   return (
@@ -1141,9 +1153,9 @@ export function createQueue(
   async function takeCoalescedJobs(
     runId: string,
     ownJobId: string
-  ): Promise<number> {
+  ): Promise<CoalescedJobs> {
     const utils = workerUtils;
-    if (!utils) return 0;
+    if (!utils) return { removed: 0 };
     const { rows } = await pool.query<{ id: string; payload: unknown }>(
       `SELECT jobs.id, jobs.payload
          FROM graphile_worker._private_jobs AS jobs
@@ -1160,6 +1172,8 @@ export function createQueue(
       [executorQueueName(runId), getJobQueueName(), ownJobId]
     );
     const ids: string[] = [];
+    /** The resume timing each candidate carries, by job id. */
+    const resumes = new Map<string, CoalescedResume>();
     for (const row of rows) {
       const message = MessageData.safeParse(row.payload);
       if (!message.success) continue;
@@ -1177,11 +1191,55 @@ export function createQueue(
       ) {
         continue;
       }
-      ids.push(row.id);
+      ids.push(String(row.id));
+      const { hookResumeTiming, traceCarrier } = body as Record<
+        string,
+        unknown
+      >;
+      if (hookResumeTiming !== undefined) {
+        resumes.set(String(row.id), {
+          hookResumeTiming,
+          ...(traceCarrier !== undefined && { traceCarrier }),
+        });
+      }
     }
-    if (ids.length === 0) return 0;
+    if (ids.length === 0) return { removed: 0 };
     const removed = await utils.completeJobs(ids);
-    return removed.length;
+    // The earliest removed wake that carries a hook resume's timing: the
+    // re-run delivers it (see `rerunBody`).
+    const removedIds = new Set(removed.map((job) => String(job.id)));
+    const resume = ids
+      .filter((id) => removedIds.has(id))
+      .map((id) => resumes.get(id))
+      .find((found) => found !== undefined);
+    return { removed: removed.length, ...(resume && { resume }) };
+  }
+
+  /**
+   * The body of a coalesced re-run: the delivery's own message, with the
+   * resume timing (and trace context) of a hook wake it absorbed in place of
+   * its own. The runtime starts a resume's TTR measurement only from the
+   * `hookResumeTiming` of the message it handles, and the re-run is what
+   * consumes the absorbed resume, so without this the measurement would be
+   * lost. Its own timing is dropped either way: the first run consumed it,
+   * and a re-run must not report that resume again.
+   */
+  function rerunBody(body: unknown, resume: CoalescedResume | undefined) {
+    const { hookResumeTiming: _consumed, ...rest } = body as Record<
+      string,
+      unknown
+    >;
+    return transport.serialize(
+      resume
+        ? {
+            ...rest,
+            hookResumeTiming: resume.hookResumeTiming,
+            ...(resume.traceCarrier !== undefined && {
+              traceCarrier: resume.traceCarrier,
+            }),
+          }
+        : rest
+    ) as Buffer;
   }
 
   function createTaskHandler(queue: QueuePrefix, executor = false) {
@@ -1306,6 +1364,7 @@ export function createQueue(
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         let rerun = 0;
         let result: HttpExecutionResult;
+        let deliveryBody: Buffer | Uint8Array = messageData.data;
         for (;;) {
           result = await deliverMessage({
             queueName,
@@ -1318,7 +1377,7 @@ export function createQueue(
             // same attempt, so the runtime reads the log as on a
             // redelivery (see `Queue.createQueueHandler`).
             deliveryCount: deliveryCount + rerun,
-            body: messageData.data,
+            body: deliveryBody,
             headers: messageData.headers,
             executorDelivery,
             invocationStartedAt,
@@ -1330,11 +1389,13 @@ export function createQueue(
             result.type !== 'completed' ||
             coalescingRunId === undefined ||
             ownJobId === undefined ||
-            rerun >= MAX_COALESCED_RERUNS ||
-            (await takeCoalescedJobs(coalescingRunId, ownJobId)) === 0
+            rerun >= MAX_COALESCED_RERUNS
           ) {
             break;
           }
+          const coalesced = await takeCoalescedJobs(coalescingRunId, ownJobId);
+          if (coalesced.removed === 0) break;
+          deliveryBody = rerunBody(body, coalesced.resume);
           rerun++;
         }
 
