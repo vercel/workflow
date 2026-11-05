@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetGlobalSingletonForTest } from './global-singleton.js';
 import {
+  clearQueueAuthKeySources,
   createLogLimiter,
   generateQueueAuthKey,
   getQueueAuthKey,
@@ -115,7 +116,7 @@ describe('createLogLimiter', () => {
 
 describe('verifyQueueAuthKey with a key source', () => {
   afterEach(() => {
-    resetGlobalSingletonForTest('@workflow/utils//queueAuthKeySources', 1);
+    clearQueueAuthKeySources();
     resetGlobalSingletonForTest('@workflow/utils//queueAuthKey', 1);
   });
 

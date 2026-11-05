@@ -15,6 +15,7 @@ export {
 export { pluralize } from './pluralize.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
 export {
+  clearQueueAuthKeySources,
   createLogLimiter,
   generateQueueAuthKey,
   getQueueAuthKey,

@@ -13,6 +13,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  clearQueueAuthKeySources,
   generateQueueAuthKey,
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
@@ -37,7 +38,7 @@ beforeEach(() => {
 afterEach(() => {
   // A fresh process for the next test: no key held, no receiving-side source.
   resetGlobalSingletonForTest('@workflow/world-local//queueAuthKeyFiles', 1);
-  resetGlobalSingletonForTest('@workflow/utils//queueAuthKeySources', 1);
+  clearQueueAuthKeySources();
   vi.restoreAllMocks();
   rmSync(base, { recursive: true, force: true });
 });
@@ -141,7 +142,7 @@ describe('the regenerating World (the app, a script calling start())', () => {
     }
   });
 
-  it('keeps one key per data directory', async () => {
+  it('keeps one key per data directory, and accepts each of them', async () => {
     const a = await createQueueAuthKey(
       path.join(base, 'a'),
       'regenerate'
@@ -151,6 +152,11 @@ describe('the regenerating World (the app, a script calling start())', () => {
       'regenerate'
     ).current();
     expect(a).not.toBe(b);
+    // Both Worlds' routes are this process's: either key is accepted, the
+    // first World's too, not only the last one registered.
+    expect(await verifyQueueAuthKey(a)).toBe(true);
+    expect(await verifyQueueAuthKey(b)).toBe(true);
+    expect(await verifyQueueAuthKey(generateQueueAuthKey())).toBe(false);
   });
 
   it('accepts its own key on every delivery without touching the file', async () => {

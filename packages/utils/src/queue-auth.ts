@@ -99,6 +99,11 @@ export function setQueueAuthKeySource(
   else sources.delete(id);
 }
 
+/** Removes every registered key source. For tests: a fresh process. */
+export function clearQueueAuthKeySources(): void {
+  keySourcesState().sources.clear();
+}
+
 /**
  * Whether a delivery's {@link QUEUE_AUTH_HEADER} is the current key of any
  * registered source. Compares against the keys in memory first. Only on a
