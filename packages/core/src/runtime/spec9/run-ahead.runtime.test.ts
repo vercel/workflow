@@ -912,11 +912,13 @@ describe.each([
       const info = vi.spyOn(runtimeLogger, 'info');
 
       await world.deliver(start);
-      // The save runs off the response path.
-      await new Promise((resolve) => setTimeout(resolve, 50));
       expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);
       expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
-      expect(saves).toHaveLength(1);
+      // The save runs off the response path (seal, compress, store).
+      await vi.waitFor(() => expect(saves).toHaveLength(1), {
+        timeout: 10_000,
+        interval: 10,
+      });
 
       unconfirmedAtStart = [];
       world.appendOutOfBand({

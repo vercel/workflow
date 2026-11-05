@@ -1509,14 +1509,6 @@ export async function runWorkflowWithQuickJS(params: {
   let throttledReplaySeconds: number | undefined;
 
   /**
-   * Fetch all events not yet processed by the live VM (log order), reading
-   * from where the log was last read to. A World's cursor never passes a
-   * position whose writer is still in flight, so reading forward from it
-   * cannot skip an event; the id set is what makes a re-read of the same
-   * span (after a queued page or a delta moved the view ahead of the cursor)
-   * harmless.
-   */
-  /**
    * Steps whose outcome the VM has been fed. Under run-ahead an outcome can
    * reach the VM before its body's settlement is acted on, and that
    * settlement must not then ask for a fresh read of it.
@@ -1532,6 +1524,14 @@ export async function runWorkflowWithQuickJS(params: {
       }
     }
   };
+  /**
+   * Fetch all events not yet processed by the live VM (log order), reading
+   * from where the log was last read to. A World's cursor never passes a
+   * position whose writer is still in flight, so reading forward from it
+   * cannot skip an event; the id set is what makes a re-read of the same
+   * span (after a queued page or a delta moved the view ahead of the cursor)
+   * harmless.
+   */
   const fetchUnseenEvents = async (): Promise<Event[]> => {
     const unseen: Event[] = [];
     let cursor: string | null = logView.logCursor;
@@ -1713,6 +1713,19 @@ export async function runWorkflowWithQuickJS(params: {
    * pass on the same event.
    */
   let runEndSeen = false;
+  /**
+   * Turbo: whether the backgrounded `run_started` has committed. A body
+   * started from a creation run-ahead sent does not wait for it the way an
+   * optimistic body's writes do (see `StepExecutorParams.runReadyBarrier`),
+   * so no creation runs ahead before it.
+   */
+  let runStartedLanded = turbo === undefined;
+  void turbo?.runReadyBarrier.then(
+    () => {
+      runStartedLanded = true;
+    },
+    () => {}
+  );
   const noteRunEnd = (seen: readonly Event[] | undefined): void => {
     if (
       seen?.some(
@@ -1743,6 +1756,8 @@ export async function runWorkflowWithQuickJS(params: {
       'workflow.run_ahead.depth_cap_steps': runAheadStats.depthCap,
       'workflow.run_ahead.failure_stops': runAheadStats.failureStops,
       'workflow.run_ahead.hazard_stops': runAheadStats.hazardStops,
+      // Displaced speculative writes: repaired in place on the node engine,
+      // a restart in place here.
       'workflow.run_ahead.repairs': runAheadStats.displaced,
     });
   };
@@ -1808,6 +1823,11 @@ export async function runWorkflowWithQuickJS(params: {
     notifyProgress();
   };
   /**
+   * Events already found to be hazards: a report, the feed and a listing can
+   * each hand back the same one.
+   */
+  const hazardEventIds = new Set<string>();
+  /**
    * Stops the delivery's further decisions on an event another writer placed
    * below a speculative write that would have made the boundary it ran ahead
    * of path-changing. The classification and the in-band fence rule this
@@ -1815,9 +1835,6 @@ export async function runWorkflowWithQuickJS(params: {
    * and it is loud. Events above every speculative position are fed after
    * them in log order, as a cold replay reads them, and are not checked.
    */
-  /** Events already found to be hazards: a report, the feed and a listing
-   * can each hand back the same one. */
-  const hazardEventIds = new Set<string>();
   const checkRunAheadHazard = (event: Event, source: string): void => {
     if (placedBySlot.size === 0) return;
     if (hazardEventIds.has(event.eventId)) return;
@@ -2281,10 +2298,10 @@ export async function runWorkflowWithQuickJS(params: {
   };
 
   /**
-   * Starts one inline step's body; never awaited here. `optimistic` (turbo,
-   * run-ahead) starts it before its `step_created` and `step_started`
-   * commit. `ahead` is the step's creation run-ahead already sent (see
-   * {@link writeCreationAhead}); `runAhead` lets the step's outcome run
+   * Starts one inline step's body; never awaited here. `optimistic` (turbo)
+   * starts it before its `step_created` and `step_started` commit. `ahead`
+   * is the step's creation run-ahead already sent, whose body starts at once
+   * (see {@link writeCreationAhead}); `runAhead` lets the step's outcome run
    * ahead of its write at a boundary that is still inert when it settles.
    */
   const launchInline = (
@@ -2312,8 +2329,8 @@ export async function runWorkflowWithQuickJS(params: {
         let startAfter: Promise<unknown> | undefined;
         if (resume) {
           // Created inline by an earlier delivery: its `step_created` (and
-          // the input on it) is already in the log.
-          committedStarts.add(step.correlationId);
+          // the input on it) is already in the log. This attempt's start is
+          // the executor's own write (see `createEvent` below).
           input = await stepInputFromLog(resume);
         } else if (ahead) {
           // Run-ahead sent the creation already; the body starts now.
@@ -3157,6 +3174,7 @@ export async function runWorkflowWithQuickJS(params: {
       let aheadInputs: Map<string, SerializedData> | undefined;
       if (
         boundaryRunAhead !== undefined &&
+        runStartedLanded &&
         resumedInline.length === 0 &&
         inlineCandidates.length > 0 &&
         inlineCandidates.length <= MAX_BATCH_EVENTS &&
