@@ -2407,7 +2407,7 @@ flowchart TD
 - A spec 9 wake without an idempotency key can be duplicated by a retried publish; the extra delivery exits without a replay when nothing new is in the log (`packages/core/src/runtime/resume-hook.ts`).
 - Linger is skipped when the remaining time to the inline deadline minus the margin is zero, so a late delivery does not hold the invocation (`packages/core/src/runtime/spec9/delivery.ts`).
 - A payload for an unawaited hook may land below speculative writes and is admitted; once the workflow awaits the hook, the boundary drains instead of running ahead (`admitBelowSpeculation` in `packages/core/src/runtime/spec9/run-ahead.ts`, `packages/core/src/runtime/spec9/delivery.ts`). See [Edge cases](#edge-cases-and-failure-handling).
-- An older SDK's `resumeHook()` on a spec 9 run gets 400 `spec-version-requires-api-v5` from the world-vercel backend on the `hook_received` write, before it sends a wake. See [Spec routing](#spec-8-and-spec-9-side-by-side).
+- An older SDK's `resumeHook()` on a spec 9 run is admitted out-of-band by the world-vercel backend, then sends an unstamped wake; on the Local and Postgres Worlds it still fails with `RunNotSupportedError`. See [An older SDK and a spec 9 run](#an-older-sdk-and-a-spec-9-run).
 - A force-claim victim with no recorded `workflowName` (a legacy hook) gets no wake, and reads the disposal on its next invocation for any reason (`packages/core/src/runtime/hook-wake.ts`).
 
 ### Timers and waits
@@ -3431,7 +3431,7 @@ A deployment on an SDK without spec 9 writes to a spec 9 run, for example a roll
 sequenceDiagram
     participant Old as Older SDK deployment
     participant B as world-vercel backend
-    Old->>B: hook_received or run_cancelled, API below 5
+    Old->>B: run_cancelled, API below 5
     B-->>Old: 400 spec-version-requires-api-v5
     Note over Old: no wake is sent, the run is unchanged
 ```
