@@ -1709,6 +1709,15 @@ export interface QuickJSWorkflowSession {
    * here (see `runtime/out-of-band-observation.ts`).
    */
   openHooks(): QuickJSOpenHook[];
+  /**
+   * How many times code in the VM has read the clock so far (the WASI
+   * clock behind `Date.now()` and `new Date()`; QuickJS may read it on its
+   * own too, which only over-counts). This engine advances the clock to
+   * every event it reads, an unread hook payload included, so a run-ahead
+   * delivery uses this to tell whether a decision may depend on where
+   * another writer's event landed (see `spec9/quickjs-entrypoint.ts`).
+   */
+  clockReads(): number;
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
@@ -1811,6 +1820,14 @@ export async function startQuickJSWorkflow(
     runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt);
   const advanceClock = (ms: number) => {
     if (Number.isFinite(ms)) vmNowMs = Math.max(vmNowMs, ms);
+  };
+  // Every read of the clock by code in the VM (`Date.now()`, `new Date()`,
+  // a `sleep()` computing its deadline): see
+  // `QuickJSWorkflowSession.clockReads`.
+  let clockReads = 0;
+  const readClock = (): number => {
+    clockReads++;
+    return vmNowMs;
   };
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
@@ -1970,7 +1987,7 @@ export async function startQuickJSWorkflow(
     }
     const vm = await restoreWorkflowVM(
       options.existingSnapshot.data,
-      () => vmNowMs,
+      readClock,
       interruptBudget
     );
     try {
@@ -2055,6 +2072,7 @@ export async function startQuickJSWorkflow(
         }),
         historicalAttributeIds,
         () => lastUlid,
+        () => clockReads,
         options.encryptionKey
       );
     } catch (err) {
@@ -2109,10 +2127,10 @@ export async function startQuickJSWorkflow(
       memoryLimit: 256 * 1024 * 1024,
       interruptHandler: createInterruptHandler(interruptBudget),
       extensions: assets.extensions,
-      wasi: makeDeterministicClockWasi(() => vmNowMs),
+      wasi: makeDeterministicClockWasi(readClock),
     });
   } else {
-    vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
+    vm = await initWorkflowVM(readClock, interruptBudget);
   }
 
   // Host-side serde: captures the VM's intrinsics (bootstrap included)
@@ -2392,6 +2410,7 @@ export async function startQuickJSWorkflow(
       }),
       historicalAttributeIds,
       () => lastUlid,
+      () => clockReads,
       options.encryptionKey
     );
   }
@@ -2418,6 +2437,7 @@ function makeSettledSession(
         'QuickJS workflow session is settled — memoryUsage is only valid while suspended'
       );
     },
+    clockReads: () => 0,
     openHooks: () => {
       throw new Error(
         'QuickJS workflow session is settled — openHooks is only valid while suspended'
@@ -2453,6 +2473,8 @@ function makeLiveSession(
   historicalAttributeIds: Set<string>,
   /** The last correlation-id ULID the VM drew (see isConsumedTerminal). */
   getLastUlid: () => string | undefined,
+  /** See {@link QuickJSWorkflowSession.clockReads}. */
+  getClockReads: () => number,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -2539,6 +2561,9 @@ function makeLiveSession(
         );
       }
       return vm.getMemoryUsage();
+    },
+    clockReads(): number {
+      return getClockReads();
     },
     openHooks(): QuickJSOpenHook[] {
       if (!alive) {

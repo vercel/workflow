@@ -1707,6 +1707,30 @@ export async function runWorkflowWithQuickJS(params: {
   /** Whether the latest boundary was classified inert. */
   let boundaryInert = false;
   /**
+   * Set when code in the VM read the clock while the VM held a speculative
+   * event no write had confirmed at its position. This engine advances its
+   * clock to every event it reads, an unread hook payload or an `attr_set`
+   * included (`processEvents`, `quickjs-runtime.ts`), so another writer's
+   * event landing below a speculative one gives a replay a later
+   * `Date.now()` after it than the workflow read. A decision made without
+   * reading the clock cannot tell where such an event landed: its payload is
+   * buffered, or, for an attribute, invisible to workflow code. One made
+   * after a read can, so a boundary that follows one decides only once the
+   * speculative events are confirmed (see `classifyBoundary`'s caller), and
+   * a displaced one restarts the delivery before anything is decided from
+   * it. Cleared once no unconfirmed speculative event is in the VM.
+   */
+  let clockReadOnSpeculation = false;
+  /** Whether the VM holds a speculative event not yet confirmed there. */
+  const vmHoldsUnconfirmedSpeculation = (): boolean => {
+    const fed = logView.fedThroughSlot;
+    if (fed === undefined) return false;
+    for (const slot of placedBySlot.keys()) {
+      if (slot <= fed) return true;
+    }
+    return false;
+  };
+  /**
    * Set once this delivery has seen the run end (another writer's
    * `run_cancelled`, say): nothing more runs ahead, so no body starts ahead
    * of a start the World will refuse. The node engine stops before its next
@@ -1742,6 +1766,7 @@ export async function runWorkflowWithQuickJS(params: {
   const runAheadStats = {
     boundaries: 0,
     drained: 0,
+    clockDrained: 0,
     depthCap: 0,
     failureStops: 0,
     hazardStops: 0,
@@ -1753,6 +1778,7 @@ export async function runWorkflowWithQuickJS(params: {
       'workflow.run_ahead.depth': runAheadDepth,
       'workflow.run_ahead.boundaries': runAheadStats.boundaries,
       'workflow.run_ahead.drained_boundaries': runAheadStats.drained,
+      'workflow.run_ahead.clock_drained_boundaries': runAheadStats.clockDrained,
       'workflow.run_ahead.depth_cap_steps': runAheadStats.depthCap,
       'workflow.run_ahead.failure_stops': runAheadStats.failureStops,
       'workflow.run_ahead.hazard_stops': runAheadStats.hazardStops,
@@ -2780,16 +2806,24 @@ export async function runWorkflowWithQuickJS(params: {
       // back reaches the VM before it decides.
       let boundaryRunAhead: RunAheadContext | undefined;
       if (runAheadDepth > 0) {
-        boundaryRunAhead = runEndSeen
-          ? undefined
-          : classifyBoundary(
-              pendingOperations,
-              new Set([
-                ...selfWrittenStepIds(),
-                ...inlineCandidates.map((step) => step.correlationId),
-                ...resumedInline.map(({ step }) => step.correlationId),
-              ])
-            );
+        if (clockReadOnSpeculation && !vmHoldsUnconfirmedSpeculation()) {
+          clockReadOnSpeculation = false;
+        }
+        // Code that read the clock past an unconfirmed speculative event
+        // decides only from a confirmed log (see `clockReadOnSpeculation`).
+        const clockGated = clockReadOnSpeculation;
+        if (clockGated) runAheadStats.clockDrained++;
+        boundaryRunAhead =
+          runEndSeen || clockGated
+            ? undefined
+            : classifyBoundary(
+                pendingOperations,
+                new Set([
+                  ...selfWrittenStepIds(),
+                  ...inlineCandidates.map((step) => step.correlationId),
+                  ...resumedInline.map(({ step }) => step.correlationId),
+                ])
+              );
         boundaryInert = boundaryRunAhead !== undefined;
         if (boundaryInert) runAheadStats.boundaries++;
         if (!boundaryInert && speculationsBySlot.size > 0) {
@@ -3033,7 +3067,15 @@ export async function runWorkflowWithQuickJS(params: {
           // consumed by the live VM, so no external requeue is needed.
           pendingRequeueSignal = false;
           eventsProcessedSinceSnapshot += newEvents.length;
+          const clockReadsBefore = runAheadDepth > 0 ? session.clockReads() : 0;
           result = await session.continueWithEvents(newEvents);
+          if (
+            runAheadDepth > 0 &&
+            session.clockReads() > clockReadsBefore &&
+            vmHoldsUnconfirmedSpeculation()
+          ) {
+            clockReadOnSpeculation = true;
+          }
           wfdiag('inline_iteration', {
             iteration,
             phase: 'feed',

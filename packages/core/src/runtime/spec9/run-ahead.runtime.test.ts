@@ -145,6 +145,29 @@ const observedHook = `const inc = ${step};
     return n;
   }${registerWorkflow()}`;
 
+// A branch on the clock after a step, beside a hook nothing awaits.
+let branchBodies: string[] = [];
+registerStepFunction('ra_first', async () => 'first');
+registerStepFunction('ra_early', async () => {
+  branchBodies.push('early');
+  return 'early';
+});
+registerStepFunction('ra_late', async () => {
+  branchBodies.push('late');
+  return 'late';
+});
+const clockBranch = `const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
+  const first = useStep("ra_first");
+  const early = useStep("ra_early");
+  const late = useStep("ra_late");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow(cutoff) {
+    createHook({ token: "ra-clock" });
+    await first();
+    if (Date.now() < cutoff) return { path: "early", result: await early() };
+    return { path: "late", result: await late() };
+  }${registerWorkflow()}`;
+
 // Steps, a hook the workflow parks on, then more steps.
 const hookBetweenLoops = `const inc = ${step};
   const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
@@ -949,6 +972,50 @@ describe.each([
       expect(eventsOf(cold.world, 'step_started')).toHaveLength(2 * STEPS);
     }
   );
+
+  // The QuickJS clock advances on every event the VM reads, an unread hook
+  // payload included. A payload another writer lands below a speculative
+  // outcome is then not inert there: replay reads a later `Date.now()` after
+  // the outcome than the workflow did when it ran ahead. A boundary whose
+  // code read the clock past an unconfirmed speculative event decides only
+  // once that event is confirmed, so the branch it takes is the one a
+  // replay of the log takes.
+  it('takes the branch a replay takes when an unread hook payload lands below an outcome the workflow read the clock after', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
+    branchBodies = [];
+    const cutoff = Date.now() + 1500;
+    let injected = false;
+    const { world, runId } = await run(clockBranch, [cutoff], {
+      async beforeCreate(data) {
+        if (injected || data.eventType !== 'step_completed') return;
+        injected = true;
+        // The outcome's write is still in flight past the cutoff, when
+        // another writer appends the unread payload below it.
+        while (Date.now() <= cutoff + 50) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        world.appendOutOfBand({
+          eventType: 'hook_received',
+          runId,
+          correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+          eventData: {
+            token: 'ra-clock',
+            payload: await dehydrateStepReturnValue('late', runId, undefined),
+          },
+        } as unknown as Partial<Event>);
+      },
+    });
+    await world.runUntilIdle();
+
+    expect(injected).toBe(true);
+    const live = (await runResult(world)) as { path: string; result: string };
+    // The branch taken is the branch whose step ran and was consumed.
+    expect(live.result).toBe(live.path);
+    expect(branchBodies).toEqual([live.path]);
+    // A replay of the committed log decides the same way.
+    const cold = await coldReplay(world, clockBranch);
+    expect(cold.result).toEqual(live);
+  });
 
   it('drains with an AbortController open', async () => {
     const { world } = await run(withAbortSignal, [STEPS]);

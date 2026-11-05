@@ -316,6 +316,11 @@ export class QuickJSLogView {
     return true;
   }
 
+  /** The highest position delivered to the VM, if any. */
+  get fedThroughSlot(): number | undefined {
+    return this.fedMaxSlot;
+  }
+
   /** How many speculative events no write has confirmed or displaced yet. */
   get speculativeCount(): number {
     return this.speculative.size;
