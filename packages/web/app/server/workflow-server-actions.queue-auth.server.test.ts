@@ -27,14 +27,22 @@ describe("the web UI's Local World", () => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  it('only reads the queue auth key, and writes nothing into the data directory', async () => {
-    const { createWorld } = await import('@workflow/world-local');
-    const { reenqueueRun } = await import('./workflow-server-actions.server');
+  // Importing the server actions module alone takes seconds: past vitest's
+  // default 5s when the machine is busy.
+  it(
+    'only reads the queue auth key, and writes nothing into the data directory',
+    {
+      timeout: 60_000,
+    },
+    async () => {
+      const { createWorld } = await import('@workflow/world-local');
+      const { reenqueueRun } = await import('./workflow-server-actions.server');
 
-    // Fails (no such run), after creating the World.
-    await reenqueueRun({}, 'wrun_01M6MV000000000000000000000');
+      // Fails (no such run), after creating the World.
+      await reenqueueRun({}, 'wrun_01M6MV000000000000000000000');
 
-    expect(createWorld).toHaveBeenCalledWith({ queueAuthKey: 'read' });
-    expect(existsSync(path.join(base, '.workflow-data'))).toBe(false);
-  });
+      expect(createWorld).toHaveBeenCalledWith({ queueAuthKey: 'read' });
+      expect(existsSync(path.join(base, '.workflow-data'))).toBe(false);
+    }
+  );
 });
