@@ -1,5 +1,6 @@
 import {
   createLogLimiter,
+  globalSingleton,
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
@@ -44,11 +45,45 @@ export function isQueueAuthEnforced(
 }
 
 /**
+ * Process-wide, so the route copies of several bundler layers share it: the
+ * warning for a World that declares no mode is logged once, and at most once
+ * a minute after that (a dev server re-initializing its routes).
+ */
+const undeclaredModeWarning = () =>
+  globalSingleton('@workflow/core//undeclaredQueueAuthModeWarning', 1, () => ({
+    limit: createLogLimiter(),
+  }));
+
+/**
+ * Opt-in leaves such a World unchecked; say so where an operator will see
+ * it, with what to do about it.
+ */
+function warnUndeclaredQueueAuthMode(): void {
+  undeclaredModeWarning().limit((routesSinceLastLog) => {
+    runtimeLogger.warn(
+      'This World declares no queueAuthMode, so the runtime does not ' +
+        'authenticate deliveries to the flow route (POST ' +
+        '/.well-known/workflow/v1/flow): a request from outside the app can ' +
+        'start runs, fail a running one, or re-trigger its steps. Protect that ' +
+        'route at the network edge. Declaring a queueAuthMode becomes required ' +
+        'in Workflow SDK v6.',
+      { routesSinceLastLog }
+    );
+  });
+}
+
+/**
  * Logs, once per queue route, what `WORKFLOW_QUEUE_AUTH` does for `world`:
  * loudly when it turns the check off, and as an error when that is refused
- * because dynamic workflows are enabled. Silent in the default case.
+ * because dynamic workflows are enabled. Silent in the default case. A World
+ * that declares no mode gets a warning instead (once, process-wide), since
+ * its flow route is not checked.
  */
 export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
+  if (world.queueAuthMode === undefined) {
+    warnUndeclaredQueueAuthMode();
+    return;
+  }
   if (!isLoopbackChecked(world)) return;
   const raw = process.env[QUEUE_AUTH_ENV];
   if (isQueueAuthOffRequested()) {
@@ -56,7 +91,7 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
       runtimeLogger.error(
         `${QUEUE_AUTH_ENV}=off is refused because dynamic workflows are enabled ` +
           '(WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS). Queue deliveries are still ' +
-          'authenticated: a delivery that does not carry this process’s queue key ' +
+          'authenticated: a delivery that does not carry the app’s queue key ' +
           'is refused with a 401.'
       );
       return;

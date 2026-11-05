@@ -5,6 +5,7 @@ import {
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
+  resetGlobalSingletonForTest,
 } from '@workflow/utils';
 import { type QueueAuthMode, SPEC_VERSION_CURRENT } from '@workflow/world';
 import {
@@ -59,7 +60,13 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  resetGlobalSingletonForTest(
+    '@workflow/core//undeclaredQueueAuthModeWarning',
+    1
+  );
 });
+
+const undeclaredWarning = expect.stringContaining('declares no queueAuthMode');
 
 describe('isQueueAuthEnforced', () => {
   it.each<[QueueAuthMode | undefined, boolean]>([
@@ -141,6 +148,42 @@ describe('authorizeQueueDelivery', () => {
 });
 
 describe('logQueueAuthSetting', () => {
+  it('warns once, process-wide, when the World declares no mode', () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    // Several route copies (bundler layers) initializing at startup.
+    logQueueAuthSetting({});
+    logQueueAuthSetting({});
+    logQueueAuthSetting({ queueAuthMode: undefined });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0] as [string];
+    expect(message).toContain(
+      'does not authenticate deliveries to the flow route'
+    );
+    expect(message).toContain('/.well-known/workflow/v1/flow');
+    expect(message).toContain('network edge');
+    expect(message).toContain('required in Workflow SDK v6');
+  });
+
+  it('warns again at most once a minute, with the count since', () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    logQueueAuthSetting({});
+    logQueueAuthSetting({});
+    vi.advanceTimersByTime(61_000);
+    logQueueAuthSetting({});
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls[1]?.[1]).toEqual({ routesSinceLastLog: 2 });
+  });
+
+  it('gives a loopback or skip World no such warning', () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    logQueueAuthSetting({ queueAuthMode: 'loopback' });
+    logQueueAuthSetting({ queueAuthMode: 'skip' });
+    expect(warn).not.toHaveBeenCalledWith(undeclaredWarning, expect.anything());
+  });
+
   it('is silent by default and for skip Worlds', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn');
     const error = vi.spyOn(runtimeLogger, 'error');
@@ -307,11 +350,19 @@ describe('workflowEntrypoint queue auth', () => {
 
   // Opt-in until the mode is required: a World that declares nothing is not
   // checked, so a forged request reaches its handler as it does on main.
-  it('does not check a World that declares no mode', async () => {
+  it('does not check a World that declares no mode, and warns once that /flow is unauthenticated', async () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     const { routed, route } = installWorld(undefined);
 
+    // Opt-in unchanged: an unauthenticated delivery is routed.
     expect((await route(delivery())).status).toBe(200);
-    expect(routed).toHaveLength(1);
+    expect((await route(delivery())).status).toBe(200);
+    expect(routed).toHaveLength(2);
+    expect(
+      warn.mock.calls.filter(([message]) =>
+        String(message).includes('declares no queueAuthMode')
+      )
+    ).toHaveLength(1);
   });
 
   it('hands a delivery carrying the key to the handler', async () => {
