@@ -139,7 +139,6 @@ import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
-  getOrchestratorWatchedFeedPollIntervalMs,
   LiveLogFeed,
 } from './live-feed.js';
 import {
@@ -1640,7 +1639,6 @@ export async function runWorkflowWithQuickJS(params: {
       cursor: logView.logCursor,
       pollIntervalMs: getOrchestratorPollIntervalMs(),
       feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
-      watchedFeedPollIntervalMs: getOrchestratorWatchedFeedPollIntervalMs(),
       onEvents: (fed) => {
         fedEventCount += fed.length;
         // The writer is not told of these positions: the feed can echo a

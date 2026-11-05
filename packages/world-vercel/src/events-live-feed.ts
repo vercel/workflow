@@ -35,16 +35,18 @@
  *
  *   { reqId, type: 'run_heartbeat', slot }
  *
- * naming the highest slot it has pushed. On such an ack the feed calls
- * `onWatched` and watches itself:
+ * naming the highest slot it has pushed. On such an ack the feed watches
+ * itself, within the `subscribe` contract (`onEvent` and `onError` only):
  *
  * - no push and no heartbeat for {@link HEARTBEAT_SILENCE_FACTOR} times
  *   `heartbeatMs` ends the feed (`onError`): it died without a sign (a
  *   half-open socket, a backend feed that stopped without a notice, reads
  *   failing for that long);
- * - a heartbeat naming a slot above the last one delivered calls `onGap`
- *   once for that range: pushes went missing (a replacement subscription
- *   that started above this one), and the caller reads the log;
+ * - a heartbeat naming a slot above the last one delivered means pushes went
+ *   missing (a replacement subscription that started above this one): the
+ *   feed reads the log after its last delivered slot and delivers the missing
+ *   events itself, in slot order, so its caller still sees every slot once
+ *   and without gaps. A read that fails ends the feed (`onError`);
  * - a heartbeat under another `reqId` after this subscription's ack ends the
  *   feed: a later `subscribe` on the connection replaced it.
  *
@@ -68,6 +70,7 @@ import {
   type Event,
   type EventsSubscribeOptions,
   eventIdToSlot,
+  slotToEventId,
 } from '@workflow/world';
 import { decodeEventFrame } from './events-v4.js';
 import { type DecodedFrame, decodeFrame, encodeFrame } from './frames.js';
@@ -83,6 +86,26 @@ export const SUBSCRIBE_FRAME_TYPE = 'subscribe';
  * frame, so three leaves room for a slow read and network delay.
  */
 export const HEARTBEAT_SILENCE_FACTOR = 3;
+
+/**
+ * Reads the run's log after a slot (one page, slot order, `resolveData:
+ * 'all'`): how a heartbeat-revealed gap is filled. `storage.ts` passes
+ * `events.list` with {@link cursorAfterSlot}.
+ */
+export type ReadEventsAfter = (
+  afterSlot: number
+) => Promise<{ data: Event[]; hasMore: boolean }>;
+
+/** Most events one gap-filling read asks for. */
+export const GAP_FILL_PAGE_SIZE = 100;
+
+/**
+ * The backend's list cursor that selects everything after `slot`
+ * (`eid:<eventId>`, workflow-server's `lib/data/event-id-cursor.ts`).
+ */
+export function cursorAfterSlot(slot: number): string {
+  return `eid:${slotToEventId(slot)}`;
+}
 
 /** The ack's heartbeat interval, when it confirms heartbeats. */
 function ackedHeartbeatMs(meta: Record<string, unknown>): number | undefined {
@@ -150,7 +173,9 @@ export function subscribeRunEvents(
   afterSlot: number,
   onEvent: (event: Event) => void,
   options: EventsSubscribeOptions = {},
-  config?: APIConfig
+  config?: APIConfig,
+  /** Fills a gap a heartbeat reveals; without it a gap ends the feed. */
+  readEventsAfter?: ReadEventsAfter
 ): () => void {
   let active = true;
   let lastSlot = afterSlot;
@@ -162,8 +187,10 @@ export function subscribeRunEvents(
   /** The silence that ends a watched feed; set once an ack confirms heartbeats. */
   let silenceMs: number | undefined;
   let silenceTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The highest slot a gap was already reported up to. */
-  let gapReportedThrough = afterSlot;
+  /** The highest slot a heartbeat said the backend pushed. */
+  let fillThrough = afterSlot;
+  /** Whether a gap-filling read is running. */
+  let filling = false;
 
   const clearSilence = () => {
     if (silenceTimer !== undefined) clearTimeout(silenceTimer);
@@ -227,19 +254,61 @@ export function subscribeRunEvents(
     }
     heard();
     const slot = frame.meta.slot;
-    if (
-      typeof slot === 'number' &&
-      Number.isSafeInteger(slot) &&
-      slot > lastSlot &&
-      slot > gapReportedThrough
-    ) {
-      gapReportedThrough = slot;
-      try {
-        options.onGap?.();
-      } catch {
-        // A throwing onGap must not escape into the transport.
-      }
+    if (typeof slot === 'number' && Number.isSafeInteger(slot)) {
+      fillGap(slot);
     }
+  };
+
+  /**
+   * The backend pushed through `throughSlot`, above what this subscription
+   * delivered: read the log after the last delivered slot and deliver the
+   * missing events in slot order. Stops at a position the read does not
+   * return yet (the runtime's own poll covers it), and ends the feed when the
+   * read fails.
+   */
+  const fillGap = (throughSlot: number) => {
+    if (throughSlot > fillThrough) fillThrough = throughSlot;
+    if (filling || !active || lastSlot >= fillThrough) return;
+    if (!readEventsAfter) {
+      fail(
+        new LiveFeedError(
+          `world-vercel: live feed for ${runId} missed pushes up to slot ${fillThrough}`,
+          { code: 'run-feed-gap' }
+        )
+      );
+      return;
+    }
+    filling = true;
+    void (async () => {
+      try {
+        while (active && lastSlot < fillThrough) {
+          const page = await readEventsAfter(lastSlot);
+          let advanced = false;
+          for (const event of page.data) {
+            if (!active) return;
+            if (event.runId !== runId) continue;
+            const slot = eventIdToSlot(event.eventId);
+            if (slot === null || slot <= lastSlot) continue;
+            if (slot !== lastSlot + 1) break;
+            lastSlot = slot;
+            advanced = true;
+            onEvent(event);
+          }
+          if (!advanced) break;
+        }
+      } catch (error) {
+        fail(
+          new LiveFeedError(
+            `world-vercel: live feed for ${runId} could not read the events it missed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { cause: error, code: 'run-feed-gap' }
+          )
+        );
+      } finally {
+        filling = false;
+      }
+    })();
   };
 
   const deliver = (frame: DecodedFrame) => {
@@ -323,11 +392,6 @@ export function subscribeRunEvents(
             if (heartbeatMs !== undefined) {
               silenceMs = heartbeatMs * HEARTBEAT_SILENCE_FACTOR;
               heard();
-              try {
-                options.onWatched?.({ silenceMs });
-              } catch {
-                // A throwing onWatched must not escape into the transport.
-              }
             }
             return;
           }

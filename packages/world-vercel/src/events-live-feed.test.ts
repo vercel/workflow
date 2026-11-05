@@ -4,7 +4,7 @@
  * connection loss, refusal, transport off). `ws` is replaced with a fake the
  * test drives directly, as in `ws-transport.test.ts`.
  */
-import { slotToEventId } from '@workflow/world';
+import { type Event, eventIdToSlot, slotToEventId } from '@workflow/world';
 import { decode } from 'cbor-x';
 import {
   afterEach,
@@ -16,7 +16,9 @@ import {
   vi,
 } from 'vitest';
 import {
+  cursorAfterSlot,
   LiveFeedError,
+  type ReadEventsAfter,
   SUBSCRIBE_FRAME_TYPE,
   subscribeRunEvents,
 } from './events-live-feed.js';
@@ -321,17 +323,32 @@ describe('subscribeRunEvents', () => {
 describe('subscribeRunEvents heartbeats', () => {
   const HEARTBEAT_MS = 10_000;
 
-  async function watchedFeed(ackMeta: Record<string, unknown> = {}) {
+  /** An event at `slot` as `events.list` returns it. */
+  function listed(slot: number, runId = RUN): Event {
+    return {
+      eventId: slotToEventId(slot),
+      runId,
+      eventType: 'hook_received',
+      correlationId: 'hook_1',
+      createdAt: new Date('2026-10-05T00:00:00.000Z'),
+      specVersion: 9,
+      eventData: { token: 'tok', payload: new Uint8Array([slot]) },
+    } as unknown as Event;
+  }
+
+  async function watchedFeed(
+    ackMeta: Record<string, unknown> = {},
+    readEventsAfter?: ReadEventsAfter
+  ) {
     const events: string[] = [];
     const onError = vi.fn();
-    const onGap = vi.fn();
-    const onWatched = vi.fn();
     const unsubscribe = subscribeRunEvents(
       RUN,
       2,
       (event) => events.push(event.eventId),
-      { onError, onGap, onWatched },
-      CONFIG
+      { onError },
+      CONFIG,
+      readEventsAfter
     );
     await settle(() => sockets.length > 0, 'socket constructed');
     const socket = sockets[sockets.length - 1];
@@ -350,17 +367,7 @@ describe('subscribeRunEvents heartbeats', () => {
       socket.deliver(
         encodeFrame({ reqId: from, type: 'run_heartbeat', slot }, EMPTY)
       );
-    return {
-      events,
-      onError,
-      onGap,
-      onWatched,
-      unsubscribe,
-      socket,
-      reqId,
-      ack,
-      heartbeat,
-    };
+    return { events, onError, unsubscribe, socket, reqId, ack, heartbeat };
   }
 
   it('lists run-heartbeat in the upgrade flags', async () => {
@@ -368,13 +375,10 @@ describe('subscribeRunEvents heartbeats', () => {
     expect(WS_CLIENT_FLAGS).toContain('run-heartbeat');
   });
 
-  it('watches a feed whose ack confirms heartbeats, and ends it after three silent intervals', async () => {
+  it('ends a feed whose ack confirms heartbeats after three silent intervals', async () => {
     const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS });
     feed.ack();
     await tick();
-    expect(feed.onWatched).toHaveBeenCalledWith({
-      silenceMs: 3 * HEARTBEAT_MS,
-    });
     // Heartbeats and pushes keep it alive.
     await vi.advanceTimersByTimeAsync(2 * HEARTBEAT_MS);
     feed.heartbeat(2);
@@ -394,24 +398,75 @@ describe('subscribeRunEvents heartbeats', () => {
     expect(feed.events).toEqual([slotToEventId(3)]);
   });
 
-  it('reports a gap once per range when a heartbeat names a slot it never received', async () => {
-    const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS });
+  it('fills a gap a heartbeat reveals by reading the log after its last delivered slot', async () => {
+    const reads: number[] = [];
+    const log = [3, 4, 5, 6].map((slot) => listed(slot));
+    const readEventsAfter: ReadEventsAfter = async (after) => {
+      reads.push(after);
+      const data = log.filter(
+        (event) => (eventIdToSlot(event.eventId) ?? 0) > after
+      );
+      return { data, hasMore: false };
+    };
+    const feed = await watchedFeed(
+      { heartbeatMs: HEARTBEAT_MS },
+      readEventsAfter
+    );
     feed.ack();
     await tick();
     feed.heartbeat(2);
-    expect(feed.onGap).not.toHaveBeenCalled();
+    await tick();
+    expect(reads).toEqual([]);
+    feed.socket.deliver(pushed(3, RUN, feed.reqId));
+    // The backend pushed through 5, but 4 and 5 never arrived.
     feed.heartbeat(5);
-    feed.heartbeat(5);
-    expect(feed.onGap).toHaveBeenCalledTimes(1);
+    await settle(() => feed.events.length >= 3, 'gap filled');
+    expect(reads).toEqual([3]);
+    // Delivered once each, in slot order; the read also returned 6, which
+    // continues the sequence.
+    expect(feed.events).toEqual(
+      [3, 4, 5, 6].map((slot) => slotToEventId(slot))
+    );
+    // A push of a slot the fill delivered is dropped.
+    feed.socket.deliver(pushed(5, RUN, feed.reqId));
     feed.heartbeat(6);
-    expect(feed.onGap).toHaveBeenCalledTimes(2);
-    // Pushes past the reported range are still delivered.
-    feed.socket.deliver(pushed(7, RUN, feed.reqId));
-    feed.heartbeat(7);
-    expect(feed.onGap).toHaveBeenCalledTimes(2);
-    expect(feed.events).toEqual([slotToEventId(7)]);
+    await tick();
+    expect(reads).toEqual([3]);
+    expect(feed.events).toHaveLength(4);
     expect(feed.onError).not.toHaveBeenCalled();
     feed.unsubscribe();
+  });
+
+  it('stops filling at a position the log read does not return yet', async () => {
+    const readEventsAfter: ReadEventsAfter = async () => ({
+      data: [listed(3), listed(5)],
+      hasMore: false,
+    });
+    const feed = await watchedFeed(
+      { heartbeatMs: HEARTBEAT_MS },
+      readEventsAfter
+    );
+    feed.ack();
+    await tick();
+    feed.heartbeat(5);
+    await settle(() => feed.events.length >= 1, 'partial fill');
+    await tick();
+    expect(feed.events).toEqual([slotToEventId(3)]);
+    expect(feed.onError).not.toHaveBeenCalled();
+    feed.unsubscribe();
+  });
+
+  it('ends the feed when the read that would fill a gap fails', async () => {
+    const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS }, async () => {
+      throw new Error('list failed');
+    });
+    feed.ack();
+    await tick();
+    feed.heartbeat(4);
+    await settle(() => feed.onError.mock.calls.length > 0, 'fill failed');
+    expect((feed.onError.mock.calls[0]?.[0] as LiveFeedError).code).toBe(
+      'run-feed-gap'
+    );
   });
 
   it('ends the feed on a heartbeat for another subscription after its ack, and ignores one before it', async () => {
@@ -432,7 +487,6 @@ describe('subscribeRunEvents heartbeats', () => {
     const feed = await watchedFeed();
     feed.ack();
     await tick();
-    expect(feed.onWatched).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(10 * HEARTBEAT_MS);
     expect(feed.onError).not.toHaveBeenCalled();
     feed.socket.deliver(pushed(3, RUN, feed.reqId));
@@ -447,5 +501,11 @@ describe('subscribeRunEvents heartbeats', () => {
     feed.unsubscribe();
     await vi.advanceTimersByTimeAsync(10 * HEARTBEAT_MS);
     expect(feed.onError).not.toHaveBeenCalled();
+  });
+});
+
+describe('cursorAfterSlot', () => {
+  it("names the backend's cursor for everything after a slot", () => {
+    expect(cursorAfterSlot(7)).toBe(`eid:${slotToEventId(7)}`);
   });
 });
