@@ -214,6 +214,76 @@ describe('fs utilities', () => {
     });
   });
 
+  describe('write existence probe on Windows', () => {
+    const eperm = () =>
+      Object.assign(new Error('EPERM: operation not permitted, access'), {
+        code: 'EPERM',
+        syscall: 'access',
+      });
+
+    async function withWin32FsModule(
+      fn: (freshFsModule: typeof import('./fs.js')) => Promise<void>
+    ) {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      try {
+        await fn(await import('./fs.js'));
+      } finally {
+        if (platform) {
+          Object.defineProperty(process, 'platform', platform);
+        }
+        vi.resetModules();
+      }
+    }
+
+    it('retries a transient EPERM and writes a missing file', async () => {
+      await withWin32FsModule(async (freshFsModule) => {
+        const filePath = path.join(testDir, 'probe-missing.json');
+        const access = fs.access;
+        const accessSpy = vi
+          .spyOn(fs, 'access')
+          .mockRejectedValueOnce(eperm())
+          .mockImplementation(access);
+
+        await freshFsModule.write(filePath, 'hello');
+
+        expect(accessSpy).toHaveBeenCalledTimes(2);
+        await expect(fs.readFile(filePath, 'utf8')).resolves.toBe('hello');
+      });
+    });
+
+    it('still raises a conflict when the file exists after the retry', async () => {
+      await withWin32FsModule(async (freshFsModule) => {
+        const filePath = path.join(testDir, 'probe-existing.json');
+        await fs.writeFile(filePath, 'original');
+        const access = fs.access;
+        vi.spyOn(fs, 'access')
+          .mockRejectedValueOnce(eperm())
+          .mockImplementation(access);
+
+        await expect(freshFsModule.write(filePath, 'new')).rejects.toThrow(
+          /already exists/
+        );
+        await expect(fs.readFile(filePath, 'utf8')).resolves.toBe('original');
+      });
+    });
+
+    it('rejects once the retries are exhausted', async () => {
+      await withWin32FsModule(async (freshFsModule) => {
+        const filePath = path.join(testDir, 'probe-locked.json');
+        vi.spyOn(fs, 'access').mockRejectedValue(eperm());
+
+        await expect(
+          freshFsModule.write(filePath, 'hello')
+        ).rejects.toMatchObject({ code: 'EPERM' });
+        await expect(fs.stat(filePath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      });
+    });
+  });
+
   describe('ensureDir', () => {
     it('does not repeat mkdir for a directory created by this process', async () => {
       clearCreatedFilesCache();
