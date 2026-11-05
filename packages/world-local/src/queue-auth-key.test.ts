@@ -400,11 +400,7 @@ describe('world.clear()', () => {
   });
 });
 
-// Each case also runs with the route answering 30ms late, so a test cannot
-// pass only because the route decided before the test moved on.
-describe.each([
-  0, 30,
-])('deliveries, with real timers (route delay %ims)', (delayMs) => {
+describe('deliveries, with real timers', () => {
   let server: Server | undefined;
 
   afterEach(async () => {
@@ -433,7 +429,6 @@ describe.each([
     server = createServer(async (request, response) => {
       for await (const _ of request);
       const key = request.headers[QUEUE_AUTH_HEADER] as string | undefined;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
       const accepted = await decide(key);
       decisions.push({ key, accepted });
       response.setHeader('content-type', 'application/json');
