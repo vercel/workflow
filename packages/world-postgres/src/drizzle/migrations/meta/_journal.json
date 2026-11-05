@@ -211,6 +211,13 @@
       "when": 1790208000000,
       "tag": "0029_add_run_job_prefix",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790294400000,
+      "tag": "0030_add_job_lock_holders",
+      "breakpoints": true
     }
   ]
 }

@@ -148,6 +148,19 @@ const withAbortSignal = `const inc = ${step};
     return controller.signal.aborted ? -1 : n;
   }${registerWorkflow()}`;
 
+// The child-run completion system hook (`child-run-completion.ts`), kept
+// open between waits, with or without a `then()` waiting on it.
+const withCompletionHook = (waiting: boolean) => `const inc = ${step};
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow(steps) {
+    const hook = createHook({ token: "wkf_child_run_completion:ra-parent", isSystem: true });
+    await hook.getConflict();
+    ${waiting ? 'hook.then(() => {});' : ''}
+    let n = 0;
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return n;
+  }${registerWorkflow()}`;
+
 const withSleep = (duration: string) => `const inc = ${step};
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow(steps) {
@@ -776,6 +789,23 @@ describe('run-ahead against an append-only World (node engine)', () => {
 
   it('drains with an AbortController open', async () => {
     const { world } = await run(withAbortSignal, [STEPS]);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(STEPS);
+    expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
+  });
+
+  // Why the parent can keep its completion hook open between waits
+  // (`child-run-completion.ts`): unlike an abort hook, it is path-changing
+  // only while the dispatcher waits on its next payload.
+  it('runs ahead with the child-run completion hook open and nothing waiting on it', async () => {
+    const { world } = await run(withCompletionHook(false), [STEPS]);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(STEPS);
+    expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+  });
+
+  it('drains while something waits on the child-run completion hook', async () => {
+    const { world } = await run(withCompletionHook(true), [STEPS]);
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);

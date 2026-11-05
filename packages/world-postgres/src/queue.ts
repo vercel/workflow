@@ -48,7 +48,11 @@ import { z } from 'zod/v4';
 import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
-import { createJobLeases, resolveJobLockStaleSeconds } from './job-lease.js';
+import {
+  createJobLeases,
+  type JobLeasePolicy,
+  resolveJobLeasePolicy,
+} from './job-lease.js';
 import { MessageData } from './message.js';
 
 /**
@@ -111,14 +115,15 @@ const graphileLogger = createGraphileLogger();
  * done, and a bound here declares a slow-but-healthy delivery crashed and
  * redelivers it while the original is still running (two executions of the
  * same steps). Crash recovery does not need one: `reenqueueActiveRuns`
- * re-enqueues active runs on start, and with `jobLockStaleSeconds` set a
- * running delivery renews its job lock and any other process releases a job
- * whose lock goes unrenewed (because its process died), and the lock of its
- * named queue, for redelivery (see `job-lease.ts`). Without it, Graphile
- * Worker resets a dead worker's job and named-queue locks only after 4 hours
- * (`resetLockedAt`). A spec 9 run's orchestrator deliveries all use the run's
- * named queue, so without it a hard-killed worker can hold them back for that
- * long; see the README.
+ * re-enqueues active runs on start, and a running delivery renews its job
+ * lock while any other process releases a job whose lock goes unrenewed
+ * (because its process died), and the lock of its named queue, for
+ * redelivery (see `job-lease.ts`). By default that release covers only the
+ * per-run named queues (a spec 9 run's orchestrator deliveries, invoke mode's
+ * executor lane) of renewing holders, after 300 seconds; with
+ * `jobLockStaleSeconds` set it covers every job of this World after that
+ * window, and `0` turns it off, leaving Graphile Worker's 4 hour reset
+ * (`resetLockedAt`).
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
@@ -227,7 +232,12 @@ export type PostgresQueue = Queue & {
 
 export function createQueue(
   config: PostgresWorldConfig,
-  pool: Pool
+  pool: Pool,
+  /** @internal Test hooks; not part of the public API. */
+  internal?: {
+    /** The `'named-queues'` default window, in place of 300 seconds. */
+    defaultJobLockStaleSeconds?: number;
+  }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createWorld({ dataDir: undefined, port });
@@ -282,8 +292,13 @@ export function createQueue(
   }
 
   const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  const leasePolicy: JobLeasePolicy = resolveJobLeasePolicy(
+    config.jobLockStaleSeconds,
+    internal?.defaultJobLockStaleSeconds
+  );
   const jobLeases = createJobLeases(pool, {
-    staleSeconds: resolveJobLockStaleSeconds(config.jobLockStaleSeconds),
+    staleSeconds: leasePolicy.staleSeconds,
+    ...(leasePolicy.scope === 'off' ? {} : { scope: leasePolicy.scope }),
   });
   /**
    * The Workflow SDK prefix this World serves: messages on it (and jobs that
@@ -1203,8 +1218,13 @@ export function createQueue(
     });
     // Graphile Worker only resets locks older than 4 hours. Release this
     // World's jobs (including spec 9 orchestrator and invoke executor jobs
-    // and their per-run queue locks) whose holders stopped renewing them.
-    jobLeases.startSweeper([getJobQueueName(), executorTask()]);
+    // and their per-run queue locks) whose holders stopped renewing them. By
+    // default only the per-run named queues' jobs, and only those of holders
+    // registered as renewing (see `JobLeasePolicy`).
+    jobLeases.startSweeper([getJobQueueName(), executorTask()], {
+      prefix: `${getJobQueueName()}:`,
+      suffix: ':executor',
+    });
   }
 
   return {

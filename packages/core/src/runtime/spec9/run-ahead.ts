@@ -1,6 +1,9 @@
 import { globalSingleton } from '@workflow/utils';
 import type { Event, World } from '@workflow/world';
-import type { OutOfBandObservation } from '../out-of-band-observation.js';
+import {
+  isAlwaysObservedHook,
+  type OutOfBandObservation,
+} from '../out-of-band-observation.js';
 
 /**
  * What the boundary a speculative write ran ahead of allowed to land below
@@ -103,6 +106,7 @@ export function runAheadContextFor(input: {
   observation: OutOfBandObservation;
   hookItems: readonly {
     correlationId: string;
+    token: string;
     isSystem?: boolean;
     disposed?: boolean;
   }[];
@@ -113,7 +117,7 @@ export function runAheadContextFor(input: {
   for (const hook of input.hookItems) {
     if (hook.disposed) continue;
     if (
-      hook.isSystem ||
+      isAlwaysObservedHook(hook) ||
       input.observedHookIds === undefined ||
       input.observedHookIds.has(hook.correlationId)
     ) {

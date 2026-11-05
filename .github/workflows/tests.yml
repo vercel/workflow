@@ -1024,7 +1024,9 @@ jobs:
           rm -f "$DEV_SERVER_LOG_PATH"
           (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
+          # dev.test.ts hands the server on only once the rebuilds its fixture
+          # restores set off have finished (see waitForDevServerToSettle).
+          pnpm vitest run packages/core/e2e/dev.test.ts
           pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
@@ -1214,7 +1216,6 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
-      WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK: '1'
 
     steps:
       - name: Checkout Repo

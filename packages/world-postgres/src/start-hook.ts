@@ -32,7 +32,7 @@ import {
 import type { RunStartHook, SerializedContent } from './drizzle/schema.js';
 
 /**
- * `start({ hook })` admission for world-postgres. See `start-hook.ts` in
+ * `start({ experimental_hook })` admission for world-postgres. See `start-hook.ts` in
  * @workflow/world for the contract.
  *
  * An accepted candidate's admission inserts its start Hook, an ordinary row

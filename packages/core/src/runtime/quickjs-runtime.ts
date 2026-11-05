@@ -56,10 +56,6 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
-import {
-  RESPONSE_BODY_CHUNK_MAX_BYTES,
-  RESPONSE_BODY_CHUNK_MIN_BYTES,
-} from '../response-body-chunk.js';
 import { createSeededNanoid } from '../seeded-nanoid.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
@@ -162,10 +158,13 @@ export interface PendingHook {
    */
   startHook?: true;
   /**
-   * True for internal system hooks (e.g. AbortController's hook), which
-   * are exempt from user-hook token namespace conflict checks.
+   * True for SDK-internal hooks (the AbortController hook, the child-run
+   * completion hook). Recorded on `hook_created`; such hooks are resumed by
+   * writers outside this run, and need not be created at terminal drain.
    */
   isSystem?: boolean;
+  /** True for an AbortController's hook (VM-only; not recorded). */
+  isAbortSignal?: boolean;
   /**
    * Set when the workflow called AbortController.abort() during this
    * invocation. The host must record the abort: create a hook_received
@@ -392,9 +391,11 @@ globalThis.__releaseDisposedHook = function(correlationId) {
   var dispose = globalThis.__findPending(correlationId, "hook_dispose");
   if (dispose) globalThis.__releasePending(dispose);
   var hook = globalThis.__findPending(correlationId, "hook");
+  // An AbortController's hook keeps its op: abort() finds it by
+  // correlationId to request the abort later.
   if (
     hook &&
-    !hook.isSystem &&
+    !hook.isAbortSignal &&
     !hook.abortRequested &&
     !globalThis.__resolvers[correlationId]
   ) {
@@ -466,6 +467,15 @@ if (typeof ReadableStream === "undefined") {
   // Minimal ReadableStream that stores body data for Response.json()/text()
   globalThis.ReadableStream = function() {};
   globalThis.ReadableStream.prototype.__bodyData = null;
+  // Reading a body as a stream is not supported in workflow functions; match
+  // the node:vm engine's error instead of failing with "not a function".
+  var streamNotSupported = function() {
+    throw new Error("This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.");
+  };
+  ["cancel", "getReader", "pipeThrough", "pipeTo", "tee", "values"].forEach(function(name) {
+    globalThis.ReadableStream.prototype[name] = streamNotSupported;
+  });
+  globalThis.ReadableStream.prototype[Symbol.asyncIterator] = streamNotSupported;
 }
 
 if (typeof WritableStream === "undefined") {
@@ -779,142 +789,12 @@ if (typeof Request === "undefined") {
   });
 }
 
-// Readers over in-VM stream handles, mirroring the node:vm engine. A handle
-// is either a named stream stored in the World (e.g. the body of a Response
-// returned by the fetch step) or a body passed to the Response/Request
-// polyfills. A named stream is read through one __builtin_response_read_chunk
-// step per chunk, sized by responseBodyChunkSize, so consumer byte limits and
-// cancel() stop the read before the whole body is loaded and every chunk
-// replays from the event log. In-memory bodies are resolved once per reader.
-// Handles are never locked or disturbed: every new reader starts again from
-// byte 0 instead of throwing, like json()/text()/arrayBuffer() on handles.
-(function() {
-  var proto = globalThis.ReadableStream.prototype;
-  if (typeof proto.getReader === "function") return;
-  var BODY_INIT = Symbol.for("BODY_INIT");
-  function unsupported() {
-    throw new Error("This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.");
-  }
-  function encode(text) {
-    return new TextEncoder().encode(text);
-  }
-  function chunkSize(offset) {
-    return Math.min(${RESPONSE_BODY_CHUNK_MAX_BYTES}, Math.max(${RESPONSE_BODY_CHUNK_MIN_BYTES}, offset));
-  }
-  function resolveSource(stream, seen) {
-    if (seen.indexOf(stream) !== -1) unsupported();
-    seen.push(stream);
-    if (!Object.prototype.hasOwnProperty.call(stream, BODY_INIT)) return { named: stream };
-    var init = stream[BODY_INIT];
-    // Encoded once per reader, not once per chunk.
-    if (typeof init === "string") return { bytes: encode(init) };
-    if (typeof URLSearchParams !== "undefined" && init instanceof URLSearchParams) return { bytes: encode(String(init)) };
-    if (init instanceof ArrayBuffer) return { bytes: new Uint8Array(init) };
-    if (ArrayBuffer.isView(init)) return { bytes: new Uint8Array(init.buffer, init.byteOffset, init.byteLength) };
-    if (init !== null && typeof init === "object" && Object.getPrototypeOf(init) === proto) return resolveSource(init, seen);
-    unsupported();
-  }
-  function readChunk(source, offset) {
-    if (source.bytes) {
-      var bytes = source.bytes;
-      var end = Math.min(offset + chunkSize(offset), bytes.byteLength);
-      return Promise.resolve({ value: bytes.slice(offset, end), done: end === bytes.byteLength });
-    }
-    // Only this byte range is materialized in the host and event log.
-    var response = Object.create(globalThis.Response.prototype);
-    response.status = 200;
-    response.statusText = "";
-    response.headers = new globalThis.Headers([]);
-    response.body = source.named;
-    response.type = "default";
-    response.url = "";
-    response.redirected = false;
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("__builtin_response_read_chunk").call(response, offset).then(function(result) {
-      return { value: new Uint8Array(result.buffer), done: result.done };
-    });
-  }
-  Object.defineProperty(proto, "locked", { get: function() { return false; }, configurable: true });
-  proto.cancel = function() { return Promise.resolve(); };
-  proto.getReader = function(options) {
-    if (options && options.mode !== undefined) unsupported();
-    var stream = this;
-    var pending = Promise.resolve();
-    var source = null;
-    var offset = 0;
-    var done = false;
-    var failed = false;
-    var failure;
-    var released = false;
-    var resolveClosed;
-    var rejectClosed;
-    var closed = new Promise(function(resolve, reject) { resolveClosed = resolve; rejectClosed = reject; });
-    closed.catch(function() {});
-    return {
-      closed: closed,
-      read: function() {
-        var result = pending.then(function() {
-          if (released) throw new TypeError("This reader has been released and can no longer be read from.");
-          if (failed) throw failure;
-          if (done) return { done: true, value: undefined };
-          return Promise.resolve().then(function() {
-            if (!source) source = resolveSource(stream, []);
-            return readChunk(source, offset);
-          }).then(function(chunk) {
-            if (done) return { done: true, value: undefined };
-            offset += chunk.value.byteLength;
-            done = chunk.done;
-            if (done) resolveClosed();
-            if (chunk.value.byteLength > 0) return { done: false, value: chunk.value };
-            return { done: true, value: undefined };
-          }, function(error) {
-            failed = true;
-            failure = error;
-            rejectClosed(error);
-            throw error;
-          });
-        });
-        pending = result.then(function() {}, function() {});
-        return result;
-      },
-      cancel: function() {
-        done = true;
-        resolveClosed();
-        return Promise.resolve();
-      },
-      releaseLock: function() { released = true; },
-    };
-  };
-  proto.values = function() {
-    var reader = this.getReader();
-    var finished = false;
-    function finish() {
-      if (finished) return Promise.resolve();
-      finished = true;
-      return reader.cancel().then(function() { reader.releaseLock(); }, function(error) { reader.releaseLock(); throw error; });
-    }
-    var iterator = {
-      next: function() {
-        return reader.read().then(function(result) {
-          if (!result.done) return result;
-          return finish().then(function() { return result; });
-        }, function(error) {
-          return finish().then(function() { throw error; }, function() { throw error; });
-        });
-      },
-      return: function() { return finish().then(function() { return { done: true, value: undefined }; }); },
-    };
-    iterator[Symbol.asyncIterator] = function() { return iterator; };
-    return iterator;
-  };
-  proto[Symbol.asyncIterator] = proto.values;
-})();
-
 // The error createHook throws when it opens the start Hook with options only
 // a write could apply. Same text as startHookOptionsError in workflow/hook.ts.
 globalThis.__startHookOptionsError = function(rejected) {
   return "\`createHook()\` was called with this run's start token and " +
     rejected.map(function(name) { return "\`" + name + "\`"; }).join(", ") +
-    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
+    ", but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.";
 };
 // Hook correlation ids are minted from the run's ULID sequence, skipping the
 // one id a run must never mint: its start Hook's (see __startHook). A redraw is
@@ -934,7 +814,7 @@ globalThis.__mintHookCorrelationId = function() {
 // The promise is resolved when a hook_received event arrives.
 globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   options = options || {};
-  // The run's start Hook (start(workflow, args, { hook })), injected by the
+  // The run's start Hook (start(workflow, args, { experimental_hook })), injected by the
   // host as __startHook, was created by the run's admission: the first
   // createHook with its token opens it (no hook_created, no suspension).
   // Mirrors workflow/hook.ts.
@@ -1034,6 +914,9 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     metadata: options.metadata,
     hasCreatedEvent: false,
   };
+  // SDK-internal hooks (e.g. the child-run completion hook); see
+  // SystemHookOptions on the host.
+  if (options.isSystem === true && !options.isWebhook) pendingOp.isSystem = true;
   globalThis.__pushPending(pendingOp);
 
   // Per-hook lifecycle state backing hook.getConflict(): resolves null
@@ -1140,6 +1023,13 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
 
   // Symbol.dispose for explicit resource management
   hook[Symbol.dispose] = disposeHook;
+
+  // SDK-internal (the child-run completion dispatcher): stop waiting for the
+  // next payload without disposing the hook, so one landing later is
+  // buffered for the next then() instead. See workflow/hook.ts.
+  hook[Symbol.for("WORKFLOW_HOOK_RELEASE_AWAITER")] = function() {
+    delete globalThis.__resolvers[correlationId];
+  };
 
   // AsyncIterable — yields payloads until disposed
   hook[Symbol.asyncIterator] = function() {
@@ -1276,14 +1166,14 @@ globalThis.AbortController = function WorkflowAbortController() {
   this.signal = new WorkflowAbortSignal(streamName, hookToken);
   var correlationId = globalThis.__mintHookCorrelationId();
   this[__ABORT_HOOK_CID] = correlationId;
-  // Register an internal system hook. isSystem prevents token namespace
-  // conflicts with user hooks.
+  // Register an internal system hook. Its token is unique by construction.
   globalThis.__pushPending({
     type: "hook",
     correlationId: correlationId,
     token: hookToken,
     isWebhook: false,
     isSystem: true,
+    isAbortSignal: true,
     hasCreatedEvent: false,
   });
   globalThis.__abortSignals[correlationId] = this.signal;
@@ -1901,7 +1791,7 @@ export async function startQuickJSWorkflow(
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
 
-  // The run's start Hook (start(workflow, args, { hook })), or undefined.
+  // The run's start Hook (start(workflow, args, { experimental_hook })), or undefined.
   const runStartHook = (): RunStartHook | undefined =>
     options.startHook === undefined
       ? resolveRunStartHook({
@@ -2077,7 +1967,7 @@ export async function startQuickJSWorkflow(
         vm.registerHostCallback(callback.name, callback.fn(vm));
       }
 
-      // A start({ hook }) run's heap must have booted with the start Hook
+      // A start({ experimental_hook }) run's heap must have booted with the start Hook
       // binding (and the run's __startHook). One captured by an older engine
       // build would mint a fresh id for the start token, so it is refused
       // here and the entrypoint falls back to a full replay. Checked only for
@@ -2241,7 +2131,7 @@ export async function startQuickJSWorkflow(
       `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
     ).dispose();
 
-    // The run's start Hook (start(workflow, args, { hook })), for the guest's
+    // The run's start Hook (start(workflow, args, { experimental_hook })), for the guest's
     // createHook binding. Not set at all for a run without one, which boots
     // exactly as before.
     const startHook = runStartHook();

@@ -415,7 +415,7 @@ export const HookTokenClaimSchema = z.compile(
     // canonical hook_created event before concurrent retries publish it.
     eventId: z.string().optional(),
     tokenRetentionUntil: z.coerce.date().optional(),
-    // When an admission wrote this claim for its run's `start({ hook })` Hook
+    // When an admission wrote this claim for its run's `start({ experimental_hook })` Hook
     // (ms since the epoch), for the orphan grace
     // (`START_HOOK_ORPHAN_GRACE_MS`). Only read while the claim's run record
     // is missing.
@@ -571,7 +571,7 @@ export async function withHookTokenClaimLock<T>(
 }
 
 /**
- * Path of the record of a refused `start({ hook })` candidate. Only refusals
+ * Path of the record of a refused `start({ experimental_hook })` candidate. Only refusals
  * are recorded: an accepted candidate's decision is its run record, which is
  * written under the token claim lock right after the start Hook's claim.
  */
