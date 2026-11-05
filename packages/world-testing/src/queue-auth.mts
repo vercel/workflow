@@ -1,7 +1,14 @@
-import { readFile } from 'node:fs/promises';
+import cp from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { World } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { expect, test, vi } from 'vitest';
+import { expect, onTestFinished, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 const ulid = monotonicFactory();
@@ -151,6 +158,97 @@ async function skipUnlessKeyChecked(
       `this World declares queueAuthMode: ${JSON.stringify(queueAuthMode)}, so its flow route is not checked`
     );
   }
+}
+
+/** The id the build gives `name` in `workflows/<file>.ts`. */
+const workflowId = (file: string, name: string) =>
+  `workflow//./workflows/${file}//${name}`;
+
+/** A port nothing listens on yet, for a server started later. */
+async function freePort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, resolve));
+  const { port } = server.address() as net.AddressInfo;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+/** A data directory this test owns, removed after it. */
+async function sharedDataDir() {
+  const dir = await mkdtemp(path.join(tmpdir(), 'workflow-queue-auth-'));
+  onTestFinished(() =>
+    rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  );
+  return dir;
+}
+
+/**
+ * The app's key file, or `undefined` while there is none. Read before the
+ * symptom a test checks, so a missing file fails the test on that symptom.
+ */
+const readKeyFile = (dataDir: string) =>
+  readFile(path.join(dataDir, 'queue-auth-key'), 'utf8').catch(() => undefined);
+
+/** A well-formed key, as a previous run of the app left in its key file. */
+const staleKey = () => randomBytes(32).toString('base64url');
+
+/**
+ * A Local World in this test process on the app's data directory, as the
+ * CLI and the web UI create it (`'read'`), or as a script calling `start()`
+ * does (`'regenerate'`). Closed after the test.
+ */
+async function otherProcessWorld(
+  dataDir: string,
+  baseUrl: string,
+  queueAuthKey: 'read' | 'regenerate'
+): Promise<World> {
+  const { createWorld } = await import('@workflow/world-local');
+  const world = createWorld({ dataDir, baseUrl, queueAuthKey });
+  onTestFinished(() => world.close?.());
+  return world;
+}
+
+/** Runs `fn` with `world` as this process's World, as `wf start` does. */
+async function onWorld<T>(world: World, fn: () => Promise<T>): Promise<T> {
+  const { setWorld } = await import('workflow/runtime');
+  setWorld(world);
+  try {
+    return await fn();
+  } finally {
+    setWorld(undefined as never);
+  }
+}
+
+async function waitForStatus(
+  fetcher: Fetcher,
+  runId: string,
+  status: string,
+  timeout = 30_000
+) {
+  await vi.waitFor(
+    async () => expect((await fetcher.getRun(runId)).status).toBe(status),
+    { interval: 200, timeout }
+  );
+}
+
+/** Runs the `wf` CLI against the app's data directory and base URL. */
+function wf(server: Server, args: string[]) {
+  const bin = createRequire(import.meta.url).resolve(
+    '@workflow/cli/bin/run.js'
+  );
+  const result = cp.spawnSync(process.execPath, [bin, ...args], {
+    encoding: 'utf8',
+    timeout: 60_000,
+    env: {
+      ...process.env,
+      WORKFLOW_TARGET_WORLD: 'local',
+      WORKFLOW_LOCAL_DATA_DIR: server.dataDir,
+      WORKFLOW_LOCAL_BASE_URL: `http://localhost:${server.info.port}`,
+    },
+  });
+  const output = `${result.stdout}${result.stderr}`;
+  expect(result.status, output).toBe(0);
+  return output;
 }
 
 /** Long enough for an accepted forged delivery to have written something. */
@@ -323,7 +421,7 @@ export function queueAuth(world: string) {
         });
         const fetcher = createFetcher(server);
         const keyFile = path.join(server.dataDir, 'queue-auth-key');
-        const keyBefore = await readFile(keyFile, 'utf8');
+        const keyBefore = await readKeyFile(server.dataDir);
         const { createWorld } = await import('@workflow/world-local');
         const other = createWorld({
           dataDir: server.dataDir,
@@ -353,6 +451,7 @@ export function queueAuth(world: string) {
           if (mode === 'read') {
             // A reader never writes the key, and its first delivery already
             // carries the app's key: nothing is refused.
+            expect(keyBefore).toBeDefined();
             expect(await readFile(keyFile, 'utf8')).toBe(keyBefore);
             expect(await refusalCounts(server)).toEqual([]);
           } else {
@@ -367,6 +466,323 @@ export function queueAuth(world: string) {
       }
     );
   }
+
+  // The app restarted (a new key) while a sender held the key of its previous
+  // run: the shape of `wf start` sent as the app's first request after a
+  // restart, and of a CLI that started while the app was down. The app
+  // refuses the old key once; the sender re-reads the file and retries at
+  // once, before it exits.
+  test.skipIf(world !== 'local')(
+    "a sender holding the previous run's key is refused once, then retries with the restarted app's key",
+    { timeout: 90_000 },
+    async () => {
+      const dataDir = await sharedDataDir();
+      const previous = staleKey();
+      await writeFile(path.join(dataDir, 'queue-auth-key'), `${previous}\n`);
+      const port = await freePort();
+      const reader = await otherProcessWorld(
+        dataDir,
+        `http://localhost:${port}`,
+        'read'
+      );
+
+      // The app is down: the first delivery fails at the transport and
+      // world-local retries it. The reader has read the previous key.
+      const run = await onWorld(reader, () =>
+        import('workflow/api').then(({ start }) =>
+          start(
+            { workflowId: workflowId('addition', 'addition') } as never,
+            [2, 3]
+          )
+        )
+      );
+
+      // Gate: the app starts, writing a new key, while that retry is pending.
+      // Without startup recovery, as in a Next.js app (which does not call
+      // world.start()), so only the sender's retry can complete the run.
+      const server = await startServer({
+        world,
+        dataDir,
+        env: {
+          WORKFLOW_QUEUE_AUTH: 'on',
+          WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS: '0',
+          PORT: String(port),
+        },
+      });
+      const fetcher = createFetcher(server);
+      await waitForStatus(fetcher, run.runId, 'completed', 60_000);
+
+      expect(
+        await readFile(path.join(dataDir, 'queue-auth-key'), 'utf8')
+      ).not.toBe(`${previous}\n`);
+      expect(await refusalCounts(server)).toEqual([
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            'workflow.queue.refusal_reason': 'wrong-key',
+          }),
+          sum: 1,
+        }),
+      ]);
+    }
+  );
+
+  // A script calls start() (a new key) while the app has a run in flight: the
+  // app accepts the script's key, and its own run carries on with it.
+  test.skipIf(world !== 'local')(
+    'a script that writes a new key while the app runs leaves the running app working',
+    { timeout: 90_000 },
+    async () => {
+      const server = await startServer({
+        world,
+        env: { WORKFLOW_QUEUE_AUTH: 'on' },
+      });
+      const fetcher = createFetcher(server);
+      const token = `queue-auth-${ulid()}`;
+      const { runId: parked } = await fetcher.invoke(
+        'workflows/hooks.ts',
+        'collectWithHook',
+        [token, 'data']
+      );
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await fetcher.getEvents(parked)).map((event) => event.eventType)
+          ).toContain('hook_created'),
+        { interval: 200, timeout: 25_000 }
+      );
+      const keyFile = path.join(server.dataDir, 'queue-auth-key');
+      const appKey = await readKeyFile(server.dataDir);
+
+      const script = await otherProcessWorld(
+        server.dataDir,
+        `http://localhost:${server.info.port}`,
+        'regenerate'
+      );
+      const fromScript = await onWorld(script, () =>
+        import('workflow/api').then(({ start }) =>
+          start(
+            { workflowId: workflowId('addition', 'addition') } as never,
+            [2, 3]
+          )
+        )
+      );
+      await waitForStatus(fetcher, fromScript.runId, 'completed');
+      expect(await readFile(keyFile, 'utf8')).not.toBe(appKey);
+
+      // The app's own run, resumed through the app, completes.
+      const resumed = await fetch(
+        `http://localhost:${server.info.port}/hooks/${token}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ data: 'last', done: true }),
+        }
+      );
+      expect(resumed.ok).toBe(true);
+      await waitForStatus(fetcher, parked, 'completed');
+    }
+  );
+
+  // Two app processes on one data directory (PM2 -i 2, node:cluster),
+  // started at once: each writes a key, the last write wins, and every
+  // sender reaches either process.
+  test.skipIf(world !== 'local')(
+    'two app processes started at once end up on one working key',
+    { timeout: 120_000 },
+    async () => {
+      const dataDir = await sharedDataDir();
+      const env = { WORKFLOW_QUEUE_AUTH: 'on' };
+      const servers = await Promise.all([
+        startServer({ world, dataDir, env }),
+        startServer({ world, dataDir, env }),
+      ]);
+      const key = await readKeyFile(dataDir);
+
+      for (const server of servers) {
+        const fetcher = createFetcher(server);
+        // The app's own queue.
+        const { runId } = await fetcher.invoke(
+          'workflows/addition.ts',
+          'addition',
+          [1, 2]
+        );
+        await waitForStatus(fetcher, runId, 'completed');
+        // A reader (the CLI) sending to this process with the file's key.
+        const reader = await otherProcessWorld(
+          dataDir,
+          `http://localhost:${server.info.port}`,
+          'read'
+        );
+        const run = await onWorld(reader, () =>
+          import('workflow/api').then(({ start }) =>
+            start(
+              { workflowId: workflowId('addition', 'addition') } as never,
+              [3, 4]
+            )
+          )
+        );
+        await waitForStatus(fetcher, run.runId, 'completed');
+      }
+
+      // One key: neither process wrote another after starting.
+      expect(await readFile(path.join(dataDir, 'queue-auth-key'), 'utf8')).toBe(
+        key
+      );
+      // A process whose own key lost the race refuses the file's key at most
+      // once, then reloads it; nothing is refused for carrying no key.
+      for (const server of servers) {
+        for (const series of await refusalCounts(server)) {
+          expect(series.attributes['workflow.queue.refusal_reason']).toBe(
+            'wrong-key'
+          );
+          expect(series.sum).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  );
+
+  // The CLI, end to end: `wf cancel` and `wf start <runId>` against the app.
+  test.skipIf(world !== 'local')(
+    'the CLI cancels and recreates runs of the running app',
+    { timeout: 120_000 },
+    async () => {
+      const server = await startServer({
+        world,
+        env: { WORKFLOW_QUEUE_AUTH: 'on' },
+      });
+      const fetcher = createFetcher(server);
+      const keyFile = path.join(server.dataDir, 'queue-auth-key');
+      const appKey = await readKeyFile(server.dataDir);
+      const { runId: parked } = await parkedRun(fetcher);
+      wf(server, ['cancel', parked]);
+      await waitForStatus(fetcher, parked, 'cancelled');
+
+      const { runId: done } = await fetcher.invoke(
+        'workflows/addition.ts',
+        'addition',
+        [2, 3]
+      );
+      await waitForStatus(fetcher, done, 'completed');
+      const output = wf(server, ['start', done]);
+      const recreated = output
+        .match(/wrun_[0-9A-Z]{26}/g)
+        ?.find((id) => id !== done);
+      expect(recreated, output).toBeDefined();
+      await waitForStatus(fetcher, recreated as string, 'completed');
+
+      // The CLI read the app's key, never wrote one: nothing it sent was
+      // refused.
+      expect(appKey).toBeDefined();
+      expect(await readFile(keyFile, 'utf8')).toBe(appKey);
+      expect(await refusalCounts(server)).toEqual([]);
+    }
+  );
+
+  // The web UI's run actions, which call these helpers on a Local World
+  // created with queueAuthKey: 'read' (workflow-server-actions.server.ts).
+  test.skipIf(world !== 'local')(
+    "the web UI's cancel, recreate, re-enqueue and wake-up reach the running app",
+    { timeout: 120_000 },
+    async () => {
+      // Without startup recovery, as in a Next.js app, which does not call
+      // world.start(): a lost message stays lost until something re-enqueues.
+      const server = await startServer({
+        world,
+        env: {
+          WORKFLOW_QUEUE_AUTH: 'on',
+          WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS: '0',
+        },
+      });
+      const fetcher = createFetcher(server);
+      const keyFile = path.join(server.dataDir, 'queue-auth-key');
+      const appKey = await readKeyFile(server.dataDir);
+      const runs = await import('@workflow/core/runtime');
+      const web = await otherProcessWorld(
+        server.dataDir,
+        `http://localhost:${server.info.port}`,
+        'read'
+      );
+
+      // Cancel.
+      const { runId: parked } = await parkedRun(fetcher);
+      await runs.cancelRun(web, parked);
+      await waitForStatus(fetcher, parked, 'cancelled');
+
+      // Recreate.
+      const { runId: done } = await fetcher.invoke(
+        'workflows/addition.ts',
+        'addition',
+        [2, 3]
+      );
+      await waitForStatus(fetcher, done, 'completed');
+      const recreated = await runs.recreateRunFromExisting(web, done);
+      await waitForStatus(fetcher, recreated, 'completed');
+
+      // Wake up: an hour-long sleep, woken now.
+      const { runId: sleeping } = await fetcher.invoke(
+        'workflows/inline-execution.ts',
+        'longSleepWorkflow',
+        []
+      );
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await fetcher.getEvents(sleeping)).map((event) => event.eventType)
+          ).toContain('wait_created'),
+        { interval: 200, timeout: 25_000 }
+      );
+      const { stoppedCount } = await runs.wakeUpRun(web, sleeping);
+      expect(stoppedCount).toBe(1);
+      await waitForStatus(fetcher, sleeping, 'completed');
+
+      // Re-enqueue: a run whose first message was lost (started by a
+      // process that exited while the app was down) stays pending, the same
+      // as without queue auth, until it is re-enqueued.
+      const lostPort = await freePort();
+      const exited = await otherProcessWorld(
+        server.dataDir,
+        `http://localhost:${lostPort}`,
+        'read'
+      );
+      const lost = await onWorld(exited, () =>
+        import('workflow/api').then(({ start }) =>
+          start(
+            { workflowId: workflowId('addition', 'addition') } as never,
+            [4, 5]
+          )
+        )
+      );
+      await exited.close?.();
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      expect((await fetcher.getRun(lost.runId)).status).toBe('pending');
+      await runs.reenqueueRun(web, lost.runId);
+      await waitForStatus(fetcher, lost.runId, 'completed');
+
+      expect(appKey).toBeDefined();
+      expect(await readFile(keyFile, 'utf8')).toBe(appKey);
+      expect(await refusalCounts(server)).toEqual([]);
+    }
+  );
+
+  // world-postgres's internal Local World only reads the key, and only when
+  // it sends: a Postgres app writes no key file and no data directory.
+  test.skipIf(world === 'local')(
+    'a Postgres app creates no queue auth key file and no Local data directory',
+    { timeout: 60_000 },
+    async () => {
+      const server = await startServer({ world });
+      const fetcher = createFetcher(server);
+      const { runId } = await fetcher.invoke(
+        'workflows/addition.ts',
+        'addition',
+        [1, 2]
+      );
+      await waitForStatus(fetcher, runId, 'completed');
+      // `server.dataDir` is the server's WORKFLOW_LOCAL_DATA_DIR, the
+      // directory the internal Local World would use.
+      expect(existsSync(server.dataDir)).toBe(false);
+    }
+  );
 
   test(
     'queue health checks still pass through the route',
