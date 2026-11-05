@@ -319,14 +319,23 @@ describe('getWorkflowPort', () => {
     await new Promise<void>((resolve) => slowServer.listen(0, resolve));
     await new Promise<void>((resolve) => fastServer.listen(0, resolve));
 
+    // Longer than the 500ms default, so the slow probe outlasting the default
+    // shows the custom timeout applies; and long enough that the fast
+    // server's probe (this process's first fetch) answers within it on a
+    // loaded Windows runner. A probe that times out counts as no workflow
+    // server, which would fall back to the first port.
+    const timeout = 1_500;
     const start = Date.now();
-    const port = await getWorkflowPort({ timeout: 100 });
+    const port = await getWorkflowPort({ timeout });
     const elapsed = Date.now() - start;
 
     const fastAddr = fastServer.address() as AddressInfo;
     expect(port).toBe(fastAddr.port);
+    // The probes run in parallel, so the never-answering server holds the
+    // call for its timeout and no longer.
+    expect(elapsed).toBeGreaterThanOrEqual(timeout - 50);
     // Windows enumerates ports through netstat before applying the probe timeout.
-    expect(elapsed).toBeLessThan(5000);
+    expect(elapsed).toBeLessThan(timeout + 5000);
   });
 
   it('should handle concurrent getWorkflowPort calls', async () => {

@@ -73,6 +73,13 @@ export function startHookOptionsError(rejected: readonly string[]): string {
   return `\`createHook()\` was called with this run's start token and ${rejected.map((name) => `\`${name}\``).join(', ')}, but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.`;
 }
 
+/**
+ * Drops a hook's pending payload awaiter without disposing the hook. Only the
+ * child-run completion dispatcher uses it; the QuickJS engine's hooks carry
+ * the same symbol.
+ */
+export const HOOK_RELEASE_AWAITER = Symbol.for('WORKFLOW_HOOK_RELEASE_AWAITER');
+
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
     // Reject an explicit empty-string token. A token must either be omitted
@@ -816,7 +823,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       webhookLogger.debug('Hook disposed', { correlationId, token });
     }
 
-    const hook: Hook<T> = {
+    const hook = {
       token,
 
       getConflict(): Promise<Run<unknown> | null> {
@@ -841,7 +848,16 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       dispose: disposeHook,
 
       [Symbol.dispose]: disposeHook,
-    };
+
+      // SDK-internal (the child-run completion dispatcher): stop waiting for
+      // the next payload without disposing the hook. A payload landing later
+      // is buffered for the next `then()`, and the hook stops counting as
+      // observed (`hookPayloadAwaiters`). One already consumed and on its way
+      // (`inFlight`) still settles the awaiter it was handed.
+      [HOOK_RELEASE_AWAITER]: () => {
+        pending = undefined;
+      },
+    } as Hook<T>;
 
     // Also register with the VM's Symbol.dispose so `using` works inside
     // the workflow sandbox (the VM may have a polyfilled Symbol.dispose

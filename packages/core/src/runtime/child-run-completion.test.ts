@@ -86,6 +86,7 @@ type Outcome =
       hooks: HookInvocationQueueItem[];
       steps: StepInvocationQueueItem[];
       waits: WaitInvocationQueueItem[];
+      observedHookIds: ReadonlySet<string> | undefined;
     };
 
 async function replay(code: string, events: Event[]): Promise<Outcome> {
@@ -103,9 +104,10 @@ async function replay(code: string, events: Event[]): Promise<Outcome> {
     };
   } catch (err) {
     if ((err as Error).name !== 'WorkflowSuspension') throw err;
-    const { items } = err as WorkflowSuspension;
+    const { items, observedHookIds } = err as WorkflowSuspension;
     return {
       done: false,
+      observedHookIds,
       hooks: items.filter(
         (item): item is HookInvocationQueueItem => item.type === 'hook'
       ),
@@ -172,14 +174,6 @@ class Log {
       eventType: 'hook_conflict',
       correlationId: hook.correlationId,
       eventData: { token: hook.token, conflictingRunId: 'wrun_other' },
-    });
-  }
-
-  hookDisposed(hook: HookInvocationQueueItem) {
-    this.#push({
-      eventType: 'hook_disposed',
-      correlationId: hook.correlationId,
-      eventData: {},
     });
   }
 
@@ -418,42 +412,86 @@ describe('awaitChildRunCompletion', () => {
     expect(await log.replay()).toEqual({ done: true, value: 'late' });
   });
 
-  it('disposes the hook between waits and registers it again for a later await', async () => {
+  it('stops listening on the hook once a wait ends, so the open hook is inert', async () => {
     const log = new Log(
       workflowCode(`
         const a = await ${awaitChild('wrun_a')};
-        const b = await ${awaitChild('wrun_b')};
-        return [a, b];
+        return [a, await readReturnValue('wrun_after')];
       `)
     );
     let s = await log.suspend();
-    const [first] = s.hooks;
-    log.hookCreated(first);
+    const [hook] = s.hooks;
+    log.hookCreated(hook);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], []);
+    // Parked: the dispatcher waits on the hook.
+    s = await log.suspend();
+    expect(s.observedHookIds?.has(hook.correlationId)).toBe(true);
+    const [wait] = s.waits;
+    log.waitCreated(wait);
+    // The safety net, not a payload, finds the child finished.
+    log.waitCompleted(wait);
     s = await log.suspend();
     await log.stepCompleted(s.steps[0], ['wrun_a']);
     s = await log.suspend();
     await log.stepCompleted(s.steps[0], 'A');
+    // Waiting is over: the hook is still open but nothing listens on it.
+    s = await log.suspend();
+    expect(s.steps.map((step) => step.args)).toEqual([['wrun_after']]);
+    expect(s.hooks[0].disposed).toBeFalsy();
+    expect(s.observedHookIds?.has(hook.correlationId)).toBe(false);
+    await log.stepCompleted(s.steps[0], 'Z');
+    expect(await log.replay()).toEqual({ done: true, value: ['A', 'Z'] });
+  });
 
-    // The first wait is over: its hook is disposed and a new one registered
-    // for the next child, under the same token.
-    s = await log.suspend();
-    const disposed = s.hooks.find(
-      (hook) => hook.correlationId === first.correlationId
+  it('keeps one hook open across waits and drops payloads for children nobody waits on', async () => {
+    const log = new Log(
+      workflowCode(`
+        const a = await ${awaitChild('wrun_a')};
+        const mid = await readReturnValue('wrun_mid');
+        const b = await ${awaitChild('wrun_b')};
+        return [a, mid, b];
+      `)
     );
-    expect(disposed?.disposed).toBe(true);
-    const second = s.hooks.find(
-      (hook) => hook.correlationId !== first.correlationId
-    );
-    assert(second);
-    expect(second).toMatchObject({ token: TOKEN, isSystem: true });
-    log.hookDisposed(first);
-    log.hookCreated(second);
+    let s = await log.suspend();
+    const [hook] = s.hooks;
+    log.hookCreated(hook);
     s = await log.suspend();
-    expect(s.steps[0].args).toEqual([['wrun_b']]);
-    await log.stepCompleted(s.steps[0], ['wrun_b']);
+    await log.stepCompleted(s.steps[0], []);
     s = await log.suspend();
+    log.waitCreated(s.waits[0]);
+    await log.childFinished(hook, 'wrun_a');
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], 'A');
+
+    // Between waits the hook stays open and is not disposed.
+    s = await log.suspend();
+    expect(s.hooks).toHaveLength(1);
+    expect(s.hooks[0].disposed).toBeFalsy();
+    expect(s.steps.map((step) => step.args)).toEqual([['wrun_mid']]);
+    // A child the parent never awaits finishes meanwhile: buffered, then
+    // dropped by the next wait.
+    await log.childFinished(hook, 'wrun_stray');
+    await log.stepCompleted(s.steps[0], 'M');
+
+    // The next await reuses the hook: no new registration, straight to the
+    // read.
+    s = await log.suspend();
+    expect(s.hooks).toHaveLength(1);
+    expect(s.steps.map((step) => [step.stepName, step.args])).toEqual([
+      [READ_FINISHED, [['wrun_b']]],
+    ]);
+    await log.stepCompleted(s.steps[0], []);
+    s = await log.suspend();
+    expect(s.steps).toHaveLength(0);
+    await log.childFinished(hook, 'wrun_b');
+    s = await log.suspend();
+    expect(s.steps.map((step) => step.args)).toEqual([['wrun_b']]);
     await log.stepCompleted(s.steps[0], 'B');
-    expect(await log.replay()).toEqual({ done: true, value: ['A', 'B'] });
+    expect(await log.replay()).toEqual({
+      done: true,
+      value: ['A', 'M', 'B'],
+    });
   });
 
   it("falls back to each child's own read when the batched status read fails", async () => {
@@ -469,7 +507,7 @@ describe('awaitChildRunCompletion', () => {
     expect(stepsNamed(s, READ_FINISHED)).toHaveLength(1);
     await log.stepFailed(s.steps[0], new Error('runs.get kept failing'));
 
-    // Both children read their own result; the hook is closed.
+    // Both children read their own result; the hook stays open.
     s = await log.suspend();
     expect(stepsNamed(s, READ_VALUE).map((step) => step.args[0])).toEqual([
       'wrun_a',
@@ -477,14 +515,47 @@ describe('awaitChildRunCompletion', () => {
     ]);
     expect(
       s.hooks.find((h) => h.correlationId === hook.correlationId)?.disposed
-    ).toBe(true);
-    log.hookDisposed(hook);
+    ).toBeFalsy();
     for (const [step, value] of stepsNamed(s, READ_VALUE).map(
       (step, i) => [step, i === 0 ? 'A' : 'B'] as const
     )) {
       await log.stepCompleted(step, value);
     }
     expect(await log.replay()).toEqual({ done: true, value: ['A', 'B'] });
+  });
+
+  it('starts waiting on the first then, not when returnValue is read', async () => {
+    const log = new Log(
+      workflowCode(`
+        const pending = ${awaitChild('wrun_a')};
+        const isPromise = pending instanceof Promise;
+        const before = await readReturnValue('wrun_before');
+        return [isPromise, before, await pending];
+      `)
+    );
+    // Read, not yet awaited: no hook and no status read, only the step.
+    let s = await log.suspend();
+    expect(s.hooks).toHaveLength(0);
+    expect(s.steps.map((step) => [step.stepName, step.args])).toEqual([
+      [READ_VALUE, ['wrun_before']],
+    ]);
+    await log.stepCompleted(s.steps[0], 'B');
+
+    // Awaited: the hook is registered, then the batched read.
+    s = await log.suspend();
+    expect(s.hooks).toHaveLength(1);
+    expect(s.hooks[0]).toMatchObject({ token: TOKEN, isSystem: true });
+    expect(s.steps).toHaveLength(0);
+    log.hookCreated(s.hooks[0]);
+    s = await log.suspend();
+    expect(s.steps[0].args).toEqual([['wrun_a']]);
+    await log.stepCompleted(s.steps[0], ['wrun_a']);
+    s = await log.suspend();
+    await log.stepCompleted(s.steps[0], 'A');
+    expect(await log.replay()).toEqual({
+      done: true,
+      value: [true, 'B', 'A'],
+    });
   });
 
   it('shares one wait between repeated awaits of the same child', async () => {
