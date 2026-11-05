@@ -19,12 +19,15 @@ import {
   HealthCheckPayloadSchema,
   isSingleOrchestratorMessage,
   MessageId,
+  messageRunSpecVersion,
+  orchestratorRunIdOf,
   parseQueueName,
   parseQueueRoute,
   type Queue,
   QueuePayloadSchema,
   QueuePrefix,
   resolveQueueNamespace,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   singleOrchestratorRunIdOf,
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
@@ -168,6 +171,32 @@ const CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT = 49;
 const POST_CEILING_RETRY_ATTEMPTS = 24;
 const MAX_GRAPHILE_JOB_ATTEMPTS =
   CORE_MAX_DELIVERIES_EXCEEDED_ATTEMPT + POST_CEILING_RETRY_ATTEMPTS;
+/**
+ * Re-runs of one spec 9 orchestrator delivery for the run's orchestrator
+ * messages that queued behind it (see `takeCoalescedJobs`), as world-vercel
+ * bounds its coalesced re-runs. Past the cap the delivery acknowledges, and
+ * the messages still waiting are delivered as usual.
+ */
+export const MAX_COALESCED_RERUNS = 32;
+/**
+ * Most waiting jobs one coalescing check claims. A run's named queue rarely
+ * holds more than a fan-out's worth of wakes; the rest wait for the next
+ * check.
+ */
+const COALESCE_BATCH_LIMIT = 500;
+/**
+ * Graphile priority of a spec 9 handoff's job: below the default 0, so the
+ * continuation runs before the run's orchestrator messages that queued behind
+ * it (Graphile takes the lowest priority first, then the earliest `run_at`).
+ */
+const HANDOFF_JOB_PRIORITY = -1;
+/**
+ * When the invocation that runs a delivery began (epoch ms), passed to the
+ * handler as `invocationStartedAt`. The same for every coalesced re-run, so
+ * a late re-run does not get a fresh inline budget.
+ */
+const INVOCATION_STARTED_AT_HEADER =
+  'x-workflow-postgres-invocation-started-at';
 const EXECUTOR_JOB_HEADER = 'x-workflow-postgres-executor-job';
 const EXECUTOR_WORKER_HEADER = 'x-workflow-postgres-executor-worker';
 const EXECUTOR_ATTEMPT_HEADER = 'x-workflow-postgres-executor-attempt';
@@ -208,6 +237,15 @@ type HttpExecutionResult =
 
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
+
+/** Whether a queue message is a step's execution message. */
+function isStepMessage(message: unknown): boolean {
+  return (
+    typeof message === 'object' &&
+    message !== null &&
+    typeof (message as { stepId?: unknown }).stepId === 'string'
+  );
+}
 
 function executorInput(message: unknown) {
   if (HealthCheckPayloadSchema.safeParse(message).success) return undefined;
@@ -332,10 +370,28 @@ export function createQueue(
     `${getJobQueueName()}:${runId}:executor`;
   const executorTask = () => `${getJobQueueName()}_executor`;
 
-  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+  const createQueueHandler: Queue['createQueueHandler'] = (
+    prefix,
+    givenHandler
+  ) => {
+    // Passes the delivering worker's `invocationStartedAt` (set on the
+    // request, see `deliverMessage`) through to the handler.
+    const withInvocationStart =
+      (req: Request): typeof givenHandler =>
+      (message, metadata) => {
+        const startedAt = Number(req.headers.get(INVOCATION_STARTED_AT_HEADER));
+        return givenHandler(
+          message,
+          Number.isFinite(startedAt) && startedAt > 0
+            ? { ...metadata, invocationStartedAt: startedAt }
+            : metadata
+        );
+      };
     if (!invocations || prefix !== ownPrefix())
-      return localWorld.createQueueHandler(prefix, handler);
+      return (req) =>
+        localWorld.createQueueHandler(prefix, withInvocationStart(req))(req);
     return async (req) => {
+      const handler = withInvocationStart(req);
       // Keep transport provenance request-scoped; it is not a World API field.
       const delivery = ExecutorDelivery.safeParse({
         id: req.headers.get(EXECUTOR_JOB_HEADER),
@@ -485,6 +541,7 @@ export function createQueue(
     createdAt,
     maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
     jobKeyMode = 'preserve_run_at',
+    priority,
   }: {
     queueId: string;
     prefix?: QueuePrefix;
@@ -512,6 +569,8 @@ export function createQueue(
      * while any job holds the key, locked or not.
      */
     jobKeyMode?: 'preserve_run_at' | 'unsafe_dedupe';
+    /** Graphile priority; lower runs first. Default 0. */
+    priority?: number;
   }) {
     const utils = workerUtils;
     if (!utils) {
@@ -542,6 +601,7 @@ export function createQueue(
       {
         ...(jobKey ? { jobKey, jobKeyMode } : {}),
         ...(runAt ? { runAt } : {}),
+        ...(priority !== undefined ? { priority } : {}),
         maxAttempts,
         ...(runQueue ? { queueName: executorQueueName(runQueue) } : {}),
       }
@@ -712,6 +772,7 @@ export function createQueue(
     headers: extraHeaders,
     abortSignal,
     executorDelivery,
+    invocationStartedAt,
   }: {
     queueName: ValidQueueName;
     prefix: QueuePrefix;
@@ -725,6 +786,8 @@ export function createQueue(
     headers?: Record<string, string>;
     abortSignal?: AbortSignal;
     executorDelivery?: ExecutorDelivery;
+    /** See {@link INVOCATION_STARTED_AT_HEADER}. */
+    invocationStartedAt?: number;
   }): Promise<HttpExecutionResult> {
     const headers = new Headers(extraHeaders);
     headers.set('content-type', 'application/json');
@@ -739,6 +802,10 @@ export function createQueue(
     headers.delete(EXECUTOR_JOB_HEADER);
     headers.delete(EXECUTOR_WORKER_HEADER);
     headers.delete(EXECUTOR_ATTEMPT_HEADER);
+    headers.delete(INVOCATION_STARTED_AT_HEADER);
+    if (invocationStartedAt !== undefined) {
+      headers.set(INVOCATION_STARTED_AT_HEADER, String(invocationStartedAt));
+    }
     if (executorDelivery) {
       headers.set(EXECUTOR_JOB_HEADER, executorDelivery.id);
       headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
@@ -918,28 +985,35 @@ export function createQueue(
 
   /**
    * The Graphile job-key mode of a publish (`queue`). A follow-up job the
-   * queue schedules itself (a reschedule, a transfer to the executor) keeps
-   * `'preserve_run_at'`: it is sent while the job it continues is locked,
-   * and must be inserted next to it.
+   * queue schedules itself (a reschedule, a transfer to the executor, a move
+   * to a run's named queue) keeps `'preserve_run_at'`: it is sent while the
+   * job it continues is locked, and must be inserted next to it.
    *
-   * - A single-orchestrator run's keyed message (spec >= 9: a step's
-   *   execution message, each hop of a wait's timer) is sent with a key only
-   *   to be deduplicated: the runtime sends it again from later deliveries
-   *   of the run (the re-send rule, a timer every delivery that may owe it
-   *   sends), and a second job would be a second owner of the step's body,
-   *   or a second chain of a long wait's hops. `'unsafe_dedupe'` makes the send a no-op while any
-   *   job holds the key: a locked one (being delivered), one waiting out its
-   *   delay, or one in retry backoff, whose attempts and `run_at` it keeps.
-   *   The key is free again once the job completes and is deleted.
-   * - Any other keyed publish keeps `'preserve_run_at'`: a duplicate may be
-   *   an immediate replay of a delayed retry, and keeping the first job's
+   * - A step's execution message (`stepId` set), of any run, and a
+   *   single-orchestrator run's other keyed messages (spec >= 9: each hop of
+   *   a wait's timer) are sent with a key only to be deduplicated: the
+   *   runtime sends them again from later deliveries of the run (spec 9's
+   *   re-send rule, a timer every delivery that may owe it sends; spec 8's
+   *   republish of a delivery's step messages after a failed send, and its
+   *   dispatch of a step another handler may already have queued), and a
+   *   second job would be a second owner of the step's body, or a second
+   *   chain of a long wait's hops. `'unsafe_dedupe'` makes the send a no-op
+   *   while any job holds the key: a locked one (being delivered), one
+   *   waiting out its delay, or one in retry backoff, whose attempts and
+   *   `run_at` it keeps. The key is free again once the job completes and is
+   *   deleted. A step's retry is not such a send: it is a reschedule of the
+   *   step's own job.
+   * - Any other keyed publish of an earlier run (spec 8's timers, hook wakes
+   *   and backstops) keeps `'preserve_run_at'`: a duplicate may be an
+   *   immediate replay of a delayed retry, and keeping the first job's
    *   `run_at` keeps that backoff.
    */
   const jobKeyModeFor = (
     message: unknown,
     idempotencyKey: string | undefined
   ): 'preserve_run_at' | 'unsafe_dedupe' =>
-    idempotencyKey !== undefined && isSingleOrchestratorMessage(message)
+    idempotencyKey !== undefined &&
+    (isSingleOrchestratorMessage(message) || isStepMessage(message))
       ? 'unsafe_dedupe'
       : 'preserve_run_at';
 
@@ -1017,6 +1091,99 @@ export function createQueue(
     return transport.deserialize(bodyStream as ReadableStream<Uint8Array>);
   }
 
+  /**
+   * The spec version a run's row records, or `undefined` when the run is not
+   * found, records none, or cannot be read. An unread version leaves the
+   * message ungated, as before this check existed: the in-band fence keeps
+   * an overlap safe, so a failed read must not fail the delivery.
+   */
+  async function readRunSpecVersion(
+    runId: string
+  ): Promise<number | undefined> {
+    let value: number | string | null | undefined;
+    try {
+      const { rows } = await pool.query<{
+        spec_version: number | string | null;
+      }>('SELECT spec_version FROM workflow.workflow_runs WHERE id = $1', [
+        runId,
+      ]);
+      value = rows[0]?.spec_version;
+    } catch {
+      return undefined;
+    }
+    // Migration 0005 created the column as `varchar` (drizzle's schema says
+    // integer), so the driver returns a string on a migrated database.
+    const specVersion =
+      value === null || value === undefined ? Number.NaN : Number(value);
+    return Number.isSafeInteger(specVersion) ? specVersion : undefined;
+  }
+
+  /**
+   * Claims the jobs queued behind a spec 9 orchestrator delivery that it can
+   * cover with a re-run (coalescing, as world-vercel does with its
+   * concurrency key): the run's orchestrator messages on its named queue
+   * that are due and not locked. Graphile runs a named queue's jobs one at a
+   * time, so these are waiting for this delivery to finish. Returns how many
+   * it removed.
+   *
+   * Removing them is safe for the reason it is safe on world-vercel: every
+   * producer commits what an orchestrator message is for (a step outcome, a
+   * `hook_received`, a cancellation) before it sends it, and the re-run reads
+   * the log. `run.wakeUp()`'s waits are best-effort, and a final timer's wait
+   * is found due by the re-run. An intermediate wait hop never reaches the
+   * named queue (`singleOrchestratorRunIdOf`). A start message (`runInput`)
+   * is left in place: it carries the run's input for a start that has not
+   * committed its `run_created` yet.
+   *
+   * `complete_jobs` deletes only unlocked jobs, so a job another worker has
+   * taken meanwhile is left to it.
+   */
+  async function takeCoalescedJobs(
+    runId: string,
+    ownJobId: string
+  ): Promise<number> {
+    const utils = workerUtils;
+    if (!utils) return 0;
+    const { rows } = await pool.query<{ id: string; payload: unknown }>(
+      `SELECT jobs.id, jobs.payload
+         FROM graphile_worker._private_jobs AS jobs
+         JOIN graphile_worker._private_tasks AS tasks ON tasks.id = jobs.task_id
+         JOIN graphile_worker._private_job_queues AS job_queues
+           ON job_queues.id = jobs.job_queue_id
+        WHERE job_queues.queue_name = $1
+          AND tasks.identifier = $2
+          AND jobs.id <> $3
+          AND jobs.locked_at IS NULL
+          AND jobs.run_at <= now()
+        ORDER BY jobs.id
+        LIMIT ${COALESCE_BATCH_LIMIT}`,
+      [executorQueueName(runId), getJobQueueName(), ownJobId]
+    );
+    const ids: string[] = [];
+    for (const row of rows) {
+      const message = MessageData.safeParse(row.payload);
+      if (!message.success) continue;
+      let body: unknown;
+      try {
+        body = await deserializeMessageBody(message.data.data);
+      } catch {
+        continue;
+      }
+      if (
+        singleOrchestratorRunIdOf(body) !== runId ||
+        (typeof body === 'object' &&
+          body !== null &&
+          ('runInput' in body || 'invoke' in body))
+      ) {
+        continue;
+      }
+      ids.push(row.id);
+    }
+    if (ids.length === 0) return 0;
+    const removed = await utils.completeJobs(ids);
+    return removed.length;
+  }
+
   function createTaskHandler(queue: QueuePrefix, executor = false) {
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
@@ -1077,23 +1244,99 @@ export function createQueue(
           worker: graphileHelpers.data.job.locked_by,
           attempt: graphileHelpers.data.job.attempts,
         });
+      } else if (prefix === queue && !executor) {
+        // An orchestrator message without a spec stamp (an older SDK's
+        // `resumeHook()` or `cancel()` during a rolling upgrade, another
+        // client of the World) was published outside any run's named queue.
+        // If its run is spec 9, stamp it with the run's version and move it
+        // to the run's named queue, so it waits behind the run's live
+        // delivery instead of running beside it. Only unstamped messages pay
+        // the read; every message this runtime sends is stamped.
+        const unstampedRunId =
+          messageRunSpecVersion(body) === undefined
+            ? orchestratorRunIdOf(body)
+            : undefined;
+        if (unstampedRunId !== undefined) {
+          const specVersion = await readRunSpecVersion(unstampedRunId);
+          if (
+            specVersion !== undefined &&
+            specVersion >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+          ) {
+            const stamped = {
+              ...(body as Record<string, unknown>),
+              runSpecVersion: specVersion,
+            };
+            await addGraphileJob({
+              queueId: messageData.id,
+              prefix: messageData.prefix,
+              route: messageData.route,
+              body: transport.serialize(stamped) as Buffer,
+              messageId: messageData.messageId,
+              createdAt: messageData.createdAt,
+              // Not a delivery: the moved job reports this one's counts.
+              attempt,
+              attemptOffset: attempt - 1,
+              deliveryOffset: deliveryCount - 1,
+              idempotencyKey: messageData.idempotencyKey,
+              headers: messageData.headers,
+              jobKey: `${getJobQueueName()}:stamped:${messageData.messageId}`,
+              serialRunId: unstampedRunId,
+            });
+            return;
+          }
+        }
       }
+      /**
+       * The run whose orchestrator messages queued behind this delivery it
+       * covers with re-runs (`takeCoalescedJobs`): a spec 9 orchestrator
+       * delivery on the run's named queue. Not on the invoke executor lane,
+       * whose deliveries also drive the run's invocation mailbox.
+       */
+      const coalescingRunId =
+        !orchestration &&
+        prefix === queue &&
+        graphileHelpers.success &&
+        graphileHelpers.data.job.id !== undefined
+          ? singleOrchestratorRunIdOf(body)
+          : undefined;
+      const ownJobId = graphileHelpers.success
+        ? graphileHelpers.data.job.id
+        : undefined;
+      const invocationStartedAt = Date.now();
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
-        const result = await deliverMessage({
-          queueName,
-          prefix,
-          route: messageData.route,
-          messageId: messageData.messageId,
-          createdAt: messageData.createdAt,
-          attempt,
-          deliveryCount,
-          body: messageData.data,
-          headers: messageData.headers,
-          executorDelivery,
-          abortSignal: graphileHelpers.success
-            ? graphileHelpers.data.abortSignal
-            : undefined,
-        });
+        let rerun = 0;
+        let result: HttpExecutionResult;
+        for (;;) {
+          result = await deliverMessage({
+            queueName,
+            prefix,
+            route: messageData.route,
+            messageId: messageData.messageId,
+            createdAt: messageData.createdAt,
+            attempt,
+            // A coalesced re-run reports the next delivery count and the
+            // same attempt, so the runtime reads the log as on a
+            // redelivery (see `Queue.createQueueHandler`).
+            deliveryCount: deliveryCount + rerun,
+            body: messageData.data,
+            headers: messageData.headers,
+            executorDelivery,
+            invocationStartedAt,
+            abortSignal: graphileHelpers.success
+              ? graphileHelpers.data.abortSignal
+              : undefined,
+          });
+          if (
+            result.type !== 'completed' ||
+            coalescingRunId === undefined ||
+            ownJobId === undefined ||
+            rerun >= MAX_COALESCED_RERUNS ||
+            (await takeCoalescedJobs(coalescingRunId, ownJobId)) === 0
+          ) {
+            break;
+          }
+          rerun++;
+        }
 
         if (result.type === 'completed') {
           return 'completed';
@@ -1108,6 +1351,18 @@ export function createQueue(
           // successor.
           const handoff =
             result.timeoutSeconds === 0 && isSingleOrchestratorMessage(body);
+          // A spec 9 orchestrator's `{ timeoutSeconds: n > 0 }` (a
+          // redelivery after the in-band fence refused its write, or a run
+          // deferred for load) is a counted redelivery of the same message,
+          // as on world-vercel and world-local: it carries `attempt` over,
+          // so a run refused on every pass reaches the delivery cap
+          // (`MAX_DELIVERIES_EXCEEDED`) instead of looping. A step message's
+          // in-place retry still starts `attempt` over.
+          const countedRedelivery =
+            !handoff &&
+            isSingleOrchestratorMessage(body) &&
+            orchestratorRunIdOf(body) !== undefined;
+          const currentDeliveryCount = deliveryCount + rerun;
           // Schedule the follow-up job before we return so a crash cannot
           // lose the wake-up request.
           await addGraphileJob({
@@ -1126,11 +1381,18 @@ export function createQueue(
             messageId: messageData.messageId,
             createdAt: messageData.createdAt,
             attempt: handoff ? attempt : attempt + 1,
-            attemptOffset: handoff ? attempt - 1 : messageData.attemptOffset,
-            deliveryOffset: deliveryCount,
+            attemptOffset: handoff
+              ? attempt - 1
+              : countedRedelivery
+                ? attempt
+                : messageData.attemptOffset,
+            deliveryOffset: currentDeliveryCount,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
+            // A handoff goes to the front of the run's named queue, ahead of
+            // the orchestrator messages that queued behind this delivery.
+            ...(handoff ? { priority: HANDOFF_JOB_PRIORITY } : {}),
             jobKey: messageData.idempotencyKey ?? messageData.messageId,
             ...(orchestration
               ? { executorRunId: orchestration.runId }

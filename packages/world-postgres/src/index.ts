@@ -5,6 +5,7 @@ import { type PostgresWorldConfig, resolveJobPrefix } from './config.js';
 import { handleConnectionErrors } from './connection-errors.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import { createRunEventsFeed, type RunEventsFeed } from './run-events.js';
 import {
   createRunStatusListener,
   type RunStatusListener,
@@ -22,11 +23,12 @@ import { createStreamer } from './streamer.js';
 function createStorage(
   drizzle: Drizzle,
   runStatusListener: RunStatusListener,
-  jobPrefix: string
+  jobPrefix: string,
+  runEventsFeed: RunEventsFeed
 ): Storage {
   return {
     runs: createRunsStorage(drizzle, runStatusListener),
-    events: createEventsStorage(drizzle, { jobPrefix }),
+    events: createEventsStorage(drizzle, { jobPrefix, runEventsFeed }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
     experimental_snapshots: createSnapshotsStorage(drizzle),
@@ -77,7 +79,21 @@ export function createWorld(
   // The prefix of the Graphile task this World's runner claims. Stamped on
   // every run this World creates, and the scope of its startup recovery.
   const jobPrefix = resolveJobPrefix(config);
-  const storage = createStorage(drizzle, runStatusListener, jobPrefix);
+  // `events.subscribe` for spec 9 orchestrators: one `LISTEN` connection,
+  // opened on the first subscription. Lingering on it holds a worker slot,
+  // so at most half of this process's slots linger at once.
+  const runEventsFeed = createRunEventsFeed(pool, {
+    maxLiveSubscriptions: Math.max(
+      1,
+      Math.floor((config.queueConcurrency || 50) / 2)
+    ),
+  });
+  const storage = createStorage(
+    drizzle,
+    runStatusListener,
+    jobPrefix,
+    runEventsFeed
+  );
   const streamer = createStreamer(pool, drizzle);
 
   const capabilities = {
@@ -138,6 +154,7 @@ export function createWorld(
       await queue.close();
       await streamer.close();
       await runStatusListener.close();
+      await runEventsFeed.close();
       if (pool !== config.pool) {
         await pool.end();
       }

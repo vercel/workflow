@@ -21,6 +21,7 @@ import type {
   EventLogSnapshot,
   EventResult,
   EventsResolveData,
+  EventsSubscribeOptions,
   ExperimentalSetAttributesResult,
   GetEventParams,
   Hook,
@@ -97,6 +98,7 @@ import {
   invocationExpiredError,
 } from './invocation-retention.js';
 import { purgeRunUserDataIfZeroRetention } from './retention.js';
+import { announceRunEvents, type RunEventsFeed } from './run-events.js';
 import {
   getRunStatusPollIntervalMs,
   notifyRunTerminal,
@@ -1195,89 +1197,130 @@ export function createEventsStorage(
      * created without a prefix and every World recovers them.
      */
     jobPrefix?: string;
+    /**
+     * The live feed behind `events.subscribe`. Omitted, the storage offers
+     * no `subscribe`. Writes announce spec 9 runs on it either way.
+     */
+    runEventsFeed?: RunEventsFeed;
   } = {}
 ): Storage['events'] {
-  const { jobPrefix } = options;
+  const { jobPrefix, runEventsFeed } = options;
   const events = createUnfencedEventsStorage(drizzle, { jobPrefix });
   const unfencedCreate = events.create as (
     runId: string | null,
     data: AnyEventRequest,
     params?: CreateEventParams
   ) => Promise<EventResult>;
+  const create = async (
+    runId: string | null,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    const result = await createFenced(runId, data, params);
+    // Wakes the run's live feed (see run-events.ts), in any process. Only
+    // a spec 9 run has subscribers, and every write to one is stamped 9.
+    const announcedRunId = result.event?.runId ?? runId;
+    if (
+      announcedRunId &&
+      result.event &&
+      (data.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+    ) {
+      announceRunEvents(drizzle, announcedRunId);
+    }
+    return result;
+  };
+  const createFenced = async (
+    runId: string | null,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    // `run_created` opens the count and is never fenced itself.
+    if (!params?.inBand || !runId || data.eventType === 'run_created') {
+      return unfencedCreate(runId, data, params);
+    }
+    const expected = params.expectedSeqInBand;
+    if (
+      expected === undefined ||
+      !Number.isSafeInteger(expected) ||
+      expected < 0
+    ) {
+      throw new WorkflowWorldError(
+        `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+        { status: 400 }
+      );
+    }
+    // Several event types update their entity row (run status,
+    // attributes, a step or wait) ahead of the event insert, so the fence
+    // check, those updates and the insert that advances the count run in
+    // one transaction that holds the run's slots row lock from the start.
+    // A stale writer is refused before it touches any row, and of writers
+    // holding the same count only the first through the lock writes
+    // anything: the others find the count moved. Only in-band writers take
+    // this lock, so out-of-band writes never wait on it.
+    const terminalRuns: string[] = [];
+    const result = await drizzle.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ seqInBand: Schema.eventSlots.seqInBand })
+        .from(Schema.eventSlots)
+        .where(eq(Schema.eventSlots.runId, runId))
+        .for('update')
+        .limit(1);
+      // No slots row: a run that predates slot-numbered ids, which the
+      // fence does not cover (its inserts allocate no slot).
+      if (row && row.seqInBand !== expected) {
+        throw new InBandSupersededError(
+          `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${row.seqInBand}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+          { seqInBand: row.seqInBand }
+        );
+      }
+      const inTransaction = createUnfencedEventsStorage(tx, {
+        jobPrefix,
+        deferTerminalNotify: (terminalRunId) =>
+          terminalRuns.push(terminalRunId),
+      }).create as (
+        runId: string | null,
+        data: AnyEventRequest,
+        params?: CreateEventParams
+      ) => Promise<EventResult>;
+      const occurredAt =
+        params?.occurredAt !== undefined
+          ? new Date(params.occurredAt)
+          : undefined;
+      return pendingFence.run(
+        {
+          runId,
+          expected,
+          consumed: false,
+          ...(occurredAt && !Number.isNaN(+occurredAt) ? { occurredAt } : {}),
+        },
+        () => inTransaction(runId, data, params)
+      );
+    }, SLOT_INSERT_TRANSACTION);
+    for (const terminalRunId of terminalRuns) {
+      await notifyRunTerminal(drizzle, terminalRunId);
+    }
+    return result;
+  };
   return {
     ...events,
-    async create(
-      runId: string | null,
-      data: AnyEventRequest,
-      params?: CreateEventParams
-    ): Promise<EventResult> {
-      // `run_created` opens the count and is never fenced itself.
-      if (!params?.inBand || !runId || data.eventType === 'run_created') {
-        return unfencedCreate(runId, data, params);
-      }
-      const expected = params.expectedSeqInBand;
-      if (
-        expected === undefined ||
-        !Number.isSafeInteger(expected) ||
-        expected < 0
-      ) {
-        throw new WorkflowWorldError(
-          `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
-          { status: 400 }
-        );
-      }
-      // Several event types update their entity row (run status,
-      // attributes, a step or wait) ahead of the event insert, so the fence
-      // check, those updates and the insert that advances the count run in
-      // one transaction that holds the run's slots row lock from the start.
-      // A stale writer is refused before it touches any row, and of writers
-      // holding the same count only the first through the lock writes
-      // anything: the others find the count moved. Only in-band writers take
-      // this lock, so out-of-band writes never wait on it.
-      const terminalRuns: string[] = [];
-      const result = await drizzle.transaction(async (tx) => {
-        const [row] = await tx
-          .select({ seqInBand: Schema.eventSlots.seqInBand })
-          .from(Schema.eventSlots)
-          .where(eq(Schema.eventSlots.runId, runId))
-          .for('update')
-          .limit(1);
-        // No slots row: a run that predates slot-numbered ids, which the
-        // fence does not cover (its inserts allocate no slot).
-        if (row && row.seqInBand !== expected) {
-          throw new InBandSupersededError(
-            `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${row.seqInBand}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
-            { seqInBand: row.seqInBand }
-          );
+    create,
+    ...(runEventsFeed
+      ? {
+          subscribe: (
+            runId: string,
+            afterSlot: number,
+            onEvent: (event: Event) => void,
+            subscribeOptions?: EventsSubscribeOptions
+          ) =>
+            runEventsFeed.subscribe(
+              runId,
+              afterSlot,
+              onEvent,
+              subscribeOptions,
+              events.list
+            ),
         }
-        const inTransaction = createUnfencedEventsStorage(tx, {
-          jobPrefix,
-          deferTerminalNotify: (terminalRunId) =>
-            terminalRuns.push(terminalRunId),
-        }).create as (
-          runId: string | null,
-          data: AnyEventRequest,
-          params?: CreateEventParams
-        ) => Promise<EventResult>;
-        const occurredAt =
-          params?.occurredAt !== undefined
-            ? new Date(params.occurredAt)
-            : undefined;
-        return pendingFence.run(
-          {
-            runId,
-            expected,
-            consumed: false,
-            ...(occurredAt && !Number.isNaN(+occurredAt) ? { occurredAt } : {}),
-          },
-          () => inTransaction(runId, data, params)
-        );
-      }, SLOT_INSERT_TRANSACTION);
-      for (const terminalRunId of terminalRuns) {
-        await notifyRunTerminal(drizzle, terminalRunId);
-      }
-      return result;
-    },
+      : {}),
     async list(params: ListEventsParams): Promise<EventListResponse> {
       // Read before listing, in one statement: the count, then the highest
       // slot. Every in-band write the count includes committed with it, so
