@@ -67,6 +67,30 @@ export function getOrchestratorFeedPollIntervalMs(
 }
 
 /**
+ * Default interval of the log-tail poll while the live push is up and the
+ * World watches it for silent failure (`EventsSubscribeOptions.onWatched`,
+ * world-vercel's heartbeats), in milliseconds. A dead push is then reported
+ * through `onError` and a skipped event through `onGap`, so the poll is only
+ * a last resort.
+ */
+export const DEFAULT_ORCHESTRATOR_WATCHED_FEED_POLL_INTERVAL_MS = 60_000;
+
+/**
+ * Interval of the log-tail poll while the live push is up and watched: an
+ * explicit `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`, else
+ * {@link DEFAULT_ORCHESTRATOR_WATCHED_FEED_POLL_INTERVAL_MS}.
+ */
+export function getOrchestratorWatchedFeedPollIntervalMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const raw = env.WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS;
+  if (raw === undefined || raw === '') {
+    return DEFAULT_ORCHESTRATOR_WATCHED_FEED_POLL_INTERVAL_MS;
+  }
+  return getOrchestratorFeedPollIntervalMs(env);
+}
+
+/**
  * How far the log-tail poll's interval backs off while the live feed is
  * healthy: up to this many times the live-push interval. Each poll that finds
  * nothing the feed had not already delivered doubles the interval; any sign
@@ -204,6 +228,11 @@ export class LiveLogFeed {
        * `pollIntervalMs`; defaults to it.
        */
       feedPollIntervalMs?: number;
+      /**
+       * Poll interval while the live push is up and the World watches it
+       * (`onWatched`). Never below `feedPollIntervalMs`; defaults to it.
+       */
+      watchedFeedPollIntervalMs?: number;
       onEvents: (events: Event[]) => void;
       /**
        * Called once when a live push subscription goes down: `onError`, or
@@ -219,6 +248,10 @@ export class LiveLogFeed {
     this.feedPollIntervalMs = Math.max(
       options.feedPollIntervalMs ?? 0,
       options.pollIntervalMs
+    );
+    this.watchedFeedPollIntervalMs = Math.max(
+      options.watchedFeedPollIntervalMs ?? 0,
+      this.feedPollIntervalMs
     );
     this.currentIntervalMs = options.pollIntervalMs;
     this.onEvents = options.onEvents;
@@ -242,6 +275,21 @@ export class LiveLogFeed {
 
   private readonly pollIntervalMs: number;
   private readonly feedPollIntervalMs: number;
+  private readonly watchedFeedPollIntervalMs: number;
+  /** Whether the World watches the live push for silent failure. */
+  private watched = false;
+
+  /** The live-push poll interval: watched or not. */
+  private get livePollIntervalMs(): number {
+    return this.watched
+      ? this.watchedFeedPollIntervalMs
+      : this.feedPollIntervalMs;
+  }
+
+  /** Whether the World watches the live push (`onWatched`), while it is live. */
+  get isWatched(): boolean {
+    return this.watched && this.isLive;
+  }
   private readonly onEvents: (events: Event[]) => void;
   private readonly onFeedDown: (() => void) | undefined;
 
@@ -258,9 +306,28 @@ export class LiveLogFeed {
           this.nextSlot - 1,
           (event) => this.offer([event], 'push'),
           {
+            // The push missed events: read the log now.
+            onGap: () => {
+              if (this.stopped) return;
+              runtimeLogger.debug('Live event feed skipped events; polling', {
+                workflowRunId: this.runId,
+              });
+              this.feedTrouble();
+              if (this.pollIntervalMs > 0) void this.pollNow();
+            },
+            // The World reports a push that dies silently: the poll is only a
+            // last resort from here.
+            onWatched: () => {
+              if (this.stopped || !this.feedLive || this.watched) return;
+              this.watched = true;
+              if (this.currentIntervalMs < this.watchedFeedPollIntervalMs) {
+                this.currentIntervalMs = this.watchedFeedPollIntervalMs;
+              }
+            },
             onError: (error) => {
               const wasLive = this.feedLive;
               this.feedLive = false;
+              this.watched = false;
               this.feedTrouble();
               runtimeLogger.debug('Live event feed stopped; polling only', {
                 workflowRunId: this.runId,
@@ -347,7 +414,7 @@ export class LiveLogFeed {
     if (clean && this.feedLive && this.pending.size === 0) {
       this.currentIntervalMs = Math.min(
         this.currentIntervalMs * 2,
-        this.feedPollIntervalMs * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR
+        this.livePollIntervalMs * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR
       );
     } else {
       this.currentIntervalMs = this.pollIntervalMs;

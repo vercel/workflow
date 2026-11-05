@@ -6,6 +6,7 @@ import {
   DEFAULT_ORCHESTRATOR_POLL_INTERVAL_MS,
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorPollIntervalMs,
+  getOrchestratorWatchedFeedPollIntervalMs,
   LiveLogFeed,
   ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR,
 } from './live-feed.js';
@@ -423,5 +424,109 @@ describe('LiveLogFeed poll backoff', () => {
     await vi.advanceTimersByTimeAsync(MAX);
     expect(live.nextPollIntervalMs).toBe(BASE);
     live.stop();
+  });
+});
+
+describe('LiveLogFeed on a watched push', () => {
+  const BASE = 50;
+  const FEED = BASE * 4;
+  const WATCHED = FEED * 6;
+
+  function watchable() {
+    const world = seeded({});
+    const base = world.asWorld();
+    const hooks: {
+      push?: (event: Event) => void;
+      onError?: (error: unknown) => void;
+      onGap?: () => void;
+      onWatched?: (info: { silenceMs: number }) => void;
+    } = {};
+    const controlledWorld = {
+      ...base,
+      events: {
+        ...base.events,
+        subscribe: (
+          _runId: string,
+          _afterSlot: number,
+          onEvent: (event: Event) => void,
+          options?: {
+            onError?: (error: unknown) => void;
+            onGap?: () => void;
+            onWatched?: (info: { silenceMs: number }) => void;
+          }
+        ) => {
+          hooks.push = onEvent;
+          hooks.onError = options?.onError;
+          hooks.onGap = options?.onGap;
+          hooks.onWatched = options?.onWatched;
+          return () => {};
+        },
+      },
+    } as typeof base;
+    const received: string[] = [];
+    const live = new LiveLogFeed(controlledWorld, RUN, {
+      afterSlot: 1,
+      cursor: slotToEventId(1),
+      pollIntervalMs: BASE,
+      feedPollIntervalMs: FEED,
+      watchedFeedPollIntervalMs: WATCHED,
+      onEvents: (events) => received.push(...events.map((e) => e.eventId)),
+    });
+    live.start();
+    return { world, hooks, live, received };
+  }
+
+  it('polls at the watched interval, doubling up to twice it, once the World watches the push', async () => {
+    vi.useFakeTimers();
+    const { hooks, live } = watchable();
+    expect(live.nextPollIntervalMs).toBe(FEED);
+    expect(live.isWatched).toBe(false);
+    hooks.onWatched?.({ silenceMs: 30_000 });
+    expect(live.isWatched).toBe(true);
+    expect(live.nextPollIntervalMs).toBe(WATCHED);
+    // The poll scheduled before runs, then the clean polls back off.
+    await vi.advanceTimersByTimeAsync(FEED);
+    expect(live.nextPollIntervalMs).toBe(WATCHED * 2);
+    await vi.advanceTimersByTimeAsync(WATCHED * 2);
+    expect(live.nextPollIntervalMs).toBe(WATCHED * 2);
+    live.stop();
+  });
+
+  it('reads the log at once when the World reports a gap', async () => {
+    vi.useFakeTimers();
+    const { world, hooks, live, received } = watchable();
+    hooks.onWatched?.({ silenceMs: 30_000 });
+    // Slot 2 was never pushed; the World learned of it from a heartbeat.
+    world.appendOutOfBand(hookReceived('hook_a'));
+    const calls = world.listCalls.length;
+    hooks.onGap?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(world.listCalls.length).toBe(calls + 1);
+    expect(received).toEqual([slotToEventId(2)]);
+    // A poll that found what the push missed goes back to the base interval.
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    live.stop();
+  });
+
+  it('is no longer watched once the push errors', async () => {
+    vi.useFakeTimers();
+    const { hooks, live } = watchable();
+    hooks.onWatched?.({ silenceMs: 30_000 });
+    hooks.onError?.(new Error('went silent'));
+    expect(live.isWatched).toBe(false);
+    expect(live.isLive).toBe(false);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    live.stop();
+  });
+
+  it('reads the watched interval from the environment', () => {
+    expect(getOrchestratorWatchedFeedPollIntervalMs({})).toBe(60_000);
+    // An explicit live-push interval applies whether or not the push is
+    // watched.
+    expect(
+      getOrchestratorWatchedFeedPollIntervalMs({
+        WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS: '15000',
+      })
+    ).toBe(15_000);
   });
 });

@@ -176,6 +176,7 @@ import {
   getOrchestratorFeedPollIntervalMs,
   getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
+  getOrchestratorWatchedFeedPollIntervalMs,
   LiveLogFeed,
 } from './live-feed.js';
 import { EventLogIndex } from './log-index.js';
@@ -2047,6 +2048,7 @@ async function runDelivery(
         cursor: log.cursor,
         pollIntervalMs: getOrchestratorPollIntervalMs(),
         feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
+        watchedFeedPollIntervalMs: getOrchestratorWatchedFeedPollIntervalMs(),
         onEvents: (events) => {
           pendingFeedEvents.push(...events);
           notifyProgress();

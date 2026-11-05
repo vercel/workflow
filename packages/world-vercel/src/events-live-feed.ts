@@ -29,6 +29,28 @@
  * with no slot and an empty body; the feed then ends and `onError` gets that
  * status, code and message.
  *
+ * Heartbeats. This client lists `run-heartbeat` in its upgrade flags. A
+ * backend that sends heartbeats says so on the ack (`heartbeatMs`), and then
+ * pushes, after a successful read once it has sent nothing for `heartbeatMs`,
+ *
+ *   { reqId, type: 'run_heartbeat', slot }
+ *
+ * naming the highest slot it has pushed. On such an ack the feed calls
+ * `onWatched` and watches itself:
+ *
+ * - no push and no heartbeat for {@link HEARTBEAT_SILENCE_FACTOR} times
+ *   `heartbeatMs` ends the feed (`onError`): it died without a sign (a
+ *   half-open socket, a backend feed that stopped without a notice, reads
+ *   failing for that long);
+ * - a heartbeat naming a slot above the last one delivered calls `onGap`
+ *   once for that range: pushes went missing (a replacement subscription
+ *   that started above this one), and the caller reads the log;
+ * - a heartbeat under another `reqId` after this subscription's ack ends the
+ *   feed: a later `subscribe` on the connection replaced it.
+ *
+ * Against a backend that predates heartbeats the ack has no `heartbeatMs`,
+ * and none of this is armed.
+ *
  * The subscription lives on the connection. When the socket closes (drain,
  * transport failure, release) the feed ends and `onError` is called once; it
  * is not resumed on reconnect. Nothing depends on the feed for correctness:
@@ -54,6 +76,21 @@ import { isWsEventsTransportPossible } from './ws-transport-enabled.js';
 
 /** Request frame type that opens a live-feed subscription. */
 export const SUBSCRIBE_FRAME_TYPE = 'subscribe';
+
+/**
+ * How many heartbeat intervals of silence end a watched feed. The backend
+ * sends a heartbeat within one interval plus one idle read (5 s) of its last
+ * frame, so three leaves room for a slow read and network delay.
+ */
+export const HEARTBEAT_SILENCE_FACTOR = 3;
+
+/** The ack's heartbeat interval, when it confirms heartbeats. */
+function ackedHeartbeatMs(meta: Record<string, unknown>): number | undefined {
+  const value = meta.heartbeatMs;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
 
 /** Raised through `onError` when the feed cannot start or stops. */
 export class LiveFeedError extends Error {
@@ -118,9 +155,40 @@ export function subscribeRunEvents(
   let active = true;
   let lastSlot = afterSlot;
   let teardown: (() => void) | undefined;
+  /** This subscription's `reqId` on the connection, once sent. */
+  let ownReqId: number | undefined;
+  /** Whether the backend acked this subscription. */
+  let acked = false;
+  /** The silence that ends a watched feed; set once an ack confirms heartbeats. */
+  let silenceMs: number | undefined;
+  let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The highest slot a gap was already reported up to. */
+  let gapReportedThrough = afterSlot;
+
+  const clearSilence = () => {
+    if (silenceTimer !== undefined) clearTimeout(silenceTimer);
+    silenceTimer = undefined;
+  };
+  /** Starts the silence clock over: the backend was heard from. */
+  const heard = () => {
+    if (!active || silenceMs === undefined) return;
+    clearSilence();
+    silenceTimer = setTimeout(() => {
+      silenceTimer = undefined;
+      fail(
+        new LiveFeedError(
+          `world-vercel: live feed for ${runId} went silent: no push or heartbeat for ${silenceMs}ms`,
+          { code: 'run-feed-silent' }
+        )
+      );
+    }, silenceMs);
+    // Never keep a process alive for the watchdog alone.
+    (silenceTimer as { unref?: () => void }).unref?.();
+  };
 
   const stop = () => {
     active = false;
+    clearSilence();
     const run = teardown;
     teardown = undefined;
     run?.();
@@ -146,6 +214,34 @@ export function subscribeRunEvents(
     }
   };
 
+  const onHeartbeat = (frame: DecodedFrame) => {
+    if (!active || !acked) return;
+    if (frame.meta.reqId !== ownReqId) {
+      fail(
+        new LiveFeedError(
+          `world-vercel: live feed for ${runId} was replaced by a later subscription on the connection`,
+          { code: 'run-feed-replaced' }
+        )
+      );
+      return;
+    }
+    heard();
+    const slot = frame.meta.slot;
+    if (
+      typeof slot === 'number' &&
+      Number.isSafeInteger(slot) &&
+      slot > lastSlot &&
+      slot > gapReportedThrough
+    ) {
+      gapReportedThrough = slot;
+      try {
+        options.onGap?.();
+      } catch {
+        // A throwing onGap must not escape into the transport.
+      }
+    }
+  };
+
   const deliver = (frame: DecodedFrame) => {
     if (!active) return;
     const ended = endedByBackend(runId, frame);
@@ -153,6 +249,7 @@ export function subscribeRunEvents(
       fail(ended);
       return;
     }
+    heard();
     const event = decodePushedEvent(frame);
     if (!event) {
       fail(
@@ -202,6 +299,7 @@ export function subscribeRunEvents(
       }
       const removeSubscriber = resolved.transport.addPushSubscriber({
         onPush: deliver,
+        onHeartbeat,
         onClose: fail,
       });
       teardown = () => {
@@ -209,15 +307,28 @@ export function subscribeRunEvents(
         release();
       };
       return resolved.transport
-        .request((reqId) =>
-          encodeFrame(
+        .request((reqId) => {
+          ownReqId = reqId;
+          return encodeFrame(
             { reqId, type: SUBSCRIBE_FRAME_TYPE, afterSlot },
             new Uint8Array(0)
-          )
-        )
+          );
+        })
         .then((reply) => {
           const { status } = reply.meta;
           if (typeof status === 'number' && status >= 200 && status < 300) {
+            if (!active) return;
+            acked = true;
+            const heartbeatMs = ackedHeartbeatMs(reply.meta);
+            if (heartbeatMs !== undefined) {
+              silenceMs = heartbeatMs * HEARTBEAT_SILENCE_FACTOR;
+              heard();
+              try {
+                options.onWatched?.({ silenceMs });
+              } catch {
+                // A throwing onWatched must not escape into the transport.
+              }
+            }
             return;
           }
           fail(

@@ -1454,6 +1454,22 @@ export type EventListResponse = PaginatedResponse<Event> & {
 export interface EventsSubscribeOptions {
   /** Called once when the World stops delivering for a transport reason. */
   onError?: (error: unknown) => void;
+  /**
+   * Called when the World learns the subscription missed events it should
+   * have delivered (world-vercel: a heartbeat naming a slot above the last
+   * one delivered). The subscription stays live; the caller should read the
+   * log now. Called at most once per missed range.
+   */
+  onGap?: () => void;
+  /**
+   * Called once when the World starts watching the subscription for silent
+   * failure (world-vercel: the backend confirmed it sends heartbeats). From
+   * then on a feed that stops delivering without a sign (a half-open socket,
+   * a backend feed that stopped without a notice) is reported through
+   * `onError` within `silenceMs`, and a missed event through `onGap`, so the
+   * caller may poll the log less often.
+   */
+  onWatched?: (info: { silenceMs: number }) => void;
 }
 
 export interface ListEventsParams {

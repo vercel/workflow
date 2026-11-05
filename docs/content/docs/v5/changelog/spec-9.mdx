@@ -176,6 +176,7 @@ An out-of-band terminal event has these effects, all of them benign:
 - The log-tail poll's interval while the World's live event feed is up. The feed pushes every event in position order, and a closed or ended subscription reports itself, so the poll only catches an event the feed missed without a sign: the newest one, with nothing pushed after it.
 - While the feed keeps up (the last poll found nothing the feed had not delivered), the interval doubles per poll, up to 2 times this value. A feed error, a failed poll, an event only the poll found, or a pushed event that skips a position puts it back at [`WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`](#workflow_orchestrator_poll_interval_ms) at once.
 - Never below `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`, so `0` polls at that interval whether the feed is up or not.
+- While the World also watches the feed for silent failure (world-vercel, once the backend confirms it sends heartbeats), the poll runs at 60 seconds, backing off to 120, unless this variable is set: a dead feed is then reported within 30 seconds and a missed push as soon as the next heartbeat names it. See [Heartbeats](#heartbeats).
 
 #### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
 
@@ -2854,9 +2855,20 @@ The feed is a timed tail read of the run's event log on the backend. Each read g
 | Feed state | Interval | Variable |
 |---|---|---|
 | Subscription live, after a clean poll | starts at 10 s, doubles per clean poll, capped at 20 s (`ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR` = 2) | `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS` |
+| Subscription live and watched (`onWatched`: the backend confirmed heartbeats) | 60 s, doubling per clean poll, capped at 120 s | `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS` when set (`DEFAULT_ORCHESTRATOR_WATCHED_FEED_POLL_INTERVAL_MS`) |
 | No `events.subscribe`, a failed or ended subscription, or feed trouble | 2 s | `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS` |
 
 `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS=0` turns the poll off. The live interval is never below the no-feed one.
+
+##### Heartbeats
+
+world-vercel lists `run-heartbeat` in its upgrade flags. A backend that sends heartbeats says so on the `subscribe_ack` (`heartbeatMs`, 10 s), and its feed then sends `{ reqId, type: 'run_heartbeat', slot }` after a successful read once it has sent nothing for `heartbeatMs`, naming the highest slot it has pushed (`lib/handlers/v5/run-feed.ts` in workflow-server). A feed whose reads fail sends none. On such an ack, `subscribeRunEvents` (`packages/world-vercel/src/events-live-feed.ts`) calls `onWatched` and watches the feed:
+
+- No push and no heartbeat for 3 × `heartbeatMs` (30 s) ends the feed through `onError` (`run-feed-silent`): a half-open socket, a feed that stopped without its `end` notice, or reads failing for that long.
+- A heartbeat naming a slot above the last one delivered calls `onGap` once for that range, and `LiveLogFeed` polls at once: a push went missing (a replacement subscription on the connection that started above what this subscriber held).
+- A heartbeat under another `reqId` after the subscription's ack ends the feed (`run-feed-replaced`): a later `subscribe` on the connection replaced it.
+
+While watched, `LiveLogFeed` polls at 60 s instead of 10 s (`getOrchestratorWatchedFeedPollIntervalMs`). Against a backend that predates heartbeats the ack has no `heartbeatMs`, nothing is armed, and the poll stays at 10 s. world-postgres and world-local never call `onWatched`.
 
 ##### One dedupe for both sources
 
@@ -4009,7 +4021,13 @@ Before: each in-band write rescanned the whole log (`maxEventSlot`, `appendUniqu
 
 ### 7. Monitor full-log reads on background step retry hops and redeliveries
 
-Every non-first delivery of a background step's message, each retry hop included, reads the run's whole log to decide, so N retrying steps cost O(N x log length) reads, and a long `retryAfter` pays one full read per 900-second hop on world-vercel. A per-step read is not a cheaper replacement, because it is also an event-log read on the same backend. Performance looks acceptable so far, so this is a post-release monitoring item: watch read volume and latency for runs with many retrying background steps, and revisit if it shows up. [4365355492](https://github.com/vercel/workflow/pull/4661#discussion_r4365355492).
+**Done.** A delivery of a background step's message that may be a retry's early redelivery (counted above 1, or the first delivery of an inline step's retry moved to the background) first reads only the step's latest event: `events.listByCorrelationId` with the run id, newest first, limit 1, `resolveData: 'none'` (`readPendingRetry` in `spec9/step-handler.ts`). While that event is a `step_retrying` whose `retryAfter` is still ahead, the delivery asks for a redelivery after the rest without reading the whole log (`pendingRetryDecision`, `spec9/step-delivery.ts`). Anything else, a failed read included, takes the full read as before. A `retryAfter: '1d'` step on world-vercel now costs one small read per 900-second hop instead of one full log read.
+
+Deferring is the only decision the short read makes, so a stale or eventually consistent read is safe. While the latest `step_retrying` names a time still ahead, nothing newer can exist for the step, because only a delivery of this message writes the step's next start, after a full read past `retryAfter`. An older `step_retrying` always names a time already past. A terminal run or step the read missed only delays the acknowledgement to `retryAfter`. Past the delivery cap, the full read would not fail the step either, since a pending `retryAfter` counts as activity. Each delivery's span records what it read (`step.delivery.log_read`: `none`, `step_tail` or `full_log`), which is what to watch from here.
+
+On world-vercel the backend serves that read by scanning the run's partition from the tail with a correlation filter and no payloads, so it stops at the step's latest event; for a step waiting out its retry that is near the tail.
+
+Before: Every non-first delivery of a background step's message, each retry hop included, reads the run's whole log to decide, so N retrying steps cost O(N x log length) reads, and a long `retryAfter` pays one full read per 900-second hop on world-vercel. A per-step read is not a cheaper replacement, because it is also an event-log read on the same backend. Performance looks acceptable so far, so this is a post-release monitoring item: watch read volume and latency for runs with many retrying background steps, and revisit if it shows up. [4365355492](https://github.com/vercel/workflow/pull/4661#discussion_r4365355492).
 
 ### 8. Not coalescing speculative creations under run-ahead (measure first)
 
@@ -4056,7 +4074,11 @@ Before: the QuickJS orchestrator did not hand off when an inline step ran past t
 
 ### 16. Live-feed heartbeat and client watchdog
 
-The client's tail poll (10 s backing off to 20 s while the push is live) is the only backstop for a world-vercel feed that stops pushing while the client still sees it as live: a feed stuck before its first timed read, a feed loop that throws without an `end` notice, the drain window, a half-open socket during a linger, and a replacement subscription that skips slots. Before default-on, have the backend feed send a heartbeat frame while idle, carrying the highest slot it has read through, and add a client watchdog: a missing heartbeat fails the feed, a heartbeat slot above what the client holds triggers a poll, and a heartbeat for another subscription is feed trouble. Use a new frame type, since a `run_event` with no event fails today's client feed. Then lengthen the live poll to 60 s or more, or keep it only as the 2 s fallback after trouble. See [Live event feed](#follow-ups).
+**Done** (with vercel/workflow-server#1376). The backend feed sends a `run_heartbeat` frame, a new frame type, to a client that lists the `run-heartbeat` upgrade flag, after a successful read once it has sent nothing for 10 seconds, carrying the highest slot it has pushed. It confirms this on each `subscribe_ack` (`heartbeatMs`). world-vercel then watches the feed: 30 seconds of silence fails it, a heartbeat slot above what the client holds triggers a poll (`onGap`), and a heartbeat for another subscription is feed trouble. While a feed is watched, the live poll runs at 60 seconds, backing off to 120. See [Heartbeats](#heartbeats).
+
+A client that does not list the flag gets no heartbeats: an older client fails its connection on an unknown frame type. A client talking to a backend that predates heartbeats gets an ack without `heartbeatMs`, arms nothing, and keeps the 10-second live poll.
+
+Before: The client's tail poll (10 s backing off to 20 s while the push is live) is the only backstop for a world-vercel feed that stops pushing while the client still sees it as live: a feed stuck before its first timed read, a feed loop that throws without an `end` notice, the drain window, a half-open socket during a linger, and a replacement subscription that skips slots. Before default-on, have the backend feed send a heartbeat frame while idle, carrying the highest slot it has read through, and add a client watchdog: a missing heartbeat fails the feed, a heartbeat slot above what the client holds triggers a poll, and a heartbeat for another subscription is feed trouble. Use a new frame type, since a `run_event` with no event fails today's client feed. Then lengthen the live poll to 60 s or more, or keep it only as the 2 s fallback after trouble. See [Live event feed](#follow-ups).
 
 ### 17. Live-feed fixes in world-vercel: bounded subscribe wait and end notices
 

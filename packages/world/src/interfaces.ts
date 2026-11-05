@@ -552,11 +552,18 @@ export interface Storage {
      * - Must not throw synchronously for a transport failure; report it
      *   through `options.onError` instead.
      *
+     * - Optionally, a World that can tell a silent failure from an idle feed
+     *   (world-vercel's heartbeats) calls `options.onWatched` once it can,
+     *   then reports silence through `onError` and a skipped event through
+     *   `options.onGap`.
+     *
      * A World that omits it is fully supported: the runtime then polls the
      * log tail at `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`. While a
      * subscription is live, the poll runs at the slower
      * `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`, so a World that offers
-     * it must report a closed or ended subscription through `onError`.
+     * it must report a closed or ended subscription through `onError`. While
+     * a live subscription is also watched (`onWatched`), the poll runs at 60
+     * seconds unless that variable is set.
      */
     subscribe?(
       runId: string,

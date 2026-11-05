@@ -143,6 +143,8 @@ export class AppendOnlyWorld {
   createCalls = 0;
   /** The params of every `events.list` call. */
   readonly listCalls: Array<Record<string, unknown>> = [];
+  /** Every `events.listByCorrelationId` call, in order. */
+  readonly correlationListCalls: Array<Record<string, unknown>> = [];
   /** Replay events served without their step input (`skipStepInputs`). */
   strippedStepInputs = 0;
   private handler:
@@ -980,10 +982,23 @@ export class AppendOnlyWorld {
         };
       },
       async listByCorrelationId(params) {
-        const data = self.events.filter(
-          (e) => e.correlationId === params.correlationId
+        self.correlationListCalls.push({ ...(params as object) });
+        const matching = self.events.filter(
+          (e) =>
+            e.correlationId === params.correlationId &&
+            (params.runId === undefined || e.runId === params.runId)
         );
-        return { data, cursor: null, hasMore: false };
+        const ordered =
+          params.pagination?.sortOrder === 'desc'
+            ? [...matching].reverse()
+            : matching;
+        const limit = params.pagination?.limit;
+        const data = limit === undefined ? ordered : ordered.slice(0, limit);
+        return {
+          data: self.served(data, params.resolveData),
+          cursor: null,
+          hasMore: data.length < ordered.length,
+        };
       },
       ...(self.options.subscribe || self.options.subscribeFailure
         ? {

@@ -317,3 +317,135 @@ describe('subscribeRunEvents', () => {
     );
   });
 });
+
+describe('subscribeRunEvents heartbeats', () => {
+  const HEARTBEAT_MS = 10_000;
+
+  async function watchedFeed(ackMeta: Record<string, unknown> = {}) {
+    const events: string[] = [];
+    const onError = vi.fn();
+    const onGap = vi.fn();
+    const onWatched = vi.fn();
+    const unsubscribe = subscribeRunEvents(
+      RUN,
+      2,
+      (event) => events.push(event.eventId),
+      { onError, onGap, onWatched },
+      CONFIG
+    );
+    await settle(() => sockets.length > 0, 'socket constructed');
+    const socket = sockets[sockets.length - 1];
+    socket.open();
+    await settle(() => socket.sent.length > 0, 'subscribe frame sent');
+    const [meta] = sentMetas(socket);
+    const reqId = meta?.reqId as number;
+    const ack = () =>
+      socket.deliver(
+        encodeFrame(
+          { reqId, type: 'subscribe_ack', status: 200, ...ackMeta },
+          EMPTY
+        )
+      );
+    const heartbeat = (slot: number, from = reqId) =>
+      socket.deliver(
+        encodeFrame({ reqId: from, type: 'run_heartbeat', slot }, EMPTY)
+      );
+    return {
+      events,
+      onError,
+      onGap,
+      onWatched,
+      unsubscribe,
+      socket,
+      reqId,
+      ack,
+      heartbeat,
+    };
+  }
+
+  it('lists run-heartbeat in the upgrade flags', async () => {
+    const { WS_CLIENT_FLAGS } = await import('./ws-parts.js');
+    expect(WS_CLIENT_FLAGS).toContain('run-heartbeat');
+  });
+
+  it('watches a feed whose ack confirms heartbeats, and ends it after three silent intervals', async () => {
+    const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS });
+    feed.ack();
+    await tick();
+    expect(feed.onWatched).toHaveBeenCalledWith({
+      silenceMs: 3 * HEARTBEAT_MS,
+    });
+    // Heartbeats and pushes keep it alive.
+    await vi.advanceTimersByTimeAsync(2 * HEARTBEAT_MS);
+    feed.heartbeat(2);
+    await vi.advanceTimersByTimeAsync(2 * HEARTBEAT_MS);
+    feed.socket.deliver(pushed(3, RUN, feed.reqId));
+    await vi.advanceTimersByTimeAsync(2 * HEARTBEAT_MS);
+    expect(feed.onError).not.toHaveBeenCalled();
+    expect(feed.events).toEqual([slotToEventId(3)]);
+    // Then silence.
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_MS + 1);
+    expect(feed.onError).toHaveBeenCalledTimes(1);
+    const error = feed.onError.mock.calls[0]?.[0] as LiveFeedError;
+    expect(error).toBeInstanceOf(LiveFeedError);
+    expect(error.code).toBe('run-feed-silent');
+    // Ended: nothing is delivered after.
+    feed.socket.deliver(pushed(4, RUN, feed.reqId));
+    expect(feed.events).toEqual([slotToEventId(3)]);
+  });
+
+  it('reports a gap once per range when a heartbeat names a slot it never received', async () => {
+    const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS });
+    feed.ack();
+    await tick();
+    feed.heartbeat(2);
+    expect(feed.onGap).not.toHaveBeenCalled();
+    feed.heartbeat(5);
+    feed.heartbeat(5);
+    expect(feed.onGap).toHaveBeenCalledTimes(1);
+    feed.heartbeat(6);
+    expect(feed.onGap).toHaveBeenCalledTimes(2);
+    // Pushes past the reported range are still delivered.
+    feed.socket.deliver(pushed(7, RUN, feed.reqId));
+    feed.heartbeat(7);
+    expect(feed.onGap).toHaveBeenCalledTimes(2);
+    expect(feed.events).toEqual([slotToEventId(7)]);
+    expect(feed.onError).not.toHaveBeenCalled();
+    feed.unsubscribe();
+  });
+
+  it('ends the feed on a heartbeat for another subscription after its ack, and ignores one before it', async () => {
+    const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS });
+    // The replaced feed's last heartbeat, still in flight before the ack.
+    feed.heartbeat(2, feed.reqId + 100);
+    expect(feed.onError).not.toHaveBeenCalled();
+    feed.ack();
+    await tick();
+    feed.heartbeat(2, feed.reqId + 100);
+    expect(feed.onError).toHaveBeenCalledTimes(1);
+    expect((feed.onError.mock.calls[0]?.[0] as LiveFeedError).code).toBe(
+      'run-feed-replaced'
+    );
+  });
+
+  it('arms nothing against a backend whose ack has no heartbeatMs', async () => {
+    const feed = await watchedFeed();
+    feed.ack();
+    await tick();
+    expect(feed.onWatched).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10 * HEARTBEAT_MS);
+    expect(feed.onError).not.toHaveBeenCalled();
+    feed.socket.deliver(pushed(3, RUN, feed.reqId));
+    expect(feed.events).toEqual([slotToEventId(3)]);
+    feed.unsubscribe();
+  });
+
+  it('stops its watchdog on unsubscribe', async () => {
+    const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS });
+    feed.ack();
+    await tick();
+    feed.unsubscribe();
+    await vi.advanceTimersByTimeAsync(10 * HEARTBEAT_MS);
+    expect(feed.onError).not.toHaveBeenCalled();
+  });
+});
