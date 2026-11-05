@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   FatalError,
+  START_HOOK_CANDIDATE_CANCELLED,
   WorkflowRunFailedError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
@@ -10,6 +11,8 @@ import {
   type Event,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,6 +45,7 @@ import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
   cancelRun,
   cancelRuns,
+  pendingWakeUpWaits,
   recreateRunFromExisting,
   reenqueueRun,
   wakeUpRun,
@@ -115,6 +119,8 @@ describe('wakeUpRun', () => {
       runId: 'wrun_123',
       pagination: { sortOrder: 'asc' },
       resolveData: 'none',
+      // The run's own version, as the World's read hint.
+      specVersion: 2,
     });
     expect(world.queue).toHaveBeenCalled();
   });
@@ -170,7 +176,8 @@ describe('reenqueueRun', () => {
 
     expect(world.queue).toHaveBeenCalledWith(
       '__wkf_workflow_test-workflow',
-      { runId: 'wrun_123' },
+      // The routing hint is the run's own spec version.
+      { runId: 'wrun_123', runSpecVersion: 2 },
       expect.anything()
     );
   });
@@ -181,15 +188,71 @@ describe('reenqueueRun', () => {
 
     expect(world.queue).toHaveBeenCalledWith(
       '__eve_wkf_workflow_test-workflow',
-      { runId: 'wrun_123' },
+      // The routing hint is the run's own spec version.
+      { runId: 'wrun_123', runSpecVersion: 2 },
       expect.anything()
     );
   });
 });
 
+describe('cancelRun of a run that does not exist', () => {
+  function missingRunWorld(
+    cancelAnswer: () => Promise<unknown>,
+    atomicStartHook = true
+  ) {
+    const world = createMockWorld();
+    if (atomicStartHook) {
+      (world as { capabilities?: unknown }).capabilities = {
+        atomicStartHook: { active: true },
+      };
+    }
+    vi.mocked(world.runs.get).mockRejectedValue(
+      new WorkflowRunNotFoundError('wrun_123')
+    );
+    vi.mocked(world.events.create).mockImplementation(
+      cancelAnswer as typeof world.events.create
+    );
+    return world;
+  }
+
+  it('still posts run_cancelled, at this SDK version, and succeeds for a fenced start Hook candidate', async () => {
+    const world = missingRunWorld(async () => {
+      throw new WorkflowWorldError('cancelled before it was created', {
+        status: 409,
+        code: START_HOOK_CANDIDATE_CANCELLED,
+      });
+    });
+
+    await cancelRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it('posts nothing on a World without start Hooks', async () => {
+    const world = missingRunWorld(async () => undefined, false);
+
+    await expect(cancelRun(world, 'wrun_123')).rejects.toThrow(
+      /Failed to cancel run/
+    );
+    expect(world.events.create).not.toHaveBeenCalled();
+  });
+
+  it('throws a typed WorkflowRunNotFoundError when the World has no such run either', async () => {
+    const world = missingRunWorld(async () => {
+      throw new WorkflowRunNotFoundError('wrun_123');
+    });
+
+    const error = await cancelRun(world, 'wrun_123').catch((e: unknown) => e);
+    expect(WorkflowRunNotFoundError.is(error)).toBe(true);
+  });
+});
+
 // A run started by a newer SDK: this one cannot write that version's format,
-// so everything it writes to the run is capped at its own.
-const NEWER_THAN_THIS_SDK = SPEC_VERSION_CURRENT + 1;
+// so everything it writes to the run is capped at the highest it supports.
+const NEWER_THAN_THIS_SDK = SPEC_VERSION_MAX_SUPPORTED + 1;
 
 describe('writes to a run started by a newer SDK', () => {
   const waitCreated: Event = {
@@ -209,23 +272,29 @@ describe('writes to a run started by a newer SDK', () => {
 
     expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
       eventType: 'run_cancelled',
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
-  it("caps wakeUpRun's wait_completed and wake at this SDK's version", async () => {
+  it("caps wakeUpRun's wake at this SDK's version, and leaves the wait to the orchestrator", async () => {
     const world = createMockWorld({
       run: { specVersion: NEWER_THAN_THIS_SDK },
       events: [waitCreated],
     });
     await wakeUpRun(world, 'wrun_123');
 
-    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
-      eventType: 'wait_completed',
-      specVersion: SPEC_VERSION_CURRENT,
+    // A single-orchestrator run's waits are completed in-band by its
+    // orchestrator: the wake names them instead.
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(vi.mocked(world.queue).mock.calls[0][1]).toMatchObject({
+      runId: 'wrun_123',
+      completeWaits: [waitCreated.correlationId],
     });
-    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
-      specVersion: SPEC_VERSION_CURRENT,
+    // An ordinary orchestrator message: best-effort on a queue that
+    // coalesces it into a running delivery.
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toEqual({
+      deploymentId: expect.any(String),
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
@@ -236,7 +305,7 @@ describe('writes to a run started by a newer SDK', () => {
     await reenqueueRun(world, 'wrun_123');
 
     expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
-      specVersion: SPEC_VERSION_CURRENT,
+      specVersion: SPEC_VERSION_MAX_SUPPORTED,
     });
   });
 
@@ -251,6 +320,52 @@ describe('writes to a run started by a newer SDK', () => {
     expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
       specVersion: SPEC_VERSION_LEGACY,
     });
+  });
+});
+
+describe('wakeUpRun pending-wake marks', () => {
+  const openWait = (runId: string, correlationId: string): Event =>
+    ({
+      eventId: `evnt_${correlationId}`,
+      runId,
+      eventType: 'wait_created',
+      correlationId,
+      eventData: { resumeAt: new Date(Date.now() + 3_600_000) },
+      createdAt: new Date(),
+    }) as Event;
+
+  function singleOrchestratorWorld(runId: string, events: Event[]) {
+    const world = createMockWorld({
+      run: { runId, specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+      events,
+    });
+    return world;
+  }
+
+  it('leaves a sleep open to waitForSleep after a wake whose publish failed', async () => {
+    const runId = 'wrun_wake_publish_failed';
+    const world = singleOrchestratorWorld(runId, [openWait(runId, 'wait_a')]);
+    vi.mocked(world.queue).mockRejectedValueOnce(new Error('queue down'));
+
+    await expect(wakeUpRun(world, runId)).rejects.toThrow('queue down');
+
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(pendingWakeUpWaits(runId).has('wait_a')).toBe(false);
+  });
+
+  it('keeps the mark of an earlier published wake when a later one fails', async () => {
+    const runId = 'wrun_wake_earlier_mark';
+    const world = singleOrchestratorWorld(runId, [
+      openWait(runId, 'wait_a'),
+      openWait(runId, 'wait_b'),
+    ]);
+    await wakeUpRun(world, runId, { correlationIds: ['wait_a'] });
+    expect(pendingWakeUpWaits(runId).has('wait_a')).toBe(true);
+
+    vi.mocked(world.queue).mockRejectedValueOnce(new Error('queue down'));
+    await expect(wakeUpRun(world, runId)).rejects.toThrow('queue down');
+
+    expect([...pendingWakeUpWaits(runId)]).toEqual(['wait_a']);
   });
 });
 
@@ -276,6 +391,25 @@ describe('recreateRunFromExisting', () => {
         deploymentId: 'deploy_source',
       })
     );
+  });
+
+  it("never forwards the source run's start Hook", async () => {
+    // A re-run is a new run by intent; forwarding the reservation would make
+    // it a duplicate of the source and refuse it with HookConflictError.
+    const world = createMockWorld({
+      run: {
+        runId: 'wrun_source',
+        deploymentId: 'deploy_source',
+        startHook: { token: 'order:1' },
+      },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source');
+
+    const opts = vi.mocked(start).mock.calls[0][2] as Record<string, unknown>;
+    expect(opts).not.toHaveProperty('hook');
+    expect(JSON.stringify(opts)).not.toContain('order:1');
   });
 
   it('pins the source run spec version for a replay on its own deployment', async () => {
@@ -323,6 +457,61 @@ describe('recreateRunFromExisting', () => {
     });
 
     expect(vi.mocked(start).mock.calls[0][2]?.specVersion).toBe(7);
+  });
+
+  it("defaults the region to the source run's region", async () => {
+    const world = createMockWorld({ run: { runId: 'wrun_source' } });
+    const regionForRunId = vi.fn().mockReturnValue('cle1');
+    Object.assign(world, { regionForRunId });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source');
+
+    expect(regionForRunId).toHaveBeenCalledWith('wrun_source');
+    expect(vi.mocked(start).mock.calls[0][2]?.region).toBe('cle1');
+  });
+
+  it('prefers an explicit region over the source run region', async () => {
+    const world = createMockWorld();
+    Object.assign(world, { regionForRunId: vi.fn().mockReturnValue('cle1') });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', { region: 'fra1' });
+
+    expect(vi.mocked(start).mock.calls[0][2]?.region).toBe('fra1');
+  });
+
+  it("leaves the region to start() when the world can't derive one", async () => {
+    const world = createMockWorld();
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source');
+
+    expect(vi.mocked(start).mock.calls[0][2]).not.toHaveProperty('region');
+  });
+
+  it('keeps a world-vercel run in its own region rather than the caller region', async () => {
+    // The observability dashboard replays runs from whatever region its own
+    // function runs in. Without this, a replay was tagged (and its data
+    // stored) in that region instead of the original run's.
+    const { createRunId, regionForRunId } = await import(
+      '@workflow/world-vercel'
+    );
+    vi.stubEnv('VERCEL_REGION', 'sfo1');
+    try {
+      const sourceRunId = `wrun_${createRunId({ region: 'cle1' })}`;
+      const world = createMockWorld({ run: { runId: sourceRunId } });
+      Object.assign(world, { regionForRunId });
+      vi.mocked(start).mockResolvedValue({
+        runId: 'wrun_new',
+      } as Run<unknown>);
+
+      await recreateRunFromExisting(world, sourceRunId);
+
+      expect(vi.mocked(start).mock.calls[0][2]?.region).toBe('cle1');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('refuses a dynamic run rather than creating one with no code behind it', async () => {

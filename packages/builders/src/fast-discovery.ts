@@ -1,4 +1,4 @@
-import { access, readFile } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { builtinModules, createRequire } from 'node:module';
 import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -58,6 +58,14 @@ export interface DiscoveredEntries {
    * unrelated application file edits.
    */
   discoveredFiles?: Set<string>;
+  /**
+   * Paths an import in the graph would resolve to if the file existed, for
+   * relative and tsconfig-alias imports that did not resolve. An import can be
+   * written before its target is created, or outlive a target that was deleted:
+   * either way the graph stops at the importer, and only the appearance of one
+   * of these paths can extend it again. Watch-mode integrations track them.
+   */
+  unresolvedImportCandidates?: Set<string>;
 }
 
 interface FastDiscoverEntriesOptions {
@@ -569,6 +577,8 @@ export async function fastDiscoverEntries({
     queue.push(normalizedPath);
   };
 
+  const unresolvedImportCandidates = new Set<string>();
+
   const readSource = async (filePath: string): Promise<string | null> => {
     return await readLimit(async () => {
       try {
@@ -595,6 +605,51 @@ export async function fastDiscoverEntries({
     });
     fileExistsCache.set(filePath, promise);
     return promise;
+  };
+
+  const isExistingFile = (filePath: string): Promise<boolean> =>
+    readLimit(async () => {
+      try {
+        return (await stat(filePath)).isFile();
+      } catch {
+        return false;
+      }
+    });
+
+  const resolveBasePath = (importer: string, specifier: string) => {
+    const strippedSpecifier = stripImportSpecifierQuery(specifier);
+    return isAbsolute(strippedSpecifier)
+      ? strippedSpecifier
+      : resolve(dirname(importer), strippedSpecifier);
+  };
+
+  /** Every source path `resolvePathLikeSpecifier` would accept for `basePath`. */
+  const pathLikeCandidates = (basePath: string): string[] =>
+    FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extname(basePath))
+      ? [basePath]
+      : [
+          ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map(
+            (candidateExtension) => `${basePath}${candidateExtension}`
+          ),
+          ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map((candidateExtension) =>
+            join(basePath, `index${candidateExtension}`)
+          ),
+        ];
+
+  const recordUnresolved = async (basePaths: string[]): Promise<void> => {
+    for (const basePath of basePaths) {
+      // An existing non-source file (a stylesheet, an image) is an import that
+      // resolved to something discovery does not follow, not a missing module.
+      if (
+        !FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extname(basePath)) &&
+        (await isExistingFile(basePath))
+      ) {
+        continue;
+      }
+      for (const candidate of pathLikeCandidates(basePath)) {
+        unresolvedImportCandidates.add(normalizePath(candidate));
+      }
+    }
   };
 
   const findTsconfigPathForImporter = (
@@ -638,23 +693,9 @@ export async function fastDiscoverEntries({
     importer: string,
     specifier: string
   ): Promise<string | null> => {
-    const strippedSpecifier = stripImportSpecifierQuery(specifier);
-    const basePath = isAbsolute(strippedSpecifier)
-      ? strippedSpecifier
-      : resolve(dirname(importer), strippedSpecifier);
-    const extension = extname(basePath);
-    if (FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension)) {
-      return (await fileExists(basePath)) ? normalizePath(basePath) : null;
-    }
-
-    for (const candidate of [
-      ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map(
-        (candidateExtension) => `${basePath}${candidateExtension}`
-      ),
-      ...FAST_DISCOVERY_SOURCE_EXTENSIONS.map((candidateExtension) =>
-        join(basePath, `index${candidateExtension}`)
-      ),
-    ]) {
+    for (const candidate of pathLikeCandidates(
+      resolveBasePath(importer, specifier)
+    )) {
       if (await fileExists(candidate)) {
         return normalizePath(candidate);
       }
@@ -663,18 +704,24 @@ export async function fastDiscoverEntries({
     return null;
   };
 
+  /**
+   * Resolve through the importer's tsconfig `paths`. `basePaths` lists every
+   * alias target that matched, so a caller that ends up with no resolution
+   * knows where the module was expected to be.
+   */
   const resolveWithTsconfigPaths = async (
     importer: string,
     specifier: string
-  ): Promise<string | null> => {
+  ): Promise<{ resolved: string | null; basePaths: string[] }> => {
+    const basePaths: string[] = [];
     if (specifier.startsWith('.') || isAbsolute(specifier)) {
-      return null;
+      return { resolved: null, basePaths };
     }
 
     const tsconfigPath = await findTsconfigPathForImporter(importer);
     const tsconfigPathAliases = await loadAliasesForTsconfig(tsconfigPath);
     if (tsconfigPathAliases.length === 0) {
-      return null;
+      return { resolved: null, basePaths };
     }
 
     for (const alias of tsconfigPathAliases) {
@@ -685,16 +732,17 @@ export async function fastDiscoverEntries({
 
       for (const target of alias.targets) {
         const targetPath = applyTsconfigPathTarget(target, captures);
+        basePaths.push(resolveBasePath(importer, targetPath));
         try {
           const resolved = await resolvePathLikeSpecifier(importer, targetPath);
           if (resolved) {
-            return resolved;
+            return { resolved, basePaths };
           }
         } catch {}
       }
     }
 
-    return null;
+    return { resolved: null, basePaths };
   };
 
   const findPackageInfoBySpecifier = (
@@ -766,6 +814,29 @@ export async function fastDiscoverEntries({
     return false;
   };
 
+  const resolveRelativeImport = async (
+    importer: string,
+    specifier: string
+  ): Promise<string | null> => {
+    const resolved = await resolvePathLikeSpecifier(importer, specifier);
+    if (!resolved) {
+      await recordUnresolved([resolveBasePath(importer, specifier)]);
+    }
+    return resolved;
+  };
+
+  const resolveBareSpecifier = async (
+    importer: string,
+    specifier: string
+  ): Promise<string | null> => {
+    try {
+      const resolved = await fastDiscoveryResolve(dirname(importer), specifier);
+      return typeof resolved === 'string' ? normalizePath(resolved) : null;
+    } catch {
+      return null;
+    }
+  };
+
   const resolveImport = (
     importer: string,
     specifier: string
@@ -778,27 +849,25 @@ export async function fastDiscoverEntries({
 
     const resolvedPromise = resolveLimit(async () => {
       if (isRelativeOrAbsoluteSpecifier(specifier)) {
-        return resolvePathLikeSpecifier(importer, specifier);
+        return resolveRelativeImport(importer, specifier);
       }
 
-      const resolvedAlias = await resolveWithTsconfigPaths(importer, specifier);
-      if (resolvedAlias) {
-        return resolvedAlias;
+      const alias = await resolveWithTsconfigPaths(importer, specifier);
+      if (alias.resolved) {
+        return alias.resolved;
       }
 
+      // An installed package discovery chooses not to follow is resolved as
+      // far as the graph is concerned, even under a catch-all alias like `*`.
       if (!(await shouldResolveBareSpecifier(specifier))) {
         return null;
       }
 
-      try {
-        const resolved = await fastDiscoveryResolve(
-          dirname(importer),
-          specifier
-        );
-        return typeof resolved === 'string' ? normalizePath(resolved) : null;
-      } catch {
-        return null;
+      const resolved = await resolveBareSpecifier(importer, specifier);
+      if (!resolved) {
+        await recordUnresolved(alias.basePaths);
       }
+      return resolved;
     });
     resolveCache.set(cacheKey, resolvedPromise);
     return resolvedPromise;
@@ -935,4 +1004,5 @@ export async function fastDiscoverEntries({
   }
 
   state.discoveredFiles = processedFiles;
+  state.unresolvedImportCandidates = unresolvedImportCandidates;
 }

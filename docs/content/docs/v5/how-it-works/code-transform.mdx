@@ -74,8 +74,9 @@ flowchart LR
 
 ## Detailed transformation examples
 
-<Tabs items={["Step Mode", "Workflow Mode", "Detect Mode"]}>
-<Tab value="Step Mode">
+<TabsWithChildren tabs={["Step Mode","Workflow Mode","Detect Mode"]}>
+
+<TabContent order={1}>
 
 **Step Mode** creates the registration bundle that the combined flow handler imports (it is not an HTTP route), and is also the transform framework loaders apply to your application code.
 
@@ -126,8 +127,9 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 
 **ID format:** Step IDs follow the pattern `step//{filepath}//{functionName}`, where the file path is relative to your project root.
 
-</Tab>
-<Tab value="Workflow Mode">
+</TabContent>
+
+<TabContent order={2}>
 
 **Workflow Mode** creates the workflow execution bundle served at `/.well-known/workflow/v1/flow`.
 
@@ -176,8 +178,9 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 
 **ID format:** Workflow IDs follow the pattern `workflow//{filepath}//{functionName}`. The `workflowId` property is attached to the function so [`start()`](/docs/api-reference/workflow-api/start) works at runtime.
 
-</Tab>
-<Tab value="Detect Mode">
+</TabContent>
+
+<TabContent order={3}>
 
 **Detect Mode** is a lightweight, non-transforming mode used during the build's discovery phase.
 
@@ -216,8 +219,9 @@ export async function handleUserSignup(email: string) {
   **Working without the app-code loader:** Frameworks apply the step-mode transform to application code by default, which is what gives `start(handleUserSignup)` its automatic IDs and type safety. If your setup can't run the loader, you can instead construct workflow IDs manually using the pattern `workflow//{filepath}//{functionName}`, look them up in the build manifest, and pass them to `start()` as strings.
 </Callout>
 
-</Tab>
-</Tabs>
+</TabContent>
+
+</TabsWithChildren>
 
 ## Generated files
 

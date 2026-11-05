@@ -1,0 +1,58 @@
+---
+title: isWorkflowRequest
+description: Recognise a Workflow SDK request inside a NestJS guard or interceptor.
+type: reference
+summary: Let queue deliveries and webhooks past an application guard.
+prerequisites:
+  - /docs/getting-started/nestjs
+---
+
+Returns `true` when NestJS routed the request an `ExecutionContext` is handling to [`WorkflowController`](/docs/api-reference/workflow-nest/workflow-controller), which serves the Workflow SDK's protocol routes under `.well-known/workflow/v1`. The check is on the selected controller rather than the URL, so an application route that can be reached through a URL containing `.well-known/workflow/v1` (a wildcard such as `files/*path`) is still treated as your route.
+
+[`WorkflowController`](/docs/api-reference/workflow-nest/workflow-controller) is a controller inside your application, so a global guard runs for it too. A guard that rejects unauthenticated requests rejects every queue delivery and webhook with `403`, and runs stop making progress with no other symptom. Use this helper to exempt them.
+
+The workflow routes authenticate their own callers — queue deliveries are signed and webhook tokens are single-use secrets — so letting them past an application guard exposes nothing.
+
+## Usage
+
+{/* @skip-typecheck - NestJS decorators require special TypeScript config */}
+
+```typescript title="src/auth.guard.ts" lineNumbers
+import {
+  Injectable,
+  type CanActivate,
+  type ExecutionContext,
+} from "@nestjs/common";
+import { isWorkflowRequest } from "workflow/nest"; // [!code highlight]
+
+@Injectable()
+export class AuthGuard implements CanActivate {
+  canActivate(context: ExecutionContext) {
+    if (isWorkflowRequest(context)) return true; // [!code highlight]
+    return this.authenticate(context);
+  }
+}
+```
+
+## API signature
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `context` | `ExecutionContext` | The execution context NestJS passes to a guard or interceptor. |
+
+### Returns
+
+`boolean`. `false` for a request to any other route, and for non-HTTP execution contexts (RPC, WebSockets), where there is no workflow route to match.
+
+## Related exports
+
+| Export | Description |
+| --- | --- |
+| `isWorkflowRoutePath(path, globalPrefix?)` | Whether a raw URL or path addresses a workflow route, for middleware that has a request rather than an `ExecutionContext`. The match is anchored to `globalPrefix` (default `''`), so pass the prefix given to `app.setGlobalPrefix()` unless it excludes the workflow routes. |
+| `WORKFLOW_ROUTE_PREFIX` | `'.well-known/workflow/v1'`, the path the controller is mounted at. |
+
+<Callout type="info">
+Interceptors and exception filters need no exemption. The workflow handlers write through `@Res()`, so the exact status and body the workflow runtime produced reach the caller, which is what the queue and third-party webhook senders key off.
+</Callout>

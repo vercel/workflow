@@ -37,11 +37,17 @@ export {
   validateAttributeEventDataSize,
 } from './attributes.js';
 export {
+  parseWorldCapabilities,
+  WorldCapabilitiesSchema,
+} from './capabilities.js';
+export {
   _resetEnvWarnCacheForTests,
   type EnvNumberOptions,
   envFlag,
   envNumber,
+  getMaxEventsForRun,
   getMaxEventsPerRun,
+  isEventLimitExemptRun,
 } from './env-config.js';
 export type * from './events.js';
 export {
@@ -57,6 +63,7 @@ export {
   HOOK_EVENTS_REQUIRING_EXISTENCE,
   HOOK_LIFECYCLE_EVENT_TYPES,
   HookCreatedEventSchema,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isChildEntityCreationEventType,
   isHookEventRequiringExistence,
@@ -101,14 +108,26 @@ export {
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
+  getRunQueueNamespace,
   HealthCheckPayloadSchema,
+  isIntermediateWaitHop,
+  isSingleOrchestratorMessage,
   MessageId,
+  messageRunSpecVersion,
+  orchestratorRunIdOf,
   parseQueueName,
+  parseQueueRoute,
+  QUEUE_MIN_STEP_KEY_DEDUPE_WINDOW_MS,
+  QUEUE_MIN_STEP_REDELIVERY_SPAN_MS,
   QueuePayloadSchema,
   QueuePrefix,
   RunInputSchema,
   resolveQueueNamespace,
+  SINGLE_ORCHESTRATOR_CONTINUATION_FIELDS,
+  singleOrchestratorContinuationPayload,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
+  WORKFLOW_FLOW_ROUTE,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
 export { reenqueueActiveRuns } from './recovery.js';
@@ -153,7 +172,17 @@ export {
   requireEventSlot,
   slotToEventId,
 } from './slot-identity.js';
-export type { SpecVersion } from './spec-version.js';
+export type * from './snapshots.js';
+export {
+  decodeSnapshotEnvelope,
+  encodeSnapshotEnvelope,
+  SNAPSHOT_FORMAT_VERSION,
+  SnapshotMetadataSchema,
+} from './snapshots.js';
+export type {
+  MintedSpecVersionOptions,
+  SpecVersion,
+} from './spec-version.js';
 export {
   CAPABILITY_ONLY_SPEC_VERSIONS,
   crossesStructuralSpecVersion,
@@ -162,8 +191,11 @@ export {
   requiresNewerWorld,
   SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_DEFAULT_MINTED,
+  SPEC_VERSION_ENV_VAR,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -173,6 +205,15 @@ export {
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   STRUCTURAL_SPEC_VERSIONS,
 } from './spec-version.js';
+export type * from './start-hook.js';
+export {
+  isStartHookId,
+  START_HOOK_ADMISSION_REJECTED_CODE,
+  START_HOOK_CANDIDATE_MAX_AGE_MS,
+  START_HOOK_WIRE_CODES,
+  StartHookSchema,
+  startHookId,
+} from './start-hook.js';
 export type * from './steps.js';
 export {
   isTerminalStepStatus,

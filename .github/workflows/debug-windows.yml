@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
@@ -31,14 +31,14 @@ jobs:
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
 
       - name: Setup tmate session
-        uses: mxschmitt/action-tmate@c0afd6f790e3a5564914980036ebf83216678101 # v3.23
+        uses: mxschmitt/action-tmate@35b54afac29c97fb54faba5b513f8fbd1882f113 # v3.24
         timeout-minutes: ${{ fromJSON(github.event.inputs.timeout_minutes) }}
         with:
           limit-access-to-actor: true

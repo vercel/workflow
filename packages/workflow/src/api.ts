@@ -38,6 +38,7 @@ export {
   type DynamicStartOptions,
   type DynamicWorkflowOptions,
   type DynamicWorkflowStepReference,
+  type StartHookOptions,
   type StartOptions,
   start,
 } from '@workflow/core/runtime/start';

@@ -18,6 +18,40 @@ import { type Reducers, type Revivers, SerializationFormat } from './types.js';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+/**
+ * devalue's built-in typed-array encoding (reached only by views no reducer
+ * claims, i.e. `Float16Array`) emits the view's whole backing buffer plus
+ * offset/length, putting bytes outside the view on the wire. Copy a
+ * subview's viewed bytes into a fresh buffer instead, so devalue emits the
+ * compact `[tag, buffer]` form, as both engines do (serialization/hardened.ts,
+ * runtime/quickjs-serde.ts).
+ */
+const stringifyOptions = {
+  operations: {
+    viewInfo: (view: ArrayBufferView & { length?: number }) => {
+      const length = view instanceof DataView ? 0 : (view.length ?? 0);
+      if (view.byteLength === view.buffer.byteLength) {
+        return {
+          buffer: view.buffer,
+          byteOffset: view.byteOffset,
+          byteLength: view.byteLength,
+          length,
+          bufferByteLength: view.buffer.byteLength,
+        };
+      }
+      const copy = new Uint8Array(view.byteLength);
+      copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+      return {
+        buffer: copy.buffer,
+        byteOffset: 0,
+        byteLength: view.byteLength,
+        length,
+        bufferByteLength: view.byteLength,
+      };
+    },
+  },
+};
+
 // ---- AbortController / AbortSignal (workflow VM context) ----
 // Mirrors the node:vm engine's workflow-context abort reducers/revivers in
 // serialization.ts: reduce by reading the stream/hook symbols stamped at
@@ -162,7 +196,8 @@ export const devalueVmCodec: Codec = {
     const reducers = getReducersForMode(mode);
     const str = stringify(
       value,
-      reducers as Record<string, (value: any) => any>
+      reducers as Record<string, (value: any) => any>,
+      stringifyOptions
     );
     return encoder.encode(str);
   },

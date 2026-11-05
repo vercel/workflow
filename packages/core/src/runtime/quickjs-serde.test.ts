@@ -19,9 +19,14 @@
 
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
-import { StreamError } from '@workflow/errors';
+import {
+  HookConflictError,
+  StreamError,
+  WorkflowStartError,
+} from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { serialize as nodeEngineSerialize } from '../serialization/workflow.js';
 import {
   deserialize as referenceDeserialize,
   serialize as referenceSerialize,
@@ -90,6 +95,19 @@ describe('wire parity: guest serialize matches the reference codec', () => {
       'plain object',
       '({a: 1, b: "two", c: null})',
       () => ({ a: 1, b: 'two', c: null }),
+    ],
+    // fetch options as the AI SDK passes them: an own `signal` key holding
+    // no AbortSignal must stay a plain object, not trip the Abort reducers.
+    [
+      'object with signal: undefined',
+      '({method: "POST", body: "{}", signal: undefined})',
+      () => ({ method: 'POST', body: '{}', signal: undefined }),
+    ],
+    ['object with signal: null', '({signal: null})', () => ({ signal: null })],
+    [
+      'object with a primitive signal',
+      '({signal: "not a signal"})',
+      () => ({ signal: 'not a signal' }),
     ],
     ['nested arrays', '[1, [2, [3, [4]]]]', () => [1, [2, [3, [4]]]]],
     [
@@ -191,6 +209,28 @@ describe('wire parity: guest serialize matches the reference codec', () => {
           url: 'https://workflow.example/stream',
         });
         error.stack = 'stream-stack';
+        return error;
+      },
+    ],
+    [
+      'WorkflowStartError',
+      '(() => { const cause = new Error("gateway timed out"); cause.stack = "cause-stack"; const e = new Error(\'Could not confirm whether workflow run "wrun_c" was admitted: gateway timed out. Retrying with the same hook token is safe while the token is held: it never admits a second run while the first one holds it.\', { cause }); e.name = "WorkflowStartError"; e.stack = "start-stack"; e.runId = "wrun_c"; e.stage = "admission"; return e; })()',
+      () => {
+        const cause = new Error('gateway timed out');
+        cause.stack = 'cause-stack';
+        const error = new WorkflowStartError('wrun_c', 'admission', cause);
+        error.stack = 'start-stack';
+        return error;
+      },
+    ],
+    [
+      'HookConflictError of a refused start',
+      '(() => { const e = new Error(\'No run was created: workflow run "wrun_owner" already owns this hook token\\n\u2570\u25b6 docs: https://workflow-sdk.dev/err/hook-conflict\', { cause: undefined }); e.name = "HookConflictError"; e.stack = "conflict-stack"; e.token = "order:1"; e.conflictingRunId = "wrun_owner"; e.kind = "start"; return e; })()',
+      () => {
+        const error = new HookConflictError('order:1', 'wrun_owner', {
+          kind: 'start',
+        });
+        error.stack = 'conflict-stack';
         return error;
       },
     ],
@@ -423,6 +463,104 @@ describe('full round trip through the host serde only', () => {
     });
   });
 });
+
+describe.skipIf(typeof Float16Array !== 'function')(
+  'Float16Array (no reducer: devalue built-in branch)',
+  () => {
+    // `Float16Array` has no workflow reducer on any codec, so the reference
+    // codec, the node:vm engine and this one must all emit devalue's
+    // built-in `[tag, buffer]` form, and a subview must carry only its
+    // viewed bytes.
+    const expectParity = (bytes: Uint8Array, hostValue: unknown) => {
+      expect(text(bytes)).toBe(text(referenceSerialize(hostValue)));
+      expect(text(bytes)).toBe(text(nodeEngineSerialize(hostValue)));
+    };
+
+    it('matches the reference codec for a whole-buffer Float16Array', () => {
+      const bytes = serializeGuest('new Float16Array([0.5, -1, 65504])');
+      expectParity(bytes, new Float16Array([0.5, -1, 65504]));
+      expect(
+        checkInGuest(
+          bytes,
+          `function (v) {
+            return { isF16: v instanceof Float16Array, values: Array.from(v) };
+          }`
+        )
+      ).toEqual({ isF16: true, values: [0.5, -1, 65504] });
+    });
+
+    it('carries a Float16Array subview without the rest of its buffer', () => {
+      const bytes = serializeGuest(
+        'new Float16Array(new Uint8Array([1,2,0,60,0,64,7,8]).buffer, 2, 2)'
+      );
+      // Base64 of [0, 60, 0, 64] (1.0, 2.0) and nothing else.
+      expect(text(bytes)).toBe(
+        'devl[["Float16Array",1],["ArrayBuffer",2],"ADwAQA=="]'
+      );
+      expectParity(
+        bytes,
+        new Float16Array(
+          new Uint8Array([1, 2, 0, 60, 0, 64, 7, 8]).buffer,
+          2,
+          2
+        )
+      );
+      expect(
+        checkInGuest(
+          bytes,
+          `function (v) {
+            return {
+              isF16: v instanceof Float16Array,
+              byteOffset: v.byteOffset,
+              bufferByteLength: v.buffer.byteLength,
+              values: Array.from(v),
+            };
+          }`
+        )
+      ).toEqual({
+        isF16: true,
+        byteOffset: 0,
+        bufferByteLength: 4,
+        values: [1, 2],
+      });
+    });
+
+    it('serializes an empty Float16Array subview', () => {
+      const bytes = serializeGuest(
+        'new Float16Array(new ArrayBuffer(8), 4, 0)'
+      );
+      expectParity(bytes, new Float16Array(new ArrayBuffer(8), 4, 0));
+      expect(
+        checkInGuest(
+          bytes,
+          `function (v) {
+            return { isF16: v instanceof Float16Array, length: v.length };
+          }`
+        )
+      ).toEqual({ isF16: true, length: 0 });
+    });
+
+    it('revives a payload carrying subview bounds', () => {
+      // What devalue's built-in encoding wrote before the hardened
+      // `viewInfo` copied subviews: the whole buffer, bounds beside it.
+      const legacy = new TextEncoder().encode(
+        'devl[["Float16Array",1,2,2],["ArrayBuffer",2],"AQIAPABABwg="]'
+      );
+      expect(
+        checkInGuest(
+          legacy,
+          `function (v) {
+            return {
+              isF16: v instanceof Float16Array,
+              byteOffset: v.byteOffset,
+              values: Array.from(v),
+            };
+          }`
+        )
+      ).toEqual({ isF16: true, byteOffset: 2, values: [1, 2] });
+    });
+  }
+);
 
 describe('NUL (U+0000) safety across the WASM boundary', () => {
   // `JS_ToCString` is NUL-terminated: naive extraction truncates guest

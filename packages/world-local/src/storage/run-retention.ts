@@ -7,7 +7,13 @@ import {
   readRunRetention,
 } from '@workflow/world';
 import { z } from 'zod';
-import { listJSONFiles, readJSON, taggedPath, writeJSON } from '../fs.js';
+import {
+  listJSONFiles,
+  readJSON,
+  runEntityDir,
+  taggedPath,
+  writeJSON,
+} from '../fs.js';
 import { purgeRunStreamData } from '../streamer.js';
 import { ensureHookIndexes, listHookByRunMarkers } from './hook-index.js';
 
@@ -60,6 +66,11 @@ export function withRunPayloadsPurged<T extends WorkflowRun>(
     // much user data as the input it ran on. The run is terminal, so nothing
     // replays it again.
     dynamicWorkflowCode: undefined,
+    // A start Hook's metadata is user data too; the token and its retention
+    // are not, and a retained start Hook still needs them.
+    ...(run.startHook?.metadata !== undefined && {
+      startHook: { ...run.startHook, metadata: undefined },
+    }),
     expiredAt: purgedAt,
   };
 }
@@ -89,25 +100,39 @@ export async function purgeRunEntityData(
   tag: string | undefined
 ): Promise<void> {
   await Promise.all([
-    scrubEntityFiles(path.join(basedir, 'steps'), runId, (step) => {
-      step.input = undefined;
-      step.output = undefined;
-      step.error = undefined;
-    }),
-    scrubEntityFiles(path.join(basedir, 'events'), runId, (event) => {
-      const eventData = event.eventData;
-      if (!eventData || typeof eventData !== 'object') return;
-      for (const field of getEventDataRefFields(String(event.eventType))) {
-        delete (eventData as Record<string, unknown>)[field];
+    scrubEntityFiles(
+      path.join(basedir, runEntityDir('steps', runId)),
+      runId,
+      (step) => {
+        step.input = undefined;
+        step.output = undefined;
+        step.error = undefined;
       }
-      if (
-        event.eventType === 'run_created' ||
-        event.eventType === 'run_started'
-      ) {
-        delete (eventData as Record<string, unknown>).dynamicWorkflowCode;
-        delete (eventData as Record<string, unknown>).dynamicWorkflowCodeRef;
+    ),
+    scrubEntityFiles(
+      path.join(basedir, runEntityDir('events', runId)),
+      runId,
+      (event) => {
+        const eventData = event.eventData;
+        if (!eventData || typeof eventData !== 'object') return;
+        for (const field of getEventDataRefFields(String(event.eventType))) {
+          delete (eventData as Record<string, unknown>)[field];
+        }
+        if (
+          event.eventType === 'run_created' ||
+          event.eventType === 'run_started'
+        ) {
+          delete (eventData as Record<string, unknown>).dynamicWorkflowCode;
+          delete (eventData as Record<string, unknown>).dynamicWorkflowCodeRef;
+          // A start Hook's metadata is user data; its token and retention
+          // are not.
+          const startHook = (eventData as { startHook?: unknown }).startHook;
+          if (startHook && typeof startHook === 'object') {
+            delete (startHook as Record<string, unknown>).metadata;
+          }
+        }
       }
-    }),
+    ),
     scrubHookMetadata(basedir, runId),
     purgeRunStreamData(basedir, runId, tag),
   ]);

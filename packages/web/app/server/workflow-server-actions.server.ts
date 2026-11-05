@@ -1385,9 +1385,13 @@ export async function getEncryptionKeyForRun(
     if (!world.getEncryptionKeyForRun) {
       return createResponse(null);
     }
-    // Fetch the full run so the World can inspect deploymentId etc.
-    const run = await world.runs.get(runId);
-    const key = await world.getEncryptionKeyForRun(run);
+    // The key lookup needs only the run's deploymentId, which survives
+    // `resolveData: 'none'`; the default ('all') would make the World resolve
+    // the run's whole input and output just to hand back that one field.
+    const { deploymentId } = await world.runs.get(runId, {
+      resolveData: 'none',
+    });
+    const key = await world.getEncryptionKeyForRun(runId, { deploymentId });
     return createResponse(key ?? null);
   } catch (error) {
     return createServerActionError<Uint8Array | null>(

@@ -337,6 +337,63 @@ export const allWorkflows = { workflow };
     );
   });
 
+  describe('unresolved import candidates', () => {
+    const discover = async (entrySource: string) => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const tsconfigFile = join(testRoot, 'tsconfig.json');
+      writeFile(
+        tsconfigFile,
+        JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } })
+      );
+      writeFile(entryFile, entrySource);
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out'),
+        tsconfigFile
+      );
+      return discovered.unresolvedImportCandidates ?? new Set<string>();
+    };
+
+    const src = (...segments: string[]) =>
+      normalize(join(testRoot, 'src', ...segments));
+
+    it('records where a missing relative import would resolve', async () => {
+      const candidates = await discover(`import './billing/workflow';\n`);
+
+      expect(candidates).toContain(src('billing', 'workflow.ts'));
+      expect(candidates).toContain(src('billing', 'workflow', 'index.ts'));
+    });
+
+    it('records where a missing tsconfig alias import would resolve', async () => {
+      const candidates = await discover(`import '@/billing/workflow';\n`);
+
+      expect(candidates).toContain(src('billing', 'workflow.ts'));
+    });
+
+    it('records a missing import written with a source extension as-is', async () => {
+      const candidates = await discover(`import './billing/workflow.ts';\n`);
+
+      expect([...candidates]).toEqual([src('billing', 'workflow.ts')]);
+    });
+
+    it('records nothing for imports that resolve', async () => {
+      writeFile(join(testRoot, 'src', 'helper.ts'), 'export const x = 1;\n');
+      writeFile(join(testRoot, 'src', 'styles.css'), 'body {}\n');
+
+      const candidates = await discover(
+        `import './helper';\nimport '@/helper';\nimport './styles.css';\n`
+      );
+
+      expect([...candidates]).toEqual([]);
+    });
+
+    it('records nothing for an unresolved bare package import', async () => {
+      const candidates = await discover(`import 'not-installed-package';\n`);
+
+      expect([...candidates]).toEqual([]);
+    });
+  });
+
   it('discovers dotted files reached through tsconfig path aliases', async () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const registryFile = join(testRoot, 'src', 'workflows', 'hello.index.ts');

@@ -11,11 +11,13 @@ import {
   STREAM_WS_PROTOCOL_V1,
   STREAM_WS_V1_MAX_CHUNK_BYTES,
   STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
+  STREAM_WS_V1_WRITE_ENVELOPE_MAX_BYTES,
   StreamWriterIdSchema,
   StreamWsCloseRequestMetaSchema,
   StreamWsDrainMetaSchema,
   StreamWsRequestMetaSchema,
   StreamWsWriteRequestMetaSchema,
+  streamWsWriteBatchEnd,
 } from './stream-ws-protocol-v1.js';
 
 type FixtureFrame = {
@@ -140,6 +142,47 @@ describe('workflow-stream-ws/v1 contract', () => {
         [new Uint8Array(STREAM_WS_V1_MAX_CHUNK_BYTES + 1)]
       )
     ).toThrow('maximum is 10485760');
+  });
+
+  it('bounds the write envelope outside chunk records', () => {
+    const frame = encodeStreamWsWriteRequest(
+      {
+        type: 'write',
+        reqId: Number.MAX_SAFE_INTEGER,
+        chunkSeq: Number.MAX_SAFE_INTEGER,
+        numChunks: STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
+      },
+      Array.from(
+        { length: STREAM_WS_V1_MAX_CHUNKS_PER_WRITE },
+        () => new Uint8Array()
+      )
+    );
+    const chunkRecordBytes = 4 * STREAM_WS_V1_MAX_CHUNKS_PER_WRITE;
+    expect(frame.byteLength - chunkRecordBytes).toBeLessThanOrEqual(
+      STREAM_WS_V1_WRITE_ENVELOPE_MAX_BYTES
+    );
+  });
+
+  it('plans write batches by chunk count and message bytes', () => {
+    const bytes = (length: number, size: number) =>
+      Array.from({ length }, () => new Uint8Array(size));
+    const envelope = STREAM_WS_V1_WRITE_ENVELOPE_MAX_BYTES;
+
+    // Count binds first for many small chunks.
+    expect(streamWsWriteBatchEnd(bytes(1001, 1), 0, 16_384)).toBe(1000);
+    expect(streamWsWriteBatchEnd(bytes(1001, 1), 1000, 16_384)).toBe(1001);
+    // Bytes bind first for large chunks; exactly at the budget still fits.
+    expect(streamWsWriteBatchEnd(bytes(5, 1000), 0, envelope + 2 * 1004)).toBe(
+      2
+    );
+    expect(
+      streamWsWriteBatchEnd(bytes(5, 1000), 0, envelope + 2 * 1004 - 1)
+    ).toBe(1);
+    expect(streamWsWriteBatchEnd(bytes(5, 1000), 3, envelope + 2 * 1004)).toBe(
+      5
+    );
+    // One chunk over the budget is still returned alone for the send check.
+    expect(streamWsWriteBatchEnd(bytes(2, 5000), 0, 1024)).toBe(1);
   });
 
   it('accepts additive connection drain controls', () => {

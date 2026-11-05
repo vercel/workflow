@@ -30,7 +30,7 @@ describe('validateRunExecutionContext', () => {
     }
     expect(WorkflowRuntimeError.is(error)).toBe(true);
     expect((error as Error).message).toMatch(
-      /Dynamic workflow execution context is 2049 bytes.*2048-byte limit.*experimental_dynamic\.steps/
+      /Dynamic workflow execution context is 2049 bytes.*2048-byte limit.*step ID, which comes from the step's file path and function name.*experimental_dynamic\.steps/
     );
   });
 

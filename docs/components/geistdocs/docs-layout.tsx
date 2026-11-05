@@ -1,6 +1,6 @@
 import { GeistdocsDocsLayout as PackageDocsLayout } from '@vercel/geistdocs/layout';
 import { GeistdocsVersionSelect } from '@vercel/geistdocs/versions';
-import type { ComponentProps, CSSProperties, ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { config } from '@/lib/geistdocs/config';
 import { getVersionSwitchPaths } from '@/lib/geistdocs/version-switch-paths';
 
@@ -150,7 +150,9 @@ export const DocsLayout = ({
       className: 'bg-background-200 max-w-[1448px] mx-auto',
       style: {
         '--fd-docs-row-1': '4rem',
-      } as CSSProperties,
+      } as NonNullable<
+        ComponentProps<typeof PackageDocsLayout>['containerProps']
+      >['style'],
     }}
     sidebarTop={
       config.versions ? (

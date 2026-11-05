@@ -122,20 +122,28 @@ export const RunAnywhere = () => (
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Run anywhere, no lock‑in
         </h2>
-        <p className="text-lg text-muted-foreground">
+        <p className="text-lg text-gray-900">
           Run locally, self-host, or swap every component — Workflow SDK is
           fully portable. For zero-config, secure, and scalable workflows,
           deploy on Vercel.
         </p>
         <div className="flex flex-col sm:flex-row items-start sm:items-center sm:justify-center gap-3 mt-2">
-          <Button asChild className="rounded-full h-10">
-            <Link href="https://vercel.com/workflows" target="_blank">
-              Workflows on Vercel
-            </Link>
+          <Button
+            Component={Link}
+            href="https://vercel.com/workflows"
+            target="_blank"
+            className="rounded-full h-10"
+          >
+            Workflows on Vercel
           </Button>
           {/* Outline variant appears smaller due to inset border — h-[42px] compensates to match the filled button visually */}
-          <Button asChild variant="outline" className="rounded-full h-[42px]">
-            <Link href="/worlds">Learn about self-hosting</Link>
+          <Button
+            Component={Link}
+            href="/worlds"
+            variant="secondary"
+            className="rounded-full h-[42px]"
+          >
+            Learn about self-hosting
           </Button>
         </div>
       </div>
@@ -147,8 +155,8 @@ export const RunAnywhere = () => (
             className={cn(
               'aspect-[244/189] flex items-center justify-center h-[180px] border rounded-md',
               index
-                ? 'bg-gradient-to-r from-background/30 to-transparent'
-                : 'bg-background/30'
+                ? 'bg-gradient-to-r from-background-100/30 to-transparent'
+                : 'bg-background-100/30'
             )}
             key={index}
           >
@@ -162,7 +170,7 @@ export const RunAnywhere = () => (
           code={code}
           codeblock={{
             className:
-              'bg-background max-w-lg text-xs rounded-md w-full mx-auto',
+              'bg-background-100 max-w-lg text-xs rounded-md w-full mx-auto',
           }}
         />
       </div>
@@ -172,8 +180,8 @@ export const RunAnywhere = () => (
             className={cn(
               'aspect-[244/189] flex items-center justify-center h-[180px] border rounded-md',
               index
-                ? 'bg-background/30'
-                : 'bg-gradient-to-l from-background/30 to-transparent'
+                ? 'bg-background-100/30'
+                : 'bg-gradient-to-l from-background-100/30 to-transparent'
             )}
             key={index}
           >

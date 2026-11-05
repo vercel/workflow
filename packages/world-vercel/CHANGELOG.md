@@ -1,5 +1,123 @@
 # @workflow/world-vercel
 
+## 5.4.0
+
+### Patch Changes
+
+- [#5238](https://github.com/vercel/workflow/pull/5238) [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289) Thanks [@pranaygp](https://github.com/pranaygp)! - Rename the `start()` option `hook` to `experimental_hook`, and enable it by default on the Postgres and Vercel Worlds. `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK` and `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK` are removed, along with the `EXPERIMENTAL_START_HOOK_ENV` exports; the capability is only used when a caller passes `experimental_hook` to `start()`.
+
+- [#5058](https://github.com/vercel/workflow/pull/5058) [`c805b90`](https://github.com/vercel/workflow/commit/c805b906e251198bc9b9f4a5340ec144fa288b62) Thanks [@bluepegasus123](https://github.com/bluepegasus123)! - Honor the caller's abort signal when `runs.waitForTerminalStatus` falls back to a plain run read.
+
+## 5.3.0
+
+### Minor Changes
+
+- [#5091](https://github.com/vercel/workflow/pull/5091) [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Reuse the Hook returned by getHookByToken() with resumeHook() to skip the token lookup on later deliveries, including across JSON or other ordinary serialization. Capable Worlds enforce atomic deduplication on cached deliveries. The SDK falls back internally after definite pre-write refusals, retries admission throttles, and never re-sends an uncertain resolved write. Trace attributes identify resolved deliveries and fallback refusals.
+
+- [#4661](https://github.com/vercel/workflow/pull/4661) [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add opt-in spec 9 runs, driven by a single orchestrator per run: set `WORKFLOW_SPEC_VERSION=9`. New runs stay on spec 8 by default.
+  
+  - Without the setting, new runs are spec 8 and behave as before.
+  - To opt in, first upgrade every deployment and process that calls `start()` or shares the World to this release, then set `WORKFLOW_SPEC_VERSION=9` on all of them. An older release fails writes to spec 9 runs (reads still work, nothing is corrupted), so do not roll back below this release while spec 9 runs are in flight.
+  - Custom Worlds: `mintedSpecVersion()` keeps creating spec 8 runs. A World that implements the in-band writer fence declares `capabilities.inBandFence` and passes `{ inBandFence: true }` to create spec 9 runs.
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Send `startHook` on run creation and map start Hook answers, retrying a delivery to a start Hook whose run is still being created, honoring `Retry-After`; `atomicStartHook` is advertised only with `WORKFLOW_VERCEL_EXPERIMENTAL_START_HOOK=1`, which needs a backend that supports start Hooks.
+
+### Patch Changes
+
+- [#4996](https://github.com/vercel/workflow/pull/4996) [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Trace `start({ hook })` outcomes: rejection reasons on `WorkflowWorldError.reason`, an outcome on every exit of the start span and on a queued copy's invocation span, a reason for every holder wake, and debug logs of local and Postgres admission decisions.
+
+- [#5072](https://github.com/vercel/workflow/pull/5072) [`612c5f4`](https://github.com/vercel/workflow/commit/612c5f4d558e61ea8c55dd269f2511b7bca69636) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Name the fields a v4 `createEvent` response failed its schema on in the error message.
+
+- [#5043](https://github.com/vercel/workflow/pull/5043) [`1123ea6`](https://github.com/vercel/workflow/commit/1123ea6c13cce041b5088da2684987dfa5165a92) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade `@vercel/queue` to 0.10.0 and publish a fan-out's batched step dispatches through the now-stable `sendBatch` instead of the deprecated `experimental_sendBatch`
+
+- [#4994](https://github.com/vercel/workflow/pull/4994) [`5dc9e15`](https://github.com/vercel/workflow/commit/5dc9e1543dfcbb1d130b9a4cff87b8952c4cd7c2) Thanks [@neilverc](https://github.com/neilverc)! - Stop following HTTP redirects on workflow API requests. `fetch` strips `Authorization` across origins but forwards every other header, so a redirect carried the request's `x-vercel-trusted-oidc-idp-token` to the host named in `Location`. A 3xx now surfaces as an error, matching the node:http transport.
+- Updated dependencies [[`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f)]:
+  - @workflow/world@5.1.0
+  - @workflow/errors@5.1.0
+
+## 5.2.3
+
+### Patch Changes
+
+- [#4916](https://github.com/vercel/workflow/pull/4916) [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix cross-deployment `start()` to 4.x deployments being misread as a run invocation, and keep replayed runs in the original run's region.
+
+- [#4895](https://github.com/vercel/workflow/pull/4895) [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Avoid redundant history reads when independent hooks register concurrently. Keep existing single-event requests parallel and reconcile their committed events together before continuing, with the normal history reload when the responses do not cover a complete consecutive suffix.
+- Updated dependencies [[`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7)]:
+  - @workflow/world@5.0.5
+  - @workflow/errors@5.0.5
+
+## 5.2.2
+
+### Patch Changes
+
+- [#4828](https://github.com/vercel/workflow/pull/4828) [`02993a2`](https://github.com/vercel/workflow/commit/02993a26cbabec8f00df1f8a3a758158d095008a) Thanks [@mmarufov](https://github.com/mmarufov)! - Fix `UND_ERR_REQ_CONTENT_LENGTH_MISMATCH` by retrying HTTP stream appends with fresh bodies after confirmed 429s, using the shared throttle wait policy. Retry only connection-refused, DNS, and connect-timeout failures; surface other transport errors without replay.
+
+## 5.2.1
+
+### Patch Changes
+
+- [#4733](https://github.com/vercel/workflow/pull/4733) [`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `InBandSupersededError` and optional `inBand`/`expectedSeqInBand` event-create params for the in-band writer fence. `@workflow/world-vercel` forwards them, does not retry a fenced write in-process, and records the fence on its event spans. The runtime does not use them yet.
+
+- [#4833](https://github.com/vercel/workflow/pull/4833) [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3) Thanks [@pranaygp](https://github.com/pranaygp)! - `@workflow/world-vercel` declares the `inBandFence` capability (its backend refuses a stale in-band write on every run with an event sequencer, and answers an in-band write on an older run with a 400), and passes on the in-band counts its backend reports: `snapshot` on `events.list` and `allocated` on a single `events.create`. The `inBandFence` contract lets a World list no snapshot when its refusals carry both counters, and `@workflow/world-testing` takes the counters from a refusal for such a World.
+- Updated dependencies [[`e6bd692`](https://github.com/vercel/workflow/commit/e6bd69278a9335db9955547b0829d5228c8b54ff), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`3e93033`](https://github.com/vercel/workflow/commit/3e930333d23b6e3e1a564b4a6ae8734e48034da3)]:
+  - @workflow/errors@5.0.4
+  - @workflow/world@5.0.4
+  - @workflow/utils@5.0.2
+
+## 5.2.0
+
+### Minor Changes
+
+- [#4722](https://github.com/vercel/workflow/pull/4722) [`d0f6b91`](https://github.com/vercel/workflow/commit/d0f6b9140841f548663c29f8adaaa21ae5dec09b) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Stream writes now upgrade to WebSocket by default; set `WORKFLOW_STREAMS_TRANSPORT=http` to opt out.
+
+### Patch Changes
+
+- [#4712](https://github.com/vercel/workflow/pull/4712) [`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Reduce redundant schema compilation by compiling final event schemas only and reusing compiled v4 event-response and paginated response schemas.
+- Updated dependencies [[`46b3bfb`](https://github.com/vercel/workflow/commit/46b3bfb166cc56c8ab6996084b4c5747677c0431)]:
+  - @workflow/world@5.0.3
+  - @workflow/errors@5.0.3
+
+## 5.1.0
+
+### Minor Changes
+
+- [#4589](https://github.com/vercel/workflow/pull/4589) [`9ca188a`](https://github.com/vercel/workflow/commit/9ca188a1e9ec229af92bf82f4ead511ca3a626f2) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Default the events transport to WebSockets. Set `WORKFLOW_EVENTS_TRANSPORT=http` to opt out.
+
+### Patch Changes
+
+- [#4333](https://github.com/vercel/workflow/pull/4333) [`a6c455a`](https://github.com/vercel/workflow/commit/a6c455a09c622e184f518764109fa455eb718699) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade `@vercel/queue` to 0.6.0 so queue callbacks for messages that are already claimed or processed (409 / 410) respond 200 instead of logging `Queue callback error` and returning 500
+
+- [#4496](https://github.com/vercel/workflow/pull/4496) [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Wait out a throttled (429) write recording a step body's outcome until the invocation's deadline instead of 30 seconds, and resend a throttled event-log read from its cursor instead of restarting it.
+
+- [#4605](https://github.com/vercel/workflow/pull/4605) [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Release drained stream writer sockets without closing the shared stream, preserve handle reuse over HTTP, and dispose transports when public writable streams abort. Propagate source failures to readers of flushable stream pipes.
+
+- [#4648](https://github.com/vercel/workflow/pull/4648) [`81eac1d`](https://github.com/vercel/workflow/commit/81eac1db2c237a5135ef4d2d0b66cd95c74057f0) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Upgrade `@vercel/queue` to 0.8.0 so throttled queue sends honor the server's `Retry-After` and queue errors carry clean messages
+- Updated dependencies [[`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/utils@5.0.1
+  - @workflow/world@5.0.2
+  - @workflow/errors@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- [#4557](https://github.com/vercel/workflow/pull/4557) [`6eaa899`](https://github.com/vercel/workflow/commit/6eaa899bfb2636b5d2545703bd166fd6ac5b6cbf) Thanks [@SandboxRD](https://github.com/SandboxRD)! - Fix `createQueueDispatcher()` and `createEventsDispatcher()` crashing under Bun with `compose is not a function`. Bun resolves `undici` to its built-in module, whose dispatchers can't compose interceptors and are ignored by Bun's `fetch`, so the plain dispatcher is used instead.
+
+- [#4534](https://github.com/vercel/workflow/pull/4534) [`0147fa5`](https://github.com/vercel/workflow/commit/0147fa58417d6fbbed25428388309a4b684c80eb) Thanks [@alangenfeld](https://github.com/alangenfeld)! - The dynamic execution-context budget error now says that step IDs and `exportName` count, not only aliases.
+
+- [#3250](https://github.com/vercel/workflow/pull/3250) [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add an _optional_, experimental `experimental_snapshots` storage interface for the QuickJS engine's VM-memory snapshotting (`save`/`load`/`delete` plus `SnapshotMetadata`, and `encodeSnapshotEnvelope`/`decodeSnapshotEnvelope`.
+
+- [#4566](https://github.com/vercel/workflow/pull/4566) [`dff10ba`](https://github.com/vercel/workflow/commit/dff10bab71f2f546a2e0143b8b91bcd2c5e1645b) Thanks [@shalabhc](https://github.com/shalabhc)! - Add `WORKFLOW_EVENTS_TRANSPORT_WS_OVERRIDE_WORKFLOWS`, a comma-separated list of workflows whose runs use the WebSocket events transport even when `WORKFLOW_EVENTS_TRANSPORT` is `http` or unset.
+
+- [#4504](https://github.com/vercel/workflow/pull/4504) [`7fb0575`](https://github.com/vercel/workflow/commit/7fb057520d97ef32a9e3b717efd51e594924f964) Thanks [@shalabhc](https://github.com/shalabhc)! - The WebSocket events transport now limits the size of each message. Any frame over `WORKFLOW_WS_MAX_MESSAGE_BYTES` (default 12 MiB, at most 16 MiB) is sent as several messages and rebuilt by the receiver. The client offers `frame-parts` in the `x-workflow-ws-flags` upgrade header so the backend can split large replies too.
+
+- [#4510](https://github.com/vercel/workflow/pull/4510) [`37ddf00`](https://github.com/vercel/workflow/commit/37ddf00f7b64698b0c8e0d678aabbc06ca3e67a9) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Split stream WebSocket write groups by encoded message bytes as well as chunk count, bounded by `WORKFLOW_WS_MAX_MESSAGE_BYTES` (default 12 MiB, at most 16 MiB).
+
+- [#4381](https://github.com/vercel/workflow/pull/4381) [`0648d16`](https://github.com/vercel/workflow/commit/0648d1684cbc86482c8c43de60b975cffc745185) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Retry throttled (429) stream WebSocket writes and closes after `Retry-After`, moving to HTTP when the socket closes or the wait budget runs out, and retry a close 5xx over HTTP instead of failing the writer.
+- Updated dependencies [[`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`2084d35`](https://github.com/vercel/workflow/commit/2084d3598c578f1d96f82ca8e4062629a43a28aa)]:
+  - @workflow/world@5.0.1
+  - @workflow/errors@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

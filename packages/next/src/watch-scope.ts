@@ -65,7 +65,8 @@ export interface WatchScope {
    */
   directories: string[];
   /**
-   * Paths that do not exist yet but would become entrypoints if they appeared.
+   * Paths that do not exist yet but would change the graph if they appeared:
+   * root entrypoints, and the targets of imports discovery could not resolve.
    * Tracked through their parent directory, never as a watch of their own.
    */
   missing: string[];
@@ -79,6 +80,14 @@ export interface WatchScopeOptions {
    * framework entrypoints (`inputFiles` plus everything discovery walked into).
    */
   relevantFiles: Iterable<string>;
+  /**
+   * POSIX-normalized absolute paths an unresolved import in the graph would
+   * resolve to. The importer is watched, but the graph stops there: when the
+   * target is created later (the import was written first) or restored (it was
+   * deleted and came back), nothing already watched changes, so these paths
+   * have to be watched on their own. Their directories may not exist yet.
+   */
+  unresolvedImports?: Iterable<string>;
   /** The project's resolved `pageExtensions`. */
   pageExtensions: readonly string[];
   /** Predicate from `createWatchIgnorePredicate`, plus the caller's dist dir. */
@@ -204,6 +213,7 @@ function graphDirectories({
 export function createWatchScope({
   workingDir,
   relevantFiles,
+  unresolvedImports = [],
   pageExtensions,
   isIgnored,
   pathExists = existsSync,
@@ -231,8 +241,8 @@ export function createWatchScope({
 
   const watchedFiles = new Set(files);
   const missing = [
-    ...new Set(
-      rootEntrypointCandidates({
+    ...new Set([
+      ...rootEntrypointCandidates({
         workingDir: root,
         pageExtensions,
         pathExists,
@@ -241,8 +251,15 @@ export function createWatchScope({
           !isIgnored(candidate) &&
           !watchedFiles.has(candidate) &&
           !pathExists(candidate)
-      )
-    ),
+      ),
+      // Kept even when the path exists by now: it was created after discovery
+      // ran, and the attach's `startTime` replays that creation as a change.
+      ...[...unresolvedImports]
+        .map(toPosix)
+        .filter(
+          (candidate) => !isIgnored(candidate) && !watchedFiles.has(candidate)
+        ),
+    ]),
   ].sort();
 
   return {

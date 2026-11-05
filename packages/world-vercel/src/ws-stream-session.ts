@@ -3,26 +3,28 @@ import { getVercelOidcToken } from '@vercel/oidc';
 import type { StreamWriteSession } from '@workflow/world';
 import type { WebSocket } from 'ws';
 import { createThrottleWaiter } from './event-retry.js';
-import { type DecodedFrame, decodeFrames } from './frames.js';
+import { decodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
   parseRetryAfter,
   withHttpClientSpan,
 } from './http-core.js';
+import { normalizeStreamChunks } from './stream-chunks.js';
 import {
   encodeStreamWsCloseRequest,
   encodeStreamWsWriteRequest,
   getStreamWsProtocolV1Url,
   parseStreamWsReply,
-  STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
   type StreamWriterId,
   StreamWriterIdSchema,
   type StreamWsErrorMeta,
+  streamWsWriteBatchEnd,
 } from './stream-ws-protocol-v1.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import type { APIConfig } from './utils.js';
 import { getHttpConfig } from './utils.js';
+import { wsMaxMessageBytes } from './ws-parts.js';
 import {
   beginNormalWsClose,
   STREAM_WS_INITIAL_CONNECT_TIMEOUT_MS,
@@ -198,20 +200,6 @@ class StreamWsCloseRetriableError extends Error {
   }
 }
 
-async function decodeOne(raw: Uint8Array): Promise<DecodedFrame> {
-  let frame: DecodedFrame | undefined;
-  for await (const candidate of decodeFrames(
-    (async function* () {
-      yield raw;
-    })()
-  )) {
-    if (frame) throw new Error('stream WebSocket message has multiple frames');
-    frame = candidate;
-  }
-  if (!frame) throw new Error('stream WebSocket message has no frame');
-  return frame;
-}
-
 function asBytes(raw: unknown): Uint8Array {
   if (raw instanceof Uint8Array) return raw;
   if (typeof raw === 'string') return new TextEncoder().encode(raw);
@@ -304,18 +292,16 @@ class VercelStreamWriteSession implements StreamWriteSession {
       await this.writeHttpOrFail(chunks);
       return;
     }
-    // Core's default group cap equals the wire cap, so splitting is normally
-    // dormant. Keep it here as a guard against configured or future cap drift;
-    // v1 deliberately defines no separate whole-message byte budget.
-    for (
-      let offset = 0;
-      offset < chunks.length;
-      offset += STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-    ) {
-      const batch = chunks.slice(
-        offset,
-        offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-      );
+    // The platform drops any WebSocket frame over 16 MiB with no close frame,
+    // leaving an unknown outcome that poisons the writer. Split each group into
+    // ordered write requests bounded by both chunk count and message bytes. At
+    // defaults (1 MiB core groups, 10 MiB chunks, 12 MiB budget) a group is one
+    // request; a single chunk too large for one message goes to HTTP unsent.
+    const maxMessageBytes = wsMaxMessageBytes();
+    const binaryChunks = normalizeStreamChunks(chunks);
+    for (let offset = 0; offset < chunks.length; ) {
+      const end = streamWsWriteBatchEnd(binaryChunks, offset, maxMessageBytes);
+      const batch = binaryChunks.slice(offset, end);
       let reply: Record<string, unknown>;
       try {
         reply = await this.requestRetryingThrottle(
@@ -331,7 +317,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
               batch
             ),
           offset === 0 ? timing : undefined,
-          { chunkSeq: chunkSeq + offset, numChunks: batch.length }
+          { chunkSeq: chunkSeq + offset, numChunks: batch.length },
+          maxMessageBytes
         );
       } catch (error) {
         if (!(error instanceof StreamWsRequestNotSentError)) throw error;
@@ -344,6 +331,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
           new Error(`stream WebSocket write received ${reply.type}`)
         );
       }
+      offset = end;
     }
   }
 
@@ -436,6 +424,15 @@ class VercelStreamWriteSession implements StreamWriteSession {
       throw this.poisonError;
     }
     if (this.mode === 'deferred') this.mode = 'waiting_to_connect';
+  }
+
+  release(): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.mode === 'closed' || this.mode === 'poisoned') return;
+      // A released handle remains usable over HTTP with the same sequence
+      // space, without retaining or reconnecting its idle socket.
+      this.fallbackToHttpBeforeSend('stream writer released');
+    });
   }
 
   dispose(): void {
@@ -667,6 +664,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
             // Like close, let an already-delivered reply finish decoding so
             // a reset right behind a 429 sees the throttled state.
             void this.inbound.then(() => {
+              // A released/replaced socket no longer owns this writer. Its
+              // teardown error must not poison later HTTP writes.
+              if (ws !== this.socket) return;
               if (this.isIdleThrottledSocket(ws)) {
                 this.leaveThrottledSocketForHttp();
                 return;
@@ -703,7 +703,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     receivedAt: number
   ): Promise<void> {
     try {
-      const frame = await decodeOne(raw);
+      const frame = decodeFrame(raw);
       const reply = parseStreamWsReply(frame.meta, frame.body);
       if (reply.type === 'drain') {
         this.handleDrain(reply.reason, reply.graceMs);
@@ -844,7 +844,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
     operation: Operation,
     buildFrame: (reqId: number) => Uint8Array,
     writeTiming?: WriteTiming,
-    writeMetadata?: WriteMetadata
+    writeMetadata?: WriteMetadata,
+    maxMessageBytes = wsMaxMessageBytes()
   ): Promise<Record<string, unknown>> {
     this.assertUsable();
     const ws = this.socket;
@@ -859,6 +860,13 @@ class VercelStreamWriteSession implements StreamWriteSession {
       frame = buildFrame(reqId);
     } catch (error) {
       throw new StreamWsRequestNotSentError(error);
+    }
+    if (frame.byteLength > maxMessageBytes) {
+      throw new StreamWsRequestNotSentError(
+        new Error(
+          `stream WebSocket message is ${frame.byteLength} bytes; maximum is ${maxMessageBytes}`
+        )
+      );
     }
     const connectionTiming = this.connectionTiming;
     const connectionFirstWrite = connectionTiming?.firstWriteSent === false;
@@ -949,9 +957,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private fallbackToHttpBeforeSend(reason = 'HTTP fallback before send'): void {
     this.mode = 'http';
     this.drainReason = undefined;
-    this.socket?.close(1000, reason);
+    const socket = this.socket;
     this.socket = undefined;
+    // HTTP writes must not wait for a retired upgrade to finish negotiating.
+    this.transportDecision = Promise.resolve();
     this.finishDrainWait();
+    if (socket) beginNormalWsClose(socket, reason);
   }
 
   /**
@@ -1003,10 +1014,15 @@ class VercelStreamWriteSession implements StreamWriteSession {
     operation: Operation,
     buildFrame: (reqId: number) => Uint8Array,
     writeTiming?: WriteTiming,
-    writeMetadata?: WriteMetadata
+    writeMetadata?: WriteMetadata,
+    maxMessageBytes?: number
   ): Promise<Record<string, unknown>> {
+    // `bounded`: past the budget the request falls back to HTTP, whose default
+    // undici transport has its own 429 policy, rather than failing the write,
+    // so a longer wait on the socket would buy little.
     const waitOutThrottle = createThrottleWaiter(
-      operation === 'write' ? 'stream chunks' : 'stream close'
+      operation === 'write' ? 'writing stream chunks' : 'writing stream close',
+      'bounded'
     );
     for (let attempt = 0; ; attempt++) {
       try {
@@ -1014,7 +1030,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
           operation,
           buildFrame,
           attempt === 0 ? writeTiming : undefined,
-          writeMetadata
+          writeMetadata,
+          maxMessageBytes
         );
       } catch (error) {
         if (!(error instanceof StreamWsThrottledError)) throw error;
@@ -1033,8 +1050,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
       // Disposed or poisoned during the wait.
       this.assertUsable();
       // Budget exhausted. The request did not apply and nothing is
-      // outstanding, so hand it to HTTP, whose dispatcher applies its own
-      // 429 policy, rather than failing a write HTTP would complete.
+      // outstanding, so hand it to HTTP, whose default undici transport applies
+      // its own 429 policy, rather than failing a write HTTP would complete.
       this.fallbackToHttpBeforeSend('stream request throttled');
       throw new StreamWsRequestNotSentError(error);
     } finally {

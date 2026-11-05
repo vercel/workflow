@@ -1,5 +1,61 @@
 # @workflow/vite
 
+## 5.0.8
+
+### Patch Changes
+
+- Updated dependencies [[`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41)]:
+  - @workflow/builders@5.0.8
+
+## 5.0.7
+
+### Patch Changes
+
+- Updated dependencies [[`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1)]:
+  - @workflow/builders@5.0.7
+
+## 5.0.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.6
+
+## 5.0.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.5
+
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.4
+
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795)]:
+  - @workflow/builders@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- Updated dependencies [[`ff4a0fd`](https://github.com/vercel/workflow/commit/ff4a0fd155bfe32e1e8df977dec6fc9e4e71dde0), [`65ca6c8`](https://github.com/vercel/workflow/commit/65ca6c893e83ef623fba370416ce9b88e9064df4), [`a11d037`](https://github.com/vercel/workflow/commit/a11d037cee76143a2060fb34698aec5fc9f9a270)]:
+  - @workflow/builders@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

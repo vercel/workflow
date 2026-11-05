@@ -1,5 +1,75 @@
 # @workflow/next
 
+## 5.0.8
+
+### Patch Changes
+
+- [#5063](https://github.com/vercel/workflow/pull/5063) [`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41) Thanks [@joelfickson](https://github.com/joelfickson)! - Run the Turbopack workflow loader on files that use `static [WORKFLOW_SERIALIZE]` computed keys (such as `@ai-sdk/openai` models), fixing "Class … not found" errors in steps.
+- Updated dependencies [[`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41), [`e1bce44`](https://github.com/vercel/workflow/commit/e1bce44d3faacff855a35265d47afe3819abed1a), [`50d425f`](https://github.com/vercel/workflow/commit/50d425fac77ec212422d57a832411c4515c0ba3c), [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289)]:
+  - @workflow/builders@5.0.8
+  - @workflow/core@5.4.0
+
+## 5.0.7
+
+### Patch Changes
+
+- Updated dependencies [[`7d31a0a`](https://github.com/vercel/workflow/commit/7d31a0a329dd020441e0aebba2bb55068f8e0f4b), [`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`3837f92`](https://github.com/vercel/workflow/commit/3837f922473ec530929a98817de25a7f878b79f0), [`ef5f004`](https://github.com/vercel/workflow/commit/ef5f0042a875563f2888fa51153339d5887d2183), [`2be58c2`](https://github.com/vercel/workflow/commit/2be58c26f9f95c324a4da6190018545c542227f8), [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`7e221fc`](https://github.com/vercel/workflow/commit/7e221fc9276b51f3cf7c597a5acdb781333b52dc), [`b9d618a`](https://github.com/vercel/workflow/commit/b9d618ac722fc4ee9000166e521a06a6294ebffd), [`b8e1f1b`](https://github.com/vercel/workflow/commit/b8e1f1b9112a180ee1982867c056617580a7e65a), [`cc637c4`](https://github.com/vercel/workflow/commit/cc637c42ac80cbf79780a1190e46dc0f01850d4c), [`af8c6d3`](https://github.com/vercel/workflow/commit/af8c6d3295ebc9aa7c0168cd0ca5007f62e6b9ba), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`44d7c76`](https://github.com/vercel/workflow/commit/44d7c769e94fb8b8a684dd69f2450ea9c52990cc), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`e127948`](https://github.com/vercel/workflow/commit/e1279482719168a0987e48f73d107be6287670c3), [`997b03d`](https://github.com/vercel/workflow/commit/997b03df9d987d5f4092fca2209d491434c3fdbe), [`433b345`](https://github.com/vercel/workflow/commit/433b345511420f902962126e4a6713fa66eaf540)]:
+  - @workflow/core@5.3.0
+  - @workflow/builders@5.0.7
+
+## 5.0.6
+
+### Patch Changes
+
+- Updated dependencies [[`91297ab`](https://github.com/vercel/workflow/commit/91297abeede266f9a74a8550fe65b8886ca57c95), [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b), [`42077f2`](https://github.com/vercel/workflow/commit/42077f2b9d39f238f1db4860a536ef5cd2d395e7), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`73a7efa`](https://github.com/vercel/workflow/commit/73a7efaaa8dbb827ce5da68c2bac110c862956ec), [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a), [`0d434fc`](https://github.com/vercel/workflow/commit/0d434fc948e33a5e29cbec3c0f4f5c3d6747cca7), [`cd2f917`](https://github.com/vercel/workflow/commit/cd2f917e0fdc5d1f5e35d9ef9508e65d8ddd729a)]:
+  - @workflow/core@5.2.3
+  - @workflow/builders@5.0.6
+
+## 5.0.5
+
+### Patch Changes
+
+- Updated dependencies [[`afdc68b`](https://github.com/vercel/workflow/commit/afdc68b8714036a01d8dcd5a023633ea544dc7fa), [`a04ecaa`](https://github.com/vercel/workflow/commit/a04ecaa6475ab729e8d0a445b00bef1490969658), [`0948b0a`](https://github.com/vercel/workflow/commit/0948b0a4853716c4b8653e78d166af781f49e1dd)]:
+  - @workflow/core@5.2.2
+  - @workflow/builders@5.0.5
+
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`854242e`](https://github.com/vercel/workflow/commit/854242ec16dcbae22c8a3fb7c031e8e28756f741), [`73a6ca3`](https://github.com/vercel/workflow/commit/73a6ca3f54461d37913f20ccc28be4d102d96353), [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349)]:
+  - @workflow/core@5.2.1
+  - @workflow/builders@5.0.4
+
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`de8d985`](https://github.com/vercel/workflow/commit/de8d98547c0e0efba30a829cb8f76f4fd5211f69), [`306a40f`](https://github.com/vercel/workflow/commit/306a40f8560708b925034a1970eaf3981d645118), [`515dc9f`](https://github.com/vercel/workflow/commit/515dc9f44d8f27fc4c42aa4d3e02f11267fe5616), [`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1), [`878979b`](https://github.com/vercel/workflow/commit/878979b6fdd7a4bb0b664bab02fc57b3785cb44f), [`3949c07`](https://github.com/vercel/workflow/commit/3949c0717bbff96d2527ef7b5397e98684974f07), [`5589df7`](https://github.com/vercel/workflow/commit/5589df750c94841a8beab954b578de23f981c6fc)]:
+  - @workflow/core@5.2.0
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/builders@5.0.3
+
+## 5.0.2
+
+### Patch Changes
+
+- [#4268](https://github.com/vercel/workflow/pull/4268) [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fail the build when the workflow bundle still contains `require()`. The workflow sandbox has no `require`, so an import esbuild left external (most often a Node.js builtin reached through a transitive dependency or a re-export) or an unresolved dynamic `require()` used to produce a bundle that threw `ReferenceError: require is not defined` on its first load. The build now reports the specifier, the module that imported it and the import chain back to user code. A `require()` inside a `try`/`catch` block, or behind a `typeof require` check, is left alone, since that is how packages probe for an optional dependency and the call either fails harmlessly or never runs. Set `WORKFLOW_ALLOW_UNSAFE_FLOW_BUNDLE=1` to downgrade the failure to a warning.
+- Updated dependencies [[`941e031`](https://github.com/vercel/workflow/commit/941e0314187308172482419b3321d6c22ae7aca4), [`ab9e640`](https://github.com/vercel/workflow/commit/ab9e640f0db46e3708dcc7d915ef1241b777a795), [`09bc2f8`](https://github.com/vercel/workflow/commit/09bc2f88f6a97c392b8edbf0b219721745364117), [`a7cc482`](https://github.com/vercel/workflow/commit/a7cc4829cc54cc09225c19b48cf68435c08b490b), [`8fa7584`](https://github.com/vercel/workflow/commit/8fa7584c7440a77ae7545f24c88e5f68151e4157), [`94e3890`](https://github.com/vercel/workflow/commit/94e3890f80c791c34daed930b50494a6e5071638), [`c1e70ef`](https://github.com/vercel/workflow/commit/c1e70efbe0c0ed6d73230773af3f9d15c17a45d6), [`e71d1c7`](https://github.com/vercel/workflow/commit/e71d1c7671308ae20371c80bd769ad3a9ce123fa)]:
+  - @workflow/core@5.1.0
+  - @workflow/builders@5.0.2
+
+## 5.0.1
+
+### Patch Changes
+
+- [#4547](https://github.com/vercel/workflow/pull/4547) [`a11d037`](https://github.com/vercel/workflow/commit/a11d037cee76143a2060fb34698aec5fc9f9a270) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `next dev` not bundling a workflow that is created after its import, or deleted and restored
+
+- [#4396](https://github.com/vercel/workflow/pull/4396) [`156e023`](https://github.com/vercel/workflow/commit/156e023d90875acc0149bf723f95f2e2d7bc044d) Thanks [@pranaygp](https://github.com/pranaygp)! - Scope the Next dev watcher to the framework module graph and stop opening a file descriptor per source file, which fixes file watch limits being reached on large projects
+- Updated dependencies [[`ff4a0fd`](https://github.com/vercel/workflow/commit/ff4a0fd155bfe32e1e8df977dec6fc9e4e71dde0), [`14dbfdc`](https://github.com/vercel/workflow/commit/14dbfdc1f52e838854b6ee70398b742e4850e891), [`1fcf4bb`](https://github.com/vercel/workflow/commit/1fcf4bb33964e491ebefefbcd0644fe46e8dd1f4), [`0147fa5`](https://github.com/vercel/workflow/commit/0147fa58417d6fbbed25428388309a4b684c80eb), [`65ca6c8`](https://github.com/vercel/workflow/commit/65ca6c893e83ef623fba370416ce9b88e9064df4), [`0e64f7b`](https://github.com/vercel/workflow/commit/0e64f7bc25b9159a39485c5ff5b2c8025bf2745a), [`a11d037`](https://github.com/vercel/workflow/commit/a11d037cee76143a2060fb34698aec5fc9f9a270), [`e915eab`](https://github.com/vercel/workflow/commit/e915eab3ea98d300e6431ad005c766c90b81695c), [`b79ad01`](https://github.com/vercel/workflow/commit/b79ad013d254d60cc1e53e65dfd806da24a8964b), [`3b09dd7`](https://github.com/vercel/workflow/commit/3b09dd7da5ea4e5de852d59c33db8db10a3d314b), [`98442de`](https://github.com/vercel/workflow/commit/98442dea24a392c29adcf843ef1a65c1ed94f32c)]:
+  - @workflow/builders@5.0.1
+  - @workflow/core@5.0.1
+
 ## 5.0.0
 
 ### Major Changes

@@ -1,7 +1,7 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import { envNumber } from '@workflow/world/env-config';
-import { STREAM_DRAIN_SYMBOL } from './symbols.js';
+import { STREAM_DRAIN_SYMBOL, STREAM_RELEASE_SYMBOL } from './symbols.js';
 
 /**
  * A durability barrier a sink may expose under {@link STREAM_DRAIN_SYMBOL}:
@@ -158,6 +158,8 @@ export interface FlushableStreamState extends PromiseWithResolvers<void> {
    * complete a step while data is still client-side.
    */
   drainBarrier?: DrainBarrier;
+  /** Release the drained sink's transport without invalidating the writable. */
+  releaseTransport?: () => Promise<void>;
 }
 
 export function createFlushableState(): FlushableStreamState {
@@ -245,12 +247,11 @@ function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
  * behavior where each write() was individually durable.
  */
 function resolveAfterDrain(state: FlushableStreamState): void {
-  const barrier = state.drainBarrier;
-  if (!barrier) {
-    state.resolve();
-    return;
-  }
-  barrier().then(
+  const release = async () => {
+    await state.drainBarrier?.();
+    await state.releaseTransport?.();
+  };
+  release().then(
     () => state.resolve(),
     (err) => state.reject(err)
   );
@@ -383,6 +384,7 @@ export function trackFlushableWritable<T>(
           }
         }
         await drainFlushableSnapshot(state);
+        await state.releaseTransport?.();
         if (!state.doneResolved) {
           state.doneResolved = true;
           state.resolve();
@@ -524,6 +526,12 @@ export function flushablePipe(
   if (typeof drain === 'function') {
     state.drainBarrier = drain;
   }
+  const release = (sink as { [STREAM_RELEASE_SYMBOL]?: () => Promise<void> })[
+    STREAM_RELEASE_SYMBOL
+  ];
+  if (typeof release === 'function') {
+    state.releaseTransport = release;
+  }
   return flushablePipePerChunk(source, sink, state);
 }
 
@@ -569,7 +577,18 @@ async function flushablePipePerChunk(
       if (readResult.done) {
         // Source stream completed - close sink and resolve
         state.streamEnded = true;
-        await writer.close();
+        try {
+          await writer.close();
+        } catch (error) {
+          // A sink errored by its consumer (e.g. the readable side of a
+          // hydrated body cancelled after the source was fully read) rejects
+          // close() with a generic TypeError. Report the sink's stored error
+          // instead, so callers can tell an intentional abort from a failure.
+          throw await writer.closed.then(
+            () => error,
+            (reason: unknown) => reason ?? error
+          );
+        }
         // Resolve done promise if not already resolved
         if (!state.doneResolved) {
           state.doneResolved = true;
@@ -610,6 +629,10 @@ async function flushablePipePerChunk(
     if (state.drainBarrier) {
       await state.drainBarrier().catch(() => {});
     }
+    // A producer error ends this pipe, unlike a lock release. Abort the sink
+    // after draining its accepted prefix so stateful transports are disposed.
+    // Cleanup must not replace the original producer/dispatch error.
+    await writer.abort(err).catch(() => {});
     if (!state.doneResolved) {
       state.doneResolved = true;
       state.reject(err);

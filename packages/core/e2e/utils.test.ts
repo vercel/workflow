@@ -1,8 +1,11 @@
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { dehydrateRunError } from '../src/serialization';
 import {
   createPerTestState,
   describeRunError,
+  fetchManifest,
   getCollectedRunIds,
   getRecordedInfraEvents,
   hasStepSourceMaps,
@@ -323,5 +326,76 @@ describe('describeRunError', () => {
     ).resolves.toEqual({});
     await expect(describeRunError(undefined, RUN_ID)).resolves.toEqual({});
     await expect(describeRunError(null, RUN_ID)).resolves.toEqual({});
+  });
+});
+
+describe('fetchManifest', () => {
+  const servers: Server[] = [];
+  afterEach(() => {
+    for (const server of servers.splice(0)) {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  /** A server answering each manifest request with the next of `replies`. */
+  async function manifestServer(
+    replies: Array<'reset' | number | Record<string, unknown>>
+  ) {
+    let requests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      const reply = replies[Math.min(requests++, replies.length - 1)];
+      if (reply === 'reset') {
+        // What a dev server's proxy sees when the worker it forwarded to is
+        // closed by a reload with the request in flight.
+        request.socket.destroy();
+        return;
+      }
+      if (typeof reply === 'number') {
+        response.writeHead(reply).end('unavailable');
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(reply));
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    return { url: `http://127.0.0.1:${port}`, requests: () => requests };
+  }
+
+  const manifest = { version: '1', workflows: {}, steps: {} };
+
+  test('retries a reset connection and a 5xx until the manifest answers', async () => {
+    const server = await manifestServer(['reset', 500, 503, manifest]);
+
+    await expect(
+      fetchManifest(server.url, { forceRefresh: true })
+    ).resolves.toEqual(manifest);
+    expect(server.requests()).toBe(4);
+  });
+
+  test('shares one request between concurrent callers', async () => {
+    const server = await manifestServer(['reset', manifest]);
+
+    const results = await Promise.all([
+      fetchManifest(server.url, { forceRefresh: true }),
+      fetchManifest(server.url, { forceRefresh: true }),
+      fetchManifest(server.url, { forceRefresh: true }),
+    ]);
+    expect(results).toEqual([manifest, manifest, manifest]);
+    expect(server.requests()).toBe(2);
+  });
+
+  test('fails at once on a 4xx', async () => {
+    const server = await manifestServer([404, manifest]);
+
+    await expect(
+      fetchManifest(server.url, { forceRefresh: true })
+    ).rejects.toThrow(/Failed to fetch manifest from .*: 404 unavailable/);
+    expect(server.requests()).toBe(1);
   });
 });

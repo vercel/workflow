@@ -21,7 +21,7 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": "^22.0.0 || ^24.0.0"
+    "node": "^24.0.0"
   },
   "packageManager": "pnpm@11.24.0",
   "scripts": {
@@ -42,7 +42,7 @@
     "ci:version": "changeset version",
     "ci:publish": "pnpm build && changeset publish",
     "release:notes": "node scripts/generate-release-notes.mjs",
-    "workbench:stage": "node scripts/stage-workbench-with-tarballs.mjs"
+    "workbench:stage": "node scripts/stage-workbench.mjs"
   },
   "lint-staged": {
     "**/*": "biome format --write --no-errors-on-unmatched"

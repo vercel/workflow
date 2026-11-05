@@ -6,6 +6,7 @@ import {
   assertSafeEntityId,
   paginatedFileSystemQuery,
   readJSONWithFallback,
+  runEntityDir,
 } from '../fs.js';
 import { filterStepData } from './filters.js';
 import { getObjectCreatedAt } from './helpers.js';
@@ -25,7 +26,7 @@ export function createStepsStorage(
       const compositeKey = `${runId}-${stepId}`;
       const step = await readJSONWithFallback(
         basedir,
-        'steps',
+        runEntityDir('steps', runId),
         compositeKey,
         StepSchema,
         tag
@@ -41,7 +42,7 @@ export function createStepsStorage(
       assertSafeEntityId('runId', params.runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
-        directory: path.join(basedir, 'steps'),
+        directory: path.join(basedir, runEntityDir('steps', params.runId)),
         schema: StepSchema,
         filePrefix: `${params.runId}-`,
         sortOrder: params.pagination?.sortOrder ?? 'desc',

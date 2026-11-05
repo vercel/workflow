@@ -410,13 +410,13 @@ export default function Page() {
 
   const classifyAddedFile = (
     file: string,
-    isEntrypoint?: (candidate: string) => boolean
+    forcesRediscovery?: (candidate: string) => boolean
   ) =>
     classifyRebuild({
       discoveredEntries,
       fileChanges: { addedFiles: [file], modifiedFiles: [], removedFiles: [] },
       inputFiles: [pageFile],
-      isEntrypoint,
+      forcesRediscovery,
       parentHasChild: () => false,
       readSnapshot: async () =>
         createSourceSnapshotFromSource(newPageSource, detectWorkflowPatterns),

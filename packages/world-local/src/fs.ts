@@ -9,6 +9,7 @@ import {
   isUnwritableDirCode,
   UnwritableDataDirError,
 } from './build-target-mismatch.js';
+import { withWindowsRetry } from './windows-retry.js';
 
 /**
  * Temp-file suffixes for atomic writes, and the write-path caches below.
@@ -114,37 +115,22 @@ export function resolveWithinBase(
   return joined;
 }
 
-const isWindows = process.platform === 'win32';
+export { withWindowsRetry };
 
 /**
- * Execute a filesystem operation with retry logic on Windows.
- * On Windows, file operations can fail with EPERM/EBUSY/EACCES when files
- * are briefly locked by another process or antivirus. This wrapper adds
- * exponential backoff retry logic. On non-Windows platforms, executes directly.
+ * `Promise.all` that waits for every promise to settle before rejecting with
+ * the first rejection (in input order). Use it where the caller finishing
+ * must mean none of its filesystem work is still running, e.g. `clear()`.
  */
-export async function withWindowsRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = 5
-): Promise<T> {
-  if (!isWindows) return fn();
-
-  const retryableErrors = ['EPERM', 'EBUSY', 'EACCES'];
-  const baseDelayMs = 10;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (error: any) {
-      const isRetryable =
-        attempt < maxRetries && retryableErrors.includes(error.code);
-      if (!isRetryable) throw error;
-      // Exponential backoff with jitter
-      const delay = baseDelayMs * 2 ** attempt + Math.random() * baseDelayMs;
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-  // TypeScript: unreachable, but satisfies return type
-  throw new Error('Retry loop exited unexpectedly');
+export async function settleAll<T>(
+  promises: Iterable<Promise<T>>
+): Promise<T[]> {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find(
+    (r): r is PromiseRejectedResult => r.status === 'rejected'
+  );
+  if (failed) throw failed.reason;
+  return results.map((r) => (r as PromiseFulfilledResult<T>).value);
 }
 
 /**
@@ -220,6 +206,34 @@ export function taggedPath(
 }
 
 /**
+ * Entity directories whose files are stored one subdirectory per run.
+ *
+ * Event and step files are only ever looked up or listed for one run at a
+ * time, so they live under `<entityDir>/<runId>/`. That keeps every per-run
+ * read and listing proportional to that run's own files rather than to every
+ * file the data directory has accumulated. File names keep their
+ * `${runId}-` prefix.
+ *
+ * Releases before this one kept these files directly in `events/` and
+ * `steps/`; `initDataDir` wipes such a data directory rather than reading it.
+ */
+export const RUN_SCOPED_ENTITY_DIRS = ['events', 'steps'] as const;
+export type RunScopedEntityDir = (typeof RUN_SCOPED_ENTITY_DIRS)[number];
+
+/**
+ * The entity-relative directory holding one run's files for a run-scoped
+ * entity: `runEntityDir('events', 'wrun_ABC')` → `events/wrun_ABC`.
+ * Pass the result as the `entityDir` of {@link taggedPath} and friends.
+ */
+export function runEntityDir(
+  entityDir: RunScopedEntityDir,
+  runId: string
+): string {
+  assertSafeEntityId('runId', runId);
+  return path.join(entityDir, runId);
+}
+
+/**
  * Read a JSON entity with tagged fallback.
  * When a tag is set, tries the tagged path first, then falls back to the
  * untagged path (so a tagged world can read entities written without a tag).
@@ -256,6 +270,7 @@ export async function listTaggedFiles(
 ): Promise<string[]> {
   const suffix = `.${tag}.json`;
   try {
+    await assertNotSymlinkedRunDir(dirPath);
     const files = await fs.readdir(dirPath);
     return files.filter((f) => f.endsWith(suffix));
   } catch (error) {
@@ -275,6 +290,7 @@ export async function listTaggedFilesByExtension(
 ): Promise<string[]> {
   const suffix = `.${tag}${extension}`;
   try {
+    await assertNotSymlinkedRunDir(dirPath);
     const files = await fs.readdir(dirPath);
     return files.filter((f) => f.endsWith(suffix));
   } catch (error) {
@@ -286,12 +302,16 @@ export async function listTaggedFilesByExtension(
 export async function ensureDir(dirPath: string): Promise<void> {
   const resolvedPath = path.resolve(dirPath);
   if (fsState.createdDirectoriesCache.has(resolvedPath)) {
+    // Checked on every use, not once: the directory can be replaced after
+    // it was cached.
+    await assertNotSymlinkedRunDir(resolvedPath);
     return;
   }
+  let mkdirError: unknown;
   try {
     await fs.mkdir(resolvedPath, { recursive: true });
-    fsState.createdDirectoriesCache.add(resolvedPath);
   } catch (error) {
+    mkdirError = error;
     // A filesystem that refuses the directory outright will refuse every write
     // into it too, and the caller's write would surface as a confusing ENOENT
     // on the file rather than a missing directory. Report it here instead,
@@ -306,6 +326,49 @@ export async function ensureDir(dirPath: string): Promise<void> {
       throw new UnwritableDataDirError(resolvedPath, code as string);
     }
     // Ignore if already exists
+  }
+  if (mkdirError !== undefined) {
+    // The fallback above accepts an existing directory via `stat`, which
+    // follows symlinks, so a run directory still has to be proven not to be
+    // a symlink here. Only a missing directory passes; any other `lstat`
+    // failure stops the write.
+    await assertNotSymlinkedRunDir(resolvedPath);
+    return;
+  }
+  await assertNotSymlinkedRunDir(resolvedPath);
+  fsState.createdDirectoriesCache.add(resolvedPath);
+}
+
+/** Thrown by {@link assertNotSymlinkedRunDir}. */
+export class SymlinkedRunDirError extends WorkflowWorldError {
+  constructor(dirPath: string) {
+    super(
+      `Refusing to use symlinked run directory ${dirPath}: ` +
+        `replace it with a real directory.`
+    );
+    this.name = 'SymlinkedRunDirError';
+  }
+}
+
+/**
+ * A run's `events/<runId>` or `steps/<runId>` directory must be a real
+ * directory: `mkdir` accepts a symlink to one, and reading, writing or
+ * deleting through it would reach files outside the data directory. Every
+ * primitive below that touches a file in, or lists, such a directory calls
+ * this first (one `lstat`); a missing directory passes.
+ */
+export async function assertNotSymlinkedRunDir(dirPath: string): Promise<void> {
+  const parent = path.basename(path.dirname(dirPath));
+  if (!(RUN_SCOPED_ENTITY_DIRS as readonly string[]).includes(parent)) return;
+  let stats: import('node:fs').Stats;
+  try {
+    stats = await fs.lstat(dirPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (stats.isSymbolicLink()) {
+    throw new SymlinkedRunDirError(dirPath);
   }
 }
 
@@ -436,10 +499,26 @@ export async function write(
   }
 }
 
+/**
+ * Writes a new private temporary file, making its directory. Unlike
+ * {@link write} it is neither atomic nor remembered in the created-files
+ * cache: the caller publishes the file under another name (as a stream chunk
+ * is linked into place) and removes it, so nothing reads it by this path.
+ */
+export async function writeTempFile(
+  filePath: string,
+  data: Buffer
+): Promise<void> {
+  await withEnsuredDirectory(path.dirname(filePath), () =>
+    fs.writeFile(filePath, data, { flag: 'wx' })
+  );
+}
+
 export async function readJSON<T>(
   filePath: string,
   decoder: z.ZodType<T>
 ): Promise<T | null> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   try {
     const content = await withWindowsRetry(() =>
       fs.readFile(filePath, 'utf-8')
@@ -452,6 +531,7 @@ export async function readJSON<T>(
 }
 
 export async function readBuffer(filePath: string): Promise<Buffer> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   const content = await fs.readFile(filePath);
   return content;
 }
@@ -459,6 +539,7 @@ export async function readBuffer(filePath: string): Promise<Buffer> {
 export async function readFirstByte(
   filePath: string
 ): Promise<number | undefined> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   const file = await fs.open(filePath, 'r');
   try {
     const byte = Buffer.allocUnsafe(1);
@@ -470,6 +551,7 @@ export async function readFirstByte(
 }
 
 export async function deleteJSON(filePath: string): Promise<void> {
+  await assertNotSymlinkedRunDir(path.dirname(filePath));
   try {
     // On Windows, a concurrent reader briefly holding the file open makes
     // unlink fail with EPERM (share violation), so retry like the other
@@ -565,6 +647,7 @@ export async function listFilesByExtension(
   extension: string
 ): Promise<string[]> {
   try {
+    await assertNotSymlinkedRunDir(dirPath);
     const files = await fs.readdir(dirPath);
     return files
       .filter((f) => f.endsWith(extension))
@@ -573,6 +656,28 @@ export async function listFilesByExtension(
     if ((error as any).code === 'ENOENT') return [];
     throw error;
   }
+}
+
+/**
+ * Every run subdirectory of a run-scoped entity directory, as absolute paths.
+ * For the few whole-store walks (index backfills, tagged `clear()`); per-run
+ * reads go straight to {@link runEntityDir}.
+ */
+export async function listRunScopedDirs(
+  basedir: string,
+  entityDir: RunScopedEntityDir
+): Promise<string[]> {
+  const root = path.join(basedir, entityDir);
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as any).code === 'ENOENT') return [];
+    throw error;
+  }
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(root, entry.name));
 }
 
 interface PaginatedFileSystemQueryConfig<T> {

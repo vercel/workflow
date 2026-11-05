@@ -66,6 +66,34 @@ function addNodeRequireBanner(config: RollupConfig): void {
   }
 }
 
+const WORKFLOW_MODULE_SIDE_EFFECT_PREFIXES = ['@workflow/', 'workflow/'];
+
+const INSTALLED_WORKFLOW_PACKAGE_DIR =
+  /[\\/]node_modules[\\/](?:@workflow[\\/][^\\/]+|workflow)[\\/]/;
+
+/**
+ * Whether `source` is a relative import from a file inside an installed
+ * workflow package, such as `./run.js` imported by
+ * `node_modules/@workflow/core/dist/runtime/lifecycle-hooks.js`.
+ *
+ * `workflow:force-inline` must inline these too. Otherwise Nitro's externals
+ * plugin externalizes the target file (it lives under `node_modules`) while
+ * the same file is already inlined through its package specifier
+ * (`@workflow/core/runtime/run`), and Rollup aborts the dev build with
+ * `"./run.js" is imported as an external by ..., but is already an existing
+ * non-external module id`. Workspace packages resolve outside `node_modules`,
+ * so Nitro never externalizes them and the monorepo does not hit this.
+ */
+function isRelativeImportInsideWorkflowPackage(
+  source: string,
+  importer: string
+): boolean {
+  return (
+    (source.startsWith('./') || source.startsWith('../')) &&
+    INSTALLED_WORKFLOW_PACKAGE_DIR.test(importer)
+  );
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -97,6 +125,23 @@ export default {
         addNodeRequireBanner(config);
       }
     });
+
+    // nitropack v2's Rollup config treats every module as side-effect free
+    // unless its id, taken after the last `node_modules/`, starts with an
+    // entry in `moduleSideEffects`. Whenever workflow packages are bundled
+    // rather than externalized (always in dev, see `workflow:force-inline`
+    // below), that drops their module-load side effects, most visibly the
+    // world registration `@workflow/core/runtime/world-init` performs, after
+    // which every `start()` fails with "Workflow world runtime was not
+    // initialized". Current Nitro v3 releases no longer restrict tree-shaking
+    // this way.
+    const moduleSideEffects = (nitro.options as { moduleSideEffects?: unknown })
+      .moduleSideEffects;
+    if (Array.isArray(moduleSideEffects)) {
+      for (const prefix of WORKFLOW_MODULE_SIDE_EFFECT_PREFIXES) {
+        if (!moduleSideEffects.includes(prefix)) moduleSideEffects.push(prefix);
+      }
+    }
 
     // NOTE: Temporary workaround for debug unenv mock
     if (!nitro.options.workflow?._vite) {
@@ -161,14 +206,20 @@ export default {
               ) {
                 if (!importer) return null;
                 // Match workflow package specifiers OR direct paths into
-                // packages/<name>/. Bail out early on non-workflow imports
+                // packages/<name>/ OR relative imports between files of an
+                // installed workflow package. Bail out early on anything else
                 // so we don't intercept the rest of the resolution chain.
                 const isWorkflowPkg =
                   /^@?workflow(\/|$)/.test(source) ||
                   /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|astro|sveltekit|nest)[\\/]/.test(
                     source
                   );
-                if (!isWorkflowPkg) return null;
+                if (
+                  !isWorkflowPkg &&
+                  !isRelativeImportInsideWorkflowPackage(source, importer)
+                ) {
+                  return null;
+                }
                 // Resolve via other resolvers, skipping ourselves so we
                 // get a path. We don't gate on `resolved.external` because
                 // `nitro:externals` spreads our result and overrides

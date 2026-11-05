@@ -32,7 +32,7 @@ export const UseCasesClient = ({ useCases }: { useCases: UseCase[] }) => {
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 flex flex-wrap sm:block items-center gap-x-2">
           Build anything with
           <Select value={selectedCase} onValueChange={handleCaseChange}>
-            <SelectTrigger className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 bg-background data-[size=default]:h-auto py-1.5 w-auto sm:mt-1.5 sm:-ml-3">
+            <SelectTrigger className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40 bg-background-100 data-[size=default]:h-auto py-1.5 w-auto sm:mt-1.5 sm:-ml-3">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -44,7 +44,7 @@ export const UseCasesClient = ({ useCases }: { useCases: UseCase[] }) => {
             </SelectContent>
           </Select>
         </h2>
-        <p className="text-balance text-lg text-muted-foreground mt-2">
+        <p className="text-balance text-lg text-gray-900 mt-2">
           Build reliable, long-running processes with automatic retries, state
           persistence, and observability built in.
         </p>

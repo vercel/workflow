@@ -1,7 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { afterEach, assert, beforeAll, describe, expect, test } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  assert,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from 'vitest';
 import { start } from '../src/runtime';
 import { getWorkbenchAppPath, getWorkflowMetadata, setupWorld } from './utils';
 
@@ -446,9 +454,87 @@ export function createDevTests(config?: DevTestConfig) {
       return after;
     };
 
+    /**
+     * Hand the dev server on settled. Whatever runs after this suite shares
+     * the server (in CI, the e2e suite, seconds later), and every fixture
+     * write and restore above makes it rebuild. On the Nitro-based
+     * frameworks a finished rebuild ends in a dev worker restart, which
+     * resets every request in flight, so a suite that starts while the
+     * restores are still rebuilding loses its first requests. Wait for those
+     * rebuilds: the HMR pipeline (where it logs) to drain, the generated
+     * workflow outputs to stop changing for longer than one rebuild takes
+     * (a rebuild that writes nothing new leaves them alone, so this is a
+     * quiet window rather than a count), and the manifest to answer.
+     */
+    // The quiet window is at least this long, and at least 1.5x the longest
+    // gap seen between two output writes while waiting: consecutive
+    // rebuilds write one build apart, so a slow runner's longer builds
+    // widen the window instead of ending it mid-build.
+    const DEV_SERVER_SETTLE_MIN_QUIET_MS = 12_000;
+    const DEV_SERVER_SETTLE_TIMEOUT_MS =
+      hmrRediscoveryTimeoutMs + DEV_SERVER_SETTLE_MIN_QUIET_MS * 4;
+    const MANIFEST_SETTLE_TIMEOUT_MS = 30_000;
+    const DEV_SERVER_SETTLE_HOOK_TIMEOUT_MS =
+      // One bound per wait, plus headroom, so each wait's own error reports
+      // a timeout rather than vitest's generic hook timeout.
+      hmrRediscoveryTimeoutMs +
+      DEV_SERVER_SETTLE_TIMEOUT_MS +
+      MANIFEST_SETTLE_TIMEOUT_MS +
+      10_000;
+    const waitForGeneratedArtifactsToGoQuiet = async () => {
+      const deadline = Date.now() + DEV_SERVER_SETTLE_TIMEOUT_MS;
+      const snapshot = async () => {
+        const next = await readGeneratedArtifactSnapshot().catch(() => null);
+        return `${next?.stepMtimeMs}/${next?.workflowMtimeMs}`;
+      };
+      let previous = await snapshot();
+      let lastChange: number | undefined;
+      let quietSince = Date.now();
+      let quietMs = DEV_SERVER_SETTLE_MIN_QUIET_MS;
+      while (Date.now() - quietSince < quietMs) {
+        if (Date.now() > deadline) {
+          throw new Error(
+            `The dev server was still rebuilding ${DEV_SERVER_SETTLE_TIMEOUT_MS}ms after the suite's last fixture restore`
+          );
+        }
+        await sleep(250);
+        const next = await snapshot();
+        if (next === previous) continue;
+        const now = Date.now();
+        if (lastChange !== undefined) {
+          quietMs = Math.max(quietMs, 1.5 * (now - lastChange));
+        }
+        previous = next;
+        lastChange = now;
+        quietSince = now;
+      }
+    };
+    const waitForDevServerToSettle = async () => {
+      await waitForHmrQuiescence();
+      await waitForGeneratedArtifactsToGoQuiet();
+      // The manifest route only exists when the app serves it publicly.
+      if (!deploymentUrl || process.env.WORKFLOW_PUBLIC_MANIFEST !== '1') {
+        return;
+      }
+      await pollUntil({
+        description: 'the workflow manifest to answer after the last rebuild',
+        timeoutMs: MANIFEST_SETTLE_TIMEOUT_MS,
+        intervalMs: 250,
+        check: async () => {
+          const response = await fetchWithTimeout(
+            '/.well-known/workflow/v1/manifest.json'
+          );
+          await response?.body?.cancel();
+          expect(response?.status).toBe(200);
+        },
+      });
+    };
+
     beforeAll(async () => {
       await prewarm();
     }, CLEANUP_HOOK_TIMEOUT_MS);
+
+    afterAll(waitForDevServerToSettle, DEV_SERVER_SETTLE_HOOK_TIMEOUT_MS);
 
     afterEach(async () => {
       // Restore file contents before deleting any files. If a deletion races
@@ -551,6 +637,133 @@ export async function hmrPageWorkflow() {
           },
         });
         await expectHmrLogCounts(logCursor, { full: 1, skip: { max: 1 } });
+      }
+    );
+
+    /**
+     * The import is written before the module exists, in a directory nothing
+     * in the graph lives in yet. Rediscovery cannot resolve it, so the module
+     * is not in the graph, and creating it changes no file that is already
+     * watched. Only watching the unresolved import's target catches it.
+     */
+    test.runIf(shouldRunNextFlowRouteHmrTests)(
+      'should bundle a workflow created after its import was written',
+      { timeout: multiPhaseHmrTestTimeoutMs },
+      async () => {
+        await waitForHmrReady();
+
+        const lateDir = path.join(appPath, 'dev-test-late-import');
+        const lateFile = path.join(lateDir, 'late-workflow.ts');
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: lateFile, content: '' });
+        restoreDirectories.push(lateDir);
+        // Let the previous test's teardown rebuild finish first, like every
+        // other HMR case here, so the writes below land on an idle pipeline.
+        await readDevServerLogCursor();
+
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/dev-test-late-import/late-workflow';
+${apiFileContent}`
+        );
+        // The rediscovery the import edit triggers has to be over before the
+        // module appears, or it would find the module itself.
+        await readDevServerLogCursor();
+        if (!shouldAssertDevHmrLogs) {
+          await sleep(5_000);
+        }
+        expect(await readManifestWorkflowFunctionNames()).not.toContain(
+          'devTestLateWorkflow'
+        );
+
+        await fs.mkdir(lateDir, { recursive: true });
+        await fs.writeFile(
+          lateFile,
+          `export async function devTestLateWorkflow() {
+  'use workflow';
+  return 'late';
+}
+`
+        );
+
+        await pollUntil({
+          description: 'late-created workflow to appear in manifest',
+          timeoutMs: hmrRediscoveryTimeoutMs,
+          intervalMs: 500,
+          check: async () => {
+            await prewarm();
+            expect(await readManifestWorkflowFunctionNames()).toContain(
+              'devTestLateWorkflow'
+            );
+          },
+        });
+      }
+    );
+
+    /**
+     * Deleting a module while its importer is left alone drops it from the
+     * graph, and with it the directory it was the only module in, so restoring
+     * it changes nothing the graph still watches.
+     */
+    test.runIf(shouldRunNextFlowRouteHmrTests)(
+      'should bundle a workflow again after it is deleted and restored',
+      { timeout: multiPhaseHmrTestTimeoutMs },
+      async () => {
+        await waitForHmrReady();
+
+        const restoredDir = path.join(appPath, 'dev-test-restored');
+        const workflowFile = path.join(restoredDir, 'restored-workflow.ts');
+        const workflowContent = `export async function devTestRestoredWorkflow() {
+  'use workflow';
+  return 'restored';
+}
+`;
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+        restoreFiles.push({ path: workflowFile, content: '' });
+        restoreDirectories.push(restoredDir);
+        await readDevServerLogCursor();
+
+        const expectInManifest = async (
+          present: boolean,
+          description: string
+        ) =>
+          pollUntil({
+            description,
+            timeoutMs: hmrRediscoveryTimeoutMs,
+            intervalMs: 500,
+            check: async () => {
+              await prewarm();
+              const names = await readManifestWorkflowFunctionNames();
+              if (present) {
+                expect(names).toContain('devTestRestoredWorkflow');
+              } else {
+                expect(names).not.toContain('devTestRestoredWorkflow');
+              }
+            },
+          });
+
+        await fs.mkdir(restoredDir, { recursive: true });
+        await fs.writeFile(workflowFile, workflowContent);
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/dev-test-restored/restored-workflow';
+${apiFileContent}`
+        );
+        await expectInManifest(true, 'fixture workflow to appear in manifest');
+
+        await fs.rm(workflowFile);
+        await expectInManifest(false, 'deleted workflow to leave the manifest');
+        await readDevServerLogCursor();
+
+        await fs.writeFile(workflowFile, workflowContent);
+        await expectInManifest(
+          true,
+          'restored workflow to reappear in manifest'
+        );
       }
     );
 

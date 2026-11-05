@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { getRunCapabilities } from '../capabilities.js';
+import zlib from 'node:zlib';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getCompressionMode, getRunCapabilities } from '../capabilities.js';
 import { importKey } from '../encryption.js';
 import {
   dehydrateStepError,
@@ -13,6 +14,7 @@ import {
 } from '../serialization-format.js';
 import * as clientModule from './client.js';
 import {
+  COMPRESSION_ASYNC_MIN_BYTES,
   COMPRESSION_MIN_BYTES,
   type CompressionStats,
   compress,
@@ -276,6 +278,87 @@ describe('mode serializers with compression', () => {
     expect(result).toEqual(value);
   });
 
+  describe('client serialize compresses off the event loop (async zstd)', () => {
+    // devalue output for this many items lands well past the async gate.
+    const largeValue = () => makeCompressibleValue(2000);
+
+    function spyOnZstd() {
+      const asyncSpy = vi.spyOn(zlib, 'zstdCompress');
+      const syncSpy = vi.spyOn(zlib, 'zstdCompressSync');
+      return {
+        asyncSpy,
+        syncSpy,
+        restore() {
+          asyncSpy.mockRestore();
+          syncSpy.mockRestore();
+        },
+      };
+    }
+
+    it('uses the threadpool for large payloads and still round-trips', async () => {
+      const spies = spyOnZstd();
+      try {
+        const value = largeValue();
+        const data = await clientModule.serialize(value, undefined, {
+          compression: true,
+        });
+        expect(spies.asyncSpy).toHaveBeenCalledTimes(1);
+        expect(spies.syncSpy).not.toHaveBeenCalled();
+        expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+        expect(await clientModule.deserialize(data, undefined, {})).toEqual(
+          value
+        );
+      } finally {
+        spies.restore();
+      }
+    });
+
+    it('stays synchronous below COMPRESSION_ASYNC_MIN_BYTES', async () => {
+      const spies = spyOnZstd();
+      try {
+        const value = makeCompressibleValue();
+        const probe = textEncoder.encode(JSON.stringify(value));
+        expect(probe.length).toBeGreaterThan(COMPRESSION_MIN_BYTES);
+        expect(probe.length).toBeLessThan(COMPRESSION_ASYNC_MIN_BYTES);
+        const data = await clientModule.serialize(value, undefined, {
+          compression: true,
+        });
+        expect(spies.syncSpy).toHaveBeenCalledTimes(1);
+        expect(spies.asyncSpy).not.toHaveBeenCalled();
+        expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+      } finally {
+        spies.restore();
+      }
+    });
+
+    it('falls back to sync zstd when the callback API is missing', async () => {
+      const syncSpy = vi.spyOn(zlib, 'zstdCompressSync');
+      // A spy is still a function, so hide the property itself to model a
+      // node:zlib without the callback API.
+      const descriptor = Object.getOwnPropertyDescriptor(zlib, 'zstdCompress');
+      Object.defineProperty(zlib, 'zstdCompress', {
+        value: undefined,
+        configurable: true,
+        writable: true,
+      });
+      try {
+        const value = largeValue();
+        const data = await clientModule.serialize(value, undefined, {
+          compression: true,
+        });
+        expect(syncSpy).toHaveBeenCalledTimes(1);
+        expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+        expect(await clientModule.deserialize(data, undefined, {})).toEqual(
+          value
+        );
+      } finally {
+        // biome-ignore lint/style/noNonNullAssertion: present on Node >= 22.15
+        Object.defineProperty(zlib, 'zstdCompress', descriptor!);
+        syncSpy.mockRestore();
+      }
+    });
+  });
+
   it('nests compression inside encryption: encr(zstd(devl))', async () => {
     const key = await makeKey();
     const value = makeCompressibleValue();
@@ -436,7 +519,9 @@ describe('o11y hydration of compressed payloads', () => {
 });
 
 describe('run capabilities for compression codecs', () => {
-  // gzip and zstd co-ship, so both are gated on the same min version.
+  // gzip and zstd co-ship, so both are gated on the same min core version.
+  // zstd additionally needs a Node.js version that decodes it.
+  const ZSTD_CAPABLE_NODE = '24.0.0';
   for (const fmt of [
     SerializationFormat.GZIP,
     SerializationFormat.ZSTD,
@@ -448,9 +533,11 @@ describe('run capabilities for compression codecs', () => {
         '5.0.0',
         '6.0.0',
       ])
-        expect(getRunCapabilities(version).supportedFormats.has(fmt)).toBe(
-          true
-        );
+        expect(
+          getRunCapabilities(version, ZSTD_CAPABLE_NODE).supportedFormats.has(
+            fmt
+          )
+        ).toBe(true);
     });
 
     it(`does not support ${fmt} for older core versions`, () => {
@@ -471,9 +558,55 @@ describe('run capabilities for compression codecs', () => {
     });
 
     it(`assumes no ${fmt} support when the version is unknown`, () => {
-      expect(getRunCapabilities(undefined).supportedFormats.has(fmt)).toBe(
-        false
-      );
+      expect(
+        getRunCapabilities(undefined, ZSTD_CAPABLE_NODE).supportedFormats.has(
+          fmt
+        )
+      ).toBe(false);
     });
   }
+
+  it('keeps gzip but drops zstd when the Node.js version is unknown', () => {
+    const { supportedFormats } = getRunCapabilities('5.0.0');
+    expect(supportedFormats.has(SerializationFormat.GZIP)).toBe(true);
+    expect(supportedFormats.has(SerializationFormat.ZSTD)).toBe(false);
+  });
+});
+
+describe('gzip-only compression mode', () => {
+  // A producer on a zstd-capable runtime writing for a run whose runtime
+  // cannot decode zstd (e.g. pinned to a Node.js 20 deployment).
+  it('writes gzip, never zstd, and the payload round-trips', async () => {
+    const value = makeCompressibleValue();
+    const data = await stepModule.serialize(value, undefined, {
+      compression: getCompressionMode(getRunCapabilities('5.0.0', '20.19.0')),
+    });
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.GZIP);
+    expect(await hydrateDataWithKey(data, {}, undefined)).toEqual(value);
+  });
+
+  it('still prefers zstd when the target runtime decodes it', async () => {
+    const data = await stepModule.serialize(
+      makeCompressibleValue(),
+      undefined,
+      {
+        compression: getCompressionMode(getRunCapabilities('5.0.0', '22.15.0')),
+      }
+    );
+    expect(peekFormatPrefix(data)).toBe(SerializationFormat.ZSTD);
+  });
+
+  it('gzip mode also overrides a zstd codec env override', async () => {
+    process.env.WORKFLOW_COMPRESSION_CODEC = 'zstd';
+    try {
+      const original = encodeWithFormatPrefix(
+        SerializationFormat.DEVALUE_V1,
+        textEncoder.encode(JSON.stringify(makeCompressibleValue()))
+      ) as Uint8Array;
+      const compressed = await compress(original, 'gzip');
+      expect(peekFormatPrefix(compressed)).toBe(SerializationFormat.GZIP);
+    } finally {
+      delete process.env.WORKFLOW_COMPRESSION_CODEC;
+    }
+  });
 });

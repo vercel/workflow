@@ -478,6 +478,78 @@ describe('failure reporting', () => {
   });
 });
 
+describe('split frames', () => {
+  const LIMIT = 2 * 1024 * 1024;
+  const splitInput = {
+    ...input,
+    payload: new Uint8Array(LIMIT * 2 + 7).fill(7),
+  };
+
+  beforeEach(() => {
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
+  });
+
+  afterEach(() => {
+    delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
+  });
+
+  it('records the request part count on a split write that succeeds', async () => {
+    const { socket } = await withOpenChannel();
+    const received: Uint8Array[] = [];
+    // Answer once the last part is in.
+    socket.onFrame = (raw) => {
+      received.push(raw);
+      void decodeOne(raw).then((frame) => {
+        const { partIndex, partCount, reqId } = frame.meta;
+        if (typeof partCount === 'number' && partIndex !== partCount - 1) {
+          return;
+        }
+        socket.deliver(
+          encodeFrame(
+            { reqId, type: 'event_ack', status: 201 },
+            materializedBody()
+          )
+        );
+      });
+    };
+
+    await createWorkflowRunEventV4(splitInput, { token: 'test-token' });
+
+    expect(received.length).toBeGreaterThan(1);
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.ws.request_parts']).toBe(
+      received.length
+    );
+    expect(span.attributes['workflow.events.ws.reply_parts']).toBeUndefined();
+  });
+
+  it('records the request part count on a split write whose socket dies before a reply', async () => {
+    const { socket } = await withOpenChannel();
+    let sent = 0;
+    socket.onFrame = () => {
+      sent++;
+    };
+    const write = createWorkflowRunEventV4(splitInput, {
+      token: 'test-token',
+    });
+    await vi.waitFor(() => expect(sent).toBeGreaterThan(1));
+    socket.close(1006);
+
+    await expect(write).rejects.toThrow(/transport failure/);
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.ws.request_parts']).toBe(sent);
+    expect(span.attributes['error.type']).toBe('TRANSPORT');
+  });
+
+  it('leaves the part count off a write that fits in one message', async () => {
+    await withOpenChannel();
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+    expect(
+      writeSpan().attributes['workflow.events.ws.request_parts']
+    ).toBeUndefined();
+  });
+});
+
 describe('connection span', () => {
   it('times the handshake under its own operation-named span', async () => {
     const { socket } = await withOpenChannel();
@@ -513,10 +585,10 @@ describe('connection span', () => {
 
 describe('transport parity', () => {
   it('does not tag an HTTP event read as an event-write transport', async () => {
-    // Explicitly HTTP, overriding the suite's `ws`: this test is about the
-    // HTTP path. A read would take HTTP either way (only the POST write is
-    // wired to the socket), so leaving `ws` set would still pass — while no
-    // longer testing what it says it does.
+    // Explicit opt-out rather than an absent variable: the default is ws now,
+    // and this test is about the HTTP path. A read would take HTTP either way
+    // (only the POST write is wired to the socket), so leaving this unset
+    // would still pass — while no longer testing what it says it does.
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     const agent = new MockAgent();
     agent.disableNetConnect();

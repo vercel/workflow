@@ -55,6 +55,10 @@ Build options:
   --runtime <runtime>    Vercel runtime for the emitted functions,
                          e.g. nodejs22.x
   --app-function <name>  Name of the catch-all app function (default: __nest)
+  --external <pkgs>      Comma-separated packages to leave as bare requires
+                         instead of bundling, for dependencies resolved at
+                         runtime behind try/catch (ORM database drivers,
+                         optional logger transports, ...)
 
 'init' writes the .swcrc settings the Workflow SWC plugin needs, preserving any
 other configuration already in the file. 'build' generates the workflow bundles
@@ -191,7 +195,19 @@ type BuildFlags = {
   runtime?: string;
   maxDuration?: number;
   appFunctionName?: string;
+  external?: string[];
 };
+
+/** Split a comma-separated flag, dropping empty entries from stray commas. */
+function parseListArg(args: string[], flag: string): string[] | undefined {
+  const raw = parseArg(args, flag);
+  if (raw === undefined) return undefined;
+  const entries = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return entries.length > 0 ? entries : undefined;
+}
 
 function parseBuildFlags(args: string[]): BuildFlags {
   return {
@@ -203,6 +219,7 @@ function parseBuildFlags(args: string[]): BuildFlags {
     runtime: parseArg(args, '--runtime'),
     maxDuration: parseNumberArg(args, '--max-duration'),
     appFunctionName: parseArg(args, '--app-function'),
+    external: parseListArg(args, '--external'),
   };
 }
 
@@ -249,6 +266,7 @@ async function buildVercelOutput(
       runtime: flags.runtime,
       maxDuration: flags.maxDuration,
       appFunctionName: flags.appFunctionName,
+      external: flags.external,
     }),
   });
   await builder.build();

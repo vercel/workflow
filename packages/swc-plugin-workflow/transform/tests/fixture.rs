@@ -58,6 +58,7 @@ fn workflow_mode(input: PathBuf) {
 }
 
 #[testing::fixture("tests/fixture/object-property-step/input.js")]
+#[testing::fixture("tests/fixture/nested-step-block-scope-collision/input.js")]
 fn detect_mode_object_property_step(input: PathBuf) {
     let detect_output = input.parent().unwrap().join("output-detect.js");
     test_fixture(

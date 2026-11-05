@@ -1,8 +1,7 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { WorkflowRunNotFoundError } from '@workflow/errors';
+import { RunExpiredError, WorkflowRunNotFoundError } from '@workflow/errors';
 import type { WorkflowRun } from '@workflow/world';
-import { Pool } from 'pg';
 import {
   afterAll,
   afterEach,
@@ -19,6 +18,7 @@ import {
   type RunStatusListener,
 } from '../src/run-status.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
+import { TestPool } from './pool.js';
 
 /**
  * `runs.waitForTerminalStatus` on world-postgres.
@@ -38,7 +38,7 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
   const originalPollInterval = process.env[pollIntervalEnv];
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let drizzle: ReturnType<typeof createClient>;
   let listener: RunStatusListener;
   let runs: ReturnType<typeof createRunsStorage>;
@@ -58,7 +58,7 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
 
     // >1 connection: the wait holds a read while the completing writer needs
     // its own, and the LISTEN client is separate from the pool entirely.
-    pool = new Pool({ connectionString: dbUrl, max: 4 });
+    pool = new TestPool({ connectionString: dbUrl, max: 4 });
     drizzle = createClient(pool);
     listener = createRunStatusListener(pool);
     runs = createRunsStorage(drizzle, listener);
@@ -114,6 +114,65 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
     if (!wait) throw new Error('world-postgres should implement the long poll');
     return wait;
   };
+
+  it('a run_started racing the run ending does not move it back to running', async () => {
+    const created = await events.create(null, {
+      eventType: 'run_created',
+      eventData: {
+        deploymentId: 'dpl_test',
+        workflowName: 'test-workflow',
+        input: new Uint8Array([1]),
+      },
+    } as never);
+    const runId = created.run!.runId;
+
+    // Another writer ends the run and holds its row lock, so the run_started
+    // passes validation against `pending` and then waits on the row.
+    const ender = await pool.connect();
+    try {
+      await ender.query('BEGIN');
+      await ender.query(
+        `UPDATE workflow.workflow_runs
+           SET status = 'cancelled', completed_at = now()
+         WHERE id = $1`,
+        [runId]
+      );
+      const started = events
+        .create(runId, { eventType: 'run_started' } as never)
+        .then(
+          () => 'started',
+          (error: unknown) => error
+        );
+      // Commit only once the run_started UPDATE is parked on the row lock.
+      // Committing earlier would let the validation read see the ended run,
+      // and that refusal passes without the guard under test.
+      const {
+        rows: [{ pid: enderPid }],
+      } = await ender.query('SELECT pg_backend_pid() AS pid');
+      await expect
+        .poll(async () => {
+          const { rows } = await pool.query(
+            `SELECT count(*)::int AS count FROM pg_stat_activity
+               WHERE pid <> $1 AND wait_event_type = 'Lock'
+               AND query ILIKE '%update%workflow_runs%'`,
+            [enderPid]
+          );
+          return rows[0].count;
+        })
+        .toBe(1);
+      await ender.query('COMMIT');
+
+      const outcome = await started;
+      expect(RunExpiredError.is(outcome)).toBe(true);
+    } finally {
+      ender.release();
+    }
+
+    const run = await runs.get(runId);
+    expect(run.status).toBe('cancelled');
+    const { data } = await events.list({ runId, resolveData: 'none' } as never);
+    expect(data.map((event) => event.eventType)).not.toContain('run_started');
+  });
 
   it('returns an already-terminal run immediately', async () => {
     const run = await startRun();

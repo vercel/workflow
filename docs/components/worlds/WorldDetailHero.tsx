@@ -1,11 +1,7 @@
 'use client';
 
 import { Button } from '@vercel/geistdocs/components/button';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@vercel/geistdocs/components/tooltip';
+import { Tooltip } from '@vercel/geistdocs/components/tooltip';
 import {
   BadgeCheck,
   CheckIcon,
@@ -100,64 +96,50 @@ export function WorldDetailHero({
           <h1 className="text-heading-40 sm:text-heading-48 flex items-center gap-4">
             {world.name}
             {world.type === 'official' ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <BadgeCheck className="h-8 w-8 text-blue-900" />
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  <p className="text-xs">Maintained by Vercel</p>
-                </TooltipContent>
+              <Tooltip text="Maintained by Vercel" position="top">
+                <BadgeCheck aria-hidden className="h-8 w-8 text-blue-900" />
+                <span className="sr-only">Maintained by Vercel</span>
               </Tooltip>
             ) : (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <HeartHandshake className="h-8 w-8 text-pink-900" />
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  <p className="text-xs">Maintained by the community</p>
-                </TooltipContent>
+              <Tooltip text="Maintained by the community" position="top">
+                <HeartHandshake aria-hidden className="h-8 w-8 text-pink-900" />
+                <span className="sr-only">Maintained by the community</span>
               </Tooltip>
             )}
           </h1>
-          <p className="font-mono text-sm text-muted-foreground">
-            {world.package}
-          </p>
-          <p className="text-lg text-muted-foreground max-w-2xl">
-            {world.description}
-          </p>
+          <p className="font-mono text-sm text-gray-900">{world.package}</p>
+          <p className="text-lg text-gray-900 max-w-2xl">{world.description}</p>
 
           {/* Actions - Community worlds only */}
           {world.type === 'community' && (
             <div className="flex items-center gap-3 flex-wrap pt-2">
-              <div className="relative bg-background border rounded-md overflow-hidden py-3 pl-4 pr-12 inline-flex">
+              <div className="relative bg-background-100 border rounded-md overflow-hidden py-3 pl-4 pr-12 inline-flex">
                 <pre className="text-sm">
                   <code>{installCommand}</code>
                 </pre>
                 <Button
                   onClick={handleCopy}
-                  size="icon"
-                  variant="ghost"
+                  size="tiny"
+                  variant="tertiary"
+                  shape="square"
+                  svgOnly
                   className="absolute right-1 top-1/2 -translate-y-1/2"
                 >
-                  <CopyButtonIcon className="size-4 text-muted-foreground" />
+                  <CopyButtonIcon className="size-4 text-gray-900" />
                 </Button>
               </div>
               {world.repository && (
                 <Button
-                  asChild
-                  variant="outline"
-                  size="lg"
+                  Component="a"
+                  href={world.repository}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  variant="secondary"
+                  size="large"
+                  suffix={<ExternalLink className="h-4 w-4" />}
                   className="h-[44px] text-base"
                 >
-                  <a
-                    href={world.repository}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2"
-                  >
-                    GitHub
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
+                  GitHub
                 </Button>
               )}
             </div>
@@ -174,7 +156,7 @@ export function WorldDetailHero({
             href={`https://www.npmjs.com/package/${world.package}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+            className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
           >
             <Package className="h-4 w-4 shrink-0" />
             <span>npm</span>
@@ -186,7 +168,7 @@ export function WorldDetailHero({
               href={githubUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
             >
               <Github className="h-4 w-4 shrink-0" />
               <span>Source</span>
@@ -199,7 +181,7 @@ export function WorldDetailHero({
               href={world.example}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
             >
               <Code className="h-4 w-4 shrink-0" />
               <span>Example</span>
@@ -208,25 +190,18 @@ export function WorldDetailHero({
 
           {/* Encryption */}
           {world.features.includes('encryption') && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Link
-                  href="/docs/how-it-works/encryption"
-                  className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <ShieldCheck className="h-4 w-4 shrink-0 text-blue-900" />
-                  <span>E2E Encrypted</span>
-                </Link>
-              </TooltipTrigger>
-              <TooltipContent
-                side="top"
-                align="start"
-                className="max-w-[200px]"
+            <Tooltip
+              text="User data is encrypted end-to-end in the event log"
+              position="top"
+              tabIndex={null}
+            >
+              <Link
+                href="/docs/how-it-works/encryption"
+                className="flex items-center gap-2 text-gray-900 hover:text-gray-1000 transition-colors"
               >
-                <p className="text-xs">
-                  User data is encrypted end-to-end in the event log
-                </p>
-              </TooltipContent>
+                <ShieldCheck className="h-4 w-4 shrink-0 text-blue-900" />
+                <span>E2E Encrypted</span>
+              </Link>
             </Tooltip>
           )}
         </div>

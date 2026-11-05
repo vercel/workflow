@@ -1,5 +1,17 @@
 # @workflow/utils
 
+## 5.0.2
+
+### Patch Changes
+
+- [#4835](https://github.com/vercel/workflow/pull/4835) [`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349) Thanks [@pranaygp](https://github.com/pranaygp)! - Add optional `Queue.registerRoute()` and `Queue.registerHandler()`, implemented by `@workflow/world-local` and `@workflow/world-postgres`, so a queue consumer other than the Workflow SDK receives its own prefix's messages on its own route or in process. `reenqueueActiveRuns()` re-enqueues a run to the queue namespace it recorded, and `@workflow/world-postgres` keeps a job's queue prefix.
+
+## 5.0.1
+
+### Patch Changes
+
+- [#4651](https://github.com/vercel/workflow/pull/4651) [`a216e77`](https://github.com/vercel/workflow/commit/a216e77a3ead2efbfd881dc56333e735729a3f13) Thanks [@pranaygp](https://github.com/pranaygp)! - `sleep()`, `RetryableError`'s `retryAfter`, and a hook's `experimental_minRetention` now throw on an Invalid Date, or on a duration that ends past the latest time a `Date` can hold, instead of sending the Invalid Date to the World.
+
 ## 5.0.0
 
 ### Major Changes

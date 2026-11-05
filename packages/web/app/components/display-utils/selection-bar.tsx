@@ -1,6 +1,6 @@
+import { Button } from '@workflow/web-shared';
 import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { Button } from '~/components/ui/button';
 import { cn } from '~/lib/utils';
 
 export interface SelectionBarProps {
@@ -54,8 +54,8 @@ export function SelectionBar({
       )}
 
       <Button
-        variant="ghost"
-        size="sm"
+        variant="tertiary"
+        size="small"
         className="h-7 px-2 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
         onClick={onClearSelection}
       >

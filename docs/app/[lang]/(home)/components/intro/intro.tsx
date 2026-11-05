@@ -122,14 +122,14 @@ const nonWorkflowLogs = [
 
 export const Intro = async () => {
   const codeBlockClassname =
-    'shadow-none border-x-0 border-t-0 dark:bg-sidebar with-line-numbers with-checks';
+    'shadow-none border-x-0 border-t-0 dark:bg-gray-100 with-line-numbers with-checks';
 
   const workflowCodeBlock = (
     <CodeBlock
       code={workflowCode}
       lang="ts"
       codeblock={{
-        className: `shadow-none overflow-visible !bg-background border-b-0! ${codeBlockClassname}`,
+        className: `shadow-none overflow-visible !bg-background-100 border-b-0! ${codeBlockClassname}`,
       }}
     />
   );
@@ -138,7 +138,7 @@ export const Intro = async () => {
       code={nonWorkflowCode}
       lang="ts"
       codeblock={{
-        className: `shadow-none overflow-visible !bg-background border-b-0! ${codeBlockClassname} max-h-[310px]`,
+        className: `shadow-none overflow-visible !bg-background-100 border-b-0! ${codeBlockClassname} max-h-[310px]`,
       }}
     />
   );
@@ -149,7 +149,7 @@ export const Intro = async () => {
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Reliability-as-code
         </h2>
-        <p className="text-lg text-muted-foreground md:mt-4">
+        <p className="text-lg text-gray-900 md:mt-4">
           Move from hand-rolled queues and custom retries to durable, resumable
           code with simple directives.
         </p>

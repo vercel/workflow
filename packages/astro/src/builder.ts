@@ -21,6 +21,12 @@ const WORKFLOW_ROUTES = [
   },
 ];
 
+/**
+ * Astro's router ignores files in the pages directory whose name starts with
+ * an underscore. Without it, Astro 5 warns about the manifest on every scan.
+ */
+const ASTRO_MANIFEST_FILE_NAME = '_manifest.json';
+
 export class LocalBuilder extends BaseBuilder {
   #pagesDir: string;
 
@@ -60,6 +66,9 @@ export class LocalBuilder extends BaseBuilder {
 
     // Clean up stale V1 step route (may persist via Vercel build cache)
     await rm(join(workflowGeneratedDir, 'step.js'), { force: true });
+    // Older versions wrote the manifest as `manifest.json`, which Astro 5
+    // warns about as an unsupported file type in the pages directory.
+    await rm(join(workflowGeneratedDir, 'manifest.json'), { force: true });
 
     // Get workflow and step files to bundle
     const inputFiles = await this.getInputFiles();
@@ -98,12 +107,14 @@ export const prerender = false;`
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
 
-    // Generate unified manifest
+    // Generate unified manifest. Prefixed with an underscore so Astro's
+    // router skips it instead of warning that `.json` is not a route type.
     const workflowBundlePath = join(workflowGeneratedDir, 'flow.js');
     const manifestJson = await this.createManifest({
       workflowBundlePath,
       manifestDir: workflowGeneratedDir,
       manifest,
+      manifestFileName: ASTRO_MANIFEST_FILE_NAME,
     });
 
     // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1

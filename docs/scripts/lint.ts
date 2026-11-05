@@ -28,7 +28,13 @@ const STATIC_APP_LINK_FILES = [
   'app/[lang]/(home)/components/templates/index.tsx',
   'app/[lang]/worlds/page.tsx',
 ];
-const KNOWN_APP_PATHS = new Set(['/', '/docs', '/cookbook', '/worlds']);
+const KNOWN_APP_PATHS = new Set([
+  '/',
+  '/changelog',
+  '/cookbook',
+  '/docs',
+  '/worlds',
+]);
 
 type UrlMeta = { hashes?: string[] };
 type Scanned = {
@@ -192,7 +198,8 @@ function buildSpaces(
  * redirect), so they are only added to the v5 space.
  */
 async function applyRedirects(v4Space: Scanned, v5Space: Scanned) {
-  const redirects = (await nextConfig.redirects?.()) ?? [];
+  const resolvedConfig = await nextConfig;
+  const redirects = (await resolvedConfig.redirects?.()) ?? [];
 
   for (const { source: src, destination: dest } of redirects) {
     if (src.includes(':') !== dest.includes(':')) continue;

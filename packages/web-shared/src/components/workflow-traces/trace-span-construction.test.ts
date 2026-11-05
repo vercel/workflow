@@ -141,4 +141,32 @@ describe('stepToSpan', () => {
 
     expect(span?.name).toBe('fetchInvoices');
   });
+
+  it('names and times a step whose creation is recorded on its step_started', () => {
+    const span = stepToSpan(
+      [
+        event({
+          eventType: 'step_started',
+          correlationId: 'step_1',
+          createdAt: date(1_000),
+          eventData: { stepName: 'step//src/billing.ts//fetchInvoices' },
+        }),
+        event({
+          eventType: 'step_completed',
+          correlationId: 'step_1',
+          createdAt: date(2_000),
+          eventData: { result: null },
+        }),
+      ],
+      date(2_000)
+    );
+
+    expect(span?.name).toBe('fetchInvoices');
+    expect(span?.attributes.data).toMatchObject({
+      stepName: 'step//src/billing.ts//fetchInvoices',
+      status: 'completed',
+      attempt: 1,
+    });
+    expect(otelTimeToMs(span!.startTime)).toBe(1_000);
+  });
 });
