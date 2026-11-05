@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
@@ -14,6 +15,80 @@ export interface DecoratorOptions {
 export interface DecoratorOptionsWithConfigPath {
   options: DecoratorOptions;
   configPath: string | undefined;
+}
+
+/**
+ * Resolves a tsconfig `extends` entry the way TypeScript does: relative and
+ * absolute paths are resolved from the extending config (adding `.json` when
+ * the path has no such file), and anything else is looked up as a package.
+ */
+function resolveExtendsPath(
+  specifier: string,
+  fromDir: string
+): string | undefined {
+  if (specifier.startsWith('.') || isAbsolute(specifier)) {
+    const path = resolve(fromDir, specifier);
+    return fileExists(path) || path.endsWith('.json') ? path : `${path}.json`;
+  }
+  const require = createRequire(join(fromDir, 'tsconfig.json'));
+  const candidates = specifier.endsWith('.json')
+    ? [specifier]
+    : [`${specifier}/tsconfig.json`, `${specifier}.json`];
+  for (const candidate of candidates) {
+    try {
+      return require.resolve(candidate);
+    } catch {
+      // Try the next candidate
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Reads the `compilerOptions` of a tsconfig, including the options it
+ * inherits through `extends` (a string or, since TypeScript 5.0, an array
+ * where later entries win). Options in the config itself override inherited
+ * ones.
+ */
+async function readCompilerOptions(
+  tsconfigPath: string,
+  ancestors: ReadonlySet<string> = new Set()
+): Promise<Record<string, unknown>> {
+  // Guard against `extends` cycles
+  if (ancestors.has(tsconfigPath)) {
+    return {};
+  }
+
+  const content = await readFile(tsconfigPath, 'utf-8');
+  const tsconfig: {
+    extends?: unknown;
+    compilerOptions?: Record<string, unknown>;
+  } = JSON5.parse(content);
+
+  const bases = (
+    Array.isArray(tsconfig.extends) ? tsconfig.extends : [tsconfig.extends]
+  ).filter((base): base is string => typeof base === 'string');
+
+  let inherited: Record<string, unknown> = {};
+  for (const base of bases) {
+    const basePath = resolveExtendsPath(base, dirname(tsconfigPath));
+    if (!basePath) {
+      continue;
+    }
+    try {
+      inherited = {
+        ...inherited,
+        ...(await readCompilerOptions(
+          basePath,
+          new Set([...ancestors, tsconfigPath])
+        )),
+      };
+    } catch {
+      // An unreadable base contributes nothing, like an unreadable tsconfig
+    }
+  }
+
+  return { ...inherited, ...tsconfig.compilerOptions };
 }
 
 /**
@@ -37,10 +112,7 @@ export async function getDecoratorOptionsFromTsConfig(
   }
 
   try {
-    const content = await readFile(tsconfigPath, 'utf-8');
-    const tsconfig: { compilerOptions?: Record<string, unknown> } =
-      JSON5.parse(content);
-    const compilerOptions = tsconfig.compilerOptions || {};
+    const compilerOptions = await readCompilerOptions(tsconfigPath);
 
     // Match Next.js behavior: enable decorators only when experimentalDecorators is true
     const experimentalDecorators =
