@@ -15,30 +15,34 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
 
 describe("the web UI's Local World", () => {
   let base: string;
+  let createWorld: typeof import('@workflow/world-local').createWorld;
+  let reenqueueRun: typeof import('./workflow-server-actions.server').reenqueueRun;
 
-  beforeAll(() => {
+  // Loading the server actions module is most of this file's time: about 3s
+  // alone, and far more on a loaded CI runner (it once took past 20s there).
+  // It is loaded here, with its own budget, so the test's timeout covers
+  // only the World creation and the check.
+  beforeAll(async () => {
     base = mkdtempSync(path.join(tmpdir(), 'web-queue-auth-'));
     vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
     vi.stubEnv('WORKFLOW_LOCAL_DATA_DIR', path.join(base, '.workflow-data'));
-  });
+    ({ createWorld } = await import('@workflow/world-local'));
+    ({ reenqueueRun } = await import('./workflow-server-actions.server'));
+  }, 120_000);
 
   afterAll(() => {
     vi.unstubAllEnvs();
     rmSync(base, { recursive: true, force: true });
   });
 
-  // Importing the server actions module alone takes about 3s, past vitest's
-  // default 5s when the machine is busy. 20s leaves room for that, and still
-  // fails on a real slowdown.
+  // The module is already loaded: 20s is ample for creating the World and
+  // the check, and still fails on a real slowdown.
   it(
     'only reads the queue auth key, and writes nothing into the data directory',
     {
       timeout: 20_000,
     },
     async () => {
-      const { createWorld } = await import('@workflow/world-local');
-      const { reenqueueRun } = await import('./workflow-server-actions.server');
-
       // Fails (no such run), after creating the World.
       await reenqueueRun({}, 'wrun_01M6MV000000000000000000000');
 
