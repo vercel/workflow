@@ -185,8 +185,10 @@ describe('createJobLeases', () => {
 
     done.resolve();
     await expect(delivery).resolves.toBeUndefined();
+    // Plus the check before acknowledging, and nothing after.
+    expect(pool.query).toHaveBeenCalledTimes(3);
     await advance(60_000);
-    expect(pool.query).toHaveBeenCalledTimes(2);
+    expect(pool.query).toHaveBeenCalledTimes(3);
     await leases.stop();
   });
 
@@ -307,7 +309,13 @@ describe('createJobLeases', () => {
 
   it('does not count a delivery that finished while its renewal was in flight as lost', async () => {
     const answer = Promise.withResolvers<{ rows: Array<{ id: string }> }>();
-    const pool = renewingPool(() => answer.promise);
+    let renewals = 0;
+    const pool = renewingPool(async (_sql, params) => {
+      renewals++;
+      // The timer's renewal is still in flight when the delivery finishes;
+      // the check before acknowledging answers at once.
+      return renewals === 1 ? answer.promise : renewedRows(params);
+    });
     const leases = createJobLeases(routed(pool), { staleSeconds: 20, now });
     const { task, done } = pendingTask();
     const delivery = leases.wrap(task)('payload', job('7'));
@@ -360,6 +368,31 @@ describe('createJobLeases', () => {
 
     await expect(delivery).rejects.toBeInstanceOf(JobLockLostError);
     expect(pool.query).toHaveBeenCalledTimes(1);
+    await leases.stop();
+  });
+
+  it('checks the lock before acknowledging even right after a renewal found it ours', async () => {
+    // A process with a shorter window (`jobLockStaleSeconds` being changed
+    // across processes) released the job after the last renewal, well
+    // within half of this process's window.
+    let released = false;
+    const pool = renewingPool(async (sql, params) => {
+      if (!isRenewal(sql) || released) return { rows: [] };
+      return renewedRows(params);
+    });
+    const leases = createJobLeases(routed(pool), { staleSeconds: 300, now });
+    const { task, done } = pendingTask();
+    const outcome = leases
+      .wrap(task)('payload', job('7'))
+      .catch((error: unknown) => error);
+
+    await advance(10_000);
+    expect(pool.query).toHaveBeenCalledTimes(1);
+    released = true;
+    await advance(1_000);
+    done.resolve();
+    expect(await outcome).toBeInstanceOf(JobLockLostError);
+    expect(pool.query).toHaveBeenCalledTimes(2);
     await leases.stop();
   });
 
