@@ -19,9 +19,10 @@ import { setupWorld } from './utils';
  * observable side:
  *
  * - held and consumed here: this process runs the message, so the flow route
- *   never answers, not even after the hold's lease would have lapsed;
+ *   never answers, not even after the hold's lease would have lapsed, and not
+ *   while a handler that outlives the lease is still running;
  * - held and never consumed: the queue delivers it when the lease lapses, and
- *   the flow route answers then;
+ *   not before, and the flow route answers then;
  * - held and released: the flow route answers at once;
  * - not held: the queue delivers it as usual, and the flow route answers.
  *
@@ -199,15 +200,67 @@ describe
           return;
         }
 
-        // Nothing renews the hold (the sender "crashed"). Well inside the
-        // lease, the queue does not deliver it.
+        // Nothing renews the hold (the sender "crashed"): the queue delivers
+        // it once the lease lapses, and not before.
+        const sentAt = Date.now();
+        const answer = await flowAnswer(
+          world,
+          correlationId,
+          (LEASE_SECONDS + 120) * 1_000
+        );
+        expect(answer).toMatchObject({ healthy: true, correlationId });
+        // The flow route stamps its answer with its own clock.
+        const answeredAt = Number(answer?.timestamp);
+        const timing = {
+          messageId: held.messageId,
+          answeredAfterSendMs: answeredAt - sentAt,
+          answeredBeforeLeaseExpiryMs:
+            held.leaseExpiresAt.getTime() - answeredAt,
+        };
+        console.info('[e2e-queue-hold] lapsed hold delivered', timing);
+        // A few seconds of clock skew between the runner, the queue and the
+        // deployment, no more.
         expect(
-          await flowAnswer(world, correlationId, (LEASE_SECONDS / 2) * 1_000)
+          answeredAt,
+          `delivered ${timing.answeredBeforeLeaseExpiryMs} ms before the hold's lease expired (${JSON.stringify(timing)})`
+        ).toBeGreaterThanOrEqual(held.leaseExpiresAt.getTime() - 3_000);
+      }
+    );
+
+    test(
+      'a held message is not delivered again while its sender is still running it',
+      { timeout: 240_000 },
+      async () => {
+        const { correlationId, sent } = await sendHeldHealthCheck(world);
+        const held = heldOrFallback(sent.experimental_hold);
+        if (!held) {
+          expect(await flowAnswer(world, correlationId, 60_000)).toMatchObject({
+            healthy: true,
+          });
+          return;
+        }
+
+        // A turn that outlives the lease: consume() has to renew it (every
+        // 10 s at a 30 s lease) while the handler runs, and the queue must not
+        // deliver the message to the flow route meanwhile or after the ack.
+        const RUN_MS = (LEASE_SECONDS + 10) * 1_000;
+        let runs = 0;
+        const sentAt = Date.now();
+        const answered = flowAnswer(
+          world,
+          correlationId,
+          RUN_MS + (LEASE_SECONDS + 30) * 1_000
+        );
+        await held.consume(async () => {
+          runs += 1;
+          await sleep(RUN_MS);
+        });
+        expect(runs).toBe(1);
+        const answer = await answered;
+        expect(
+          answer,
+          `the flow route also ran the held message ${Number(answer?.timestamp) - sentAt} ms after the send, while or after its sender ran it`
         ).toBeUndefined();
-        // Once the lease lapses, it does.
-        expect(
-          await flowAnswer(world, correlationId, (LEASE_SECONDS + 120) * 1_000)
-        ).toMatchObject({ healthy: true, correlationId });
       }
     );
 
