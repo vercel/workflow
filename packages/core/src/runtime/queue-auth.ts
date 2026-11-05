@@ -81,7 +81,7 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
   }
 }
 
-/** Why a delivery was refused: it carried no key, or not this process's. */
+/** Why a delivery was refused: it carried no key, or not the app's. */
 export type QueueAuthRefusalReason = 'no-key' | 'wrong-key';
 
 export interface QueueAuthRefusal {

@@ -111,7 +111,7 @@ export async function verifyQueueAuthKey(
 
 /**
  * Set to `1` on the 401 the runtime answers a delivery with when it does not
- * carry this process's queue key (see `authorizeQueueDelivery` in
+ * carry the app's queue key (see `authorizeQueueDelivery` in
  * `@workflow/core`), so the sending queue can tell that refusal apart from a
  * bare 401 from something in front of the app, such as a proxy.
  *

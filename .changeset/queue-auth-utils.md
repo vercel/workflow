@@ -2,4 +2,4 @@
 "@workflow/utils": minor
 ---
 
-Add `getQueueAuthKey()`, `isQueueAuthKey()` and `QUEUE_AUTH_HEADER`: a per-process, in-memory key for authenticating queue deliveries.
+Add queue auth helpers: `QUEUE_AUTH_HEADER`, the key functions (`generateQueueAuthKey()`, `getQueueAuthKey()`, `isQueueAuthKey()`, `isWellFormedQueueAuthKey()`, `setQueueAuthKeySource()`, `verifyQueueAuthKey()`), the refusal marker (`isQueueAuthRefusal()`, `QUEUE_AUTH_REFUSED_HEADER`, `QUEUE_AUTH_REFUSED_CODE`) and `createLogLimiter()`.

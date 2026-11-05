@@ -56,9 +56,11 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 ### `WORKFLOW_QUEUE_AUTH`
 
-Whether the flow route accepts only deliveries sent by this process's own queue. Default: `on`. Every delivery carries a random in-memory key, and the route refuses a request without it with a `401` and touches no run. Messages enqueued by another process on the same data directory (a script, the CLI, or a test runner calling `start()` or `resumeHook()` against a running app) carry that process's key, so the app refuses them. The sending process retries a refused message a few times, then logs one line and gives it up, and the run stays `pending` until the app's own queue re-enqueues it (its startup recovery does). Set `off` on the app to accept such messages on a trusted machine.
+Whether the flow route accepts only deliveries sent by the app's own processes. Default: `on`. Every delivery carries the app's queue key, and the route refuses a request without it with a `401` and touches no run.
 
-The same refusal happens in cluster mode: several app processes on one port (PM2 with `-i N`, `node:cluster`, Nitro's `node-cluster` preset) each have their own in-memory key, so a loopback delivery can land on a sibling process and be refused. The bounded retry gives it a few chances to reach the process that sent it, which reduces the loss but does not prevent it: a message refused on every retry is given up and its run stalls. Run one process per port, or set `off` and protect the flow route at the network. A key shared by every process is the full fix. Keep `workflow` / `@workflow/core` and `@workflow/world-local` on matching versions: a World package without queue auth sends no key, so the route refuses its deliveries. `off` is refused while dynamic workflows are enabled. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+The key is a random value in the file `queue-auth-key` in the [data directory](#data-directory-layout). The app writes a new one each time it starts, when it first uses its World and before it sends anything, so a restart needs no wait. A script that calls `start()` with the same data directory writes a new key the same way, and the app accepts it. The CLI and the web UI only read the key, so point them at the app's data directory (`WORKFLOW_LOCAL_DATA_DIR`). Several app processes on one data directory (PM2 with `-i N`, `node:cluster`, Nitro's `node-cluster` preset) end up on the newest key in the file.
+
+A refused delivery is retried at once when the key in the file has changed, and otherwise a few times with a short backoff, then logged once and given up; its run is left as it was. Keep the CLI and the web UI on the same release as the app's `@workflow/world-local`: an older one sends no key. Set `off` on the app to accept deliveries from a process that cannot read its data directory, on a trusted machine only. `off` is refused while dynamic workflows are enabled. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
 
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
@@ -157,6 +159,8 @@ Each run's event and step files are stored in their own directory (`events/<runI
 
 A directory that mixes both layouts, or holds `.json` files in `events/` or `steps/` that the World did not write, is never deleted: starting fails with a `DataDirLayoutError` that lists the files.
 
+The data directory also holds the app's queue key, `queue-auth-key` (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)). The file is readable and writable only by its owner (mode `0600`); Windows does not enforce that mode the same way, and the file gets the directory's permissions. The World writes a `.gitignore` containing `*` into the data directory when it has none, so neither the key nor the run data is committed, and never replaces one that is already there.
+
 ## Limitations
 
 The Local World is designed for development, not production:
@@ -164,6 +168,6 @@ The Local World is designed for development, not production:
 - **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
 - **Filesystem storage**: Data is stored in local JSON files.
 - **Single instance**: The Local World cannot handle distributed deployments.
-- **Minimal authentication**: The flow route accepts only its own process's deliveries (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)), but nothing else is authenticated. The Local World is suitable only for local development.
+- **Minimal authentication**: The flow route accepts only deliveries carrying the app's queue key (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)), but nothing else is authenticated. Anyone who can read the data directory can read the key. The Local World is suitable only for local development.
 
 For production deployments, use the [Vercel World](/worlds/vercel), which handles execution, persistence, multi-tenancy, scale, observability, and security for you on Vercel, or check out the [Postgres World](/worlds/postgres) - a tested reference implementation that implements the complete World spec and can be used to deploy workflows anywhere.

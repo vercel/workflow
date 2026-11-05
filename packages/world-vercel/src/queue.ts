@@ -1319,8 +1319,11 @@ export function createQueue(config?: APIConfig): Queue {
   ) => error instanceof ConsumerDiscoveryError;
 
   return {
-    // Vercel Queues delivers to a private route that is not reachable from
-    // outside the platform, so the runtime does not check deliveries itself.
+    // The runtime does not check deliveries with a key, because two layers
+    // protect the route: only Vercel Queues can trigger it, and the handler
+    // takes a message ID and retrieves and leases the message through the
+    // queue, so a request cannot carry its own payload. Do not copy 'skip'
+    // into a World that lacks either layer.
     queueAuthMode: 'skip',
     queue,
     queueBatch,

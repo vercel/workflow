@@ -1,5 +1,5 @@
 ---
-"@workflow/world-testing": patch
+"@workflow/world-testing": minor
 ---
 
-Add conformance tests that, on a World checked with the in-process key, forged flow-route requests are refused with a 401 and change no run state.
+Add queue auth conformance tests: forged flow-route requests are refused and change no run, and a process sharing the app's data directory starts runs the app completes.

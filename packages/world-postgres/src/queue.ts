@@ -1235,10 +1235,11 @@ export function createQueue(
   }
 
   return {
-    // The runtime does not check the flow route. A worker may deliver a job
-    // another process enqueued, so deliveries cannot carry a process key; the
-    // database credentials control who can enqueue, and the route is
-    // protected at the network edge (see the Security section of the docs).
+    // The runtime does not check the flow route until messages are delivered
+    // in-process and the route is denied
+    // (https://github.com/vercel/workflow/issues/5258). Meanwhile the database
+    // credentials control who can enqueue, and the route has to be protected
+    // at the network edge (see "Protect the queue route" in the docs).
     queueAuthMode: 'skip',
     createQueueHandler,
     getDeploymentId,

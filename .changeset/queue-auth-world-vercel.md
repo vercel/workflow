@@ -1,5 +1,5 @@
 ---
-"@workflow/world-vercel": patch
+"@workflow/world-vercel": minor
 ---
 
-Declare `queueAuthMode: 'skip'`: Vercel Queues delivers to a private route, so the runtime does not check deliveries.
+Declare `queueAuthMode: 'skip'`: the flow route only Vercel Queues can trigger takes a message ID, so the runtime does not check a key.

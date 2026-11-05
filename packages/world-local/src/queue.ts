@@ -82,10 +82,11 @@ export const MAX_LOCAL_SAFETY_LIMIT = 256;
 
 /**
  * Deliveries of one message the runtime may refuse as unauthenticated (its
- * marked 401) before world-local gives the message up. More than one, so in
- * cluster mode (several processes on one port, each with its own key) a
- * retry can reach the process whose key matches; few, because a sender in
- * another process is refused every time.
+ * marked 401) before world-local gives the message up. A refusal after which
+ * the key file holds a new key is retried at once; the rest wait the short
+ * backoff, by which time the route has re-read the file too (its re-reads are
+ * rate-limited). Few, because a sender that cannot read the app's key is
+ * refused every time.
  */
 export const MAX_QUEUE_AUTH_REFUSALS = 5;
 
@@ -178,10 +179,11 @@ export type LocalQueue = Queue & {
 };
 
 const QUEUE_AUTH_REFUSAL_HINT =
-  'A queue delivery is only accepted by the process whose queue sent it: it carries that ' +
-  "process's in-memory key. Messages enqueued from a separate process (a script, CLI, or " +
-  'test runner) are refused by the app. On a trusted network, set WORKFLOW_QUEUE_AUTH=off ' +
-  'on the app to accept them (refused while dynamic workflows are enabled).';
+  "A queue delivery is accepted only with the app's key, from the file queue-auth-key in " +
+  "the app's data directory. Run the sender on the same data directory as the app " +
+  '(WORKFLOW_LOCAL_DATA_DIR) and on the same release. On a trusted network, set ' +
+  'WORKFLOW_QUEUE_AUTH=off on the app to accept other senders (refused while dynamic ' +
+  'workflows are enabled).';
 
 const DETACHED_ARRAYBUFFER_ERROR =
   'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
@@ -243,7 +245,8 @@ export function createRunGate() {
 
 /**
  * The key a queue sends when no World gave it one (a queue created on its
- * own, as unit tests do): the process's in-memory key.
+ * own, as unit tests do): the in-memory key of `@workflow/utils`, which the
+ * runtime checks when no World registered a key source.
  */
 const inMemoryQueueAuthKey: QueueAuthKey = {
   current: async () => getQueueAuthKey(),
@@ -775,8 +778,8 @@ export function createQueue(
   };
 
   return {
-    // Every delivery carries this process's in-memory key (see the send
-    // loop), and the runtime refuses one that does not.
+    // Every delivery carries the app's key from the data directory (see the
+    // send loop), and the runtime refuses one that does not.
     queueAuthMode: 'loopback',
     queue,
     createQueueHandler,

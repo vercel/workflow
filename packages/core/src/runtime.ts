@@ -714,8 +714,8 @@ export function workflowEntrypoint(
         }
 
         // Before the handler reads the body or touches any run: a request
-        // that is not a delivery from this process's own queue is refused
-        // and dropped (see `authorizeQueueDelivery`). Covers every delivery
+        // that does not carry the app's queue key is refused and dropped
+        // (see `authorizeQueueDelivery`). Covers every delivery
         // to this route, health checks and invocations included.
         const refusal = await authorizeQueueDelivery(cachedRoute.world, req);
         if (refusal) {

@@ -1001,14 +1001,20 @@ export interface InvokeOptions {
  * flow route, before it does any work. See {@link Queue.queueAuthMode}.
  *
  * - `'loopback'`: the World's queue delivers back to the app it runs in, and
- *   attaches the app's queue key (`getQueueAuthKey()` from `@workflow/utils`)
- *   as the `QUEUE_AUTH_HEADER` header of every delivery it sends, over HTTP
- *   or to an in-process handler registered with `registerHandler`. The
- *   runtime refuses, with a 401 and without touching any run, a delivery that
- *   does not carry it. "Loopback" means sent by this app's own queue, not any
- *   request from localhost. Temporary: it goes away once the Local World's
- *   queue no longer delivers back to the app over its own routes.
- * - `'skip'`: the runtime does not check.
+ *   attaches the app's queue key as the `QUEUE_AUTH_HEADER` header of every
+ *   delivery it sends, over HTTP or to an in-process handler registered with
+ *   `registerHandler`. The runtime checks it against the key source the World
+ *   registered (`setQueueAuthKeySource()` from `@workflow/utils`; the Local
+ *   World's is the key file in its data directory), or `getQueueAuthKey()`
+ *   when there is none, and refuses, with a 401 and without touching any
+ *   run, a delivery that does not carry it. "Loopback" means sent by this
+ *   app's own processes, which share the key through the data directory, not
+ *   any request from localhost. Temporary: it goes away once the Local
+ *   World's queue no longer delivers back to the app over its own routes.
+ * - `'skip'`: the runtime does not check. Only for a World whose platform
+ *   guarantees that only its queue reaches the route, as Vercel's does;
+ *   world-postgres declares it until its messages are delivered in-process
+ *   (https://github.com/vercel/workflow/issues/5258).
  */
 export type QueueAuthMode = 'loopback' | 'skip';
 

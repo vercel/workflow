@@ -157,9 +157,9 @@ async function skipUnlessKeyChecked(
 const settle = () => new Promise((resolve) => setTimeout(resolve, 1_500));
 
 /**
- * On a World checked with the in-process key (world-local), the flow route
- * (`/.well-known/workflow/v1/flow`) accepts only deliveries sent by the app's
- * own queue, which carry the process's in-memory key. Everything a request
+ * On a World that declares `queueAuthMode: 'loopback'` (world-local), the flow
+ * route (`/.well-known/workflow/v1/flow`) accepts only deliveries that carry
+ * the app's queue key, which its processes share. Everything a request
  * from outside could do with it, start a run, fail a running one through the
  * max-deliveries path, re-trigger a step, or replay a real delivery, is
  * refused with a 401 and changes no run state. The refusal tests skip on a
@@ -306,8 +306,8 @@ export function queueAuth(world: string) {
   );
 
   // Another process acting on the running app through its data directory,
-  // the shape of `wf start` / `wf start <runId>` (step 0 of the key-file
-  // change: on a per-process key both left the new run pending forever).
+  // the shape of `wf start` / `wf start <runId>` ('read') and of a script that
+  // calls start() ('regenerate'): the app completes the run.
   // world-local only: it is the World whose processes share a key through the
   // data directory; world-postgres declares 'skip'.
   for (const mode of ['read', 'regenerate'] as const) {
