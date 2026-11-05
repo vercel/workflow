@@ -41,6 +41,7 @@ afterEach(() => {
   resetGlobalSingletonForTest('@workflow/world-local//queueAuthKeyFiles', 1);
   clearQueueAuthKeySources();
   vi.restoreAllMocks();
+  vi.useRealTimers();
   rmSync(base, { recursive: true, force: true });
 });
 
@@ -130,6 +131,7 @@ describe('the regenerating World (the app, a script calling start())', () => {
       }
       await vi.waitFor(() => expect(decisions).toHaveLength(2), {
         interval: 10,
+        timeout: 10_000,
       });
       // Both accepted on the first delivery: neither key was refused.
       expect(decisions).toEqual([true, true]);
@@ -188,6 +190,9 @@ describe('the regenerating World (the app, a script calling start())', () => {
   });
 
   it('refuses a wrong key, reading the file at most every 250ms', async () => {
+    // The clock moves only when the test moves it, so the flood below stays
+    // inside the interval however slow the machine is.
+    vi.useFakeTimers({ toFake: ['Date'] });
     const dataDir = path.join(base, 'data');
     const key = await createQueueAuthKey(dataDir, 'regenerate').current();
     const replaced = generateQueueAuthKey();
@@ -202,7 +207,7 @@ describe('the regenerating World (the app, a script calling start())', () => {
     }
     expect(await verifyQueueAuthKey(replaced)).toBe(false);
     expect(await verifyQueueAuthKey(key)).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    vi.setSystemTime(Date.now() + 300);
     expect(await verifyQueueAuthKey(replaced)).toBe(true);
   });
 
@@ -233,6 +238,8 @@ describe('the regenerating World (the app, a script calling start())', () => {
   });
 
   it('rewrites the key file at most every 250ms under a flood of keyless deliveries', async () => {
+    // The clock moves only when the test moves it (see above).
+    vi.useFakeTimers({ toFake: ['Date'] });
     const dataDir = path.join(base, 'data');
     const key = await createQueueAuthKey(dataDir, 'regenerate').current();
 
@@ -252,7 +259,7 @@ describe('the regenerating World (the app, a script calling start())', () => {
     expect(existsSync(keyFile(dataDir))).toBe(false);
 
     // After the interval, the next one rewrites it, with the same key.
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    vi.setSystemTime(Date.now() + 300);
     expect(await verifyQueueAuthKey(undefined)).toBe(false);
     expect(readKey(dataDir)).toBe(key);
   });
@@ -453,6 +460,7 @@ describe('deliveries, with real timers', () => {
       );
       await vi.waitFor(() => expect(decisions).toHaveLength(1), {
         interval: 10,
+        timeout: 10_000,
       });
       // Far below world-local's 5s retry backoff: nothing waited or retried.
       expect(Date.now() - startedAt).toBeLessThan(2_000);
@@ -477,6 +485,7 @@ describe('deliveries, with real timers', () => {
       );
       await vi.waitFor(() => expect(accepted(decisions)).toBe(1), {
         interval: 10,
+        timeout: 10_000,
       });
       expect(decisions).toEqual([{ key: old, accepted: true }]);
       decisions.length = 0;
@@ -492,6 +501,7 @@ describe('deliveries, with real timers', () => {
       );
       await vi.waitFor(() => expect(accepted(decisions)).toBe(1), {
         interval: 10,
+        timeout: 10_000,
       });
       expect(decisions).toEqual([
         { key: old, accepted: false },
@@ -569,6 +579,7 @@ describe('deliveries, with real timers', () => {
       );
       await vi.waitFor(() => expect(accepted(decisions)).toBe(1), {
         interval: 10,
+        timeout: 10_000,
       });
       expect(decisions).toEqual([
         { key: undefined, accepted: false },
