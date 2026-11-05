@@ -636,6 +636,7 @@ export const serializedClassToString = (value: { classId: string }): string => {
  * display-friendly values. Used by both web and CLI hydration.
  */
 export const observabilityRevivers: Revivers = {
+  Date: (value: string) => new Date(value),
   ReadableStream: streamToStreamRef,
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
