@@ -18,8 +18,10 @@ This error occurs when you try to import or use Node.js core modules (like `fs`,
 ## Error message
 
 ```text
-Cannot use Node.js module "fs" in workflow functions. Move this module to a step function.
+You are attempting to use "fs" which is a Node.js module. Node.js modules are not available in workflow functions.
 ```
+
+For an npm package that imports Node.js modules, the message reads `You are attempting to use "<package>" which depends on Node.js modules` instead. The build error points at the first line of your workflow file that uses the import, including imports split across several lines.
 
 ## Why this happens
 
