@@ -114,3 +114,6 @@ allowBuilds:
   protobufjs: false
   sharp: false
   ssh2: false
+  # wrangler's local runtime (@workflow/world-cloudflare e2e); its install
+  # script links the platform-specific workerd binary.
+  workerd: true

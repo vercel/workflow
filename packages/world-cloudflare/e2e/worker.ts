@@ -1,6 +1,7 @@
 /**
- * POC Worker: a tiny HTTP API over the Workflow SDK, running on the
- * Durable Objects World. Used by `poc/test/e2e.test.ts` under `wrangler dev`.
+ * e2e Worker: a tiny HTTP API over the Workflow SDK, running on the
+ * Cloudflare World. Used by `e2e/test/e2e.test.ts` under `wrangler dev`.
+ * Imports the built package (`dist/`), so the suite tests what is published.
  */
 
 import { unwrapInvocationOutcome } from '@workflow/errors/invocation';
@@ -11,7 +12,7 @@ import structuredClone from 'quickjs-wasi/structured-clone.so';
 import url from 'quickjs-wasi/url.so';
 import { getRun, resumeHook, start } from 'workflow/api';
 import { healthCheck, setWorld } from 'workflow/runtime';
-import { setupCloudflareWorld } from '../src/index.js';
+import { setupCloudflareWorld } from '../dist/index.js';
 import { deploymentId, workflowIds } from './.workflow/build-info.mjs';
 import { createFlowRoute } from './.workflow/combined.mjs';
 
@@ -20,7 +21,7 @@ export {
   StepRunner,
   StreamObject,
   TokenObject,
-} from '../src/index.js';
+} from '../dist/index.js';
 
 const world = setupCloudflareWorld({
   deploymentId,

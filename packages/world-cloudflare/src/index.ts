@@ -1,15 +1,18 @@
 /**
- * `@workflow/world-cloudflare`: a proof-of-concept World in which each
- * workflow run is a Cloudflare Durable Object that stores and runs it.
+ * `@workflow/world-cloudflare` (experimental): a World in which each workflow
+ * run is a Cloudflare Durable Object that stores and runs it.
  *
  * A Worker using it must:
  *  - call `setupCloudflareWorld()` at module scope with its build's
  *    deployment id, the generated workflow route, and the QuickJS modules;
  *  - re-export `RunObject`, `TokenObject`, `StreamObject` and `StepRunner`
  *    from its entrypoint, bound as `WORKFLOW_RUNS`, `WORKFLOW_TOKENS` and
- *    `WORKFLOW_STREAMS` (see `poc/wrangler.jsonc`);
- *  - run with `WORKFLOW_VM=quickjs` and the `nodejs_compat` and
- *    `enable_ctx_exports` compatibility flags.
+ *    `WORKFLOW_STREAMS` (see `e2e/wrangler.jsonc`);
+ *  - run with `WORKFLOW_VM=quickjs`, the `nodejs_compat` compatibility flag,
+ *    and `ctx.exports` available (a compatibility date of 2026-09-01 or
+ *    later, or the `enable_ctx_exports` flag).
+ *
+ * See the package README for a complete setup.
  */
 import { installQuickJSModules, type QuickJSModules } from './quickjs.js';
 import { configureRuntime, type FlowRoute } from './runtime.js';
@@ -24,7 +27,7 @@ export type { QuickJSModules };
 
 export interface SetupOptions {
   deploymentId: string;
-  /** `createFlowRoute` from the combined workflow bundle (see poc/build.mjs). */
+  /** `createFlowRoute` from the combined workflow bundle (see `buildCloudflareWorkflows` in `@workflow/world-cloudflare/build`). */
   createFlowRoute: () => FlowRoute;
   quickjs: QuickJSModules;
   /** `setWorld` from `workflow/runtime`, so the World becomes the active one. */

@@ -86,6 +86,10 @@ export {
   healthCheck,
 } from './runtime/helpers.js';
 export {
+  type PrecompiledQuickJSModules,
+  setPrecompiledQuickJSModules,
+} from './runtime/quickjs-precompiled.js';
+export {
   getHookByToken,
   type Hook,
   type ResumedHook,

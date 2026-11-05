@@ -1,11 +1,11 @@
-/** Start and stop `wrangler dev` for the POC Worker (local workerd only). */
+/** Start and stop `wrangler dev` for the e2e Worker (local workerd only). */
 import { type ChildProcess, spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const pocDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-export const WRANGLER =
-  process.env.WRANGLER_BIN ?? 'npx --yes wrangler@4.146.0';
+const e2eDir = join(dirname(fileURLToPath(import.meta.url)), '..');
+// The package's pinned `wrangler` devDependency.
+export const WRANGLER = process.env.WRANGLER_BIN ?? 'pnpm exec wrangler';
 
 export interface DevServer {
   url: string;
@@ -21,7 +21,7 @@ export async function startDev(
   const child: ChildProcess = spawn(
     `${WRANGLER} dev --config wrangler.jsonc --port ${port} --persist-to ${persistTo} --show-interactive-dev-session=false`,
     {
-      cwd: pocDir,
+      cwd: e2eDir,
       shell: true,
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],

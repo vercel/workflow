@@ -1,4 +1,4 @@
-// Minimal ambient declarations for the Workers runtime APIs this POC uses.
+// Minimal ambient declarations for the Workers runtime APIs this package uses.
 // Kept local so the package does not need @cloudflare/workers-types.
 
 declare module 'cloudflare:workers' {

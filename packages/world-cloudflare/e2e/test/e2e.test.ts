@@ -1,6 +1,6 @@
 /**
  * End-to-end tests of the Durable Objects World under local `wrangler dev`
- * (workerd + local Durable Object storage). Run with `pnpm test:poc`.
+ * (workerd + local Durable Object storage). Run with `pnpm test:e2e`.
  *
  * Crash recovery is tested by killing the whole `wrangler dev` process group
  * (the isolate and every object instance die with it) and starting it again
@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { type DevServer, startDev } from './wrangler.js';
 
 const port = 8700 + Math.floor(Math.random() * 200);
-const persistTo = mkdtempSync(join(tmpdir(), 'wf-cf-poc-'));
+const persistTo = mkdtempSync(join(tmpdir(), 'wf-cf-e2e-'));
 let server: DevServer;
 
 interface LoggedEvent {
