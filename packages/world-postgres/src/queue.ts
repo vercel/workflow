@@ -1173,7 +1173,7 @@ export function createQueue(
         singleOrchestratorRunIdOf(body) !== runId ||
         (typeof body === 'object' &&
           body !== null &&
-          ('runInput' in body || 'invoke' in body))
+          ('runInput' in body || 'invoke' in body || 'hookInput' in body))
       ) {
         continue;
       }
