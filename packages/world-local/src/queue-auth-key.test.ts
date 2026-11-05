@@ -354,7 +354,11 @@ describe('world.clear()', () => {
   });
 });
 
-describe('deliveries, with real timers', () => {
+// Each case also runs with the route answering 30ms late, so a test cannot
+// pass only because the route decided before the test moved on.
+describe.each([
+  0, 30,
+])('deliveries, with real timers (route delay %ims)', (delayMs) => {
   let server: Server | undefined;
 
   afterEach(async () => {
@@ -365,18 +369,27 @@ describe('deliveries, with real timers', () => {
     server = undefined;
   });
 
+  type Decision = { key: string | undefined; accepted: boolean };
+
   /**
    * A flow route that accepts the key in `dataDir`'s file and answers anything
-   * else with the runtime's marked 401, recording each key it was sent.
+   * else with the runtime's marked 401. `decide` overrides that check. Each
+   * delivery is recorded once it has been decided, with the outcome, so a
+   * test can wait for a delivery to be accepted before it changes the file.
    */
-  async function route(dataDir: string) {
-    const sent: (string | undefined)[] = [];
+  async function route(
+    dataDir: string,
+    decide: (key: string | undefined) => boolean | Promise<boolean> = async (
+      key
+    ) => key !== undefined && key === (await readQueueAuthKeyFile(dataDir))
+  ) {
+    const decisions: Decision[] = [];
     server = createServer(async (request, response) => {
       for await (const _ of request);
       const key = request.headers[QUEUE_AUTH_HEADER] as string | undefined;
-      sent.push(key);
-      const accepted =
-        key !== undefined && key === (await readQueueAuthKeyFile(dataDir));
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const accepted = await decide(key);
+      decisions.push({ key, accepted });
       response.setHeader('content-type', 'application/json');
       if (accepted) {
         response.end('{}');
@@ -390,14 +403,17 @@ describe('deliveries, with real timers', () => {
       server?.listen(0, '127.0.0.1', resolve)
     );
     const { port } = server.address() as AddressInfo;
-    return { sent, baseUrl: `http://127.0.0.1:${port}` };
+    return { decisions, baseUrl: `http://127.0.0.1:${port}` };
   }
+
+  const accepted = (decisions: Decision[]) =>
+    decisions.filter((decision) => decision.accepted).length;
 
   it("a starting app's first delivery carries its new key on the first attempt, without waiting", async () => {
     const dataDir = path.join(base, 'data');
     mkdirSync(dataDir);
     writeFileSync(keyFile(dataDir), `${generateQueueAuthKey()}\n`);
-    const { sent, baseUrl } = await route(dataDir);
+    const { decisions, baseUrl } = await route(dataDir);
     const world = createWorld({ dataDir, baseUrl });
     try {
       const startedAt = Date.now();
@@ -405,10 +421,12 @@ describe('deliveries, with real timers', () => {
         '__wkf_workflow_test' as never,
         { runId: 'wrun_1' } as never
       );
-      await vi.waitFor(() => expect(sent).toHaveLength(1), { interval: 10 });
+      await vi.waitFor(() => expect(decisions).toHaveLength(1), {
+        interval: 10,
+      });
       // Far below world-local's 5s retry backoff: nothing waited or retried.
       expect(Date.now() - startedAt).toBeLessThan(2_000);
-      expect(sent).toEqual([readKey(dataDir)]);
+      expect(decisions).toEqual([{ key: readKey(dataDir), accepted: true }]);
     } finally {
       await world.close?.();
     }
@@ -419,18 +437,21 @@ describe('deliveries, with real timers', () => {
     mkdirSync(dataDir);
     const old = generateQueueAuthKey();
     writeFileSync(keyFile(dataDir), `${old}\n`);
-    const { sent, baseUrl } = await route(dataDir);
+    const { decisions, baseUrl } = await route(dataDir);
     const cli = createWorld({ dataDir, baseUrl, queueAuthKey: 'read' });
     try {
-      // The CLI read the key, then the app restarted and wrote a new one.
+      // The CLI reads the key and its first delivery is accepted with it.
       await cli.queue(
         '__wkf_workflow_test' as never,
         { runId: 'wrun_1' } as never
       );
-      await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0), {
+      await vi.waitFor(() => expect(accepted(decisions)).toBe(1), {
         interval: 10,
       });
-      sent.length = 0;
+      expect(decisions).toEqual([{ key: old, accepted: true }]);
+      decisions.length = 0;
+
+      // Only then does the app restart and write a new key.
       const fresh = generateQueueAuthKey();
       writeFileSync(keyFile(dataDir), `${fresh}\n`);
 
@@ -439,9 +460,13 @@ describe('deliveries, with real timers', () => {
         '__wkf_workflow_test' as never,
         { runId: 'wrun_2' } as never
       );
-      await vi.waitFor(() => expect(sent).toEqual([old, fresh]), {
+      await vi.waitFor(() => expect(accepted(decisions)).toBe(1), {
         interval: 10,
       });
+      expect(decisions).toEqual([
+        { key: old, accepted: false },
+        { key: fresh, accepted: true },
+      ]);
       expect(Date.now() - startedAt).toBeLessThan(2_000);
       expect(readKey(dataDir)).toBe(fresh);
     } finally {
@@ -452,32 +477,28 @@ describe('deliveries, with real timers', () => {
   it('a sender that found no key file retries at once once the app has written one', async () => {
     const dataDir = path.join(base, 'data');
     mkdirSync(dataDir);
-    const { sent, baseUrl } = await route(dataDir);
+    // The app refuses the keyless delivery after writing its key (its reload
+    // rewrites a missing file before it refuses).
+    const appKey = generateQueueAuthKey();
+    const { decisions, baseUrl } = await route(dataDir, (key) => {
+      if (key === appKey) return true;
+      writeFileSync(keyFile(dataDir), `${appKey}\n`);
+      return false;
+    });
     const cli = createWorld({ dataDir, baseUrl, queueAuthKey: 'read' });
     try {
-      server?.removeAllListeners('request');
-      // The app answers the keyless delivery after writing its key (its
-      // reload rewrites a missing file before it refuses).
-      const appKey = generateQueueAuthKey();
-      server?.on('request', async (request, response) => {
-        for await (const _ of request);
-        const key = request.headers[QUEUE_AUTH_HEADER] as string | undefined;
-        sent.push(key);
-        if (key === appKey) return void response.end('{}');
-        writeFileSync(keyFile(dataDir), `${appKey}\n`);
-        response.statusCode = 401;
-        response.setHeader(QUEUE_AUTH_REFUSED_HEADER, '1');
-        response.end(JSON.stringify({ code: QUEUE_AUTH_REFUSED_CODE }));
-      });
-
       const startedAt = Date.now();
       await cli.queue(
         '__wkf_workflow_test' as never,
         { runId: 'wrun_1' } as never
       );
-      await vi.waitFor(() => expect(sent).toEqual([undefined, appKey]), {
+      await vi.waitFor(() => expect(accepted(decisions)).toBe(1), {
         interval: 10,
       });
+      expect(decisions).toEqual([
+        { key: undefined, accepted: false },
+        { key: appKey, accepted: true },
+      ]);
       expect(Date.now() - startedAt).toBeLessThan(2_000);
     } finally {
       await cli.close?.();
