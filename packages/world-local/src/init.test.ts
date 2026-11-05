@@ -2,6 +2,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -165,6 +166,35 @@ describe('ensureDataDir', () => {
     } catch {
       // Ignore cleanup errors
     }
+  });
+
+  describe('concurrent checks', () => {
+    // Real file operations. On Windows a probe file two calls share fails one
+    // of them with EPERM (see init-write-probe.test.ts for that rule on every
+    // OS); here they must simply all succeed and leave no probe behind.
+    it('20 concurrent checks of one directory all succeed', async () => {
+      const dataDir = path.join(testBaseDir, 'shared');
+      await expect(
+        Promise.all(Array.from({ length: 20 }, () => ensureDataDir(dataDir)))
+      ).resolves.toHaveLength(20);
+      expect(
+        readdirSync(dataDir).filter((name) =>
+          name.startsWith('.workflow-write-test-')
+        )
+      ).toEqual([]);
+    });
+
+    it('createWorld() followed at once by start() succeeds', async () => {
+      const { createWorld } = await import('./index.js');
+      const dataDir = path.join(testBaseDir, 'world');
+      const world = createWorld({ dataDir });
+      try {
+        await expect(world.start?.()).resolves.toBeUndefined();
+        expect(existsSync(path.join(dataDir, 'queue-auth-key'))).toBe(true);
+      } finally {
+        await world.close?.();
+      }
+    });
   });
 
   describe('.gitignore', () => {

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   access,
   constants,
@@ -250,10 +251,14 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
     );
   }
 
-  // Verify the directory is writable by attempting to write a temp file
+  // Verify the directory is writable by attempting to write a temp file.
+  // Its name is unique per call: concurrent checks of one directory (a World
+  // writing its queue auth key while start() initializes the directory, or
+  // two processes) must not share a file, because on Windows unlinking a file
+  // another call still has open fails with EPERM.
   const testFile = path.join(
     absolutePath,
-    `.workflow-write-test-${Date.now()}`
+    `.workflow-write-test-${process.pid}-${randomBytes(6).toString('hex')}`
   );
   try {
     await writeFile(testFile, '');
