@@ -91,6 +91,17 @@ export const MAX_LOCAL_SAFETY_LIMIT = 256;
  */
 export const MAX_QUEUE_AUTH_REFUSALS = 5;
 
+/**
+ * Refusals of one message after which the key file held a new key, retried
+ * at once and not counted. Rotations happen when one of the app's processes
+ * starts, seconds apart; past this many for one message, the key is changing
+ * on every attempt (something rewrites it in a loop), and further refusals
+ * count like any other: they back off and give the message up. So a message
+ * never spins, and ends after at most this plus MAX_QUEUE_AUTH_REFUSALS
+ * deliveries, far below MAX_LOCAL_SAFETY_LIMIT.
+ */
+export const MAX_UNCOUNTED_KEY_ROTATIONS = 16;
+
 /** Failed deliveries retried 5s apart, before the backoff grows. */
 const LINEAR_RETRY_DELIVERIES = 32;
 const LINEAR_RETRY_DELAY_MS = 5_000;
@@ -431,6 +442,9 @@ export function createQueue(
       // Deliveries the runtime refused as unauthenticated (see
       // `MAX_QUEUE_AUTH_REFUSALS`).
       let authRefusals = 0;
+      // Refusals fixed by a new key, retried at once (see
+      // `MAX_UNCOUNTED_KEY_ROTATIONS`).
+      let keyRotations = 0;
       let releaseDelivery: (() => void) | undefined;
       const endDelivery = () => {
         releaseDelivery?.();
@@ -556,9 +570,13 @@ export function createQueue(
             // Another process of the app may have written a new key (the app
             // restarted, a script called `start()`), so re-read the key file
             // and, if it changed, retry at once with the new key. That
-            // refusal is not counted: the key rotated, and each rotation is
-            // a write by one of the app's processes, so this cannot spin.
-            // Otherwise (the key did not change) count it and retry a few
+            // refusal is not counted: the key rotated, which one of the
+            // app's processes does when it starts. Past
+            // MAX_UNCOUNTED_KEY_ROTATIONS such retries the key is changing
+            // on every attempt, and the refusal counts like any other, so
+            // the message cannot spin.
+            // Otherwise (the key did not change, or the uncounted rotations
+            // are used up) count it and retry a few
             // times with the short backoff (the route re-reads the file on a
             // mismatch too, rate-limited), then give the message up rather
             // than retry it for hours. Retrying is safe: a refused delivery
@@ -566,7 +584,12 @@ export function createQueue(
             // an attempt either. A given-up message's run is left as it is.
             delivery--;
             const reloadedKey = await queueAuthKey.reload();
-            if (reloadedKey !== undefined && reloadedKey !== sentKey) {
+            if (
+              reloadedKey !== undefined &&
+              reloadedKey !== sentKey &&
+              keyRotations < MAX_UNCOUNTED_KEY_ROTATIONS
+            ) {
+              keyRotations++;
               debugLog(
                 '[world-local]: delivery refused as unauthenticated; the queue auth key changed, retrying with it'
               );

@@ -1,6 +1,8 @@
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  generateQueueAuthKey,
   getQueueAuthKey,
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
@@ -8,7 +10,12 @@ import {
 } from '@workflow/utils';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createQueue, MAX_QUEUE_AUTH_REFUSALS } from './queue';
+import {
+  createQueue,
+  MAX_LOCAL_SAFETY_LIMIT,
+  MAX_QUEUE_AUTH_REFUSALS,
+  MAX_UNCOUNTED_KEY_ROTATIONS,
+} from './queue';
 
 // Retry backoffs resolve at once.
 vi.mock('node:timers/promises', () => ({
@@ -154,6 +161,41 @@ describe('queue auth refusal', () => {
       await new Promise((resolve) => setImmediate(resolve));
     }
   };
+
+  it('stays bounded, and backs off, when the key changes on every refusal', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(sleep).mockClear();
+    // A key file rewritten before every reload: each refusal looks fixable.
+    let key = generateQueueAuthKey();
+    const rotating = {
+      current: async () => key,
+      reload: async () => {
+        key = generateQueueAuthKey();
+        return key;
+      },
+      restore: async () => {},
+    };
+    localQueue = createQueue({}, { queueAuthKey: rotating });
+    const handler = vi.fn(async (_req: Request) => refusal());
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'wrun_rotating',
+    });
+    await vi.waitFor(() => expect(errors).toHaveBeenCalledTimes(1));
+
+    // The first rotations are retried at once and not counted; past the
+    // allowance they count, back off and give the message up, far below
+    // the safety limit, with no tight spin.
+    expect(handler).toHaveBeenCalledTimes(
+      MAX_UNCOUNTED_KEY_ROTATIONS + MAX_QUEUE_AUTH_REFUSALS
+    );
+    expect(MAX_UNCOUNTED_KEY_ROTATIONS + MAX_QUEUE_AUTH_REFUSALS).toBeLessThan(
+      MAX_LOCAL_SAFETY_LIMIT
+    );
+    expect(vi.mocked(sleep)).toHaveBeenCalledTimes(MAX_QUEUE_AUTH_REFUSALS - 1);
+    expect(errors.mock.calls[0]?.[0]).toContain('giving up the message');
+  });
 
   it('retries a marked 401 a bounded number of times, then gives up with one line', async () => {
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
