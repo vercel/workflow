@@ -76,8 +76,8 @@ function warnUndeclaredQueueAuthMode(): void {
  * Logs, once per queue route, what `WORKFLOW_QUEUE_AUTH` does for `world`:
  * loudly when it turns the check off, and as an error when that is refused
  * because dynamic workflows are enabled. Silent in the default case. A World
- * that declares no mode gets a warning instead (once, process-wide), since
- * its flow route is not checked.
+ * that declares no mode gets a warning instead, since its flow route is not
+ * checked: once, then at most once a minute when routes restart.
  */
 export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
   if (world.queueAuthMode === undefined) {

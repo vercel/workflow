@@ -148,7 +148,7 @@ describe('authorizeQueueDelivery', () => {
 });
 
 describe('logQueueAuthSetting', () => {
-  it('warns once, process-wide, when the World declares no mode', () => {
+  it('warns once for several route startups at once when the World declares no mode', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     // Several route copies (bundler layers) initializing at startup.
     logQueueAuthSetting({});
