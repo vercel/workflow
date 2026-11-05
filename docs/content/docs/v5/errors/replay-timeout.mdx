@@ -22,6 +22,8 @@ Workflow replay exceeded maximum duration (240s) after 4 attempts
 ╰▶ docs: https://workflow-sdk.dev/err/replay-timeout
 ```
 
+In the [web UI](/docs/observability#web-ui), a run that failed with `REPLAY_TIMEOUT` shows a banner with the environment variable to set, unless it already ran on the QuickJS VM with snapshotting.
+
 ## Why it happens
 
 - **The event log is very large.** On the default engine, replay time grows with the number of events in the run.

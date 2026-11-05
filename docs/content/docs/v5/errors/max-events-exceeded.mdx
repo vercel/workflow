@@ -29,6 +29,8 @@ Before a run reaches the limit, the runtime logs a warning in your function logs
 Workflow run is approaching the per-run event limit (<count> of <limit> events, 50%). ...
 ```
 
+In the [web UI](/docs/observability#web-ui), a run that failed with `MAX_EVENTS_EXCEEDED` shows a banner with the environment variable to set, unless it already ran on the QuickJS VM with snapshotting. The run's sidebar shows which **Workflow VM** it ran on.
+
 ## Why it happens
 
 - **The workflow is long-running by design.** Agents, chat sessions, and loops that wait on hooks or sleeps for days accumulate events with every iteration.
