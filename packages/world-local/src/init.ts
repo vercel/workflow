@@ -214,7 +214,8 @@ export function upgradeVersion(
 
 /**
  * Ensures the data directory exists and is writable.
- * Creates the directory if it doesn't exist.
+ * Creates the directory if it doesn't exist, and its `.gitignore` if it has
+ * none.
  *
  * @param dataDir - The path to the data directory
  * @throws {DataDirAccessError} If the directory cannot be created or accessed
@@ -224,15 +225,7 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
 
   // Try to create the directory if it doesn't exist
   try {
-    const created = await mkdir(absolutePath, { recursive: true });
-    if (created !== undefined) {
-      // A directory this created gets a `.gitignore` that ignores everything
-      // in it, run data and the queue auth key alike. `wx` never overwrites
-      // one that is already there.
-      await writeFile(path.join(absolutePath, '.gitignore'), '*\n', {
-        flag: 'wx',
-      }).catch(() => {});
-    }
+    await mkdir(absolutePath, { recursive: true });
   } catch (error: unknown) {
     const nodeError = error as NodeJS.ErrnoException;
     // EEXIST is fine - directory already exists
@@ -277,6 +270,13 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
       nodeError.code
     );
   }
+
+  // A `.gitignore` that ignores everything in the directory, run data and the
+  // queue auth key alike, whenever there is none. `wx` never overwrites one
+  // that is already there, and a failure here never fails the World.
+  await writeFile(path.join(absolutePath, '.gitignore'), '*\n', {
+    flag: 'wx',
+  }).catch(() => {});
 }
 
 /**

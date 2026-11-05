@@ -167,6 +167,56 @@ describe('ensureDataDir', () => {
     }
   });
 
+  describe('.gitignore', () => {
+    const gitignore = (dir: string) => path.join(dir, '.gitignore');
+
+    it('writes one ignoring everything into a directory it creates', async () => {
+      const dataDir = path.join(testBaseDir, 'new-data-dir');
+
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('*\n');
+    });
+
+    it('writes one into an existing directory that has none', async () => {
+      // A data directory from a release that wrote no `.gitignore`.
+      const dataDir = path.join(testBaseDir, 'existing');
+      mkdirSync(path.join(dataDir, 'runs'), { recursive: true });
+
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('*\n');
+    });
+
+    it('never overwrites an existing one', async () => {
+      const dataDir = path.join(testBaseDir, 'existing');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(gitignore(dataDir), 'mine\n');
+
+      await ensureDataDir(dataDir);
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('mine\n');
+    });
+
+    it('writes it again after it is deleted', async () => {
+      const dataDir = path.join(testBaseDir, 'existing');
+      await ensureDataDir(dataDir);
+      rmSync(gitignore(dataDir));
+
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('*\n');
+    });
+
+    it('does not fail when the path is taken by a directory', async () => {
+      const dataDir = path.join(testBaseDir, 'existing');
+      mkdirSync(gitignore(dataDir), { recursive: true });
+
+      await expect(ensureDataDir(dataDir)).resolves.toBeUndefined();
+    });
+  });
+
   describe('directory creation', () => {
     it('should create the directory if it does not exist', async () => {
       const dataDir = path.join(testBaseDir, 'new-data-dir');
