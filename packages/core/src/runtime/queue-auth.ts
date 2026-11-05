@@ -5,21 +5,24 @@ import {
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
 } from '@workflow/utils';
-import type { QueueAuthMode, World } from '@workflow/world';
+import type { World } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 
 /**
  * Environment variable that turns the queue delivery check off: `off`
- * accepts unauthenticated deliveries on a World in `'in-process-key'` mode
- * (local development, a trusted network, or a sender in another process).
- * Anything else, including unset, leaves it on.
+ * accepts unauthenticated deliveries on a World in `'loopback'` mode (a
+ * trusted network). Anything else, including unset, leaves it on.
  */
 export const QUEUE_AUTH_ENV = 'WORKFLOW_QUEUE_AUTH';
 
-/** A World that declares no mode fails closed: its deliveries are checked. */
-function queueAuthModeOf(world: Pick<World, 'queueAuth'>): QueueAuthMode {
-  return world.queueAuth ?? 'in-process-key';
+/**
+ * Whether `world`'s flow route is checked at all. Opt-in: only a World that
+ * declares `'loopback'` is; `'skip'` and a World that declares nothing are
+ * not.
+ */
+function isLoopbackChecked(world: Pick<World, 'queueAuthMode'>): boolean {
+  return world.queueAuthMode === 'loopback';
 }
 
 function isQueueAuthOffRequested(): boolean {
@@ -33,8 +36,10 @@ function isQueueAuthOffRequested(): boolean {
  * while dynamic workflows are enabled, because a forged delivery could then
  * execute stored dynamic code.
  */
-export function isQueueAuthEnforced(world: Pick<World, 'queueAuth'>): boolean {
-  if (queueAuthModeOf(world) === 'skip') return false;
+export function isQueueAuthEnforced(
+  world: Pick<World, 'queueAuthMode'>
+): boolean {
+  if (!isLoopbackChecked(world)) return false;
   return !isQueueAuthOffRequested() || isDynamicWorkflowsEnabled();
 }
 
@@ -43,8 +48,8 @@ export function isQueueAuthEnforced(world: Pick<World, 'queueAuth'>): boolean {
  * loudly when it turns the check off, and as an error when that is refused
  * because dynamic workflows are enabled. Silent in the default case.
  */
-export function logQueueAuthSetting(world: Pick<World, 'queueAuth'>): void {
-  if (queueAuthModeOf(world) === 'skip') return;
+export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
+  if (!isLoopbackChecked(world)) return;
   const raw = process.env[QUEUE_AUTH_ENV];
   if (isQueueAuthOffRequested()) {
     if (isDynamicWorkflowsEnabled()) {
@@ -99,7 +104,7 @@ export interface QueueAuthRefusal {
  * message up rather than retry it: the refusal cannot change on redelivery.
  */
 export function authorizeQueueDelivery(
-  world: Pick<World, 'queueAuth'>,
+  world: Pick<World, 'queueAuthMode'>,
   req: Request
 ): QueueAuthRefusal | undefined {
   if (!isQueueAuthEnforced(world)) return undefined;
@@ -119,21 +124,14 @@ export function authorizeQueueDelivery(
  * first refusal is logged at once, later ones at most once a minute with a
  * count, so a flood of forged requests cannot flood the logs.
  */
-export function createQueueAuthRefusalLogger(
-  world: Pick<World, 'queueAuth'>
-): () => void {
+export function createQueueAuthRefusalLogger(): () => void {
   const limit = createLogLimiter();
   return () =>
     limit((refusedSinceLastLog) => {
       runtimeLogger.warn(
         'Refused an unauthenticated queue delivery with a 401; no run was touched. ' +
-          'Only deliveries sent by this process’s own queue are accepted. If the ' +
-          'request came from a separate process (a script, CLI, or test runner) on a ' +
-          `trusted network, set ${QUEUE_AUTH_ENV}=off on this app.` +
-          (world.queueAuth === undefined
-            ? ' This World declares no `queueAuth` mode, so it is checked by default; ' +
-              "a World whose transport authenticates deliveries itself declares `queueAuth: 'skip'`."
-            : ''),
+          'Only deliveries sent by this app’s own processes are accepted. If the ' +
+          `request came from a trusted network, set ${QUEUE_AUTH_ENV}=off on this app.`,
         { refusedSinceLastLog }
       );
     });

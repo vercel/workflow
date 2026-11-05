@@ -708,7 +708,7 @@ export function workflowEntrypoint(
             return {
               handler: handler(worldHandlers),
               world: worldHandlers,
-              logQueueAuthRefusal: createQueueAuthRefusalLogger(worldHandlers),
+              logQueueAuthRefusal: createQueueAuthRefusalLogger(),
             };
           });
         }

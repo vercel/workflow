@@ -422,7 +422,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             ...callerHeaders,
             'content-type': 'application/json',
             // This process's in-memory key, which the runtime checks before
-            // the handler does any work (`queueAuth: 'in-process-key'`).
+            // the handler does any work (`queueAuthMode: 'loopback'`).
             // Attached on every attempt and both transports, so health
             // checks and in-process deliveries carry it too.
             [QUEUE_AUTH_HEADER]: getQueueAuthKey(),
@@ -752,7 +752,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   return {
     // Every delivery carries this process's in-memory key (see the send
     // loop), and the runtime refuses one that does not.
-    queueAuth: 'in-process-key',
+    queueAuthMode: 'loopback',
     queue,
     createQueueHandler,
     getDeploymentId,

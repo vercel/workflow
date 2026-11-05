@@ -131,23 +131,22 @@ async function refusalCounts(server: Server) {
 }
 
 /**
- * Skips the running test unless the server's World has its flow route
- * checked with the in-process key. A World that declares `queueAuth: 'skip'`
- * (its transport authenticates deliveries: world-vercel's private route,
- * world-postgres's database) leaves the route unchecked, so there is no
- * refusal to assert. A World that declares nothing is checked (fails closed),
- * so it runs these tests.
+ * Skips the running test unless the server's World declares
+ * `queueAuthMode: 'loopback'`, the only mode whose flow route is checked. A
+ * World that declares `'skip'` (world-vercel, world-postgres) or declares
+ * nothing (opt-in) leaves the route unchecked, so there is no refusal to
+ * assert.
  */
 async function skipUnlessKeyChecked(
   server: Server,
   ctx: { skip: (note?: string) => void }
 ) {
-  const { queueAuth } = (await fetch(
+  const { queueAuthMode } = (await fetch(
     `http://localhost:${server.info.port}/_queue-auth`
-  ).then((response) => response.json())) as { queueAuth: string | null };
-  if (queueAuth === 'skip') {
+  ).then((response) => response.json())) as { queueAuthMode: string | null };
+  if (queueAuthMode !== 'loopback') {
     ctx.skip(
-      "this World declares queueAuth: 'skip', so its flow route is not checked"
+      `this World declares queueAuthMode: ${JSON.stringify(queueAuthMode)}, so its flow route is not checked`
     );
   }
 }
@@ -162,7 +161,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 1_500));
  * from outside could do with it, start a run, fail a running one through the
  * max-deliveries path, re-trigger a step, or replay a real delivery, is
  * refused with a 401 and changes no run state. The refusal tests skip on a
- * World that declares `queueAuth: 'skip'` (world-postgres); the health-check
+ * World that declares `queueAuthMode: 'skip'` (world-postgres); the health-check
  * test runs on every World.
  */
 export function queueAuth(world: string) {

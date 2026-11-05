@@ -318,9 +318,9 @@ const app = new Hono()
     return ctx.json({ events: allEvents, snapshot });
   })
   .get('/_queue-auth', async (ctx) => {
-    // The World's declared queue auth mode; an undeclared World is checked.
+    // The World's declared queue auth mode; only 'loopback' is checked.
     const world = await getWorld();
-    return ctx.json({ queueAuth: world.queueAuth ?? null });
+    return ctx.json({ queueAuthMode: world.queueAuthMode ?? null });
   })
   .get('/_capabilities', async (ctx) => {
     const world = await getWorld();

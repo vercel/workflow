@@ -1321,7 +1321,7 @@ export function createQueue(config?: APIConfig): Queue {
   return {
     // Vercel Queues delivers to a private route that is not reachable from
     // outside the platform, so the runtime does not check deliveries itself.
-    queueAuth: 'skip',
+    queueAuthMode: 'skip',
     queue,
     queueBatch,
     createQueueHandler,

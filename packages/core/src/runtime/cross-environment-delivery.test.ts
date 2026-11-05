@@ -77,7 +77,6 @@ async function runHandler(options: {
     specVersion: SPEC_VERSION_CURRENT,
     getDeploymentId,
     ...(environment === null ? {} : { getEnvironment }),
-    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (
         _prefix: string,

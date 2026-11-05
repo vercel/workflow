@@ -63,30 +63,30 @@ afterEach(() => {
 
 describe('isQueueAuthEnforced', () => {
   it.each<[QueueAuthMode | undefined, boolean]>([
-    ['in-process-key', true],
-    [undefined, true],
+    ['loopback', true],
+    // Opt-in: a World that declares nothing is not checked.
+    [undefined, false],
     ['skip', false],
   ])('mode %s: enforced=%s by default', (mode, enforced) => {
-    expect(isQueueAuthEnforced({ queueAuth: mode })).toBe(enforced);
+    expect(isQueueAuthEnforced({ queueAuthMode: mode })).toBe(enforced);
   });
 
   it('WORKFLOW_QUEUE_AUTH=off turns it off, in any case', () => {
     for (const value of ['off', 'OFF', ' Off ']) {
       vi.stubEnv('WORKFLOW_QUEUE_AUTH', value);
-      expect(isQueueAuthEnforced({ queueAuth: 'in-process-key' })).toBe(false);
-      expect(isQueueAuthEnforced({})).toBe(false);
+      expect(isQueueAuthEnforced({ queueAuthMode: 'loopback' })).toBe(false);
     }
   });
 
   it('any other value leaves it on', () => {
     for (const value of ['on', '', '0', 'false', 'disabled']) {
       vi.stubEnv('WORKFLOW_QUEUE_AUTH', value);
-      expect(isQueueAuthEnforced({ queueAuth: 'in-process-key' })).toBe(true);
+      expect(isQueueAuthEnforced({ queueAuthMode: 'loopback' })).toBe(true);
     }
   });
 
   it('refuses off while dynamic workflows are enabled, read on every call', () => {
-    const world = { queueAuth: 'in-process-key' as const };
+    const world = { queueAuthMode: 'loopback' as const };
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
     expect(isQueueAuthEnforced(world)).toBe(false);
     vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
@@ -99,7 +99,7 @@ describe('isQueueAuthEnforced', () => {
 });
 
 describe('authorizeQueueDelivery', () => {
-  const world = { queueAuth: 'in-process-key' as const };
+  const world = { queueAuthMode: 'loopback' as const };
 
   it('lets a delivery carrying the key through', () => {
     expect(authorizeQueueDelivery(world, withKey())).toBeUndefined();
@@ -134,7 +134,7 @@ describe('authorizeQueueDelivery', () => {
   });
 
   it("does not check a World that declares 'skip'", () => {
-    expect(authorizeQueueDelivery({ queueAuth: 'skip' }, delivery())).toBe(
+    expect(authorizeQueueDelivery({ queueAuthMode: 'skip' }, delivery())).toBe(
       undefined
     );
   });
@@ -144,9 +144,9 @@ describe('logQueueAuthSetting', () => {
   it('is silent by default and for skip Worlds', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn');
     const error = vi.spyOn(runtimeLogger, 'error');
-    logQueueAuthSetting({ queueAuth: 'in-process-key' });
+    logQueueAuthSetting({ queueAuthMode: 'loopback' });
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
-    logQueueAuthSetting({ queueAuth: 'skip' });
+    logQueueAuthSetting({ queueAuthMode: 'skip' });
     expect(warn).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
   });
@@ -154,7 +154,7 @@ describe('logQueueAuthSetting', () => {
   it('warns loudly when off', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn');
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
-    logQueueAuthSetting({ queueAuth: 'in-process-key' });
+    logQueueAuthSetting({ queueAuthMode: 'loopback' });
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('QUEUE DELIVERY AUTHENTICATION IS OFF')
     );
@@ -164,14 +164,14 @@ describe('logQueueAuthSetting', () => {
     const error = vi.spyOn(runtimeLogger, 'error');
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
     vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
-    logQueueAuthSetting({ queueAuth: 'in-process-key' });
+    logQueueAuthSetting({ queueAuthMode: 'loopback' });
     expect(error).toHaveBeenCalledWith(expect.stringContaining('is refused'));
   });
 
   it('warns about an unrecognized value', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn');
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'disabled');
-    logQueueAuthSetting({ queueAuth: 'in-process-key' });
+    logQueueAuthSetting({ queueAuthMode: 'loopback' });
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('Unrecognized WORKFLOW_QUEUE_AUTH value')
     );
@@ -182,9 +182,7 @@ describe('createQueueAuthRefusalLogger', () => {
   it('logs the first refusal, then at most once a minute with a count', () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(runtimeLogger, 'warn');
-    const logRefusal = createQueueAuthRefusalLogger({
-      queueAuth: 'in-process-key',
-    });
+    const logRefusal = createQueueAuthRefusalLogger();
     logRefusal();
     logRefusal();
     logRefusal();
@@ -194,12 +192,6 @@ describe('createQueueAuthRefusalLogger', () => {
     expect(warn).toHaveBeenCalledTimes(2);
     expect(warn.mock.calls[1]?.[1]).toEqual({ refusedSinceLastLog: 3 });
   });
-
-  it('names the missing declaration for a World that declares no mode', () => {
-    const warn = vi.spyOn(runtimeLogger, 'warn');
-    createQueueAuthRefusalLogger({})();
-    expect(warn.mock.calls[0]?.[0]).toContain('declares no `queueAuth` mode');
-  });
 });
 
 describe('workflowEntrypoint queue auth', () => {
@@ -208,11 +200,11 @@ describe('workflowEntrypoint queue auth', () => {
    * storage records every write, so a test sees whether a refused request
    * reached the handler or touched a run.
    */
-  function installWorld(queueAuth: QueueAuthMode | undefined) {
+  function installWorld(queueAuthMode: QueueAuthMode | undefined) {
     const routed: Request[] = [];
     const writes = vi.fn();
     setWorld({
-      ...(queueAuth === undefined ? {} : { queueAuth }),
+      ...(queueAuthMode === undefined ? {} : { queueAuthMode }),
       specVersion: SPEC_VERSION_CURRENT,
       getDeploymentId: async () => 'dpl_test',
       createQueueHandler: vi.fn(() => async (req: Request) => {
@@ -231,7 +223,7 @@ describe('workflowEntrypoint queue auth', () => {
 
   it('refuses a request without the key before the handler sees it', async () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
-    const { routed, writes, route } = installWorld('in-process-key');
+    const { routed, writes, route } = installWorld('loopback');
 
     const response = await route(delivery());
 
@@ -245,7 +237,7 @@ describe('workflowEntrypoint queue auth', () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     vi.stubEnv('WORKFLOW_TARGET_WORLD', 'local');
     counterAdds.mockClear();
-    const { route } = installWorld('in-process-key');
+    const { route } = installWorld('loopback');
 
     await route(delivery());
     await route(delivery({ [QUEUE_AUTH_HEADER]: 'x'.repeat(43) }));
@@ -271,7 +263,7 @@ describe('workflowEntrypoint queue auth', () => {
   it('labels every refusal with the route template, whatever the request path', async () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     counterAdds.mockClear();
-    const { route } = installWorld('in-process-key');
+    const { route } = installWorld('loopback');
 
     for (const path of [
       '/.well-known/workflow/v1/flow',
@@ -301,7 +293,7 @@ describe('workflowEntrypoint queue auth', () => {
   it('counts each refusal even while the log is rate-limited', async () => {
     const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     counterAdds.mockClear();
-    const { route } = installWorld('in-process-key');
+    const { route } = installWorld('loopback');
 
     for (let i = 0; i < 5; i++) await route(delivery());
     await vi.waitFor(() => expect(counterAdds).toHaveBeenCalledTimes(5));
@@ -313,16 +305,17 @@ describe('workflowEntrypoint queue auth', () => {
     ).toHaveLength(1);
   });
 
-  it('fails closed for a World that declares no mode', async () => {
-    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+  // Opt-in until the mode is required: a World that declares nothing is not
+  // checked, so a forged request reaches its handler as it does on main.
+  it('does not check a World that declares no mode', async () => {
     const { routed, route } = installWorld(undefined);
 
-    expect((await route(delivery())).status).toBe(401);
-    expect(routed).toHaveLength(0);
+    expect((await route(delivery())).status).toBe(200);
+    expect(routed).toHaveLength(1);
   });
 
   it('hands a delivery carrying the key to the handler', async () => {
-    const { routed, route } = installWorld('in-process-key');
+    const { routed, route } = installWorld('loopback');
 
     const response = await route(withKey());
 
@@ -340,7 +333,7 @@ describe('workflowEntrypoint queue auth', () => {
   it('WORKFLOW_QUEUE_AUTH=off lets an unauthenticated request through', async () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
-    const { routed, route } = installWorld('in-process-key');
+    const { routed, route } = installWorld('loopback');
 
     expect((await route(delivery())).status).toBe(200);
     expect(routed).toHaveLength(1);
@@ -349,7 +342,7 @@ describe('workflowEntrypoint queue auth', () => {
   it('refuses off at delivery time once dynamic workflows are enabled', async () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
-    const { routed, route } = installWorld('in-process-key');
+    const { routed, route } = installWorld('loopback');
     expect((await route(delivery())).status).toBe(200);
 
     // Enabled after the route was built: read per delivery, not at boot.
@@ -359,7 +352,7 @@ describe('workflowEntrypoint queue auth', () => {
   });
 
   it('leaves the ?__health probe unauthenticated: it touches nothing', async () => {
-    const { routed, writes, route } = installWorld('in-process-key');
+    const { routed, writes, route } = installWorld('loopback');
 
     const response = await route(new Request(`${FLOW_URL}?__health`));
 

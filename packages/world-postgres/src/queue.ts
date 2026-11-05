@@ -1232,7 +1232,7 @@ export function createQueue(
     // another process enqueued, so deliveries cannot carry a process key; the
     // database credentials control who can enqueue, and the route is
     // protected at the network edge (see the Security section of the docs).
-    queueAuth: 'skip',
+    queueAuthMode: 'skip',
     createQueueHandler,
     getDeploymentId,
     queue,

@@ -129,7 +129,6 @@ async function deliver(options: {
     specVersion: SPEC_VERSION_CURRENT,
     capabilities: { inBandFence: true },
     getDeploymentId: vi.fn(async () => 'dpl_current'),
-    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (
         _prefix: string,

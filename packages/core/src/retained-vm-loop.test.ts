@@ -739,7 +739,6 @@ async function drive(
   setWorld({
     capabilities: { inBandFence: true },
     specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-    queueAuth: 'skip',
     createQueueHandler: vi.fn(
       (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
         async () => {

@@ -174,7 +174,7 @@ under `--world local`, whose only state is a data directory the script clears
 before each run. Under `--world local` it also exports `WORKFLOW_QUEUE_AUTH=off`:
 the harness's `start()` and `resumeHook()` deliveries come from its own process,
 whose in-memory queue key the app's flow route would refuse. world-postgres needs
-no such setting: it declares `queueAuth: 'skip'`, so its flow route is not checked.
+no such setting: it declares `queueAuthMode: 'skip'`, so its flow route is not checked.
 
 Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates

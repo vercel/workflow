@@ -998,36 +998,32 @@ export interface InvokeOptions {
 
 /**
  * How the runtime authenticates a delivery that reaches the Workflow SDK's
- * flow route, before it does any work. See {@link Queue.queueAuth}.
+ * flow route, before it does any work. See {@link Queue.queueAuthMode}.
  *
- * - `'in-process-key'`: the World's queue runs in the app's own process and
- *   attaches the process's in-memory key (`getQueueAuthKey()` from
- *   `@workflow/utils`) as the `QUEUE_AUTH_HEADER` header of every delivery it
- *   sends, over HTTP or to an in-process handler. The runtime refuses, with a
- *   401 and without touching any run, a delivery that does not carry it.
- * - `'skip'`: the runtime does not check. For a World whose transport
- *   authenticates deliveries itself (Vercel Queues reaches a private route),
- *   or whose deliveries cannot carry a process key (world-postgres's workers
- *   may deliver a job another process enqueued; its database controls who
- *   can enqueue, and its route must be protected at the network edge).
+ * - `'loopback'`: the World's queue delivers back to the app it runs in, and
+ *   attaches the app's queue key (`getQueueAuthKey()` from `@workflow/utils`)
+ *   as the `QUEUE_AUTH_HEADER` header of every delivery it sends, over HTTP
+ *   or to an in-process handler registered with `registerHandler`. The
+ *   runtime refuses, with a 401 and without touching any run, a delivery that
+ *   does not carry it. "Loopback" means sent by this app's own queue, not any
+ *   request from localhost. Temporary: it goes away once the Local World's
+ *   queue no longer delivers back to the app over its own routes.
+ * - `'skip'`: the runtime does not check.
  */
-export type QueueAuthMode = 'in-process-key' | 'skip';
+export type QueueAuthMode = 'loopback' | 'skip';
 
 export interface Queue {
   getDeploymentId(): Promise<string>;
 
   /**
    * How the runtime authenticates the deliveries this World's queue sends
-   * (see {@link QueueAuthMode}). A World that declares nothing is treated as
-   * `'in-process-key'`, so it fails closed: unless its queue attaches the key,
-   * every delivery is refused. A World whose route is protected some other
-   * way declares `'skip'`.
+   * (see {@link QueueAuthMode}). Opt-in: a World that declares nothing is not
+   * checked. The mode becomes required in SDK v6.
    *
-   * `WORKFLOW_QUEUE_AUTH=off` turns the check off for `'in-process-key'`
-   * Worlds (a trusted network, or a sender in another process), except while
-   * dynamic workflows are enabled.
+   * `WORKFLOW_QUEUE_AUTH=off` turns the check off for `'loopback'` Worlds (a
+   * trusted network), except while dynamic workflows are enabled.
    */
-  queueAuth?: QueueAuthMode;
+  queueAuthMode?: QueueAuthMode;
 
   /**
    * Send an invocation to a run's executor. Must be enabled via capabilities.invoke.

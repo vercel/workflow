@@ -51,9 +51,9 @@ describe('queue auth key on deliveries', () => {
     return { seen, baseUrl: `http://127.0.0.1:${port}` };
   }
 
-  it("declares 'in-process-key'", () => {
+  it("declares 'loopback'", () => {
     localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
-    expect(localQueue.queueAuth).toBe('in-process-key');
+    expect(localQueue.queueAuthMode).toBe('loopback');
   });
 
   it('attaches the key to an in-process delivery', async () => {
