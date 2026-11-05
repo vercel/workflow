@@ -83,10 +83,7 @@ export function createWorld(
   // opened on the first subscription. Lingering on it holds a worker slot,
   // so at most half of this process's slots linger at once.
   const runEventsFeed = createRunEventsFeed(pool, {
-    maxLiveSubscriptions: Math.max(
-      1,
-      Math.floor((config.queueConcurrency || 50) / 2)
-    ),
+    maxLiveSubscriptions: Math.floor((config.queueConcurrency || 50) / 2),
   });
   const storage = createStorage(
     drizzle,
