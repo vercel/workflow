@@ -717,7 +717,7 @@ export function workflowEntrypoint(
         // that is not a delivery from this process's own queue is refused
         // and dropped (see `authorizeQueueDelivery`). Covers every delivery
         // to this route, health checks and invocations included.
-        const refusal = authorizeQueueDelivery(cachedRoute.world, req);
+        const refusal = await authorizeQueueDelivery(cachedRoute.world, req);
         if (refusal) {
           cachedRoute.logQueueAuthRefusal();
           // Counted, not awaited: the 401 does not wait on a meter. The route

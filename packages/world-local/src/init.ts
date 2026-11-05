@@ -224,7 +224,15 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
 
   // Try to create the directory if it doesn't exist
   try {
-    await mkdir(absolutePath, { recursive: true });
+    const created = await mkdir(absolutePath, { recursive: true });
+    if (created !== undefined) {
+      // A directory this created gets a `.gitignore` that ignores everything
+      // in it, run data and the queue auth key alike. `wx` never overwrites
+      // one that is already there.
+      await writeFile(path.join(absolutePath, '.gitignore'), '*\n', {
+        flag: 'wx',
+      }).catch(() => {});
+    }
   } catch (error: unknown) {
     const nodeError = error as NodeJS.ErrnoException;
     // EEXIST is fine - directory already exists

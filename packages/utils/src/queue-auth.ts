@@ -1,17 +1,21 @@
 import { globalSingleton } from './global-singleton.js';
 
 /**
- * The request header a World's in-process queue attaches to every delivery
- * it sends to the app's queue routes, carrying {@link getQueueAuthKey}. The
- * runtime's flow route compares it against the same key before it does any
- * work (see `authorizeQueueDelivery` in `@workflow/core`).
+ * The request header a World's queue attaches to every delivery it sends to
+ * the app's flow route, carrying the app's queue key. The runtime's flow
+ * route checks it before it does any work (see `authorizeQueueDelivery` in
+ * `@workflow/core`).
  */
 export const QUEUE_AUTH_HEADER = 'x-workflow-auth';
 
 /** 32 random bytes, base64url: 43 characters. */
 const KEY_BYTES = 32;
 
-function generateKey(): string {
+/** A key's shape: {@link generateQueueAuthKey}'s output, and nothing else. */
+const KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+/** A new random queue auth key: 32 random bytes, base64url. */
+export function generateQueueAuthKey(): string {
   const bytes = new Uint8Array(KEY_BYTES);
   globalThis.crypto.getRandomValues(bytes);
   let binary = '';
@@ -22,36 +26,87 @@ function generateKey(): string {
     .replace(/=+$/, '');
 }
 
+/** Whether `value` has the shape of a queue auth key (not whether it is the current one). */
+export function isWellFormedQueueAuthKey(
+  value: string | null | undefined
+): value is string {
+  return typeof value === 'string' && KEY_PATTERN.test(value);
+}
+
 /**
- * The process's queue auth key: random, generated on first use, held only in
- * memory and never stored, logged or configured.
- *
- * Process-wide rather than per module copy: the queue that sends a delivery
- * and the route that receives it can sit in different bundler layers of one
- * process (see `globalSingleton`), and both must read the same key. A
- * different process has a different key, so only deliveries sent by this
- * process's own queue are accepted by its routes.
+ * A process-wide key held only in memory, for a World whose queue and routes
+ * always share one process (world-sim). The Local World shares its key
+ * through its data directory instead; see {@link setQueueAuthKeySource}.
  */
 export function getQueueAuthKey(): string {
   return globalSingleton('@workflow/utils//queueAuthKey', 1, () => ({
-    key: generateKey(),
+    key: generateQueueAuthKey(),
   })).key;
 }
 
 /**
- * Whether `value` (a delivery's {@link QUEUE_AUTH_HEADER}) is this process's
- * queue auth key. Constant time in the key's contents: the length is not
- * secret, so a value of another length is refused at once.
+ * Whether `value` (a delivery's {@link QUEUE_AUTH_HEADER}) equals `expected`,
+ * by default the in-memory {@link getQueueAuthKey}. Constant time in the
+ * key's contents: the length is not secret, so a value of another length is
+ * refused at once.
  */
-export function isQueueAuthKey(value: string | null | undefined): boolean {
-  if (typeof value !== 'string') return false;
-  const key = getQueueAuthKey();
-  if (value.length !== key.length) return false;
+export function isQueueAuthKey(
+  value: string | null | undefined,
+  expected: string | undefined = getQueueAuthKey()
+): boolean {
+  if (typeof value !== 'string' || typeof expected !== 'string') return false;
+  if (value.length !== expected.length) return false;
   let diff = 0;
-  for (let i = 0; i < key.length; i++) {
-    diff |= value.charCodeAt(i) ^ key.charCodeAt(i);
+  for (let i = 0; i < expected.length; i++) {
+    diff |= value.charCodeAt(i) ^ expected.charCodeAt(i);
   }
   return diff === 0;
+}
+
+/**
+ * Where the receiving side of this process reads the key a delivery must
+ * carry: the key held in memory, and a way to reload it from storage when a
+ * delivery carries a different one (another process of the app wrote a new
+ * key). Registered by the Local World that generates the app's key.
+ */
+export interface QueueAuthKeySource {
+  /** The key in memory. No I/O: called on every delivery. */
+  current(): string | undefined;
+  /** Reloads the key from storage, rate-limited, and returns it. */
+  reload(): Promise<string | undefined>;
+}
+
+const keySourceState = () =>
+  globalSingleton('@workflow/utils//queueAuthKeySource', 1, () => ({
+    source: undefined as QueueAuthKeySource | undefined,
+  }));
+
+/**
+ * Sets this process's receiving-side key source (process-wide, so every
+ * bundler layer's copy of the route reads the same one). Without one, the
+ * receiving side uses the in-memory {@link getQueueAuthKey}.
+ */
+export function setQueueAuthKeySource(
+  source: QueueAuthKeySource | undefined
+): void {
+  keySourceState().source = source;
+}
+
+/**
+ * Whether a delivery's {@link QUEUE_AUTH_HEADER} is the app's current key.
+ * Compares against the key in memory first. Only on a mismatch does it reload
+ * the key from storage (rate-limited by the source) and compare again, so a
+ * key another process of the app wrote is accepted without reading storage
+ * on every delivery.
+ */
+export async function verifyQueueAuthKey(
+  value: string | null | undefined
+): Promise<boolean> {
+  const { source } = keySourceState();
+  if (!source) return isQueueAuthKey(value);
+  if (isQueueAuthKey(value, source.current())) return true;
+  if (!isWellFormedQueueAuthKey(value)) return false;
+  return isQueueAuthKey(value, await source.reload());
 }
 
 /**
@@ -60,10 +115,10 @@ export function isQueueAuthKey(value: string | null | undefined): boolean {
  * `@workflow/core`), so the sending queue can tell that refusal apart from a
  * bare 401 from something in front of the app, such as a proxy.
  *
- * The refusal is permanent: inside one process the sender and the route read
- * the same key, so a refused delivery came from another process (or a World
- * that sends no key), and redelivering it can never succeed. A queue that sees
- * the marker gives the message up instead of retrying it.
+ * A queue that sees the marker reloads its key, since another process of the
+ * app may have written a new one, retries a few times, then gives the message
+ * up instead of retrying it for hours. A refused delivery touched no run, so
+ * retrying it is safe.
  */
 export const QUEUE_AUTH_REFUSED_HEADER = 'x-workflow-auth-refused';
 

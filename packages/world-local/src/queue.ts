@@ -34,6 +34,7 @@ import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
+import type { QueueAuthKey } from './queue-auth-key.js';
 
 /**
  * JSON transport that preserves Uint8Array values using the same
@@ -240,7 +241,24 @@ export function createRunGate() {
   };
 }
 
-export function createQueue(config: Partial<Config>): LocalQueue {
+/**
+ * The key a queue sends when no World gave it one (a queue created on its
+ * own, as unit tests do): the process's in-memory key.
+ */
+const inMemoryQueueAuthKey: QueueAuthKey = {
+  current: async () => getQueueAuthKey(),
+  reload: async () => getQueueAuthKey(),
+  restore: async () => {},
+};
+
+export function createQueue(
+  config: Partial<Config>,
+  options: {
+    /** The app's queue auth key, from `createWorld` (see `queue-auth-key.ts`). */
+    queueAuthKey?: QueueAuthKey;
+  } = {}
+): LocalQueue {
+  const queueAuthKey = options.queueAuthKey ?? inMemoryQueueAuthKey;
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
   // mixes transports mid-flight.
@@ -418,14 +436,16 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         for (let loop = 0; loop - handoffs < MAX_LOCAL_SAFETY_LIMIT; loop++) {
           releaseDelivery = await acquireDelivery();
           if (closeSignal.aborted) return;
+          // The app's key, which the runtime checks before the handler does
+          // any work (`queueAuthMode: 'loopback'`). Cached: no file read per
+          // delivery. Attached on every attempt and both transports, so
+          // health checks and in-process deliveries carry it too. A reader
+          // with no key file yet sends none, and is refused.
+          const sentKey = await queueAuthKey.current();
           const headers: Record<string, string> = {
             ...callerHeaders,
             'content-type': 'application/json',
-            // This process's in-memory key, which the runtime checks before
-            // the handler does any work (`queueAuthMode: 'loopback'`).
-            // Attached on every attempt and both transports, so health
-            // checks and in-process deliveries carry it too.
-            [QUEUE_AUTH_HEADER]: getQueueAuthKey(),
+            ...(sentKey !== undefined && { [QUEUE_AUTH_HEADER]: sentKey }),
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
             'x-vqs-message-attempt': String(delivery + 1 - handoffs),
@@ -528,21 +548,26 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
           if (isQueueAuthRefusal(response)) {
             // The runtime's own queue auth refusal (marked, unlike a proxy's
-            // bare 401). This process's queue and its routes read the same
-            // key, so the route that refused it is another process's. That is
-            // permanent for a sender in another process, but not in cluster
-            // mode (several processes on one port: PM2 -i N, node:cluster,
-            // Nitro's node-cluster), where a loopback delivery can land on a
-            // sibling with a different key and a retry can reach this one.
-            // So retry a few times with the short backoff, then give the
+            // bare 401): the route holds a key other than the one sent.
+            // Another process of the app may have written a new key (the app
+            // restarted, a script called `start()`), so re-read the key file
+            // and, if it changed, retry at once with the new key. Otherwise
+            // retry a few times with the short backoff (the route re-reads
+            // the file on a mismatch too, rate-limited), then give the
             // message up rather than retry it for hours. Retrying is safe: a
             // refused delivery reached no handler and touched no run, so it
-            // is not counted as an attempt either. A given-up message's run is
-            // left as it is, and the app's startup recovery re-enqueues a
-            // pending or running run.
+            // is not counted as an attempt either. A given-up message's run
+            // is left as it is.
             delivery--;
             authRefusals++;
+            const reloadedKey = await queueAuthKey.reload();
             if (authRefusals < MAX_QUEUE_AUTH_REFUSALS) {
+              if (reloadedKey !== undefined && reloadedKey !== sentKey) {
+                debugLog(
+                  `[world-local]: delivery refused as unauthenticated; the queue auth key changed, retrying with it (${authRefusals}/${MAX_QUEUE_AUTH_REFUSALS})`
+                );
+                continue;
+              }
               debugLog(
                 `[world-local]: delivery refused as unauthenticated (${authRefusals}/${MAX_QUEUE_AUTH_REFUSALS}), retrying`
               );

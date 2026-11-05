@@ -1,9 +1,9 @@
 import {
   createLogLimiter,
-  isQueueAuthKey,
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
+  verifyQueueAuthKey,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
@@ -91,8 +91,8 @@ export interface QueueAuthRefusal {
 }
 
 /**
- * Checks that a request to a queue route is a delivery from this process's
- * own queue, before the handler reads its body or touches any run.
+ * Checks that a request to the flow route carries the app's queue key,
+ * before the handler reads its body or touches any run.
  *
  * Returns `undefined` to let the delivery through, or the refusal to answer
  * with. A refused request is dropped as is: its run id would come from an
@@ -100,16 +100,19 @@ export interface QueueAuthRefusal {
  * forger the very effect the check exists to deny.
  *
  * The 401 carries `QUEUE_AUTH_REFUSED_HEADER` and `QUEUE_AUTH_REFUSED_CODE`,
- * so the sending queue can tell it from a proxy's bare 401 and give the
- * message up rather than retry it: the refusal cannot change on redelivery.
+ * so the sending queue can tell it from a proxy's bare 401: it reloads its
+ * key (another process of the app may have written a new one) and retries a
+ * few times before giving the message up.
  */
-export function authorizeQueueDelivery(
+export async function authorizeQueueDelivery(
   world: Pick<World, 'queueAuthMode'>,
   req: Request
-): QueueAuthRefusal | undefined {
+): Promise<QueueAuthRefusal | undefined> {
   if (!isQueueAuthEnforced(world)) return undefined;
   const presented = req.headers.get(QUEUE_AUTH_HEADER);
-  if (isQueueAuthKey(presented)) return undefined;
+  // The key in memory first; storage only on a mismatch (see
+  // `verifyQueueAuthKey`).
+  if (await verifyQueueAuthKey(presented)) return undefined;
   return {
     reason: presented ? 'wrong-key' : 'no-key',
     response: Response.json(

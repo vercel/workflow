@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { monotonicFactory } from 'ulid';
 import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
@@ -303,30 +305,33 @@ export function queueAuth(world: string) {
     }
   );
 
-  // A sender in another process: its world-local queue carries its own
-  // process's key, as `start()` from a script or test runner does. (An old
-  // World that sends no key is refused the same way, as `no-key`.)
-  // world-postgres has no such sender, since the app's own worker delivers
-  // every job; its worker's fail-fast is covered by world-postgres's
-  // queue-http integration test.
-  test.skipIf(world !== 'local')(
-    'a delivery from another process is refused a bounded number of times, given up, and leaves its run pending',
-    { timeout: 90_000 },
-    async () => {
-      const server = await startServer({
-        world,
-        env: { WORKFLOW_QUEUE_AUTH: 'on' },
-      });
-      const fetcher = createFetcher(server);
-      const { createWorld } = await import('@workflow/world-local');
-      const sender = createWorld({
-        dataDir: server.dataDir,
-        baseUrl: `http://localhost:${server.info.port}`,
-      });
-      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
-      try {
-        // What `start()` in that process does: write `run_created` to the
-        // shared data directory, then enqueue the run's first delivery.
+  // Another process acting on the running app through its data directory,
+  // the shape of `wf start` / `wf start <runId>` (step 0 of the key-file
+  // change: on a per-process key both left the new run pending forever).
+  // world-local only: it is the World whose processes share a key through the
+  // data directory; world-postgres declares 'skip'.
+  for (const mode of ['read', 'regenerate'] as const) {
+    test.skipIf(world !== 'local')(
+      mode === 'read'
+        ? 'a process that reads the key (the CLI, the web UI) starts a run the app runs to completion'
+        : 'a process that regenerates the key (a script calling start()) starts a run the app runs to completion',
+      { timeout: 90_000 },
+      async () => {
+        const server = await startServer({
+          world,
+          env: { WORKFLOW_QUEUE_AUTH: 'on' },
+        });
+        const fetcher = createFetcher(server);
+        const keyFile = path.join(server.dataDir, 'queue-auth-key');
+        const keyBefore = await readFile(keyFile, 'utf8');
+        const { createWorld } = await import('@workflow/world-local');
+        const other = createWorld({
+          dataDir: server.dataDir,
+          baseUrl: `http://localhost:${server.info.port}`,
+          queueAuthKey: mode,
+        });
+        const { setWorld } = await import('workflow/runtime');
+        const { start } = await import('workflow/api');
         const manifest = (await fetch(
           `http://localhost:${server.info.port}/_manifest`
         ).then((response) => response.json())) as {
@@ -334,68 +339,34 @@ export function queueAuth(world: string) {
         };
         const { workflowId } =
           manifest.workflows['workflows/addition.ts'].addition;
-        const created = await sender.events.create(null, {
-          eventType: 'run_created',
-          specVersion: 8,
-          eventData: {
-            deploymentId: await sender.getDeploymentId(),
-            workflowName: workflowId,
-            input: new Uint8Array([1]),
-          },
-        } as never);
-        const runId = (created as { run?: { runId: string } }).run!.runId;
-        await sender.queue(`__wkf_workflow_${workflowId}` as never, {
-          runId,
-          requestedAt: new Date(),
-        });
-
-        // world-local retries a refused delivery MAX_QUEUE_AUTH_REFUSALS (5)
-        // times, 5s apart (so in cluster mode a retry can reach the process
-        // whose key matches), then gives the message up.
-        const refusals = 5;
-        await vi.waitFor(
-          async () =>
-            expect(
-              (await refusalCounts(server)).reduce((n, s) => n + s.sum, 0)
-            ).toBe(refusals),
-          { interval: 200, timeout: 45_000 }
-        );
-        // Past one more retry delay: a sender that kept retrying would have
-        // been refused again by now.
-        await new Promise((resolve) => setTimeout(resolve, 7_000));
-        expect(await refusalCounts(server)).toEqual([
-          {
-            attributes: {
-              'http.route': '/.well-known/workflow/v1/flow',
-              'workflow.queue.refusal_reason': 'wrong-key',
-              'workflow.world': world,
-            },
-            sum: refusals,
-          },
-        ]);
-        // One actionable line from the sender, not one per attempt.
-        const lines = errors.mock.calls.filter(([message]) =>
-          String(message).includes('refused by the app as unauthenticated')
-        );
-        expect(lines).toHaveLength(1);
-        expect(lines[0]?.[1]).toMatchObject({
-          runId,
-          hint: expect.stringContaining('WORKFLOW_QUEUE_AUTH=off'),
-        });
-        // The run stays as `start()` left it: created, never delivered. The
-        // refusing route touched nothing and the sender gave the message up,
-        // so nothing writes to it until the app's own queue re-enqueues it
-        // (its startup recovery, or `wf` reenqueue).
-        expect(await runState(fetcher, runId)).toEqual({
-          status: 'pending',
-          events: [expect.stringMatching(/^run_created:/)],
-        });
-      } finally {
-        errors.mockRestore();
-        await sender.close?.();
+        setWorld(other);
+        try {
+          // What `wf start` does: core's start(), on this process's World.
+          const run = await start({ workflowId } as never, [2, 3]);
+          await vi.waitFor(
+            async () =>
+              expect((await fetcher.getRun(run.runId)).status).toBe(
+                'completed'
+              ),
+            { interval: 200, timeout: 30_000 }
+          );
+          if (mode === 'read') {
+            // A reader never writes the key, and its first delivery already
+            // carries the app's key: nothing is refused.
+            expect(await readFile(keyFile, 'utf8')).toBe(keyBefore);
+            expect(await refusalCounts(server)).toEqual([]);
+          } else {
+            // A regenerating process wrote its own key; the app reloaded it
+            // instead of refusing the run.
+            expect(await readFile(keyFile, 'utf8')).not.toBe(keyBefore);
+          }
+        } finally {
+          setWorld(undefined as never);
+          await other.close?.();
+        }
       }
-    }
-  );
+    );
+  }
 
   test(
     'queue health checks still pass through the route',

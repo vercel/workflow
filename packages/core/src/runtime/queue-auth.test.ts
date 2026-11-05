@@ -101,8 +101,8 @@ describe('isQueueAuthEnforced', () => {
 describe('authorizeQueueDelivery', () => {
   const world = { queueAuthMode: 'loopback' as const };
 
-  it('lets a delivery carrying the key through', () => {
-    expect(authorizeQueueDelivery(world, withKey())).toBeUndefined();
+  it('lets a delivery carrying the key through', async () => {
+    expect(await authorizeQueueDelivery(world, withKey())).toBeUndefined();
   });
 
   it.each([
@@ -111,7 +111,7 @@ describe('authorizeQueueDelivery', () => {
     ['a wrong key', { [QUEUE_AUTH_HEADER]: 'x'.repeat(43) }],
     ['a truncated key', { [QUEUE_AUTH_HEADER]: getQueueAuthKey().slice(1) }],
   ])('refuses %s with a marked 401', async (_name, headers) => {
-    const refusal = authorizeQueueDelivery(world, delivery(headers));
+    const refusal = await authorizeQueueDelivery(world, delivery(headers));
     expect(refusal?.response.status).toBe(401);
     // Marked, so the sending queue gives the message up instead of retrying
     // it: the refusal cannot change on redelivery.
@@ -127,16 +127,16 @@ describe('authorizeQueueDelivery', () => {
     ['no-key', {}],
     ['no-key', { [QUEUE_AUTH_HEADER]: '' }],
     ['wrong-key', { [QUEUE_AUTH_HEADER]: 'x'.repeat(43) }],
-  ])('reports %s', (reason, headers) => {
-    expect(authorizeQueueDelivery(world, delivery(headers))?.reason).toBe(
-      reason
-    );
+  ])('reports %s', async (reason, headers) => {
+    expect(
+      (await authorizeQueueDelivery(world, delivery(headers)))?.reason
+    ).toBe(reason);
   });
 
-  it("does not check a World that declares 'skip'", () => {
-    expect(authorizeQueueDelivery({ queueAuthMode: 'skip' }, delivery())).toBe(
-      undefined
-    );
+  it("does not check a World that declares 'skip'", async () => {
+    expect(
+      await authorizeQueueDelivery({ queueAuthMode: 'skip' }, delivery())
+    ).toBe(undefined);
   });
 });
 

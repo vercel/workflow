@@ -240,7 +240,14 @@ export function createQueue(
   }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const localWorld = createWorld({ dataDir: undefined, port });
+  // Only for its queue handler. 'read' so a Postgres app never creates a
+  // queue auth key file or a `.workflow-data` directory: this World declares
+  // queueAuthMode 'skip', and the key is read only if something sends.
+  const localWorld = createWorld({
+    dataDir: undefined,
+    port,
+    queueAuthKey: 'read',
+  });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
   // custom dispatcher, and a queue-owned pool keeps these sockets out of the
