@@ -171,6 +171,12 @@ function resolveExportSubpath(
 
   // Search through exports to find a matching subpath
   for (const [subpath, target] of Object.entries(pkg.exports)) {
+    // Keys that don't start with "." are conditions of the root export
+    // (e.g. { "types": "...", "default": "..." }), not subpaths. The root
+    // entrypoint is handled by isRootEntrypointFile().
+    if (!subpath.startsWith('.')) {
+      continue;
+    }
     const resolvedTarget = resolveExportTarget(target);
     if (
       resolvedTarget &&
