@@ -23,6 +23,8 @@ target
 *.wasm
 # swc-plugin build hash
 packages/swc-plugin-workflow/build-hash.json
+# oclif command manifest, generated on pack
+packages/cli/oclif.manifest.json
 
 # SWC plugin cache
 .swc

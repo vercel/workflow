@@ -191,7 +191,9 @@ describe('encodeMultiChunks', () => {
 // describe block. Keeping it here (next to the tests that need it)
 // makes the intent clear. The encodeMultiChunks tests above are pure
 // functions and are unaffected.
-vi.mock('./utils.js', () => ({
+vi.mock('./utils.js', async (importOriginal) => ({
+  // Real proxy detection: it is a pure function of the World's config.
+  getHttpUrl: (await importOriginal<typeof import('./utils.js')>()).getHttpUrl,
   makeRequest: vi.fn(),
   getHttpConfig: vi.fn().mockResolvedValue({
     baseUrl: 'https://test.example.com',
@@ -200,15 +202,54 @@ vi.mock('./utils.js', () => ({
 }));
 
 describe('stream writer session capability', () => {
-  it('leaves the stateful seam absent on the HTTP default', async () => {
+  it('advertises the stateful seam by default', async () => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', undefined);
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeTypeOf('function');
+  });
+
+  it.each([
+    '',
+    'ws',
+    'WS',
+    'websocket',
+  ])('advertises the stateful seam for a non-http value: %j', async (value) => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', value);
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeTypeOf('function');
+  });
+
+  it.each([
+    'http',
+    'HTTP',
+    ' http ',
+    'Http\t',
+  ])('leaves the stateful seam absent on the http opt-out: %j', async (value) => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', value);
     const { createStreamer } = await import('./streamer.js');
     expect(createStreamer().streams.createWriteSession).toBeUndefined();
   });
 
-  it('advertises the stateful seam only on the exact ws opt-in', async () => {
+  it('leaves the stateful seam absent on the projectConfig proxy', async () => {
     vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', 'ws');
     const { createStreamer } = await import('./streamer.js');
-    expect(createStreamer().streams.createWriteSession).toBeTypeOf('function');
+    const streamer = createStreamer({
+      projectConfig: { projectId: 'prj_test', teamId: 'team_test' },
+    });
+    expect(streamer.streams.createWriteSession).toBeUndefined();
+  });
+
+  it('creates a write session with no env var set', async () => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', undefined);
+    const { createStreamer } = await import('./streamer.js');
+    const session = await createStreamer().streams.createWriteSession?.(
+      'wrun_test',
+      'stream',
+      { writerId: 'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV' }
+    );
+    expect(session).toBeDefined();
+    expect(session?.write).toBeTypeOf('function');
+    session?.dispose?.();
   });
 });
 

@@ -2,6 +2,7 @@ import {
   type Event,
   type Hook,
   type SerializedData,
+  type StartHook,
   type Step,
   StepStatusSchema,
   type Wait,
@@ -21,13 +22,36 @@ import {
   pgSchema,
   primaryKey,
   text,
-  timestamp,
   uniqueIndex,
   varchar,
 } from 'drizzle-orm/pg-core';
 import { Cbor, type Cborized } from './cbor.js';
 
 export const schema = pgSchema('workflow');
+
+/** A UTC offset (`+00`, `-07`, `+05:30`) or `Z` at the end of a timestamp. */
+const UTC_OFFSET = /(?:[+-]\d\d(?::?\d\d){0,2}|Z)$/;
+
+/**
+ * Every timestamp column is `timestamp with time zone`, so it stores an
+ * instant. With `timestamp without time zone`, `DEFAULT now()` stored the
+ * session's local wall time while drizzle read every value back as UTC, which
+ * put `createdAt` hours off on servers not running in UTC (migration 0027).
+ *
+ * Postgres prints `timestamptz` values with their offset. A value without one
+ * comes from a column migration 0027 has not converted yet, which held UTC
+ * wall times for everything written from JavaScript, so read it as UTC, as
+ * earlier versions did. Drizzle's own `withTimezone` reader would parse it in
+ * the Node process's local time zone instead.
+ */
+const timestamptz = customType<{ data: Date; driverData: string | Date }>({
+  dataType: () => 'timestamp with time zone',
+  toDriver: (value) => value.toISOString(),
+  fromDriver: (value) => {
+    if (value instanceof Date) return value;
+    return new Date(UTC_OFFSET.test(value) ? value : `${value}Z`);
+  },
+});
 
 function mustBeMoreThanOne<T>(t: T[]) {
   return t as [T, ...T[]];
@@ -62,6 +86,9 @@ type DrizzlishOfType<T extends object> = {
  * Serialization currently uses `any[]`.
  */
 export type SerializedContent = any[];
+
+/** The start Hook a run row keeps: `run.startHook`, without its metadata. */
+export type RunStartHook = Omit<StartHook, 'metadata'> & { hookId: string };
 
 export const runs = schema.table(
   'workflow_runs',
@@ -125,19 +152,38 @@ export const runs = schema.table(
      * started on. Null on every static run.
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
-      .defaultNow()
+    /**
+     * The `jobPrefix` of the World that created the run: the prefix of the
+     * Graphile task whose runner claims the run's jobs. Startup recovery
+     * re-enqueues only the active runs stamped with its own prefix, so apps
+     * sharing a database do not drive each other's runs. Internal routing
+     * metadata, stripped from the run returned to callers.
+     *
+     * Null on runs created before this column existed, and on runs written by
+     * storage constructed without a World. Every World recovers those, as
+     * before.
+     */
+    jobPrefix: varchar('job_prefix'),
+    /**
+     * The start Hook this run was admitted with through `start({ experimental_hook })`,
+     * without its metadata (which lives on the start Hook's own row in
+     * `workflow_hooks`). Echo only: the Hook row is what holds the token.
+     * Null on every other run.
+     */
+    startHook: Cbor<RunStartHook>()('start_hook_cbor'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    updatedAt: timestamptz('updated_at')
+      .default(sql`now()`)
       .$onUpdateFn(() => new Date())
       .notNull(),
-    completedAt: timestamp('completed_at'),
-    startedAt: timestamp('started_at'),
-    expiredAt: timestamp('expired_at'),
+    completedAt: timestamptz('completed_at'),
+    startedAt: timestamptz('started_at'),
+    expiredAt: timestamptz('expired_at'),
   } satisfies DrizzlishOfType<
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
       'input' | 'output' | 'executionContext' | 'error'
-    > & { dynamicWorkflowCode?: SerializedData }
+    > & { dynamicWorkflowCode?: SerializedData; jobPrefix?: string }
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
@@ -148,7 +194,7 @@ export const events = schema.table(
     eventId: varchar('id').notNull(),
     eventType: varchar('type').$type<Event['eventType']>().notNull(),
     correlationId: varchar('correlation_id'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     runId: varchar('run_id').notNull(),
     /** @deprecated */
     eventDataJson: jsonb('payload'),
@@ -208,7 +254,41 @@ export const events = schema.table(
  */
 export const eventSlots = schema.table('workflow_event_slots', {
   runId: varchar('run_id').primaryKey(),
+  /**
+   * The in-band writer fence of a single-orchestrator run: positions
+   * accepted from in-band (orchestrator) writes, `run_created` included. An
+   * in-band insert advances it in the same statement that inserts the event,
+   * and only when it equals the writer's `expectedSeqInBand`. See
+   * `fencedInsert` in storage.ts.
+   */
+  seqInBand: integer('seq_in_band').notNull().default(1),
 });
+
+/**
+ * One immutable `start({ experimental_hook })` admission decision per candidate run (see
+ * `start-hook.ts` in @workflow/world, and `../start-hook.ts` here).
+ *
+ * - `accepted` rows are written in the same transaction as the run they
+ *   admit and its start Hook (an ordinary row in `workflow_hooks`).
+ * - `rejected` rows record the owner the candidate lost to, so a later
+ *   attempt for the same candidate answers the same `conflicting_run_id`
+ *   even after the owner has released the token.
+ *
+ * A decision only matters inside its candidate's 24h window: past it, every
+ * attempt for the candidate is refused regardless. Admissions delete rows
+ * older than that as they go (`created_at` index).
+ */
+export const startHookAdmissions = schema.table(
+  'workflow_start_hook_admissions',
+  {
+    runId: varchar('run_id').primaryKey(),
+    token: varchar('token').notNull(),
+    decision: varchar('decision').$type<'accepted' | 'rejected'>().notNull(),
+    conflictingRunId: varchar('conflicting_run_id'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+  },
+  (tb) => [index().on(tb.createdAt)]
+);
 
 export const steps = schema.table(
   'workflow_steps',
@@ -233,14 +313,14 @@ export const steps = schema.table(
     error: Cbor<SerializedData>()('error_cbor'),
     attempt: integer('attempt').notNull(),
     /** Maps to startedAt in Step interface */
-    startedAt: timestamp('started_at'),
-    completedAt: timestamp('completed_at'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
-      .defaultNow()
+    startedAt: timestamptz('started_at'),
+    completedAt: timestamptz('completed_at'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    updatedAt: timestamptz('updated_at')
+      .default(sql`now()`)
       .$onUpdateFn(() => new Date())
       .notNull(),
-    retryAfter: timestamp('retry_after'),
+    retryAfter: timestamptz('retry_after'),
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
     Cborized<
@@ -262,10 +342,8 @@ export const hooks = schema.table(
     ownerId: varchar('owner_id').notNull(),
     projectId: varchar('project_id').notNull(),
     environment: varchar('environment').notNull(),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    tokenRetentionUntil: timestamp('token_retention_until', {
-      withTimezone: true,
-    }),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    tokenRetentionUntil: timestamptz('token_retention_until'),
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
@@ -282,10 +360,27 @@ export const hooks = schema.table(
     claimedFrom: Cbor<NonNullable<Hook['claimedFrom']>>()('claimed_from'),
     // `resumeCapabilities` is deliberately response-only (attested fresh on
     // each by-token lookup, never persisted), so it must not become a column.
+    /**
+     * This row's claim on `token` is unique: at most one row per token has
+     * it (`workflow_hooks_token_claim_unique`), so two `start({ experimental_hook })`
+     * admissions racing for a token conflict on the insert instead of both
+     * winning, and an admission racing another run's `createHook` leaves
+     * one owner. Every Hook written since migration 0028 sets it; rows
+     * written before it do not, so the index cannot fail on existing data.
+     */
+    claimsToken: boolean('claims_token').notNull().default(false),
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'> & {
+      claimsToken?: boolean;
+    }
   >,
-  (tb) => [index().on(tb.runId), index().on(tb.token)]
+  (tb) => [
+    index().on(tb.runId),
+    index().on(tb.token),
+    uniqueIndex('workflow_hooks_token_claim_unique')
+      .on(tb.token)
+      .where(sql`${tb.claimsToken}`),
+  ]
 );
 
 export const waits = schema.table(
@@ -294,11 +389,11 @@ export const waits = schema.table(
     waitId: varchar('wait_id').primaryKey(),
     runId: varchar('run_id').notNull(),
     status: waitStatus('status').notNull(),
-    resumeAt: timestamp('resume_at'),
-    completedAt: timestamp('completed_at'),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at')
-      .defaultNow()
+    resumeAt: timestamptz('resume_at'),
+    completedAt: timestamptz('completed_at'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    updatedAt: timestamptz('updated_at')
+      .default(sql`now()`)
       .$onUpdateFn(() => new Date())
       .notNull(),
     specVersion: integer('spec_version'),
@@ -323,9 +418,9 @@ export const invocations = schema.table(
     fingerprint: varchar('fingerprint'),
     result: bytea('result'),
     resultVersion: integer('result_version').notNull().default(0),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    respondedAt: timestamp('responded_at'),
-    expiredAt: timestamp('expired_at'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+    respondedAt: timestamptz('responded_at'),
+    expiredAt: timestamptz('expired_at'),
   },
   (tb) => [
     primaryKey({ columns: [tb.runId, tb.requestId] }),
@@ -350,7 +445,19 @@ export const snapshots = schema.table('workflow_snapshots', {
   runId: varchar('run_id').primaryKey(),
   data: bytea('data').notNull(),
   eventsCursor: varchar('events_cursor'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+});
+
+/**
+ * Graphile workers of processes that renew their job locks (`job-lease.ts`).
+ * The default stale-lock sweep releases a per-run named-queue job only when
+ * its holder is listed here, so a process on an earlier version, which
+ * neither renews nor fences its acknowledgement, is never released under.
+ * `renewed_at` only ages out the rows of workers that hold no job.
+ */
+export const jobLockHolders = schema.table('workflow_job_lock_holders', {
+  workerId: text('worker_id').primaryKey(),
+  renewedAt: timestamptz('renewed_at').default(sql`now()`).notNull(),
 });
 
 export const streams = schema.table(
@@ -360,7 +467,7 @@ export const streams = schema.table(
     streamId: varchar('stream_id').notNull(),
     runId: varchar('run_id'),
     chunkData: bytea('data').notNull(),
-    createdAt: timestamp('created_at').defaultNow().notNull(),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     eof: boolean('eof').notNull(),
   },
   (tb) => [

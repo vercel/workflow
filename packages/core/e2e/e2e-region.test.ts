@@ -1,6 +1,6 @@
 import { decode, isTagged } from '@workflow/world-vercel/run-id';
 import { beforeAll, beforeEach, describe, expect, test } from 'vitest';
-import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
   getHookByToken,
@@ -153,12 +153,9 @@ const regionProbe = () =>
  */
 async function startImplicitRegionProbe(region: string, label: string) {
   const url = new URL(`/api/e2e-region-implicit/${region}`, deploymentUrl);
-  const res = await fetch(url, {
+  const res = await fetchWithTrustedSources(url, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(await getTrustedSourcesHeaders()),
-    },
+    headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ label }),
   });
   if (!res.ok) {
@@ -331,12 +328,9 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
         // that served none of the stream's writes, so the chunk count it
         // reports must come from cross-region stream metadata.
         const url = new URL('/api/e2e-stream-read/sfo1', deploymentUrl);
-        const res = await fetch(url, {
+        const res = await fetchWithTrustedSources(url, {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(await getTrustedSourcesHeaders()),
-          },
+          headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ runId: run.runId }),
         });
         expect(res.ok).toBe(true);

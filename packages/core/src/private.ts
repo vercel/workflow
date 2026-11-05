@@ -135,6 +135,20 @@ export interface WorkflowOrchestratorContext {
   runId: string;
   encryptionKey: PayloadKey | undefined;
   worldCapabilities?: WorldCapabilities;
+  /**
+   * The run's start Hook (`start(workflow, args, { experimental_hook })`), fixed when the
+   * session is created; `undefined` for a run started without one. The first
+   * `createHook({ token })` with this token binds to `hookId` (setting
+   * `bound`) instead of minting an id and writing `hook_created`: the
+   * admission that created the run created this Hook.
+   */
+  startHook?: {
+    token: string;
+    hookId: string;
+    /** `start({ experimental_hook })`'s retention deadline, when one was set. */
+    tokenRetentionUntil?: Date;
+    bound: boolean;
+  };
   globalThis: typeof globalThis;
   /**
    * Increments when a suspension is accepted and on every retained-session
@@ -144,12 +158,31 @@ export interface WorkflowOrchestratorContext {
    * into boundary N+1.
    */
   suspensionGeneration: number;
+  /**
+   * The {@link suspensionGeneration} whose idle poll
+   * ({@link scheduleWorkflowSuspension}) is running, if one is. Every pending
+   * consumer signals the end of the log, so one boundary of an N-wide fan-out
+   * raises N signals; they share this one poll instead of each running its
+   * own. Optional so lightweight test contexts need not set it.
+   */
+  suspensionPollGeneration?: number;
   eventsConsumer: EventsConsumer;
   /**
    * Map of pending invocations keyed by correlationId.
    * Using Map instead of Array for O(1) lookup/delete operations.
    */
   invocationsQueue: Map<string, QueueItem>;
+  /**
+   * Per open hook, a probe for whether workflow code is currently waiting on
+   * its next payload (an `await hook`, a pending `for await` iteration, or a
+   * `.then` on it). Registered by `createHook` and dropped once the hook can
+   * receive nothing more. Snapshotted into
+   * {@link WorkflowSuspension.observedHookIds} when a suspension is raised.
+   *
+   * Optional so older/out-of-tree contexts (and lightweight test harnesses)
+   * degrade to "every open hook is observed".
+   */
+  hookPayloadAwaiters?: Map<string, () => boolean>;
   onWorkflowError: (error: Error) => void;
   /**
    * Mints the ULID body of a correlation id. Every entity a replay creates
@@ -251,7 +284,7 @@ export interface WorkflowOrchestratorContext {
 }
 
 /** The kind of branch-deciding delivery a barrier represents. */
-export type DeliveryKind = 'hook' | 'wait' | 'step';
+export type DeliveryKind = 'hook' | 'wait' | 'step' | 'attribute';
 
 interface DeliveryBarrierEntry {
   kind: DeliveryKind;
@@ -289,7 +322,13 @@ interface DeliveryBarrierEntry {
  *  - a hook defers behind earlier HOOKS, WAITS and STEPS;
  *  - a wait defers behind earlier HOOKS and STEPS (not earlier waits, since a
  *    wait never needs to queue behind another wait);
- *  - a step defers behind earlier WAITS, HOOKS and STEPS.
+ *  - a step defers behind earlier WAITS, HOOKS and STEPS;
+ *  - an attribute (the `attr_set` acknowledgement that resolves
+ *    `setAttributes()`) defers behind every earlier kind, and every kind
+ *    defers behind an earlier attribute. Resolving `setAttributes()` resumes a
+ *    branch that may draw the next correlation ID, so it is as branch-deciding
+ *    as a step result; gating only one direction would still let a later
+ *    delivery overtake a branch resuming from an attribute write (#4770).
  *
  * The step-behind-step edge is not redundant with the serial `promiseQueue`.
  * The queue fixes the order in which step results are HYDRATED, but a step no
@@ -309,9 +348,10 @@ interface DeliveryBarrierEntry {
  * wait-for graph can never contain a cycle.
  */
 const DEFER_BEHIND: Record<DeliveryKind, readonly DeliveryKind[]> = {
-  hook: ['hook', 'wait', 'step'],
-  wait: ['hook', 'step'],
-  step: ['wait', 'hook', 'step'],
+  hook: ['hook', 'wait', 'step', 'attribute'],
+  wait: ['hook', 'step', 'attribute'],
+  step: ['wait', 'hook', 'step', 'attribute'],
+  attribute: ['hook', 'wait', 'step', 'attribute'],
 };
 
 /**
@@ -339,11 +379,11 @@ function gatesOn(
   if (otherIndex >= index || !DEFER_BEHIND[kind].includes(other.kind)) {
     return false;
   }
-  // A step skips an UNARMED earlier entry (an unclaimed buffered hook
-  // payload). See the asymmetry described on `awaitEarlierDeliveries`. The
-  // skip is direct, never transitive: armed entries are still gated on, even
-  // when they are themselves parked behind such a payload.
-  return !(kind === 'step' && !other.armed);
+  // A step or attribute skips an UNARMED earlier entry (an unclaimed buffered
+  // hook payload). See the asymmetry described on `awaitEarlierDeliveries`.
+  // The skip is direct, never transitive: armed entries are still gated on,
+  // even when they are themselves parked behind such a payload.
+  return !((kind === 'step' || kind === 'attribute') && !other.armed);
 }
 
 /**
@@ -434,7 +474,8 @@ function computeResolvesOnItsOwn(
  * What counts as "defers behind" is {@link gatesOn}, shared with
  * {@link computeResolvesOnItsOwn} so the two cannot drift.
  *
- * One asymmetry: a STEP result skips any earlier delivery that is UNARMED,
+ * One asymmetry: a STEP result (and, for the same reason, an ATTRIBUTE
+ * acknowledgement) skips any earlier delivery that is UNARMED,
  * i.e. a buffered hook payload no consumer has claimed. Such a payload is
  * delivered only when the workflow next reads the hook, and reaching that read
  * often requires the step result itself (`await stepX()` before the
@@ -685,9 +726,11 @@ export function registerDeliveryBarrier(
      * so `Date.now()` in the cascade this delivery wakes reads the delivery's
      * own time, whatever the consumer walk has read ahead of it. Required so
      * that a new delivery site cannot forget the clock: a delivery that does
-     * not move it leaves the cascade it wakes reading a stale time.
+     * not move it leaves the cascade it wakes reading a stale time. `null`
+     * opts out explicitly; attribute acknowledgements use it because they
+     * have never moved the clock, and recorded histories may branch on it.
      */
-    deliveredAt: number;
+    deliveredAt: number | null;
   }
 ): DeliveryBarrier {
   // Idempotent like the handle it backs; `advanceClock` never moves backwards,
@@ -698,7 +741,9 @@ export function registerDeliveryBarrier(
       return false;
     }
     deliveredToWorkflow = true;
-    ctx.advanceClock?.(options.deliveredAt);
+    if (options.deliveredAt !== null) {
+      ctx.advanceClock?.(options.deliveredAt);
+    }
     return true;
   };
 
@@ -998,9 +1043,15 @@ export function isDeliveryIdle(ctx: WorkflowOrchestratorContext): boolean {
  */
 export function scheduleWhenIdle(
   ctx: WorkflowOrchestratorContext,
-  fn: () => void
+  fn: () => void,
+  /**
+   * Checked before every poll: once it returns true the poll ends without
+   * calling `fn`, instead of polling on until idle only to drop the call.
+   */
+  isStale?: () => boolean
 ): void {
   const check = () => {
+    if (isStale?.()) return;
     if (!isDeliveryIdle(ctx)) {
       // A delivery is still hydrating, or is committed but parked behind its
       // deferral (whose resolve runs on a detached timer, not this queue).
@@ -1015,15 +1066,57 @@ export function scheduleWhenIdle(
   setTimeout(check, 0);
 }
 
-/** Schedule a generation-guarded suspension after deliveries settle. */
+/**
+ * Schedule a generation-guarded suspension after deliveries settle.
+ *
+ * At most one idle poll runs per generation: a signal raised while that
+ * generation's poll runs joins it, and the poll ends as soon as the
+ * generation moves on. The poll that runs is the earliest one of its
+ * generation, so the suspension is raised no earlier than the first of N
+ * independent polls would have raised it. Before this, each pending consumer
+ * at the end of the log started its own poll, and polls of past generations
+ * kept polling until idle: a lingering orchestrator resuming a 1024-wide
+ * fan-out once per incoming outcome ran about 10^8 timers, which kept the
+ * process busy for over a minute after the last outcome arrived.
+ */
 export function scheduleWorkflowSuspension(
   ctx: WorkflowOrchestratorContext
 ): void {
   const generation = ctx.suspensionGeneration;
-  scheduleWhenIdle(ctx, () => {
-    if (generation !== ctx.suspensionGeneration) return;
-    ctx.onWorkflowError(
-      new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-    );
-  });
+  if (generation !== undefined && ctx.suspensionPollGeneration === generation) {
+    return;
+  }
+  ctx.suspensionPollGeneration = generation;
+  const release = () => {
+    if (ctx.suspensionPollGeneration === generation) {
+      ctx.suspensionPollGeneration = undefined;
+    }
+  };
+  const isStale = () => {
+    if (generation === ctx.suspensionGeneration) return false;
+    release();
+    return true;
+  };
+  scheduleWhenIdle(
+    ctx,
+    () => {
+      release();
+      if (generation !== ctx.suspensionGeneration) return;
+      const suspension = new WorkflowSuspension(
+        ctx.invocationsQueue,
+        ctx.globalThis
+      );
+      // Taken at idle, the same instant the queue is: the awaiters that are
+      // pending now are exactly the ones this suspension's outcome depends on.
+      if (ctx.hookPayloadAwaiters) {
+        const observed = new Set<string>();
+        for (const [correlationId, isAwaited] of ctx.hookPayloadAwaiters) {
+          if (isAwaited()) observed.add(correlationId);
+        }
+        suspension.observedHookIds = observed;
+      }
+      ctx.onWorkflowError(suspension);
+    },
+    isStale
+  );
 }

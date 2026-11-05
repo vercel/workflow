@@ -50,6 +50,13 @@ test('the transport lanes run their fixed app subsets', () => {
   ]);
 });
 
+test('the spec 9 lane runs its app on both VMs', () => {
+  assert.deepEqual(names(matrices['vercel-spec9-matrix']), [
+    'nextjs-turbopack/node',
+    'nextjs-turbopack/quickjs',
+  ]);
+});
+
 test('matrix entries carry no lane-internal fields', () => {
   for (const { app } of matrices['vercel-prod-matrix'].include) {
     assert.deepEqual(Object.keys(app).sort(), [

@@ -200,7 +200,7 @@ describe('guardDeploymentAffinity', () => {
           errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
         }),
       }),
-      { requestId: 'req_test' }
+      { requestId: 'req_test', inBand: false }
     );
     // Written by a deployment that is not the run's own, so stamped with the
     // run's version, which its pinned runtime can read.

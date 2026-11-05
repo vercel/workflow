@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeFrame, encodeFrame } from './frames.js';
+import type { APIConfig } from './utils.js';
 
 const {
   FakeWebSocket,
@@ -160,7 +161,7 @@ afterEach(() => {
 });
 
 function makeSession(
-  config: { token?: string } | undefined = { token: 'token' },
+  config: APIConfig | undefined = { token: 'token' },
   connectAfterFirstWrite = false
 ) {
   const writeHttp = vi.fn(
@@ -187,13 +188,36 @@ function makeSession(
 }
 
 describe('v1 stream WebSocket writer lifecycle', () => {
-  it('keeps HTTP as the default without constructing a socket', async () => {
+  it('opens a socket by default, with no env var set', async () => {
+    makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+  });
+
+  it.each([
+    'http',
+    'HTTP',
+    ' http ',
+  ])('stays on HTTP without constructing a socket on the %j opt-out', async (value) => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = value;
     const { session, writeHttp, closeHttp } = makeSession();
     await session.write(0, ['one']);
     await session.close();
 
     expect(sockets).toHaveLength(0);
     expect(writeHttp).toHaveBeenCalledWith(['one']);
+    expect(closeHttp).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays on HTTP for a projectConfig World without constructing a socket', async () => {
+    const { session, writeHttp, closeHttp } = makeSession({
+      token: 'token',
+      projectConfig: { projectId: 'prj_test', teamId: 'team_test' },
+    });
+    await session.write(0, ['one']);
+    await session.close();
+
+    expect(sockets).toHaveLength(0);
+    expect(writeHttp.mock.calls.map((call) => call[0])).toEqual([['one']]);
     expect(closeHttp).toHaveBeenCalledTimes(1);
   });
 

@@ -1,5 +1,49 @@
 # @workflow/nest
 
+## 5.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41)]:
+  - @workflow/builders@5.0.8
+
+## 5.1.5
+
+### Patch Changes
+
+- Updated dependencies [[`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1)]:
+  - @workflow/builders@5.0.7
+
+## 5.1.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.6
+
+## 5.1.3
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.5
+
+## 5.1.2
+
+### Patch Changes
+
+- Updated dependencies [[`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349)]:
+  - @workflow/utils@5.0.2
+  - @workflow/builders@5.0.4
+
+## 5.1.1
+
+### Patch Changes
+
+- Updated dependencies [[`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1)]:
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/builders@5.0.3
+
 ## 5.1.0
 
 ### Minor Changes

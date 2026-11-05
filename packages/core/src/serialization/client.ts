@@ -33,10 +33,13 @@ export async function serialize(
       payload
     ) as Uint8Array;
     // Compress before encrypting, since encrypted bytes don't compress.
+    // Client serialization runs on the caller's event loop (an HTTP handler
+    // starting a run), so take the threadpool path for zstd.
     const compressed = await compress(
       prefixed,
       options?.compression ?? false,
-      options?.compressionStats
+      options?.compressionStats,
+      { preferAsync: true }
     );
     return encryptData(compressed, encryptionKey);
   } catch (error) {

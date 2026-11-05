@@ -1065,18 +1065,11 @@ describe('AbortController (hook-backed)', () => {
     expect(value.observed).toEqual(['listener:stop it']);
   });
 
-  it('carries the system hook token into the completion-drain disposal', async () => {
-    // The completion drain synthesizes a `hook_dispose` for a durable system
-    // hook the workflow never aborted, and the entrypoint turns that op into a
-    // `hook_disposed` event. The op therefore has to carry the token: the
-    // node:vm engine sends one here (its drain marks the queue item disposed
-    // and reuses it, token included), and a world that releases a hook's token
-    // claim alongside the hook needs to be told which token this is.
+  it('leaves system-hook cleanup to run termination', async () => {
     const code = `
       var checkStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//check");
       async function workflow() {
-        // Never aborted and never explicitly disposed: exactly the hook the
-        // completion drain has to clean up.
+        // Never aborted or explicitly disposed: run termination cleans it up.
         var controller = new AbortController();
         await checkStep(1);
         return controller.signal.aborted;
@@ -1137,12 +1130,7 @@ describe('AbortController (hook-backed)', () => {
     });
 
     expect(r2.completed).toBeDefined();
-    const disposal = r2.completed!.drainOperations?.find(
-      (o) => o.type === 'hook_dispose'
-    ) as any;
-    expect(disposal).toBeDefined();
-    expect(disposal.correlationId).toBe(hookOp.correlationId);
-    expect(disposal.token).toBe(hookOp.token);
+    expect(r2.completed!.drainOperations).toBeUndefined();
   });
 
   it('AbortSignal statics work in the VM', async () => {
@@ -1345,14 +1333,16 @@ describe('hook_conflict on a forced hook', () => {
     expect(out.conflict).toEqual({ name: 'FatalError', fatal: true });
   });
 
-  it('stays an ordinary HookConflictError when the World declined on purpose (forceRefusedReason)', async () => {
+  it.each([
+    'victim-spec-version',
+  ] as const)('stays an ordinary HookConflictError when the World declined on purpose (%s)', async (forceRefusedReason) => {
     // The run holding the token predates involuntary disposal, so the World
     // would not take it: the caller gets
     // the everyday conflict and the owning run's handle, exactly as without
     // `experimental_force`.
     const out = await runWithConflict({
       conflictingRunId: 'wrun_legacy_victim',
-      forceRefusedReason: 'victim-spec-version',
+      forceRefusedReason,
     });
     expect(out.awaited).toEqual({
       name: 'HookConflictError',
@@ -1499,6 +1489,24 @@ describe('global surface parity', () => {
     const value = unwrapResult(result.completed!.result) as any;
     expect(value.threw).toBe(true);
     expect(value.message).toContain('step function');
+  });
+
+  it.each([
+    ['getReader()', 'res.body.getReader();'],
+    ['for await', 'for await (const _ of res.body) {}'],
+  ])('reading response.body with %s throws', async (_label, read) => {
+    const result = await runToCompletion(`
+      const res = new Response("Hello, world!");
+      try {
+        ${read}
+        return { threw: false };
+      } catch (e) {
+        return { threw: true, message: e.message };
+      }
+    `);
+    const value = unwrapResult(result.completed!.result) as any;
+    expect(value.threw).toBe(true);
+    expect(value.message).toContain('not available inside a workflow function');
   });
 
   it('process.env is present (frozen copy, matching the node engine)', async () => {

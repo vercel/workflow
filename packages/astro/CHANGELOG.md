@@ -1,5 +1,61 @@
 # @workflow/astro
 
+## 5.0.8
+
+### Patch Changes
+
+- Updated dependencies [[`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41)]:
+  - @workflow/builders@5.0.8
+  - @workflow/rollup@5.0.8
+  - @workflow/vite@5.0.8
+
+## 5.0.7
+
+### Patch Changes
+
+- [#5183](https://github.com/vercel/workflow/pull/5183) [`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop Astro and Vite from warning about generated workflow files during build and dev.
+- Updated dependencies [[`a54154e`](https://github.com/vercel/workflow/commit/a54154e6e13c821f4de57f678d4ef8776b7cf05c), [`aed1a0d`](https://github.com/vercel/workflow/commit/aed1a0d8746f28c36b3684dcf1359ae6e22ab8e1)]:
+  - @workflow/builders@5.0.7
+  - @workflow/rollup@5.0.7
+  - @workflow/vite@5.0.7
+
+## 5.0.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.6
+  - @workflow/rollup@5.0.6
+  - @workflow/vite@5.0.6
+
+## 5.0.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.5
+  - @workflow/rollup@5.0.5
+  - @workflow/vite@5.0.5
+
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.4
+  - @workflow/rollup@5.0.4
+  - @workflow/vite@5.0.4
+
+## 5.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`1acc0ba`](https://github.com/vercel/workflow/commit/1acc0bac5d9c96880300c0c5a1e374229888fbb1)]:
+  - @workflow/swc-plugin@5.0.1
+  - @workflow/builders@5.0.3
+  - @workflow/rollup@5.0.3
+  - @workflow/vite@5.0.3
+
 ## 5.0.2
 
 ### Patch Changes

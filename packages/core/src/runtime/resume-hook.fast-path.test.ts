@@ -128,11 +128,16 @@ describe('resumeHook (resumeContext fast path)', () => {
       specVersion: SPEC_VERSION_CURRENT,
     } as unknown as WorkflowRun;
     const runsGet = vi.fn().mockResolvedValue(run);
-    const { queue } = makeWorld(hook, { runsGet });
+    const { queue, getEncryptionKeyForRun } = makeWorld(hook, { runsGet });
 
     await resumeHook(hook.token, { foo: 'bar' });
 
-    expect(runsGet).toHaveBeenCalledWith(hook.runId);
+    // Metadata only: the fallback needs the run's deploymentId and status,
+    // not its payloads (#4645).
+    expect(runsGet).toHaveBeenCalledWith(hook.runId, { resolveData: 'none' });
+    expect(getEncryptionKeyForRun).toHaveBeenCalledWith(hook.runId, {
+      deploymentId: 'deployment_fallback',
+    });
     expect(queue).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ runId: hook.runId }),

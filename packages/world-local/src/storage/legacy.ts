@@ -11,6 +11,7 @@ import {
   jsonReplacer,
   promoteExclusive,
   resolveWithinBase,
+  runEntityDir,
   writeExclusive,
   writeJSON,
 } from '../fs.js';
@@ -185,7 +186,7 @@ export async function handleLegacyEvent(
       const compositeKey = `${runId}-${eventId}`;
       const eventPath = resolveWithinBase(
         basedir,
-        'events',
+        runEntityDir('events', runId),
         `${compositeKey}.json`
       );
       if (data.eventType === 'hook_received') {

@@ -5,16 +5,20 @@ import {
   HookNotFoundError,
   RunExpiredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import {
   HOOK_RESUME_DEDUP_VERSION,
   type HookResumeContext,
+  HookSchema,
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
-  type WorkflowRun,
+  type WorkflowRunWithoutData,
+  type World,
   type Hook as WorldHook,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -65,6 +69,12 @@ async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
  * whose `metadata` is a Promise.
  */
 type ResumableHook = Omit<WorldHook, 'metadata'>;
+
+/** Validates a hook carried across requests without user metadata or live capabilities. */
+const HookResumeHandleSchema = HookSchema.omit({
+  metadata: true,
+  resumeCapabilities: true,
+});
 
 /**
  * A hook as returned by {@link getHookByToken} and {@link resumeHook}: the
@@ -129,11 +139,14 @@ interface HookLookup {
 interface HookResumeInfo {
   resumeContext: HookResumeContext;
   source: 'hook' | 'run_fallback';
-  run?: WorkflowRun;
+  run?: WorkflowRunWithoutData;
 }
 
-/** Derive a resume context from a full run (fallback for pre-`resumeContext` hooks). */
-function resumeContextFromRun(run: WorkflowRun): HookResumeContext {
+/**
+ * Derive a resume context from a run's metadata (fallback for
+ * pre-`resumeContext` hooks). Nothing here reads the run's payloads.
+ */
+function resumeContextFromRun(run: WorkflowRunWithoutData): HookResumeContext {
   const coreVersion = run.executionContext?.workflowCoreVersion;
   const traceCarrier = run.executionContext?.traceCarrier;
   const hookResumeInputVersion = run.executionContext?.hookResumeInputVersion;
@@ -167,12 +180,18 @@ function resumeContextFromRun(run: WorkflowRun): HookResumeContext {
  * `hook_received` for an ended run.
  */
 async function resolveHookResumeInfo(
-  hook: ResumableHook
+  hook: ResumableHook,
+  world?: World
 ): Promise<HookResumeInfo> {
   if (hook.resumeContext) {
     return { resumeContext: hook.resumeContext, source: 'hook' };
   }
-  const run = await (await getWorldLazy()).runs.get(hook.runId);
+  // Metadata only: the resume context, the terminal-status check, and the key
+  // lookup need none of the run's input or output, and the default
+  // `resolveData` ('all') would make the World resolve both (#4645).
+  const run = await (world ?? (await getWorldLazy())).runs.get(hook.runId, {
+    resolveData: 'none',
+  });
   return {
     resumeContext: resumeContextFromRun(run),
     source: 'run_fallback',
@@ -184,19 +203,18 @@ async function resolveHookResumeInfo(
  * Resolve the run's symmetric key for a payload WRITE, as a bare `CryptoKey`
  * (`importKey`): the `encr` write fallback used when the run published no
  * public key to seal to. Writing needs only the AES key, not the read-side
- * keypair. On the fast path this needs only `runId` + `deploymentId` (no run
- * entity); on the fallback path the already fetched run is reused.
+ * keypair. Both paths resolve it by `runId` + the resume context's
+ * `deploymentId`; on the fallback path that context came from the run's
+ * metadata, so no payload is ever read for the key.
  */
 async function resolveHookEncryptionKey(
   hook: ResumableHook,
-  info: HookResumeInfo
+  info: HookResumeInfo,
+  world: World
 ): Promise<Awaited<ReturnType<typeof importKey>> | undefined> {
-  const world = await getWorldLazy();
-  const rawKey = info.run
-    ? await world.getEncryptionKeyForRun?.(info.run)
-    : await world.getEncryptionKeyForRun?.(hook.runId, {
-        deploymentId: info.resumeContext.deploymentId,
-      });
+  const rawKey = await world.getEncryptionKeyForRun?.(hook.runId, {
+    deploymentId: info.resumeContext.deploymentId,
+  });
   return rawKey ? await importKey(rawKey) : undefined;
 }
 
@@ -230,13 +248,11 @@ function withLazyMetadata(raw: WorldHook): HookLookup {
   const hydrate = async (): Promise<unknown> => {
     const world = await getWorldLazy();
     const info = await resolveHookResumeInfo(raw);
-    // On the fast path this resolves the key by runId + deploymentId (no run
-    // read); on the fallback path it reuses the already-fetched run.
-    const rawKey = info.run
-      ? await world.getEncryptionKeyForRun?.(info.run)
-      : await world.getEncryptionKeyForRun?.(raw.runId, {
-          deploymentId: info.resumeContext.deploymentId,
-        });
+    // Resolved by runId + deploymentId on both paths: the fast path reads no
+    // run, and the fallback path read only the run's metadata.
+    const rawKey = await world.getEncryptionKeyForRun?.(raw.runId, {
+      deploymentId: info.resumeContext.deploymentId,
+    });
     encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
     return await hydrateStepArguments(
       serialized as any,
@@ -304,6 +320,38 @@ export async function getHookByToken(token: string): Promise<Hook> {
 }
 
 /**
+ * `world.hooks.getByToken`, recording what the lookup found on the
+ * `hook.resume` span. A start Hook (`start(workflow, args, { experimental_hook })`) is an
+ * ordinary Hook here: it resolves from the moment its run is admitted.
+ */
+async function lookupByToken(
+  world: Awaited<ReturnType<typeof getWorldLazy>>,
+  token: string,
+  /** The `hook.resume` span, which records the lookup's result. */
+  span?: Span,
+  /** Whether this lookup follows a takeover of the token mid-resume. */
+  redirected = false
+): Promise<ResumableHook> {
+  try {
+    const hook = await world.hooks.getByToken(token);
+    span?.setAttributes(
+      Attribute.HookLookupResult(redirected ? 'redirected' : 'found')
+    );
+    return hook;
+  } catch (error) {
+    recordLookupFailure(span, error);
+    throw error;
+  }
+}
+
+/** Records a by-token lookup's `not_found` answer on `span`. */
+function recordLookupFailure(span: Span | undefined, error: unknown): void {
+  if (HookNotFoundError.is(error)) {
+    span?.setAttributes(Attribute.HookLookupResult('not_found'));
+  }
+}
+
+/**
  * The result of {@link resumeHook}: a {@link Hook} augmented
  * with an optional resilience signal.
  *
@@ -331,16 +379,13 @@ export type ResumedHook = Hook & {
  * leaves the executor's outcome unknown; do not retry by directly writing an
  * event. Event and response persistence may be separate backend operations.
  *
- * Prefer passing the token string over a cached {@link Hook} object. A token
- * is looked up fresh, so the live backend can attest its atomic resume claim
- * and the durable write becomes idempotent-on-retry (transport retries of the
- * same write converge on one event). A supplied Hook object may carry a stale
- * attestation, so it is deliberately ignored and the write is claim-less —
- * meaning a lost response cannot be retried safely: retrying at the
- * application level mints a fresh claim and can commit a second
- * `hook_received`.
+ * Pass a Hook object to skip the token lookup when its resumeContext and the
+ * World support guarded delivery. A definite refusal falls back to a fresh
+ * lookup; an uncertain write is never re-sent. Cached resumeCapabilities are
+ * never trusted. Hooks without resumeContext keep the run-fallback path.
  *
- * @param tokenOrHook - The unique token identifying the hook, or the hook object itself
+ * @param tokenOrHook - A token, or a Hook targeting that specific hook (and
+ *   its force-claim successor), not an unrelated later owner of the token.
  * @param payload - The data payload to send to the hook
  * @returns Promise resolving to the {@link ResumedHook}
  * @throws {HookNotFoundError} If the Hook does not exist or its run has ended
@@ -368,15 +413,9 @@ export async function resumeHook<T = any>(
   payload: T,
   encryptionKeyOverride?: PayloadKey
 ): Promise<ResumedHook> {
-  // Public entry point. It never attests hook freshness, so a Hook object
-  // supplied here (which may carry a `resumeCapabilities` cached before a
-  // server rollback or kill switch) is ignored by the dynamic-dedup gate and
-  // fails closed to a plain, claim-less write. Only `resumeWebhook`, which
-  // fetches the hook by token in-line during the same resume, reaches the
-  // internal implementation with the fresh attestation set. Keeping the
-  // freshness flag off the exported signature prevents a caller from passing a
-  // stale Hook plus `true` and reactivating dynamic dedup against a
-  // rolled-back backend.
+  // Caller-supplied hooks never attest live capabilities. Resolved handles
+  // instead require an endpoint whose write contract enforces deduplication;
+  // older servers and the kill switch reject that route before writing.
   //
   // T0 of the hook-resume TTR window is taken HERE, at the public entry point,
   // rather than inside the implementation; see the parameter's doc comment.
@@ -435,17 +474,41 @@ const MAX_FORCE_CLAIM_REDIRECTS = 3;
 // them, always within this module copy.
 const notFoundReasons = new WeakMap<object, 'lookup' | 'not-webhook'>();
 
+/**
+ * {@link resumeHook} against an explicit World rather than the process's
+ * configured one, for SDK internals that act on a World they were handed
+ * (e.g. `cancelRun(world, …)` resuming a parent's child-run completion hook).
+ *
+ * @internal
+ */
+export async function resumeHookOnWorld<T = any>(
+  world: World,
+  token: string,
+  payload: T
+): Promise<ResumedHook> {
+  return resumeHookImpl(
+    token,
+    payload,
+    undefined,
+    false,
+    Date.now(),
+    false,
+    world
+  );
+}
+
 async function resumeHookImpl<T = any>(
   tokenOrHook: string | ResumableHook,
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
-  webhookOnly = false
+  webhookOnly = false,
+  worldOverride?: World
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
-      const world = await getWorldLazy();
+      const world = worldOverride ?? (await getWorldLazy());
       const token =
         typeof tokenOrHook === 'string' ? tokenOrHook : tokenOrHook.token;
 
@@ -492,6 +555,7 @@ async function resumeHookImpl<T = any>(
       // per-run (runId, resumeId) claim then dedups a retry of the redirected
       // write exactly as it dedups a retry of a plain one.
       const resumeId = generateResumeId();
+      const routeState = { resolvedFallback: false };
       const assertResendable = (cause: unknown): void => {
         if (
           payload instanceof Request &&
@@ -518,7 +582,9 @@ async function resumeHookImpl<T = any>(
             fresh,
             resumeRequestedAtMs,
             resumeId,
-            webhookOnly
+            webhookOnly,
+            redirects > 0,
+            routeState
           );
         } catch (err) {
           if (
@@ -595,6 +661,7 @@ async function resumeHookImpl<T = any>(
             try {
               relocated = await world.hooks.getByToken(token);
             } catch (lookupError) {
+              recordLookupFailure(span, lookupError);
               if (!HookNotFoundError.is(lookupError)) {
                 runtimeLogger.warn(
                   'Hook resume: re-resolving the token after a not-found failed; surfacing the original error',
@@ -618,6 +685,7 @@ async function resumeHookImpl<T = any>(
               assertResendable(err);
               redirects++;
               span?.setAttributes({
+                ...Attribute.HookLookupResult('redirected'),
                 'workflow.hook.resume_redirects': redirects,
                 'workflow.hook.resume_redirect_to_run': relocated.runId,
               });
@@ -643,14 +711,17 @@ async function resumeHookAttempt<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   logicalResumeId: string,
-  webhookOnly: boolean
+  webhookOnly: boolean,
+  /** Whether a takeover redirected this resume to the token's new owner. */
+  redirected = false,
+  routeState = { resolvedFallback: false }
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
     let hook: ResumableHook;
     if (suppliedToken) {
       try {
-        hook = await world.hooks.getByToken(tokenOrHook);
+        hook = await lookupByToken(world, tokenOrHook, span, redirected);
       } catch (lookupError) {
         if (HookNotFoundError.is(lookupError)) {
           notFoundReasons.set(lookupError, 'lookup');
@@ -658,7 +729,24 @@ async function resumeHookAttempt<T = any>(
         throw lookupError;
       }
     } else {
-      hook = tokenOrHook;
+      hook = hookFreshlyLookedUp
+        ? tokenOrHook
+        : HookResumeHandleSchema.parse(tokenOrHook);
+      if (!hookFreshlyLookedUp) {
+        // Validation omits user metadata so it cannot hydrate it. Preserve
+        // its descriptor without reading it: in-process Hooks carry a lazy
+        // getter, while raw World hooks can still carry serialized metadata.
+        const metadata = Object.getOwnPropertyDescriptor(
+          tokenOrHook,
+          'metadata'
+        );
+        if (metadata) {
+          Object.defineProperty(hook, 'metadata', {
+            ...metadata,
+            configurable: true,
+          });
+        }
+      }
     }
     // `resumeWebhook()` checked the hook it looked up; a redirect lands on a
     // different hook, and one taken over by `createHook({ experimental_force
@@ -672,7 +760,7 @@ async function resumeHookAttempt<T = any>(
     // when it came from a by-token lookup performed during this resume.
     const hookResumeCapabilitiesAreFresh = suppliedToken || hookFreshlyLookedUp;
 
-    const info = await resolveHookResumeInfo(hook);
+    const info = await resolveHookResumeInfo(hook, world);
     const { resumeContext } = info;
 
     span?.setAttributes({
@@ -737,7 +825,8 @@ async function resumeHookAttempt<T = any>(
       // (a bare CryptoKey via `resolveHookEncryptionKey`), not the
       // read-side RunPayloadKeys.
       let encryptionKey =
-        encryptionKeyOverride ?? (await resolveHookEncryptionKey(hook, info));
+        encryptionKeyOverride ??
+        (await resolveHookEncryptionKey(hook, info, world));
       if (!capabilities.supportedFormats.has(SerializationFormat.ENCRYPTED)) {
         encryptionKey = undefined;
       }
@@ -767,7 +856,11 @@ async function resumeHookAttempt<T = any>(
       capabilities.framedByteStreams,
       compression,
       undefined,
-      readbackOps
+      readbackOps,
+      // resumeContext.workflowCoreVersion describes the run's starting client,
+      // which may differ from its pinned deployment. Keep abort packets raw
+      // until the resume context can attest the receiving runtime separately.
+      false
     );
     // A hook_received event is not durable while its payload still points
     // at stream uploads in flight. Finish those before committing the
@@ -847,6 +940,10 @@ async function resumeHookAttempt<T = any>(
     }
 
     const queueName = getWorkflowQueueName(resumeContext.workflowName);
+    // `specVersion` picks the queue transport, so an unknown version takes
+    // the legacy one every deployment reads. The routing hint on the payload
+    // is left off instead: a guessed version would route the wake to the
+    // wrong orchestrator, and without one the runtime reads the run.
     const queueOptions = {
       deploymentId: resumeContext.deploymentId,
       specVersion: resumeContext.runSpecVersion ?? SPEC_VERSION_LEGACY,
@@ -869,7 +966,12 @@ async function resumeHookAttempt<T = any>(
     // on exactly one committed event via the backend's (runId, resumeId)
     // constraint. Without it the write is a plain single-shot create,
     // exactly as before dedup existed.
+    const resolvedHandle =
+      !hookResumeCapabilitiesAreFresh &&
+      hook.resumeContext !== undefined &&
+      world.capabilities?.resolvedHookResume === true;
     const backendDedupSupported =
+      resolvedHandle ||
       (hookResumeCapabilitiesAreFresh
         ? (hook.resumeCapabilities?.hookResumeDedupVersion ?? 0)
         : 0) >= HOOK_RESUME_DEDUP_VERSION ||
@@ -881,6 +983,11 @@ async function resumeHookAttempt<T = any>(
 
     span?.setAttributes({
       'workflow.hook.resume_strategy': 'sequential',
+      'workflow.hook.resume_route': routeState.resolvedFallback
+        ? 'resolved_fallback'
+        : resolvedHandle && canClaimResume
+          ? 'resolved'
+          : 'lookup',
     });
 
     const resumeId = canClaimResume ? logicalResumeId : undefined;
@@ -914,12 +1021,11 @@ async function resumeHookAttempt<T = any>(
     // hiding that behind "not found" would mask the bug.)
     const isHookGoneError = (err: unknown): boolean =>
       HookNotFoundError.is(err) || RunExpiredError.is(err);
-    try {
-      await world.events.create(
+    const write = (claim: boolean, resolved: boolean) =>
+      world.events.create(
         hook.runId,
         {
           eventType: 'hook_received',
-          // The payload is already encoded for the run (see `compression`).
           specVersion: specVersionForRunWrite(resumeContext.runSpecVersion),
           correlationId: hook.hookId,
           eventData: {
@@ -929,19 +1035,114 @@ async function resumeHookAttempt<T = any>(
         },
         {
           v1Compat,
-          ...(resumeId && payloadDigest
+          inBand: false,
+          ...(claim && resumeId && payloadDigest
             ? { resumeId, resumePayloadDigest: payloadDigest }
             : {}),
+          ...(resolved ? { requireHookResumeDedup: true } : {}),
         }
       );
+    try {
+      await write(canClaimResume, resolvedHandle && canClaimResume);
     } catch (err) {
-      // A takeover refusal is a redirect, handled by the caller's loop;
-      // it must not be re-keyed to the final "not found".
-      if (HookForceClaimedError.is(err)) throw err;
-      if (isHookGoneError(err)) {
-        throw new HookNotFoundError(hook.token);
+      // Only explicit pre-write refusals permit another delivery attempt.
+      // Transport errors, timeouts, and lost responses may follow a commit.
+      // The adapter preserves retry history even when the final answer is a
+      // refusal: an earlier send may already have committed. Do not look up,
+      // redirect, or fall back to a claim-less write in that case.
+      if (
+        WorkflowWorldError.is(err) &&
+        err.code === 'HOOK_RESUME_RETRY_REFUSED'
+      ) {
+        throw err;
       }
-      throw err;
+      const refusalStatus = HookNotFoundError.is(err)
+        ? 404
+        : WorkflowWorldError.is(err) &&
+            (err.status === 400 || err.status === 404)
+          ? err.status
+          : undefined;
+      if (resolvedHandle && canClaimResume && refusalStatus !== undefined) {
+        routeState.resolvedFallback = true;
+        span?.setAttributes({
+          'workflow.hook.resume_route': 'resolved_fallback',
+          'workflow.hook.resolved_refusal_status': refusalStatus,
+        });
+        let fresh: ResumableHook;
+        try {
+          fresh = await lookupByToken(world, hook.token, span, redirected);
+        } catch (lookupError) {
+          if (HookNotFoundError.is(lookupError))
+            notFoundReasons.set(lookupError, 'lookup');
+          throw lookupError;
+        }
+        if (fresh.hookId !== hook.hookId || fresh.runId !== hook.runId) {
+          if (fresh.claimedFrom?.hookId === hook.hookId) {
+            throw new HookForceClaimedError(
+              hook.token,
+              fresh.runId,
+              fresh.hookId
+            );
+          }
+          const gone = new HookNotFoundError(hook.token);
+          notFoundReasons.set(gone, 'lookup');
+          throw gone;
+        }
+        // A hook's run and encoding context are immutable. Keep the serialized
+        // payload (which may have consumed a Request body) for this same hook.
+        // If a stale descriptor had different encoding metadata, re-encode with
+        // the fresh context instead. This path never re-enters the resolved route.
+        const fields = [
+          'deploymentId',
+          'workflowName',
+          'runSpecVersion',
+          'workflowCoreVersion',
+          'nodeVersion',
+          'encryptionPublicKey',
+        ] as const;
+        if (
+          !fresh.resumeContext ||
+          fields.some(
+            (field) => fresh.resumeContext?.[field] !== resumeContext[field]
+          )
+        ) {
+          if (payload instanceof Request && payload.bodyUsed) {
+            throw new WorkflowRuntimeError(
+              'Hook delivery was refused before writing, but its encoding context changed after the request body was consumed; retry the request',
+              { cause: err }
+            );
+          }
+          return resumeHookAttempt(
+            world,
+            span,
+            fresh,
+            payload,
+            undefined,
+            true,
+            resumeRequestedAtMs,
+            logicalResumeId,
+            webhookOnly,
+            redirected,
+            routeState
+          );
+        }
+        hook = fresh;
+        const freshDedup =
+          (fresh.resumeCapabilities?.hookResumeDedupVersion ?? 0) >=
+            HOOK_RESUME_DEDUP_VERSION ||
+          world.capabilities?.hookResumeDedup === true;
+        try {
+          await write(freshDedup, false);
+        } catch (fallbackError) {
+          if (isHookGoneError(fallbackError))
+            throw new HookNotFoundError(hook.token);
+          throw fallbackError;
+        }
+      } else {
+        if (HookForceClaimedError.is(err)) throw err;
+        if (isHookGoneError(err)) throw new HookNotFoundError(hook.token);
+        throw err;
+      }
     }
     // Stamped AFTER the write resolves (entry-time attributes cannot tell
     // an attempted resume from a committed one): together with
@@ -961,6 +1162,9 @@ async function resumeHookAttempt<T = any>(
           queueName,
           {
             runId: hook.runId,
+            ...(resumeContext.runSpecVersion !== undefined && {
+              runSpecVersion: resumeContext.runSpecVersion,
+            }),
             traceCarrier: resumeContext.traceCarrier ?? undefined,
             hookResumeTiming: {
               resumeRequestedAtMs,
@@ -970,13 +1174,17 @@ async function resumeHookAttempt<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             ...queueOptions,
-            // Dedup retried publishes whose response was lost: a
-            // duplicate wake is harmless for correctness (deterministic
-            // replay) but costs a full replay of the run, and the queue
-            // accepts a repeated idempotency key by delivering only one
-            // of the messages. Claim-less writes have no resumeId and
-            // keep the previous behavior.
-            ...(resumeId ? { idempotencyKey: `hook-${resumeId}` } : {}),
+            // A spec 9 wake carries no idempotency key: a key could be
+            // absorbed by an orchestrator delivery that is already exiting
+            // and lose the wakeup, and a duplicate wake from a retried
+            // publish only costs a cheap delivery. An older run replays in
+            // full on every delivery, so its retried publishes whose
+            // response was lost dedupe on the resume (claim-less writes have
+            // no resumeId and keep the previous behavior).
+            ...(resumeId &&
+              queueOptions.specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR && {
+                idempotencyKey: `hook-${resumeId}`,
+              }),
           }
         ),
       world.isDeploymentUnavailableError?.bind(world)

@@ -15,6 +15,14 @@ each of its steps, the payloads on its event log, and anything written to its
 streams. How long that data is kept is decided by the World you are running
 on, not by the SDK.
 
+<Callout type="info">
+  For the [Vercel World](/worlds/vercel), retention is documented in the
+  [Vercel Workflows docs](https://vercel.com/docs/workflows/retention): how long
+  run payloads stay readable and when they're deleted, how long run metadata is
+  kept, where run data is stored, and how to check whether a run's data has
+  expired.
+</Callout>
+
 `experimental_retention` on [`start()`](/docs/api-reference/workflow-api/start)
 lets a run ask for a specific retention period, rather than the World's default.
 

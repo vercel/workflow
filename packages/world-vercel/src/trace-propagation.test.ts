@@ -367,46 +367,49 @@ describe('snapshot requests trace propagation', () => {
     expect(traceparent).toContain(traceId);
   });
 
-  it('injects traceparent on snapshots.save (undici request path)', async () => {
-    const agent = new MockAgent();
-    agent.disableNetConnect();
-    let capturedHeaders: Record<string, unknown> | undefined;
-    agent
-      .get('https://vercel-workflow.com')
-      .intercept({
-        path: '/api/v2/runs/wrun_1/snapshot',
-        method: 'PUT',
-      })
-      .reply(200, (opts) => {
-        capturedHeaders = opts.headers as Record<string, unknown>;
-        return 'ok';
+  it.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
+    'injects traceparent on snapshots.save (undici request path)',
+    async () => {
+      const agent = new MockAgent();
+      agent.disableNetConnect();
+      let capturedHeaders: Record<string, unknown> | undefined;
+      agent
+        .get('https://vercel-workflow.com')
+        .intercept({
+          path: '/api/v2/runs/wrun_1/snapshot',
+          method: 'PUT',
+        })
+        .reply(200, (opts) => {
+          capturedHeaders = opts.headers as Record<string, unknown>;
+          return 'ok';
+        });
+
+      const { createSnapshotsStorage } = await import('./snapshots.js');
+      const snapshots = createSnapshotsStorage({
+        token: 'test-token',
+        dispatcher: agent,
       });
 
-    const { createSnapshotsStorage } = await import('./snapshots.js');
-    const snapshots = createSnapshotsStorage({
-      token: 'test-token',
-      dispatcher: agent,
-    });
-
-    const tracer = otelTrace.getTracer('test');
-    let traceId = '';
-    await tracer.startActiveSpan('flow-invocation', async (span) => {
-      traceId = span.spanContext().traceId;
-      await snapshots.save('wrun_1', new Uint8Array([1, 2, 3]), {
-        eventsCursor: 'evnt_1',
-        createdAt: new Date(),
+      const tracer = otelTrace.getTracer('test');
+      let traceId = '';
+      await tracer.startActiveSpan('flow-invocation', async (span) => {
+        traceId = span.spanContext().traceId;
+        await snapshots.save('wrun_1', new Uint8Array([1, 2, 3]), {
+          eventsCursor: 'evnt_1',
+          createdAt: new Date(),
+        });
+        span.end();
       });
-      span.end();
-    });
 
-    const headers = new Headers(
-      (capturedHeaders ?? {}) as Record<string, string>
-    );
-    const traceparent = headers.get('traceparent');
-    expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
-    expect(traceparent).toContain(traceId);
-    agent.assertNoPendingInterceptors();
-  });
+      const headers = new Headers(
+        (capturedHeaders ?? {}) as Record<string, string>
+      );
+      const traceparent = headers.get('traceparent');
+      expect(traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+      expect(traceparent).toContain(traceId);
+      agent.assertNoPendingInterceptors();
+    }
+  );
 });
 
 describe('ws stream transport upgrade trace propagation', () => {

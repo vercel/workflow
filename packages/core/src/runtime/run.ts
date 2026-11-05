@@ -1,12 +1,20 @@
 import {
   RunExpiredError,
+  START_HOOK_CANDIDATE_CANCELLED,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import type { WorkflowRun, WorkflowRunStatus, World } from '@workflow/world';
+import {
+  isTerminalWorkflowRunStatus,
+  SPEC_VERSION_CURRENT,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+  type World,
+} from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import {
   deriveRunPayloadKeys,
@@ -21,16 +29,23 @@ import {
   tagForwardedWritableTarget,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import { afterRunCancelled } from './after-terminal-write.js';
+import { awaitChildRunCompletion } from './child-run-completion.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  isSingleOrchestratorRun,
   type StopSleepOptions,
   type StopSleepResult,
+  wakeRunAfterOutOfBandWrite,
   wakeUpRun,
 } from './runs.js';
 
 const RETURN_VALUE_POLL_INTERVAL_MS = 1_000;
+
+/** Concurrent run reads in one `Run.readFinishedRunIds` step. */
+const READ_FINISHED_CONCURRENCY = 20;
 const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
   'completed',
   'failed',
@@ -193,14 +208,22 @@ export interface WorkflowRunWritableStreamOptions {
  */
 export class Run<TResult> {
   static [WORKFLOW_SERIALIZE](instance: Run<unknown>) {
-    return { runId: instance.runId, resilientStart: instance.#resilientStart };
+    return {
+      runId: instance.runId,
+      resilientStart: instance.#resilientStart,
+      ...(instance.#parentRunId ? { parentRunId: instance.#parentRunId } : {}),
+    };
   }
 
   static [WORKFLOW_DESERIALIZE](data: {
     runId: string;
     resilientStart?: boolean;
+    parentRunId?: string;
   }) {
-    return new Run(data.runId, { resilientStart: data.resilientStart });
+    return new Run(data.runId, {
+      resilientStart: data.resilientStart,
+      parentRunId: data.parentRunId,
+    });
   }
 
   /**
@@ -234,9 +257,22 @@ export class Run<TResult> {
    */
   #resilientStart = false;
 
-  constructor(runId: string, opts?: { resilientStart?: boolean }) {
+  /**
+   * The workflow run that started this run with `start()` and that this run
+   * resumes, through the child-run completion hook, when it finishes. Set only
+   * on handles returned by such a `start()`. Inside that parent workflow,
+   * `returnValue` suspends on the hook instead of polling.
+   * @internal
+   */
+  #parentRunId: string | undefined;
+
+  constructor(
+    runId: string,
+    opts?: { resilientStart?: boolean; parentRunId?: string }
+  ) {
     this.runId = runId;
     this.#resilientStart = opts?.resilientStart ?? false;
+    this.#parentRunId = opts?.parentRunId;
   }
 
   /**
@@ -249,8 +285,27 @@ export class Run<TResult> {
     if (!this.#encryptionKeyPromise) {
       this.#encryptionKeyPromise = (async () => {
         const world = await this.#lazyWorldPromise;
-        const runData = run ?? (await world.runs.get(this.runId));
-        const rawKey = await world.getEncryptionKeyForRun?.(runData);
+        // Checked before the read, not with `?.` around the call: a World
+        // without encryption has nothing to resolve, so it should not pay for
+        // a run it would discard.
+        if (!world.getEncryptionKeyForRun) return undefined;
+
+        let rawKey: Uint8Array | undefined;
+        if (run) {
+          rawKey = await world.getEncryptionKeyForRun(run);
+        } else {
+          // `getEncryptionKeyForRun` reads only the run's id and deployment,
+          // both of which survive `resolveData: 'none'`. The default ('all')
+          // maps to `remoteRefBehavior=resolve` on world-vercel, which makes
+          // the server resolve and return the run's whole input and output
+          // before a `getReadable()` caller can read its first chunk.
+          const { deploymentId } = await world.runs.get(this.runId, {
+            resolveData: 'none',
+          });
+          rawKey = await world.getEncryptionKeyForRun(this.runId, {
+            deploymentId,
+          });
+        }
         return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
       })();
     }
@@ -273,6 +328,9 @@ export class Run<TResult> {
    * @param options - Optional settings to target specific sleep calls by correlation ID.
    *   If not provided, all pending sleep calls will be interrupted.
    * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
+   *   On a single-orchestrator run it is the number of sleep calls the run's
+   *   orchestrator was asked to complete, which is best-effort while an
+   *   orchestrator invocation of the run is live (see `wakeUpRun`).
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
     'use step';
@@ -290,14 +348,53 @@ export class Run<TResult> {
     'use step';
     const world = await this.#lazyWorldPromise;
     // The caller is often not the run's executor, so stamp the run's version.
-    const run = await world.runs.get(this.runId, { resolveData: 'none' });
-    await world.events.create(this.runId, {
-      eventType: 'run_cancelled',
-      specVersion: specVersionForRunWrite(run.specVersion),
+    // A run that does not exist is cancelled through the World all the same:
+    // a `start({ experimental_hook })` candidate that was admitted but never created its
+    // run (the one a `WorkflowStartError` names) is fenced by it, so it can
+    // never start. Otherwise the World answers `WorkflowRunNotFoundError`.
+    const run = await world.runs
+      .get(this.runId, { resolveData: 'none' })
+      .catch((err: unknown) => {
+        // Only a World with start Hooks can have a candidate with no run
+        // to fence; anywhere else a missing run stays a plain not-found.
+        if (
+          !WorkflowRunNotFoundError.is(err) ||
+          world.capabilities?.atomicStartHook?.active !== true
+        ) {
+          throw err;
+        }
+        return undefined;
+      });
+    const cancelled = {
+      eventType: 'run_cancelled' as const,
+      specVersion: run
+        ? specVersionForRunWrite(run.specVersion)
+        : SPEC_VERSION_CURRENT,
       ...(options?.cancelReason !== undefined
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
-    });
+    };
+    if (!run) {
+      try {
+        await world.events.create(this.runId, cancelled);
+      } catch (err) {
+        if (
+          WorkflowWorldError.is(err) &&
+          err.code === START_HOOK_CANDIDATE_CANCELLED
+        ) {
+          return;
+        }
+        throw err;
+      }
+      return;
+    }
+    if (isSingleOrchestratorRun(run)) {
+      await world.events.create(this.runId, cancelled, { inBand: false });
+    } else {
+      await world.events.create(this.runId, cancelled);
+    }
+    await wakeRunAfterOutOfBandWrite(world, run);
+    await afterRunCancelled(world, run);
   }
 
   /**
@@ -331,12 +428,71 @@ export class Run<TResult> {
   }
 
   /**
-   * The return value of the workflow run.
-   * Polls the workflow return value until the workflow run completes.
+   * The return value of the workflow run, once it completes. Rejects with
+   * `WorkflowRunFailedError` or `WorkflowRunCancelledError` if the run fails
+   * or is cancelled.
+   *
+   * Inside the workflow that started this run, the parent suspends on a system
+   * hook the run resumes when it finishes, so waiting costs no compute and
+   * resumes as soon as the run is done. Everywhere else (host code, steps,
+   * a workflow handed another run's handle) it polls until the run finishes.
    */
   get returnValue(): Promise<TResult> {
+    return (
+      awaitChildRunCompletion(
+        this.runId,
+        this.#parentRunId,
+        () => this.readReturnValue(),
+        (runIds) => Run.readFinishedRunIds(runIds)
+      ) ?? this.readReturnValue()
+    );
+  }
+
+  /**
+   * The step behind {@link returnValue}: polls until the run is terminal.
+   * Use `returnValue` instead.
+   * @internal
+   */
+  async readReturnValue(): Promise<TResult> {
     'use step';
     return this.#pollReturnValue();
+  }
+
+  /**
+   * Which of `runIds` have finished (completed, failed, or cancelled), in one
+   * step: the batched status read behind the child-run completion hook. A run
+   * that cannot be found is reported as finished, so the caller's
+   * `returnValue` read surfaces the not-found (or retries a resilient start).
+   * @internal
+   */
+  static async readFinishedRunIds(runIds: string[]): Promise<string[]> {
+    'use step';
+    const world = await getWorldLazy();
+    const finished = new Set<string>();
+    let next = 0;
+    const worker = async () => {
+      for (
+        let runId = runIds[next++];
+        runId !== undefined;
+        runId = runIds[next++]
+      ) {
+        try {
+          const run = await world.runs.get(runId, { resolveData: 'none' });
+          if (isTerminalWorkflowRunStatus(run.status)) finished.add(runId);
+        } catch (error) {
+          if (!WorkflowRunNotFoundError.is(error)) throw error;
+          finished.add(runId);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(READ_FINISHED_CONCURRENCY, runIds.length) },
+        worker
+      )
+    );
+    // Input order, so the result does not depend on read timing.
+    return runIds.filter((runId) => finished.has(runId));
   }
 
   /**

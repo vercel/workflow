@@ -15,8 +15,8 @@ import {
   applyAttributeChanges,
   isTerminalWorkflowRunStatus,
   validateAttributeChanges,
-  WorkflowRunSchema,
 } from '@workflow/world';
+import type { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
@@ -26,7 +26,7 @@ import {
   writeJSON,
 } from '../fs.js';
 import { filterRunData } from './filters.js';
-import { getObjectCreatedAt } from './helpers.js';
+import { getObjectCreatedAt, RunRecordSchema } from './helpers.js';
 import {
   getRunStatusPollIntervalMs,
   waitForRunTerminalSignal,
@@ -124,7 +124,7 @@ export function createRunsStorage(
       basedir,
       'runs',
       id,
-      WorkflowRunSchema,
+      RunRecordSchema,
       tag
     );
     if (!run) {
@@ -186,7 +186,8 @@ export function createRunsStorage(
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'runs'),
-        schema: WorkflowRunSchema,
+        // A start Hook fence parses to null, which the query skips.
+        schema: RunRecordSchema as z.ZodType<WorkflowRun>,
         fileIdFilter: params?.fileIdFilter,
         filter: (run) => {
           if (
@@ -236,7 +237,7 @@ export function createRunsStorage(
           basedir,
           'runs',
           runId,
-          WorkflowRunSchema,
+          RunRecordSchema,
           tag
         );
         if (!run) {

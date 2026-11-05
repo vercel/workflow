@@ -1,0 +1,48 @@
+---
+title: replay-timeout
+description: Workflow replay exceeded its time budget on repeated deliveries and the run was failed.
+type: troubleshooting
+summary: Reduce replay cost by running on the QuickJS VM with snapshotting, or by moving heavy synchronous work out of the workflow function.
+prerequisites:
+  - /docs/how-it-works/event-sourcing
+related:
+  - /docs/configuration/runtime-tuning#workflow_replay_timeout_ms
+  - /docs/errors/max-events-exceeded
+---
+
+Each time a run resumes, the runtime re-runs the workflow function against the recorded [event log](/docs/how-it-works/event-sourcing) to rebuild its state. That replay has a time budget per handler invocation ([`WORKFLOW_REPLAY_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_replay_timeout_ms)). Time spent inside `"use step"` bodies doesn't count against it.
+
+When replay exceeds the budget, the delivery is retried. After [`WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES`](/docs/configuration/runtime-tuning#workflow_replay_timeout_max_retries) attempts, the run is failed with the `REPLAY_TIMEOUT` error code.
+
+## Error message
+
+```text
+Workflow replay exceeded maximum duration (240s) after 4 attempts
+├▶ hint: Replay time grows with the size of the event log. Run long-running workflows on the QuickJS VM with snapshotting ...
+╰▶ docs: https://workflow-sdk.dev/err/replay-timeout
+```
+
+## Why it happens
+
+- **The event log is very large.** On the default engine, replay time grows with the number of events in the run.
+- **The workflow function does heavy synchronous work** outside of steps, such as parsing large payloads or tight loops.
+
+## How to fix it
+
+### Run on the QuickJS VM with snapshotting
+
+<Callout type="warn">
+The QuickJS engine is experimental, and its global surface differs from the default engine. Review the [differences](/docs/configuration/runtime-tuning#workflow_vm) before switching an existing deployment.
+</Callout>
+
+Under QuickJS with snapshotting, a run restores its VM memory from a snapshot and replays only the events recorded since, so replay time stays roughly constant as the log grows. These runs are also exempt from the default [per-run event limit](/docs/errors/max-events-exceeded).
+
+Set `WORKFLOW_VM=quickjs` in the environment that starts runs. Snapshotting is on by default under QuickJS. Only runs started after the change use the new engine. See [max-events-exceeded](/docs/errors/max-events-exceeded#run-on-the-quickjs-vm-with-snapshotting) for the full eligibility rules.
+
+### Move heavy work into steps
+
+Steps run with full Node.js access, their results are recorded once, and replay reuses those results without re-running the body. Move expensive parsing, transformation, and computation out of the workflow function into steps.
+
+### Raise the budget
+
+As a short-term mitigation, raise [`WORKFLOW_REPLAY_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_replay_timeout_ms). This doesn't reduce replay cost, which keeps growing with the log on the default engine.

@@ -1,5 +1,49 @@
 # @workflow/web
 
+## 5.0.8
+
+### Patch Changes
+
+- Updated dependencies [[`f98fca1`](https://github.com/vercel/workflow/commit/f98fca13f6659e222db7803511b5e92443e7db63), [`a4123ba`](https://github.com/vercel/workflow/commit/a4123baf9768084f4b31604d609672392cb43c84)]:
+  - @workflow/world-local@5.2.1
+
+## 5.0.7
+
+### Patch Changes
+
+- [#5079](https://github.com/vercel/workflow/pull/5079) [`f4f6b02`](https://github.com/vercel/workflow/commit/f4f6b02f53b42bf56f634508e3043fa8a27f7691) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Recognize unframed serialized abort packets in the Streams viewer so encrypted packets can be decrypted, and keep stream-list rows at least 40px tall.
+- Updated dependencies [[`3ca3bf0`](https://github.com/vercel/workflow/commit/3ca3bf0b36b1bcdf1d105b8af530b6f0e553485b), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`eb07a8d`](https://github.com/vercel/workflow/commit/eb07a8d261de014499ca0eb7f259e178d610082f), [`2a3e4c0`](https://github.com/vercel/workflow/commit/2a3e4c00fd4114473d7cf95737bdb70bddc41e8d), [`6455beb`](https://github.com/vercel/workflow/commit/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`3bf8cd9`](https://github.com/vercel/workflow/commit/3bf8cd972b6d15b2275245416ac60f74e3cab8a1), [`72131a2`](https://github.com/vercel/workflow/commit/72131a227d3efbf2613104026976c3a0d887d1c6), [`d4b7b06`](https://github.com/vercel/workflow/commit/d4b7b06cbf918a6af6927a45fd6f2423279c507b)]:
+  - @workflow/world-local@5.2.0
+
+## 5.0.6
+
+### Patch Changes
+
+- [#4758](https://github.com/vercel/workflow/pull/4758) [`0bc17d7`](https://github.com/vercel/workflow/commit/0bc17d778d3629f2ec182a9c5335534c1f95082b) Thanks [@pranaygp](https://github.com/pranaygp)! - Resolve a run's encryption key from metadata only when decrypting in `workflow inspect --decrypt` and the web UI, instead of making the server resolve the run's whole input and output for each lookup.
+
+- [#4874](https://github.com/vercel/workflow/pull/4874) [`2163290`](https://github.com/vercel/workflow/commit/216329045b3babe96db592f5557e5f04c7a3a51a) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Recommend the QuickJS VM with snapshotting on runs that failed with `MAX_EVENTS_EXCEEDED` or `REPLAY_TIMEOUT`
+- Updated dependencies [[`5170f8f`](https://github.com/vercel/workflow/commit/5170f8f06e49b463ff52027926fe58f9897c12dc), [`59b76f8`](https://github.com/vercel/workflow/commit/59b76f8deaa8e925f90377e5a6a6063dcd9d9f16), [`a067ef7`](https://github.com/vercel/workflow/commit/a067ef7625cf0e2e1c6c06701359e92abde07ad6)]:
+  - @workflow/world-local@5.1.2
+
+## 5.0.5
+
+No changes in this release.
+
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`fcb554b`](https://github.com/vercel/workflow/commit/fcb554b621eb846af808acd258f31a6e4348a349), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`b69fabe`](https://github.com/vercel/workflow/commit/b69fabecf21cdd61bd411dc7c81db67c704583ae), [`77ccb69`](https://github.com/vercel/workflow/commit/77ccb696422772f889a1d000908b7deb3af11553), [`c57820d`](https://github.com/vercel/workflow/commit/c57820d294b69601ca21597ebc0e0f74c0e26d9f), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb), [`ebaa5b7`](https://github.com/vercel/workflow/commit/ebaa5b7bd76fb828cc9d4ff1ec0abd4681f417fb)]:
+  - @workflow/world-local@5.1.1
+
+## 5.0.3
+
+### Patch Changes
+
+- [#4736](https://github.com/vercel/workflow/pull/4736) [`28cb70d`](https://github.com/vercel/workflow/commit/28cb70da502b8051d955fda981502c509c93c714) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Upgrade `react-router` and `@react-router/*` to 7.18.4 to address CVE-2026-34077 and GHSA-qwww-vcr4-c8h2
+- Updated dependencies [[`0139561`](https://github.com/vercel/workflow/commit/0139561514e1d3f0c26ab53eaa4dd174ba9c2fcf), [`b38360d`](https://github.com/vercel/workflow/commit/b38360d2ba798fa93b22fc2cdfb1a4b053d360f2)]:
+  - @workflow/world-local@5.1.0
+
 ## 5.0.2
 
 ### Patch Changes
