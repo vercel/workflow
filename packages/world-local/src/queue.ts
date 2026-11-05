@@ -81,9 +81,10 @@ const MAX_SAFE_TIMEOUT_MS = 2147483647;
 export const MAX_LOCAL_SAFETY_LIMIT = 256;
 
 /**
- * Deliveries of one message the runtime may refuse as unauthenticated (its
- * marked 401) before world-local gives the message up. A refusal after which
- * the key file holds a new key is retried at once; the rest wait the short
+ * Refusals of one message (the runtime's marked 401) after which the key file
+ * still holds the key that was sent, before world-local gives the message up.
+ * A refusal after which the file holds a new key is retried at once and not
+ * counted, however many rotations there are. The counted ones wait the short
  * backoff, by which time the route has re-read the file too (its re-reads are
  * rate-limited). Few, because a sender that cannot read the app's key is
  * refused every time.
@@ -554,23 +555,25 @@ export function createQueue(
             // bare 401): the route holds a key other than the one sent.
             // Another process of the app may have written a new key (the app
             // restarted, a script called `start()`), so re-read the key file
-            // and, if it changed, retry at once with the new key. Otherwise
-            // retry a few times with the short backoff (the route re-reads
-            // the file on a mismatch too, rate-limited), then give the
-            // message up rather than retry it for hours. Retrying is safe: a
-            // refused delivery reached no handler and touched no run, so it
-            // is not counted as an attempt either. A given-up message's run
-            // is left as it is.
+            // and, if it changed, retry at once with the new key. That
+            // refusal is not counted: the key rotated, and each rotation is
+            // a write by one of the app's processes, so this cannot spin.
+            // Otherwise (the key did not change) count it and retry a few
+            // times with the short backoff (the route re-reads the file on a
+            // mismatch too, rate-limited), then give the message up rather
+            // than retry it for hours. Retrying is safe: a refused delivery
+            // reached no handler and touched no run, so it is not counted as
+            // an attempt either. A given-up message's run is left as it is.
             delivery--;
-            authRefusals++;
             const reloadedKey = await queueAuthKey.reload();
+            if (reloadedKey !== undefined && reloadedKey !== sentKey) {
+              debugLog(
+                '[world-local]: delivery refused as unauthenticated; the queue auth key changed, retrying with it'
+              );
+              continue;
+            }
+            authRefusals++;
             if (authRefusals < MAX_QUEUE_AUTH_REFUSALS) {
-              if (reloadedKey !== undefined && reloadedKey !== sentKey) {
-                debugLog(
-                  `[world-local]: delivery refused as unauthenticated; the queue auth key changed, retrying with it (${authRefusals}/${MAX_QUEUE_AUTH_REFUSALS})`
-                );
-                continue;
-              }
               debugLog(
                 `[world-local]: delivery refused as unauthenticated (${authRefusals}/${MAX_QUEUE_AUTH_REFUSALS}), retrying`
               );

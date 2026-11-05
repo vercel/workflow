@@ -23,6 +23,7 @@ import {
 } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createWorld } from './index.js';
+import { MAX_QUEUE_AUTH_REFUSALS } from './queue.js';
 import {
   createQueueAuthKey,
   QUEUE_AUTH_KEY_FILE,
@@ -498,6 +499,51 @@ describe('deliveries, with real timers', () => {
       ]);
       expect(Date.now() - startedAt).toBeLessThan(2_000);
       expect(readKey(dataDir)).toBe(fresh);
+    } finally {
+      await cli.close?.();
+    }
+  });
+
+  it('a message refused on more rotations than the refusal limit is still delivered when each retry is fixed', async () => {
+    const dataDir = path.join(base, 'data');
+    mkdirSync(dataDir);
+    writeFileSync(keyFile(dataDir), `${generateQueueAuthKey()}\n`);
+    // Each of the first 7 deliveries meets a key that rotated just before
+    // it arrived (an app restarting, scripts calling start()): refused, with
+    // the new key already in the file for the sender's reload to find.
+    const ROTATIONS = 7;
+    let rotations = 0;
+    const { decisions, baseUrl } = await route(dataDir, async (key) => {
+      if (rotations < ROTATIONS) {
+        rotations++;
+        writeFileSync(keyFile(dataDir), `${generateQueueAuthKey()}\n`);
+        return false;
+      }
+      return key !== undefined && key === (await readQueueAuthKeyFile(dataDir));
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cli = createWorld({ dataDir, baseUrl, queueAuthKey: 'read' });
+    try {
+      const startedAt = Date.now();
+      await cli.queue(
+        '__wkf_workflow_test' as never,
+        { runId: 'wrun_1' } as never
+      );
+      await vi.waitFor(() => expect(accepted(decisions)).toBe(1), {
+        interval: 10,
+        timeout: 5_000,
+      });
+      expect(decisions.filter((decision) => !decision.accepted)).toHaveLength(
+        ROTATIONS
+      );
+      // More than MAX_QUEUE_AUTH_REFUSALS refusals, none counted: no backoff
+      // and no give-up line.
+      expect(ROTATIONS).toBeGreaterThan(MAX_QUEUE_AUTH_REFUSALS);
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+      expect(error).not.toHaveBeenCalledWith(
+        expect.stringContaining('giving up the message'),
+        expect.anything()
+      );
     } finally {
       await cli.close?.();
     }
