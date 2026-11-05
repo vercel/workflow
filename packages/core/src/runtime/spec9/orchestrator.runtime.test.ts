@@ -1808,6 +1808,18 @@ describe.each([
         },
       };
     };
+    /**
+     * Drains the run, step messages ahead of orchestrator wakes. In plain
+     * FIFO order the steps the redelivery creates wait behind a wake per
+     * earlier step outcome, each a full replay that finds nothing to do (the
+     * QuickJS engine has no no-op shortcut for them): ~130 replays of a
+     * ~400-event log, which took over 60s on a loaded Windows runner.
+     */
+    const drain = (world: AppendOnlyWorld) =>
+      world.runUntilIdle(500, {
+        prefer: (held) =>
+          (held.message as { stepId?: string }).stepId !== undefined,
+      });
     const stepMessageIds = (world: AppendOnlyWorld) =>
       world.queueCalls.flatMap((call) => {
         const stepId = (call.message as { stepId?: string }).stepId;
@@ -1837,7 +1849,7 @@ describe.each([
 
         // The redelivery creates the rest and finishes the run; each step
         // runs once.
-        await world.runUntilIdle(500);
+        await drain(world);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
         const starts = eventsOf(world, 'step_started').map(
@@ -1898,7 +1910,7 @@ describe.each([
           messageId: start.messageId,
           deliveryCount: 2,
         });
-        await world.runUntilIdle(500);
+        await drain(world);
         expect(eventsOf(world, 'run_completed')).toHaveLength(1);
         expect(calls.so_add).toBe(fanOut);
         const starts = eventsOf(world, 'step_started').map(
