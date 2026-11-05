@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { databaseFor } from './db/index.js';
 import { createWorld } from './index.js';
 import { createStorage } from './storage.js';
@@ -171,26 +171,6 @@ describe('tags', () => {
       await world1.close();
     });
 
-    it('deletes only its own queue messages', async () => {
-      const tagged = createWorld({ dataDir: testDir, tag: 'vitest-0' });
-      const db = databaseFor(testDir);
-      for (const tag of ['vitest-0', null]) {
-        db.run(
-          `INSERT INTO messages (id, tag, queue_name, prefix, transport, body, visible_at, created_at)
-           VALUES (?, ?, '__wkf_workflow_wf', '__wkf_workflow_', 'http', '{}', ?, ?)`,
-          `msg_${tag ?? 'none'}`,
-          tag,
-          Date.now() + 3_600_000,
-          new Date().toISOString()
-        );
-      }
-
-      await tagged.clear();
-
-      expect(db.all('SELECT id FROM messages')).toEqual([{ id: 'msg_none' }]);
-      await tagged.close();
-    });
-
     it('lists a stream written again after clear()', async () => {
       const world = createWorld({ dataDir: testDir, tag: 'vitest-0' });
       const run = await newRun(world);
@@ -225,34 +205,69 @@ describe('tags', () => {
   });
 
   describe('startup recovery', () => {
-    it("recovers only its own tag's runs, and only those without a message", async () => {
-      const app = createStorage(testDir);
-      const tests = createStorage(testDir, 'vitest-0');
-      const appRun = await newRun(app, 'app-wf');
-      const queuedRun = await newRun(app, 'queued-wf');
-      const testRun = await newRun(tests, 'test-wf');
-      const db = databaseFor(testDir);
-      db.run(
-        `INSERT INTO messages (id, tag, queue_name, prefix, transport, body, run_id, visible_at, created_at)
-         VALUES ('msg_queued', NULL, '__wkf_workflow_queued-wf', '__wkf_workflow_', 'http', '{}', ?, ?, ?)`,
-        queuedRun.runId,
-        Date.now() + 3_600_000,
-        new Date().toISOString()
-      );
-
-      const recovering = createWorld({
+    /** A World that records the run of every delivery it receives. */
+    function recoveringWorld() {
+      const world = createWorld({
         dataDir: testDir,
         baseUrl: 'http://127.0.0.1:1',
       });
-      await recovering.start();
-      const queued = db
-        .all<{ run_id: string }>('SELECT run_id FROM messages')
-        .map((row) => row.run_id);
-      expect(queued.filter((id) => id === appRun.runId)).toHaveLength(1);
-      expect(queued.filter((id) => id === queuedRun.runId)).toHaveLength(1);
-      expect(queued).not.toContain(testRun.runId);
+      const delivered: { runId: string; at: number }[] = [];
+      world.registerHandler(
+        '__wkf_workflow_',
+        world.createQueueHandler('__wkf_workflow_', async (body) => {
+          delivered.push({
+            runId: (body as { runId: string }).runId,
+            at: Date.now(),
+          });
+          return undefined;
+        })
+      );
+      return { world, delivered };
+    }
 
-      await recovering.close();
+    it("re-enqueues only its own tag's active runs", async () => {
+      const appRun = await newRun(createStorage(testDir), 'app-wf');
+      const testRun = await newRun(
+        createStorage(testDir, 'vitest-0'),
+        'test-wf'
+      );
+
+      const { world, delivered } = recoveringWorld();
+      await world.start();
+      await vi.waitFor(() =>
+        expect(delivered.map((d) => d.runId)).toContain(appRun.runId)
+      );
+      expect(delivered.map((d) => d.runId)).not.toContain(testRun.runId);
+      await world.close();
+    });
+
+    it('wakes a run again when its open wait is due: the timer died with the previous process', async () => {
+      const storage = createStorage(testDir);
+      const run = await newRun(storage, 'sleeping-wf');
+      await updateRun(storage, run.runId, 'run_started');
+      const resumeAt = new Date(Date.now() + 1_500);
+      await storage.events.create(run.runId, {
+        eventType: 'wait_created',
+        correlationId: 'wait_1',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { resumeAt },
+      });
+
+      const { world, delivered } = recoveringWorld();
+      const startedAt = Date.now();
+      await world.start();
+      // The recovery delivery at once, then the wait's wake once it is due.
+      await vi.waitFor(
+        () =>
+          expect(delivered.filter((d) => d.runId === run.runId)).toHaveLength(
+            2
+          ),
+        { timeout: 10_000 }
+      );
+      const [first, wake] = delivered;
+      expect(first.at - startedAt).toBeLessThan(1_000);
+      expect(wake.at).toBeGreaterThanOrEqual(resumeAt.getTime());
+      await world.close();
     });
   });
 });

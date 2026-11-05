@@ -37,6 +37,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
+    "async-sema": "3.1.1",
     "ulid": "catalog:",
     "undici": "catalog:",
     "zod": "catalog:"

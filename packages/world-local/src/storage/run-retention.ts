@@ -98,14 +98,6 @@ export function purgeRunData(db: Database, runId: string): void {
     );
   }
 
-  // Queued messages of a finished run carry its payloads (step inputs, hook
-  // payloads) and nothing will act on them: those not being delivered go.
-  db.run(
-    'DELETE FROM messages WHERE run_id = ? AND (lease_until IS NULL OR lease_until < ?)',
-    runId,
-    Date.now()
-  );
-
   purgeRunStreams(db, runId);
 }
 

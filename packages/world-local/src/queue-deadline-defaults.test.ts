@@ -1,10 +1,7 @@
-import fs from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import os from 'node:os';
-import path from 'node:path';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Record what each transport is actually built with, so the test pins the
 // wiring (#3909) rather than only the value `getQueueAgentOptions()` returns.
@@ -38,7 +35,6 @@ vi.mock('@workflow/world/node-http.js', async (importOriginal) => {
 });
 
 const { createQueue, getQueueAgentOptions } = await import('./queue.js');
-const { databaseFor } = await import('./db/index.js');
 
 const payload = { runId: 'run_01ABC', stepId: 'step_01ABC', stepName: 's' };
 
@@ -57,11 +53,6 @@ function disabledDeadlines(): { headersTimeout: number; bodyTimeout: number } {
 
 describe('queue delivery deadlines are off by default (#3909)', () => {
   let server: Server | undefined;
-  let dataDir: string;
-
-  beforeEach(() => {
-    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wl-queue-'));
-  });
 
   afterEach(async () => {
     agentOptions.length = 0;
@@ -72,14 +63,12 @@ describe('queue delivery deadlines are off by default (#3909)', () => {
       await new Promise((resolve) => server?.close(resolve));
       server = undefined;
     }
-    databaseFor(dataDir).close();
-    fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
   it('builds the undici Agent with no headers/body deadline', async () => {
     const disabled = disabledDeadlines();
     vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
-    const queue = createQueue({ dataDir, baseUrl: 'http://127.0.0.1:1' });
+    const queue = createQueue({ baseUrl: 'http://127.0.0.1:1' });
     await queue.close();
     expect(agentOptions).toHaveLength(1);
     expect(agentOptions[0]).toMatchObject(disabled);
@@ -97,12 +86,10 @@ describe('queue delivery deadlines are off by default (#3909)', () => {
       server?.listen(0, '127.0.0.1', resolve);
     });
     const { port } = server.address() as AddressInfo;
-    const queue = createQueue({ dataDir, baseUrl: `http://127.0.0.1:${port}` });
+    const queue = createQueue({ baseUrl: `http://127.0.0.1:${port}` });
     try {
       await queue.queue('__wkf_workflow_test' as any, payload);
-      await vi.waitFor(() => expect(fetchOptions).toHaveLength(1), {
-        timeout: 20_000,
-      });
+      await vi.waitFor(() => expect(fetchOptions).toHaveLength(1));
       expect(fetchOptions[0]).toEqual({
         headersTimeoutMs: disabled.headersTimeout,
         bodyTimeoutMs: disabled.bodyTimeout,

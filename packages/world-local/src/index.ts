@@ -1,8 +1,14 @@
-import type { QueuePrefix, World, WorldCapabilities } from '@workflow/world';
+import type {
+  QueuePrefix,
+  Wait,
+  World,
+  WorldCapabilities,
+} from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
+import { decode } from './db/codec.js';
 import { databaseFor } from './db/index.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
@@ -63,9 +69,9 @@ export type LocalWorld = World & {
  * @param args.dataDir - Directory for storing workflow data (default: `.workflow-data/`)
  * @param args.port - Port override for queue transport (default: auto-detected)
  * @param args.baseUrl - Full base URL override for queue transport (default: `http://localhost:{port}`)
- * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs that have no queued message (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
- * @param args.tag - Optional tag (e.g., `vitest-0`) scoping the runs, queue
- *   messages and streams this World writes; `clear()` only deletes this tag's data.
+ * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
+ * @param args.tag - Optional tag (e.g., `vitest-0`) scoping the runs and
+ *   streams this World writes; `clear()` only deletes this tag's data.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
  * @throws {DataDirVersionError} If the data directory version is incompatible
  */
@@ -103,9 +109,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     // transaction, writing the holder's `hook_disposed`.
     hookForceClaim: true,
     // The queue delivers a single-orchestrator run's orchestrator messages
-    // one at a time across every process (lanes, see queue.ts): with the
-    // fence, the two halves of the single-writer guarantee. An in-band write
-    // is stored at its `occurredAt`.
+    // one at a time (a per-run gate where they are sent and one where they
+    // are handled, see queue.ts): with the fence, the two halves of the
+    // single-writer guarantee. An in-band write is stored at its `occurredAt`.
     maxConcurrency: true,
     // The per-run in-band count is a column of the run's row, checked and
     // advanced in the write's transaction.
@@ -124,16 +130,6 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     registerHandler: queue.registerHandler,
     registerRoute: queue.registerRoute,
     ...storage,
-    events: {
-      ...storage.events,
-      // A process that writes to the World also delivers its queue: after a
-      // restart, the first write resumes the messages the previous process
-      // left (wait timers, retries, its in-flight deliveries).
-      create: ((...args: Parameters<typeof storage.events.create>) => {
-        queue.startConsumer();
-        return storage.events.create(...args);
-      }) as typeof storage.events.create,
-    },
     ...instrumentObject('world.streams', {
       ...streamer,
       ...(mergedConfig.streamFlushIntervalMs !== undefined && {
@@ -142,29 +138,30 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
-      queue.startConsumer();
       if (!recoverActiveRuns) {
         return;
       }
-      // The queue is durable: a run's queued messages (deliveries, wait
-      // timers, retries) are still there and are delivered again, including
-      // one whose delivery a dead process held. Recovery only re-enqueues
-      // the active runs that have no message at all (their messages were
-      // lost, for example because they were written by an older release
-      // whose queue was in memory), and only this World's tag: a dev server
-      // never recovers a test's runs. Such a run's inline-owned steps belong
-      // to a previous process, so they are released first.
+      // The queue is in memory: a restart loses every message a run had
+      // queued (its step messages, its wait timers). Every active run of this
+      // World's tag is re-enqueued (a tagged World recovers only its tag, an
+      // untagged one only untagged runs, so a dev server never recovers a
+      // test's runs), after its steps that were running inline in the
+      // previous process are released. Recovery assumes this is the only
+      // live process on this data directory and tag.
+      //
+      // The recovery message carries a recovery marker, so a
+      // single-orchestrator (spec 9) delivery of it sends the run's step
+      // messages and wait timers again. On top of that every open wait of a
+      // recovered run gets a wake of its own, due when the wait is: a timer
+      // is the one thing nothing else re-sends, and a run whose sleep lost
+      // its timer would otherwise never wake.
       const releases = createReleasePipeline(storage);
       const recoveryRuns = {
         ...storage.runs,
         list: (async (params) => {
           const page = await storage.runs.list({ ...params, ownTagOnly: true });
-          const queued = queue.runsWithMessages(
-            page.data.map((run) => run.runId)
-          );
-          const data = page.data.filter((run) => !queued.has(run.runId));
-          releases.prefetch(data.map((run) => run.runId));
-          return { ...page, data };
+          releases.prefetch(page.data.map((run) => run.runId));
+          return page;
         }) as typeof storage.runs.list,
       };
       const releaseThenEnqueue: typeof queue.queue = async (
@@ -172,8 +169,44 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         message,
         opts
       ) => {
-        await releases.settle((message as { runId: string }).runId);
-        return queue.queue(queueName, message, opts);
+        const { runId, runSpecVersion } = message as {
+          runId: string;
+          runSpecVersion?: number;
+        };
+        await releases.settle(runId);
+        const sent = await queue.queue(queueName, message, opts);
+        await wakeOpenWaits(queueName, runId, runSpecVersion);
+        return sent;
+      };
+      const wakeOpenWaits = async (
+        queueName: Parameters<typeof queue.queue>[0],
+        runId: string,
+        runSpecVersion: number | undefined
+      ) => {
+        const now = Date.now();
+        for (const wait of openWaits(mergedConfig.dataDir, runId)) {
+          const resumeAt = wait.resumeAt
+            ? new Date(wait.resumeAt).getTime()
+            : now;
+          try {
+            await queue.queue(
+              queueName,
+              {
+                runId,
+                ...(runSpecVersion !== undefined && { runSpecVersion }),
+                requestedAt: new Date(),
+              },
+              {
+                delaySeconds: Math.max(0, Math.ceil((resumeAt - now) / 1000)),
+                idempotencyKey: `recovery-wait:${runId}:${wait.waitId}:${resumeAt}`,
+              }
+            );
+          } catch (error) {
+            console.warn(
+              `[world-local] Failed to re-arm wait ${wait.waitId} of run ${runId}: ${error}`
+            );
+          }
+        }
       };
       await reenqueueActiveRuns(
         recoveryRuns,
@@ -204,7 +237,6 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
             'hook_tokens',
             'hook_resumes',
             'start_hook_rejections',
-            'messages',
             'stream_chunks',
             'snapshots',
             'runs',
@@ -214,7 +246,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           return;
         }
         // Only this tag's data: its runs and everything they own, and its
-        // queue messages and streams.
+        // streams.
         const runs = 'SELECT run_id FROM runs WHERE tag = ?';
         for (const table of [
           'events',
@@ -233,10 +265,17 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         );
         db.run('DELETE FROM hooks WHERE tag = ?', tag);
         db.run('DELETE FROM start_hook_rejections WHERE tag = ?', tag);
-        db.run('DELETE FROM messages WHERE tag = ?', tag);
         db.run('DELETE FROM stream_chunks WHERE tag = ?', tag);
         db.run('DELETE FROM runs WHERE tag = ?', tag);
       });
     },
   };
+}
+
+/** A run's waits that have not completed. */
+function openWaits(dataDir: string, runId: string): Wait[] {
+  return databaseFor(dataDir)
+    .all<{ doc: string }>('SELECT doc FROM waits WHERE run_id = ?', runId)
+    .map((row) => decode<Wait>(row.doc))
+    .filter((wait) => wait.status === 'waiting');
 }

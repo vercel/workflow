@@ -1,8 +1,5 @@
-import fs from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import os from 'node:os';
-import path from 'node:path';
 import { setWorkflowBasePath } from '@workflow/utils';
 import type { WorkflowInvokePayload } from '@workflow/world';
 import {
@@ -14,7 +11,6 @@ import {
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
-import { databaseFor } from './db/index.js';
 import {
   createQueue,
   DEFAULT_BODY_TIMEOUT_MS,
@@ -24,80 +20,10 @@ import {
   MAX_LOCAL_SAFETY_LIMIT,
 } from './queue';
 
-/**
- * The queue's clock (`queueNow`), which schedules every delay, backoff and
- * lease. It runs {@link FAST} times faster than real time by default, so a
- * 5s retry backoff takes 100ms, while a 30s lease (renewed every 5s) still
- * outlasts the consumer's 100ms poll. A test can freeze it (`clock.set(0)`)
- * and move it by hand (`clock.advance(ms)`): on a frozen clock, a delivery
- * that happens proves the message was not delayed.
- */
-// Slower on Windows, where every database operation opens its own
-// connection: a lease (30s of queue time) must outlast a delivery.
-/** `vi.waitFor` with room for a loaded (or Windows) runner. */
-const waitFor: typeof vi.waitFor = (callback, options) =>
-  vi.waitFor(callback, {
-    timeout: 10_000,
-    ...(typeof options === 'number' ? { timeout: options } : options),
-  });
-
-const FAST = process.platform === 'win32' ? 10 : 50;
-const clock = vi.hoisted(() => {
-  const state = {
-    speed: process.platform === 'win32' ? 10 : 50,
-    origin: Date.now(),
-    at: Date.now(),
-    now(): number {
-      return state.at + (Date.now() - state.origin) * state.speed;
-    },
-    set(speed: number): void {
-      state.at = state.now();
-      state.origin = Date.now();
-      state.speed = speed;
-    },
-    advance(ms: number): void {
-      state.at += ms;
-    },
-  };
-  return state;
-});
-
-vi.mock('./queue-clock.js', () => ({ queueNow: () => clock.now() }));
-
-/** Every queue gets a data directory of its own, removed after the test. */
-const dataDirs: string[] = [];
-function tempDataDir(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wl-queue-'));
-  dataDirs.push(dir);
-  return dir;
-}
-
-interface MessageRow {
-  id: string;
-  run_id: string | null;
-  visible_at: number;
-  lease_owner: string | null;
-  deliveries: number;
-  created_at: string;
-}
-
-/** The messages table of `dataDir`. */
-function messageRows(dataDir: string): MessageRow[] {
-  return databaseFor(dataDir)
-    .all<MessageRow>('SELECT * FROM messages ORDER BY id')
-    .map((row) => ({
-      ...row,
-      visible_at: Number(row.visible_at),
-      deliveries: Number(row.deliveries),
-    }));
-}
-
-/** Waits out real time (for asserting that nothing happens meanwhile). */
-const realDelay = (ms: number) =>
-  new Promise((resolve) => globalThis.setTimeout(resolve, ms));
-
-/** Longer than the consumer's poll interval (100ms), with margin. */
-const IDLE_MS = 300;
+// Mock node:timers/promises so setTimeout resolves immediately
+vi.mock('node:timers/promises', () => ({
+  setTimeout: vi.fn().mockResolvedValue(undefined),
+}));
 
 const workflowPayload: WorkflowInvokePayload = {
   runId: 'run_01ABC',
@@ -112,15 +38,10 @@ const workflowPayload: WorkflowInvokePayload = {
 // describe at the end.
 beforeEach(() => {
   vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
-  clock.set(FAST);
 });
 
 afterEach(() => {
   vi.unstubAllEnvs();
-  for (const dir of dataDirs.splice(0)) {
-    databaseFor(dir).close();
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 describe('zod v3/v4 schema compatibility (regression #1587)', () => {
@@ -148,11 +69,9 @@ describe('zod v3/v4 schema compatibility (regression #1587)', () => {
 
 describe('queue timeout re-enqueue', () => {
   let localQueue: ReturnType<typeof createQueue>;
-  let dataDir: string;
 
   beforeEach(() => {
-    dataDir = tempDataDir();
-    localQueue = createQueue({ dataDir, baseUrl: 'http://localhost:3000' });
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
   });
 
   afterEach(async () => {
@@ -297,12 +216,12 @@ describe('queue timeout re-enqueue', () => {
   });
 
   it('queue retries when handler returns timeoutSeconds > 0', async () => {
-    const deliveredAt: number[] = [];
+    let callCount = 0;
     const handler = localQueue.createQueueHandler(
       '__wkf_workflow_',
       async () => {
-        deliveredAt.push(clock.now());
-        if (deliveredAt.length < 3) {
+        callCount++;
+        if (callCount < 3) {
           return { timeoutSeconds: 5 };
         }
         // Third call succeeds normally
@@ -316,17 +235,9 @@ describe('queue timeout re-enqueue', () => {
 
     // Wait for the async queue processing to complete
     // The queue fires off processing asynchronously, so we need to wait
-    await waitFor(
-      () => {
-        expect(deliveredAt).toHaveLength(3);
-      },
-      { timeout: 5_000 }
-    );
-    // Each redelivery waited out the 5s the handler asked for.
-    const [first = 0, second = 0, third = 0] = deliveredAt;
-    expect(second - first).toBeGreaterThanOrEqual(5_000);
-    expect(third - second).toBeGreaterThanOrEqual(5_000);
-    await waitFor(() => expect(messageRows(dataDir)).toEqual([]));
+    await vi.waitFor(() => {
+      expect(callCount).toBe(3);
+    });
   });
 
   it('redelivers the SAME message on timeoutSeconds: one id, one createdAt, increasing deliveryCount', async () => {
@@ -351,7 +262,7 @@ describe('queue timeout re-enqueue', () => {
       { idempotencyKey: 'step_01ABC', retentionSeconds: 3600 }
     );
 
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(metas).toHaveLength(3);
     });
     expect(metas.map((meta) => meta.messageId)).toEqual([
@@ -391,7 +302,7 @@ describe('queue timeout re-enqueue', () => {
       workflowPayload,
       { idempotencyKey: 'step_01ABC' }
     );
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(calls).toBe(1);
     });
     const second = await localQueue.queue(
@@ -401,7 +312,7 @@ describe('queue timeout re-enqueue', () => {
     );
     expect(second.messageId).toBe(first.messageId);
     release();
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(calls).toBe(2);
     });
   });
@@ -420,35 +331,27 @@ describe('queue timeout re-enqueue', () => {
     const a = await localQueue.queue('__wkf_workflow_test' as any, wake);
     const b = await localQueue.queue('__wkf_workflow_test' as any, wake);
     expect(a.messageId).not.toBe(b.messageId);
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(calls).toBe(2);
     });
   });
 
   it('queue retries when the handler rejects', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    const deliveredAt: number[] = [];
+    let callCount = 0;
     const handler = localQueue.createQueueHandler(
       '__wkf_workflow_',
       async () => {
-        deliveredAt.push(clock.now());
-        if (deliveredAt.length < 3) throw new Error('retry delivery');
+        callCount++;
+        if (callCount < 3) throw new Error('retry delivery');
       }
     );
 
     localQueue.registerHandler('__wkf_workflow_', handler);
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await waitFor(
-      () => {
-        expect(deliveredAt).toHaveLength(3);
-      },
-      { timeout: 5_000 }
-    );
-    // Each retry waited out the backoff.
-    const [first = 0, second = 0, third = 0] = deliveredAt;
-    expect(second - first).toBeGreaterThanOrEqual(localRetryDelayMs(1));
-    expect(third - second).toBeGreaterThanOrEqual(localRetryDelayMs(2));
+    await vi.waitFor(() => {
+      expect(callCount).toBe(3);
+    });
   });
 
   it('routes namespaced queues to namespaced direct handlers', async () => {
@@ -470,21 +373,21 @@ describe('queue timeout re-enqueue', () => {
       workflowPayload
     );
 
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(handlerImpl).toHaveBeenCalledTimes(1);
     });
   });
 
   it('uses basePath when delivering to direct in-process handlers', async () => {
     await localQueue.close();
-    localQueue = createQueue({ dataDir });
+    localQueue = createQueue({});
     setWorkflowBasePath('/v2');
     const handler = vi.fn(async () => Response.json({ ok: true }));
 
     localQueue.registerHandler('__wkf_workflow_', handler);
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(handler).toHaveBeenCalledTimes(1);
     });
 
@@ -494,8 +397,9 @@ describe('queue timeout re-enqueue', () => {
   });
 
   it('queue retries immediately when handler returns timeoutSeconds: 0', async () => {
-    // On a frozen clock, a redelivery that happens at all was not delayed.
-    clock.set(0);
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
     let callCount = 0;
     const handler = localQueue.createQueueHandler(
       '__wkf_workflow_',
@@ -512,10 +416,12 @@ describe('queue timeout re-enqueue', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    // No delay: all three deliveries happen without the clock moving.
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(callCount).toBe(3);
     });
+
+    // setTimeout should NOT have been called for timeoutSeconds: 0
+    expect(mockSetTimeout).not.toHaveBeenCalled();
   });
 
   it('logs actionable guidance for detached ArrayBuffer proxy failures', async () => {
@@ -530,7 +436,7 @@ describe('queue timeout re-enqueue', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await waitFor(() => {
+    await vi.waitFor(() => {
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining(
           '[local world] Queue operation failed: detected "Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer"'
@@ -548,97 +454,140 @@ describe('queue timeout re-enqueue', () => {
 
 describe('queue delaySeconds', () => {
   let localQueue: ReturnType<typeof createQueue>;
-  let dataDir: string;
 
   beforeEach(() => {
-    dataDir = tempDataDir();
-    localQueue = createQueue({ dataDir, baseUrl: 'http://localhost:3000' });
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
   });
 
   afterEach(async () => {
     await localQueue.close();
   });
 
-  /** A handler on the queue that counts its deliveries. */
-  function countingHandler() {
-    const calls = { count: 0 };
-    localQueue.registerHandler(
-      '__wkf_workflow_',
-      localQueue.createQueueHandler('__wkf_workflow_', async () => {
-        calls.count++;
-        return undefined;
-      })
-    );
-    return calls;
-  }
-
   it('honors delaySeconds before delivering the message', async () => {
-    clock.set(0);
-    const calls = countingHandler();
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        callCount++;
+        return undefined;
+      }
+    );
+
+    localQueue.registerHandler('__wkf_workflow_', handler);
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload, {
       delaySeconds: 7,
     });
 
-    // The message is scheduled 7s (7000ms) out...
-    const [row] = messageRows(dataDir);
-    expect(row?.visible_at).toBe(Date.parse(row?.created_at ?? '') + 7_000);
-    // ...and not delivered a moment before.
-    clock.advance(6_999);
-    await realDelay(IDLE_MS);
-    expect(calls.count).toBe(0);
+    await vi.waitFor(() => {
+      expect(callCount).toBe(1);
+    });
 
-    clock.advance(1);
-    await waitFor(() => {
-      expect(calls.count).toBe(1);
+    // setTimeout should have been called with the delay (7s = 7000ms)
+    // before the message was delivered, cancellable on close().
+    expect(mockSetTimeout).toHaveBeenCalledWith(7000, undefined, {
+      signal: expect.any(AbortSignal),
     });
   });
 
-  it('close() leaves a pending delayed message undelivered, and in the queue', async () => {
+  it('close() aborts a pending delayed message without delivering it', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+    // Real-ish sleep: never resolves, rejects with AbortError on signal
+    // abort — mirrors node:timers/promises semantics for long delays.
+    vi.mocked(mockSetTimeout).mockImplementationOnce(
+      (_delay?: number, _value?: unknown, opts?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }) as never
+    );
     const consoleError = vi
       .spyOn(console, 'error')
       .mockImplementation(() => {});
-    const calls = countingHandler();
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        callCount++;
+        return undefined;
+      }
+    );
+
+    localQueue.registerHandler('__wkf_workflow_', handler);
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload, {
       delaySeconds: 3600,
     });
 
     await localQueue.close();
-    await realDelay(IDLE_MS);
+    // Give the aborted delivery promise a chance to settle.
+    await new Promise((resolve) => setImmediate(resolve));
 
-    expect(calls.count).toBe(0);
-    // Durable: the message waits for the next consumer rather than being
-    // dropped.
-    expect(messageRows(dataDir)).toHaveLength(1);
-    // No spurious "[local world] Queue operation failed" noise on shutdown.
+    expect(callCount).toBe(0);
+    // The AbortError must be swallowed silently — no spurious
+    // "[local world] Queue operation failed" noise on shutdown.
     expect(consoleError).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
-  it('delivers at once for delaySeconds: 0', async () => {
-    // On a frozen clock, a delivery that happens at all was not delayed.
-    clock.set(0);
-    const calls = countingHandler();
+  it('does not call setTimeout for delaySeconds: 0', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        callCount++;
+        return undefined;
+      }
+    );
+
+    localQueue.registerHandler('__wkf_workflow_', handler);
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload, {
       delaySeconds: 0,
     });
 
-    await waitFor(() => {
-      expect(calls.count).toBe(1);
+    await vi.waitFor(() => {
+      expect(callCount).toBe(1);
     });
+
+    // setTimeout should NOT have been called for delaySeconds: 0 (the
+    // delay-honoring branch is gated on `delaySeconds > 0`).
+    expect(mockSetTimeout).not.toHaveBeenCalled();
   });
 
-  it('delivers at once when delaySeconds is omitted', async () => {
-    clock.set(0);
-    const calls = countingHandler();
+  it('does not call setTimeout when delaySeconds is omitted', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        callCount++;
+        return undefined;
+      }
+    );
+
+    localQueue.registerHandler('__wkf_workflow_', handler);
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await waitFor(() => {
-      expect(calls.count).toBe(1);
+    await vi.waitFor(() => {
+      expect(callCount).toBe(1);
     });
+
+    expect(mockSetTimeout).not.toHaveBeenCalled();
   });
 });
 
@@ -658,11 +607,9 @@ function fetchFailedTimeout(): TypeError {
 
 describe('transport-level delivery failures are retried (regression)', () => {
   let localQueue: ReturnType<typeof createQueue>;
-  let dataDir: string;
 
   beforeEach(() => {
-    dataDir = tempDataDir();
-    localQueue = createQueue({ dataDir, baseUrl: 'http://localhost:3000' });
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
   });
 
   afterEach(async () => {
@@ -684,7 +631,7 @@ describe('transport-level delivery failures are retried (regression)', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await waitFor(() => expect(calls).toBe(3), { timeout: 5_000 });
+    await vi.waitFor(() => expect(calls).toBe(3));
   });
 
   it('retries a "fetch failed"/ETIMEDOUT transport throw instead of dropping it', async () => {
@@ -702,7 +649,7 @@ describe('transport-level delivery failures are retried (regression)', () => {
 
     // Before the fix this stayed at 1 (the throw escaped the retry loop and the
     // message was dropped); now it retries until the transient timeout clears.
-    await waitFor(() => expect(calls).toBe(3), { timeout: 5_000 });
+    await vi.waitFor(() => expect(calls).toBe(3));
   });
 
   it('does NOT advance the handler delivery attempt across transport failures', async () => {
@@ -723,9 +670,7 @@ describe('transport-level delivery failures are retried (regression)', () => {
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
 
-    await waitFor(() => expect(attempts.length).toBe(1), {
-      timeout: 5_000,
-    });
+    await vi.waitFor(() => expect(attempts.length).toBe(1));
     expect(attempts[0]).toBe(1);
   });
 });
@@ -794,14 +739,12 @@ describe('queue transport timeouts', () => {
 
     process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '0';
     process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
-    const dataDir = tempDataDir();
     const localQueue = createQueue({
-      dataDir,
       baseUrl: `http://127.0.0.1:${port}`,
     });
 
     await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-    await waitFor(() => expect(requestReceived).toBe(true));
+    await vi.waitFor(() => expect(requestReceived).toBe(true));
     const closePromise = localQueue.close();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const outcome = await Promise.race([
@@ -816,11 +759,6 @@ describe('queue transport timeouts', () => {
       await closePromise;
     }
     expect(outcome).toBe('closed');
-    // The request reached the app, which may still be executing it: the
-    // message stays leased (it lapses) rather than going to another consumer.
-    expect(messageRows(dataDir)).toMatchObject([
-      { lease_owner: expect.any(String) },
-    ]);
   });
 
   it('redelivers when a handler exceeds an opt-in headers deadline', async () => {
@@ -841,12 +779,11 @@ describe('queue transport timeouts', () => {
       .spyOn(console, 'error')
       .mockImplementation(() => {});
     const localQueue = createQueue({
-      dataDir: tempDataDir(),
       baseUrl: `http://127.0.0.1:${port}`,
     });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
+      await vi.waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining('Queue delivery failed at the transport'),
         expect.objectContaining({
@@ -879,12 +816,11 @@ describe('queue transport timeouts', () => {
       .spyOn(console, 'error')
       .mockImplementation(() => {});
     const localQueue = createQueue({
-      dataDir: tempDataDir(),
       baseUrl: `http://127.0.0.1:${port}`,
     });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
+      await vi.waitFor(() => expect(requests).toBe(2), { timeout: 5_000 });
       expect(consoleError).toHaveBeenCalledWith(
         expect.stringContaining('Queue delivery failed at the transport'),
         expect.objectContaining({
@@ -938,13 +874,10 @@ describe('node:http mode', () => {
       })
     );
 
-    const localQueue = createQueue({
-      dataDir: tempDataDir(),
-      baseUrl: `http://127.0.0.1:${port}`,
-    });
+    const localQueue = createQueue({ baseUrl: `http://127.0.0.1:${port}` });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await waitFor(() => expect(attempts.length).toBe(1), {
+      await vi.waitFor(() => expect(attempts.length).toBe(1), {
         timeout: 5_000,
       });
       expect(attempts[0]).toBe('1');
@@ -973,13 +906,10 @@ describe('node:http mode', () => {
     });
     const { port } = server.address() as AddressInfo;
 
-    const localQueue = createQueue({
-      dataDir: tempDataDir(),
-      baseUrl: `http://127.0.0.1:${port}`,
-    });
+    const localQueue = createQueue({ baseUrl: `http://127.0.0.1:${port}` });
     try {
       await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
-      await waitFor(() => expect(calls).toBe(3), { timeout: 20_000 });
+      await vi.waitFor(() => expect(calls).toBe(3), { timeout: 20_000 });
     } finally {
       await localQueue.close();
     }
@@ -989,10 +919,7 @@ describe('node:http mode', () => {
   // still has to settle, still has to be idempotent, and still has to stop
   // in-flight deliveries via the abort controller it owns.
   it('closes idempotently', async () => {
-    const localQueue = createQueue({
-      dataDir: tempDataDir(),
-      baseUrl: 'http://localhost:3000',
-    });
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
     await expect(localQueue.close()).resolves.toBeUndefined();
     await expect(localQueue.close()).resolves.toBeUndefined();
   });
@@ -1000,15 +927,13 @@ describe('node:http mode', () => {
 
 describe('per-run orchestrator serialization', () => {
   let localQueue: ReturnType<typeof createQueue>;
-  let dataDir: string;
   const spec9 = (runId: string) => ({
     runId,
     runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
   });
 
   beforeEach(() => {
-    dataDir = tempDataDir();
-    localQueue = createQueue({ dataDir, baseUrl: 'http://localhost:3000' });
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
   });
 
   afterEach(async () => {
@@ -1053,13 +978,13 @@ describe('per-run orchestrator serialization', () => {
     const { started, releases, maxActive } = holdingHandler();
     await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
     await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
-    await waitFor(() => expect(started).toHaveLength(1));
-    // Give the second delivery every chance to start: several consumer polls.
-    await realDelay(IDLE_MS);
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    // Give the second delivery every chance to start.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(started).toHaveLength(1);
 
     releases[0]?.();
-    await waitFor(() => expect(started).toHaveLength(2));
+    await vi.waitFor(() => expect(started).toHaveLength(2));
     releases[1]?.();
     expect(maxActive.get('run_a')).toBe(1);
   });
@@ -1078,7 +1003,7 @@ describe('per-run orchestrator serialization', () => {
     });
     await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
     await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
-    await waitFor(() => expect(started).toHaveLength(4));
+    await vi.waitFor(() => expect(started).toHaveLength(4));
     for (const release of releases) release();
   });
 
@@ -1104,35 +1029,31 @@ describe('per-run orchestrator serialization', () => {
         runId: 'run_a',
       } as any
     );
-    await waitFor(() => expect(started).toHaveLength(5));
+    await vi.waitFor(() => expect(started).toHaveLength(5));
     for (const release of releases) release();
   });
 
-  // A sender whose messages the queue's lanes cannot see (world-postgres
-  // reusing this handler; here a queue on another data directory) reaches
-  // the handler of the process serving the routes, which holds them back.
-  // Queues on the same data directory share lanes: see "durable queue".
-  it('holds back a delivery sent by a queue whose lanes it cannot see', async () => {
+  // A script or test process that calls `start()` or `resumeHook()` sends its
+  // messages with a queue of its own, which the sending gate cannot see; the
+  // handler of the process serving the routes holds them back instead.
+  it('holds back a delivery sent by another process’s queue', async () => {
     const { started, releases, maxActive, handler } = holdingHandler();
-    const otherSender = createQueue({
-      dataDir: tempDataDir(),
-      baseUrl: 'http://localhost:3000',
-    });
+    const otherProcess = createQueue({ baseUrl: 'http://localhost:3000' });
     try {
-      // The other sender's messages reach this process's handler.
-      otherSender.registerHandler('__wkf_workflow_', handler);
+      // The other process's messages reach this process's handler.
+      otherProcess.registerHandler('__wkf_workflow_', handler);
       await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
-      await otherSender.queue('__wkf_workflow_test' as any, spec9('run_a'));
-      await waitFor(() => expect(started).toHaveLength(1));
-      await realDelay(IDLE_MS);
+      await otherProcess.queue('__wkf_workflow_test' as any, spec9('run_a'));
+      await vi.waitFor(() => expect(started).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
       expect(started).toHaveLength(1);
 
       releases[0]?.();
-      await waitFor(() => expect(started).toHaveLength(2));
+      await vi.waitFor(() => expect(started).toHaveLength(2));
       releases[1]?.();
       expect(maxActive.get('run_a')).toBe(1);
     } finally {
-      await otherSender.close();
+      await otherProcess.close();
     }
   });
 
@@ -1151,34 +1072,37 @@ describe('per-run orchestrator serialization', () => {
       }
     );
     localQueue.registerHandler('__wkf_workflow_', handler);
-    // Freeze the clock so the first message's redelivery waits until the
-    // test moves it.
-    clock.set(0);
+    // `setTimeout` from node:timers/promises is mocked to resolve at once, so
+    // hold the redelivery delay open on a promise this test controls.
+    const { setTimeout: mockedSleep } = await import('node:timers/promises');
+    let wakeRedelivery!: () => void;
+    vi.mocked(mockedSleep).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          wakeRedelivery = () => resolve(undefined);
+        }) as any
+    );
     await localQueue.queue(
       '__wkf_workflow_test' as any,
       { ...spec9('run_a'), tag: 'first' } as any
     );
-    await waitFor(() => expect(order).toEqual(['first']));
+    await vi.waitFor(() => expect(order).toEqual(['first']));
     await localQueue.queue(
       '__wkf_workflow_test' as any,
       { ...spec9('run_a'), tag: 'second' } as any
     );
     // The first message is between deliveries, so the second one runs.
-    await waitFor(() => expect(order).toEqual(['first', 'second']));
-    await realDelay(IDLE_MS);
-    expect(order).toEqual(['first', 'second']);
-    clock.advance(1_000);
-    await waitFor(() => expect(order).toEqual(['first', 'second', 'first']));
+    await vi.waitFor(() => expect(order).toEqual(['first', 'second']));
+    wakeRedelivery();
+    await vi.waitFor(() => expect(order).toEqual(['first', 'second', 'first']));
   });
 });
 
 describe('handoff', () => {
   let localQueue: ReturnType<typeof createQueue>;
-  let dataDir: string;
 
   beforeEach(() => {
-    dataDir = tempDataDir();
-    localQueue = createQueue({ dataDir, baseUrl: 'http://localhost:3000' });
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
   });
 
   afterEach(async () => {
@@ -1188,8 +1112,6 @@ describe('handoff', () => {
 
   /** Delivers one message, answering `{ timeoutSeconds: 0 }` twice. */
   async function deliveriesOf(payload: Record<string, unknown>) {
-    // On a frozen clock, a redelivery that happens at all was not delayed.
-    clock.set(0);
     const seen: { attempt: number; deliveryCount?: number; id: string }[] = [];
     const handler = localQueue.createQueueHandler(
       '__wkf_workflow_',
@@ -1204,7 +1126,7 @@ describe('handoff', () => {
     );
     localQueue.registerHandler('__wkf_workflow_', handler);
     await localQueue.queue('__wkf_workflow_test' as any, payload as any);
-    await waitFor(() => expect(seen).toHaveLength(3));
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
     return seen;
   }
 
@@ -1263,13 +1185,13 @@ describe('per-prefix delivery routes', () => {
     const { requests, origin } = await startServer(
       new Set(['/.well-known/workflow/v1/flow'])
     );
-    const localQueue = createQueue({ dataDir: tempDataDir(), baseUrl: origin });
+    const localQueue = createQueue({ baseUrl: origin });
     try {
       await localQueue.queue(
         '__agent_wkf_workflow_session' as ValidQueueName,
         workflowPayload
       );
-      await waitFor(() => expect(requests).toHaveLength(1));
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
       expect(requests[0]).toEqual({
         path: '/.well-known/workflow/v1/flow',
         queueName: '__agent_wkf_workflow_session',
@@ -1283,7 +1205,7 @@ describe('per-prefix delivery routes', () => {
     const { requests, origin } = await startServer(
       new Set(['/.well-known/workflow/v1/flow', '/api/agent/queue'])
     );
-    const localQueue = createQueue({ dataDir: tempDataDir(), baseUrl: origin });
+    const localQueue = createQueue({ baseUrl: origin });
     localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
     try {
       await localQueue.queue(
@@ -1294,7 +1216,7 @@ describe('per-prefix delivery routes', () => {
         '__wkf_workflow_myWorkflow' as ValidQueueName,
         workflowPayload
       );
-      await waitFor(() => expect(requests).toHaveLength(2));
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
       expect(requests).toEqual(
         expect.arrayContaining([
           {
@@ -1316,17 +1238,14 @@ describe('per-prefix delivery routes', () => {
     const { requests, origin } = await startServer(
       new Set(['/base/api/agent/queue'])
     );
-    const localQueue = createQueue({
-      dataDir: tempDataDir(),
-      baseUrl: `${origin}/base`,
-    });
+    const localQueue = createQueue({ baseUrl: `${origin}/base` });
     localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
     try {
       await localQueue.queue(
         '__agent_wkf_workflow_session' as ValidQueueName,
         workflowPayload
       );
-      await waitFor(() => expect(requests).toHaveLength(1));
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
       expect(requests[0]?.path).toBe('/base/api/agent/queue');
     } finally {
       await localQueue.close();
@@ -1337,7 +1256,7 @@ describe('per-prefix delivery routes', () => {
     const { requests, origin } = await startServer(
       new Set(['/api/agent/queue'])
     );
-    const localQueue = createQueue({ dataDir: tempDataDir(), baseUrl: origin });
+    const localQueue = createQueue({ baseUrl: origin });
     const handler = vi.fn(async (req: Request) => {
       expect(new URL(req.url).pathname).toBe('/api/agent/queue');
       return Response.json({ ok: true });
@@ -1349,7 +1268,7 @@ describe('per-prefix delivery routes', () => {
         '__agent_wkf_workflow_session' as ValidQueueName,
         workflowPayload
       );
-      await waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
       expect(requests).toHaveLength(0);
     } finally {
       await localQueue.close();
@@ -1363,7 +1282,7 @@ describe('per-prefix delivery routes', () => {
     const consoleError = vi
       .spyOn(console, 'error')
       .mockImplementation(() => {});
-    const localQueue = createQueue({ dataDir: tempDataDir(), baseUrl: origin });
+    const localQueue = createQueue({ baseUrl: origin });
     try {
       await localQueue.queue(
         '__agent_wkf_workflow_session' as ValidQueueName,
@@ -1372,7 +1291,7 @@ describe('per-prefix delivery routes', () => {
       // The first attempt goes to the flow route, which this app doesn't have.
       // The server records the request before the client reads the 404 and
       // logs it, so wait for the log too.
-      await waitFor(() => {
+      await vi.waitFor(() => {
         expect(requests.length).toBeGreaterThan(0);
         expect(consoleError).toHaveBeenCalledWith(
           expect.stringContaining('HTTP 404'),
@@ -1384,7 +1303,7 @@ describe('per-prefix delivery routes', () => {
       expect(requests[0]?.path).toBe('/.well-known/workflow/v1/flow');
 
       localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
-      await waitFor(() =>
+      await vi.waitFor(() =>
         expect(requests.at(-1)?.path).toBe('/api/agent/queue')
       );
       const settled = requests.length;
@@ -1397,10 +1316,7 @@ describe('per-prefix delivery routes', () => {
   });
 
   it('rejects an invalid prefix or route', () => {
-    const localQueue = createQueue({
-      dataDir: tempDataDir(),
-      baseUrl: 'http://localhost:3000',
-    });
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
     expect(() =>
       localQueue.registerRoute('__agent_wkf_workflow_', 'api/agent/queue')
     ).toThrow(TypeError);
@@ -1410,10 +1326,7 @@ describe('per-prefix delivery routes', () => {
   });
 
   it("refuses a message outside the handler's prefix, naming both", async () => {
-    const localQueue = createQueue({
-      dataDir: tempDataDir(),
-      baseUrl: 'http://localhost:3000',
-    });
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
     const handler = vi.fn();
     const route = localQueue.createQueueHandler('__wkf_workflow_', handler);
     const response = await route(
@@ -1450,270 +1363,5 @@ describe('localRetryDelayMs', () => {
       spanMs += delay;
     }
     expect(spanMs).toBeGreaterThan(QUEUE_MIN_STEP_REDELIVERY_SPAN_MS);
-  });
-});
-
-describe('durable queue', () => {
-  const queues: ReturnType<typeof createQueue>[] = [];
-  /** A queue on `dataDir`, closed after the test. */
-  function queueOn(dataDir: string, config: { baseUrl?: string } = {}) {
-    const queue = createQueue({ dataDir, ...config });
-    queues.push(queue);
-    return queue;
-  }
-
-  afterEach(async () => {
-    for (const queue of queues.splice(0)) await queue.close();
-    vi.restoreAllMocks();
-  });
-
-  it('delivers a message enqueued by a queue that has since closed, from another queue on the data directory', async () => {
-    // The sender cannot deliver: no handler for the prefix, and no app URL
-    // to resolve (a script calling `start()` with no dev server up).
-    vi.stubEnv('WORKFLOW_LOCAL_BASE_URL', '');
-    vi.stubEnv('PORT', '');
-    const dataDir = tempDataDir();
-    const sender = queueOn(dataDir);
-    const { messageId } = await sender.queue(
-      '__wkf_workflow_test' as any,
-      workflowPayload
-    );
-    await realDelay(IDLE_MS);
-    expect(messageRows(dataDir)).toMatchObject([
-      { id: messageId, deliveries: 0 },
-    ]);
-    await sender.close();
-
-    const metas: { messageId: string; attempt: number }[] = [];
-    const consumer = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    consumer.registerHandler(
-      '__wkf_workflow_',
-      consumer.createQueueHandler('__wkf_workflow_', async (_body, meta) => {
-        metas.push({ messageId: meta.messageId, attempt: meta.attempt });
-        return undefined;
-      })
-    );
-    consumer.startConsumer();
-    await waitFor(() => expect(metas).toHaveLength(1));
-    expect(metas[0]).toEqual({ messageId, attempt: 1 });
-    await waitFor(() => expect(messageRows(dataDir)).toEqual([]));
-  });
-
-  it('keeps a delayed message across a close and reopen, delivering it when due', async () => {
-    clock.set(0);
-    const dataDir = tempDataDir();
-    const before = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    let deliveredBefore = 0;
-    before.registerHandler(
-      '__wkf_workflow_',
-      before.createQueueHandler('__wkf_workflow_', async () => {
-        deliveredBefore++;
-        return undefined;
-      })
-    );
-    await before.queue('__wkf_workflow_test' as any, workflowPayload, {
-      delaySeconds: 60,
-    });
-    await before.close();
-    const [row] = messageRows(dataDir);
-    expect(row?.visible_at).toBe(clock.now() + 60_000);
-
-    const after = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    let deliveredAfter = 0;
-    after.registerHandler(
-      '__wkf_workflow_',
-      after.createQueueHandler('__wkf_workflow_', async () => {
-        deliveredAfter++;
-        return undefined;
-      })
-    );
-    after.startConsumer();
-    expect(after.runsWithMessages(['run_01ABC', 'run_other'])).toEqual(
-      new Set(['run_01ABC'])
-    );
-    // Still waiting out its delay after the restart...
-    clock.advance(59_000);
-    await realDelay(IDLE_MS);
-    expect(deliveredAfter).toBe(0);
-    // ...and delivered once it is due.
-    clock.advance(1_000);
-    await waitFor(() => expect(deliveredAfter).toBe(1));
-    expect(deliveredBefore).toBe(0);
-    await waitFor(() =>
-      expect(after.runsWithMessages(['run_01ABC'])).toEqual(new Set())
-    );
-  });
-
-  it('delivers at most one orchestrator message of a spec 9 run at a time across queues on the data directory', async () => {
-    const dataDir = tempDataDir();
-    const a = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    const b = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    const started: string[] = [];
-    const releases: (() => void)[] = [];
-    const active = new Map<string, number>();
-    const maxActive = new Map<string, number>();
-    // A handler of each queue's own, so each has its own handler gate: only
-    // the shared lane keeps the run's deliveries apart.
-    for (const queue of [a, b]) {
-      queue.registerHandler(
-        '__wkf_workflow_',
-        queue.createQueueHandler('__wkf_workflow_', async (message) => {
-          const { runId } = message as { runId: string };
-          active.set(runId, (active.get(runId) ?? 0) + 1);
-          maxActive.set(
-            runId,
-            Math.max(maxActive.get(runId) ?? 0, active.get(runId) ?? 0)
-          );
-          started.push(runId);
-          await new Promise<void>((resolve) => releases.push(resolve));
-          active.set(runId, (active.get(runId) ?? 1) - 1);
-          return undefined;
-        })
-      );
-    }
-    const spec9 = (runId: string) => ({
-      runId,
-      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-    });
-    await a.queue('__wkf_workflow_test' as any, spec9('run_a'));
-    await b.queue('__wkf_workflow_test' as any, spec9('run_a'));
-    await a.queue('__wkf_workflow_test' as any, spec9('run_a'));
-    await b.queue('__wkf_workflow_test' as any, spec9('run_b'));
-
-    // One delivery of run_a, and run_b's alongside it.
-    await waitFor(() =>
-      expect([...started].sort()).toEqual(['run_a', 'run_b'])
-    );
-    await realDelay(IDLE_MS);
-    expect(started).toHaveLength(2);
-
-    // Each release lets exactly the run's next message in.
-    for (let delivered = 3; delivered <= 4; delivered++) {
-      for (const release of releases.splice(0)) release();
-      await waitFor(() => expect(started).toHaveLength(delivered));
-      await realDelay(IDLE_MS);
-      expect(started).toHaveLength(delivered);
-    }
-    for (const release of releases.splice(0)) release();
-    await waitFor(() => expect(messageRows(dataDir)).toEqual([]));
-    expect(started.filter((runId) => runId === 'run_a')).toHaveLength(3);
-    expect(maxActive.get('run_a')).toBe(1);
-  });
-});
-
-describe('queue review follow-ups', () => {
-  const queues: ReturnType<typeof createQueue>[] = [];
-  function queueOn(dataDir: string, config: { baseUrl?: string } = {}) {
-    const queue = createQueue({ dataDir, ...config });
-    queues.push(queue);
-    return queue;
-  }
-  afterEach(async () => {
-    for (const queue of queues.splice(0)) await queue.close();
-    vi.restoreAllMocks();
-  });
-
-  const orchestratorMessage = {
-    runId: 'wrun_lane',
-    runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
-  } as unknown as WorkflowInvokePayload;
-
-  it('keeps the lane across a close: another queue does not start a run whose delivery is still executing', async () => {
-    const dataDir = tempDataDir();
-    const events: string[] = [];
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const a = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    a.registerHandler(
-      '__wkf_workflow_',
-      a.createQueueHandler('__wkf_workflow_', async () => {
-        events.push('a start');
-        await held;
-        events.push('a end');
-        return undefined;
-      })
-    );
-    await a.queue('__wkf_workflow_test' as any, orchestratorMessage);
-    await waitFor(() => expect(events).toEqual(['a start']));
-    await a.close();
-
-    const b = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    b.registerHandler(
-      '__wkf_workflow_',
-      b.createQueueHandler('__wkf_workflow_', async () => {
-        events.push('b start');
-        return undefined;
-      })
-    );
-    b.startConsumer();
-    await realDelay(IDLE_MS);
-    // A's delivery is still running: B waits for its lease to lapse.
-    expect(events).toEqual(['a start']);
-    release();
-    await waitFor(() => expect(events).toEqual(['a start', 'a end']));
-  });
-
-  it('delivers to the route the enqueuing process registered, from any process', async () => {
-    const requests: string[] = [];
-    const server = createServer((request, response) => {
-      requests.push(request.url ?? '');
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({ ok: true }));
-    });
-    await new Promise<void>((resolve) => {
-      server.listen(0, '127.0.0.1', resolve);
-    });
-    const { port } = server.address() as AddressInfo;
-    try {
-      vi.stubEnv('WORKFLOW_LOCAL_BASE_URL', '');
-      vi.stubEnv('PORT', '');
-      const dataDir = tempDataDir();
-      // The sender registered the route but cannot reach the app.
-      const sender = queueOn(dataDir);
-      sender.registerRoute('__agent_wkf_workflow_' as any, '/api/agent/queue');
-      await sender.queue('__agent_wkf_workflow_test' as any, workflowPayload);
-      await sender.close();
-
-      const consumer = queueOn(dataDir, {
-        baseUrl: `http://127.0.0.1:${port}`,
-      });
-      consumer.startConsumer();
-      await waitFor(() => expect(requests).toHaveLength(1));
-      expect(requests[0]).toBe('/api/agent/queue');
-    } finally {
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-    }
-  });
-
-  it('stays idle, without write transactions, while a lane is busy', async () => {
-    const dataDir = tempDataDir();
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const q = queueOn(dataDir, { baseUrl: 'http://localhost:3000' });
-    let deliveries = 0;
-    q.registerHandler(
-      '__wkf_workflow_',
-      q.createQueueHandler('__wkf_workflow_', async () => {
-        deliveries++;
-        if (deliveries === 1) await held;
-        return undefined;
-      })
-    );
-    await q.queue('__wkf_workflow_test' as any, orchestratorMessage);
-    await waitFor(() => expect(deliveries).toBe(1));
-    // A second orchestrator message of the run waits behind the first.
-    await q.queue('__wkf_workflow_test' as any, orchestratorMessage);
-    const db = databaseFor(dataDir);
-    const transact = vi.spyOn(Object.getPrototypeOf(db), 'transact');
-    await realDelay(300);
-    // Polling (about every 100ms) reads; it never takes the write lock.
-    expect(transact.mock.calls.length).toBeLessThan(5);
-    release();
-    await waitFor(() => expect(deliveries).toBe(2));
   });
 });

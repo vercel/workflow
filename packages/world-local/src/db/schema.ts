@@ -104,42 +104,6 @@ const MIGRATIONS: string[] = [
     conflicting_run_id TEXT NOT NULL
   );
 
-  CREATE TABLE messages (
-    id TEXT PRIMARY KEY,
-    tag TEXT,
-    queue_name TEXT NOT NULL,
-    prefix TEXT NOT NULL,
-    -- 'http' (any consumer that can reach the app delivers it) or 'direct'
-    -- (only a consumer with an in-process handler for its prefix does).
-    transport TEXT NOT NULL,
-    -- The HTTP route the enqueuing process had registered for the prefix
-    -- (\`registerRoute\`), so any consumer delivers it there; NULL for the
-    -- flow route.
-    route TEXT,
-    body TEXT NOT NULL,
-    headers TEXT,
-    idempotency_key TEXT,
-    -- The run whose orchestrator deliveries go one at a time (spec 9), keyed
-    -- with the prefix; NULL for every other message.
-    lane TEXT,
-    hands_off INTEGER NOT NULL DEFAULT 0,
-    run_id TEXT,
-    step_id TEXT,
-    visible_at INTEGER NOT NULL,
-    lease_owner TEXT,
-    lease_until INTEGER,
-    deliveries INTEGER NOT NULL DEFAULT 0,
-    handoffs INTEGER NOT NULL DEFAULT 0,
-    failures INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-  );
-  CREATE INDEX messages_by_visible ON messages (visible_at);
-  CREATE INDEX messages_by_lane ON messages (lane, lease_until);
-  CREATE INDEX messages_by_run ON messages (run_id);
-  CREATE UNIQUE INDEX messages_by_idempotency_key
-    ON messages (COALESCE(tag, ''), idempotency_key)
-    WHERE idempotency_key IS NOT NULL;
-
   CREATE TABLE stream_chunks (
     name TEXT NOT NULL,
     idx INTEGER NOT NULL,

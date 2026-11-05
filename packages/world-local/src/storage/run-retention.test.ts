@@ -116,7 +116,7 @@ describe('run retention (world-local)', () => {
   // ---------------------------------------------------------------------
 
   describe("$retention: '0'", () => {
-    it('leaves no trace of the payloads in the database files, and drops queued messages', async () => {
+    it('leaves no trace of the payloads in the database files', async () => {
       // A payload long and distinctive enough to find as raw bytes.
       const marker = 'purge-marker-'.repeat(40);
       const created = await storage.events.create(null, {
@@ -135,21 +135,8 @@ describe('run retention (world-local)', () => {
         eventType: 'run_started',
         specVersion: SPEC_VERSION_CURRENT,
       } as never);
-      const db = databaseFor(testDir);
-      db.run(
-        `INSERT INTO messages (id, queue_name, prefix, transport, body, run_id, visible_at, created_at)
-         VALUES ('msg_delayed', '__wkf_workflow_w', '__wkf_workflow_', 'http', ?, ?, ?, ?)`,
-        JSON.stringify({ runId, marker }),
-        runId,
-        Date.now() + 3_600_000,
-        new Date().toISOString()
-      );
-
       await complete(runId);
 
-      expect(db.all('SELECT id FROM messages WHERE run_id = ?', runId)).toEqual(
-        []
-      );
       const needles = [
         Buffer.from(marker),
         Buffer.from(Buffer.from(marker).toString('base64').slice(0, 64)),

@@ -11,10 +11,10 @@ Used by default on `next dev` and `next start`.
   change it makes to its run, step, wait and hook, commit together or not at
   all. Writers in several processes on one data directory are ordered by
   SQLite's write lock, which the OS releases when a process exits.
-- **Queue.** Messages are rows of the same database, delivered over HTTP to the
-  app (or to an in-process handler) by a leased consumer in each process that
-  uses the World. They survive restarts. A single-orchestrator (spec 9) run's
-  orchestrator deliveries go one at a time across every process.
+- **Queue.** In memory, as before: a message is an HTTP request to the app (or
+  a call to an in-process handler) from the process that enqueued it. Nothing
+  is stored; on startup, recovery re-enqueues active runs and wakes each one
+  when its open waits are due.
 - **Streams.** Chunks are numbered in the transaction that writes them, so a
   reader gets them in order; readers in other processes poll for new rows.
 

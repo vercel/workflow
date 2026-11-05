@@ -24,7 +24,10 @@ import { createWorld, type LocalWorld } from '@workflow/world-local';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
-import { dehydrateWorkflowArguments } from '../serialization.js';
+import {
+  dehydrateWorkflowArguments,
+  hydrateStepError,
+} from '../serialization.js';
 import { NEAR_DUE_WAIT_WINDOW_SECONDS } from './wait-continuation.js';
 import { setWorld } from './world.js';
 
@@ -54,15 +57,7 @@ vi.mock('./quickjs-runtime.js', async (importOriginal) => {
  * silently targets a stale object and the test times out like an unfixed run;
  * update the key here.
  */
-async function simulateProcessRestart(dataDir: string) {
-  // The dead process's queue leases die with it. Across real processes
-  // world-local hands a dead process's in-process deliveries back at once
-  // (its pid is gone); within this one test process it cannot tell, so the
-  // test releases them as the exit would.
-  const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
-  const db = new DatabaseSync(join(dataDir, 'world.db'));
-  db.exec('UPDATE messages SET lease_owner = NULL, lease_until = NULL');
-  db.close();
+async function simulateProcessRestart() {
   // A new process has none of the dead one's in-flight step executions.
   globalSingleton('@workflow/core//stepSingleFlight', 1, () => ({
     inFlight: new Map(),
@@ -120,12 +115,10 @@ describe('world-local restart recovery of an inline step', () => {
   }
 
   // A spec 8 run records an inline step's creation as its own `step_created`
-  // and stamps the start with its queue message. world-local's queue is
-  // durable: that message is still queued after the restart, and its
-  // redelivery is the step's owner, so it starts the step again at once
-  // (nothing needs releasing). A single-orchestrator run (spec 9) records the
+  // and stamps the start with its queue message, which world-local releases
+  // with a `step_retrying`. A single-orchestrator run (spec 9) records the
   // creation on the `step_started` and stamps no owner: its redelivered
-  // orchestrator starts the step again on its own.
+  // orchestrator starts the step again on its own, so nothing is released.
   it.each([
     {
       engine: 'node',
@@ -153,7 +146,7 @@ describe('world-local restart recovery of an inline step', () => {
   }) => {
     const singleOrchestrator = specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR;
     const creation = singleOrchestrator ? [] : ['step_created'];
-    const release: string[] = [];
+    const release = singleOrchestrator ? [] : ['step_retrying'];
     let bodyRuns = 0;
     let entered!: () => void;
     const firstBodyEntered = new Promise<void>((resolve) => {
@@ -195,7 +188,7 @@ describe('world-local restart recovery of an inline step', () => {
         : { ownerMessageId: expect.stringMatching(/^msg_/) },
     });
     await previous.close();
-    await simulateProcessRestart(dataDir);
+    await simulateProcessRestart();
 
     const restarted = bootWorld();
     const restartedAt = Date.now();
@@ -226,13 +219,25 @@ describe('world-local restart recovery of an inline step', () => {
       (await restarted.steps.get(runId, events[0].correlationId as string))
         .attempt
     ).toBe(2);
+    if (singleOrchestrator) return;
+    const error = await hydrateStepError(
+      (events[creation.length + 1].eventData as { error: unknown }).error,
+      runId,
+      undefined
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
+      'The process running this step exited before it finished.'
+    );
   });
 });
 
 /**
- * A run suspended on queued work (a background step's message, a wait's
- * timer) when its process exits finishes after a restart: world-local's queue
- * is durable, so those messages are delivered by the restarted process.
+ * world-local's queue is in memory, so a restart loses every message a run
+ * had queued: a background step's message and a wait's timer. Its recovery
+ * message carries a recovery marker, and a single-orchestrator delivery of
+ * it sends them again (see `stepsToReenqueue`); a spec 8 run replays them
+ * on its own.
  */
 describe('world-local restart recovery of a run suspended on queued work', () => {
   let dataDir: string;
@@ -300,13 +305,12 @@ describe('world-local restart recovery of a run suspended on queued work', () =>
     ].map((specVersion) => ({ ...row, specVersion }))
   );
 
-  // Spec 9 only: a spec 8 run replays its timers on its own. The sleep
-  // outlasts the window within which any suspending spec 9 delivery arms a
-  // wait's timer whatever its chain, so only the recovery marker arms it.
+  // The sleep outlasts the window within which any suspending spec 9
+  // delivery arms a wait's timer whatever its chain, so only recovery wakes
+  // it: the recovery marker on spec 9, and on either spec the wake
+  // world-local sends for each open wait, due when the wait is.
   it.each(
-    rows.filter(
-      ({ specVersion }) => specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR
-    )
+    rows
   )('completes a run that was sleeping when the process exited ($engine, spec $specVersion)', async ({
     workflowVm,
     specVersion,
@@ -329,7 +333,7 @@ describe('world-local restart recovery of a run suspended on queued work', () =>
     );
     // The process exits with the wait's timer in its queue.
     await previous.close();
-    await simulateProcessRestart(dataDir);
+    await simulateProcessRestart();
 
     const restarted = bootWorld(code);
     await restarted.start();
@@ -395,7 +399,7 @@ describe('world-local restart recovery of a run suspended on queued work', () =>
       specVersion === SPEC_VERSION_SINGLE_ORCHESTRATOR ? { inline: false } : {}
     );
     await previous.close();
-    await simulateProcessRestart(dataDir);
+    await simulateProcessRestart();
 
     const restarted = bootWorld(code);
     await restarted.start();
