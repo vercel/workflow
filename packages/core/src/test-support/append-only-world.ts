@@ -745,11 +745,16 @@ export class AppendOnlyWorld {
 
   /**
    * Deliver held messages, oldest first, until none is left or `limit`
-   * deliveries were made. Delays are ignored.
+   * deliveries were made. Delays are ignored. `prefer` picks which held
+   * messages go ahead of the rest (oldest first among them).
    */
-  async runUntilIdle(limit = 100): Promise<void> {
+  async runUntilIdle(
+    limit = 100,
+    options: { prefer?: (held: HeldMessage) => boolean } = {}
+  ): Promise<void> {
+    const { prefer } = options;
     for (let i = 0; i < limit; i++) {
-      const next = this.held[0];
+      const next = (prefer && this.held.find(prefer)) || this.held[0];
       if (!next) return;
       await this.deliver(next);
     }
