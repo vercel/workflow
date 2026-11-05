@@ -36,6 +36,26 @@ const pools = globalSingleton('@workflow/world-vercel//httpPools', 1, () => ({
 }));
 
 /**
+ * How long an idle HTTP/1.1 socket stays pooled. Neither workflow-server nor
+ * VQS sends a `Keep-Alive: timeout=` hint, so undici uses this value as is.
+ *
+ * Every hook resume pays for this on two H1 pools: `hooks.getByToken` on the
+ * default agent and the wake publish on the queue agent. HTTP/2 sessions are
+ * kept alive by undici's pings, so the events pool isn't affected. The resumes
+ * that matter arrive after a human pause (the next chat message, a webhook),
+ * which routinely ran past the old 10s and paid a fresh TCP + TLS handshake to
+ * each host, two round trips plus certificate verification apiece, on a
+ * so-called warm instance.
+ *
+ * Probing both hosts with one pinned socket showed idle sockets were still
+ * accepted and reused after 15s, 45s and 90s. 60s keeps a clear margin below
+ * that floor. A socket the peer did close is detected (FIN) before reuse in
+ * the normal case; the rare race lands on the same retry paths a reset socket
+ * always did.
+ */
+export const KEEP_ALIVE_TIMEOUT_MS = 60_000;
+
+/**
  * Shared between all agents: connection pooling only. `pipelining` is
  * deliberately NOT set here: undici overloads that single option to mean both
  * "H1 pipelining depth" and "max in-flight H2 streams per connection", and the
@@ -43,7 +63,7 @@ const pools = globalSingleton('@workflow/world-vercel//httpPools', 1, () => ({
  */
 const BASE_AGENT_OPTIONS = {
   connections: 8,
-  keepAliveTimeout: 10_000,
+  keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,
 };
 
 /**
