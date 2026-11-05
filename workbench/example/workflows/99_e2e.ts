@@ -3952,14 +3952,34 @@ export async function awaitChildReturnValueWorkflow(
 }
 
 /**
+ * Child for the fan-out completion test: finishes only once the test resumes
+ * its hook, then doubles `value`. The test resumes it after the parent is
+ * suspended on its completion hook, so the child's resume always lands on it
+ * (a child that finished before the parent registered would be answered by
+ * the parent's status read instead, with no `hook_received`).
+ */
+export async function gatedChildWorkflow(token: string, value: number) {
+  'use workflow';
+  using hook = createHook<Record<string, never>>({ token });
+  await hook;
+  return await doubleValue(value);
+}
+
+/**
  * Parent that fans out to several children and awaits them all. Every child
  * resumes the parent's one completion hook, so the parent's log holds a
- * single system hook however many children it waits on.
+ * single system hook however many children it waits on. Child `i` waits on
+ * the hook `${tokenPrefix}:${i}`.
  */
-export async function awaitChildrenFanOutWorkflow(values: number[]) {
+export async function awaitChildrenFanOutWorkflow(
+  values: number[],
+  tokenPrefix: string
+) {
   'use workflow';
   const runs = await Promise.all(
-    values.map((value) => start(slowChildWorkflow, [value, false]))
+    values.map((value, i) =>
+      start(gatedChildWorkflow, [`${tokenPrefix}:${i}`, value])
+    )
   );
   const results = await Promise.all(runs.map((run) => run.returnValue));
   return { childRunIds: runs.map((run) => run.runId), results };

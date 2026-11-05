@@ -4635,10 +4635,27 @@ describe.concurrent('e2e', () => {
     { timeout: 120_000 },
     async () => {
       const values = [1, 2, 3, 4];
+      const tokenPrefix = `fanout-${Math.random().toString(36).slice(2)}`;
       const run = await start(await e2e('awaitChildrenFanOutWorkflow'), [
         values,
+        tokenPrefix,
       ]);
       trackRun(run);
+
+      // The parent writes its safety-net sleep only once its completion hook
+      // is registered and its first status read of the children returned.
+      // The children are still gated then, so each one can only be answered
+      // by its resume of the hook. A child that finished earlier would resume
+      // a hook nobody registered yet (a no-op) and be answered by the read.
+      await waitForRunEvents(run.runId, (e) => e.eventType === 'wait_created', {
+        timeoutMs: 60_000,
+        description: "the parent's safety-net sleep",
+      });
+      for (const [i] of values.entries()) {
+        const token = `${tokenPrefix}:${i}`;
+        await resumeHook(await waitForHook(token), {});
+      }
+
       const returnValue = await run.returnValue;
       expect(returnValue.results).toEqual(values.map((v) => v * 2));
       for (const childRunId of returnValue.childRunIds) {
