@@ -935,13 +935,12 @@ jobs:
         run: |
           export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
           rm -f "$DEV_SERVER_LOG_PATH"
-          # The runner calls start()/resumeHook() in its own process, so the
-          # app's flow route sees deliveries from another process's queue.
-          # Those carry that process's in-memory queue key, not the app's, so
-          # queue auth is off here, which requires dynamic workflows off (the
-          # runtime refuses WORKFLOW_QUEUE_AUTH=off under them). Dynamic
-          # workflows are covered by e2e-local-dynamic, which starts its runs
-          # through the app with queue auth on.
+          # Queue auth stays off on this lane until the team decides to run
+          # the Local lanes with it on. (The runner shares the app's data
+          # directory, so its start()/resumeHook() deliveries carry the app's
+          # key either way.) Off requires dynamic workflows off: the runtime
+          # refuses WORKFLOW_QUEUE_AUTH=off under them. Dynamic workflows are
+          # covered by e2e-local-dynamic, with queue auth on.
           (cd "$WORKBENCH_APP_PATH" && WORKFLOW_QUEUE_AUTH=off pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
           # dev.test.ts hands the server on only once the rebuilds its fixture
@@ -1060,13 +1059,12 @@ jobs:
       - name: Run E2E Tests
         run: |
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
-          # The runner calls start()/resumeHook() in its own process, so the
-          # app's flow route sees deliveries from another process's queue.
-          # Those carry that process's in-memory queue key, not the app's, so
-          # queue auth is off here, which requires dynamic workflows off (the
-          # runtime refuses WORKFLOW_QUEUE_AUTH=off under them). Dynamic
-          # workflows are covered by e2e-local-dynamic, which starts its runs
-          # through the app with queue auth on.
+          # Queue auth stays off on this lane until the team decides to run
+          # the Local lanes with it on. (The runner shares the app's data
+          # directory, so its start()/resumeHook() deliveries carry the app's
+          # key either way.) Off requires dynamic workflows off: the runtime
+          # refuses WORKFLOW_QUEUE_AUTH=off under them. Dynamic workflows are
+          # covered by e2e-local-dynamic, with queue auth on.
           (cd "$WORKBENCH_APP_PATH" && WORKFLOW_QUEUE_AUTH=off pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
@@ -1109,11 +1107,11 @@ jobs:
           if-no-files-found: ignore
 
   # Dynamic workflows on a local World, with queue auth on. The local dev/prod
-  # lanes run with dynamic workflows off and queue auth off, because their
-  # runner calls start() in its own process (see e2e-local-dev). Here the
-  # runner starts each parent fixture through the app
-  # (`/api/e2e-dynamic-start`, WORKFLOW_E2E_START_VIA_APP=1), so the app's own
-  # queue sends every delivery and auth can stay on.
+  # lanes run with dynamic workflows off and queue auth off until the team
+  # decides to run them with auth on (see e2e-local-dev). Here the runner
+  # starts each parent fixture through the app (`/api/e2e-dynamic-start`,
+  # WORKFLOW_E2E_START_VIA_APP=1), so the app's own queue sends the first
+  # delivery, as in a real app.
   e2e-local-dynamic:
     name: E2E Local Dynamic Workflows (nextjs-turbopack)
     runs-on: ubuntu-latest
@@ -1489,9 +1487,9 @@ jobs:
           # `$using:` only resolves PowerShell variables, not env vars, so
           # copy MATRIX_VM into a session variable before Start-Job.
           $matrixVm = $env:MATRIX_VM
-          # The runner calls start()/resumeHook() in its own process, whose
-          # queue's in-memory key is not the app's, so queue auth is off here
-          # (dynamic workflows stay off, as the runtime requires for that).
+          # Queue auth stays off on this lane until the team decides to run
+          # the Local lanes with it on (dynamic workflows stay off, as the
+          # runtime requires for that).
           $job = Start-Job -ScriptBlock { Set-Location $using:PWD; $env:WORKFLOW_VM = $using:matrixVm; $env:WORKFLOW_QUEUE_AUTH = 'off'; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..

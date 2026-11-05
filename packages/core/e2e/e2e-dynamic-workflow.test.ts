@@ -182,10 +182,10 @@ function skipIfUnsupportedDeployment(error: unknown): never {
 /**
  * Set on lanes that start the parent fixtures through the app
  * (nextjs-turbopack's `/api/e2e-dynamic-start`) instead of calling `start()`
- * here. A run this process starts is first delivered by this process's queue,
- * with its own in-memory queue key, so an app with queue auth on (and auth
- * stays on whenever dynamic workflows are enabled) refuses it. Starting it in
- * the app makes the app's own queue the sender.
+ * here, so the app's own queue sends the first delivery, as in a real app.
+ * That lane runs with queue auth on (it stays on whenever dynamic workflows
+ * are enabled); the other Local lanes keep it off until the team decides to
+ * turn it on there.
  */
 const startViaApp = process.env.WORKFLOW_E2E_START_VIA_APP === '1';
 

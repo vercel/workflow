@@ -9,12 +9,11 @@ import {
 /**
  * Starts one of the dynamic-workflow e2e fixtures from inside the app.
  *
- * The e2e runner otherwise calls `start()` in its own process, whose queue
- * sends the run's first delivery with that process's in-memory queue key,
- * which the app's flow route refuses. Starting the run here makes the app's
- * own queue the sender, as in a real app, so the dynamic-workflow lane runs
- * with queue auth on (`e2e-dynamic-workflow.test.ts`,
- * `WORKFLOW_E2E_START_VIA_APP=1`). Limited to the fixtures that lane starts.
+ * The e2e runner otherwise calls `start()` in its own process. Starting the
+ * run here makes the app's own queue the sender, as in a real app, for the
+ * dynamic-workflow lane, which runs with queue auth on
+ * (`e2e-dynamic-workflow.test.ts`, `WORKFLOW_E2E_START_VIA_APP=1`). Limited
+ * to the fixtures that lane starts.
  */
 const FIXTURES = {
   dynamicWorkflowFromApp,

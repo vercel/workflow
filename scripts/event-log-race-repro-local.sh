@@ -261,11 +261,10 @@ else
   export WORKFLOW_TARGET_WORLD="local"
   export WORKFLOW_LOCAL_DATA_DIR="$DATA_DIR"
   export WORKFLOW_LOCAL_QUEUE_CONCURRENCY="${WORKFLOW_LOCAL_QUEUE_CONCURRENCY:-$LOCAL_QUEUE_CONCURRENCY}"
-  # The harness calls start() and resumeHook() in its own process, and
-  # world-local's queue delivers them from there, with that process's
-  # in-memory queue key, which the app's flow route refuses with queue auth
-  # on. The runtime refuses this while dynamic workflows are enabled, so do
-  # not export WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
+  # Queue auth stays off here, as on the e2e-local CI lanes, until the team
+  # decides to run them with it on. The runtime refuses it while dynamic
+  # workflows are enabled, so do not export
+  # WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS.
   export WORKFLOW_QUEUE_AUTH="off"
 fi
 
