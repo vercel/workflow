@@ -292,6 +292,45 @@ describe.skipIf(process.platform === 'win32')(
       );
     });
 
+    it("passes an absorbed hook wake's resume timing on when the re-run hands off", async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery, response) => {
+        const n = runDeliveries(runId).length;
+        if (n === 1) await gate.released;
+        // The re-run reaches its invocation deadline and hands off.
+        if (n === 2) {
+          response.end(JSON.stringify({ timeoutSeconds: 0 }));
+          return;
+        }
+        response.end('{}');
+      };
+      const { messageId } = await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      const absorbedTiming = {
+        resumeRequestedAtMs: 10,
+        queuePublishRequestedAtMs: 20,
+        strategy: 'sequential',
+      };
+      await wake(runId, { hookResumeTiming: absorbedTiming });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 3
+      );
+      const [, rerun, continuation] = runDeliveries(runId);
+      expect(rerun!.body.hookResumeTiming).toEqual(absorbedTiming);
+      expect(continuation).toMatchObject({
+        messageId,
+        attempt: 1,
+        deliveryCount: 3,
+      });
+      expect(continuation!.body.hookResumeTiming).toEqual(absorbedTiming);
+    });
+
     it('leaves a legacy hook resume (hookInput) queued behind a delivery to its own delivery', async () => {
       const runId = `wrun_${ulid()}`;
       const gate = held();

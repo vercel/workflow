@@ -1430,7 +1430,12 @@ export function createQueue(
             queueId: messageData.id,
             prefix: messageData.prefix,
             route: messageData.route,
-            body: messageData.data,
+            // As last delivered: after a coalesced re-run, that is the body
+            // carrying the absorbed hook wake's resume timing (`rerunBody`).
+            // A re-run that hands off before consuming it, at its invocation
+            // deadline say, passes it on to the next invocation, as an
+            // uncoalesced timed wake that hands off does.
+            body: deliveryBody,
             // The same message: its id and creation time carry over. The
             // replacement is a new Graphile job whose own attempt count
             // starts again at 1; the deliveries made so far ride along as
