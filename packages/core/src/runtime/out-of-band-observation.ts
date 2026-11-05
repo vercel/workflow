@@ -45,8 +45,15 @@ import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from './child-run-completion.js';
  * it is gone.
  *
  * The QuickJS engine advances its clock on every event it reads, unclaimed
- * payloads included, so this argument does not hold there. Its suspensions do
- * not carry `observedHookIds`, which classifies every open hook as observed.
+ * payloads included, so the clock half of this argument does not hold there:
+ * a payload placed below an event the VM consumed moves the `Date.now()` a
+ * replay reads after that event. The QuickJS VM reports a hook as observed
+ * while a resolver waits on its next payload (`openHooks`), and its run-ahead
+ * makes up for the clock separately: a boundary whose code read the clock
+ * while the VM held an unconfirmed speculative event decides only once that
+ * event is confirmed at its position (`clockReadOnSpeculation`,
+ * `spec9/quickjs-entrypoint.ts`). A decision made without reading the clock
+ * cannot tell where the payload landed.
  *
  * ## Waits
  *
