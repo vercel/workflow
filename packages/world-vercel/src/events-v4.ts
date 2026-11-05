@@ -495,56 +495,54 @@ export interface PreconditionFailureDetails {
  * responses with the same omitted-payload tolerance the v4 sites use.
  */
 const OMITTED_EVENT_PAYLOAD = Symbol('omitted event payload');
-export const VercelEventWireSchema = z.compile(
-  z
-    .preprocess((value) => {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return value;
-      }
+export const VercelEventWireSchema = z
+  .preprocess((value) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return value;
+    }
 
-      const event = value as Record<string, unknown>;
-      const payloadField =
-        typeof event.eventType === 'string'
-          ? getEventDataPayloadField(event.eventType)
-          : undefined;
-      const eventData = event.eventData as Record<string, unknown> | undefined;
-      if (
-        !payloadField ||
-        typeof eventData !== 'object' ||
-        eventData === null ||
-        Array.isArray(eventData) ||
-        Object.hasOwn(eventData, payloadField)
-      ) {
-        return value;
-      }
+    const event = value as Record<string, unknown>;
+    const payloadField =
+      typeof event.eventType === 'string'
+        ? getEventDataPayloadField(event.eventType)
+        : undefined;
+    const eventData = event.eventData as Record<string, unknown> | undefined;
+    if (
+      !payloadField ||
+      typeof eventData !== 'object' ||
+      eventData === null ||
+      Array.isArray(eventData) ||
+      Object.hasOwn(eventData, payloadField)
+    ) {
+      return value;
+    }
 
-      return {
-        ...event,
-        eventData: {
-          ...eventData,
-          [payloadField]: OMITTED_EVENT_PAYLOAD,
-        },
-      };
-    }, EventSchema)
-    .transform((event) => {
-      const payloadField = getEventDataPayloadField(event.eventType);
-      if (!payloadField || !('eventData' in event)) return event;
+    return {
+      ...event,
+      eventData: {
+        ...eventData,
+        [payloadField]: OMITTED_EVENT_PAYLOAD,
+      },
+    };
+  }, EventSchema)
+  .transform((event) => {
+    const payloadField = getEventDataPayloadField(event.eventType);
+    if (!payloadField || !('eventData' in event)) return event;
 
-      const eventData = event.eventData as Record<string, unknown> | undefined;
-      if (
-        typeof eventData !== 'object' ||
-        eventData === null ||
-        Array.isArray(eventData) ||
-        eventData[payloadField] !== OMITTED_EVENT_PAYLOAD
-      ) {
-        return event;
-      }
+    const eventData = event.eventData as Record<string, unknown> | undefined;
+    if (
+      typeof eventData !== 'object' ||
+      eventData === null ||
+      Array.isArray(eventData) ||
+      eventData[payloadField] !== OMITTED_EVENT_PAYLOAD
+    ) {
+      return event;
+    }
 
-      const parsedEventData = { ...eventData };
-      delete parsedEventData[payloadField];
-      return { ...event, eventData: parsedEventData } as Event;
-    })
-);
+    const parsedEventData = { ...eventData };
+    delete parsedEventData[payloadField];
+    return { ...event, eventData: parsedEventData } as Event;
+  });
 
 const CreateEventV4BodyBaseSchema = z.object({
   event: VercelEventWireSchema,
@@ -626,7 +624,7 @@ const CreateEventV4BodySchemas: {
   noop: CreateEventV4BodySchema,
 };
 
-const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
+const MaxEventsHeaderSchema = z.coerce.number().int().positive();
 
 /**
  * The in-band fence's counters as a list response carries them
@@ -635,15 +633,13 @@ const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
  * every slot up to `seq`. Sent by a backend that reads them; absent
  * otherwise.
  */
-const EventLogSnapshotWireSchema = z.compile(
-  z
-    .object({
-      seq: z.number().int().nonnegative(),
-      seqInBand: z.number().int().nonnegative(),
-    })
-    // In-band positions are a subset of all positions.
-    .refine(({ seq, seqInBand }) => seqInBand <= seq)
-);
+const EventLogSnapshotWireSchema = z
+  .object({
+    seq: z.number().int().nonnegative(),
+    seqInBand: z.number().int().nonnegative(),
+  })
+  // In-band positions are a subset of all positions.
+  .refine(({ seq, seqInBand }) => seqInBand <= seq);
 
 const SNAPSHOT_SEQ_HEADER = 'x-wf-snapshot-seq';
 const SNAPSHOT_SEQ_IN_BAND_HEADER = 'x-wf-snapshot-seq-in-band';
@@ -682,29 +678,25 @@ function snapshotFromEnd(snapshot: unknown): EventLogSnapshot | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-const EventStreamEndSchema = z.compile(
-  z.object({
-    _end: z.literal(1),
-    next: z.string().optional(),
-    hasMore: z.boolean(),
-    // Read on its own (`snapshotFromEnd`): a malformed snapshot lists none
-    // rather than failing the page.
-    snapshot: z.unknown().optional(),
-  })
-);
+const EventStreamEndSchema = z.object({
+  _end: z.literal(1),
+  next: z.string().optional(),
+  hasMore: z.boolean(),
+  // Read on its own (`snapshotFromEnd`): a malformed snapshot lists none
+  // rather than failing the page.
+  snapshot: z.unknown().optional(),
+});
 
 /**
  * Terminal error frame. The backend sends this when it cannot finish a frame
  * stream and retrying will not help — the response already committed to `200`
  * with its first byte, so there is no status code left to carry the failure.
  */
-const EventStreamErrorSchema = z.compile(
-  z.object({
-    _error: z.literal(1),
-    code: z.string(),
-    message: z.string().optional(),
-  })
-);
+const EventStreamErrorSchema = z.object({
+  _error: z.literal(1),
+  code: z.string(),
+  message: z.string().optional(),
+});
 
 /**
  * An event's payload object is gone from the backend's blob storage. The
@@ -1259,17 +1251,16 @@ export async function createWorkflowRunEventV4<T extends EventType>(
 // Workflow SDK schema cache for v4 create-event responses. Every consumer of
 // @workflow/world-vercel uses it.
 //
-// One compiled schema per event type, per module copy. Several event types
-// share a base schema, and the refinement still differs, so the cache key is
-// the event type. A compiled schema closes over this copy's Zod objects.
-// The map stores schemas only, never response bodies or request data.
-// per-copy-ok: each bundler layer compiles an event type once, on first decode.
+// One schema per event type, per module copy, built on first decode. Several
+// event types share a base schema but the refinement differs, so the cache key
+// is the event type. The map stores schemas only, never response bodies or
+// request data.
+// per-copy-ok: each bundler layer builds an event type's schema once.
 const createEventResponseSchemas = new Map<
   EventType,
   z.ZodType<EventResult & { event: Event }>
 >();
 
-/** Uncompiled response schema. The cached schema is `z.compile` of this. */
 export function createEventResponseSchema<T extends EventType>(
   eventType: T
 ): z.ZodType<EventResult<T> & { event: Event }> {
@@ -1289,9 +1280,8 @@ export function getCreateEventResponseSchema<T extends EventType>(
     | undefined;
   if (cached) return cached;
 
-  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
-    createEventResponseSchema(eventType)
-  );
+  const schema: z.ZodType<EventResult<T> & { event: Event }> =
+    createEventResponseSchema(eventType);
   createEventResponseSchemas.set(eventType, schema);
   return schema;
 }
@@ -1450,23 +1440,19 @@ export interface CreateEventBatchV4Result {
   allocated?: number;
 }
 
-const BatchReportSchema = z.compile(
-  z.object({
-    events: z.array(VercelEventWireSchema).optional(),
-    cursor: z.string().nullable().optional(),
-    hasMore: z.boolean().optional(),
-    reportIncomplete: z.boolean().optional(),
-    allocated: z.number().int().nonnegative().optional(),
-  })
-);
+const BatchReportSchema = z.object({
+  events: z.array(VercelEventWireSchema).optional(),
+  cursor: z.string().nullable().optional(),
+  hasMore: z.boolean().optional(),
+  reportIncomplete: z.boolean().optional(),
+  allocated: z.number().int().nonnegative().optional(),
+});
 
-const BatchItemFailureSchema = z.compile(
-  z.object({
-    status: z.number().int(),
-    error: z.string(),
-    message: z.string(),
-  })
-);
+const BatchItemFailureSchema = z.object({
+  status: z.number().int(),
+  error: z.string(),
+  message: z.string(),
+});
 
 /**
  * POST /api/v4/runs/:runId/events/batch
