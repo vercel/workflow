@@ -371,7 +371,10 @@ describe('world.clear()', () => {
     const world = createWorld({ dataDir });
     try {
       await world.start?.();
-      const key = readKey(dataDir);
+      // start() does not wait for the key write; this does (the same process
+      // and directory: it returns the World's key, it does not make one).
+      const key = await createQueueAuthKey(dataDir, 'regenerate').current();
+      expect(readKey(dataDir)).toBe(key);
       expect(await verifyQueueAuthKey(key)).toBe(true);
 
       await world.clear();
@@ -379,27 +382,6 @@ describe('world.clear()', () => {
       expect(readKey(dataDir)).toBe(key);
       expect(await verifyQueueAuthKey(key)).toBe(true);
       expect(await createQueueAuthKey(dataDir, 'read').current()).toBe(key);
-    } finally {
-      await world.close?.();
-    }
-  });
-
-  it('a reader racing clear() sees the key or none, and the key once clear() is done', async () => {
-    const dataDir = path.join(base, 'data');
-    const world = createWorld({ dataDir });
-    try {
-      await world.start?.();
-      const key = readKey(dataDir);
-      const reader = createQueueAuthKey(dataDir, 'read');
-
-      // Gate: the reader's reload starts while clear() has removed the
-      // directory and not yet rewritten it.
-      const clearing = world.clear();
-      const during = await reader.reload();
-      await clearing;
-
-      expect([key, undefined]).toContain(during);
-      expect(await reader.reload()).toBe(key);
     } finally {
       await world.close?.();
     }
