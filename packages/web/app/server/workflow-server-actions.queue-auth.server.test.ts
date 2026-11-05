@@ -27,12 +27,13 @@ describe("the web UI's Local World", () => {
     rmSync(base, { recursive: true, force: true });
   });
 
-  // Importing the server actions module alone takes seconds: past vitest's
-  // default 5s when the machine is busy.
+  // Importing the server actions module alone takes about 3s, past vitest's
+  // default 5s when the machine is busy. 20s leaves room for that, and still
+  // fails on a real slowdown.
   it(
     'only reads the queue auth key, and writes nothing into the data directory',
     {
-      timeout: 60_000,
+      timeout: 20_000,
     },
     async () => {
       const { createWorld } = await import('@workflow/world-local');
