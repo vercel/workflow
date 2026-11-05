@@ -12,6 +12,7 @@ const workbenchScriptsRoot = path.join(workbenchRoot, 'scripts');
 const repoLibRoot = path.join(repoRoot, 'lib');
 const packagesRoot = path.join(repoRoot, 'packages');
 const workspaceYamlPath = path.join(repoRoot, 'pnpm-workspace.yaml');
+const lockfilePath = path.join(repoRoot, 'pnpm-lock.yaml');
 const patchesRoot = path.join(repoRoot, 'patches');
 
 const dependencyFields = [
@@ -337,6 +338,42 @@ function writeStagedWorkspaceConfig(
   return overridesApplied;
 }
 
+/**
+ * Seed the staged install with the monorepo lockfile, so the staged workbench
+ * installs the versions the repo locked instead of whatever npm has newest.
+ *
+ * Only the workbench's own importer is kept, re-keyed as the staged root
+ * (`.`). Its monorepo dependencies now point at tarballs, so pnpm re-resolves
+ * just those; every other dependency keeps its locked version, and a package
+ * the tarballs bring in that the lockfile already has keeps that version too.
+ * Unlocked versions still pass pnpm's `minimumReleaseAge`, which the staged
+ * config copies from the monorepo.
+ */
+export function stageLockfile(lockfileText, workbenchImporter) {
+  const lines = lockfileText.split(/\r?\n/u);
+  const importersStart = lines.indexOf('importers:');
+  const packagesStart = lines.indexOf('packages:');
+  if (importersStart === -1 || packagesStart < importersStart) {
+    throw new Error('Could not find the importers block in pnpm-lock.yaml');
+  }
+  const header = `  ${workbenchImporter}:`;
+  const start = lines.indexOf(header, importersStart);
+  if (start === -1 || start > packagesStart) {
+    throw new Error(
+      `pnpm-lock.yaml has no importer for ${workbenchImporter}; run pnpm install`
+    );
+  }
+  let end = start + 1;
+  while (end < packagesStart && !/^ {2}\S/u.test(lines[end])) end += 1;
+  return [
+    ...lines.slice(0, importersStart + 1),
+    '',
+    '  .:',
+    ...lines.slice(start + 1, end),
+    ...lines.slice(packagesStart),
+  ].join('\n');
+}
+
 function main() {
   const args = process.argv.slice(2).filter((arg) => arg !== '--');
   const [workbenchArg] = args;
@@ -425,6 +462,18 @@ function main() {
   );
   console.log(
     `Wrote staged pnpm workspace config with ${overridesApplied} tarball overrides for transitive monorepo packages`
+  );
+
+  const workbenchImporter = path
+    .relative(repoRoot, sourceWorkbenchDir)
+    .split(path.sep)
+    .join('/');
+  fs.writeFileSync(
+    path.join(stagedWorkbenchDir, 'pnpm-lock.yaml'),
+    stageLockfile(fs.readFileSync(lockfilePath, 'utf8'), workbenchImporter)
+  );
+  console.log(
+    `Seeded the staged install with the ${workbenchImporter} importer of pnpm-lock.yaml`
   );
 
   console.log(`Installing dependencies in ${stagedWorkbenchDir}`);
