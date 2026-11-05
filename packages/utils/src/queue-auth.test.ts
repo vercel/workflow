@@ -115,14 +115,14 @@ describe('createLogLimiter', () => {
 
 describe('verifyQueueAuthKey with a key source', () => {
   afterEach(() => {
-    setQueueAuthKeySource(undefined);
+    resetGlobalSingletonForTest('@workflow/utils//queueAuthKeySources', 1);
     resetGlobalSingletonForTest('@workflow/utils//queueAuthKey', 1);
   });
 
   /** A source whose storage holds `stored`, counting reloads. */
-  function source(inMemory: string, stored: string | undefined) {
+  function source(inMemory: string, stored: string | undefined, id = 'dir') {
     const state = { key: inMemory, stored, reloads: 0 };
-    setQueueAuthKeySource({
+    setQueueAuthKeySource(id, {
       current: () => state.key,
       reload: async () => {
         state.reloads++;
@@ -167,6 +167,35 @@ describe('verifyQueueAuthKey with a key source', () => {
     const state = source(key, key);
     expect(await verifyQueueAuthKey(value)).toBe(false);
     expect(state.reloads).toBe(1);
+  });
+
+  it('accepts the key of every registered source, one per data directory', async () => {
+    const a = generateQueueAuthKey();
+    const b = generateQueueAuthKey();
+    const stateA = source(a, undefined, '/data/a');
+    const stateB = source(b, undefined, '/data/b');
+
+    expect(await verifyQueueAuthKey(a)).toBe(true);
+    expect(await verifyQueueAuthKey(b)).toBe(true);
+    expect(stateA.reloads + stateB.reloads).toBe(0);
+    // A wrong key reloads every source, and matches none.
+    expect(await verifyQueueAuthKey(generateQueueAuthKey())).toBe(false);
+    expect([stateA.reloads, stateB.reloads]).toEqual([1, 1]);
+  });
+
+  it('accepts a key stored for any source, after reloading', async () => {
+    const storedB = generateQueueAuthKey();
+    source(generateQueueAuthKey(), undefined, '/data/a');
+    source(generateQueueAuthKey(), storedB, '/data/b');
+    expect(await verifyQueueAuthKey(storedB)).toBe(true);
+  });
+
+  it('stops accepting a source that was removed', async () => {
+    const key = generateQueueAuthKey();
+    source(key, undefined, '/data/a');
+    source(generateQueueAuthKey(), undefined, '/data/b');
+    setQueueAuthKeySource('/data/a', undefined);
+    expect(await verifyQueueAuthKey(key)).toBe(false);
   });
 
   it('without a source, checks the in-memory key', async () => {

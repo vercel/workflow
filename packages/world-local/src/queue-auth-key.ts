@@ -177,10 +177,11 @@ export function createQueueAuthKey(
     state.regenerated = writeQueueAuthKeyFile(dir, key).catch((error) =>
       logWriteFailure(state, dir, error)
     );
-    // This process's routes check deliveries against it. Reloads are
-    // rate-limited: a flood of wrong keys reads the file at most every
-    // RELOAD_INTERVAL_MS.
-    setQueueAuthKeySource({
+    // This process's routes check deliveries against it, and against the
+    // key of any other data directory a World in this process regenerated.
+    // Reloads are rate-limited: a flood of wrong keys reads the file at most
+    // every RELOAD_INTERVAL_MS.
+    setQueueAuthKeySource(dir, {
       current: () => state.key,
       reload: async () => {
         const now = Date.now();

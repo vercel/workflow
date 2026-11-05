@@ -18,7 +18,6 @@ import {
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
   resetGlobalSingletonForTest,
-  setQueueAuthKeySource,
   verifyQueueAuthKey,
 } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -38,7 +37,7 @@ beforeEach(() => {
 afterEach(() => {
   // A fresh process for the next test: no key held, no receiving-side source.
   resetGlobalSingletonForTest('@workflow/world-local//queueAuthKeyFiles', 1);
-  setQueueAuthKeySource(undefined);
+  resetGlobalSingletonForTest('@workflow/utils//queueAuthKeySources', 1);
   vi.restoreAllMocks();
   rmSync(base, { recursive: true, force: true });
 });
@@ -93,6 +92,53 @@ describe('the regenerating World (the app, a script calling start())', () => {
     expect(second).toBe(first);
     expect(third).toBe(first);
     expect(statSync(keyFile(dataDir))).toMatchObject({ ino, mtimeMs });
+  });
+
+  it('accepts the deliveries of two Worlds on different data directories in one process', async () => {
+    // The runtime's check (verifyQueueAuthKey) behind a real HTTP route.
+    const decisions: boolean[] = [];
+    const server = createServer(async (request, response) => {
+      for await (const _ of request);
+      const ok = await verifyQueueAuthKey(
+        request.headers[QUEUE_AUTH_HEADER] as string | undefined
+      );
+      decisions.push(ok);
+      response.statusCode = ok ? 200 : 401;
+      if (!ok) response.setHeader(QUEUE_AUTH_REFUSED_HEADER, '1');
+      response.setHeader('content-type', 'application/json');
+      response.end(
+        ok ? '{}' : JSON.stringify({ code: QUEUE_AUTH_REFUSED_CODE })
+      );
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    const baseUrl = `http://127.0.0.1:${port}`;
+    const worlds = [
+      createWorld({ dataDir: path.join(base, 'a'), baseUrl }),
+      createWorld({ dataDir: path.join(base, 'b'), baseUrl }),
+    ];
+    try {
+      for (const [i, world] of worlds.entries()) {
+        await world.queue(
+          '__wkf_workflow_test' as never,
+          { runId: `wrun_${i}` } as never
+        );
+      }
+      await vi.waitFor(() => expect(decisions).toHaveLength(2), {
+        interval: 10,
+      });
+      // Both accepted on the first delivery: neither key was refused.
+      expect(decisions).toEqual([true, true]);
+      expect(readKey(path.join(base, 'a'))).not.toBe(
+        readKey(path.join(base, 'b'))
+      );
+    } finally {
+      await Promise.all(worlds.map((world) => world.close?.()));
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
 
   it('keeps one key per data directory', async () => {

@@ -64,10 +64,11 @@ export function isQueueAuthKey(
 }
 
 /**
- * Where the receiving side of this process reads the key a delivery must
- * carry: the key held in memory, and a way to reload it from storage when a
+ * Where the receiving side of this process reads a key a delivery may carry:
+ * the key held in memory, and a way to reload it from storage when a
  * delivery carries a different one (another process of the app wrote a new
- * key). Registered by the Local World that generates the app's key.
+ * key). Registered by each Local World that generates a key, one per data
+ * directory.
  */
 export interface QueueAuthKeySource {
   /** The key in memory. No I/O: called on every delivery. */
@@ -76,39 +77,53 @@ export interface QueueAuthKeySource {
   reload(): Promise<string | undefined>;
 }
 
-const keySourceState = () =>
-  globalSingleton('@workflow/utils//queueAuthKeySource', 1, () => ({
-    source: undefined as QueueAuthKeySource | undefined,
+const keySourcesState = () =>
+  globalSingleton('@workflow/utils//queueAuthKeySources', 1, () => ({
+    sources: new Map<string, QueueAuthKeySource>(),
   }));
 
 /**
- * Sets this process's receiving-side key source (process-wide, so every
- * bundler layer's copy of the route reads the same one). Without one, the
+ * Registers this process's receiving-side key source for `id` (a data
+ * directory), or removes it with `undefined`. Process-wide, so every bundler
+ * layer's copy of the route reads the same sources. A process with several
+ * Local Worlds on different data directories registers one each, and a
+ * delivery carrying any of their keys is accepted. Without any, the
  * receiving side uses the in-memory {@link getQueueAuthKey}.
  */
 export function setQueueAuthKeySource(
+  id: string,
   source: QueueAuthKeySource | undefined
 ): void {
-  keySourceState().source = source;
+  const { sources } = keySourcesState();
+  if (source) sources.set(id, source);
+  else sources.delete(id);
 }
 
 /**
- * Whether a delivery's {@link QUEUE_AUTH_HEADER} is the app's current key.
- * Compares against the key in memory first. Only on a mismatch does it reload
- * the key from storage (rate-limited by the source) and compare again, so a
- * key another process of the app wrote is accepted without reading storage
- * on every delivery. A delivery without a key reloads too, and is still
- * refused: its sender found no key in storage, and the reload is what puts
- * one back there (the Local World rewrites a key file that is gone).
+ * Whether a delivery's {@link QUEUE_AUTH_HEADER} is the current key of any
+ * registered source. Compares against the keys in memory first. Only on a
+ * mismatch does it reload the keys from storage (rate-limited by each source)
+ * and compare again, so a key another process of the app wrote is accepted
+ * without reading storage on every delivery. A delivery without a key
+ * reloads too, and is still refused: its sender found no key in storage, and
+ * the reload is what puts one back there (the Local World rewrites a key file
+ * that is gone).
  */
 export async function verifyQueueAuthKey(
   value: string | null | undefined
 ): Promise<boolean> {
-  const { source } = keySourceState();
-  if (!source) return isQueueAuthKey(value);
-  if (isQueueAuthKey(value, source.current())) return true;
-  const reloaded = await source.reload();
-  return isWellFormedQueueAuthKey(value) && isQueueAuthKey(value, reloaded);
+  const { sources } = keySourcesState();
+  if (sources.size === 0) return isQueueAuthKey(value);
+  for (const source of sources.values()) {
+    if (isQueueAuthKey(value, source.current())) return true;
+  }
+  const reloaded = await Promise.all(
+    [...sources.values()].map((source) => source.reload())
+  );
+  return (
+    isWellFormedQueueAuthKey(value) &&
+    reloaded.some((key) => isQueueAuthKey(value, key))
+  );
 }
 
 /**
