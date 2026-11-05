@@ -73,7 +73,7 @@ import {
   type WorkflowSessionRebase,
 } from '../../workflow.js';
 import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getMaxInlineSteps,
@@ -2591,7 +2591,7 @@ async function runDelivery(
           event,
           occurredAt,
           ...(event.eventType === 'step_started'
-            ? { computeInstanceId: COMPUTE_INSTANCE_ID }
+            ? { computeInstanceId: getComputeInstanceId() }
             : {}),
         })),
         {

@@ -52,7 +52,7 @@ import { remapErrorStack, stripInlineSourceMap } from '../../source-map.js';
 import * as Attribute from '../../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../../telemetry.js';
 import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import { DEFAULT_STEP_MAX_RETRIES, getMaxInlineSteps } from '../constants.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import { getPortLazy } from '../get-port-lazy.js';
@@ -1658,7 +1658,7 @@ export async function runWorkflowWithQuickJS(params: {
         },
       },
       {
-        computeInstanceId: COMPUTE_INSTANCE_ID,
+        computeInstanceId: getComputeInstanceId(),
         ...(requestId ? { requestId } : {}),
       }
     );

@@ -46,7 +46,7 @@ import {
   normalizeUnknownError,
   promoteAbortErrorToFatal,
 } from '../../types.js';
-import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
+import { getComputeInstanceId } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   isOptimisticInlineStartExplicitlyDisabled,
@@ -412,7 +412,7 @@ export async function executeStep(
   // requestId as analytics `vercelId`, while computeInstanceId identifies the
   // worker that executed the step.
   const stepStartedEventParams: CreateEventParams = {
-    computeInstanceId: COMPUTE_INSTANCE_ID,
+    computeInstanceId: getComputeInstanceId(),
     ...(params.requestId ? { requestId: params.requestId } : {}),
     // A step start latency metric covers a background step's first attempt
     // only; a caller-written start (an inline step) never carries it.
