@@ -104,7 +104,7 @@ interface BaseWorkflowConfig {
    * limit) at the cost of stack traces that reference generated code.
    *
    * `'external'` and `'linked'` write a separate `.map` file; use these
-   * when you want to ship source maps to observability tooling but keep
+   * when you want to dashboard source maps to observability tooling but keep
    * them out of the function bundle.
    *
    * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable;
@@ -173,7 +173,7 @@ export interface NextConfig extends BaseWorkflowConfig {
    * `/.well-known/workflow/v1/*`. Undefined keeps the app-root layout.
    *
    * A path of one or more plain segments, with or without surrounding slashes
-   * (`/ship`, `ship/`); the builder normalizes it and rejects anything that
+   * (`/dashboard`, `dashboard/`); the builder normalizes it and rejects anything that
    * would not address a Next.js route.
    *
    * Unlike Next.js' `basePath`, which moves the whole app, this moves only the

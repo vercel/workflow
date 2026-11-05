@@ -494,8 +494,8 @@ export function withWorkflow(
        * Experimental: serve the generated workflow routes below a route
        * segment this app owns, so they answer at
        * `<prefix>/.well-known/workflow/v1/*` instead of
-       * `/.well-known/workflow/v1/*`. For example `'/ship'` emits the flow
-       * route at `/ship/.well-known/workflow/v1/flow`.
+       * `/.well-known/workflow/v1/*`. For example `'/dashboard'` emits the flow
+       * route at `/dashboard/.well-known/workflow/v1/flow`.
        *
        * Unlike Next.js' `basePath`, this moves only the workflow routes; the
        * rest of the app keeps its paths. It exists for deployments where the

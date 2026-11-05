@@ -173,8 +173,11 @@ describe('NextBuilder route prefix', () => {
   });
 
   it('emits everything below the route prefix', async () => {
-    const workingDir = await buildProject('/ship');
-    const generatedDir = join(workingDir, 'app/ship/.well-known/workflow/v1');
+    const workingDir = await buildProject('/dashboard');
+    const generatedDir = join(
+      workingDir,
+      'app/dashboard/.well-known/workflow/v1'
+    );
 
     expect(combinedBundles).toEqual([
       {
@@ -189,7 +192,10 @@ describe('NextBuilder route prefix', () => {
     expect(existsSync(join(workingDir, 'app/.well-known'))).toBe(false);
     expect(
       existsSync(
-        join(workingDir, 'public/ship/.well-known/workflow/v1/manifest.json')
+        join(
+          workingDir,
+          'public/dashboard/.well-known/workflow/v1/manifest.json'
+        )
       )
     ).toBe(true);
   });
@@ -198,10 +204,10 @@ describe('NextBuilder route prefix', () => {
   // `../config.json` relative to the route file, so the config has to move
   // with the route for the queue trigger to be attached to it.
   it('writes the queue trigger config next to the prefixed flow route', async () => {
-    const workingDir = await buildProject('ship/');
+    const workingDir = await buildProject('dashboard/');
     const configPath = join(
       workingDir,
-      'app/ship/.well-known/workflow/v1/config.json'
+      'app/dashboard/.well-known/workflow/v1/config.json'
     );
 
     expect(JSON.parse(readFileSync(configPath, 'utf-8'))).toEqual({
@@ -216,9 +222,17 @@ describe('NextBuilder route prefix', () => {
   // Every one of these leaves a second flow route carrying the queue trigger,
   // which would give the deployment two consumers of the same topic.
   it.each([
-    { from: undefined, to: '/ship', stale: 'app/.well-known/workflow/v1' },
-    { from: '/ship', to: '/cargo', stale: 'app/ship/.well-known/workflow/v1' },
-    { from: '/ship', to: undefined, stale: 'app/ship/.well-known/workflow/v1' },
+    { from: undefined, to: '/dashboard', stale: 'app/.well-known/workflow/v1' },
+    {
+      from: '/dashboard',
+      to: '/admin',
+      stale: 'app/dashboard/.well-known/workflow/v1',
+    },
+    {
+      from: '/dashboard',
+      to: undefined,
+      stale: 'app/dashboard/.well-known/workflow/v1',
+    },
   ])('removes the generated routes from a previous $from build when building $to', async ({
     from,
     to,
@@ -264,7 +278,7 @@ describe('NextBuilder route prefix', () => {
     mkdirSync(dirname(manualRoute), { recursive: true });
     await writeFile(manualRoute, 'export function GET() {}');
 
-    await build(workingDir, '/ship');
+    await build(workingDir, '/dashboard');
 
     expect(existsSync(manualRoute)).toBe(true);
   });

@@ -11,7 +11,7 @@ const SEGMENT_PATTERN = /^[A-Za-z0-9._~-]+$/;
 function invalid(prefix: string, reason: string): Error {
   return new Error(
     `Invalid workflow route prefix ${JSON.stringify(prefix)}: ${reason}. ` +
-      '`workflows.experimentalRoutePrefix` expects a path such as "/ship".'
+      '`workflows.experimentalRoutePrefix` expects a path such as "/dashboard".'
   );
 }
 
@@ -65,7 +65,7 @@ function assertSegment(prefix: string, segment: string): void {
 
 /**
  * Normalizes the experimental workflow route prefix to a leading slash with no
- * trailing slash (`ship/` -> `/ship`), or undefined when no prefix is
+ * trailing slash (`dashboard/` -> `/dashboard`), or undefined when no prefix is
  * configured. Undefined is preserved rather than collapsed to `''` so callers
  * can keep emitting exactly what they emitted before this option existed.
  */
@@ -94,7 +94,7 @@ export function normalizeWorkflowRoutePrefix(
 }
 
 /**
- * The prefix as a path fragment relative to a directory (`/ship` -> `ship`),
+ * The prefix as a path fragment relative to a directory (`/dashboard` -> `dashboard`),
  * for joining below `app/` or `public/`. Returns `''` when there is no prefix,
  * which `path.join` drops, so unprefixed layouts keep their exact paths.
  */

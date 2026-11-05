@@ -269,7 +269,7 @@ describe('withWorkflow builder config', () => {
   it('passes a normalized route prefix to the workflow builder', async () => {
     const config = withWorkflow(
       {},
-      { workflows: { experimentalRoutePrefix: 'ship/' } }
+      { workflows: { experimentalRoutePrefix: 'dashboard/' } }
     );
 
     await config('phase-production-build', { defaultConfig: {} });
@@ -278,22 +278,22 @@ describe('withWorkflow builder config', () => {
     expect(builderConfigs[0]).toMatchObject({
       // The runtime resolves workflow URLs against the base path, so it has
       // to carry the prefix the routes were emitted under.
-      basePath: '/ship',
-      experimentalRoutePrefix: '/ship',
+      basePath: '/dashboard',
+      experimentalRoutePrefix: '/dashboard',
     });
   });
 
   it('appends the route prefix to the Next basePath', async () => {
     const config = withWorkflow(
       { basePath: '/v2' },
-      { workflows: { experimentalRoutePrefix: '/ship' } }
+      { workflows: { experimentalRoutePrefix: '/dashboard' } }
     );
 
     await config('phase-production-build', { defaultConfig: {} });
 
     expect(builderConfigs[0]).toMatchObject({
-      basePath: '/v2/ship',
-      experimentalRoutePrefix: '/ship',
+      basePath: '/v2/dashboard',
+      experimentalRoutePrefix: '/dashboard',
     });
   });
 
@@ -309,14 +309,14 @@ describe('withWorkflow builder config', () => {
     );
     const manifest = '{"version":"1.0.0"}';
     writeFile(
-      join(projectDir, 'app/ship/.well-known/workflow/v1/manifest.json'),
+      join(projectDir, 'app/dashboard/.well-known/workflow/v1/manifest.json'),
       manifest
     );
 
     try {
       const nextConfig = await withWorkflow(
         {},
-        { workflows: { experimentalRoutePrefix: '/ship' } }
+        { workflows: { experimentalRoutePrefix: '/dashboard' } }
       )('phase-production-build', { defaultConfig: {} });
 
       await (
@@ -607,7 +607,7 @@ describe('withWorkflow builder config', () => {
       return patterns;
     }
 
-    // The shape @ai-sdk/openai and @ai-sdk/gateway ship: the serde symbols are
+    // The shape @ai-sdk/openai and @ai-sdk/gateway dashboard: the serde symbols are
     // imported constants used as computed keys, with no directive in the file.
     // See https://github.com/vercel/workflow/issues/4897.
     it.each([

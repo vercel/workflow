@@ -32,7 +32,7 @@ Framework options are read at build or dev-server startup. Use them for settings
 
 - Environment override: none
 - Default: none, so the routes are generated at the app root
-- Experimental. Emits the generated workflow routes below a route segment the app owns, such as `/ship/.well-known/workflow/v1/flow`, for apps that cannot own the origin's root paths.
+- Experimental. Emits the generated workflow routes below a route segment the app owns, such as `/dashboard/.well-known/workflow/v1/flow`, for apps that cannot own the origin's root paths.
 - See [`withWorkflow`](/docs/api-reference/workflow-next/with-workflow#workflow-route-prefix) for the generated paths and the Turborepo caching caveat.
 
 ```typescript title="next.config.ts" lineNumbers

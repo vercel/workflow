@@ -104,7 +104,7 @@ export default withWorkflow(nextConfig, {
 | --- | --- | --- | --- |
 | `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
 | `workflows.sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. See [Source maps](#source-maps) below. |
-| `workflows.experimentalRoutePrefix` | `string` | — | Serves the generated workflow routes below a route segment this app owns, such as `/ship`. See [Workflow route prefix](#workflow-route-prefix) below. |
+| `workflows.experimentalRoutePrefix` | `string` | — | Serves the generated workflow routes below a route segment this app owns, such as `/dashboard`. See [Workflow route prefix](#workflow-route-prefix) below. |
 
 ### Source maps
 
@@ -132,7 +132,7 @@ The `workflows.local` options only affect local development. When deployed to Ve
 
 ### Workflow route prefix
 
-By default the integration generates its routes at the root of your app, so the flow route answers at `/.well-known/workflow/v1/flow`. Some deployments cannot own those paths. In a [Microfrontends](https://vercel.com/docs/microfrontends) setup, for example, a child app is routed a path such as `/ship/*` while requests for `/.well-known/*` go to the default app, so queue deliveries and webhooks aimed at the root never reach the child.
+By default the integration generates its routes at the root of your app, so the flow route answers at `/.well-known/workflow/v1/flow`. Some deployments cannot own those paths. In a [Microfrontends](https://vercel.com/docs/microfrontends) setup, for example, a child app is routed a path such as `/dashboard/*` while requests for `/.well-known/*` go to the default app, so queue deliveries and webhooks aimed at the root never reach the child.
 
 `workflows.experimentalRoutePrefix` moves the generated workflow routes below a segment the app does own:
 
@@ -144,7 +144,7 @@ const nextConfig: NextConfig = {};
 
 export default withWorkflow(nextConfig, {
   workflows: {
-    experimentalRoutePrefix: "/ship", // [!code highlight]
+    experimentalRoutePrefix: "/dashboard", // [!code highlight]
   },
 });
 ```
@@ -153,31 +153,37 @@ With that prefix, the build emits:
 
 | Artifact | Path |
 | --- | --- |
-| Flow route | `app/ship/.well-known/workflow/v1/flow/route.js` |
-| Webhook route | `app/ship/.well-known/workflow/v1/webhook/[token]/route.js` |
-| Vercel function config | `app/ship/.well-known/workflow/v1/config.json` |
-| Manifest | `app/ship/.well-known/workflow/v1/manifest.json` |
+| Flow route | `app/dashboard/.well-known/workflow/v1/flow/route.js` |
+| Webhook route | `app/dashboard/.well-known/workflow/v1/webhook/[token]/route.js` |
+| Vercel function config | `app/dashboard/.well-known/workflow/v1/config.json` |
+| Manifest | `app/dashboard/.well-known/workflow/v1/manifest.json` |
 
-The queue trigger that makes the flow route a queue consumer is written next to the prefixed route, so deliveries reach it without any additional routing configuration. Webhook URLs, health checks, and the local and Postgres queue targets are all built from the prefix, so `createWebhook()` returns a URL under `/ship/.well-known/workflow/v1/webhook/:token`. `getWorkflowMetadata().url` includes the prefix too (for example `https://example.com/ship`), so don't build URLs to the rest of your app from it.
+The queue trigger that makes the flow route a queue consumer is written next to the prefixed route, so deliveries reach it without any additional routing configuration. Webhook URLs, health checks, and the local and Postgres queue targets are all built from the prefix, so `createWebhook()` returns a URL under `/dashboard/.well-known/workflow/v1/webhook/:token`. `getWorkflowMetadata().url` includes the prefix too (for example `https://example.com/dashboard`), so don't build URLs to the rest of your app from it.
 
 The prefix is a plain path of one or more segments. Leading and trailing slashes are optional. Anything Next.js would not serve at a fixed path is rejected when the config is created: dynamic segments such as `/[team]`, route groups such as `/(group)`, and `_`-prefixed segments, which Next.js excludes from routing entirely. Segments starting with `.` are rejected too, because the build could not clean up routes generated below them after the prefix changes.
 
 <Callout type="warn">
-If you cache your build with Turborepo, update the `outputs` globs to the prefixed paths. `app/.well-known/workflow/**` no longer matches `app/ship/.well-known/workflow/**`, and a cache hit would restore a build with no workflow routes in it.
+If you cache your build with Turborepo, update the `outputs` globs to the prefixed paths. `app/.well-known/workflow/**` no longer matches `app/dashboard/.well-known/workflow/**`, and a cache hit would restore a build with no workflow routes in it.
 </Callout>
 
 <Callout type="warn">
-If the app has `proxy.ts` or middleware, its matcher must exclude the prefixed path. A pattern such as `/((?!.well-known/workflow/).*)` only matches from the start of the path, so it no longer skips `/ship/.well-known/workflow/v1/flow`; exclude `ship/.well-known/workflow/` instead.
+If the app has `proxy.ts` or middleware, its matcher must exclude the prefixed path. A pattern such as `/((?!.well-known/workflow/).*)` only matches from the start of the path, so it no longer skips `/dashboard/.well-known/workflow/v1/flow`; exclude `dashboard/.well-known/workflow/` instead.
 </Callout>
 
 <Callout type="warn">
 Your routing layer must send the prefixed paths to this app. With Microfrontends, that means choosing a prefix the child app is already routed in the group's [routing configuration](https://vercel.com/docs/microfrontends/routing).
 </Callout>
 
-This option is experimental and its name may change. Unlike Next.js' `basePath`, which moves the whole app, it moves only the workflow routes; the rest of your routes keep their paths. The two compose: with `basePath: "/v2"` and `experimentalRoutePrefix: "/ship"`, the flow route answers at `/v2/ship/.well-known/workflow/v1/flow`.
+This option is experimental and its name may change.
+
+#### Compared with `basePath`
+
+The integration already honors Next.js' [`basePath`](https://nextjs.org/docs/app/api-reference/config/next-config-js/basePath): Next.js serves every route, including the generated workflow routes, below it, and `withWorkflow` passes it to the runtime so webhook and queue URLs include it. That only helps when the whole app can move under one path. A Microfrontends child app usually can't: its pages already live at `app/dashboard/...`, so `basePath: "/dashboard"` would serve them at `/dashboard/dashboard/...`.
+
+`experimentalRoutePrefix` moves only the generated workflow routes and their function config into the app tree; the rest of your routes keep their paths. The two compose: with `basePath: "/v2"` and `experimentalRoutePrefix: "/dashboard"`, the flow route answers at `/v2/dashboard/.well-known/workflow/v1/flow`.
 
 <Callout type="info">
-The local CLI and web UI infer the manifest location from the unprefixed app paths, so the Workflows tab is empty for a prefixed app. Set [`WORKFLOW_MANIFEST_PATH`](/docs/configuration/cli-and-web-ui#workflow_manifest_path) to the prefixed manifest, for example `app/ship/.well-known/workflow/v1/manifest.json`.
+The local CLI and web UI infer the manifest location from the unprefixed app paths, so the Workflows tab is empty for a prefixed app. Set [`WORKFLOW_MANIFEST_PATH`](/docs/configuration/cli-and-web-ui#workflow_manifest_path) to the prefixed manifest, for example `app/dashboard/.well-known/workflow/v1/manifest.json`.
 </Callout>
 
 ## Exporting a function
