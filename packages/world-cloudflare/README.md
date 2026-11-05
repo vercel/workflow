@@ -151,6 +151,7 @@ before 2026-09-01, also add the `enable_ctx_exports` flag.
 
 ```sh
 pnpm --filter @workflow/world-cloudflare build
+pnpm --filter @workflow/world-cloudflare test       # unit tests (src/**/*.test.ts)
 pnpm --filter @workflow/world-cloudflare test:e2e   # end-to-end suite under wrangler dev
 pnpm --filter @workflow/world-cloudflare e2e:dev    # the e2e Worker on :8787
 ```

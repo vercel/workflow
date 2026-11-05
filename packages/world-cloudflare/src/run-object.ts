@@ -50,6 +50,7 @@ import {
 } from '@workflow/world';
 import { createSimStore, type SimStore } from '@workflow/world-sim/store';
 import { monotonicFactory } from 'ulid';
+import { computeAlarmTarget } from './alarm.js';
 import { call, serve, TOKENS_BINDING } from './rpc.js';
 import {
   type DeliveryMeta,
@@ -58,6 +59,7 @@ import {
   getRuntimeConfig,
   runAsLocal,
 } from './runtime.js';
+import { singleFlight } from './single-flight.js';
 import type { ClaimResult } from './token-object.js';
 import type { RunApi } from './world.js';
 
@@ -135,6 +137,8 @@ export class RunObject extends DurableObject<Record<string, unknown>> {
   #signals = new Map<string, Signal>();
   #inflight = new Set<string>();
   #flowBusy = false;
+  /** `invoke` calls still delivering, by idempotency key. */
+  #invocations = new Map<string, Promise<InvocationOutcome>>();
   #stepDeliveries = 0;
   #completingWaits = new Set<string>();
   #alarmAt: number | null | undefined;
@@ -786,28 +790,31 @@ export class RunObject extends DurableObject<Record<string, unknown>> {
   }
 
   async #scheduleAlarm() {
-    let next: number | undefined;
-    const consider = (ms: number) => {
-      if (next === undefined || ms < next) next = ms;
-    };
-    for (const signal of this.#signals.values()) {
-      if (signal.parked || this.#inflight.has(signal.messageId)) continue;
-      consider(
-        this.#pinned.has(signal.messageId)
-          ? Date.now() + PINNED_RECHECK_MS
-          : signal.runAt
-      );
-    }
+    const now = Date.now();
     const run = this.#currentRun();
-    if (run && !isTerminalWorkflowRunStatus(run.status)) {
-      for (const wait of this.#store.allWaits()) {
-        if (wait.status !== 'completed' && wait.resumeAt) {
-          consider(new Date(wait.resumeAt).getTime());
-        }
-      }
-    }
-    if (this.#inflight.size > 0) consider(Date.now() + BACKSTOP_MS);
-    const target = next ?? null;
+    const waitDeadlines =
+      run && !isTerminalWorkflowRunStatus(run.status)
+        ? this.#store
+            .allWaits()
+            .filter((wait) => wait.status !== 'completed' && wait.resumeAt)
+            .map((wait) => new Date(wait.resumeAt as Date).getTime())
+        : [];
+    const target = computeAlarmTarget({
+      now,
+      signals: [...this.#signals.values()].map((signal) => ({
+        kind: signal.kind,
+        runAt: signal.runAt,
+        parked: Boolean(signal.parked),
+        inflight: this.#inflight.has(signal.messageId),
+        pinned: this.#pinned.has(signal.messageId),
+      })),
+      waitDeadlines,
+      flowBusy: this.#flowBusy,
+      stepSlotsFull: this.#stepDeliveries >= MAX_STEP_DELIVERIES,
+      inflightCount: this.#inflight.size,
+      backstopMs: BACKSTOP_MS,
+      pinnedRecheckMs: PINNED_RECHECK_MS,
+    });
     if (target === this.#alarmAt) return;
     this.#alarmAt = target;
     debug(
@@ -905,6 +912,20 @@ export class RunObject extends DurableObject<Record<string, unknown>> {
     const requestId = options?.idempotencyKey ?? `inv_${this.#messageIds()}`;
     const stored = kv.get<InvocationOutcome>(`${INVOKE_PREFIX}${requestId}`);
     if (stored) return stored;
+    // A second call with the same key while the first is still delivering
+    // (a client retry, say) shares its outcome instead of delivering the input
+    // a second time: the stored outcome is only written once delivery ends.
+    return singleFlight(this.#invocations, requestId, () =>
+      this.#runInvocation(runId, payload, requestId)
+    );
+  }
+
+  async #runInvocation(
+    runId: string,
+    payload: unknown,
+    requestId: string
+  ): Promise<InvocationOutcome> {
+    const kv = this.ctx.storage.kv;
     const run = this.#currentRun();
     if (!run) throw new WorkflowRunNotFoundError(runId);
     const queueName = this.#queueName(run);

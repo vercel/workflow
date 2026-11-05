@@ -35,6 +35,7 @@
     "build": "node scripts/build.mjs && tsc -p tsconfig.build.json",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run src",
     "e2e:build": "node e2e/build.mjs",
     "e2e:dev": "node e2e/build.mjs && wrangler dev --config e2e/wrangler.jsonc",
     "test:e2e": "node e2e/build.mjs && vitest run --config e2e/vitest.config.ts"
