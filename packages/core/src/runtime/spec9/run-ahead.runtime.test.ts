@@ -1,7 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { InBandSupersededError, RetryableError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { type Event, SPEC_VERSION_SINGLE_ORCHESTRATOR } from '@workflow/world';
+import {
+  type Event,
+  type SnapshotMetadata,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type World,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
@@ -140,6 +145,18 @@ const observedHook = `const inc = ${step};
     return n;
   }${registerWorkflow()}`;
 
+// Steps, a hook the workflow parks on, then more steps.
+const hookBetweenLoops = `const inc = ${step};
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow(steps) {
+    const hook = createHook({ token: "ra-snapshot" });
+    let n = 0;
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    const payload = await hook;
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return n + payload.add;
+  }${registerWorkflow()}`;
+
 const withAbortSignal = `const inc = ${step};
   async function workflow(steps) {
     const controller = new AbortController();
@@ -264,12 +281,15 @@ function holdOutcomesUntilAhead(ahead: number) {
   };
 }
 
+/** The workflow VM engine the run-ahead suite runs on. */
+let engine: 'node' | 'quickjs' = 'node';
+
 async function run(
   code: string,
   args: unknown[],
   options: ConstructorParameters<typeof AppendOnlyWorld>[0] = slowOutcomes
 ) {
-  const setup = await setupOrchestratorRun(code, args, options, 'node');
+  const setup = await setupOrchestratorRun(code, args, options, engine);
   currentWorld = setup.world;
   return setup;
 }
@@ -315,7 +335,16 @@ afterEach(() => {
   currentWorld = undefined;
 });
 
-describe('run-ahead against an append-only World (node engine)', () => {
+describe.each([
+  'node',
+  'quickjs',
+] as const)('run-ahead against an append-only World (%s engine)', (vm) => {
+  beforeEach(() => {
+    engine = vm;
+  });
+  afterEach(() => {
+    engine = 'node';
+  });
   it('starts the next inline step before the previous step_completed commits, and leaves the same log', async () => {
     const { world } = await run(sequential, [STEPS]);
     await world.runUntilIdle();
@@ -534,61 +563,128 @@ describe('run-ahead against an append-only World (node engine)', () => {
   // speculative outcome was placed at. The repair rebuilds the log from the
   // writes' own responses, without reading it, and the retained session takes
   // the corrected log without a replay.
-  it('repairs a displaced speculative write without a log read, and keeps the session', async () => {
-    // Shallow enough that the workflow is still running when the displaced
-    // write's commit comes back, so a later pass carries out the repair.
-    vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
-    const debug = vi.spyOn(runtimeLogger, 'debug');
-    let injected = false;
-    let outcomes = 0;
-    const { world, runId } = await run(unobservedHook, [STEPS], {
-      async beforeCreate(data) {
-        await slowOutcomes.beforeCreate(data);
-        // The second step's outcome is written ahead of the workflow, which
-        // has moved on to the next step by then: inject below it.
-        if (
-          !injected &&
-          data.eventType === 'step_completed' &&
-          ++outcomes === 2
-        ) {
-          injected = true;
-          world.appendOutOfBand({
-            eventType: 'hook_received',
-            runId,
-            correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
-            eventData: {
-              token: 'ra-unobserved',
-              payload: await dehydrateStepReturnValue('late', runId, undefined),
-            },
-          } as unknown as Partial<Event>);
-        }
-      },
-    });
-    const listsAtStart = () => world.listCalls.length;
-    await world.runUntilIdle();
-    const calls = (message: string) =>
-      debug.mock.calls
-        .filter(([logged]) => logged === message)
-        .map(([, fields]) => fields as Record<string, unknown>);
-    const repairs = calls('Run-ahead repaired');
-    const modes = calls('Starting workflow execution').map(
-      (fields) => fields.executionMode
-    );
-    debug.mockRestore();
+  it.runIf(vm === 'node')(
+    'repairs a displaced speculative write without a log read, and keeps the session',
+    async () => {
+      // Shallow enough that the workflow is still running when the displaced
+      // write's commit comes back, so a later pass carries out the repair.
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
+      const debug = vi.spyOn(runtimeLogger, 'debug');
+      let injected = false;
+      let outcomes = 0;
+      const { world, runId } = await run(unobservedHook, [STEPS], {
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          // The second step's outcome is written ahead of the workflow, which
+          // has moved on to the next step by then: inject below it.
+          if (
+            !injected &&
+            data.eventType === 'step_completed' &&
+            ++outcomes === 2
+          ) {
+            injected = true;
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+              eventData: {
+                token: 'ra-unobserved',
+                payload: await dehydrateStepReturnValue(
+                  'late',
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      const listsAtStart = () => world.listCalls.length;
+      await world.runUntilIdle();
+      const calls = (message: string) =>
+        debug.mock.calls
+          .filter(([logged]) => logged === message)
+          .map(([, fields]) => fields as Record<string, unknown>);
+      const repairs = calls('Run-ahead repaired');
+      const modes = calls('Starting workflow execution').map(
+        (fields) => fields.executionMode
+      );
+      debug.mockRestore();
 
-    expect(injected).toBe(true);
-    expect(await runResult(world)).toBe(STEPS);
-    expect(world.deliveries).toHaveLength(1);
-    expect(repairs).toEqual([
-      expect.objectContaining({ readLog: false, rebased: true }),
-    ]);
-    // No pass after the first replayed from scratch.
-    expect(modes.slice(1).every((mode) => mode === 'retained')).toBe(true);
-    void listsAtStart;
-    // The corrected log replays to the same result from cold.
-    const cold = await coldReplay(world, unobservedHook);
-    expect(cold.result).toBe(STEPS);
-  });
+      expect(injected).toBe(true);
+      expect(await runResult(world)).toBe(STEPS);
+      expect(world.deliveries).toHaveLength(1);
+      expect(repairs).toEqual([
+        expect.objectContaining({ readLog: false, rebased: true }),
+      ]);
+      // No pass after the first replayed from scratch.
+      expect(modes.slice(1).every((mode) => mode === 'retained')).toBe(true);
+      void listsAtStart;
+      // The corrected log replays to the same result from cold.
+      const cold = await coldReplay(world, unobservedHook);
+      expect(cold.result).toBe(STEPS);
+    }
+  );
+
+  // The live QuickJS VM cannot take back an event it consumed, so a
+  // speculative write another writer displaced ends the pass: the delivery
+  // restarts in place from a fresh load, with run-ahead off for the rest of
+  // it. An inert displacement is no hazard: nothing it decided is refused.
+  it.runIf(vm === 'quickjs')(
+    'restarts in place when an inert event displaces a speculative write, and stops nothing',
+    async () => {
+      vi.stubEnv('WORKFLOW_RUN_AHEAD_DEPTH', '2');
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const info = vi.spyOn(runtimeLogger, 'info');
+      let injected = false;
+      let outcomes = 0;
+      const { world, runId } = await run(unobservedHook, [STEPS], {
+        async beforeCreate(data) {
+          await slowOutcomes.beforeCreate(data);
+          if (
+            !injected &&
+            data.eventType === 'step_completed' &&
+            ++outcomes === 2
+          ) {
+            injected = true;
+            world.appendOutOfBand({
+              eventType: 'hook_received',
+              runId,
+              correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+              eventData: {
+                token: 'ra-unobserved',
+                payload: await dehydrateStepReturnValue(
+                  'late',
+                  runId,
+                  undefined
+                ),
+              },
+            } as unknown as Partial<Event>);
+          }
+        },
+      });
+      await world.runUntilIdle();
+      const restarts = info.mock.calls.filter(([message]) =>
+        String(message).includes('continuing in place')
+      );
+      const hazards = errors.mock.calls.filter(([line]) =>
+        String(line).includes('Run-ahead stopped: an event')
+      );
+      info.mockRestore();
+      errors.mockRestore();
+
+      expect(injected).toBe(true);
+      expect(restarts).toHaveLength(1);
+      expect(hazards).toEqual([]);
+      expect(await runResult(world)).toBe(STEPS);
+      expect(world.deliveries).toHaveLength(1);
+      // Every step ran once: each outcome's start had committed.
+      expect(eventsOf(world, 'step_started')).toHaveLength(STEPS);
+      expect(bodiesStarted).toBe(STEPS);
+      const cold = await coldReplay(world, unobservedHook);
+      expect(cold.result).toBe(STEPS);
+    }
+  );
 
   // An event the session cannot take below what it consumed (here the run's
   // cancellation) sends the repaired log to a cold replay instead.
@@ -626,7 +722,8 @@ describe('run-ahead against an append-only World (node engine)', () => {
     for (const completed of eventsOf(world, 'step_completed')) {
       expect(created.has(completed.correlationId)).toBe(true);
     }
-    expect(modes[0]).toBe('replay');
+    // The node engine's repair sends the session to a cold replay.
+    if (vm === 'node') expect(modes[0]).toBe('replay');
   });
 
   // A hazard (an event that could change the workflow's path) below
@@ -786,6 +883,70 @@ describe('run-ahead against an append-only World (node engine)', () => {
     // After it resolved, the loop ran ahead again.
     expect(Math.max(...unconfirmedAtStart.slice(before))).toBeGreaterThan(0);
   });
+
+  // A VM snapshot is taken only once every speculative event the heap
+  // consumed is confirmed at its position, so a restore replays nothing the
+  // log does not hold.
+  it.runIf(vm === 'quickjs')(
+    'snapshots a VM that ran ahead only from a confirmed log, and the restored VM runs ahead again',
+    async () => {
+      vi.stubEnv('WORKFLOW_SNAPSHOT_THRESHOLD', '1');
+      vi.stubEnv('WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED', '1');
+      vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', '0');
+      let stored: { data: Uint8Array; metadata: SnapshotMetadata } | undefined;
+      const saves: SnapshotMetadata[] = [];
+      const { world, runId, start } = await run(hookBetweenLoops, [STEPS]);
+      const snapshots: NonNullable<World['experimental_snapshots']> = {
+        async save(_runId, data, metadata) {
+          stored = { data, metadata };
+          saves.push(metadata);
+        },
+        async load() {
+          return stored ?? null;
+        },
+        async delete() {
+          stored = undefined;
+        },
+      };
+      setWorld({ ...world.asWorld(), experimental_snapshots: snapshots });
+      const info = vi.spyOn(runtimeLogger, 'info');
+
+      await world.deliver(start);
+      // The save runs off the response path.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(eventsOf(world, 'step_completed')).toHaveLength(STEPS);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      expect(saves).toHaveLength(1);
+
+      unconfirmedAtStart = [];
+      world.appendOutOfBand({
+        eventType: 'hook_received',
+        runId,
+        correlationId: eventsOf(world, 'hook_created')[0]?.correlationId,
+        eventData: {
+          token: 'ra-snapshot',
+          payload: await dehydrateStepReturnValue(
+            { add: 100 },
+            runId,
+            undefined
+          ),
+        },
+      } as unknown as Partial<Event>);
+      world.enqueue(ORCHESTRATOR_QUEUE, { runId, requestedAt: new Date() });
+      await world.runUntilIdle();
+      const restored = info.mock.calls.filter(
+        ([message]) => message === 'QuickJS runtime: restored VM snapshot'
+      );
+      info.mockRestore();
+
+      expect(restored.length).toBeGreaterThan(0);
+      expect(await runResult(world)).toBe(2 * STEPS + 100);
+      expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+      const cold = await coldReplay(world, hookBetweenLoops);
+      expect(cold.result).toBe(2 * STEPS + 100);
+      expect(eventsOf(cold.world, 'step_started')).toHaveLength(2 * STEPS);
+    }
+  );
 
   it('drains with an AbortController open', async () => {
     const { world } = await run(withAbortSignal, [STEPS]);

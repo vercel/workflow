@@ -1807,6 +1807,12 @@ async function runDelivery(
           },
           requestId,
           writer,
+          // Off for the rest of a delivery that run-ahead stopped once, as
+          // on the node engine below.
+          runAheadDepth:
+            isRunAheadDisabledFor(world) || runAheadRestarts > 0
+              ? 0
+              : getRunAheadDepth(),
           onStepMessageSent: noteStepMessageSent,
           onWaitTimerSent: (correlationId) => timedWaits.add(correlationId),
           completedWaits,
@@ -1830,7 +1836,10 @@ async function runDelivery(
           OrchestratorSupersededError.is(err) ||
           turboStartFailure ||
           isRetryableWorldError(err) ||
-          isQueueSendFailure(err)
+          isQueueSendFailure(err) ||
+          // Run-ahead stopped the pass: the delivery restarts in place.
+          RunAheadStopError.is(err) ||
+          RunAheadStopError.is(writer.stopCause)
         ) {
           throw err;
         }
