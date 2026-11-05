@@ -67,6 +67,9 @@ function main() {
   pnpm('--filter', './packages/*', 'run', '--if-present', 'prepack');
   try {
     pnpm(
+      // pnpm 10+ deploys only from a workspace that injects its packages.
+      // Injecting just here keeps the monorepo's own install linked.
+      '--config.inject-workspace-packages=true',
       '--filter',
       `./${path.relative(repoRoot, sourceDir)}`,
       'deploy',
