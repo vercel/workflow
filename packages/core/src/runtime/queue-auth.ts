@@ -45,9 +45,27 @@ export function isQueueAuthEnforced(
 }
 
 /**
- * Process-wide, so the route copies of several bundler layers share it: the
- * warning for a World that declares no mode is logged once, and at most once
- * a minute after that (a dev server re-initializing its routes).
+ * The queue auth log lines' limiters, process-wide rather than per
+ * workflowEntrypoint(): several bundler layers each build their own route,
+ * and SvelteKit and Astro build a new one for every request, so a limiter
+ * held by the route would let every request log. Each line is logged once,
+ * then at most once a minute, with the number of calls since.
+ */
+const settingLogs = () =>
+  globalSingleton('@workflow/core//queueAuthSettingLogs', 1, () => ({
+    off: createLogLimiter(),
+    refusedOff: createLogLimiter(),
+    unrecognized: createLogLimiter(),
+  }));
+
+const refusalLog = () =>
+  globalSingleton('@workflow/core//queueAuthRefusalLog', 1, () => ({
+    limit: createLogLimiter(),
+  }));
+
+/**
+ * The warning for a World that declares no mode: once, then at most once a
+ * minute (a dev server re-initializing its routes, a per-request route).
  */
 const undeclaredModeWarning = () =>
   globalSingleton('@workflow/core//undeclaredQueueAuthModeWarning', 1, () => ({
@@ -86,21 +104,28 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
   }
   if (!isLoopbackChecked(world)) return;
   const raw = process.env[QUEUE_AUTH_ENV];
+  const log = settingLogs();
   if (isQueueAuthOffRequested()) {
     if (isDynamicWorkflowsEnabled()) {
-      runtimeLogger.error(
-        `${QUEUE_AUTH_ENV}=off is refused because dynamic workflows are enabled ` +
-          '(WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS). Queue deliveries are still ' +
-          'authenticated: a delivery that does not carry the app’s queue key ' +
-          'is refused with a 401.'
+      log.refusedOff((routesSinceLastLog) =>
+        runtimeLogger.error(
+          `${QUEUE_AUTH_ENV}=off is refused because dynamic workflows are enabled ` +
+            '(WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS). Queue deliveries are still ' +
+            'authenticated: a delivery that does not carry the app’s queue key ' +
+            'is refused with a 401.',
+          { routesSinceLastLog }
+        )
       );
       return;
     }
-    runtimeLogger.warn(
-      `QUEUE DELIVERY AUTHENTICATION IS OFF (${QUEUE_AUTH_ENV}=off). The workflow ` +
-        'queue routes accept unauthenticated requests: anyone who can reach this ' +
-        'server can start runs, fail a running one, or re-trigger its steps. Only ' +
-        'use this for local development or on a trusted network.'
+    log.off((routesSinceLastLog) =>
+      runtimeLogger.warn(
+        `QUEUE DELIVERY AUTHENTICATION IS OFF (${QUEUE_AUTH_ENV}=off). The workflow ` +
+          'queue routes accept unauthenticated requests: anyone who can reach this ' +
+          'server can start runs, fail a running one, or re-trigger its steps. Only ' +
+          'use this for local development or on a trusted network.',
+        { routesSinceLastLog }
+      )
     );
     return;
   }
@@ -109,9 +134,12 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
     raw.trim() !== '' &&
     raw.trim().toLowerCase() !== 'on'
   ) {
-    runtimeLogger.warn(
-      `Unrecognized ${QUEUE_AUTH_ENV} value "${raw}"; expected "on" or "off". ` +
-        'Queue deliveries stay authenticated.'
+    log.unrecognized((routesSinceLastLog) =>
+      runtimeLogger.warn(
+        `Unrecognized ${QUEUE_AUTH_ENV} value "${raw}"; expected "on" or "off". ` +
+          'Queue deliveries stay authenticated.',
+        { routesSinceLastLog }
+      )
     );
   }
 }
@@ -158,14 +186,14 @@ export async function authorizeQueueDelivery(
 }
 
 /**
- * A rate-limited logger for refused deliveries, one per queue route: the
- * first refusal is logged at once, later ones at most once a minute with a
- * count, so a flood of forged requests cannot flood the logs.
+ * A rate-limited logger for refused deliveries, shared by every route in the
+ * process (see `settingLogs`): the first refusal is logged at once, later
+ * ones at most once a minute with a count, so a flood of forged requests
+ * cannot flood the logs, whether the route is built once or per request.
  */
 export function createQueueAuthRefusalLogger(): () => void {
-  const limit = createLogLimiter();
   return () =>
-    limit((refusedSinceLastLog) => {
+    refusalLog().limit((refusedSinceLastLog) => {
       runtimeLogger.warn(
         'Refused an unauthenticated queue delivery with a 401; no run was touched. ' +
           'Only deliveries sent by this app’s own processes are accepted. If the ' +

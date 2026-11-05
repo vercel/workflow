@@ -64,6 +64,8 @@ afterEach(() => {
     '@workflow/core//undeclaredQueueAuthModeWarning',
     1
   );
+  resetGlobalSingletonForTest('@workflow/core//queueAuthSettingLogs', 1);
+  resetGlobalSingletonForTest('@workflow/core//queueAuthRefusalLog', 1);
 });
 
 const undeclaredWarning = expect.stringContaining('declares no queueAuthMode');
@@ -199,7 +201,8 @@ describe('logQueueAuthSetting', () => {
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
     logQueueAuthSetting({ queueAuthMode: 'loopback' });
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('QUEUE DELIVERY AUTHENTICATION IS OFF')
+      expect.stringContaining('QUEUE DELIVERY AUTHENTICATION IS OFF'),
+      { routesSinceLastLog: 1 }
     );
   });
 
@@ -208,7 +211,9 @@ describe('logQueueAuthSetting', () => {
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
     vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
     logQueueAuthSetting({ queueAuthMode: 'loopback' });
-    expect(error).toHaveBeenCalledWith(expect.stringContaining('is refused'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('is refused'), {
+      routesSinceLastLog: 1,
+    });
   });
 
   it('warns about an unrecognized value', () => {
@@ -216,7 +221,8 @@ describe('logQueueAuthSetting', () => {
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'disabled');
     logQueueAuthSetting({ queueAuthMode: 'loopback' });
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Unrecognized WORKFLOW_QUEUE_AUTH value')
+      expect.stringContaining('Unrecognized WORKFLOW_QUEUE_AUTH value'),
+      { routesSinceLastLog: 1 }
     );
   });
 });
@@ -263,6 +269,64 @@ describe('workflowEntrypoint queue auth', () => {
     );
     return { routed, writes, route };
   }
+
+  /**
+   * The flow route as SvelteKit and Astro serve it: a new
+   * workflowEntrypoint() for every request (packages/sveltekit and
+   * packages/astro builders), so nothing held per entrypoint survives one.
+   */
+  function perRequestRoute(queueAuthMode: QueueAuthMode | undefined) {
+    const { routed } = installWorld(queueAuthMode);
+    const route = (req: Request) =>
+      workflowEntrypoint('globalThis.__private_workflows = new Map();')(req);
+    return { routed, route };
+  }
+
+  const lines = (spy: { mock: { calls: unknown[][] } }, text: string) =>
+    spy.mock.calls.filter(([message]) => String(message).includes(text));
+
+  it('rate-limits refusal lines across per-request entrypoints', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    const { route } = perRequestRoute('loopback');
+
+    for (let i = 0; i < 5; i++) {
+      expect((await route(delivery())).status).toBe(401);
+    }
+    expect(lines(warn, 'queue delivery with a 401')).toHaveLength(1);
+
+    vi.advanceTimersByTime(61_000);
+    expect((await route(delivery())).status).toBe(401);
+    const refused = lines(warn, 'queue delivery with a 401');
+    expect(refused).toHaveLength(2);
+    expect(refused[1]?.[1]).toEqual({ refusedSinceLastLog: 5 });
+  });
+
+  it.each([
+    ['off', {}, 'warn', 'QUEUE DELIVERY AUTHENTICATION IS OFF'],
+    [
+      'off',
+      { WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS: '1' },
+      'error',
+      'is refused because dynamic workflows are enabled',
+    ],
+    ['maybe', {}, 'warn', 'Unrecognized WORKFLOW_QUEUE_AUTH value'],
+  ] as const)('rate-limits the WORKFLOW_QUEUE_AUTH=%s setting line across per-request entrypoints (%o)', async (value, env, level, text) => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.stubEnv('WORKFLOW_QUEUE_AUTH', value);
+    for (const [name, envValue] of Object.entries(env)) {
+      vi.stubEnv(name, envValue);
+    }
+    const spy = vi.spyOn(runtimeLogger, level).mockImplementation(() => {});
+    const { route } = perRequestRoute('loopback');
+
+    for (let i = 0; i < 5; i++) await route(withKey());
+    expect(lines(spy, text)).toHaveLength(1);
+
+    vi.advanceTimersByTime(61_000);
+    await route(withKey());
+    expect(lines(spy, text)).toHaveLength(2);
+  });
 
   it('refuses a request without the key before the handler sees it', async () => {
     vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
