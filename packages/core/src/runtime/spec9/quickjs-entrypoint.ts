@@ -1568,8 +1568,6 @@ export async function runWorkflowWithQuickJS(params: {
         // id the speculative one was given.
         logView.screen(e);
         screenWrittenEvents([e], 'listing');
-        const slot = e.eventId ? eventIdToSlot(e.eventId) : null;
-        if (slot !== null) params.writer?.observeSlot(slot);
         if (e.eventId && seenEventIds.has(e.eventId)) continue;
         if (e.eventId) seenEventIds.add(e.eventId);
         unseen.push(e);
@@ -1643,13 +1641,12 @@ export async function runWorkflowWithQuickJS(params: {
       feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
       onEvents: (fed) => {
         fedEventCount += fed.length;
-        for (const event of fed) {
-          // The writer predicts run-ahead positions past every position it
-          // knows was taken.
-          const slot = eventIdToSlot(event.eventId);
-          if (slot !== null) params.writer?.observeSlot(slot);
-          screenWrittenEvents([event], 'live feed');
-        }
+        // The writer is not told of these positions: the feed can echo a
+        // write of this delivery before its response, and a position counted
+        // twice would push the next run-ahead prediction past the slot it
+        // takes. A prediction another writer made stale is refused by the
+        // view instead (`queueSpeculative`), and that write is awaited.
+        screenWrittenEvents(fed, 'live feed');
         logView.absorb({ events: fed });
         notifyProgress();
       },
