@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resetGlobalSingletonForTest } from './global-singleton.js';
 import {
   createLogLimiter,
+  generateQueueAuthKey,
   getQueueAuthKey,
   isQueueAuthKey,
   isQueueAuthRefusal,
   QUEUE_AUTH_REFUSED_HEADER,
+  setQueueAuthKeySource,
+  verifyQueueAuthKey,
 } from './queue-auth.js';
 
 describe('queue auth key', () => {
@@ -107,5 +110,67 @@ describe('createLogLimiter', () => {
     limitB(b);
     expect(a).toHaveBeenCalledTimes(1);
     expect(b).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('verifyQueueAuthKey with a key source', () => {
+  afterEach(() => {
+    setQueueAuthKeySource(undefined);
+    resetGlobalSingletonForTest('@workflow/utils//queueAuthKey', 1);
+  });
+
+  /** A source whose storage holds `stored`, counting reloads. */
+  function source(inMemory: string, stored: string | undefined) {
+    const state = { key: inMemory, stored, reloads: 0 };
+    setQueueAuthKeySource({
+      current: () => state.key,
+      reload: async () => {
+        state.reloads++;
+        if (state.stored) state.key = state.stored;
+        return state.key;
+      },
+    });
+    return state;
+  }
+
+  it('accepts the key in memory without reloading', async () => {
+    const key = generateQueueAuthKey();
+    const state = source(key, undefined);
+    for (let i = 0; i < 100; i++) {
+      expect(await verifyQueueAuthKey(key)).toBe(true);
+    }
+    expect(state.reloads).toBe(0);
+  });
+
+  it('accepts a key another process stored, after one reload', async () => {
+    const stored = generateQueueAuthKey();
+    const state = source(generateQueueAuthKey(), stored);
+    expect(await verifyQueueAuthKey(stored)).toBe(true);
+    expect(state.reloads).toBe(1);
+    // Now in memory: no further reload.
+    expect(await verifyQueueAuthKey(stored)).toBe(true);
+    expect(state.reloads).toBe(1);
+  });
+
+  it('refuses a wrong key after reloading', async () => {
+    const state = source(generateQueueAuthKey(), undefined);
+    expect(await verifyQueueAuthKey(generateQueueAuthKey())).toBe(false);
+    expect(state.reloads).toBe(1);
+  });
+
+  it.each([
+    ['no key', undefined],
+    ['an empty key', ''],
+    ['a malformed key', 'not-a-key'],
+  ])('refuses %s, and reloads so storage gets a key back', async (_, value) => {
+    const key = generateQueueAuthKey();
+    const state = source(key, key);
+    expect(await verifyQueueAuthKey(value)).toBe(false);
+    expect(state.reloads).toBe(1);
+  });
+
+  it('without a source, checks the in-memory key', async () => {
+    expect(await verifyQueueAuthKey(getQueueAuthKey())).toBe(true);
+    expect(await verifyQueueAuthKey(generateQueueAuthKey())).toBe(false);
   });
 });

@@ -97,7 +97,9 @@ export function setQueueAuthKeySource(
  * Compares against the key in memory first. Only on a mismatch does it reload
  * the key from storage (rate-limited by the source) and compare again, so a
  * key another process of the app wrote is accepted without reading storage
- * on every delivery.
+ * on every delivery. A delivery without a key reloads too, and is still
+ * refused: its sender found no key in storage, and the reload is what puts
+ * one back there (the Local World rewrites a key file that is gone).
  */
 export async function verifyQueueAuthKey(
   value: string | null | undefined
@@ -105,8 +107,8 @@ export async function verifyQueueAuthKey(
   const { source } = keySourceState();
   if (!source) return isQueueAuthKey(value);
   if (isQueueAuthKey(value, source.current())) return true;
-  if (!isWellFormedQueueAuthKey(value)) return false;
-  return isQueueAuthKey(value, await source.reload());
+  const reloaded = await source.reload();
+  return isWellFormedQueueAuthKey(value) && isQueueAuthKey(value, reloaded);
 }
 
 /**
