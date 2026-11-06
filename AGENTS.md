@@ -74,7 +74,12 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 
 # Step 1: Start the dev server in background
 # NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
-cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+# NOTE: WORKFLOW_QUEUE_AUTH=off matches the e2e-local CI lanes, which keep
+# queue auth off until the team decides to run them with it on. It is refused
+# while dynamic workflows are enabled; the dynamic-workflow e2e runs with auth
+# on and starts its runs through the app (see the header of
+# packages/core/e2e/e2e-dynamic-workflow.test.ts).
+cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 WORKFLOW_QUEUE_AUTH=off pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
 # Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
@@ -166,7 +171,10 @@ world-postgres it first brings up the container and applies migrations, and
 leaves Postgres running for the next iteration unless `--teardown` is passed;
 the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
 under `--world local`, whose only state is a data directory the script clears
-before each run.
+before each run. Under `--world local` it also exports `WORKFLOW_QUEUE_AUTH=off`,
+as the e2e-local CI lanes do until the team decides to run them with queue auth
+on. world-postgres needs no such setting: it declares
+`queueAuthMode: 'skip'`, so its flow route is not checked.
 
 Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates

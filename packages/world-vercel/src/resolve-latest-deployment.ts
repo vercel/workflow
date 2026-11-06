@@ -13,11 +13,9 @@ import { getDispatcher } from './http-client.js';
 import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 import type { APIConfig } from './utils.js';
 
-const ResolveLatestDeploymentResponseSchema = z.compile(
-  z.object({
-    id: z.string(),
-  })
-);
+const ResolveLatestDeploymentResponseSchema = z.object({
+  id: z.string(),
+});
 
 /**
  * Resolve the credential this call should authenticate with.

@@ -204,6 +204,18 @@ const StepExecutionDurationHistogram = once(async () => {
     });
 });
 
+const QueueDeliveryRefusedCounter = once(async () => {
+  const otel = await OtelApi.value;
+  if (!otel) return null;
+  return otel.metrics
+    .getMeter('workflow')
+    .createCounter('workflow.queue.delivery.refused', {
+      description:
+        'Queue deliveries a route refused because they did not carry the process queue key',
+      unit: '{delivery}',
+    });
+});
+
 /**
  * One-shot runtime diagnostic (DEBUG=workflow:* only), same shape as the one
  * world-vercel emits tagged `world-vercel`: prints how this module instance
@@ -387,6 +399,26 @@ export async function recordStepExecutionDuration(
 ): Promise<void> {
   const histogram = await StepExecutionDurationHistogram.value;
   histogram?.record(durationMs, { 'workflow.step.status': status });
+}
+
+/**
+ * Counts one delivery a queue route refused with a 401 (see
+ * `authorizeQueueDelivery`): the operator's signal for a forgery storm or a
+ * mass refusal from a misconfigured sender. Every refusal is counted, unlike
+ * the rate-limited log. Dimensions are bounded: the World target, the route's
+ * path (fixed by the app), and whether the request carried a key at all.
+ */
+export async function recordQueueDeliveryRefused(attributes: {
+  world: string;
+  route: string;
+  reason: 'no-key' | 'wrong-key';
+}): Promise<void> {
+  const counter = await QueueDeliveryRefusedCounter.value;
+  counter?.add(1, {
+    'workflow.world': attributes.world,
+    'http.route': attributes.route,
+    'workflow.queue.refusal_reason': attributes.reason,
+  });
 }
 
 /**

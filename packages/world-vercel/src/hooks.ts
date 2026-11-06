@@ -20,13 +20,11 @@ function filterHookData(hook: any, resolveData: 'none' | 'all'): Hook {
   }
   return normalizeHookData(hook) as Hook;
 }
-const HookWithRefsSchema = z.compile(
-  HookSchema.omit({
-    metadata: true,
-  }).extend({
-    metadataRef: z.any().optional(),
-  })
-);
+const HookWithRefsSchema = HookSchema.omit({
+  metadata: true,
+}).extend({
+  metadataRef: z.any().optional(),
+});
 
 export async function listHooks(
   params: ListHooksParams,

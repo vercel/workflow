@@ -122,3 +122,32 @@ export function requireEventSlot(eventId: string): number {
   }
   return slot;
 }
+
+/**
+ * Whether `event` records its run's creation: the run's `run_created`, or a
+ * `run_started` at the first slot.
+ *
+ * On a single-orchestrator (spec >= 9) run whose resilient `run_started`
+ * created it, that `run_started` takes the first slot with the creation data
+ * a `run_created` would carry (`input`, `deploymentId`, `workflowName`,
+ * `executionContext`, `attributes`, `encryptionPublicKey`, `startHook`), and
+ * the log has no `run_created`. Only a creation can hold the first slot, so
+ * the position identifies it even when the event was listed without its
+ * payload.
+ *
+ * A World that writes this shape keeps the in-band count a log with a
+ * `run_created` would have: the creation holds `IN_BAND_SEQ_AT_RUN_CREATION`
+ * and the start the next position, and the `run_started` write reports
+ * `allocated: 1`. Its writer cannot infer that allocation from the slot, which
+ * it may already count as the creation's.
+ */
+export function isRunCreationEvent(event: {
+  eventType: string;
+  eventId: string;
+}): boolean {
+  return (
+    event.eventType === 'run_created' ||
+    (event.eventType === 'run_started' &&
+      eventIdToSlot(event.eventId) === FIRST_EVENT_SLOT)
+  );
+}
