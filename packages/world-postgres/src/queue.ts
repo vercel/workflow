@@ -178,23 +178,21 @@ const ExecutorDelivery = z.object({
 });
 type ExecutorDelivery = z.infer<typeof ExecutorDelivery>;
 
-const GraphileHelpers = z.compile(
-  z.object({
-    abortSignal: z.instanceof(AbortSignal).optional(),
-    job: z.object({
-      attempts: z.number().int().positive(),
-      id: z.string().optional(),
-      locked_by: z.string().nullable().optional(),
-      task_identifier: z.string().optional(),
-      max_attempts: z.number().int().positive().optional(),
-    }),
-    getQueueName: z
-      .custom<() => string | null | Promise<string | null>>(
-        (value) => typeof value === 'function'
-      )
-      .optional(),
-  })
-);
+const GraphileHelpers = z.object({
+  abortSignal: z.instanceof(AbortSignal).optional(),
+  job: z.object({
+    attempts: z.number().int().positive(),
+    id: z.string().optional(),
+    locked_by: z.string().nullable().optional(),
+    task_identifier: z.string().optional(),
+    max_attempts: z.number().int().positive().optional(),
+  }),
+  getQueueName: z
+    .custom<() => string | null | Promise<string | null>>(
+      (value) => typeof value === 'function'
+    )
+    .optional(),
+});
 
 type HttpExecutionResult =
   | { type: 'completed' }
