@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import {
   access,
   constants,
@@ -211,7 +212,8 @@ export function upgradeVersion(
 
 /**
  * Ensures the data directory exists and is writable.
- * Creates the directory if it doesn't exist.
+ * Creates the directory if it doesn't exist, and its `.gitignore` if it has
+ * none.
  *
  * @param dataDir - The path to the data directory
  * @throws {DataDirAccessError} If the directory cannot be created or accessed
@@ -246,10 +248,14 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
     );
   }
 
-  // Verify the directory is writable by attempting to write a temp file
+  // Verify the directory is writable by attempting to write a temp file.
+  // Its name is unique per call: concurrent checks of one directory (a World
+  // writing its queue auth key while start() initializes the directory, or
+  // two processes) must not share a file, because on Windows unlinking a file
+  // another call still has open fails with EPERM.
   const testFile = path.join(
     absolutePath,
-    `.workflow-write-test-${Date.now()}`
+    `.workflow-write-test-${process.pid}-${randomBytes(6).toString('hex')}`
   );
   try {
     await writeFile(testFile, '');
@@ -266,6 +272,13 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
       nodeError.code
     );
   }
+
+  // A `.gitignore` that ignores everything in the directory, run data and the
+  // queue auth key alike, whenever there is none. `wx` never overwrites one
+  // that is already there, and a failure here never fails the World.
+  await writeFile(path.join(absolutePath, '.gitignore'), '*\n', {
+    flag: 'wx',
+  }).catch(() => {});
 }
 
 /**

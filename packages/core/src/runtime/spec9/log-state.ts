@@ -1,4 +1,5 @@
 import type { Event, SerializedData } from '@workflow/world';
+import { CHILD_RUN_COMPLETION_TOKEN_PREFIX } from '../child-run-completion.js';
 
 /**
  * Upper bound on a step input carried on its queue message. Larger inputs are
@@ -166,35 +167,75 @@ export function analyzeLogSteps(events: readonly Event[]): LogStepState[] {
   return out;
 }
 
+/** What a run waits on outside its orchestrator (see {@link externalWorkOf}). */
+export type ExternalWork = 'step' | 'hook';
+
 /**
- * Whether the run waits on work that happens outside its orchestrator: an
- * open hook (created, not disposed), or a step running from its own message
- * that has no outcome yet. That is a background step, or an inline step that
- * retried: an inline step's retry moves it to its own message, which runs
- * every later attempt.
+ * What the run waits on outside its orchestrator, if anything: `'step'` for
+ * a step running from its own message that has no outcome yet (a background
+ * step, or an inline step that retried: an inline step's retry moves it to
+ * its own message, which runs every later attempt), else `'hook'` for an
+ * open hook (created, not disposed), else `undefined`. A step outranks a
+ * hook: it decides how long a delivery lingers (see
+ * `getOrchestratorLingerMsFor`), and a step's outcome is due soon while a
+ * hook may never be resumed.
  *
  * Any open hook counts, however rarely it is resumed: a run that keeps a hook
  * open for its whole life (a cancel or approval hook beside a polling loop)
- * makes every pass that finds nothing to run linger, even one that just
- * armed a timer much longer than the linger window.
+ * makes every pass that finds nothing to run linger for the hook window,
+ * even one that just armed a timer much longer than it.
+ *
+ * The exception is the parent's child-run completion hook, which stays open
+ * for the rest of the run once the parent awaited a child
+ * (`child-run-completion.ts`). It is external work only while a child is
+ * awaited, which is when the dispatcher waits on its next payload. Given the
+ * suspension's `observedHookIds`, an open completion hook not among them does
+ * not count. Without them (QuickJS) every open hook counts.
  */
-export function awaitsExternalWork(events: readonly Event[]): boolean {
+export function externalWorkOf(
+  events: readonly Event[],
+  observedHookIds?: ReadonlySet<string>
+): ExternalWork | undefined {
   const openHooks = new Set<string>();
   const retried = new Set<string>();
   for (const event of events) {
     if (!event.correlationId) continue;
-    if (event.eventType === 'hook_created') openHooks.add(event.correlationId);
-    else if (event.eventType === 'hook_disposed') {
+    if (event.eventType === 'hook_created') {
+      const token = (event as { eventData?: { token?: unknown } }).eventData
+        ?.token;
+      const idleCompletionHook =
+        observedHookIds !== undefined &&
+        typeof token === 'string' &&
+        token.startsWith(CHILD_RUN_COMPLETION_TOKEN_PREFIX) &&
+        !observedHookIds.has(event.correlationId);
+      if (!idleCompletionHook) openHooks.add(event.correlationId);
+    } else if (event.eventType === 'hook_disposed') {
       openHooks.delete(event.correlationId);
     } else if (event.eventType === 'step_retrying') {
       retried.add(event.correlationId);
     }
   }
-  if (openHooks.size > 0) return true;
-  return analyzeLogSteps(events).some(
-    (step) =>
-      !step.terminal && (!step.inline || retried.has(step.correlationId))
-  );
+  if (
+    analyzeLogSteps(events).some(
+      (step) =>
+        !step.terminal && (!step.inline || retried.has(step.correlationId))
+    )
+  ) {
+    return 'step';
+  }
+  return openHooks.size > 0 ? 'hook' : undefined;
+}
+
+/**
+ * Whether the run waits on work that happens outside its orchestrator: an
+ * open hook, or a step running from its own message (see
+ * {@link externalWorkOf}).
+ */
+export function awaitsExternalWork(
+  events: readonly Event[],
+  observedHookIds?: ReadonlySet<string>
+): boolean {
+  return externalWorkOf(events, observedHookIds) !== undefined;
 }
 
 /** An open wait: created and not completed. */

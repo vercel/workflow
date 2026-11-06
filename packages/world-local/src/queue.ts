@@ -2,8 +2,12 @@ import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import {
   createAppRouteUrl,
+  createLogLimiter,
   createWorkflowUrl,
   debugLog,
+  getQueueAuthKey,
+  isQueueAuthRefusal,
+  QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
@@ -30,6 +34,7 @@ import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './db/codec.js';
 import { getPackageInfo } from './init.js';
+import type { QueueAuthKey } from './queue-auth-key.js';
 
 /**
  * JSON transport that preserves Uint8Array values using the same
@@ -68,12 +73,41 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // persistent state and return another timeoutSeconds if needed.
 const MAX_SAFE_TIMEOUT_MS = 2147483647;
 
+// How long close() waits for first delivery attempts already under way (see
+// `firstAttempts` in createQueue) before it aborts them. It only has to cover
+// getting the request to the app (the key, the base URL, a connect, a write):
+// the app's handler does not stop when the sender goes away, so a request the
+// app has read is not lost by aborting before its answer.
+const CLOSE_FIRST_ATTEMPT_WAIT_MS = 1_000;
+
 /**
  * The most deliveries world-local makes of one message (handoffs aside): a
  * guard against a message that fails forever. The runtime enforces its own
  * delivery cap well below it.
  */
 export const MAX_LOCAL_SAFETY_LIMIT = 256;
+
+/**
+ * Refusals of one message (the runtime's marked 401) after which the key file
+ * still holds the key that was sent, before world-local gives the message up.
+ * A refusal after which the file holds a new key is retried at once and not
+ * counted, however many rotations there are. The counted ones wait the short
+ * backoff, by which time the route has re-read the file too (its re-reads are
+ * rate-limited). Few, because a sender that cannot read the app's key is
+ * refused every time.
+ */
+export const MAX_QUEUE_AUTH_REFUSALS = 5;
+
+/**
+ * Refusals of one message after which the key file held a new key, retried
+ * at once and not counted. Rotations happen when one of the app's processes
+ * starts, seconds apart; past this many for one message, the key is changing
+ * on every attempt (something rewrites it in a loop), and further refusals
+ * count like any other: they back off and give the message up. So a message
+ * never spins, and ends after at most this plus MAX_QUEUE_AUTH_REFUSALS
+ * deliveries, far below MAX_LOCAL_SAFETY_LIMIT.
+ */
+export const MAX_UNCOUNTED_KEY_ROTATIONS = 16;
 
 /** Failed deliveries retried 5s apart, before the backoff grows. */
 const LINEAR_RETRY_DELIVERIES = 32;
@@ -163,6 +197,13 @@ export type LocalQueue = Queue & {
   registerRoute(prefix: QueuePrefix, path: string): void;
 };
 
+const QUEUE_AUTH_REFUSAL_HINT =
+  "A queue delivery is accepted only with the app's key, from the file queue-auth-key in " +
+  "the app's data directory. Run the sender on the same data directory as the app " +
+  '(WORKFLOW_LOCAL_DATA_DIR) and on the same release. On a trusted network, set ' +
+  'WORKFLOW_QUEUE_AUTH=off on the app to accept other senders (refused while dynamic ' +
+  'workflows are enabled).';
+
 const DETACHED_ARRAYBUFFER_ERROR =
   'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
 const PROXY_HANDLER_DOCS_URL =
@@ -221,7 +262,25 @@ export function createRunGate() {
   };
 }
 
-export function createQueue(config: Partial<Config>): LocalQueue {
+/**
+ * The key a queue sends when no World gave it one (a queue created on its
+ * own, as unit tests do): the in-memory key of `@workflow/utils`, which the
+ * runtime checks when no World registered a key source.
+ */
+const inMemoryQueueAuthKey: QueueAuthKey = {
+  current: async () => getQueueAuthKey(),
+  reload: async () => getQueueAuthKey(),
+  restore: async () => {},
+};
+
+export function createQueue(
+  config: Partial<Config>,
+  options: {
+    /** The app's queue auth key, from `createWorld` (see `queue-auth-key.ts`). */
+    queueAuthKey?: QueueAuthKey;
+  } = {}
+): LocalQueue {
+  const queueAuthKey = options.queueAuthKey ?? inMemoryQueueAuthKey;
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
   // mixes transports mid-flight.
@@ -251,6 +310,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   // serves the workflow routes. Separate from `runGate`, which a sender holds
   // while it delivers to its own process's handler.
   const handlerRunGate = createRunGate();
+  // One line for the first queue auth refusal, then at most one a minute
+  // with a count, however many messages are refused.
+  const logAuthRefusal = createLogLimiter();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
   // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
@@ -259,6 +321,16 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   // isAbortError check in the delivery catch handler.
   const closeController = new AbortController();
   const closeSignal = closeController.signal;
+  /**
+   * The first delivery attempt of each message sent without a delay, until
+   * the attempt has an answer (or has failed). close() waits for them, up to
+   * CLOSE_FIRST_ATTEMPT_WAIT_MS, before it aborts: a short-lived sender (the
+   * CLI's `wf start`, a script) closes its World right after `start()`
+   * returns, and aborting a first attempt that has not reached the app yet
+   * loses the message (the queue is in memory), leaving the new run pending.
+   */
+  const firstAttempts = new Set<Promise<void>>();
+  let closing: Promise<void> | undefined;
 
   /**
    * holds inflight messages by idempotency key to ensure
@@ -293,6 +365,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
+    // A caller's headers never carry the auth header: only the send loop
+    // below sets it. Dropped case-insensitively, since a differently cased
+    // copy would be merged into the one the loop sets.
+    const callerHeaders = Object.fromEntries(
+      Object.entries(opts?.headers ?? {}).filter(
+        ([name]) => name.toLowerCase() !== QUEUE_AUTH_HEADER
+      )
+    );
     const messageId = MessageId.parse(`msg_${generateId()}`);
     // One message for its whole life: every delivery below, including the
     // `{ timeoutSeconds }` redeliveries, reuses this id and creation time.
@@ -319,6 +399,19 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       cleanup.push(() => {
         inflightMessages.delete(key);
       });
+    }
+
+    let firstAttemptDone = () => {};
+    if (!(opts?.delaySeconds && opts.delaySeconds > 0)) {
+      let resolve = () => {};
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      firstAttempts.add(promise);
+      firstAttemptDone = () => {
+        firstAttempts.delete(promise);
+        resolve();
+      };
     }
 
     (async () => {
@@ -376,6 +469,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       let handoffs = 0;
       // Deliveries whose handler answered with an error.
       let failedDeliveries = 0;
+      // Deliveries the runtime refused as unauthenticated (see
+      // `MAX_QUEUE_AUTH_REFUSALS`).
+      let authRefusals = 0;
+      // Refusals fixed by a new key, retried at once (see
+      // `MAX_UNCOUNTED_KEY_ROTATIONS`).
+      let keyRotations = 0;
       let releaseDelivery: (() => void) | undefined;
       const endDelivery = () => {
         releaseDelivery?.();
@@ -385,9 +484,16 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         for (let loop = 0; loop - handoffs < MAX_LOCAL_SAFETY_LIMIT; loop++) {
           releaseDelivery = await acquireDelivery();
           if (closeSignal.aborted) return;
+          // The app's key, which the runtime checks before the handler does
+          // any work (`queueAuthMode: 'loopback'`). Cached: no file read per
+          // delivery. Attached on every attempt and both transports, so
+          // health checks and in-process deliveries carry it too. A reader
+          // with no key file yet sends none, and is refused.
+          const sentKey = await queueAuthKey.current();
           const headers: Record<string, string> = {
-            ...opts?.headers,
+            ...callerHeaders,
             'content-type': 'application/json',
+            ...(sentKey !== undefined && { [QUEUE_AUTH_HEADER]: sentKey }),
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
             'x-vqs-message-attempt': String(delivery + 1 - handoffs),
@@ -428,9 +534,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     signal: closeSignal,
                   } as any);
             }
+            firstAttemptDone();
             delivery++;
             text = await response.text();
           } catch (err) {
+            firstAttemptDone();
             endDelivery();
             // A transport can fail before response headers or while consuming
             // the body. Both are transient: back off and retry the same
@@ -488,6 +596,63 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             return;
           }
 
+          if (isQueueAuthRefusal(response)) {
+            // The runtime's own queue auth refusal (marked, unlike a proxy's
+            // bare 401): the route holds a key other than the one sent.
+            // Another process of the app may have written a new key (the app
+            // restarted, a script called `start()`), so re-read the key file
+            // and, if it changed, retry at once with the new key. That
+            // refusal is not counted: the key rotated, which one of the
+            // app's processes does when it starts. Past
+            // MAX_UNCOUNTED_KEY_ROTATIONS such retries the key is changing
+            // on every attempt, and the refusal counts like any other, so
+            // the message cannot spin.
+            // Otherwise (the key did not change, or the uncounted rotations
+            // are used up) count it and retry a few
+            // times with the short backoff (the route re-reads the file on a
+            // mismatch too, rate-limited), then give the message up rather
+            // than retry it for hours. Retrying is safe: a refused delivery
+            // reached no handler and touched no run, so it is not counted as
+            // an attempt either. A given-up message's run is left as it is.
+            delivery--;
+            const reloadedKey = await queueAuthKey.reload();
+            if (
+              reloadedKey !== undefined &&
+              reloadedKey !== sentKey &&
+              keyRotations < MAX_UNCOUNTED_KEY_ROTATIONS
+            ) {
+              keyRotations++;
+              debugLog(
+                '[world-local]: delivery refused as unauthenticated; the queue auth key changed, retrying with it'
+              );
+              continue;
+            }
+            authRefusals++;
+            if (authRefusals < MAX_QUEUE_AUTH_REFUSALS) {
+              debugLog(
+                `[world-local]: delivery refused as unauthenticated (${authRefusals}/${MAX_QUEUE_AUTH_REFUSALS}), retrying`
+              );
+              await setTimeout(localRetryDelayMs(authRefusals), undefined, {
+                signal: closeSignal,
+              });
+              continue;
+            }
+            logAuthRefusal((refusedSinceLastLog) => {
+              console.error(
+                `[world-local] Queue delivery refused by the app as unauthenticated ${MAX_QUEUE_AUTH_REFUSALS} times; giving up the message`,
+                {
+                  queueName,
+                  messageId,
+                  ...(runId && { runId }),
+                  ...(stepId && { stepId }),
+                  refusedSinceLastLog,
+                  hint: QUEUE_AUTH_REFUSAL_HINT,
+                }
+              );
+            });
+            return;
+          }
+
           console.error(
             `[world-local] Queue message failed (attempt ${delivery}, HTTP ${response.status})`,
             {
@@ -496,6 +661,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               ...(runId && { runId }),
               ...(stepId && { stepId }),
               handlerError: text,
+              ...(response.status === 401 && {
+                hint:
+                  'A 401 without the Workflow runtime’s refusal marker, so not a queue auth ' +
+                  'refusal (perhaps a proxy or auth layer in front of the app). Retrying.',
+              }),
               ...(!directHandler &&
                 !routes.has(prefix) &&
                 (response.status === 400 || response.status === 404) && {
@@ -524,6 +694,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         );
       } finally {
+        firstAttemptDone();
         endDelivery();
       }
     })()
@@ -666,6 +837,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   };
 
   return {
+    // Every delivery carries the app's key from the data directory (see the
+    // send loop), and the runtime refuses one that does not.
+    queueAuthMode: 'loopback',
     queue,
     createQueueHandler,
     getDeploymentId,
@@ -675,13 +849,29 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     registerRoute(prefix: QueuePrefix, path: string) {
       routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
     },
-    async close() {
+    close() {
       // Idempotent: shutdown paths (CLI signal handlers, test teardown)
       // may close the queue more than once.
-      if (closeSignal.aborted) return;
-      closeController.abort();
-      if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
-      await httpAgent?.close();
+      closing ??= (async () => {
+        if (firstAttempts.size > 0) {
+          let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+          await Promise.race([
+            Promise.allSettled([...firstAttempts]),
+            new Promise<void>((resolve) => {
+              timer = globalThis.setTimeout(
+                resolve,
+                CLOSE_FIRST_ATTEMPT_WAIT_MS
+              );
+              timer.unref?.();
+            }),
+          ]);
+          globalThis.clearTimeout(timer);
+        }
+        closeController.abort();
+        if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
+        await httpAgent?.close();
+      })();
+      return closing;
     },
   };
 }

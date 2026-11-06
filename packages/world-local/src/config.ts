@@ -39,6 +39,16 @@ export type Config = {
    * Default is 10ms. Set to 0 for immediate flushing.
    */
   streamFlushIntervalMs?: number;
+  /**
+   * How this World handles the app's queue auth key, in
+   * `<dataDir>/queue-auth-key`. `'regenerate'` (the default, and what
+   * `getWorld()` creates in an app or in a script that calls `start()`)
+   * writes a new key when the World is created, before its queue sends
+   * anything. `'read'` only reads the key the app wrote and never creates or
+   * replaces it: for tools acting on a running app's data directory (the CLI,
+   * the web UI) and for world-postgres's internal Local World.
+   */
+  queueAuthKey?: 'regenerate' | 'read';
 };
 
 export const config = once<Config>(() => {

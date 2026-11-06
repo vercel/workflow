@@ -1,5 +1,13 @@
 # @workflow/world-local
 
+## 5.2.1
+
+### Patch Changes
+
+- [#5190](https://github.com/vercel/workflow/pull/5190) [`f98fca1`](https://github.com/vercel/workflow/commit/f98fca13f6659e222db7803511b5e92443e7db63) Thanks [@prha](https://github.com/prha)! - Take over a Hook token claim lock left by a dead process at once, instead of after 30 seconds, and create claim and in-band fence locks with their owner recorded in one atomic step. Continue to recognize directory locks written by earlier world-local releases.
+
+- [#5189](https://github.com/vercel/workflow/pull/5189) [`a4123ba`](https://github.com/vercel/workflow/commit/a4123baf9768084f4b31604d609672392cb43c84) Thanks [@prha](https://github.com/prha)! - Create a hook whose interrupted `hook_created` left its token claim naming an event slot another event has since taken, instead of reporting it as already created while no creation exists.
+
 ## 5.2.0
 
 ### Minor Changes

@@ -2,6 +2,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -164,6 +165,85 @@ describe('ensureDataDir', () => {
     } catch {
       // Ignore cleanup errors
     }
+  });
+
+  describe('concurrent checks', () => {
+    // Real file operations. On Windows a probe file two calls share fails one
+    // of them with EPERM (see init-write-probe.test.ts for that rule on every
+    // OS); here they must simply all succeed and leave no probe behind.
+    it('20 concurrent checks of one directory all succeed', async () => {
+      const dataDir = path.join(testBaseDir, 'shared');
+      await expect(
+        Promise.all(Array.from({ length: 20 }, () => ensureDataDir(dataDir)))
+      ).resolves.toHaveLength(20);
+      expect(
+        readdirSync(dataDir).filter((name) =>
+          name.startsWith('.workflow-write-test-')
+        )
+      ).toEqual([]);
+    });
+
+    it('createWorld() followed at once by start() succeeds', async () => {
+      const { createWorld } = await import('./index.js');
+      const dataDir = path.join(testBaseDir, 'world');
+      const world = createWorld({ dataDir });
+      try {
+        await expect(world.start?.()).resolves.toBeUndefined();
+        expect(existsSync(path.join(dataDir, 'queue-auth-key'))).toBe(true);
+      } finally {
+        await world.close?.();
+      }
+    });
+  });
+
+  describe('.gitignore', () => {
+    const gitignore = (dir: string) => path.join(dir, '.gitignore');
+
+    it('writes one ignoring everything into a directory it creates', async () => {
+      const dataDir = path.join(testBaseDir, 'new-data-dir');
+
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('*\n');
+    });
+
+    it('writes one into an existing directory that has none', async () => {
+      // A data directory from a release that wrote no `.gitignore`.
+      const dataDir = path.join(testBaseDir, 'existing');
+      mkdirSync(path.join(dataDir, 'runs'), { recursive: true });
+
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('*\n');
+    });
+
+    it('never overwrites an existing one', async () => {
+      const dataDir = path.join(testBaseDir, 'existing');
+      mkdirSync(dataDir, { recursive: true });
+      writeFileSync(gitignore(dataDir), 'mine\n');
+
+      await ensureDataDir(dataDir);
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('mine\n');
+    });
+
+    it('writes it again after it is deleted', async () => {
+      const dataDir = path.join(testBaseDir, 'existing');
+      await ensureDataDir(dataDir);
+      rmSync(gitignore(dataDir));
+
+      await ensureDataDir(dataDir);
+
+      expect(readFileSync(gitignore(dataDir), 'utf8')).toBe('*\n');
+    });
+
+    it('does not fail when the path is taken by a directory', async () => {
+      const dataDir = path.join(testBaseDir, 'existing');
+      mkdirSync(gitignore(dataDir), { recursive: true });
+
+      await expect(ensureDataDir(dataDir)).resolves.toBeUndefined();
+    });
   });
 
   describe('directory creation', () => {

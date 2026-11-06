@@ -537,6 +537,9 @@ export async function handleSuspension({
       item.type === 'step' &&
       !inFlightStepCorrelationIds?.has(item.correlationId)
   );
+  // At terminal drain a system hook that was never created is not needed:
+  // nothing will resume it once the run ends. An abort that was requested
+  // still has to be recorded, so its hook is created and resumed.
   const allHookItems = suspension.items.filter(
     (item): item is HookInvocationQueueItem =>
       item.type === 'hook' &&

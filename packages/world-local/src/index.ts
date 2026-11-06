@@ -17,6 +17,7 @@ import {
   releaseOrphanedSteps,
 } from './orphaned-steps.js';
 import { createQueue, type DirectHandler } from './queue.js';
+import { createQueueAuthKey } from './queue-auth-key.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -72,6 +73,9 @@ export type LocalWorld = World & {
  * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
  * @param args.tag - Optional tag (e.g., `vitest-0`) scoping the runs and
  *   streams this World writes; `clear()` only deletes this tag's data.
+ * @param args.queueAuthKey - `'regenerate'` (default) writes a new queue auth key to the data
+ *   directory when the World is created; `'read'` only reads the key a running app wrote (the
+ *   CLI, the web UI). See `Config.queueAuthKey`.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
  * @throws {DataDirVersionError} If the data directory version is incompatible
  */
@@ -84,7 +88,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   warnIfRunningInVercelDeployment(mergedConfig.dataDir);
   const tag = mergedConfig.tag;
-  const queue = createQueue(mergedConfig);
+  // Before the queue, which waits for it: a regenerating World writes the
+  // app's new key before it sends anything.
+  const queueAuthKey = createQueueAuthKey(
+    mergedConfig.dataDir,
+    mergedConfig.queueAuthKey ?? 'regenerate'
+  );
+  const queue = createQueue(mergedConfig, { queueAuthKey });
   const { clearCache: _clearStorageCache, ...storage } = createStorage(
     mergedConfig.dataDir,
     tag
@@ -124,11 +134,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       inBandFence: capabilities.inBandFence,
     }),
     capabilities,
-    queue: queue.queue,
-    createQueueHandler: queue.createQueueHandler,
-    getDeploymentId: queue.getDeploymentId,
-    registerHandler: queue.registerHandler,
-    registerRoute: queue.registerRoute,
+    // The queue, its handlers and `queueAuthMode: 'loopback'`; `close()` is
+    // the World's own, below.
+    ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
       ...streamer,
@@ -221,6 +229,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     },
     async close() {
       await queue.close();
+      // The key is written behind createWorld(): never leave that write in
+      // flight past close() (a caller may remove the directory next).
+      await queueAuthKey.current().catch(() => {});
       // Other Worlds on the data directory reopen it on their next use.
       databaseFor(mergedConfig.dataDir).close();
     },
