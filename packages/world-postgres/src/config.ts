@@ -5,6 +5,14 @@ type PgConnectionConfig =
   | { pool: Pool; connectionString?: undefined; maxPoolSize?: undefined };
 
 export type PostgresWorldConfig = PgConnectionConfig & {
+  /**
+   * Prefix of the Graphile Worker tasks this World enqueues to and claims
+   * from (`${jobPrefix}flows`). Apps sharing a database keep their jobs apart
+   * by using distinct prefixes. Each run is stamped with the prefix of the
+   * World that created it, and `start()` re-enqueues only the active runs
+   * stamped with this World's prefix (plus unstamped runs, created before
+   * the stamp existed). Defaults to `workflow_`.
+   */
   jobPrefix?: string;
   /**
    * namespace for queue topic prefixes (e.g. 'custom' → '__custom_wkf_workflow_').
@@ -18,16 +26,20 @@ export type PostgresWorldConfig = PgConnectionConfig & {
   enableInvoke?: boolean;
   /**
    * Seconds a running delivery's Graphile job lock may go unrenewed before
-   * another process releases the job for redelivery. A delivery renews its
-   * lock while it runs, so this bounds how long a job whose process died stays
-   * locked. Use the same value on every process that shares the database, and
-   * keep it well above the longest time a process can go without running its
-   * timers (a blocked event loop) or getting a pool connection. `0` turns
-   * renewal and the release of stale locks off, which leaves recovery to
-   * Graphile Worker's fixed 4 hour reset and to restarts.
-   * Defaults to WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS, then `0` (off).
-   * 30 is a good value when more than one process shares the database; turn
-   * it on once every process runs a version that renews its locks.
+   * another process releases any of this World's jobs for redelivery. Use the
+   * same value on every process that shares the database, keep it well above
+   * the longest time a process can go without running its timers (a blocked
+   * event loop) or getting a pool connection, and set it only once every
+   * process runs a version that renews its locks. 30 is a good value when
+   * more than one process shares the database.
+   *
+   * Defaults to WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS. When neither is
+   * set, every delivery still renews its lock and registers its worker as
+   * renewing (`workflow.workflow_job_lock_holders`, migration 0030), and only
+   * the jobs of a spec 9 run's named queue whose holder registered are
+   * released, after 300 seconds unrenewed; other jobs keep Graphile Worker's
+   * fixed 4 hour reset. `0` turns renewal and the release of stale locks off,
+   * which leaves recovery to that reset and to restarts.
    */
   jobLockStaleSeconds?: number;
   /**
@@ -43,3 +55,17 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    */
   streamFlushIntervalMs?: number;
 };
+
+const DEFAULT_JOB_PREFIX = 'workflow_';
+
+/**
+ * The effective `jobPrefix`: the one the queue builds its Graphile task names
+ * from, and the one stamped on the runs this World creates. Both must come
+ * from here, so that recovery only ever re-enqueues a run into the task whose
+ * runner claims it.
+ */
+export function resolveJobPrefix(
+  config: Pick<PostgresWorldConfig, 'jobPrefix'>
+): string {
+  return config.jobPrefix || DEFAULT_JOB_PREFIX;
+}

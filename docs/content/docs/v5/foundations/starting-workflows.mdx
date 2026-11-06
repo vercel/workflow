@@ -100,16 +100,12 @@ export async function parentWorkflow(inputValue: number) {
 }
 ```
 
-When you call `start()` inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned `Run` object works as it does outside workflows. Properties such as `.runId`, `.status`, and `.returnValue`, and methods such as `.cancel()`, are all available. Each property access or method call executes as a separate step.
+When you call `start()` inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned `Run` object works as it does outside workflows. Properties such as `.runId`, `.status`, and `.returnValue`, and methods such as `.cancel()`, are all available.
 
-If the child run fails or is canceled, `await childRun.returnValue` throws [`WorkflowRunFailedError`](/docs/api-reference/workflow-errors/workflow-run-failed-error) or [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) on the first attempt.
+Awaiting `childRun.returnValue` suspends the parent on a system hook that the child resumes when it finishes, so the parent waits without polling, uses no compute while it waits, and resumes as soon as the child is done. A child canceled without going through the SDK is noticed later, at the parent's next safety-net check; see [Cancellations that bypass the SDK](/cookbook/advanced/child-workflows#cancellations-that-bypass-the-sdk). If the child run fails or is canceled, `await childRun.returnValue` throws [`WorkflowRunFailedError`](/docs/api-reference/workflow-errors/workflow-run-failed-error) or [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) on the first attempt.
 
 <Callout type="info">
-Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.returnValue`) triggers a workflow step. This means each access is recorded in the event log and replayed deterministically.
-</Callout>
-
-<Callout type="warn">
-Awaiting `returnValue` polls the child run every second, and the polling step holds its worker slot open until the child finishes. Size worker-based Worlds to cover the peak number of these polls in flight. If the child workflow is long-running, spawn it without awaiting `returnValue` and have it resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
+Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.returnValue`) is recorded in the event log and replayed deterministically. Most accessors run as one step; `returnValue` records the system hook and the steps that read the child's result.
 </Callout>
 
 ### Fire and forget

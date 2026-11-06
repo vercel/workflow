@@ -2,6 +2,7 @@ import {
   type Event,
   type Hook,
   type SerializedData,
+  type StartHook,
   type Step,
   StepStatusSchema,
   type Wait,
@@ -86,6 +87,9 @@ type DrizzlishOfType<T extends object> = {
  */
 export type SerializedContent = any[];
 
+/** The start Hook a run row keeps: `run.startHook`, without its metadata. */
+export type RunStartHook = Omit<StartHook, 'metadata'> & { hookId: string };
+
 export const runs = schema.table(
   'workflow_runs',
   {
@@ -148,6 +152,25 @@ export const runs = schema.table(
      * started on. Null on every static run.
      */
     dynamicWorkflowCode: Cbor<SerializedData>()('dynamic_workflow_code_cbor'),
+    /**
+     * The `jobPrefix` of the World that created the run: the prefix of the
+     * Graphile task whose runner claims the run's jobs. Startup recovery
+     * re-enqueues only the active runs stamped with its own prefix, so apps
+     * sharing a database do not drive each other's runs. Internal routing
+     * metadata, stripped from the run returned to callers.
+     *
+     * Null on runs created before this column existed, and on runs written by
+     * storage constructed without a World. Every World recovers those, as
+     * before.
+     */
+    jobPrefix: varchar('job_prefix'),
+    /**
+     * The start Hook this run was admitted with through `start({ experimental_hook })`,
+     * without its metadata (which lives on the start Hook's own row in
+     * `workflow_hooks`). Echo only: the Hook row is what holds the token.
+     * Null on every other run.
+     */
+    startHook: Cbor<RunStartHook>()('start_hook_cbor'),
     createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
     updatedAt: timestamptz('updated_at')
       .default(sql`now()`)
@@ -160,7 +183,7 @@ export const runs = schema.table(
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
       'input' | 'output' | 'executionContext' | 'error'
-    > & { dynamicWorkflowCode?: SerializedData }
+    > & { dynamicWorkflowCode?: SerializedData; jobPrefix?: string }
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
 );
@@ -241,6 +264,32 @@ export const eventSlots = schema.table('workflow_event_slots', {
   seqInBand: integer('seq_in_band').notNull().default(1),
 });
 
+/**
+ * One immutable `start({ experimental_hook })` admission decision per candidate run (see
+ * `start-hook.ts` in @workflow/world, and `../start-hook.ts` here).
+ *
+ * - `accepted` rows are written in the same transaction as the run they
+ *   admit and its start Hook (an ordinary row in `workflow_hooks`).
+ * - `rejected` rows record the owner the candidate lost to, so a later
+ *   attempt for the same candidate answers the same `conflicting_run_id`
+ *   even after the owner has released the token.
+ *
+ * A decision only matters inside its candidate's 24h window: past it, every
+ * attempt for the candidate is refused regardless. Admissions delete rows
+ * older than that as they go (`created_at` index).
+ */
+export const startHookAdmissions = schema.table(
+  'workflow_start_hook_admissions',
+  {
+    runId: varchar('run_id').primaryKey(),
+    token: varchar('token').notNull(),
+    decision: varchar('decision').$type<'accepted' | 'rejected'>().notNull(),
+    conflictingRunId: varchar('conflicting_run_id'),
+    createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+  },
+  (tb) => [index().on(tb.createdAt)]
+);
+
 export const steps = schema.table(
   'workflow_steps',
   {
@@ -311,10 +360,27 @@ export const hooks = schema.table(
     claimedFrom: Cbor<NonNullable<Hook['claimedFrom']>>()('claimed_from'),
     // `resumeCapabilities` is deliberately response-only (attested fresh on
     // each by-token lookup, never persisted), so it must not become a column.
+    /**
+     * This row's claim on `token` is unique: at most one row per token has
+     * it (`workflow_hooks_token_claim_unique`), so two `start({ experimental_hook })`
+     * admissions racing for a token conflict on the insert instead of both
+     * winning, and an admission racing another run's `createHook` leaves
+     * one owner. Every Hook written since migration 0028 sets it; rows
+     * written before it do not, so the index cannot fail on existing data.
+     */
+    claimsToken: boolean('claims_token').notNull().default(false),
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'> & {
+      claimsToken?: boolean;
+    }
   >,
-  (tb) => [index().on(tb.runId), index().on(tb.token)]
+  (tb) => [
+    index().on(tb.runId),
+    index().on(tb.token),
+    uniqueIndex('workflow_hooks_token_claim_unique')
+      .on(tb.token)
+      .where(sql`${tb.claimsToken}`),
+  ]
 );
 
 export const waits = schema.table(
@@ -380,6 +446,18 @@ export const snapshots = schema.table('workflow_snapshots', {
   data: bytea('data').notNull(),
   eventsCursor: varchar('events_cursor'),
   createdAt: timestamptz('created_at').default(sql`now()`).notNull(),
+});
+
+/**
+ * Graphile workers of processes that renew their job locks (`job-lease.ts`).
+ * The default stale-lock sweep releases a per-run named-queue job only when
+ * its holder is listed here, so a process on an earlier version, which
+ * neither renews nor fences its acknowledgement, is never released under.
+ * `renewed_at` only ages out the rows of workers that hold no job.
+ */
+export const jobLockHolders = schema.table('workflow_job_lock_holders', {
+  workerId: text('worker_id').primaryKey(),
+  renewedAt: timestamptz('renewed_at').default(sql`now()`).notNull(),
 });
 
 export const streams = schema.table(

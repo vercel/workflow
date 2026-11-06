@@ -45,6 +45,13 @@ The runtime reads these variables where workflows execute. Set them on the deplo
 - The kill switch for the wait. Worlds that do not implement waiting are already on the interval path, so this changes nothing for them.
 - Read by the process awaiting `Run.returnValue`, like the interval above.
 
+### `WORKFLOW_CHILD_RUN_COMPLETION_HOOK`
+
+- Default: enabled
+- Inside a workflow, awaiting `returnValue` of a run that workflow started suspends the parent on a system hook the child resumes when it finishes, instead of polling. See [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits).
+- Set to `0` or `false` to stop `start()` from marking new child runs for the hook, so their parents poll `returnValue` inside a step on the variables above.
+- Read by the deployment calling `start()` from a workflow. A child already marked keeps resuming its parent, so a parent waiting on it is never stranded.
+
 ## Replay and queue delivery
 
 ### `WORKFLOW_REPLAY_TIMEOUT_MS`
@@ -67,6 +74,19 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `48`
 - Delivery attempts before a run or step is failed gracefully.
 - Can only be lowered. Workflow calibrates the default to record failure before the queue expires the message.
+
+### `WORKFLOW_QUEUE_AUTH`
+
+- Default: `on`
+- Applies to the [Local World](/worlds/local), and to any World that declares `queueAuthMode: 'loopback'`. A World that declares nothing is not checked; the runtime logs a warning when its flow route starts (once, then at most once a minute when routes restart). With `on`, the Workflow SDK's flow route (`POST /.well-known/workflow/v1/flow`) accepts only deliveries sent by the app's own processes. A queue consumer's own route (built with `world.createQueueHandler()` and registered with `registerRoute()`) is not checked; it must authenticate deliveries itself, or sit behind the network edge.
+- Every delivery the Local World sends carries the app's queue key. The route refuses a request that does not carry the key with a `401`, before it reads the body, and does not touch any run. A request from outside the app therefore cannot start a run, fail a running one, re-trigger a step, or replay a delivery.
+- The key is a random value in the file `queue-auth-key` in the Local World's data directory, readable only by its owner (Windows does not enforce that the same way). The app writes a new key each time it starts, before it sends any delivery, and the data directory gets a `.gitignore` that keeps the key out of git. See [the Local World's data directory](/worlds/local#data-directory-layout).
+- The usual setups need nothing: the app's own queue, the CLI, the web UI, a script calling `start()` or `resumeHook()`, and several app processes all use the same data directory, so they send a key the app accepts. Point the CLI and the web UI at the app's data directory (`WORKFLOW_LOCAL_DATA_DIR`). Set `off` on the app only when a delivery comes from a process that cannot read that directory.
+- `off` accepts unauthenticated deliveries. Use it only for local development or on a trusted network. The runtime logs a warning when a route starts with `off`.
+- `off` is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`). Both variables are read on every delivery, so the check comes back on as soon as dynamic workflows are enabled.
+- The `401` is marked as the runtime's own refusal (an `x-workflow-auth-refused: 1` header). The Local World's queue then reads the key file again: if another process wrote a new key, it retries at once with that key. Otherwise it retries a few times with its short backoff, then logs one line and gives the message up. A refused delivery reaches no handler and touches no run, so retrying it is safe and it does not count as an attempt. A given-up message's run is left as it was. A `401` without the marker, for example from a proxy, gets the queue's normal retries.
+- Each refusal increments the OpenTelemetry counter `workflow.queue.delivery.refused` (when a meter provider is registered). Its attributes are `workflow.world`, `http.route`, and `workflow.queue.refusal_reason` (`no-key` or `wrong-key`). A refusal right after the app, the CLI or a script starts is expected: it wrote a new key, and the sender reloads it and retries on its own. Alert on refusals that persist, which mean forged requests or a sender that cannot get the app's key. The refusal log is rate-limited to one line a minute per process; the counter counts every refusal.
+- Any value other than `off` leaves the check on. Worlds that declare `queueAuthMode: 'skip'` are not checked and are not affected. The [Vercel World](/worlds/vercel) delivers to a route only Vercel Queues can trigger (see its [security section](/worlds/vercel#security)). The [Postgres World](/worlds/postgres) relies on its database credentials to control who can enqueue, and its flow route accepts any well-formed request, so protect that route at the network edge, as its [security section](/worlds/postgres#protect-the-queue-route) describes.
 
 ### `WORKFLOW_MAX_EVENTS`
 
@@ -169,6 +189,18 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Clamp: `1` to `16`
 - Number of newly-created steps one invocation runs inline in parallel before queueing the rest.
 - Steps started beside an awaited hook registration (`hook.getConflict()`) count against the same cap. They are held for the pass that observes the registration and then run inline on it, so the registration still precedes them; only the steps past the cap are queued.
+
+### `WORKFLOW_INLINE_EARLY_ADVANCE`
+
+- Default: enabled
+- Spec 8 runs on the Node.js VM engine only (not QuickJS, and not spec 9 runs). When one inline step of a parallel batch completes or fails while its siblings are still running, the invocation replays the workflow right away instead of waiting for the slowest sibling. A branch of a `Promise.all` can then start its next step without waiting for the other branches.
+- Steps still running stay owned by the invocation that started them. They count against `WORKFLOW_MAX_INLINE_STEPS`, so fewer new steps run inline while they run. A branch that fans out while its siblings still run queues the steps past the remaining slots as background steps.
+- When the workflow returns or throws while one of its inline steps is still running (for example a `Promise.race` loser), the run completes or fails right away. That step gets only its current attempt: the invocation lets its body finish, and the bundled Worlds record its `step_completed`, `step_failed` or `step_retrying` after the run's terminal event, but a retry is never run, so a step whose attempt fails retryably stays pending. This matches what happens when a `sleep()` or hook wins a race. `run_completed` or `run_failed` is therefore not always the last event of a run. With this setting off, the run waits for the loser and its retries. The `workflow.inline.running_at_terminal` and `workflow.inline.discarded_outcomes` span attributes, and an info log, report these steps.
+- A step that retries, is throttled, or leaves stream writes unflushed waits for its whole batch, as with this setting off.
+- Branches whose steps were queued because the batch exceeded `WORKFLOW_MAX_INLINE_STEPS` still advance only when the last pending step of the batch completes.
+- When the invocation hands the run off (its replay budget or inline window is spent), it waits for every inline step still running first, so branches advance in lockstep at that point, as with this setting off. An info log marks the hand-off.
+- `workflow.inline.early_advances` counts early replays and `workflow.inline.slots_held_back` counts steps queued because running steps held the inline slots.
+- Set `0` or `false` to wait for every inline step of a batch before replaying.
 
 ### `WORKFLOW_TURBO`
 
@@ -420,3 +452,54 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Clamp-down only: it never raises the World's limit, and it applies even when the World supplies none. With no World limit and no override, nothing is enforced.
 - The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).
 - QuickJS runs with snapshotting are exempt from the World's default limit, but this override still applies to them.
+
+## Spec 9 (experimental)
+
+Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below. See [Settings and behaviour on spec 9 runs](/docs/changelog/spec-9#settings-and-behaviour-on-spec-9-runs) for each one in full.
+
+### `WORKFLOW_SPEC_VERSION`
+
+- Default: unset. New runs use spec version 8, or 6 with [`WORKFLOW_SEALED_LOG=0`](#workflow_sealed_log), which this setting takes precedence over.
+- `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
+- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist. See [Opting in](/docs/changelog/spec-9#opting-in).
+
+### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
+
+- Default: `2000`
+- Log-tail poll interval of a busy orchestrator while no live event feed covers the run. `0` turns polling off.
+
+### `WORKFLOW_ORCHESTRATOR_FEED_POLL_INTERVAL_MS`
+
+- Default: `10000`
+- Log-tail poll interval while the World's live event feed is up.
+
+### `WORKFLOW_ORCHESTRATOR_LINGER_MS`
+
+- Default: `30000`
+- How long an orchestrator with nothing left to run stays live on the event feed while the run waits on a background step. `0` turns it off, for hooks too.
+
+### `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`
+
+- Default: `5000`, and never more than [`WORKFLOW_ORCHESTRATOR_LINGER_MS`](#workflow_orchestrator_linger_ms)
+- How long an orchestrator with nothing left to run stays live on the event feed while the run waits only on open hooks. Any hook that is created and not disposed counts, however rarely it is resumed. `0` turns it off.
+
+### `WORKFLOW_ORCHESTRATOR_READ_TIMEOUT_MS`
+
+- Default: `5000`
+- Deadline for one incremental read of the event log before the orchestrator sends it again. `0` turns the deadline off.
+
+### `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS`
+
+- Default: `60000`
+- How long before the inline window ends the orchestrator stops starting inline steps.
+
+### `WORKFLOW_OPTIMISTIC_BACKGROUND_START`
+
+- Default: unset
+- `1` or `true` starts a background step's body before its `step_started` commits. Use only when background step bodies are idempotent.
+
+### `WORKFLOW_RUN_AHEAD_DEPTH`
+
+- Default: `10`
+- Clamp: `0` to `16`
+- How many inline step outcomes may be unconfirmed at once while the orchestrator runs ahead of its writes. `0` disables run-ahead.

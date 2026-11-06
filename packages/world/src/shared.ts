@@ -25,15 +25,13 @@ export interface PaginationOptions {
   sortOrder?: 'asc' | 'desc';
 }
 
-export const PageInfoSchema = z.compile(
-  z.object({
-    currentLookbackDays: z.number(),
-    maxLookbackDays: z.number(),
-    currentWindowStart: z.coerce.date(),
-    maxWindowStart: z.coerce.date(),
-    upgradeAvailable: z.boolean(),
-  })
-);
+export const PageInfoSchema = z.object({
+  currentLookbackDays: z.number(),
+  maxLookbackDays: z.number(),
+  currentWindowStart: z.coerce.date(),
+  maxWindowStart: z.coerce.date(),
+  upgradeAvailable: z.boolean(),
+});
 
 export type PageInfo = z.infer<typeof PageInfoSchema>;
 
@@ -42,15 +40,13 @@ export type PageInfo = z.infer<typeof PageInfoSchema>;
 // deduplicate those across copies. Stores schemas only, never page bodies.
 const paginatedResponseSchemas = new WeakMap<z.ZodTypeAny, z.ZodTypeAny>();
 
-function compilePaginatedResponse<T extends z.ZodTypeAny>(dataSchema: T) {
-  return z.compile(
-    z.object({
-      data: z.array(dataSchema),
-      cursor: z.string().nullable(),
-      hasMore: z.boolean(),
-      pageInfo: PageInfoSchema.optional(),
-    })
-  );
+function buildPaginatedResponse<T extends z.ZodTypeAny>(dataSchema: T) {
+  return z.object({
+    data: z.array(dataSchema),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+    pageInfo: PageInfoSchema.optional(),
+  });
 }
 
 // Shared schema for paginated responses
@@ -58,10 +54,10 @@ export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
   dataSchema: T
 ) => {
   const cached = paginatedResponseSchemas.get(dataSchema) as
-    | ReturnType<typeof compilePaginatedResponse<T>>
+    | ReturnType<typeof buildPaginatedResponse<T>>
     | undefined;
   if (cached) return cached;
-  const schema = compilePaginatedResponse(dataSchema);
+  const schema = buildPaginatedResponse(dataSchema);
   paginatedResponseSchemas.set(dataSchema, schema);
   return schema;
 };
@@ -113,13 +109,11 @@ export function entityResolveData<T extends EventsResolveData | undefined>(
 /**
  * A standard error schema shape for propogating errors from runs and steps
  */
-export const StructuredErrorSchema = z.compile(
-  z.object({
-    message: z.string(),
-    stack: z.string().optional(),
-    code: z.string().optional(), // Populated with RunErrorCode values (USER_ERROR, RUNTIME_ERROR, etc.) for run_failed events
-  })
-);
+export const StructuredErrorSchema = z.object({
+  message: z.string(),
+  stack: z.string().optional(),
+  code: z.string().optional(), // Populated with RunErrorCode values (USER_ERROR, RUNTIME_ERROR, etc.) for run_failed events
+});
 
 export type StructuredError = z.infer<typeof StructuredErrorSchema>;
 

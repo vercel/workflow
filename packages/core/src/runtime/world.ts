@@ -184,6 +184,7 @@ export const createWorld = async (): Promise<World> => {
   } catch {
     const resolvedPath = resolveModulePath(targetWorld);
     mod = await import(
+      /* @vite-ignore */
       /* webpackIgnore: true */
       /* turbopackIgnore: true */
       resolvedPath

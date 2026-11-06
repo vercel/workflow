@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
 import type { Run } from '@workflow/core/runtime';
-import { setWorld } from '@workflow/core/runtime';
+import { pendingWakeUpWaits, setWorld } from '@workflow/core/runtime';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Event, Hook } from '@workflow/world';
 import {
@@ -364,9 +364,14 @@ export async function waitForSleep(
         .map((e) => e.correlationId)
     );
 
+    // A sleep `run.wakeUp()` already named is being completed by the run's
+    // orchestrator; the next pending sleep is another one.
+    const wokenIds = pendingWakeUpWaits(run.runId);
     const pendingSleep = events.find(
       (e) =>
-        e.eventType === 'wait_created' && !waitCompletedIds.has(e.correlationId)
+        e.eventType === 'wait_created' &&
+        !waitCompletedIds.has(e.correlationId) &&
+        !wokenIds.has(e.correlationId)
     );
 
     if (pendingSleep?.correlationId) return pendingSleep.correlationId;

@@ -1,6 +1,6 @@
 {
   "name": "@workflow/rollup",
-  "version": "5.0.6",
+  "version": "5.0.8",
   "description": "Rollup plugin for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -35,7 +35,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "rollup": "^4.62.2",
+    "rollup": "^4.67.4",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

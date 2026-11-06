@@ -12,14 +12,12 @@ import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import { Mutex } from './util.js';
 
-const StreamPublishMessage = z.compile(
-  z.object({
-    streamId: z.string(),
-    chunkId: z.templateLiteral(['chnk_', z.string()]),
-    firstChunkId: z.templateLiteral(['chnk_', z.string()]).optional(),
-    rangeFollows: z.literal(true).optional(),
-  })
-);
+const StreamPublishMessage = z.object({
+  streamId: z.string(),
+  chunkId: z.templateLiteral(['chnk_', z.string()]),
+  firstChunkId: z.templateLiteral(['chnk_', z.string()]).optional(),
+  rangeFollows: z.literal(true).optional(),
+});
 
 interface StreamChunkEvent {
   id: `chnk_${string}`;

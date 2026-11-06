@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +25,7 @@ class TestBuilder extends BaseBuilder {
     workflowBundlePath: string;
     manifestDir: string;
     manifest: WorkflowManifest;
+    manifestFileName?: string;
   }): Promise<string | undefined> {
     return this.createManifest(args);
   }
@@ -132,5 +139,22 @@ describe('base builder logging', () => {
     expect(logSpy.mock.calls[1]?.[0]).toMatch(
       /^✓ Compiled workflows in \d+(?:ms|\.\d+s) \(2 steps, 1 workflow\)$/
     );
+  });
+
+  it('writes the manifest under the requested file name', async () => {
+    const workflowBundlePath = join(testRoot, 'workflow.js');
+    const manifestDir = join(testRoot, 'src/pages/.well-known/workflow/v1');
+    writeFileSync(workflowBundlePath, '', 'utf-8');
+
+    const manifestJson = await createBuilder(testRoot).createTestManifest({
+      workflowBundlePath,
+      manifestDir,
+      manifest: { steps: {}, workflows: {} },
+      manifestFileName: '_manifest.json',
+    });
+
+    expect(manifestJson).toBeDefined();
+    expect(existsSync(join(manifestDir, '_manifest.json'))).toBe(true);
+    expect(existsSync(join(manifestDir, 'manifest.json'))).toBe(false);
   });
 });
