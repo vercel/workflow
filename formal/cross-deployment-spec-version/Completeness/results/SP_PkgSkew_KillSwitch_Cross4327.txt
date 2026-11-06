@@ -1,0 +1,56 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 129 and seed 301105533201514693 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 59202] (Linux 6.18.49 amd64, Amazon.com Inc. 21.0.12 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/SharedPool.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/SP_PkgSkew_KillSwitch_Cross4327/Naturals.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/SP_PkgSkew_KillSwitch_Cross4327/FiniteSets.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/SP_PkgSkew_KillSwitch_Cross4327/TLC.tla
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/states/SP_PkgSkew_KillSwitch_Cross4327/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SharedPool
+Starting... (2026-10-28 19:09:03)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-10-28 19:09:03.
+Error: Invariant SafeExec is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ phase = "mixed"
+/\ bad = FALSE
+/\ att = 0
+/\ stamp = 0
+/\ status = "init"
+/\ sph = "none"
+/\ rolled = FALSE
+/\ seen = {"mixed"}
+/\ seg = 0
+
+State 2: <Start line 80, col 10 to line 83, col 55 of module SharedPool>
+/\ phase = "mixed"
+/\ bad = FALSE
+/\ att = 1
+/\ stamp = 8
+/\ status = "running"
+/\ sph = "mixed"
+/\ rolled = FALSE
+/\ seen = {"mixed"}
+/\ seg = 0
+
+State 3: <Deliver line 86, col 3 to line 97, col 43 of module SharedPool>
+/\ phase = "mixed"
+/\ bad = TRUE
+/\ att = 1
+/\ stamp = 8
+/\ status = "running"
+/\ sph = "mixed"
+/\ rolled = FALSE
+/\ seen = {"mixed"}
+/\ seg = 1
+
+25 states generated, 24 distinct states found, 12 states left on queue.
+The depth of the complete state graph search is 4.
+The average outdegree of the complete state graph is 2 (minimum is 1, the maximum 3 and the 95th percentile is 3).
+Finished in 00s at (2026-10-28 19:09:03)
