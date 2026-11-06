@@ -44,9 +44,11 @@ function gate() {
 const FAILING_STEP = 'retryHandoffFailingStep';
 /** Succeeds once released. */
 const SIBLING_STEP = 'retryHandoffSiblingStep';
+/** Succeeds at once. */
+const FAST_STEP = 'retryHandoffFastStep';
 let failingGate = gate();
 let siblingGate = gate();
-const calls = { [FAILING_STEP]: 0, [SIBLING_STEP]: 0 };
+const calls = { [FAILING_STEP]: 0, [SIBLING_STEP]: 0, [FAST_STEP]: 0 };
 registerStepFunction(FAILING_STEP, async () => {
   calls[FAILING_STEP]++;
   if (calls[FAILING_STEP] > 1) return 'ok';
@@ -58,15 +60,23 @@ registerStepFunction(SIBLING_STEP, async () => {
   await siblingGate.opened;
   return 'ok';
 });
+registerStepFunction(FAST_STEP, async () => {
+  calls[FAST_STEP]++;
+  return 'ok';
+});
 
 /**
  * A fake World whose `queue` folds a keyed publish into a message still in
  * flight under that key, as world-local does, and one orchestrator delivery
  * that starts `steps` inline (their bodies hold on their gates). Then a queued
  * delivery of the failing step, keyed in flight under its dispatch key,
- * arrives and waits on the inline execution.
+ * arrives and waits on the inline execution. `body` is the workflow's body
+ * over the steps `s0`, `s1`, ... (by default, all of them in parallel).
  */
-async function startRaceOnFailingStep(steps: string[]) {
+async function startRaceOnFailingStep(
+  steps: string[],
+  body = `return await Promise.all([${steps.map((_, i) => `s${i}()`).join(', ')}]);`
+) {
   const runId = `wrun_retry_handoff_${Date.now()}`;
   const startedAt = new Date('2024-01-01T00:00:00.000Z');
   const workflowRun: WorkflowRun = {
@@ -173,7 +183,7 @@ async function startRaceOnFailingStep(steps: string[]) {
   const entry = workflowEntrypoint(`
     ${declarations}
     async function workflow() {
-      return await Promise.all([${steps.map((_, i) => `s${i}()`).join(', ')}]);
+      ${body}
     };globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set("workflow", workflow);`);
   await entry(new Request('https://example.test'));
@@ -238,6 +248,7 @@ describe('a queued delivery waiting on a failing inline attempt', () => {
     vi.restoreAllMocks();
     calls[FAILING_STEP] = 0;
     calls[SIBLING_STEP] = 0;
+    calls[FAST_STEP] = 0;
     failingGate = gate();
     siblingGate = gate();
   });
@@ -302,6 +313,51 @@ describe('a queued delivery waiting on a failing inline attempt', () => {
     expect(queuedResult).toEqual({ timeoutSeconds: expect.any(Number) });
 
     // The redelivery runs attempt 2, sees every step done and finishes the run.
+    await race.redeliver();
+    expect(calls[FAILING_STEP]).toBe(2);
+    expect(race.durable.some((e) => e.eventType === 'run_completed')).toBe(
+      true
+    );
+  });
+
+  it('stays in flight until the retry is published when a sibling from an earlier inline pass outlasts the failure', async () => {
+    // The sibling starts in the first pass beside the fast step. The fast
+    // step settles first, so the delivery replays while the sibling runs
+    // (early advance) and starts the failing step in a second pass. Its
+    // retry is published only once the sibling, tracked from the first
+    // pass, settles too.
+    const race = await startRaceOnFailingStep(
+      [FAST_STEP, FAILING_STEP, SIBLING_STEP],
+      'return await Promise.all([(async () => { await s0(); return await s1(); })(), s2()]);'
+    );
+
+    failingGate.open();
+    await vi.waitFor(() =>
+      expect(
+        race.durable.some(
+          (e) =>
+            e.eventType === 'step_retrying' && e.correlationId === race.stepId
+        )
+      ).toBe(true)
+    );
+    let queuedSettled = false;
+    race.queuedDelivery.then(() => {
+      queuedSettled = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(queuedSettled).toBe(false);
+    expect(stepRetries(race.published, race.stepId)).toHaveLength(0);
+
+    siblingGate.open();
+    const [, queuedResult] = await Promise.all([
+      race.flowDelivery,
+      race.queuedDelivery,
+    ]);
+    const retries = stepRetries(race.published, race.stepId);
+    expect(retries).toHaveLength(1);
+    expect(retries[0].messageId).toBe(STEP_MESSAGE_ID);
+    expect(queuedResult).toEqual({ timeoutSeconds: expect.any(Number) });
+
     await race.redeliver();
     expect(calls[FAILING_STEP]).toBe(2);
     expect(race.durable.some((e) => e.eventType === 'run_completed')).toBe(

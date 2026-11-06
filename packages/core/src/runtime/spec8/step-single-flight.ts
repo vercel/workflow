@@ -76,15 +76,17 @@ export interface StepSingleFlightOptions {
   logLevel?: 'debug' | 'warn';
   /**
    * Set by a winner that publishes its own `retry` under the step's dispatch
-   * key (stepDispatchIdempotencyKey) once this promise settles: the node
-   * engine's inline executions, which publish after their whole inline batch
-   * settles. A queued delivery of the same step that is waiting on it was
-   * published under that same key and is still in flight, so the queue folds
-   * the retry into it (world-local returns the in-flight message's id, queues
-   * dedupe a key while its message is in flight, and world-postgres replaces
-   * an unlocked job with the same key or drops a later job whose key it has
-   * already completed). The QuickJS engine publishes its retries under their
-   * own keys, so its winners leave this unset.
+   * key (stepDispatchIdempotencyKey): the node engine's inline executions.
+   * The promise settles once that publish is durable, or once the delivery
+   * that owns the execution ended without making it (a throttled batch
+   * hands the step to its continuation's replay instead). A queued delivery
+   * of the same step that is waiting on it was published under that same key
+   * and is still in flight, so the queue folds the retry into it
+   * (world-local returns the in-flight message's id, queues dedupe a key
+   * while its message is in flight, and world-postgres replaces an unlocked
+   * job with the same key or drops a later job whose key it has already
+   * completed). The QuickJS engine publishes its retries under their own
+   * keys, so its winners leave this unset.
    */
   retryPublishedUnderDispatchKeyAfter?: Promise<unknown>;
   /**

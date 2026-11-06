@@ -17,7 +17,7 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { once } from '@workflow/utils';
+import { once, withResolvers } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type CreateEventParams,
@@ -236,6 +236,38 @@ function isEarlyAdvanceOutcome(
   );
 }
 
+/**
+ * Per inline step execution of one delivery, a promise that settles once the
+ * delivery published the step's delayed retry under its dispatch key, or
+ * ended without publishing it. A queued delivery of the step that carries
+ * that retry waits on it (see `carryFoldedRetry` in `./step-single-flight.ts`).
+ */
+class InlineRetryPublications {
+  readonly #release = new Map<string, () => void>();
+
+  /** The promise for the execution of `correlationId` about to start. */
+  track(correlationId: string): Promise<void> {
+    this.#release.get(correlationId)?.();
+    const { promise, resolve } = withResolvers<void>();
+    this.#release.set(correlationId, resolve);
+    return promise;
+  }
+
+  /** The retries of `correlationIds` are published. */
+  published(correlationIds: readonly string[]): void {
+    for (const id of correlationIds) {
+      this.#release.get(id)?.();
+      this.#release.delete(id);
+    }
+  }
+
+  /** The delivery ended: nothing it did not publish yet will be. */
+  releaseAll(): void {
+    for (const release of this.#release.values()) release();
+    this.#release.clear();
+  }
+}
+
 /** Runs one delivery of a spec 8 (or older) run's queue message. */
 export async function runSpec8Delivery(
   delivery: WorkflowDelivery
@@ -247,16 +279,26 @@ export async function runSpec8Delivery(
     InlineStepRef,
     InlineStepResult
   >();
+  const inlineRetryPublications = new InlineRetryPublications();
   try {
-    return await runDelivery(delivery, inlineStepsInFlight);
+    return await runDelivery(
+      delivery,
+      inlineStepsInFlight,
+      inlineRetryPublications
+    );
   } finally {
-    await inlineStepsInFlight.settleAll();
+    try {
+      await inlineStepsInFlight.settleAll();
+    } finally {
+      inlineRetryPublications.releaseAll();
+    }
   }
 }
 
 async function runDelivery(
   delivery: WorkflowDelivery,
-  inlineStepsInFlight: InlineStepsInFlight<InlineStepRef, InlineStepResult>
+  inlineStepsInFlight: InlineStepsInFlight<InlineStepRef, InlineStepResult>,
+  inlineRetryPublications: InlineRetryPublications
 ): Promise<DeliveryResult> {
   const {
     workflowCode,
@@ -754,6 +796,9 @@ async function runDelivery(
           }
         )
       )
+    );
+    inlineRetryPublications.published(
+      retries.map(({ step }) => step.correlationId)
     );
   };
 
@@ -4467,13 +4512,6 @@ async function runDelivery(
           InlineStepRef,
           InlineStepResult
         >[] = [];
-        // Settles once every body in this batch has. A `retry` below is
-        // published only after that, so a queued delivery carrying it waits
-        // this long.
-        let markInlineBatchSettled!: () => void;
-        const inlineBatchSettled = new Promise<void>((resolve) => {
-          markInlineBatchSettled = resolve;
-        });
         const stepExecutionPromises = inlineExecutions.map((s, stepIndex) => {
           let markStartSettled!: () => void;
           const startSettled = new Promise<void>((resolve) => {
@@ -4590,9 +4628,11 @@ async function runDelivery(
             s.lazyStepInput !== undefined || s.preclaimedStart !== undefined;
           const executed = runStepSingleFlight(runId, s.correlationId, run, {
             logLevel: isFreshClaim ? 'debug' : 'warn',
-            // A `retry` is published below (toRetry) under the step's
-            // dispatch key.
-            retryPublishedUnderDispatchKeyAfter: inlineBatchSettled,
+            // A `retry` is published under the step's dispatch key
+            // (publishInlineRetries), or the delivery ends without it.
+            retryPublishedUnderDispatchKeyAfter: inlineRetryPublications.track(
+              s.correlationId
+            ),
           });
           const tracked = executed.finally(() =>
             inFlightOwnedSteps.delete(s.correlationId)
@@ -4616,9 +4656,6 @@ async function runDelivery(
         for (const promise of stepExecutionPromises) {
           promise.catch(() => {});
         }
-        void Promise.allSettled(stepExecutionPromises).then(
-          markInlineBatchSettled
-        );
         try {
           // Join the dispatch publishes launched above and
           // the fold's deferred batch work (trailing chunk
