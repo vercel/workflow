@@ -16,6 +16,7 @@ import {
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
 import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
+import { type Immutable, produce } from 'workflow/state';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -4661,4 +4662,77 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
   'use workflow';
   const child = await startDisallowedDynamicRun(value);
   return { childRunId: child.runId };
+}
+
+//////////////////////////////////////////////////////////
+// workflow/state values stored by reference
+//////////////////////////////////////////////////////////
+
+type StateRefsChat = {
+  history: { role: string; content: string }[];
+  turns: number;
+};
+
+const stateRefsMessage = (i: number) =>
+  `Turn ${i}: please summarise the attached report and list its three biggest risks. `.repeat(
+    2
+  );
+
+async function stateRefsReply(
+  chat: Immutable<StateRefsChat>,
+  text: string,
+  failOnce: boolean
+) {
+  'use step';
+  // A failed first attempt makes the retry run in a new invocation, which
+  // rebuilds its input from the run's log.
+  if (failOnce && getStepMetadata().attempt < 2)
+    throw new Error('transient: retry in a new invocation');
+  return produce(chat, (d) => {
+    d.history.push(
+      { role: 'user', content: text },
+      { role: 'assistant', content: `re ${text.length}` }
+    );
+    d.turns++;
+  });
+}
+
+async function stateRefsSummary(chat: Immutable<StateRefsChat>, i: number) {
+  'use step';
+  return `${i}:${chat.turns}:${chat.history.length}`;
+}
+
+/**
+ * State passed from step to step with `produce()`: step inputs are stored as
+ * references and outputs as changes. Covers a hook string referenced by later
+ * state, a retry that rebuilds cold, a replay after a sleep, and a fan-out
+ * wider than the inline limit (queued steps rebuild cold).
+ */
+export async function stateRefsWorkflow(
+  token: string,
+  turns: number,
+  width: number
+) {
+  'use workflow';
+  let chat: Immutable<StateRefsChat> = { history: [], turns: 0 };
+  using hook = createHook<{ text: string }>({ token });
+  const { text } = await hook;
+  chat = await stateRefsReply(chat, text, false);
+  for (let i = 1; i < turns; i++) {
+    chat = await stateRefsReply(
+      chat,
+      i === 2 ? text : stateRefsMessage(i),
+      i === 3
+    );
+    if (i === 4) await sleep('1s');
+  }
+  const fan = await Promise.all(
+    Array.from({ length: width }, (_, i) => stateRefsSummary(chat, i))
+  );
+  return {
+    turns: chat.turns,
+    first: chat.history[0]?.content,
+    last: chat.history.at(-2)?.content.slice(0, 7),
+    fan,
+  };
 }
