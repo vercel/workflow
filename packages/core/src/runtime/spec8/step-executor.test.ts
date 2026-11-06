@@ -1,13 +1,17 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { FatalError, WorkflowWorldError } from '@workflow/errors';
+import {
+  FatalError,
+  RetryableError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import { ulid } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../../flushable-stream.js';
-import { runtimeLogger } from '../../logger.js';
+import { runtimeLogger, stepLogger } from '../../logger.js';
 import { registerStepFunction } from '../../private.js';
 import {
   dehydrateStepArguments,
@@ -1309,9 +1313,14 @@ describe('executeStep — thrown errors with a read-only stack', () => {
     return error;
   }
 
-  async function runThrowingStep(makeError: () => Error) {
+  async function runThrowingStep(
+    makeError: () => unknown,
+    maxRetries = MAX_RETRIES,
+    prepareWorld: (world: World) => void = () => {}
+  ) {
     const world = makeWorld();
     setWorld(world);
+    prepareWorld(world);
     const stepName = uniqueStepName();
     const { runId, stepId } = await setupRunningStep({
       world,
@@ -1325,7 +1334,7 @@ describe('executeStep — thrown errors with a read-only stack', () => {
         async () => {
           throw makeError();
         },
-        { maxRetries: MAX_RETRIES }
+        { maxRetries }
       )
     );
     const result = await executeStep({
@@ -1381,6 +1390,272 @@ describe('executeStep — thrown errors with a read-only stack', () => {
     );
     const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
     expect(hydrated.message).toBe('constraint violated');
+  });
+
+  it('records a retry when the step throws a thenable that never settles', async () => {
+    vi.stubEnv('WORKFLOW_THROWN_THENABLE_TIMEOUT_MS', '50');
+    try {
+      const { world, runId, stepId, result } = await runThrowingStep(() => ({
+        // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+        then() {},
+      }));
+
+      expect(result.type).toBe('retry');
+      const hydrated = await hydratedErrorOf(
+        world,
+        runId,
+        stepId,
+        'step_retrying'
+      );
+      expect(hydrated.message).toMatch(/did not settle within 50ms/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('records a retry when the step throws a thenable that resolves to itself', async () => {
+    const chain = {
+      // biome-ignore lint/suspicious/noThenProperty: Intentionally thenable
+      then(resolve: (value: unknown) => void) {
+        resolve(chain);
+      },
+    };
+    const { world, runId, stepId, result } = await runThrowingStep(() => chain);
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toBe(
+      'Promise rejection: thrown thenable kept resolving to another thenable after 8 steps'
+    );
+  });
+
+  it('records the reason and its cause when the step throws a rejected promise', async () => {
+    const warn = vi.spyOn(stepLogger, 'warn');
+    try {
+      const { world, runId, stepId, result } = await runThrowingStep(() => {
+        const thrown = Promise.reject(
+          new Error('outer', { cause: new Error('inner') })
+        );
+        thrown.catch(() => {});
+        return thrown;
+      });
+
+      expect(result.type).toBe('retry');
+      const hydrated = await hydratedErrorOf(
+        world,
+        runId,
+        stepId,
+        'step_retrying'
+      );
+      expect(hydrated.message).toBe('outer');
+      expect((hydrated.cause as Error).message).toBe('inner');
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringMatching(/could not be serialized/),
+        expect.anything()
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  class ApiResponse {
+    status = 503;
+  }
+
+  it('records a retry with the original message when the cause cannot be serialized', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(
+      () => new Error('upstream returned 503', { cause: new ApiResponse() })
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toBe('upstream returned 503');
+    expect((hydrated.cause as Error).message).toBe('{"status":503}');
+  });
+
+  it('records a fatal failure when the cause cannot be serialized', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      Object.assign(new FatalError('rejected by upstream'), {
+        cause: new ApiResponse(),
+      })
+    );
+
+    expect(result.type).toBe('failed');
+    const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('rejected by upstream');
+  });
+
+  it('records a retry with the members of an aggregate whose member cannot be serialized', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(
+      () =>
+        new AggregateError(
+          [new ApiResponse(), new Error('timeout')],
+          'all upstreams failed',
+          { cause: new ApiResponse() }
+        )
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = (await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    )) as AggregateError;
+    expect(hydrated).toBeInstanceOf(AggregateError);
+    expect(hydrated.message).toBe('all upstreams failed');
+    expect(hydrated.errors).toHaveLength(2);
+    expect(hydrated.errors[0].message).toBe('{"status":503}');
+    expect(hydrated.errors[1].message).toBe('timeout');
+    expect((hydrated.cause as Error).message).toBe('{"status":503}');
+  });
+
+  it('records a retry with the cause chain of an aggregate member', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(
+      () =>
+        new AggregateError(
+          [
+            new Error('timeout', {
+              cause: new Error('socket hang up', { cause: new ApiResponse() }),
+            }),
+          ],
+          'all upstreams failed'
+        )
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = (await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    )) as AggregateError;
+    const member = hydrated.errors[0] as Error;
+    expect(member.message).toBe('timeout');
+    expect((member.cause as Error).message).toBe('socket hang up');
+    expect(((member.cause as Error).cause as Error).message).toBe(
+      '{"status":503}'
+    );
+  });
+
+  const rejected = (reason: unknown) => {
+    const thrown = Promise.reject(reason);
+    thrown.catch(() => {});
+    return thrown;
+  };
+
+  it('fails without retrying when the step throws a promise rejected with a FatalError', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      rejected(new FatalError('card declined'))
+    );
+
+    expect(result.type).toBe('failed');
+    expect(await eventsFor(world, runId, stepId, 'step_retrying')).toHaveLength(
+      0
+    );
+    const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('card declined');
+  });
+
+  it('waits for retryAfter when the step throws a promise rejected with a RetryableError', async () => {
+    const { result } = await runThrowingStep(() =>
+      rejected(new RetryableError('rate limited', { retryAfter: 60_000 }))
+    );
+
+    expect(result).toMatchObject({ type: 'retry' });
+    expect(
+      (result as { timeoutSeconds: number }).timeoutSeconds
+    ).toBeGreaterThanOrEqual(59);
+  });
+
+  it('records a retry when an unserializable cause sits under a very deep chain', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() => {
+      let error: Error = Object.assign(new Error('leaf'), {
+        cause: new ApiResponse(),
+      });
+      for (let link = 0; link < 50_000; link++) {
+        error = new Error(`link ${link}`, { cause: error });
+      }
+      return error;
+    });
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toBe('link 49999');
+  });
+
+  it('records a retry when the error has a stack that is not a string', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(() =>
+      Object.assign(new Error('upstream returned 503'), {
+        stack: new ApiResponse(),
+        cause: new ApiResponse(),
+      })
+    );
+
+    expect(result.type).toBe('retry');
+    const hydrated = await hydratedErrorOf(
+      world,
+      runId,
+      stepId,
+      'step_retrying'
+    );
+    expect(hydrated.message).toBe('upstream returned 503');
+  });
+
+  it('rethrows an encryption failure without treating it as unserializable', async () => {
+    const warn = vi.spyOn(stepLogger, 'warn');
+    const encrypt = vi.spyOn(globalThis.crypto.subtle, 'encrypt');
+    try {
+      await expect(
+        runThrowingStep(
+          () => {
+            encrypt.mockRejectedValue(new Error('key service down'));
+            return new Error('upstream returned 503');
+          },
+          MAX_RETRIES,
+          (world) => {
+            world.getEncryptionKeyForRun = async () => new Uint8Array(32);
+          }
+        )
+      ).rejects.toThrow();
+      expect(encrypt).toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.stringMatching(/could not be serialized/),
+        expect.anything()
+      );
+    } finally {
+      encrypt.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('records the final failure when the last attempt throws an unserializable cause', async () => {
+    const { world, runId, stepId, result } = await runThrowingStep(
+      () => new Error('upstream returned 503', { cause: new ApiResponse() }),
+      0
+    );
+
+    expect(result.type).toBe('failed');
+    const hydrated = await hydratedErrorOf(world, runId, stepId, 'step_failed');
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toMatch(/upstream returned 503$/);
   });
 });
 
