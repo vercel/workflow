@@ -42,7 +42,19 @@ Accepted values:
 - Set `1` to expose the workflow manifest at `/.well-known/workflow/v1/manifest.json`.
 - Useful for end-to-end tests and tools that need to discover workflows over HTTP.
 
+### Manifest failures
+
+The manifest records which workflows a build registered, so a production build that cannot write one fails instead of reporting success. Development and watch builds keep warning and carrying on, as do builders that run inside an edit or test loop rather than ahead of a deploy — `@workflow/nest` rebuilds at application startup, and `@workflow/vitest` rebuilds per test run.
+
+This covers the diagnostics copy as well: when a build is configured to emit one (`.vercel/output/diagnostics/workflows-manifest.json`, or a framework's `diagnosticsDir`), failing to write it fails the build even though `manifest.json` itself was written.
+
 ## Discovery
+
+### Unresolved imports
+
+Discovery walks the import graph from your app's entrypoints and only follows literal string specifiers. A production build reports an import it cannot resolve when the file that wrote it declares workflow code itself, because the module behind it is never scanned and anything it declares goes unregistered — see [`workflow-not-registered`](/docs/errors/workflow-not-registered).
+
+The report is deliberately narrow. Only files declaring `"use workflow"`, `"use step"` or a serde class are considered, and an import that resolves to something discovery does not follow is never reported: an existing asset, a type-only import backed by a `.d.ts`, an uninstalled package, or import-looking text inside a template literal. Development and watch builds stay quiet, where writing an import before creating its target is a normal editing state, and so do the startup and test-run rebuilds described above.
 
 ### `WORKFLOW_DISCOVER_NODE_MODULES`
 

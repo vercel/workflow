@@ -422,7 +422,13 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
       import('./builder.js'),
       import('@workflow/builders'),
     ]);
-    const builder = new NestLocalBuilder({ ...this.options, basePath });
+    // Startup rebuild, re-run on every `nest start --watch` restart, so it
+    // is an edit loop rather than a build ahead of a deploy.
+    const builder = new NestLocalBuilder({
+      ...this.options,
+      basePath,
+      development: true,
+    });
     await createBuildQueue()(() => builder.build());
   }
 

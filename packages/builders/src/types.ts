@@ -27,6 +27,19 @@ export type SourcemapMode = boolean | 'inline' | 'linked' | 'external' | 'both';
  */
 interface BaseWorkflowConfig {
   watch?: boolean;
+  /**
+   * Treat this build as a development build even though it neither watches nor
+   * runs under `NODE_ENV=development`.
+   *
+   * For builders that run inside an edit or test loop rather than ahead of a
+   * deploy: `@workflow/nest` rebuilds at application startup, so every
+   * `nest start --watch` restart is one of these, and `@workflow/vitest`
+   * rebuilds per test run under `NODE_ENV=test`. Both would otherwise be
+   * classified as production and get diagnostics meant for a deploy — a
+   * half-written import warned about on every restart, and a manifest failure
+   * taken as fatal.
+   */
+  development?: boolean;
   dirs: string[];
   workingDir: string;
   /**

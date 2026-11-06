@@ -392,6 +392,348 @@ export const allWorkflows = { workflow };
 
       expect([...candidates]).toEqual([]);
     });
+
+    it('records the TypeScript counterparts of a missing .js import', async () => {
+      const candidates = await discover(`import './billing/workflow.js';\n`);
+
+      expect([...candidates]).toEqual([
+        src('billing', 'workflow.js'),
+        src('billing', 'workflow.ts'),
+        src('billing', 'workflow.tsx'),
+      ]);
+    });
+  });
+
+  describe('TypeScript .js import rewriting', () => {
+    const workflowSource = `export async function run() {
+  'use workflow';
+  return 'ok';
+}
+`;
+
+    it.each([
+      ['.js', '.ts'],
+      ['.js', '.tsx'],
+      ['.jsx', '.tsx'],
+      ['.mjs', '.mts'],
+      ['.cjs', '.cts'],
+    ])('follows a relative "%s" import to the sibling "%s" file', async (written, onDisk) => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const workflowFile = join(testRoot, 'src', `workflow${onDisk}`);
+
+      writeFile(entryFile, `import './workflow${written}';\n`);
+      writeFile(workflowFile, workflowSource);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredWorkflows).toEqual(
+        new Set([normalize(workflowFile)])
+      );
+    });
+
+    it('follows the NodeNext `export * from "./x.js"` re-export shape', async () => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const indexFile = join(testRoot, 'src', 'workflows', 'index.ts');
+      const workflowFile = join(testRoot, 'src', 'workflows', 'order.ts');
+
+      writeFile(entryFile, `import './workflows';\n`);
+      writeFile(indexFile, `export * from './order.js';\n`);
+      writeFile(workflowFile, workflowSource);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredWorkflows).toEqual(
+        new Set([normalize(workflowFile)])
+      );
+      expect(
+        parentHasChild(normalize(indexFile), normalize(workflowFile))
+      ).toBe(true);
+    });
+
+    it('follows a deep package import written with a .js extension', async () => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const packageRoot = join(testRoot, 'node_modules', 'workflow-pkg');
+      const workflowFile = join(packageRoot, 'order.ts');
+
+      writeFile(entryFile, `import 'workflow-pkg/order.js';\n`);
+      writeFile(
+        join(packageRoot, 'package.json'),
+        JSON.stringify({
+          name: 'workflow-pkg',
+          version: '1.0.0',
+          dependencies: { workflow: '*' },
+        })
+      );
+      writeFile(workflowFile, workflowSource);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredWorkflows).toEqual(
+        new Set([normalize(workflowFile)])
+      );
+    });
+
+    it('keeps resolving to the real .js file when both extensions exist', async () => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const jsFile = join(testRoot, 'src', 'workflow.js');
+      const tsFile = join(testRoot, 'src', 'workflow.ts');
+
+      writeFile(entryFile, `import './workflow.js';\n`);
+      writeFile(jsFile, workflowSource);
+      // A stale compiled copy next to the source: the alias is a fallback, so
+      // the file the specifier actually names still wins.
+      writeFile(tsFile, workflowSource);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredWorkflows).toEqual(
+        new Set([normalize(jsFile)])
+      );
+    });
+  });
+
+  describe('unresolved imports out of files declaring workflow code', () => {
+    const discover = async (files: Record<string, string>) => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const tsconfigFile = join(testRoot, 'tsconfig.json');
+      writeFile(
+        tsconfigFile,
+        JSON.stringify({ compilerOptions: { paths: { '@/*': ['./src/*'] } } })
+      );
+      for (const [relativePath, contents] of Object.entries(files)) {
+        writeFile(join(testRoot, relativePath), contents);
+      }
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out'),
+        tsconfigFile
+      );
+      return (discovered.unresolvedDirectiveImports ?? []).map(
+        ({ importer, specifier }) => ({
+          importer: normalize(importer),
+          specifier,
+        })
+      );
+    };
+
+    const src = (...segments: string[]) =>
+      normalize(join(testRoot, 'src', ...segments));
+
+    it('reports a missing relative import out of a "use workflow" file', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\n`,
+        'src/workflows/order.ts': `import { charge } from './charge';
+
+export async function order() {
+  'use workflow';
+  return charge();
+}
+`,
+      });
+
+      expect(unresolved).toEqual([
+        { importer: src('workflows', 'order.ts'), specifier: './charge' },
+      ]);
+    });
+
+    it('reports a missing tsconfig alias import out of a "use step" file', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './steps/charge';\n`,
+        'src/steps/charge.ts': `import { gateway } from '@/lib/gateway';
+
+export async function charge() {
+  'use step';
+  return gateway();
+}
+`,
+      });
+
+      expect(unresolved).toEqual([
+        { importer: src('steps', 'charge.ts'), specifier: '@/lib/gateway' },
+      ]);
+    });
+
+    it('reports nothing when the importer declares no workflow code', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './page';\n`,
+        'src/page.ts': `import './missing';\n`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    it('reports nothing for an import that resolves through the .js alias', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\n`,
+        'src/workflows/order.ts': `import { charge } from './charge.js';
+
+export async function order() {
+  'use workflow';
+  return charge();
+}
+`,
+        'src/workflows/charge.ts': `export async function charge() {
+  'use step';
+  return 1;
+}
+`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    // `import type { Env } from './env.js'` with only `env.d.ts` on disk is
+    // the NodeNext spelling of a type-only import, and `./types` resolves to
+    // `types.d.ts` the same way. TypeScript erases both, so nothing else ever
+    // objects — and a declaration file cannot hold a `"use workflow"`
+    // function, so there is no registration behind it to lose.
+    it('reports nothing for a type-only import backed by a declaration file', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\n`,
+        'src/workflows/order.ts': `import type { Env } from './env.js';
+import type { Db } from './lib/db';
+
+export async function order(_env: Env, _db: Db) {
+  'use workflow';
+  return 1;
+}
+`,
+        'src/workflows/env.d.ts': `export type Env = { url: string };\n`,
+        'src/workflows/lib/db.d.ts': `export type Db = { query(): void };\n`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    it.each([
+      '.d.mts',
+      '.d.cts',
+    ])('reports nothing for a declaration file written as %s', async (extension) => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\n`,
+        'src/workflows/order.ts': `import type { Env } from './env.js';
+
+export async function order(_env: Env) {
+  'use workflow';
+  return 1;
+}
+`,
+        [`src/workflows/env${extension}`]: `export type Env = string;\n`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    // An agent workflow whose prompt shows a code sample is the ordinary case,
+    // and template text is not code.
+    it('reports nothing for import-looking text inside a template literal', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/agent';\n`,
+        'src/workflows/agent.ts': `const SYSTEM = \`Answer with snippets such as:
+import { db } from './lib/db'
+require('./lib/other')
+\`;
+
+export async function agent() {
+  'use workflow';
+  return SYSTEM;
+}
+`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    // A catch-all alias matches package names too, and TypeScript falls back
+    // to normal package resolution when the substitution misses.
+    it('reports nothing for a package that only matched a catch-all alias', async () => {
+      const entryFile = join(testRoot, 'src', 'entry.ts');
+      const tsconfigFile = join(testRoot, 'tsconfig.json');
+      writeFile(
+        tsconfigFile,
+        JSON.stringify({ compilerOptions: { paths: { '*': ['./src/*'] } } })
+      );
+      writeFile(entryFile, `import './workflows/order';\n`);
+      writeFile(
+        join(testRoot, 'src', 'workflows', 'order.ts'),
+        `import type { Handler } from 'aws-lambda';
+
+export async function order(_handler: Handler) {
+  'use workflow';
+  return 1;
+}
+`
+      );
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out'),
+        tsconfigFile
+      );
+
+      expect(discovered.unresolvedDirectiveImports).toEqual([]);
+      // The watcher still learns where it would land, so creating the file
+      // later rebuilds.
+      expect(discovered.unresolvedImportCandidates).toContain(
+        normalize(join(testRoot, 'src', 'aws-lambda.ts'))
+      );
+    });
+
+    it('reports nothing for assets and uninstalled packages', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\n`,
+        'src/workflows/order.ts': `import './order.css';
+import 'not-installed-package';
+
+export async function order() {
+  'use workflow';
+  return 1;
+}
+`,
+        'src/workflows/order.css': `.order {}\n`,
+      });
+
+      expect(unresolved).toEqual([]);
+    });
+
+    it('reports each missing import once, sorted', async () => {
+      const unresolved = await discover({
+        'src/entry.ts': `import './workflows/order';\nimport './workflows/mail';\n`,
+        'src/workflows/order.ts': `import './b';
+import './a';
+
+export async function order() {
+  'use workflow';
+  return 1;
+}
+`,
+        'src/workflows/mail.ts': `import './a';
+
+export async function mail() {
+  'use workflow';
+  return 1;
+}
+`,
+      });
+
+      expect(unresolved).toEqual([
+        { importer: src('workflows', 'mail.ts'), specifier: './a' },
+        { importer: src('workflows', 'order.ts'), specifier: './a' },
+        { importer: src('workflows', 'order.ts'), specifier: './b' },
+      ]);
+    });
   });
 
   it('discovers dotted files reached through tsconfig path aliases', async () => {
