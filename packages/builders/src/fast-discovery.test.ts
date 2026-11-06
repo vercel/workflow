@@ -388,6 +388,57 @@ export async function chat() {
       }
     });
 
+    it('records distinct provider versions resolved by different packages', async () => {
+      const { packageIndex } = writeProviderPackage(providerEntry);
+      const nestedRoot = join(testRoot, 'node_modules', 'workflow-pkg');
+      const nestedProvider = join(
+        nestedRoot,
+        'node_modules',
+        'model-provider',
+        'dist',
+        'index.js'
+      );
+      writeFile(
+        join(nestedRoot, 'package.json'),
+        JSON.stringify({
+          name: 'workflow-pkg',
+          version: '1.0.0',
+          main: './index.js',
+          dependencies: { workflow: '*', 'model-provider': '2.0.0' },
+        })
+      );
+      writeFile(
+        join(nestedRoot, 'index.js'),
+        `import { provider } from 'model-provider';
+export async function nestedWorkflow() {
+  'use workflow';
+  return provider('nested');
+}
+`
+      );
+      writeFile(
+        join(nestedRoot, 'node_modules', 'model-provider', 'package.json'),
+        JSON.stringify({
+          name: 'model-provider',
+          version: '2.0.0',
+          type: 'module',
+          exports: { '.': { import: './dist/index.js' } },
+        })
+      );
+      writeFile(nestedProvider, providerEntry);
+      const entryFile = writeWorkflowUsingProvider();
+      writeFile(entryFile, `import './workflow';\nimport 'workflow-pkg';\n`);
+
+      const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+        [entryFile],
+        join(testRoot, 'out')
+      );
+
+      expect(discovered.discoveredSerdeFiles).toEqual(
+        new Set([normalize(packageIndex), normalize(nestedProvider)])
+      );
+    });
+
     it('skips a file that only reads serde symbols', async () => {
       const { packageIndex } = writeProviderPackage(
         `import { WORKFLOW_SERIALIZE } from 'provider-utils';
