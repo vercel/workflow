@@ -297,6 +297,10 @@ export function workflowEntrypoint(
   }
 ): (req: Request) => Promise<Response> {
   setWorkflowBasePath(options?.basePath);
+  // The route this handler is mounted at, base path included (Next.js'
+  // `basePath`, `workflows.experimentalRoutePrefix`, NestJS' global prefix).
+  // It is fixed for the deployment, so it stays a bounded route template.
+  const flowRoute = `${options?.basePath ?? ''}${WORKFLOW_FLOW_ROUTE}`;
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
@@ -685,7 +689,7 @@ export function workflowEntrypoint(
             ? {}
             : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
           ...Attribute.HttpRequestMethod(req.method),
-          ...Attribute.HttpRoute(WORKFLOW_FLOW_ROUTE),
+          ...Attribute.HttpRoute(flowRoute),
         },
       },
       async (span) => {

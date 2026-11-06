@@ -1,5 +1,6 @@
 import { Flags } from '@oclif/core';
 import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
+import { setWorkflowBasePath, WORKFLOW_ROUTE_BASE } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import chalk from 'chalk';
 import { BaseCommand } from '../base.js';
@@ -67,24 +68,45 @@ function logPortDetectionDebug(
 // Default port for local development servers
 const DEFAULT_LOCAL_PORT = 3000;
 
+/**
+ * Normalizes `--base-path` to a leading slash with no trailing slash
+ * (`dashboard/` -> `/dashboard`), or `''` when unset.
+ */
+export function normalizeHealthBasePath(basePath: string | undefined): string {
+  const trimmed = basePath?.trim() ?? '';
+  if (trimmed.includes('://') || /[?#\\]/.test(trimmed)) {
+    throw new Error(
+      `Invalid --base-path ${JSON.stringify(basePath)}: expected a path such as "/dashboard".`
+    );
+  }
+  const segments = trimmed.split('/').filter(Boolean);
+  return segments.length === 0 ? '' : `/${segments.join('/')}`;
+}
+
+function appendBasePath(url: string, basePath: string): string {
+  return basePath ? `${url.replace(/\/+$/, '')}${basePath}` : url;
+}
+
 function resolveLocalBaseUrl(
   explicitPort: number | undefined,
-  detectedPort: number | undefined
+  detectedPort: number | undefined,
+  basePath: string
 ): string {
   if (explicitPort) {
-    return `http://localhost:${explicitPort}`;
+    return appendBasePath(`http://localhost:${explicitPort}`, basePath);
   }
+  // Used as is: `run()` has already appended the base path to it.
   if (process.env.WORKFLOW_LOCAL_BASE_URL) {
     return process.env.WORKFLOW_LOCAL_BASE_URL;
   }
   if (process.env.PORT) {
-    return `http://localhost:${process.env.PORT}`;
+    return appendBasePath(`http://localhost:${process.env.PORT}`, basePath);
   }
   if (detectedPort) {
-    return `http://localhost:${detectedPort}`;
+    return appendBasePath(`http://localhost:${detectedPort}`, basePath);
   }
   // Fall back to default port 3000 (common for Next.js, Nuxt, etc.)
-  return `http://localhost:${DEFAULT_LOCAL_PORT}`;
+  return appendBasePath(`http://localhost:${DEFAULT_LOCAL_PORT}`, basePath);
 }
 
 async function testHttpHealthEndpoint(
@@ -93,7 +115,7 @@ async function testHttpHealthEndpoint(
   timeoutMs: number
 ): Promise<{ ok: boolean; status?: number; error?: string }> {
   try {
-    const healthUrl = `${baseUrl}/.well-known/workflow/v1/flow?__health`;
+    const healthUrl = `${baseUrl.replace(/\/+$/, '')}${WORKFLOW_ROUTE_BASE}/flow?__health`;
     if (verbose) {
       logger.debug(`Testing HTTP health at: ${healthUrl}`);
     }
@@ -126,15 +148,20 @@ async function testHttpHealthEndpoint(
 export async function verifyLocalServerAccessible(
   verbose: boolean,
   explicitPort: number | undefined,
-  timeoutMs: number
+  timeoutMs: number,
+  basePath = ''
 ): Promise<string> {
-  const detectedPort = explicitPort ?? (await getWorkflowPort());
+  const detectedPort =
+    explicitPort ??
+    (await getWorkflowPort({
+      endpoint: `${basePath}${WORKFLOW_ROUTE_BASE}/flow?__health`,
+    }));
 
   if (verbose) {
     logPortDetectionDebug(explicitPort, detectedPort);
   }
 
-  const baseUrl = resolveLocalBaseUrl(explicitPort, detectedPort);
+  const baseUrl = resolveLocalBaseUrl(explicitPort, detectedPort, basePath);
 
   if (verbose) {
     logger.debug(`Resolved base URL: ${baseUrl}`);
@@ -161,6 +188,37 @@ export async function verifyLocalServerAccessible(
     `Cannot reach local server at ${baseUrl} (${result.error}). Make sure your development server is running.\n` +
       portHint
   );
+}
+
+/**
+ * Points the Local World at the app's workflow routes for the queue-based
+ * health check, which enqueues from this process.
+ */
+function configureLocalBaseUrl(
+  port: number | undefined,
+  basePath: string
+): void {
+  // If user specifies a port, set the env var so the World uses it
+  if (port) {
+    process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${port}`;
+  }
+  // Set default WORKFLOW_LOCAL_BASE_URL if not already set
+  // We use WORKFLOW_LOCAL_BASE_URL instead of PORT to avoid conflicts
+  // with other tools (like Next.js) that also use the PORT env var
+  if (!process.env.WORKFLOW_LOCAL_BASE_URL && !process.env.PORT) {
+    process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${DEFAULT_LOCAL_PORT}`;
+  }
+  // The Local World uses WORKFLOW_LOCAL_BASE_URL as is, so the base path
+  // goes into it; a `PORT`-derived target picks it up from the global
+  // base path instead. The queue-based check below enqueues from this
+  // process, so both must match where the app serves its workflow routes.
+  if (basePath && process.env.WORKFLOW_LOCAL_BASE_URL) {
+    process.env.WORKFLOW_LOCAL_BASE_URL = appendBasePath(
+      process.env.WORKFLOW_LOCAL_BASE_URL,
+      basePath
+    );
+  }
+  setWorkflowBasePath(basePath);
 }
 
 function isLocalBackend(backend: string): boolean {
@@ -216,6 +274,7 @@ export default class Health extends BaseCommand {
   static examples = [
     '$ workflow health',
     '$ workflow health --timeout 60000',
+    '$ workflow health --base-path /dashboard',
     '$ workflow health --backend vercel --project my-project --team my-team',
   ];
 
@@ -236,6 +295,14 @@ export default class Health extends BaseCommand {
       helpLabel: '-p, --port',
       helpValue: 'PORT',
     }),
+    'base-path': Flags.string({
+      description:
+        'Path the workflow routes are served under (local backend), for example the Next.js basePath followed by workflows.experimentalRoutePrefix',
+      required: false,
+      helpGroup: 'Health Check',
+      helpLabel: '--base-path',
+      helpValue: 'PATH',
+    }),
     // Include relevant flags from cliFlags (excluding ones not relevant to health check)
     verbose: cliFlags.verbose,
     json: cliFlags.json,
@@ -255,23 +322,16 @@ export default class Health extends BaseCommand {
 
     // For local backend, set up port configuration early
     if (isLocalBackend(flags.backend)) {
-      // If user specifies a port, set the env var so the World uses it
-      if (flags.port) {
-        process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${flags.port}`;
-      }
-      // Set default WORKFLOW_LOCAL_BASE_URL if not already set
-      // We use WORKFLOW_LOCAL_BASE_URL instead of PORT to avoid conflicts
-      // with other tools (like Next.js) that also use the PORT env var
-      if (!process.env.WORKFLOW_LOCAL_BASE_URL && !process.env.PORT) {
-        process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${DEFAULT_LOCAL_PORT}`;
-      }
+      const basePath = normalizeHealthBasePath(flags['base-path']);
+      configureLocalBaseUrl(flags.port, basePath);
 
       // Verify the server is accessible before proceeding
       const accessible = await this.verifyLocalServer(
         flags.json,
         flags.verbose,
         flags.port,
-        flags.timeout
+        flags.timeout,
+        basePath
       );
       if (!accessible) {
         process.exit(1);
@@ -311,7 +371,8 @@ export default class Health extends BaseCommand {
     jsonMode: boolean,
     verbose: boolean,
     port: number | undefined,
-    timeoutMs: number
+    timeoutMs: number,
+    basePath: string
   ): Promise<boolean> {
     if (!jsonMode) {
       logger.log(chalk.gray('Checking local server accessibility...'));
@@ -320,7 +381,8 @@ export default class Health extends BaseCommand {
       const baseUrl = await verifyLocalServerAccessible(
         verbose,
         port,
-        timeoutMs
+        timeoutMs,
+        basePath
       );
       if (!jsonMode) {
         logger.log(chalk.green(`  ✓ Local server accessible at ${baseUrl}`));
