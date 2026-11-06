@@ -51,6 +51,8 @@ let bodiesStarted = 0;
 let bodiesFinished = 0;
 /** Per body start: how many step outcomes had committed. */
 let completedAtStart: number[] = [];
+/** Per body start: how many `hook_created` had committed. */
+let hooksCreatedAtStart: number[] = [];
 
 registerStepFunction('ra_inc', async (n: number) => {
   bodiesStarted++;
@@ -58,6 +60,7 @@ registerStepFunction('ra_inc', async (n: number) => {
   if (world) {
     const outcomes = eventsOf(world, 'step_completed').length;
     completedAtStart.push(outcomes);
+    hooksCreatedAtStart.push(eventsOf(world, 'hook_created').length);
     // Every step before this one is `bodiesStarted - 1`.
     unconfirmedAtStart.push(bodiesStarted - 1 - outcomes);
   }
@@ -129,6 +132,68 @@ const unobservedHook = `const inc = ${step};
     let n = 0;
     for (let i = 0; i < steps; i++) n = await inc(n);
     return n;
+  }${registerWorkflow()}`;
+
+/**
+ * A sequential loop beside hooks the workflow registers but never acts on:
+ * `prelude` runs before the loop, `inLoop(i)` at the top of each iteration.
+ */
+const loopBesideHooks = (prelude: string, inLoop = '') => `const inc = ${step};
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow(steps) {
+    ${prelude}
+    let n = 0;
+    for (let i = 0; i < steps; i++) {
+      ${inLoop}
+      n = await inc(n);
+    }
+    return n;
+  }${registerWorkflow()}`;
+
+// Hooks nobody waits on, in the shapes workflow code registers them.
+const unawaitedHookShapes: [string, string][] = [
+  ['a hook', `const hook = createHook({ token: "ra-shape-hook" });`],
+  ['a webhook', `const hook = createHook({ isWebhook: true });`],
+  [
+    'two hooks',
+    `const a = createHook({ token: "ra-shape-a" });
+    const b = createHook({ token: "ra-shape-b" });`,
+  ],
+  [
+    'a hook whose iterator is taken but not advanced',
+    `const hook = createHook({ token: "ra-shape-iterator" });
+    const payloads = hook[Symbol.asyncIterator]();`,
+  ],
+  [
+    'a hook with metadata',
+    `const hook = createHook({ token: "ra-shape-metadata", metadata: { kind: "approval" } });`,
+  ],
+  [
+    'a disposed hook',
+    `const hook = createHook({ token: "ra-shape-disposed" });
+    hook.dispose();`,
+  ],
+];
+
+// A hook the workflow only attaches a `.then` to: acting on it, without
+// ever awaiting it.
+const thenOnHook = loopBesideHooks(
+  `const hook = createHook({ token: "ra-then" });
+  hook.then(() => {});`
+);
+
+// A hook raced against a sleep that wins, then a loop; `dispose` disposes
+// the hook after the race.
+const loopAfterLostRace = (dispose: boolean) => `const inc = ${step};
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow(steps) {
+    const hook = createHook({ token: "ra-race" });
+    const winner = await Promise.race([hook, sleep(1).then(() => "timeout")]);
+    ${dispose ? 'hook.dispose();' : ''}
+    let n = 0;
+    for (let i = 0; i < steps; i++) n = await inc(n);
+    return [winner, n];
   }${registerWorkflow()}`;
 
 // A hook the workflow waits on while it runs steps, then a second loop
@@ -342,6 +407,7 @@ async function coldReplay(world: AppendOnlyWorld, code: string) {
 beforeEach(() => {
   unconfirmedAtStart = [];
   completedAtStart = [];
+  hooksCreatedAtStart = [];
   bodiesStarted = 0;
   bodiesFinished = 0;
   onceStartDurable = [];
@@ -580,6 +646,70 @@ describe.each([
     await world.runUntilIdle();
     expect(await runResult(world)).toBe(STEPS);
     expect(Math.max(...unconfirmedAtStart)).toBeGreaterThan(0);
+  });
+
+  // Registering a hook is not acting on it: only an `await`, a `.then`, an
+  // abort signal, a step run elsewhere or a wait coming due stops run-ahead
+  // (`observeOutOfBandWriters`). Every step after the first starts while the
+  // outcome before it is still in flight, exactly as without the hook.
+  it.each([
+    ['no hook', ''] as [string, string],
+    ...unawaitedHookShapes,
+  ])('runs ahead at every boundary beside %s nobody awaits', async (_, prelude) => {
+    const { world } = await run(loopBesideHooks(prelude), [STEPS], {
+      beforeCreate: holdOutcomesUntilAhead(1),
+    });
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(STEPS);
+    expect(unconfirmedAtStart).toHaveLength(STEPS);
+    expect(unconfirmedAtStart.slice(1).every((n) => n > 0)).toBe(true);
+  });
+
+  // The boundary that registers a hook commits its `hook_created` before the
+  // steps it starts, so a step can hand the token out and have it resumed.
+  // That is one sync point at that boundary, not a mode: the boundaries after
+  // it run ahead again.
+  it('syncs only at the boundary that registers a hook mid-run, then runs ahead again', async () => {
+    const { world } = await run(
+      loopBesideHooks(
+        'let hook;',
+        'if (i === 2) hook = createHook({ token: "ra-mid-run" });'
+      ),
+      [STEPS]
+    );
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(STEPS);
+    // The step created beside the hook starts once it is registered.
+    expect(hooksCreatedAtStart).toEqual([0, 0, 1, 1, 1, 1]);
+    expect(unconfirmedAtStart[2]).toBe(0);
+    // Before and after that boundary, steps run ahead.
+    expect(unconfirmedAtStart[1]).toBeGreaterThan(0);
+    expect(unconfirmedAtStart.slice(3).every((n) => n > 0)).toBe(true);
+  });
+
+  it('drains at every boundary while a `.then` waits on a hook nobody awaits', async () => {
+    const { world } = await run(thenOnHook, [STEPS]);
+    await world.runUntilIdle();
+    expect(await runResult(world)).toBe(STEPS);
+    expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
+  });
+
+  // `Promise.race` attaches a `.then` to the hook that outlives the race: the
+  // abandoned awaiter still takes the hook's next payload, so the hook stays
+  // observed (see `runtime/out-of-band-observation.ts`). Disposing the hook
+  // once the race is decided ends that, and the loop runs ahead.
+  it('drains after a race the hook lost until the hook is disposed', async () => {
+    const kept = await run(loopAfterLostRace(false), [STEPS]);
+    await kept.world.runUntilIdle();
+    expect(await runResult(kept.world)).toEqual(['timeout', STEPS]);
+    expect(unconfirmedAtStart.every((n) => n === 0)).toBe(true);
+
+    unconfirmedAtStart = [];
+    bodiesStarted = 0;
+    const disposed = await run(loopAfterLostRace(true), [STEPS]);
+    await disposed.world.runUntilIdle();
+    expect(await runResult(disposed.world)).toEqual(['timeout', STEPS]);
+    expect(unconfirmedAtStart.slice(1).every((n) => n > 0)).toBe(true);
   });
 
   // A payload for a hook the workflow never awaits takes the slot a
