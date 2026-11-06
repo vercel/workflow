@@ -392,7 +392,6 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           }))
         );
 
-        // older readers read exactly one chunkId per notification
         const lastIndex = chunkIds.length - 1;
         await notifyStream(
           ...chunkIds.map((chunkId, i) =>

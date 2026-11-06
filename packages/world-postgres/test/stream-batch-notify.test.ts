@@ -59,35 +59,69 @@ describe('Postgres stream batch notifications', () => {
 
     const statements: string[] = [];
     const query = pool.query.bind(pool);
-    vi.spyOn(pool, 'query').mockImplementation(((
+    const spy = vi.spyOn(pool, 'query').mockImplementation(((
       config: string | { text: string },
       ...rest: unknown[]
     ) => {
       statements.push(typeof config === 'string' ? config : config.text);
       return (query as (...args: unknown[]) => unknown)(config, ...rest);
     }) as typeof pool.query);
-    const notifies = () =>
-      statements.filter((text) => text.includes('pg_notify')).length;
-    const chunkReads = () =>
-      statements.filter(
-        (text) =>
-          text.startsWith('select') && text.includes('workflow_stream_chunks')
-      ).length;
+    try {
+      const notifies = () =>
+        statements.filter((text) => text.includes('pg_notify')).length;
+      const chunkReads = () =>
+        statements.filter(
+          (text) =>
+            text.startsWith('select') && text.includes('workflow_stream_chunks')
+        ).length;
 
+      const runId = `run_${randomUUID()}`;
+      const name = `stream_${randomUUID()}`;
+      const stream = await streamer.streams.get(runId, name);
+      await expect.poll(chunkReads).toBe(1);
+      statements.length = 0;
+
+      const chunks = Array.from({ length: 50 }, (_, i) => `chunk ${i};`);
+      await streamer.streams.writeMulti(runId, name, chunks);
+      await streamer.streams.close(runId, name);
+
+      const received = await new Response(stream).text();
+      expect(received).toBe(chunks.join(''));
+      expect(notifies()).toBe(2);
+      expect(chunkReads()).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test('an old style notification without firstChunkId reads only its own chunk', async () => {
     const runId = `run_${randomUUID()}`;
     const name = `stream_${randomUUID()}`;
-    const stream = await streamer.streams.get(runId, name);
-    await expect.poll(chunkReads).toBe(1);
-    statements.length = 0;
+    const reader = (await streamer.streams.get(runId, name)).getReader();
+    await streamer.streams.write(runId, name, 'first;');
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(
+      'first;'
+    );
 
-    const chunks = Array.from({ length: 50 }, (_, i) => `chunk ${i};`);
-    await streamer.streams.writeMulti(runId, name, chunks);
-    await streamer.streams.close(runId, name);
+    const {
+      rows: [{ id }],
+    } = await pool.query<{ id: string }>(
+      'SELECT id FROM workflow.workflow_stream_chunks WHERE stream_id = $1',
+      [name]
+    );
+    await pool.query(
+      `INSERT INTO workflow.workflow_stream_chunks (id, stream_id, run_id, data, eof)
+       VALUES ($1, $3, $4, 'skipped;', false), ($2, $3, $4, 'named;', false)`,
+      [`${id}a`, `${id}b`, name, runId]
+    );
+    await pool.query(`SELECT pg_notify('workflow_event_chunk', $1)`, [
+      JSON.stringify({ streamId: name, chunkId: `${id}b` }),
+    ]);
 
-    const received = await new Response(stream).text();
-    expect(received).toBe(chunks.join(''));
-    expect(notifies()).toBe(2);
-    expect(chunkReads()).toBe(2);
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe(
+      'named;'
+    );
+    await reader.cancel();
   });
 
   test('a batch still names every chunk for readers that read one chunkId per notification', async () => {
