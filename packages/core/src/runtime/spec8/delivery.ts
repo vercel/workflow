@@ -4518,6 +4518,7 @@ async function runDelivery(
               // from the existing step entity, and for
               // pre-claimed steps, whose pair already
               // carried it.
+              stateContext: replayPayloadCache?.stateContext,
               lazyStepInput: s.lazyStepInput,
               // Pre-claimed inline start: the suspension
               // batch settled this step's create + claim;

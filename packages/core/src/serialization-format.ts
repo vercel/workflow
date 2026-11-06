@@ -674,6 +674,24 @@ export const observabilityRevivers: Revivers = {
     `<workflow:${value.workflowId}>`,
   Instance: serializedInstanceToRef,
   Class: serializedClassToString,
+  // frozen state records. A whole value displays as itself, as does a
+  // `source` record (hook payloads and run inputs written by earlier previews
+  // of this feature; current ones are stored unwrapped). A reference or a
+  // change needs the run's log to rebuild, so it displays as what it points to.
+  StateRefV1: (record: {
+    kind: string;
+    value?: unknown;
+    version?: string;
+    base?: string;
+    ops?: unknown;
+  }) =>
+    record.kind === 'source' || record.kind === 'full'
+      ? record.value
+      : record.kind === 'patch'
+        ? { [`<state change from ${record.base}>`]: record.ops }
+        : `<state ${record.version}>`,
+  StateSrcV1: ([id, path]: [string, (string | number)[]]) =>
+    `<same as ${id}${path.length ? `.${path.join('.')}` : ''}>`,
 };
 
 // ---------------------------------------------------------------------------

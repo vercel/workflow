@@ -31,6 +31,14 @@ import { runtimeLogger, stepLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
 import type { PayloadKey } from '../../serialization/encryption.js';
 import { formatSerializationError } from '../../serialization/errors.js';
+import { WorkflowStateRecoveryError } from '../../serialization/state-recovery.js';
+import {
+  type StateContext,
+  stateContextForData,
+  stateDehydrateAttributes,
+  stateHydrateAttributes,
+  stateWriteCounts,
+} from '../../serialization/state-refs.js';
 import {
   cancelAbortReaders,
   dehydrateStepError,
@@ -129,6 +137,13 @@ export interface StepExecutorParams {
    * carries no payload (the legacy contract).
    */
   lazyStepInput?: SerializedData;
+  /**
+   * The replay's frozen state context, for an inline step: its input's
+   * references resolve against it, and its output's changes are encoded
+   * against it. Absent elsewhere; the input's own binding or a recovery
+   * from the run's log is used instead.
+   */
+  stateContext?: StateContext;
   /**
    * Pre-claimed inline start: the suspension handler committed (or lost) this
    * step's `step_created` + `step_started` pair inside its batched fan-out
@@ -966,6 +981,7 @@ export async function executeStep(
       // Use the provided encryption key when available, otherwise resolve
       // through the memoized accessor declared at the top of this trace.
       const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
+      let stateContext = params.stateContext ?? stateContextForData(step.input);
       const hydratedInput = await trace(
         'step.hydrate',
         {},
@@ -982,10 +998,13 @@ export async function executeStep(
             streamStates,
             // A workflow-created writable passed into an optimistic step can
             // emit chunks before run_started lands, just like getWritable().
-            optimisticStart ? params.runReadyBarrier : undefined
+            optimisticStart ? params.runReadyBarrier : undefined,
+            stateContext
           );
+          stateContext ??= stateContextForData(hydrated);
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
+            ...stateHydrateAttributes(stateContext),
             ...Attribute.StepArgumentsCount(hydrated.args.length),
             ...Attribute.QueueDeserializeTimeMs(durationMs),
           });
@@ -1191,6 +1210,7 @@ export async function executeStep(
 
       result = await trace('step.dehydrate', {}, async (dehydrateSpan) => {
         const startTime = Date.now();
+        const stateBefore = stateWriteCounts(stateContext);
         const dehydrated = await dehydrateStepReturnValue(
           result,
           workflowRunId,
@@ -1205,10 +1225,12 @@ export async function executeStep(
           // write on the run-ready barrier. Undefined on the await path.
           optimisticStart ? params.runReadyBarrier : undefined,
           ops,
-          true
+          true,
+          stateContext
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({
+          ...stateDehydrateAttributes(stateContext, stateBefore),
           ...Attribute.QueueSerializeTimeMs(durationMs),
           ...Attribute.StepResultType(typeof dehydrated),
         });
@@ -1290,6 +1312,9 @@ export async function executeStep(
         await Promise.all(preCompletionOps).catch(() => {});
       }
     } catch (err: unknown) {
+      // The run's log could not be read to rebuild this step's frozen state
+      // input: retry the delivery, not the user's step (its body has not run).
+      if (WorkflowStateRecoveryError.is(err)) throw err;
       // Optimistic start: the body threw before `step_started` was confirmed.
       // Reconcile first: if we lost the create-claim (or the run is
       // gone/throttled) the body error is moot; discard it and don't write a
