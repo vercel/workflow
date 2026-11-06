@@ -45,6 +45,8 @@ interface Connection {
 const state = globalSingleton('@workflow/world-local//sqlite', 1, () => ({
   connections: new Map<string, Connection>(),
   sweeper: null as ReturnType<typeof setInterval> | null,
+  /** See {@link emptyDatabase}. */
+  empty: undefined as Connection | undefined,
 }));
 
 function fileIdentity(file: string): string | null {
@@ -167,6 +169,28 @@ function open(file: string): Connection {
   return connection;
 }
 
+/**
+ * An empty database with the current schema, in memory: what reads see while
+ * the data directory has no database file yet. A read never creates the
+ * file, or the directory (the CLI or web UI pointed at an app that has not
+ * run yet must not write into its data directory); the first write does.
+ * Never written to, so one serves every data directory.
+ */
+function emptyDatabase(): Connection {
+  if (!state.empty) {
+    const raw = openRawDatabase(':memory:');
+    migrate(raw);
+    state.empty = {
+      file: ':memory:',
+      raw,
+      identity: null,
+      lastUsed: Date.now(),
+      depth: 0,
+    };
+  }
+  return state.empty;
+}
+
 function acquire(file: string): Connection {
   const existing = state.connections.get(file);
   if (existing) {
@@ -198,6 +222,14 @@ export class Database {
     return acquire(this.file);
   }
 
+  /** The connection for a read: an empty database while there is no file. */
+  private readConnection(): Connection {
+    if (!state.connections.has(this.file) && !fs.existsSync(this.file)) {
+      return emptyDatabase();
+    }
+    return this.connection();
+  }
+
   prepare(sql: string): Statement {
     return this.connection().raw.prepare(sql);
   }
@@ -207,13 +239,19 @@ export class Database {
     ...params: unknown[]
   ): T | undefined {
     return this.released(
-      () => this.prepare(sql).get(...(params as never[])) as T | undefined
+      () =>
+        this.readConnection()
+          .raw.prepare(sql)
+          .get(...(params as never[])) as T | undefined
     );
   }
 
   all<T = Record<string, unknown>>(sql: string, ...params: unknown[]): T[] {
     return this.released(
-      () => this.prepare(sql).all(...(params as never[])) as T[]
+      () =>
+        this.readConnection()
+          .raw.prepare(sql)
+          .all(...(params as never[])) as T[]
     );
   }
 
@@ -307,7 +345,7 @@ export class Database {
    * commits in between cannot be half seen. `fn` must be synchronous.
    */
   snapshot<T>(fn: () => T): T {
-    const connection = this.connection();
+    const connection = this.readConnection();
     if (connection.depth > 0) return fn();
     retryWhileBusy(() => connection.raw.exec('BEGIN'));
     connection.depth++;
@@ -347,6 +385,7 @@ export class Database {
    * process can keep part of the WAL alive until it finishes.
    */
   checkpoint(): void {
+    if (!fs.existsSync(this.file)) return;
     try {
       this.released(() =>
         this.connection().raw.exec('PRAGMA wal_checkpoint(TRUNCATE)')
