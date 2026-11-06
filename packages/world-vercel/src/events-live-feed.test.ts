@@ -456,6 +456,30 @@ describe('subscribeRunEvents heartbeats', () => {
     feed.unsubscribe();
   });
 
+  it('does not read again for a slot a fill could not reach, only for a higher one', async () => {
+    const reads: number[] = [];
+    const feed = await watchedFeed(
+      { heartbeatMs: HEARTBEAT_MS },
+      async (after) => {
+        reads.push(after);
+        return { data: [], hasMore: false };
+      }
+    );
+    feed.ack();
+    await tick();
+    feed.heartbeat(4);
+    await settle(() => reads.length === 1, 'first fill');
+    await tick();
+    feed.heartbeat(4);
+    feed.heartbeat(4);
+    await tick();
+    expect(reads).toEqual([2]);
+    feed.heartbeat(5);
+    await settle(() => reads.length === 2, 'fill for a higher slot');
+    expect(reads).toEqual([2, 2]);
+    feed.unsubscribe();
+  });
+
   it('ends the feed when the read that would fill a gap fails', async () => {
     const feed = await watchedFeed({ heartbeatMs: HEARTBEAT_MS }, async () => {
       throw new Error('list failed');

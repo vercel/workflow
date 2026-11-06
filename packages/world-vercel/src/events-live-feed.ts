@@ -44,9 +44,15 @@
  *   failing for that long);
  * - a heartbeat naming a slot above the last one delivered means pushes went
  *   missing (a replacement subscription that started above this one): the
- *   feed reads the log after its last delivered slot and delivers the missing
- *   events itself, in slot order, so its caller still sees every slot once
- *   and without gaps. A read that fails ends the feed (`onError`);
+ *   feed reads the log after its last delivered slot and delivers what
+ *   continues the sequence from there, in slot order. A read that fails ends
+ *   the feed (`onError`). This narrows gaps; it does not rule them out. The
+ *   feed only guarantees that it delivers slots in increasing order, each at
+ *   most once: a push above the gap that lands while the read is in flight
+ *   moves the last delivered slot past it, and the read's events below that
+ *   are then dropped. The runtime accepts only the slot it expects next, so
+ *   it holds such a push and its own log poll fills the gap, as it does for
+ *   any push that skips a slot;
  * - a heartbeat under another `reqId` after this subscription's ack ends the
  *   feed: a later `subscribe` on the connection replaced it.
  *
@@ -100,8 +106,9 @@ export type ReadEventsAfter = (
 export const GAP_FILL_PAGE_SIZE = 100;
 
 /**
- * The backend's list cursor that selects everything after `slot`
- * (`eid:<eventId>`, workflow-server's `lib/data/event-id-cursor.ts`).
+ * The backend's list cursor that selects everything after `slot`. The
+ * backend's events list takes `eid:<eventId>` as the cursor for "after this
+ * event", the form it returns as `cursor` itself.
  */
 export function cursorAfterSlot(slot: number): string {
   return `eid:${slotToEventId(slot)}`;
@@ -191,6 +198,12 @@ export function subscribeRunEvents(
   let fillThrough = afterSlot;
   /** Whether a gap-filling read is running. */
   let filling = false;
+  /**
+   * The highest slot a fill gave up on: its read returned nothing that
+   * continues the sequence. A heartbeat naming the same slot again does not
+   * read again; one naming a higher slot does.
+   */
+  let unfilledThrough = afterSlot;
 
   const clearSilence = () => {
     if (silenceTimer !== undefined) clearTimeout(silenceTimer);
@@ -268,7 +281,14 @@ export function subscribeRunEvents(
    */
   const fillGap = (throughSlot: number) => {
     if (throughSlot > fillThrough) fillThrough = throughSlot;
-    if (filling || !active || lastSlot >= fillThrough) return;
+    if (
+      filling ||
+      !active ||
+      lastSlot >= fillThrough ||
+      fillThrough <= unfilledThrough
+    ) {
+      return;
+    }
     if (!readEventsAfter) {
       fail(
         new LiveFeedError(
@@ -294,7 +314,10 @@ export function subscribeRunEvents(
             advanced = true;
             onEvent(event);
           }
-          if (!advanced) break;
+          if (!advanced) {
+            unfilledThrough = fillThrough;
+            break;
+          }
         }
       } catch (error) {
         fail(
@@ -331,8 +354,9 @@ export function subscribeRunEvents(
     if (event.runId !== runId) return;
     const slot = pushedSlot(frame, event);
     if (slot !== null) {
-      // At most once per slot; the runtime discards anything else out of
-      // order on its own.
+      // Increasing slots, each at most once; not necessarily without gaps
+      // (see the heartbeat notes above). The runtime holds a push above a
+      // gap until its poll fills it.
       if (slot <= lastSlot) return;
       lastSlot = slot;
     }

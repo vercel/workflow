@@ -2860,10 +2860,10 @@ The feed is a timed tail read of the run's event log on the backend. Each read g
 
 ##### Heartbeats
 
-world-vercel lists `run-heartbeat` in its upgrade flags. A backend that sends heartbeats says so on the `subscribe_ack` (`heartbeatMs`, 10 s). Its feed then sends `{ reqId, type: 'run_heartbeat', slot }` after a successful read once it has sent nothing for `heartbeatMs`, naming the highest slot it has pushed (`lib/handlers/v5/run-feed.ts` in workflow-server). A feed whose reads fail sends none. On such an ack, `subscribeRunEvents` (`packages/world-vercel/src/events-live-feed.ts`) watches the feed, within the `subscribe` contract (`onEvent` and `onError` only):
+world-vercel lists `run-heartbeat` in its upgrade flags. A backend that sends heartbeats says so on the `subscribe_ack` (`heartbeatMs`, 10 s). Its feed then sends `{ reqId, type: 'run_heartbeat', slot }` after a successful read once it has sent nothing for `heartbeatMs`, naming the highest slot it has pushed. A feed whose reads fail sends none. On such an ack, `subscribeRunEvents` (`packages/world-vercel/src/events-live-feed.ts`) watches the feed, within the `subscribe` contract (`onEvent` and `onError` only):
 
 - No push and no heartbeat for 3 × `heartbeatMs` (30 s) ends the feed through `onError` (`run-feed-silent`): a half-open socket, a feed that stopped without its `end` notice, or reads failing for that long.
-- A heartbeat naming a slot above the last one delivered means pushes went missing (a replacement subscription on the connection that started above what this subscriber held). The feed reads the log after its last delivered slot (`events.list`, cursor `eid:<eventId>`) and delivers the missing events itself, in slot order. A read that fails ends the feed (`run-feed-gap`).
+- A heartbeat naming a slot above the last one delivered means pushes went missing (a replacement subscription on the connection that started above what this subscriber held). The feed reads the log after its last delivered slot (`events.list`, cursor `eid:<eventId>`) and delivers what continues the sequence from there, in slot order. A read that fails ends the feed (`run-feed-gap`). The feed's guarantee stays increasing slots, each at most once: a push above the gap that lands while the read is in flight can still leave one, which the runtime's own poll fills as it does for any push that skips a slot.
 - A heartbeat under another `reqId` after the subscription's ack ends the feed (`run-feed-replaced`): a later `subscribe` on the connection replaced it.
 
 The runtime's poll is unchanged: 10 s to 20 s while the feed is up. Against a backend that predates heartbeats the ack has no `heartbeatMs` and nothing is armed.
@@ -4072,7 +4072,7 @@ Before: the QuickJS orchestrator did not hand off when an inline step ran past t
 
 ### 16. Live-feed heartbeat and client watchdog
 
-**Done** (with vercel/workflow-server#1376). The backend feed sends a `run_heartbeat` frame, a new frame type, to a client that lists the `run-heartbeat` upgrade flag. It goes out after a successful read once the feed has sent nothing for 10 seconds, and carries the highest slot it has pushed. The backend confirms this on each `subscribe_ack` (`heartbeatMs`). world-vercel then watches the feed: 30 seconds of silence fails it, a heartbeat slot above what the client holds makes world-vercel read the missing events from the log and deliver them itself, and a heartbeat for another subscription is feed trouble. See [Heartbeats](#heartbeats).
+**Done.** The backend feed sends a `run_heartbeat` frame, a new frame type, to a client that lists the `run-heartbeat` upgrade flag. It goes out after a successful read once the feed has sent nothing for 10 seconds, and carries the highest slot it has pushed. The backend confirms this on each `subscribe_ack` (`heartbeatMs`). world-vercel then watches the feed: 30 seconds of silence fails it, a heartbeat slot above what the client holds makes world-vercel read the missing events from the log and deliver them itself, and a heartbeat for another subscription is feed trouble. See [Heartbeats](#heartbeats).
 
 The `subscribe` contract is unchanged (`onEvent`, `onError`), so the runtime keeps its live poll at 10 to 20 seconds. Lengthening it would need the runtime to know the feed is watched, which no World reports today.
 
