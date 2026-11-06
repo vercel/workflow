@@ -12,7 +12,7 @@ import {
 } from '@workflow/utils';
 import type { HookConflictEvent } from '@workflow/world';
 import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
-import type { Hook, HookOptions } from '../create-hook.js';
+import type { Hook, HookOptions, SystemHookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { webhookLogger } from '../logger.js';
 import {
@@ -21,7 +21,9 @@ import {
   scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from '../private.js';
+import { replayPayloadEventKey } from '../replay-payload-cache.js';
 import type { Run } from '../runtime/run.js';
+import { mintHookCorrelationId } from '../runtime/start-hook-binding.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
 /**
@@ -63,6 +65,21 @@ function createConflictingRun(
   return deserialize.call(RunClass, { runId: conflictingRunId });
 }
 
+/**
+ * The error `createHook()` throws when it opens the run's start Hook with
+ * options only a write could apply. Shared with the QuickJS guest's message.
+ */
+export function startHookOptionsError(rejected: readonly string[]): string {
+  return `\`createHook()\` was called with this run's start token and ${rejected.map((name) => `\`${name}\``).join(', ')}, but the start Hook was already created by \`start()\`, so they cannot apply. Set \`metadata\` and \`experimental_minRetention\` on \`start(workflow, args, { experimental_hook })\` instead; \`isWebhook\` and \`experimental_force\` are not available for a start Hook.`;
+}
+
+/**
+ * Drops a hook's pending payload awaiter without disposing the hook. Only the
+ * child-run completion dispatcher uses it; the QuickJS engine's hooks carry
+ * the same symbol.
+ */
+export const HOOK_RELEASE_AWAITER = Symbol.for('WORKFLOW_HOOK_RELEASE_AWAITER');
+
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
   return function createHookImpl<T = any>(options: HookOptions = {}): Hook<T> {
     // Reject an explicit empty-string token. A token must either be omitted
@@ -75,6 +92,33 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       throw new Error(
         '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a generated one.'
       );
+    }
+
+    // The run's start Hook (`start(workflow, args, { experimental_hook })`) was created by
+    // the run's admission, so the first `createHook` with its token opens that
+    // Hook instead of creating one: no `hook_created`, no suspension. Whether
+    // this call binds depends only on the token and on earlier calls in the
+    // body, so every replay decides it the same way.
+    const startHook = ctx.startHook;
+    const bindsStartHook =
+      startHook !== undefined &&
+      !startHook.bound &&
+      typeof options.token === 'string' &&
+      options.token === startHook.token;
+
+    if (bindsStartHook) {
+      // Nothing is written for the start Hook, so these options could not
+      // take effect. They belong on the `start()` that created it.
+      const rejected = [
+        options.metadata !== undefined && 'metadata',
+        options.experimental_minRetention !== undefined &&
+          'experimental_minRetention',
+        options.isWebhook === true && 'isWebhook',
+        options.experimental_force === true && 'experimental_force',
+      ].filter((name): name is string => typeof name === 'string');
+      if (rejected.length > 0) {
+        throw new Error(startHookOptionsError(rejected));
+      }
     }
 
     if (
@@ -116,26 +160,56 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
     }
 
-    // Generate hook ID and token
-    const correlationId = `hook_${ctx.generateUlid()}`;
+    // Generate hook ID and token. Binding the start Hook still draws one
+    // ULID, so the ids every later call mints do not depend on whether this
+    // one bound.
+    let correlationId: string;
+    if (bindsStartHook) {
+      ctx.generateUlid();
+      correlationId = startHook.hookId;
+      startHook.bound = true;
+      ctx.eventsConsumer.startHookOpened();
+    } else {
+      correlationId = mintHookCorrelationId(ctx.generateUlid, startHook);
+    }
     const token = options.token ?? ctx.generateNanoid();
-    const tokenRetentionUntil =
-      options.experimental_minRetention === undefined
+    const tokenRetentionUntil = bindsStartHook
+      ? startHook.tokenRetentionUntil
+      : options.experimental_minRetention === undefined
         ? undefined
         : parseDurationToDate(options.experimental_minRetention);
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
     const isWebhook = options.isWebhook ?? false;
+    // SDK-internal hooks (see `SystemHookOptions`) are marked so the runtime
+    // and observability tooling can tell them apart from user hooks.
+    const isSystem =
+      (options as SystemHookOptions).isSystem === true && !isWebhook;
 
-    ctx.invocationsQueue.set(correlationId, {
-      type: 'hook',
+    ctx.invocationsQueue.set(
       correlationId,
-      token,
-      tokenRetentionUntil,
-      ...(options.experimental_force === true && { force: true }),
-      metadata: options.metadata,
-      isWebhook,
-    });
+      bindsStartHook
+        ? {
+            type: 'hook',
+            correlationId,
+            token,
+            tokenRetentionUntil,
+            isWebhook: false,
+            // `run_created` stands for this Hook's creation.
+            hasCreatedEvent: true,
+            startHook: true,
+          }
+        : {
+            type: 'hook',
+            correlationId,
+            token,
+            tokenRetentionUntil,
+            ...(options.experimental_force === true && { force: true }),
+            metadata: options.metadata,
+            isWebhook,
+            ...(isSystem && { isSystem: true }),
+          }
+    );
 
     // Queue of buffered hook payloads (received before the workflow awaited
     // the hook). Each entry's `claim()` builds the consumer-facing promise
@@ -174,8 +248,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     let eventLogEmpty = false;
 
-    // Track if the event log confirms hook creation happened
-    let hasCreated = false;
+    // Track if the event log confirms hook creation happened. The start Hook
+    // was created with the run (`run_created`, the log's first event), so its
+    // registration outcome is settled before any other delivery: `getConflict()`
+    // resolves null without a write or a suspension.
+    let hasCreated = bindsStartHook;
 
     // Track if the event log confirms disposal happened (replay no-op)
     let hasDisposedEvent = false;
@@ -447,7 +524,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               try {
                 const prepared =
                   await ctx.replayPayloadCache.prepareEventPayload(
-                    event.eventId,
+                    replayPayloadEventKey(event),
                     'payload',
                     event.eventData.payload
                   );
@@ -522,7 +599,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const prepared = await ctx.replayPayloadCache.prepareEventPayload(
-                event.eventId,
+                replayPayloadEventKey(event),
                 'payload',
                 event.eventData.payload
               );
@@ -746,7 +823,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       webhookLogger.debug('Hook disposed', { correlationId, token });
     }
 
-    const hook: Hook<T> = {
+    const hook = {
       token,
 
       getConflict(): Promise<Run<unknown> | null> {
@@ -771,7 +848,16 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       dispose: disposeHook,
 
       [Symbol.dispose]: disposeHook,
-    };
+
+      // SDK-internal (the child-run completion dispatcher): stop waiting for
+      // the next payload without disposing the hook. A payload landing later
+      // is buffered for the next `then()`, and the hook stops counting as
+      // observed (`hookPayloadAwaiters`). One already consumed and on its way
+      // (`inFlight`) still settles the awaiter it was handed.
+      [HOOK_RELEASE_AWAITER]: () => {
+        pending = undefined;
+      },
+    } as Hook<T>;
 
     // Also register with the VM's Symbol.dispose so `using` works inside
     // the workflow sandbox (the VM may have a polyfilled Symbol.dispose

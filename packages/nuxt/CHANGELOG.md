@@ -1,5 +1,20 @@
 # @workflow/nuxt
 
+## 5.0.8
+
+### Patch Changes
+
+- [#5211](https://github.com/vercel/workflow/pull/5211) [`6291260`](https://github.com/vercel/workflow/commit/629126060cca6313e4ac3df8489402a86f41c362) Thanks [@atinux](https://github.com/atinux)! - Upgrade `@nuxt/kit` to 4.6.3 to pick up the fix for CVE-2026-71314.
+- Updated dependencies [[`9bed0a7`](https://github.com/vercel/workflow/commit/9bed0a7138f5988cdda6ede33a77c0317b7aea9f)]:
+  - @workflow/nitro@5.0.8
+
+## 5.0.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.7
+
 ## 5.0.6
 
 ### Patch Changes

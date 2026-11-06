@@ -492,7 +492,10 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
  */
 async function createWorldForBackend(backendId: string): Promise<World> {
   if (backendId === 'local' || backendId === '@workflow/world-local') {
-    return createLocalWorld();
+    // Read the key the running app wrote to its data directory, never
+    // replace it: the web UI acts on that app (cancel, recreate, re-enqueue,
+    // wake-up), and a new key would be one the app's routes do not hold.
+    return createLocalWorld({ queueAuthKey: 'read' });
   }
 
   const cwd = getObservabilityCwd();

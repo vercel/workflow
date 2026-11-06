@@ -198,7 +198,10 @@ describe('createWorkflowRunEvent retry wiring', () => {
 
   it('still maps a hook_disposed 404 to HookNotFoundError, after the retry loop, without retrying', async () => {
     createV4Mock.mockImplementation(async () => {
-      throw new WorkflowWorldError('not found', { status: 404 });
+      throw new WorkflowWorldError('not found', {
+        status: 404,
+        code: 'not-found',
+      });
     });
 
     await expect(
@@ -211,6 +214,23 @@ describe('createWorkflowRunEvent retry wiring', () => {
     ).rejects.toBeInstanceOf(HookNotFoundError);
     // 404 is definitive → one attempt; the mapping wraps the retry loop.
     expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a 404 without an error code alone: a missing route is not a missing hook', async () => {
+    createV4Mock.mockImplementation(async () => {
+      throw new WorkflowWorldError('v4 createEvent failed: HTTP 404', {
+        status: 404,
+      });
+    });
+
+    const err = await createWorkflowRunEvent(
+      RUN_ID,
+      { eventType: 'hook_received', correlationId: 'hook_1', specVersion: 2 },
+      undefined,
+      CONFIG
+    ).catch((e) => e);
+    expect(err).not.toBeInstanceOf(HookNotFoundError);
+    expect(WorkflowWorldError.is(err) && err.status).toBe(404);
   });
 
   it('does not retry an excluded event type (step_started) even on a 5xx', async () => {
@@ -227,5 +247,169 @@ describe('createWorkflowRunEvent retry wiring', () => {
       )
     ).rejects.toBeInstanceOf(WorkflowWorldError);
     expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    400, 404,
+  ])('preserves definite %s refusals on resolved delivery', async (status) => {
+    const error = new WorkflowWorldError('resolved refused', { status });
+    createV4Mock.mockRejectedValue(error);
+    await expect(
+      createWorkflowRunEvent(
+        RUN_ID,
+        {
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          specVersion: 2,
+          eventData: { payload: new Uint8Array([1]) },
+        },
+        {
+          requireHookResumeDedup: true,
+          resumeId: 'resolved',
+          resumePayloadDigest: 'a'.repeat(64),
+        },
+        CONFIG
+      )
+    ).rejects.toBe(error);
+    expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: 429, code: undefined },
+    { status: 503, code: 'run-spec-version-changed' },
+    { status: 503, code: 'start-hook-run-pending' },
+  ])('retries definite $status $code admission refusals on the resolved route', async ({
+    status,
+    code,
+  }) => {
+    const error =
+      status === 429
+        ? new ThrottleError('busy', { retryAfter: 1 })
+        : new WorkflowWorldError('busy', {
+            status: 503,
+            code,
+            retryAfter: 1,
+          });
+    createV4Mock
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(v4Success());
+    const params = {
+      requireHookResumeDedup: true,
+      resumeId: 'resolved',
+      resumePayloadDigest: 'a'.repeat(64),
+    };
+    const promise = createWorkflowRunEvent(
+      RUN_ID,
+      {
+        eventType: 'hook_received',
+        correlationId: 'hook_1',
+        specVersion: 2,
+        eventData: { payload: new Uint8Array([1]) },
+      },
+      params,
+      CONFIG
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+    expect(createV4Mock).toHaveBeenCalledTimes(2);
+    expect(createV4Mock.mock.calls[0][0].resumeId).toBe('resolved');
+    expect(createV4Mock.mock.calls[1][0].resumeId).toBe('resolved');
+  });
+
+  it('does not retry a resolved write after an uncertain response', async () => {
+    const error = new WorkflowWorldError('lost', { code: 'STREAM_ERROR' });
+    createV4Mock.mockRejectedValue(error);
+    await expect(
+      createWorkflowRunEvent(
+        RUN_ID,
+        {
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          specVersion: 2,
+          eventData: { payload: new Uint8Array([1]) },
+        },
+        {
+          requireHookResumeDedup: true,
+          resumeId: 'resolved',
+          resumePayloadDigest: 'a'.repeat(64),
+        },
+        CONFIG
+      )
+    ).rejects.toBe(error);
+    expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'service-unavailable',
+    'unknown-error',
+    undefined,
+  ])('does not resend an ambiguous 503 %s even with Retry-After', async (code) => {
+    const error = new WorkflowWorldError('write may have committed', {
+      status: 503,
+      code,
+      retryAfter: 1,
+    });
+    createV4Mock.mockRejectedValueOnce(error).mockRejectedValueOnce(
+      new WorkflowWorldError('kill switch', {
+        status: 404,
+        code: 'resolved-hook-unavailable',
+      })
+    );
+    await expect(
+      createWorkflowRunEvent(
+        RUN_ID,
+        { eventType: 'hook_received', correlationId: 'hook_1', specVersion: 2 },
+        {
+          requireHookResumeDedup: true,
+          resumeId: 'r1',
+          resumePayloadDigest: 'a'.repeat(64),
+        },
+        CONFIG
+      )
+    ).rejects.toBe(error);
+    expect(createV4Mock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { status: 400, pending: false },
+    { status: 404, pending: false },
+    { status: 404, pending: true },
+  ])('preserves retry history after a pending=$pending admission retry and $status refusal', async ({
+    status,
+    pending,
+  }) => {
+    const refusal = new WorkflowWorldError('refused', {
+      status,
+      code: 'resolved-hook-unavailable',
+    });
+    createV4Mock
+      .mockRejectedValueOnce(
+        pending
+          ? new WorkflowWorldError('pending', {
+              status: 503,
+              code: 'start-hook-run-pending',
+              retryAfter: 1,
+            })
+          : new ThrottleError('busy', { retryAfter: 1 })
+      )
+      .mockRejectedValueOnce(refusal);
+    const delivery = createWorkflowRunEvent(
+      RUN_ID,
+      { eventType: 'hook_received', correlationId: 'hook_1', specVersion: 2 },
+      {
+        requireHookResumeDedup: true,
+        resumeId: 'r1',
+        resumePayloadDigest: 'a'.repeat(64),
+      },
+      CONFIG
+    );
+    const assertion = expect(delivery).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      code: 'HOOK_RESUME_RETRY_REFUSED',
+      status,
+      cause: refusal,
+    });
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(createV4Mock).toHaveBeenCalledTimes(2);
   });
 });

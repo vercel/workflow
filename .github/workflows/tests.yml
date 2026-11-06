@@ -30,9 +30,10 @@ jobs:
       vercel-prod-matrix: ${{ steps.vercel-matrix.outputs.vercel-prod-matrix }}
       vercel-ws-transport-matrix: ${{ steps.vercel-matrix.outputs.vercel-ws-transport-matrix }}
       vercel-http-transport-matrix: ${{ steps.vercel-matrix.outputs.vercel-http-transport-matrix }}
+      vercel-spec9-matrix: ${{ steps.vercel-matrix.outputs.vercel-spec9-matrix }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -88,7 +89,7 @@ jobs:
 
     steps:
       - name: Find existing test comment
-        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -98,7 +99,7 @@ jobs:
       - name: Get existing comment body
         if: steps.find-comment.outputs.comment-id != ''
         id: get-comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           STARTED_AT: ${{ github.run_started_at }}
         with:
@@ -148,7 +149,7 @@ jobs:
 
       - name: Create new test comment
         if: steps.find-comment.outputs.comment-id == ''
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           message: |
@@ -164,14 +165,14 @@ jobs:
 
       - name: Update existing test comment with stale warning
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results == 'true'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           path: ${{ steps.get-comment.outputs.stale-comment-path }}
 
       - name: Update existing test comment without results
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results != 'true'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           message: |
@@ -200,7 +201,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -224,7 +225,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -250,7 +251,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -298,7 +299,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -326,7 +327,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -336,7 +337,7 @@ jobs:
           build-packages: 'true'
 
       - name: Upload package build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-package-build-artifacts
           # Keep this list aligned with package build outputs in turbo.json.
@@ -394,7 +395,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -497,7 +498,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ fromJSON(needs.ci-scope.outputs.vercel-projects)['nextjs-turbopack']['project-id'] }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -588,7 +589,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -649,6 +650,97 @@ jobs:
           token: ${{ secrets.VERCEL_LABS_TOKEN }}
           e2e-start-ms: ${{ steps.e2eStart.outputs.ms }}
 
+  e2e-vercel-spec9:
+    # Spec 9 runs (the single orchestrator) are opt-in with
+    # WORKFLOW_SPEC_VERSION=9, so every other Vercel lane runs the default,
+    # spec 8. This lane deploys its own preview with the variable set and runs
+    # the full suite against it on both VMs.
+    #
+    # The variable is set on the deployment AND on the test runner: a
+    # cross-deployment start() stamps the lower of the target's and the
+    # caller's version, so with only the deployment env set this lane would
+    # silently test spec 8. The e2e test "stamps the spec version the lane
+    # opts in to" fails if either side stops seeing it.
+    #
+    # Same dedicated-deployment pattern as e2e-vercel-ws-transport above.
+    name: E2E Vercel Spec 9 Test (${{ matrix.app.name }}, ${{ matrix.vm }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: ci-scope
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    concurrency:
+      group: e2e-vercel-spec9-${{ matrix.app.name }}-${{ matrix.vm }}-${{ needs.ci-scope.outputs.e2e-vercel-slot }}
+      queue: max
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.ci-scope.outputs.vercel-spec9-matrix) }}
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      - name: Deploy a dedicated spec 9 preview
+        id: deployment
+        uses: ./.github/actions/deploy-vercel-preview
+        with:
+          project-id: ${{ matrix.app.project-id }}
+          team-id: ${{ env.VERCEL_TEAM_ID }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          env: |
+            WORKFLOW_SPEC_VERSION=9
+
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
+      - name: Run E2E Tests
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-spec9-$APP_NAME-$WORKFLOW_VM.json"
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VM: ${{ matrix.vm }}
+          WORKFLOW_SPEC_VERSION: '9'
+          WORKFLOW_VERCEL_ENV: "preview"
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.VERCEL_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      - name: Report E2E results
+        if: always()
+        uses: ./.github/actions/report-vercel-e2e
+        with:
+          results-name: vercel-spec9-${{ matrix.app.name }}-${{ matrix.vm }}
+          app: ${{ matrix.app.name }}
+          summary-title: E2E Vercel Spec 9 (${{ matrix.app.name }}, ${{ matrix.vm }})
+          capture-runtime-logs: ${{ job.status == 'failure' }}
+          deployment-id: ${{ steps.deployment.outputs.deployment-id }}
+          environment: preview
+          project-id: ${{ matrix.app.project-id }}
+          team-id: ${{ env.VERCEL_TEAM_ID }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          e2e-start-ms: ${{ steps.e2eStart.outputs.ms }}
+
   e2e-vercel-http-transport:
     # The counterpart to e2e-vercel-ws-transport. With
     # WORKFLOW_EVENTS_TRANSPORT defaulting to `ws`, e2e-vercel-prod — which
@@ -701,7 +793,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -770,7 +862,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -803,7 +895,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -824,7 +916,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -843,9 +935,17 @@ jobs:
         run: |
           export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
           rm -f "$DEV_SERVER_LOG_PATH"
-          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
+          # Queue auth stays off on this lane until the team decides to run
+          # the Local lanes with it on. (The runner shares the app's data
+          # directory, so its start()/resumeHook() deliveries carry the app's
+          # key either way.) Off requires dynamic workflows off: the runtime
+          # refuses WORKFLOW_QUEUE_AUTH=off under them. Dynamic workflows are
+          # covered by e2e-local-dynamic, with queue auth on.
+          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_QUEUE_AUTH=off pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
+          # dev.test.ts hands the server on only once the rebuilds its fixture
+          # restores set off have finished (see waitForDevServerToSettle).
+          pnpm vitest run packages/core/e2e/dev.test.ts
           pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
@@ -856,8 +956,6 @@ jobs:
           WORKFLOW_DEV_HMR_LOGS: "1"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
-          # The server above opts in, so a dynamic E2E opt-in refusal fails.
-          WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
           # Local worlds have no run encryption keys; snapshot legs opt in.
           WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
@@ -879,7 +977,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
@@ -906,7 +1004,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -927,7 +1025,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -961,7 +1059,13 @@ jobs:
       - name: Run E2E Tests
         run: |
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
-          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
+          # Queue auth stays off on this lane until the team decides to run
+          # the Local lanes with it on. (The runner shares the app's data
+          # directory, so its start()/resumeHook() deliveries carry the app's
+          # key either way.) Off requires dynamic workflows off: the runtime
+          # refuses WORKFLOW_QUEUE_AUTH=off under them. Dynamic workflows are
+          # covered by e2e-local-dynamic, with queue auth on.
+          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_QUEUE_AUTH=off pnpm start 2>&1 | tee "$PROD_SERVER_LOG_PATH") &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
@@ -971,8 +1075,6 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
           WORKFLOW_VM: ${{ matrix.app.vm || '' }}
-          # The server above opts in, so a dynamic E2E opt-in refusal fails.
-          WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
           WORKFLOW_SNAPSHOT_THRESHOLD: ${{ matrix.app.snapshotThreshold || '' }}
           # Local worlds have no run encryption keys; snapshot legs opt in.
           WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED: ${{ matrix.app.snapshotThreshold && '1' || '' }}
@@ -994,13 +1096,79 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
             e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.flaky.json
             e2e-infra-${{ matrix.app.name }}-local.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Dynamic workflows on a local World, with queue auth on. The local dev/prod
+  # lanes run with dynamic workflows off and queue auth off until the team
+  # decides to run them with auth on (see e2e-local-dev). Here the runner
+  # starts each parent fixture through the app (`/api/e2e-dynamic-start`,
+  # WORKFLOW_E2E_START_VIA_APP=1), so the app's own queue sends the first
+  # delivery, as in a real app.
+  e2e-local-dynamic:
+    name: E2E Local Dynamic Workflows (nextjs-turbopack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, e2e-package-build]
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Download shared package builds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      - name: Prepare workbench path
+        id: prepare-workbench
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: nextjs-turbopack
+
+      - name: Run dynamic workflow E2E tests
+        run: |
+          export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-nextjs-turbopack-dynamic.log"
+          # Queue auth is left at its default (on).
+          (cd "$WORKBENCH_APP_PATH" && WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS=1 pnpm dev 2>&1 | tee "$DEV_SERVER_LOG_PATH") &
+          echo "starting tests in 10 seconds" && sleep 10
+          pnpm vitest run packages/core/e2e/e2e-dynamic-workflow.test.ts --reporter=verbose
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          APP_NAME: nextjs-turbopack
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+          # The server above opts in, so a dynamic E2E opt-in refusal fails.
+          WORKFLOW_E2E_EXPECT_DYNAMIC_WORKFLOWS: "1"
+          WORKFLOW_E2E_START_VIA_APP: "1"
+
+      - name: Upload dev server log
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-local-dynamic-dev-server-log
+          path: dev-server-nextjs-turbopack-dynamic.log
           retention-days: 7
           if-no-files-found: ignore
 
@@ -1038,7 +1206,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1059,7 +1227,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1113,18 +1281,48 @@ jobs:
           echo "VM snapshot restores: $restores"
           test "$restores" -gt 0
 
+      # The only CI run of the start({ hook }) block on the single-orchestrator
+      # engine: the spec 9 Vercel lane skips it until world-vercel's start Hook
+      # flag is on there. Spec 9 is a runtime choice (WORKFLOW_SPEC_VERSION is
+      # read when the World is created), so the built app is restarted with it
+      # rather than rebuilt; the spec 8 server is stopped first so its
+      # in-process queue workers don't pick the spec 9 runs up.
+      - name: Run start({ hook }) E2E at spec 9
+        if: ${{ matrix.app.name == 'nextjs-turbopack' && !matrix.app.canary && !matrix.app.snapshotThreshold }}
+        run: |
+          # Stop the spec 8 server by its port: Next.js renames its server
+          # process, so its command line no longer says `next start`.
+          listening() { lsof -ti tcp:3000 -sTCP:LISTEN; }
+          pids=$(listening || true)
+          if [ -n "$pids" ]; then echo "$pids" | xargs kill || true; fi
+          for _ in $(seq 1 30); do listening >/dev/null || break; sleep 1; done
+          if listening >/dev/null; then echo "port 3000 is still in use"; exit 1; fi
+          (cd "$WORKBENCH_APP_PATH" && pnpm start > "$GITHUB_WORKSPACE/prod-server-postgres-spec9-${{ matrix.app.artifactSuffix }}.log" 2>&1) &
+          for _ in $(seq 1 60); do curl -s -o /dev/null http://localhost:3000/ && break; sleep 1; done
+          pnpm vitest run packages/core/e2e/e2e.test.ts -t 'start\(\{ hook \}\)' --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-spec9-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+          DEPLOYMENT_URL: "http://localhost:3000"
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
+          WORKFLOW_SPEC_VERSION: '9'
+          # Every test of the block must run here, not skip.
+          WORKFLOW_E2E_EXPECT_START_HOOK: '1'
+
       - name: Generate E2E summary
         if: always()
         run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Postgres (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
             e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.flaky.json
+            e2e-local-postgres-spec9-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
             e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
@@ -1156,7 +1354,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1169,7 +1367,7 @@ jobs:
       # vitest suite imports `@workflow/core` and shells out to the `workflow`
       # CLI to inspect runs.
       - name: Download shared package builds
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1230,7 +1428,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-conformance-python
           path: |
@@ -1260,7 +1458,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1289,7 +1487,10 @@ jobs:
           # `$using:` only resolves PowerShell variables, not env vars, so
           # copy MATRIX_VM into a session variable before Start-Job.
           $matrixVm = $env:MATRIX_VM
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; $env:WORKFLOW_VM = $using:matrixVm; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
+          # Queue auth stays off on this lane until the team decides to run
+          # the Local lanes with it on (dynamic workflows stay off, as the
+          # runtime requires for that).
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; $env:WORKFLOW_VM = $using:matrixVm; $env:WORKFLOW_QUEUE_AUTH = 'off'; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
 
@@ -1391,7 +1592,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
           path: |
@@ -1403,7 +1604,7 @@ jobs:
 
       - name: Upload Next.js server logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nextjs-server-logs-windows-${{ matrix.vm }}
           path: nextjs-server.log
@@ -1423,7 +1624,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1461,17 +1662,17 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-multi-region, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
+    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-multi-region, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-vercel-spec9, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
     if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: e2e-results-*
           path: e2e-results
@@ -1487,7 +1688,7 @@ jobs:
 
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: e2e-test-results
           path: e2e-summary.md
@@ -1497,7 +1698,7 @@ jobs:
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-vercel-spec9, e2e-local-dev, e2e-local-prod, e2e-local-dynamic, e2e-local-postgres, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -1509,8 +1710,10 @@ jobs:
           VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
           VERCEL_WS_STATUS: ${{ needs.e2e-vercel-ws-transport.result }}
           VERCEL_HTTP_STATUS: ${{ needs.e2e-vercel-http-transport.result }}
+          VERCEL_SPEC9_STATUS: ${{ needs.e2e-vercel-spec9.result }}
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
+          LOCAL_DYNAMIC_STATUS: ${{ needs.e2e-local-dynamic.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
           FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
@@ -1545,6 +1748,7 @@ jobs:
             [[ "$UNIT_STATUS" == "skipped" ]] || echo "Warning: unit was not skipped ($UNIT_STATUS)"
             [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
             [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
+            [[ "$LOCAL_DYNAMIC_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dynamic was not skipped ($LOCAL_DYNAMIC_STATUS)"
             [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
             [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
           else
@@ -1554,8 +1758,10 @@ jobs:
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
             [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
             [[ "$VERCEL_HTTP_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-http-transport ($VERCEL_HTTP_STATUS)")
+            [[ "$VERCEL_SPEC9_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-spec9 ($VERCEL_SPEC9_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
+            [[ "$LOCAL_DYNAMIC_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dynamic ($LOCAL_DYNAMIC_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
             [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
           fi
@@ -1582,12 +1788,12 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: e2e-results-*
           path: e2e-results

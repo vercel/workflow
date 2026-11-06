@@ -76,6 +76,9 @@ export interface RunCapabilities {
    * raw bytes (the legacy format) for compatibility with older runs.
    */
   framedByteStreams: boolean;
+
+  /** Whether real-time abort packets may carry a length envelope. */
+  framedAbortStreams: boolean;
 }
 
 /**
@@ -122,6 +125,10 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
   { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
+  // This change has a minor changeset. Keep this cutoff aligned with the
+  // release that actually ships the compatible abort reader: a lower cutoff
+  // would make new producers frame packets for old, unframed-only readers.
+  { capability: 'framedAbortStreams', minVersion: '5.3.0' },
   // NOTE: the hook-resume consumer protocol ("does the consumer re-ensure
   // `hook_received` from the queue message's `hookInput`?") is intentionally
   // NOT gated here. A version-compare against a predicted release cutoff is a
@@ -200,6 +207,7 @@ export function getRunCapabilities(
     return {
       supportedFormats: BASELINE_FORMATS,
       framedByteStreams: false,
+      framedAbortStreams: false,
     };
   }
 
@@ -217,6 +225,7 @@ export function getRunCapabilities(
   const result: RunCapabilities = {
     supportedFormats: formats,
     framedByteStreams: false,
+    framedAbortStreams: false,
   };
 
   for (const { capability, minVersion } of CAPABILITY_VERSION_TABLE) {

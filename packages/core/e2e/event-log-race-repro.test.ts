@@ -240,6 +240,8 @@ interface ReproRunResult {
   errorName?: string;
   durationMs: number;
   dashboardUrl?: string;
+  /** The run's spec version, as its row reported it. */
+  specVersion?: number;
   /** Diagnostics from the driver: how much racing pressure the attempt actually
    *  applied. A run that corrupts with `stragglers: 0` in every round would mean
    *  the step-count amplifier was not the trigger. */
@@ -638,6 +640,7 @@ async function pollTerminalRun(
   const world = await getWorld();
   const deadline = startedAt + config.runTimeoutMs;
   let lastStatus: string | undefined;
+  let specVersion: number | undefined;
   const base = {
     attempt: -1,
     scenario,
@@ -649,10 +652,12 @@ async function pollTerminalRun(
   while (Date.now() < deadline) {
     const runData = await world.runs.get(run.runId);
     lastStatus = runData.status;
+    specVersion = runData.specVersion;
 
     if (runData.status === 'completed') {
       return {
         ...base,
+        specVersion,
         outcome: 'completed',
         status: runData.status,
         durationMs: Date.now() - startedAt,
@@ -675,6 +680,7 @@ async function pollTerminalRun(
       const described = await describeRunError(failure.error, run.runId);
       return {
         ...base,
+        specVersion,
         outcome: classifyFailure(failure.errorCode),
         status: runData.status,
         errorCode: failure.errorCode,
@@ -686,6 +692,7 @@ async function pollTerminalRun(
     if (runData.status === 'cancelled') {
       return {
         ...base,
+        specVersion,
         outcome: 'infra',
         status: runData.status,
         errorCode: 'CANCELLED',
@@ -739,6 +746,7 @@ async function pollTerminalRun(
 
   return {
     ...base,
+    specVersion,
     outcome: 'stuck',
     status: lastStatus,
     durationMs: Date.now() - startedAt,
@@ -1706,6 +1714,17 @@ let remainingPlanned = plannedAttempts;
 let budgetExhausted = false;
 let lastCheckpointAt = 0;
 
+/**
+ * The spec version this lane's runs must have, when the lane opts in to one
+ * with `WORKFLOW_SPEC_VERSION` (set on both the deployment and this runner: a
+ * cross-deployment `start()` stamps the lower of the two). Without it the
+ * runs take the default, which this harness does not pin.
+ */
+const expectedSpecVersion = (() => {
+  const raw = process.env.WORKFLOW_SPEC_VERSION?.trim();
+  return raw ? Number(raw) : undefined;
+})();
+
 function writeResults(results: ReproRunResult[], complete: boolean) {
   fs.writeFileSync(
     RESULT_PATH,
@@ -1713,6 +1732,7 @@ function writeResults(results: ReproRunResult[], complete: boolean) {
       {
         completedAt: new Date().toISOString(),
         deploymentUrl,
+        ...(expectedSpecVersion !== undefined ? { expectedSpecVersion } : {}),
         // `partial` is the renderer's signal that the distribution below counts
         // fewer runs than were planned, so its rates are still meaningful but
         // its totals are not comparable to a full run's.
@@ -1944,6 +1964,20 @@ describe('event log race repro', { retry: 0 }, () => {
         (result) => result.outcome !== 'completed' && result.outcome !== 'infra'
       );
       expect(regressions).toEqual([]);
+
+      // A lane that opts in to a spec version and silently races another one
+      // would report a clean result for the wrong orchestrator.
+      if (expectedSpecVersion !== undefined) {
+        const offVersion = results.filter(
+          (result) =>
+            result.specVersion !== undefined &&
+            result.specVersion !== expectedSpecVersion
+        );
+        expect(offVersion).toEqual([]);
+        expect(
+          results.some((result) => result.specVersion === expectedSpecVersion)
+        ).toBe(true);
+      }
     }
   );
 });

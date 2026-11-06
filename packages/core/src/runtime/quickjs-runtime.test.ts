@@ -1333,14 +1333,16 @@ describe('hook_conflict on a forced hook', () => {
     expect(out.conflict).toEqual({ name: 'FatalError', fatal: true });
   });
 
-  it('stays an ordinary HookConflictError when the World declined on purpose (forceRefusedReason)', async () => {
+  it.each([
+    'victim-spec-version',
+  ] as const)('stays an ordinary HookConflictError when the World declined on purpose (%s)', async (forceRefusedReason) => {
     // The run holding the token predates involuntary disposal, so the World
     // would not take it: the caller gets
     // the everyday conflict and the owning run's handle, exactly as without
     // `experimental_force`.
     const out = await runWithConflict({
       conflictingRunId: 'wrun_legacy_victim',
-      forceRefusedReason: 'victim-spec-version',
+      forceRefusedReason,
     });
     expect(out.awaited).toEqual({
       name: 'HookConflictError',
@@ -1487,6 +1489,24 @@ describe('global surface parity', () => {
     const value = unwrapResult(result.completed!.result) as any;
     expect(value.threw).toBe(true);
     expect(value.message).toContain('step function');
+  });
+
+  it.each([
+    ['getReader()', 'res.body.getReader();'],
+    ['for await', 'for await (const _ of res.body) {}'],
+  ])('reading response.body with %s throws', async (_label, read) => {
+    const result = await runToCompletion(`
+      const res = new Response("Hello, world!");
+      try {
+        ${read}
+        return { threw: false };
+      } catch (e) {
+        return { threw: true, message: e.message };
+      }
+    `);
+    const value = unwrapResult(result.completed!.result) as any;
+    expect(value.threw).toBe(true);
+    expect(value.message).toContain('not available inside a workflow function');
   });
 
   it('process.env is present (frozen copy, matching the node engine)', async () => {

@@ -2,16 +2,22 @@ import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import {
   createAppRouteUrl,
+  createLogLimiter,
   createWorkflowUrl,
   debugLog,
+  getQueueAuthKey,
+  isQueueAuthRefusal,
+  QUEUE_AUTH_HEADER,
 } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
+  isSingleOrchestratorMessage,
   MessageId,
   parseQueueName,
   parseQueueRoute,
   type Queue,
   QueuePrefix,
+  singleOrchestratorRunIdOf,
   ValidQueueName,
   WORKFLOW_FLOW_ROUTE,
 } from '@workflow/world';
@@ -28,6 +34,7 @@ import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
+import type { QueueAuthKey } from './queue-auth-key.js';
 
 /**
  * JSON transport that preserves Uint8Array values using the same
@@ -65,6 +72,57 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // When the clamped timeout fires, the handler will recalculate remaining time from
 // persistent state and return another timeoutSeconds if needed.
 const MAX_SAFE_TIMEOUT_MS = 2147483647;
+
+/**
+ * The most deliveries world-local makes of one message (handoffs aside): a
+ * guard against a message that fails forever. The runtime enforces its own
+ * delivery cap well below it.
+ */
+export const MAX_LOCAL_SAFETY_LIMIT = 256;
+
+/**
+ * Refusals of one message (the runtime's marked 401) after which the key file
+ * still holds the key that was sent, before world-local gives the message up.
+ * A refusal after which the file holds a new key is retried at once and not
+ * counted, however many rotations there are. The counted ones wait the short
+ * backoff, by which time the route has re-read the file too (its re-reads are
+ * rate-limited). Few, because a sender that cannot read the app's key is
+ * refused every time.
+ */
+export const MAX_QUEUE_AUTH_REFUSALS = 5;
+
+/**
+ * Refusals of one message after which the key file held a new key, retried
+ * at once and not counted. Rotations happen when one of the app's processes
+ * starts, seconds apart; past this many for one message, the key is changing
+ * on every attempt (something rewrites it in a loop), and further refusals
+ * count like any other: they back off and give the message up. So a message
+ * never spins, and ends after at most this plus MAX_QUEUE_AUTH_REFUSALS
+ * deliveries, far below MAX_LOCAL_SAFETY_LIMIT.
+ */
+export const MAX_UNCOUNTED_KEY_ROTATIONS = 16;
+
+/** Failed deliveries retried 5s apart, before the backoff grows. */
+const LINEAR_RETRY_DELIVERIES = 32;
+const LINEAR_RETRY_DELAY_MS = 5_000;
+const MAX_RETRY_DELAY_MS = 60_000;
+
+/**
+ * The delay before world-local retries a message whose `failedDeliveries`-th
+ * delivery failed: 5s for the first 32, as Vercel Queues does, then doubling
+ * up to a minute. So the {@link MAX_LOCAL_SAFETY_LIMIT} deliveries of a
+ * message that keeps failing span hours, longer than the runtime's stall
+ * window for a step message (`QUEUE_MIN_STEP_REDELIVERY_SPAN_MS` in
+ * `@workflow/world`), and a step whose every delivery throws is failed
+ * rather than left with no message.
+ */
+export function localRetryDelayMs(failedDeliveries: number): number {
+  if (failedDeliveries <= LINEAR_RETRY_DELIVERIES) return LINEAR_RETRY_DELAY_MS;
+  return Math.min(
+    MAX_RETRY_DELAY_MS,
+    LINEAR_RETRY_DELAY_MS * 2 ** (failedDeliveries - LINEAR_RETRY_DELIVERIES)
+  );
+}
 
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
@@ -132,6 +190,13 @@ export type LocalQueue = Queue & {
   registerRoute(prefix: QueuePrefix, path: string): void;
 };
 
+const QUEUE_AUTH_REFUSAL_HINT =
+  "A queue delivery is accepted only with the app's key, from the file queue-auth-key in " +
+  "the app's data directory. Run the sender on the same data directory as the app " +
+  '(WORKFLOW_LOCAL_DATA_DIR) and on the same release. On a trusted network, set ' +
+  'WORKFLOW_QUEUE_AUTH=off on the app to accept other senders (refused while dynamic ' +
+  'workflows are enabled).';
+
 const DETACHED_ARRAYBUFFER_ERROR =
   'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
 const PROXY_HANDLER_DOCS_URL =
@@ -156,7 +221,59 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
   return false;
 }
 
-export function createQueue(config: Partial<Config>): LocalQueue {
+/**
+ * Per-run mutual exclusion for orchestrator deliveries, in FIFO order.
+ *
+ * `acquire(runId)` resolves once every earlier holder for that run has
+ * released, with the release function. Keys are dropped when the last holder
+ * releases, so the map holds only runs with a delivery in flight or waiting.
+ */
+export function createRunGate() {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    async acquire(runId: string): Promise<() => void> {
+      const previous = tails.get(runId) ?? Promise.resolve();
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.then(() => held);
+      tails.set(runId, tail);
+      await previous;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        release();
+        if (tails.get(runId) === tail) tails.delete(runId);
+      };
+    },
+    /** Runs with a delivery in flight or waiting. For tests. */
+    size(): number {
+      return tails.size;
+    },
+  };
+}
+
+/**
+ * The key a queue sends when no World gave it one (a queue created on its
+ * own, as unit tests do): the in-memory key of `@workflow/utils`, which the
+ * runtime checks when no World registered a key source.
+ */
+const inMemoryQueueAuthKey: QueueAuthKey = {
+  current: async () => getQueueAuthKey(),
+  reload: async () => getQueueAuthKey(),
+  restore: async () => {},
+};
+
+export function createQueue(
+  config: Partial<Config>,
+  options: {
+    /** The app's queue auth key, from `createWorld` (see `queue-auth-key.ts`). */
+    queueAuthKey?: QueueAuthKey;
+  } = {}
+): LocalQueue {
+  const queueAuthKey = options.queueAuthKey ?? inMemoryQueueAuthKey;
   // Exactly one of these is built, and close() shuts down whichever it is.
   // Resolved once per queue rather than per delivery so a single queue never
   // mixes transports mid-flight.
@@ -171,6 +288,24 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
+  // A single-orchestrator run's (spec >= 9) orchestrator deliveries go one at
+  // a time, like a concurrency key on Vercel Queues: the single-writer
+  // guarantee's queue half (the in-band fence is the other). Step messages,
+  // health checks and earlier runs' messages are not gated (see
+  // `singleOrchestratorRunIdOf`), so a run's steps keep running in parallel
+  // with each other and with its orchestrator.
+  const runGate = createRunGate();
+  // The same gate on the receiving side, held by `createQueueHandler` around
+  // the handler. `runGate` only sees the messages this process's queue sends,
+  // but a run's messages can come from several processes on one data
+  // directory (an app, plus a script or test process that calls `start()` or
+  // `resumeHook()`), and all of them reach the handler of the process that
+  // serves the workflow routes. Separate from `runGate`, which a sender holds
+  // while it delivers to its own process's handler.
+  const handlerRunGate = createRunGate();
+  // One line for the first queue auth refusal, then at most one a minute
+  // with a count, however many messages are refused.
+  const logAuthRefusal = createLogLimiter();
 
   // Aborted by close(): cancels every pending sleep (delayed deliveries,
   // timeoutSeconds re-deliveries, retry backoffs) so shutdown isn't held
@@ -213,6 +348,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     const body = transport.serialize(message);
     const { prefix } = parseQueueName(queueName);
+    // A caller's headers never carry the auth header: only the send loop
+    // below sets it. Dropped case-insensitively, since a differently cased
+    // copy would be merged into the one the loop sets.
+    const callerHeaders = Object.fromEntries(
+      Object.entries(opts?.headers ?? {}).filter(
+        ([name]) => name.toLowerCase() !== QUEUE_AUTH_HEADER
+      )
+    );
     const messageId = MessageId.parse(`msg_${generateId()}`);
     // One message for its whole life: every delivery below, including the
     // `{ timeoutSeconds }` redeliveries, reuses this id and creation time.
@@ -223,6 +366,15 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const msg = message as Record<string, unknown>;
     const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
+    // Keyed by prefix as well, so a run id never gates deliveries on another
+    // prefix (a queue consumer of its own, or another namespace).
+    const orchestratorRunKey = (() => {
+      const id = singleOrchestratorRunIdOf(message);
+      return id === undefined ? undefined : `${prefix}${id}`;
+    })();
+    // On a single-orchestrator run, `{ timeoutSeconds: 0 }` is a handoff: the
+    // redelivery starts at once and the handed-off delivery is not an attempt.
+    const handsOff = isSingleOrchestratorMessage(message);
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -244,20 +396,37 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await setTimeout(delayMs, undefined, { signal: closeSignal });
       }
 
-      const token = semaphore.tryAcquire();
-      if (!token) {
-        // Debug-gated: this is the semaphore doing its job. A fan-out wider
-        // than the limit queues behind it and every message still runs, so a
-        // per-message warning turns a healthy wide run into a wall of output.
-        debugLog(
-          `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
-        );
-        await semaphore.acquire();
-      }
-      // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow handler
-      // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
-      const MAX_LOCAL_SAFETY_LIMIT = 256;
+      /**
+       * Takes this message's delivery slots: its run's orchestrator gate
+       * first (when it is an orchestrator delivery), then a worker slot. The
+       * gate is taken first so a delivery waiting for its run holds no worker
+       * slot. Both are held for one delivery attempt only and released before
+       * any sleep (a `{ timeoutSeconds }` redelivery delay, a retry backoff),
+       * because a message that is not being delivered occupies neither, as on
+       * Vercel Queues.
+       */
+      const acquireDelivery = async (): Promise<() => void> => {
+        const releaseRun = orchestratorRunKey
+          ? await runGate.acquire(orchestratorRunKey)
+          : undefined;
+        if (!semaphore.tryAcquire()) {
+          // Debug-gated: this is the semaphore doing its job. A fan-out wider
+          // than the limit queues behind it and every message still runs, so
+          // a per-message warning turns a healthy wide run into a wall of
+          // output.
+          debugLog(
+            `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
+          );
+          await semaphore.acquire();
+        }
+        return () => {
+          semaphore.release();
+          releaseRun?.();
+        };
+      };
+      // Handoffs counted as such per message, as Vercel Queues bounds them;
+      // past it a handoff counts toward `attempt` and the safety limit.
+      const MAX_LOCAL_HANDOFFS = 10_000;
       // Number of times the message has actually reached a handler (returned
       // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
       // not the loop counter, is the attempt the handler sees via
@@ -265,14 +434,40 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
       let delivery = 0;
+      // Deliveries that ended in a handoff, which `attempt` and the safety
+      // limit leave out.
+      let handoffs = 0;
+      // Deliveries whose handler answered with an error.
+      let failedDeliveries = 0;
+      // Deliveries the runtime refused as unauthenticated (see
+      // `MAX_QUEUE_AUTH_REFUSALS`).
+      let authRefusals = 0;
+      // Refusals fixed by a new key, retried at once (see
+      // `MAX_UNCOUNTED_KEY_ROTATIONS`).
+      let keyRotations = 0;
+      let releaseDelivery: (() => void) | undefined;
+      const endDelivery = () => {
+        releaseDelivery?.();
+        releaseDelivery = undefined;
+      };
       try {
-        for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+        for (let loop = 0; loop - handoffs < MAX_LOCAL_SAFETY_LIMIT; loop++) {
+          releaseDelivery = await acquireDelivery();
+          if (closeSignal.aborted) return;
+          // The app's key, which the runtime checks before the handler does
+          // any work (`queueAuthMode: 'loopback'`). Cached: no file read per
+          // delivery. Attached on every attempt and both transports, so
+          // health checks and in-process deliveries carry it too. A reader
+          // with no key file yet sends none, and is refused.
+          const sentKey = await queueAuthKey.current();
           const headers: Record<string, string> = {
-            ...opts?.headers,
+            ...callerHeaders,
             'content-type': 'application/json',
+            ...(sentKey !== undefined && { [QUEUE_AUTH_HEADER]: sentKey }),
             'x-vqs-queue-name': queueName,
             'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(delivery + 1),
+            'x-vqs-message-attempt': String(delivery + 1 - handoffs),
+            'x-vqs-message-delivery-count': String(delivery + 1),
             'x-vqs-message-created-at': createdAt,
           };
           const directHandler = directHandlers.get(prefix);
@@ -312,6 +507,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             delivery++;
             text = await response.text();
           } catch (err) {
+            endDelivery();
             // A transport can fail before response headers or while consuming
             // the body. Both are transient: back off and retry the same
             // durable message rather than leaving its run stalled. Two
@@ -343,6 +539,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             continue;
           }
 
+          endDelivery();
           if (response.ok) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
@@ -358,10 +555,69 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   await setTimeout(timeoutMs, undefined, {
                     signal: closeSignal,
                   });
+                } else if (handsOff && handoffs < MAX_LOCAL_HANDOFFS) {
+                  handoffs++;
                 }
                 continue;
               }
             } catch {}
+            return;
+          }
+
+          if (isQueueAuthRefusal(response)) {
+            // The runtime's own queue auth refusal (marked, unlike a proxy's
+            // bare 401): the route holds a key other than the one sent.
+            // Another process of the app may have written a new key (the app
+            // restarted, a script called `start()`), so re-read the key file
+            // and, if it changed, retry at once with the new key. That
+            // refusal is not counted: the key rotated, which one of the
+            // app's processes does when it starts. Past
+            // MAX_UNCOUNTED_KEY_ROTATIONS such retries the key is changing
+            // on every attempt, and the refusal counts like any other, so
+            // the message cannot spin.
+            // Otherwise (the key did not change, or the uncounted rotations
+            // are used up) count it and retry a few
+            // times with the short backoff (the route re-reads the file on a
+            // mismatch too, rate-limited), then give the message up rather
+            // than retry it for hours. Retrying is safe: a refused delivery
+            // reached no handler and touched no run, so it is not counted as
+            // an attempt either. A given-up message's run is left as it is.
+            delivery--;
+            const reloadedKey = await queueAuthKey.reload();
+            if (
+              reloadedKey !== undefined &&
+              reloadedKey !== sentKey &&
+              keyRotations < MAX_UNCOUNTED_KEY_ROTATIONS
+            ) {
+              keyRotations++;
+              debugLog(
+                '[world-local]: delivery refused as unauthenticated; the queue auth key changed, retrying with it'
+              );
+              continue;
+            }
+            authRefusals++;
+            if (authRefusals < MAX_QUEUE_AUTH_REFUSALS) {
+              debugLog(
+                `[world-local]: delivery refused as unauthenticated (${authRefusals}/${MAX_QUEUE_AUTH_REFUSALS}), retrying`
+              );
+              await setTimeout(localRetryDelayMs(authRefusals), undefined, {
+                signal: closeSignal,
+              });
+              continue;
+            }
+            logAuthRefusal((refusedSinceLastLog) => {
+              console.error(
+                `[world-local] Queue delivery refused by the app as unauthenticated ${MAX_QUEUE_AUTH_REFUSALS} times; giving up the message`,
+                {
+                  queueName,
+                  messageId,
+                  ...(runId && { runId }),
+                  ...(stepId && { stepId }),
+                  refusedSinceLastLog,
+                  hint: QUEUE_AUTH_REFUSAL_HINT,
+                }
+              );
+            });
             return;
           }
 
@@ -373,6 +629,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
               ...(runId && { runId }),
               ...(stepId && { stepId }),
               handlerError: text,
+              ...(response.status === 401 && {
+                hint:
+                  'A 401 without the Workflow runtime’s refusal marker, so not a queue auth ' +
+                  'refusal (perhaps a proxy or auth layer in front of the app). Retrying.',
+              }),
               ...(!directHandler &&
                 !routes.has(prefix) &&
                 (response.status === 400 || response.status === 404) && {
@@ -384,11 +645,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             }
           );
 
-          // 5s linear backoff to approximate VQS retry timing in local dev.
-          // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient: the handler enforces the real
-          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000, undefined, { signal: closeSignal });
+          // Backs off as VQS does (see `localRetryDelayMs`).
+          failedDeliveries++;
+          await setTimeout(localRetryDelayMs(failedDeliveries), undefined, {
+            signal: closeSignal,
+          });
         }
 
         console.error(
@@ -401,7 +662,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         );
       } finally {
-        semaphore.release();
+        endDelivery();
       }
     })()
       .catch((err) => {
@@ -486,6 +747,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
 
       const body = await new TypedJsonTransport().deserialize(req.body);
+      const orchestratorRunId = singleOrchestratorRunIdOf(body);
+      const releaseRun =
+        orchestratorRunId === undefined
+          ? undefined
+          : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
       try {
         const result = await handler(body, {
           attempt,
@@ -526,6 +792,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         return Response.json({ ok: true });
       } catch (error) {
         return Response.json(String(error), { status: 500 });
+      } finally {
+        releaseRun?.();
       }
     };
   };
@@ -536,6 +804,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   };
 
   return {
+    // Every delivery carries the app's key from the data directory (see the
+    // send loop), and the runtime refuses one that does not.
+    queueAuthMode: 'loopback',
     queue,
     createQueueHandler,
     getDeploymentId,

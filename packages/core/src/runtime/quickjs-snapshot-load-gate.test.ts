@@ -131,7 +131,9 @@ async function invoke(options: {
     dispose: vi.fn(),
   });
 
-  const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+  const { runWorkflowWithQuickJS } = await import(
+    './spec9/quickjs-entrypoint.js'
+  );
   await runWorkflowWithQuickJS({
     workflowCode: '// not evaluated: the VM is mocked',
     workflowName: 'workflow',
@@ -148,7 +150,7 @@ describe('QuickJS snapshot load gate', () => {
     // so the load gate is what's under test.
     process.env.WORKFLOW_SNAPSHOT_ALLOW_UNENCRYPTED = '1';
     const { __resetSnapshotLatchesForTests } = await import(
-      './quickjs-entrypoint.js'
+      './quickjs-delivery-shared.js'
     );
     __resetSnapshotLatchesForTests();
   });

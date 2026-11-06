@@ -154,13 +154,14 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Environment variable: `WORKFLOW_POSTGRES_JOB_PREFIX`
 - Default: `workflow_`
 - Prefix for Graphile Worker job names.
+- Use a distinct prefix for each application that shares a database. `start()` re-enqueues only the active runs created under this prefix, plus runs created by earlier versions, which have no prefix. See [`WORKFLOW_POSTGRES_JOB_PREFIX`](/worlds/postgres#workflow_postgres_job_prefix).
 
 ### `queueConcurrency`
 
 - Environment variable: `WORKFLOW_POSTGRES_WORKER_CONCURRENCY`
 - Default: `50`
 - Number of concurrent workers polling for jobs.
-- Also bounds concurrent parent-to-child workflow return-value polls.
+- Also bounds concurrent `returnValue` polls that run inside steps. A parent workflow awaiting a child it started suspends on a system hook instead and holds no worker (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)).
 
 ### `pollInterval`
 
@@ -175,6 +176,15 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Whether the application coordinates shutdown instead of Graphile Worker responding automatically.
 - Set to `true` only when the application awaits `world.close()` before closing its workflow HTTP server and caller-owned pool.
 - Prevents Graphile Worker's default handler from terminating the process before the application's remaining cleanup finishes.
+
+### `jobLockStaleSeconds`
+
+- Environment variable: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
+- Default: unset. Every delivery renews its job lock, and a job in a spec 9 run's named queue whose process died is redelivered after 300 seconds unrenewed, if its holder registered as renewing. Other jobs keep Graphile Worker's fixed 4 hour reset.
+- Seconds a running delivery's job lock may go unrenewed before another process releases any of this World's jobs for redelivery. Setting it extends the release from spec 9 named queues to every job, whoever holds it.
+- `30` is a good value when more than one process shares the database. Use the same value on every process, and keep it well above the longest a process can block its event loop.
+- `0` turns renewal and release off, and leaves recovery to Graphile Worker's fixed 4 hour reset and to restarts.
+- Set it only once every process that shares the database runs a version that includes this option. A process on an earlier version neither renews its locks nor fences its acknowledgement on the lock holder, so while it shares the database with a process that has this set, its deliveries that run longer than the window are redelivered, and finishing one can delete the redelivered job. The default is safe for this: it never releases the job of a holder that did not register as renewing. See [Postgres World: `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](/worlds/postgres#workflow_postgres_job_lock_stale_seconds).
 
 ### `maxPoolSize`
 
