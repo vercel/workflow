@@ -1,8 +1,8 @@
+import { produce } from 'immer';
 import { describe, expect, it } from 'vitest';
 import { StateContext, stateSourceId } from './serialization/state-refs.js';
 import * as workflow from './serialization/workflow.js';
 import { hydrateData, observabilityRevivers } from './serialization-format.js';
-import { produce } from './state.js';
 import { createStateResolver } from './state-resolver.js';
 
 type Message = { role: string; content: string };
