@@ -45,6 +45,7 @@
     "@types/ms": "0.7.34",
     "@types/node": "catalog:",
     "@types/proper-lockfile": "4.1.4",
+    "@vercel/nft": "1.11.0",
     "@workflow/tsconfig": "workspace:*",
     "ms": "2.1.3",
     "typescript": "catalog:",

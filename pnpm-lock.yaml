@@ -1473,6 +1473,9 @@ importers:
       '@types/proper-lockfile':
         specifier: 4.1.4
         version: 4.1.4
+      '@vercel/nft':
+        specifier: 1.11.0
+        version: 1.11.0(rollup@4.67.4)(supports-color@10.2.2)
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

@@ -67,6 +67,18 @@ export function resetVercelDeploymentWarning(): void {
 }
 
 /**
+ * Whether `child` is `parent` itself or a path under it.
+ *
+ * `tmpdir()` is passed straight in as an argument instead of being held in a
+ * local: `@vercel/nft` statically evaluates `const tmp = tmpdir()` to the build
+ * machine's temp directory and copies that whole directory into any function
+ * that bundles this module (#5265).
+ */
+function isSameOrInside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(`${parent}${path.sep}`);
+}
+
+/**
  * Warn when the local world is created inside a Vercel deployment.
  *
  * A deployment running the local world writes workflow state to a read-only
@@ -90,11 +102,7 @@ export function warnIfRunningInVercelDeployment(dataDir: string): void {
     return;
   }
   const resolvedDataDir = path.resolve(dataDir);
-  const tmp = tmpdir();
-  if (
-    resolvedDataDir === tmp ||
-    resolvedDataDir.startsWith(`${tmp}${path.sep}`)
-  ) {
+  if (isSameOrInside(resolvedDataDir, tmpdir())) {
     return;
   }
   warnings.warnedAboutVercelDeployment = true;
