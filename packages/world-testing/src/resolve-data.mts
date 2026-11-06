@@ -28,14 +28,16 @@ export function resolveData(world: string) {
       );
       // A World that misreads the mode fails here already: the runtime
       // replays with it, so the steps' results come back stripped.
-      // Wait for the terminal event, not just the status: a World may mark
-      // the run completed a moment before its `run_completed` is listed, and
-      // the two reads below must see the same log.
+      // The run's status can read completed before its `run_completed` is
+      // listed, so wait for the log to hold it too: both reads below then see
+      // the whole log.
       await vi.waitFor(
         async () => {
           expect((await server.getRun(result.runId)).status).toBe('completed');
           const events = await server.getEvents(result.runId, 'all');
-          expect(events.map((e) => e.eventType)).toContain('run_completed');
+          expect(events.some((e) => e.eventType === 'run_completed')).toBe(
+            true
+          );
         },
         { interval: 200, timeout: 25_000 }
       );
@@ -47,9 +49,16 @@ export function resolveData(world: string) {
       expect(
         skipped.map(({ eventId, eventType }) => ({ eventId, eventType }))
       ).toEqual(all.map(({ eventId, eventType }) => ({ eventId, eventType })));
-      // The log has step inputs to omit, so the case below is not vacuous.
+      // The log has step inputs to omit, so the case below is not vacuous: on
+      // a `step_created`, or on an inline step's first `step_started`, which
+      // is its creation.
       expect(
-        all.some((e) => e.eventType === 'step_created' && e.payloadDigest)
+        all.some(
+          (e) =>
+            (e.eventType === 'step_created' ||
+              e.eventType === 'step_started') &&
+            e.payloadDigest
+        )
       ).toBe(true);
 
       for (const [index, event] of all.entries()) {

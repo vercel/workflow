@@ -2351,10 +2351,12 @@ export const OPTIONS = handler;`;
     workflowBundlePath,
     manifestDir,
     manifest,
+    manifestFileName = 'manifest.json',
   }: {
     workflowBundlePath: string;
     manifestDir: string;
     manifest: WorkflowManifest;
+    manifestFileName?: string;
   }): Promise<string | undefined> {
     const buildStart = Date.now();
     this.logCreateManifestInfo('Creating manifest...');
@@ -2379,7 +2381,7 @@ export const OPTIONS = handler;`;
 
       await mkdir(manifestDir, { recursive: true });
       await writeFileIfChanged(
-        join(manifestDir, 'manifest.json'),
+        join(manifestDir, manifestFileName),
         manifestJson
       );
 

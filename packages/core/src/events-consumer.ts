@@ -143,6 +143,28 @@ export enum EventConsumerResult {
 
 type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
+/** A registered callback, in the order {@link EventsConsumer.offer} tries it. */
+interface CallbackRegistration {
+  fn: EventConsumerCallback;
+  /** See `SubscribeOptions.correlationId`. */
+  correlationId: string | undefined;
+  /** Registration order; offers try callbacks in increasing `seq`. */
+  seq: number;
+}
+
+/** Options of {@link EventsConsumer.subscribe}. */
+export interface SubscribeOptions {
+  /**
+   * The only correlation id whose events the callback can consume. A keyed
+   * callback is a promise that, for any event with another correlation id
+   * (or none), it returns `NotConsumed` and does nothing else, so the walk
+   * skips it for those events instead of calling it. It is still offered the
+   * end-of-log `null`, and every event of its own correlation id, in its
+   * registration position among all callbacks.
+   */
+  correlationId?: string;
+}
+
 export interface EventsConsumerOptions {
   /**
    * Observation callback invoked after an event has been consumed (not for one
@@ -191,6 +213,39 @@ export interface EventsConsumerOptions {
    * timing, and say so at the call site.
    */
   isDeliveryIdle: () => boolean;
+  /**
+   * The run's start Hook id (`startHookId(runId)`), for a run started with
+   * `start(workflow, args, { experimental_hook })`. That Hook exists from the run's
+   * admission, so payloads can be resumed into it before the body calls
+   * `createHook` (even before `run_started`), and another run can force-claim
+   * it before then too.
+   *
+   * An unclaimed `hook_received` for this id, or a `hook_disposed` carrying
+   * `forceClaimedBy` for it, is parked at once at its log index instead of
+   * after the deferred check: the same index and the same later drain the
+   * timer would reach, without blocking the walk for the window on every
+   * replay. The workflow may also never claim the Hook (the token used only
+   * as an idempotency key), so these parked events never fail a run:
+   * {@link EventsConsumer.strandedEvent} and the end-of-log check skip them,
+   * and {@link EventsConsumer.parkedSummary} counts them separately.
+   *
+   * `undefined` for every other run, which behaves exactly as before.
+   */
+  eagerParkCorrelationId?: string;
+}
+
+/**
+ * See {@link EventsConsumer.parkedSummary}. `count`, `eventId` and `eventType`
+ * describe the parked events other than unclaimed start Hook deliveries
+ * (`eventId`/`eventType` are absent when there are none), which are counted
+ * in `unclaimedStartHook` instead (absent when zero, and always absent for a
+ * run without a start Hook).
+ */
+export interface ParkedSummary {
+  count: number;
+  eventId?: string;
+  eventType?: Event['eventType'];
+  unclaimedStartHook?: number;
 }
 
 /** See {@link EventsConsumer.describe}. */
@@ -205,6 +260,16 @@ export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[];
   readonly callbacks: EventConsumerCallback[] = [];
+  /**
+   * {@link callbacks}' registrations, index for index, with the correlation
+   * id each one was keyed to (see {@link EventsConsumer.subscribe}).
+   */
+  private readonly registrations: CallbackRegistration[] = [];
+  /** Unkeyed registrations, in registration order. */
+  private readonly unkeyed: CallbackRegistration[] = [];
+  /** Keyed registrations by correlation id, each in registration order. */
+  private readonly keyed = new Map<string, CallbackRegistration[]>();
+  private nextRegistrationSeq = 0;
   /**
    * Events the ordered walk stepped over because nobody claimed them and their
    * type carries no ordering claim. Each keeps the index it held in the log:
@@ -240,6 +305,13 @@ export class EventsConsumer {
   ) => void;
   private getPromiseQueue: () => Promise<void>;
   private isDeliveryIdle: () => boolean;
+  private readonly eagerParkCorrelationId: string | undefined;
+  /**
+   * Whether the body has opened the start Hook: until then nothing can claim
+   * its parked deliveries, so the drain does not offer them (see
+   * {@link startHookOpened}).
+   */
+  private startHookOpen = false;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
@@ -262,6 +334,45 @@ export class EventsConsumer {
     this.onDuplicateEvent = options.onDuplicateEvent;
     this.getPromiseQueue = options.getPromiseQueue;
     this.isDeliveryIdle = options.isDeliveryIdle;
+    this.eagerParkCorrelationId = options.eagerParkCorrelationId;
+  }
+
+  /**
+   * The body opened the start Hook (its `createHook({ token })` bound to it).
+   * Its parked deliveries are offered from the next drain on; before this,
+   * offering each of them to every callback on every pass would cost the
+   * whole replay for a run that never opens the Hook.
+   */
+  startHookOpened(): void {
+    this.startHookOpen = true;
+  }
+
+  /**
+   * Whether `event` is a delivery for the run's start Hook that may wait,
+   * parked, for a `createHook` the body has not reached, or never reaches.
+   * See {@link EventsConsumerOptions.eagerParkCorrelationId}.
+   */
+  private isStartHookEvent(event: Event): boolean {
+    if (
+      this.eagerParkCorrelationId === undefined ||
+      event.correlationId !== this.eagerParkCorrelationId
+    ) {
+      return false;
+    }
+    if (event.eventType === 'hook_received') return true;
+    return (
+      event.eventType === 'hook_disposed' &&
+      event.eventData?.forceClaimedBy !== undefined
+    );
+  }
+
+  /** The oldest parked event that is not an unclaimed start Hook delivery. */
+  private oldestStrandable(): Event | undefined {
+    if (this.eagerParkCorrelationId === undefined) {
+      return this.parked[0]?.event;
+    }
+    return this.parked.find((entry) => !this.isStartHookEvent(entry.event))
+      ?.event;
   }
 
   /**
@@ -271,7 +382,9 @@ export class EventsConsumer {
    * the definitive one), this answers which event the bet lost on.
    */
   get strandedEvent(): Event | undefined {
-    return this.parked[0]?.event;
+    // A start Hook delivery nobody claimed is not a lost bet: the workflow may
+    // use the start token only as an idempotency key and never open the Hook.
+    return this.oldestStrandable();
   }
 
   /**
@@ -285,17 +398,39 @@ export class EventsConsumer {
    * parking made is not going to pay off, and that shape is only visible across
    * replays.
    */
-  get parkedSummary():
-    | { count: number; eventId: string; eventType: Event['eventType'] }
-    | undefined {
-    const oldest = this.parked[0]?.event;
-    if (!oldest) {
+  get parkedSummary(): ParkedSummary | undefined {
+    if (this.eagerParkCorrelationId === undefined) {
+      const oldest = this.parked[0]?.event;
+      if (!oldest) {
+        return undefined;
+      }
+      return {
+        count: this.parked.length,
+        eventId: oldest.eventId,
+        eventType: oldest.eventType,
+      };
+    }
+    // Start Hook deliveries the body has not claimed (yet, or ever) are
+    // reported apart from the rest, so telemetry does not read them as the
+    // bet parking makes on everything else.
+    let unclaimedStartHook = 0;
+    let oldest: Event | undefined;
+    for (const { event } of this.parked) {
+      if (this.isStartHookEvent(event)) {
+        unclaimedStartHook++;
+      } else {
+        oldest ??= event;
+      }
+    }
+    if (!oldest && unclaimedStartHook === 0) {
       return undefined;
     }
     return {
-      count: this.parked.length,
-      eventId: oldest.eventId,
-      eventType: oldest.eventType,
+      count: this.parked.length - unclaimedStartHook,
+      ...(oldest
+        ? { eventId: oldest.eventId, eventType: oldest.eventType }
+        : {}),
+      ...(unclaimedStartHook > 0 ? { unclaimedStartHook } : {}),
     };
   }
 
@@ -332,9 +467,38 @@ export class EventsConsumer {
    *  - `EventConsumerResult.Finished` the event is considered consumed and the callback is removed from the callbacks list
    *
    * @param fn - The callback function to register.
+   * @param options - See {@link SubscribeOptions}.
    */
-  subscribe(fn: EventConsumerCallback) {
+  subscribe(fn: EventConsumerCallback, options: SubscribeOptions = {}) {
+    this.register(fn, options.correlationId);
+  }
+
+  /**
+   * {@link subscribe} keyed to `correlationId` (see
+   * `SubscribeOptions.correlationId`).
+   */
+  subscribeFor(correlationId: string, fn: EventConsumerCallback) {
+    this.register(fn, correlationId);
+  }
+
+  private register(
+    fn: EventConsumerCallback,
+    correlationId: string | undefined
+  ) {
+    const registration: CallbackRegistration = {
+      fn,
+      correlationId,
+      seq: this.nextRegistrationSeq++,
+    };
     this.callbacks.push(fn);
+    this.registrations.push(registration);
+    if (registration.correlationId === undefined) {
+      this.unkeyed.push(registration);
+    } else {
+      const list = this.keyed.get(registration.correlationId);
+      if (list) list.push(registration);
+      else this.keyed.set(registration.correlationId, [registration]);
+    }
     // Cancel any pending unconsumed check since a new callback may consume the event.
     // Incrementing the version causes any in-flight promise chain check to no-op.
     // Also clear the pending setTimeout if it hasn't fired yet.
@@ -415,6 +579,10 @@ export class EventsConsumer {
           this.skipDuplicateEvent(currentEvent, firstType);
           continue;
         }
+        if (this.isStartHookEvent(currentEvent)) {
+          this.parkStartHookEvent(currentEvent);
+          continue;
+        }
         this.scheduleUnconsumedCheck(currentEvent, true);
         return;
       }
@@ -428,11 +596,16 @@ export class EventsConsumer {
    * walk and the parked drain advance differently, so each does its own.
    */
   private offer(currentEvent: Event | null): boolean {
-    for (let i = 0; i < this.callbacks.length; i++) {
-      const callback = this.callbacks[i];
+    // The end-of-log `null`, and any event while nothing is keyed, goes to
+    // every callback. Otherwise only the unkeyed callbacks and those keyed to
+    // the event's correlation id can consume it (`SubscribeOptions`), tried
+    // in the same registration order a full walk would use.
+    const candidates = this.candidatesFor(currentEvent);
+    for (let i = 0; i < candidates.length; i++) {
+      const registration = candidates[i];
       let handled = EventConsumerResult.NotConsumed;
       try {
-        handled = callback(currentEvent);
+        handled = registration.fn(currentEvent);
       } catch (error) {
         eventsLogger.error('EventConsumer callback threw an error', { error });
       }
@@ -457,11 +630,40 @@ export class EventsConsumer {
       }
       // remove the callback if it has finished
       if (handled === EventConsumerResult.Finished) {
-        this.callbacks.splice(i, 1);
+        this.unregister(registration);
       }
       return true;
     }
     return false;
+  }
+
+  /** The registrations that may consume `event`, in registration order. */
+  private candidatesFor(event: Event | null): readonly CallbackRegistration[] {
+    if (event === null || this.keyed.size === 0) return this.registrations;
+    const keyed =
+      event.correlationId === undefined
+        ? undefined
+        : this.keyed.get(event.correlationId);
+    return mergeBySeq(this.unkeyed, keyed ?? []);
+  }
+
+  /** Removes a finished callback from every index. */
+  private unregister(registration: CallbackRegistration): void {
+    const index = this.registrations.indexOf(registration);
+    if (index !== -1) {
+      this.registrations.splice(index, 1);
+      this.callbacks.splice(index, 1);
+    }
+    const list =
+      registration.correlationId === undefined
+        ? this.unkeyed
+        : this.keyed.get(registration.correlationId);
+    if (!list) return;
+    const at = list.indexOf(registration);
+    if (at !== -1) list.splice(at, 1);
+    if (list.length === 0 && registration.correlationId !== undefined) {
+      this.keyed.delete(registration.correlationId);
+    }
   }
 
   /**
@@ -479,6 +681,9 @@ export class EventsConsumer {
       this.dropParkedDuplicates();
       for (let i = 0; i < this.parked.length; i++) {
         const entry = this.parked[i];
+        if (!this.startHookOpen && this.isStartHookEvent(entry.event)) {
+          continue;
+        }
         const walkIndex = this.eventIndex;
         this.eventIndex = entry.index;
         let consumed: boolean;
@@ -572,6 +777,25 @@ export class EventsConsumer {
       parked: this.parked.length,
     });
     return true;
+  }
+
+  /**
+   * Park a start Hook delivery at once, at its log index, without waiting out
+   * the deferred check: no consumer can be on its way for it, since the only
+   * one is the body's `createHook` with the start token, which may come much
+   * later. Covers `hook_disposed{forceClaimedBy}` too, which {@link park}
+   * refuses for every other id. See
+   * {@link EventsConsumerOptions.eagerParkCorrelationId}.
+   */
+  private parkStartHookEvent(event: Event): void {
+    this.parked.push({ event, index: this.eventIndex });
+    this.eventIndex++;
+    eventsLogger.debug('Parked a start Hook delivery for later claim', {
+      eventId: event.eventId,
+      eventType: event.eventType,
+      correlationId: event.correlationId,
+      parked: this.parked.length,
+    });
   }
 
   /**
@@ -721,6 +945,11 @@ export class EventsConsumer {
     if (this.parked.length === 0) {
       return;
     }
+    // Unclaimed start Hook deliveries can wait forever without fault.
+    const strandable = this.oldestStrandable();
+    if (!strandable) {
+      return;
+    }
     const last = this.events.at(-1);
     if (!last || !TERMINAL_EVENT_TYPES.has(last.eventType)) {
       // A later replay is still expected, so nothing here is decidable and
@@ -737,7 +966,7 @@ export class EventsConsumer {
       });
       return;
     }
-    this.scheduleUnconsumedCheck(this.parked[0].event, false);
+    this.scheduleUnconsumedCheck(strandable, false);
   }
 
   private scheduleUnconsumedCheck(currentEvent: Event, mayPark: boolean) {
@@ -883,4 +1112,22 @@ export class EventsConsumer {
     };
     poll();
   }
+}
+
+/** Two registration lists, each in `seq` order, merged in `seq` order. */
+function mergeBySeq(
+  a: readonly CallbackRegistration[],
+  b: readonly CallbackRegistration[]
+): readonly CallbackRegistration[] {
+  if (b.length === 0) return a;
+  if (a.length === 0) return b;
+  const merged: CallbackRegistration[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    merged.push(a[i].seq < b[j].seq ? a[i++] : b[j++]);
+  }
+  while (i < a.length) merged.push(a[i++]);
+  while (j < b.length) merged.push(b[j++]);
+  return merged;
 }

@@ -158,7 +158,7 @@ The route serves `world.createQueueHandler("__agent_wkf_workflow_", handler)`. T
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.
-- **Hook minimum retention**: [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) cannot exceed 30 days.
+- **Hook minimum retention**: `experimental_minRetention` cannot exceed 30 days, on both [`createHook()`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) and [`start({ experimental_hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts).
 
 ## Observability
 
@@ -176,7 +176,7 @@ npx workflow inspect runs --backend vercel
 npx workflow web --backend vercel
 ```
 
-The CLI automatically retrieves authentication from the Vercel CLI (`vercel login`) and infers project/team IDs from your local Vercel project linking.
+The CLI automatically retrieves authentication from the Vercel CLI (`vercel login`) and infers project/team IDs from your local Vercel project linking. In a monorepo, it uses the nearest `.vercel/project.json`.
 
 To use the local observability UI instead of the Vercel dashboard:
 
@@ -184,7 +184,7 @@ To use the local observability UI instead of the Vercel dashboard:
 npx workflow web --backend vercel --localUi
 ```
 
-To override the automatic configuration:
+To override the automatic configuration, pass the values explicitly. `--project` and `--team` take precedence over the linked project:
 
 ```bash
 npx workflow inspect runs \
@@ -404,6 +404,8 @@ Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-se
 
 Below the floor the deadline starts canceling requests that would have succeeded, since a cold route or a large event page can take seconds, and a canceled request is redriven through the queue rather than making progress. The ceiling matches the longest a backend route holds a response. Requests that legitimately outlast it (stream reads and writes, event batches) opt out of the deadline entirely rather than relying on this value.
 
+The same deadline bounds the [events WebSocket](#workflow_events_transport): opening the socket, including resolving the token it is opened with, and each event write over it.
+
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 
 Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
@@ -455,6 +457,8 @@ try {
 ```
 
 `openEventsChannel()` returns `undefined`, and writes stay on HTTP, when the transport is disabled or the World cannot hold a socket, such as a `projectConfig` World.
+
+If the first connect fails, or opening the socket or a write over it gets no answer within [`WORKFLOW_REQUEST_TIMEOUT_MS`](#workflow_request_timeout_ms), the channel closes. The write that failed is retried over HTTP where the event type allows a retry, and every later event write for that run goes over HTTP until a new channel is opened, which the next delivery does. The channel is shared by every concurrent invocation of the run in the same process, so one timed out write moves all of them to HTTP, and releasing it afterwards has nothing left to close.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
 
@@ -553,6 +557,8 @@ Practically, this means:
 - Unauthorized requests can never reach workflow or step execution
 - Only messages delivered through Vercel Queues can trigger execution
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
+
+These two layers, a route only Vercel Queues can trigger and a handler that takes a message ID and retrieves and leases the message through Vercel Queues, are why the Vercel World declares `queueAuthMode: 'skip'`: the runtime does not also check a [queue key](/worlds/building-a-world#authenticating-deliveries) on its deliveries. A custom World should declare `'skip'` only when its platform provides both layers.
 
 <Callout>
   The Workflow SDK build step manages this configuration. If you are writing a custom integration, see [Framework integrations: Security](/docs/how-it-works/framework-integrations#security) for more details.

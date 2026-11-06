@@ -3,12 +3,16 @@ import { expect, test, vi } from 'vitest';
 import { createFetcher, startServer } from './util.mjs';
 
 /**
- * The optional in-band writer fence (`WorldCapabilities.inBandFence`), which
- * keeps a run to one orchestrator writer when two orchestrator deliveries
- * overlap. A World can run every workflow in this suite without the fence
- * ever refusing anything, so the fence is checked directly here. Skipped for
- * a World that does not declare it. See the in-band writer fence section of
- * the building-a-world guide.
+ * The in-band writer fence (`WorldCapabilities.inBandFence`), which spec 9
+ * runs need: the runtime refuses to create or drive a spec 9 run on a World
+ * that does not declare it, and relies on it to keep a run to one writer when
+ * two orchestrator deliveries overlap. A World can run every workflow in this
+ * suite without the fence ever refusing anything, because the queue rarely
+ * lets two deliveries of a run overlap, so the fence is checked directly here.
+ *
+ * Skipped for a World that does not declare the fence. Such a World creates
+ * spec 8 runs (`mintedSpecVersion()` never returns 9 for it), which need no
+ * fence. See the single-writer section of the building-a-world guide.
  */
 export function inBandFence(world: string) {
   test(
@@ -25,9 +29,15 @@ export function inBandFence(world: string) {
         'addition',
         [1, 2]
       );
+      // Settled once `run_completed` is in the log. The run's status alone is
+      // not enough: a World may show the terminal status before the terminal
+      // event is listable.
       await vi.waitFor(
         async () => {
-          expect((await server.getRun(result.runId)).status).toBe('completed');
+          const listed = await server.getEvents(result.runId);
+          expect(listed.map((event) => event.eventType)).toContain(
+            'run_completed'
+          );
         },
         { interval: 200, timeout: 25_000 }
       );

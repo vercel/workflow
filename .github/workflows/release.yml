@@ -32,7 +32,7 @@ jobs:
       RELEASE_VERSION: 5
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -44,7 +44,7 @@ jobs:
       # Keep setup-node because registry-url configures npm publishing. pnpm/setup
       # handles the pnpm store cache after Node.js is available.
       - name: Setup Node.js 24.x
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24.x
           registry-url: 'https://registry.npmjs.org'

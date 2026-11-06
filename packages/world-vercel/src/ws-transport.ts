@@ -83,6 +83,20 @@ interface PendingRequest {
 }
 
 /**
+ * A listener for the unsolicited `run_event` frames a live-feed subscription
+ * makes the server push (see `events-live-feed.ts`). `onClose` fires once,
+ * when the connection the subscription was made on goes away: the server's
+ * subscription goes with it.
+ */
+export interface WsPushSubscriber {
+  onPush(frame: DecodedFrame): void;
+  onClose(error: WsTransportError): void;
+}
+
+/** Frame type of a live-feed push. */
+export const RUN_EVENT_FRAME_TYPE = 'run_event';
+
+/**
  * Everything scoped to one socket. `nextReqId` and `pending` live here rather
  * than on the transport because the protocol defines `reqId` as a
  * per-connection counter: a reconnected socket restarts at 1 and would
@@ -162,6 +176,8 @@ class WsEventsTransport {
   /** Authorization the current socket was opened with, so a forced refresh can
    *  tell whether it actually produced a new one. */
   private lastAuthorization: string | null = null;
+  /** Live-feed subscribers on the current connection. */
+  private pushSubscribers = new Set<WsPushSubscriber>();
 
   constructor(
     private readonly wsUrl: string,
@@ -221,6 +237,7 @@ class WsEventsTransport {
             `workflow-server events WS connection to ${this.wsUrl} ` +
               `abandoned after request ${reqId} timed out`
           );
+          this.close('request timed out');
         }, timeoutMs);
         deadline.unref?.();
         const onSent = (err?: Error) => {
@@ -249,6 +266,34 @@ class WsEventsTransport {
   }
 
   /**
+   * Register a live-feed subscriber. Returns its removal, which is idempotent.
+   * The subscriber is told once when the connection closes, and is removed
+   * then: a subscription does not survive a reconnect.
+   */
+  addPushSubscriber(subscriber: WsPushSubscriber): () => void {
+    this.pushSubscribers.add(subscriber);
+    return () => {
+      this.pushSubscribers.delete(subscriber);
+    };
+  }
+
+  private closePushSubscribers(reason: string): void {
+    if (this.pushSubscribers.size === 0) return;
+    const subscribers = [...this.pushSubscribers];
+    this.pushSubscribers.clear();
+    const error = new WsTransportError(reason);
+    for (const subscriber of subscribers) {
+      try {
+        subscriber.onClose(error);
+      } catch (err) {
+        console.error(
+          `world-vercel: ws live-feed subscriber threw on close: ${describeError(err)}`
+        );
+      }
+    }
+  }
+
+  /**
    * Claim the channel and start connecting. Called once per invocation that
    * intends to write, at the point the run id is known. Connecting lazily on
    * the first write instead bills the handshake (plus the OIDC mint riding it)
@@ -265,10 +310,7 @@ class WsEventsTransport {
    * HTTP: writes resolve no channel and take the pooled HTTP route instead of
    * paying another handshake attempt each.
    *
-   * That de-opt covers the handshake only. A channel that connects and then
-   * fails every write stays registered and keeps taking the WS path, so the
-   * fallback is per-invocation rather than a circuit breaker. Tolerable while
-   * the transport is opt-in; defaulting it on needs a write-failure de-opt too.
+   * A write that times out closes the channel too; other failed writes leave it registered.
    */
   open(): void {
     if (this.closed) return;
@@ -317,6 +359,9 @@ class WsEventsTransport {
     }
     const conn = this.connection;
     this.connection = null;
+    this.closePushSubscribers(
+      `workflow-server events WS channel for ${this.wsUrl} closed (${reason})`
+    );
     // Normal closure: a clean client-side release, not an aborted run.
     conn?.ws.close(1000, reason);
   }
@@ -434,10 +479,28 @@ class WsEventsTransport {
   private connect(): Promise<Connection> {
     return new Promise<Connection>((resolve, reject) => {
       void (async () => {
+        const handshakeTimeoutMs = getRequestTimeoutMs();
+        let timedOut = false;
+        let socket: WebSocket | undefined;
+        const handshakeDeadline = setTimeout(() => {
+          timedOut = true;
+          const message =
+            `workflow-server events WS handshake to ${this.wsUrl} timed out ` +
+            `after ${handshakeTimeoutMs}ms`;
+          const log = this.closed ? debugLog : console.error;
+          log(`world-vercel: ws events transport ${message}`);
+          reject(new WsTransportError(message));
+          socket?.terminate();
+          this.close('handshake timed out');
+        }, handshakeTimeoutMs);
+        handshakeDeadline.unref?.();
+
         let conn: Connection;
         try {
           const headers = await this.resolveUpgradeHeaders();
+          if (timedOut) return;
           const ws = new WebSocket(this.wsUrl, { headers });
+          socket = ws;
           ws.binaryType = 'nodebuffer';
           const pending = new Map<number, PendingRequest>();
           conn = {
@@ -457,6 +520,8 @@ class WsEventsTransport {
             }),
           };
         } catch (err) {
+          clearTimeout(handshakeDeadline);
+          if (timedOut) return;
           console.error(
             `world-vercel: ws events transport could not open a connection ` +
               `to ${this.wsUrl}: ${describeError(err)}`
@@ -480,6 +545,7 @@ class WsEventsTransport {
 
         ws.on('open', () => {
           opened = true;
+          clearTimeout(handshakeDeadline);
           if (this.closed) {
             // Released while this handshake was in flight: `close()` could
             // only null out the connection it could see. Adopting this one now
@@ -503,6 +569,7 @@ class WsEventsTransport {
         });
 
         ws.on('error', (err) => {
+          if (timedOut) return;
           console.error(
             `world-vercel: ws events transport socket error ` +
               `(${this.wsUrl}): ${describeError(err)}`
@@ -517,6 +584,7 @@ class WsEventsTransport {
         });
 
         ws.on('close', (code: number) => {
+          clearTimeout(handshakeDeadline);
           const wasActive = this.connection === conn;
           if (wasActive) this.connection = null;
 
@@ -530,6 +598,13 @@ class WsEventsTransport {
                 `workflow-server events WS connection to ${this.wsUrl} ` +
                   `closed before opening (code ${code})`
               )
+            );
+          }
+
+          // Subscriptions live on the connection, so they end with it.
+          if (wasActive) {
+            this.closePushSubscribers(
+              `workflow-server events WS connection closed (code ${code})`
             );
           }
 
@@ -642,6 +717,21 @@ class WsEventsTransport {
       return;
     }
 
+    if (decoded.meta.type === RUN_EVENT_FRAME_TYPE) {
+      // Unsolicited live-feed push. Routed before the reqId checks below: it
+      // answers no pending request, and must not fail the connection.
+      for (const subscriber of [...this.pushSubscribers]) {
+        try {
+          subscriber.onPush(decoded);
+        } catch (err) {
+          console.error(
+            `world-vercel: ws live-feed subscriber threw on a pushed event: ${describeError(err)}`
+          );
+        }
+      }
+      return;
+    }
+
     const reqId = decoded.meta.reqId;
 
     if (reqId === MALFORMED_FRAME_REQ_ID) {
@@ -743,7 +833,10 @@ class WsEventsTransport {
    */
   private failConnection(conn: Connection, message: string): void {
     this.failAllPending(conn, new WsTransportError(message));
-    if (this.connection === conn) this.connection = null;
+    if (this.connection === conn) {
+      this.connection = null;
+      this.closePushSubscribers(message);
+    }
     conn.ws.close();
   }
 }

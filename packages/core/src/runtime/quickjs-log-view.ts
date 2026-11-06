@@ -50,6 +50,20 @@ export class QuickJSLogView {
   private fedMaxSlot: number | undefined;
   /** Events handed back by a World that the VM has not been given yet. */
   private readonly unfed = new Map<number, Event>();
+  /**
+   * Run-ahead: events this invocation placed at the position its in-band
+   * writer predicted for them before the write committed (see
+   * {@link queueSpeculative}), by that position, until the write confirms or
+   * displaces them. They are fed like any queued event, in position order,
+   * but never count as a position this view has seen: a write names only
+   * confirmed positions, so the World reports whatever took one.
+   */
+  private readonly speculative = new Map<number, Event>();
+  /**
+   * Called with every event found at a speculative position that is not the
+   * one placed there: another writer took the position first.
+   */
+  onDisplaced: ((event: Event, placed: Event) => void) | undefined;
   private cursor: string | null;
   private cursorPosition: number | undefined;
 
@@ -96,9 +110,37 @@ export class QuickJSLogView {
     return this.unfed.size;
   }
 
+  /**
+   * The highest position this invocation knows exists, fed to the VM or not:
+   * where a live feed started now picks up. `undefined` while none is known.
+   */
+  get highestKnownSlot(): number | undefined {
+    if (this.knownMaxSlot === undefined) return this.fedMaxSlot;
+    if (this.fedMaxSlot === undefined) return this.knownMaxSlot;
+    return Math.max(this.knownMaxSlot, this.fedMaxSlot);
+  }
+
   /** Whether positions are being tracked (see class doc). */
   get tracking(): boolean {
     return this.slotTracking;
+  }
+
+  /**
+   * Whether the VM is short of a position this invocation knows exists: a
+   * write whose event was not delivered off its response, or a queued event
+   * above a position nothing has filled. Only then does the next turn need a
+   * listing; otherwise everything this invocation knows of is fed or
+   * deliverable from the queue. Always true without position tracking.
+   *
+   * Events other writers append without this invocation hearing of them
+   * reach it through the live feed while it runs, or through their own wake
+   * once it exits.
+   */
+  get behind(): boolean {
+    if (!this.slotTracking) return true;
+    if (this.knownMaxSlot === undefined) return false;
+    const fed = this.fedMaxSlot ?? FIRST_EVENT_SLOT - 1;
+    return this.knownMaxSlot > fed;
   }
 
   /**
@@ -246,7 +288,82 @@ export class QuickJSLogView {
     return out;
   }
 
+  /**
+   * Run-ahead: queue `events`, which this invocation is still writing, at the
+   * positions its writer predicted. They are fed in position order like any
+   * queued event, but do not count as seen until their write confirms them
+   * (see {@link onDisplaced} for when another event turns up there). All or
+   * nothing: refused (`false`) without position tracking, or when a position
+   * is one this view already knows of or holds, which makes the prediction
+   * stale.
+   */
+  queueSpeculative(events: readonly Event[]): boolean {
+    if (!this.slotTracking) return false;
+    const known = this.highestKnownSlot;
+    const placed: [number, Event][] = [];
+    for (const event of events) {
+      const slot =
+        typeof event.eventId === 'string' ? eventIdToSlot(event.eventId) : null;
+      if (slot === null) return false;
+      if (known !== undefined && slot <= known) return false;
+      if (this.unfed.has(slot) || this.speculative.has(slot)) return false;
+      placed.push([slot, event]);
+    }
+    for (const [slot, event] of placed) {
+      this.speculative.set(slot, event);
+      this.unfed.set(slot, event);
+    }
+    return true;
+  }
+
+  /** The highest position delivered to the VM, if any. */
+  get fedThroughSlot(): number | undefined {
+    return this.fedMaxSlot;
+  }
+
+  /** How many speculative events no write has confirmed or displaced yet. */
+  get speculativeCount(): number {
+    return this.speculative.size;
+  }
+
+  /**
+   * Checks an event read from the log against the speculative events: a
+   * listing returns the event at a speculative position under the same id
+   * the speculative one has, so it must be checked before it is deduplicated
+   * by id.
+   */
+  screen(event: Event): void {
+    const slot = this.slotOf(event);
+    if (slot !== undefined) this.matchSpeculative(event, slot);
+  }
+
+  /**
+   * Whether `event` is at a speculative position: `'own'` when it is the
+   * committed copy of the event placed there (which then replaces it, if it
+   * has not been fed yet), `'other'` when another writer's event took the
+   * position.
+   */
+  private matchSpeculative(
+    event: Event,
+    slot: number
+  ): 'own' | 'other' | undefined {
+    const placed = this.speculative.get(slot);
+    if (placed === undefined || placed === event) return undefined;
+    if (
+      placed.eventType === event.eventType &&
+      placed.correlationId === event.correlationId
+    ) {
+      this.speculative.delete(slot);
+      if (this.unfed.get(slot) === placed) this.unfed.set(slot, event);
+      return 'own';
+    }
+    this.onDisplaced?.(event, placed);
+    return 'other';
+  }
+
   private queueIsDense(): boolean {
+    // Speculative events sit above the positions this view knows of.
+    if (this.speculative.size > 0) return false;
     if (this.knownMaxSlot === undefined) {
       return this.unfed.size === 0;
     }
@@ -258,6 +375,7 @@ export class QuickJSLogView {
   private queue(event: Event): boolean {
     const slot = this.slotOf(event);
     if (slot === undefined) return false;
+    if (this.matchSpeculative(event, slot) !== undefined) return false;
     if (this.fedMaxSlot !== undefined && slot <= this.fedMaxSlot) {
       return false;
     }
@@ -278,6 +396,7 @@ export class QuickJSLogView {
       this.slotTracking = false;
       this.knownMaxSlot = undefined;
       this.unfed.clear();
+      this.speculative.clear();
       return undefined;
     }
     if (this.knownMaxSlot === undefined || slot > this.knownMaxSlot) {

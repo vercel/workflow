@@ -403,6 +403,72 @@ describe('healthCheck response parsing', () => {
     expect(result.hookResumeInputVersion).toBeUndefined();
   });
 
+  it('surfaces the target World capabilities, ignoring ones this build does not know', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        capabilities: {
+          hookRetention: { active: true },
+          atomicStartHook: { active: true },
+          someFutureCapability: { active: true },
+        },
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.capabilities).toEqual({
+      hookRetention: { active: true },
+      atomicStartHook: { active: true },
+    });
+  });
+
+  it('reads malformed capabilities as unsupported and keeps the rest of the response', async () => {
+    // A peer on another SDK version must never read as unhealthy because of
+    // its capabilities: a capability can only fail closed.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        hookResumeInputVersion: 2,
+        capabilities: {
+          atomicStartHook: { active: 'yes' },
+          hookRetention: { active: true },
+        },
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBe(3);
+    expect(result.hookResumeInputVersion).toBe(2);
+    expect(result.capabilities).toEqual({ hookRetention: { active: true } });
+  });
+
+  it('omits capabilities that are not an object', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        capabilities: 'all of them',
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.capabilities).toBeUndefined();
+  });
+
   it('returns healthy with no fields for non-JSON plain-text responses', async () => {
     // Some deployments respond with plain text like
     // 'Workflow SDK "..." endpoint is healthy'. The parser treats any
@@ -826,6 +892,29 @@ describe('settleEventSlotGap', () => {
     expect(eventsListMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the events the caller held that the re-read came back without', async () => {
+    // The orchestrator's log holds its own writes from their responses (and,
+    // with run-ahead, an outcome consumed before its write committed). The
+    // re-read fills the hole below such an event but may not carry the event
+    // itself yet; dropping it would lose a position this delivery took.
+    eventsListMock.mockResolvedValueOnce({
+      data: slotLog(1, 2, 3),
+      cursor: 'eid:filled',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 2, 4),
+      cursor: 'eid:stale',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    expect(settled.log.events.map((e) => e.eventId)).toEqual(
+      slotLog(1, 2, 3, 4).map((e) => e.eventId)
+    );
+    expect(settled.log.cursor).toBe('eid:filled');
+  });
+
   it('reports a hole that survives every re-read', async () => {
     eventsListMock.mockResolvedValue({
       data: slotLog(1, 4),
@@ -1103,6 +1192,24 @@ describe('health check run public key', () => {
     expect(writtenResponse(write).encryptionPublicKey).toBe(
       bytesToBase64(publicKey)
     );
+  });
+
+  it('reports the responding World capabilities', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    (world as { capabilities?: unknown }).capabilities = {
+      atomicStartHook: { active: true },
+    };
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_caps' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).capabilities).toEqual({
+      atomicStartHook: { active: true },
+    });
   });
 
   it('reports the responding deployment Node.js version', async () => {

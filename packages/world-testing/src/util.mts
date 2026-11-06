@@ -30,6 +30,11 @@ type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
 export async function startServer(opts: {
   world: string;
   env?: Record<string, string | undefined>;
+  /**
+   * A data directory to share with other servers or processes. The caller
+   * owns it and removes it; by default each server gets its own.
+   */
+  dataDir?: string;
 }) {
   let serverPath = new URL('./server.mts', import.meta.url);
 
@@ -43,10 +48,10 @@ export async function startServer(opts: {
   // every untagged run it finds — including runs still mid-flight in another
   // test's server — dispatching them against the same on-disk event log and
   // racing the run's actual owner into spurious `ReplayDivergenceError`s.
-  const dataDir = join(
-    tmpdir(),
-    `workflow-world-testing-${process.pid}-${randomUUID()}`
-  );
+  const ownsDataDir = opts.dataDir === undefined;
+  const dataDir =
+    opts.dataDir ??
+    join(tmpdir(), `workflow-world-testing-${process.pid}-${randomUUID()}`);
 
   const proc = cp.spawn('node', [fileURLToPath(serverPath)], {
     stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
@@ -73,6 +78,7 @@ export async function startServer(opts: {
         setTimeout(5_000, undefined, { ref: false }),
       ]);
     }
+    if (!ownsDataDir) return;
     // Windows can hold the handles for a moment past exit, hence the retries.
     // A leaked temp dir is not worth failing an otherwise passing test over.
     await rm(dataDir, {
@@ -116,6 +122,8 @@ export async function startServer(opts: {
     const control = Control.parse(chunk);
     return {
       ...control,
+      /** The server's data directory (`WORKFLOW_LOCAL_DATA_DIR`). */
+      dataDir,
       getOutput: () => outputBuffer.join(''),
     };
   }

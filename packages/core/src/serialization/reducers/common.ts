@@ -17,6 +17,7 @@ import {
   RetryableError,
   RuntimeDecryptionError,
   StreamError,
+  WorkflowStartError,
 } from '@workflow/errors';
 import {
   arrayBufferByteLength,
@@ -305,6 +306,7 @@ export function getCommonReducers(
       if (conflictingRunId !== undefined) {
         reduced.conflictingRunId = conflictingRunId;
       }
+      if (readProperty(value, 'kind') === 'start') reduced.kind = 'start';
       return reduced;
     },
     HookForceClaimedError: (value) => {
@@ -324,6 +326,18 @@ export function getCommonReducers(
       if (claimedByHookId !== undefined) {
         reduced.claimedByHookId = claimedByHookId;
       }
+      return reduced;
+    },
+    // WorkflowStartError carries the candidate run and the stage that could
+    // not be confirmed; `start()` is a step, so it crosses into workflows.
+    WorkflowStartError: (value) => {
+      const base = reduceNamedErrorSubclassBase('WorkflowStartError', value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['WorkflowStartError'] = {
+        ...base,
+        runId: readProperty(value, 'runId') as WorkflowStartError['runId'],
+        stage: readProperty(value, 'stage') as WorkflowStartError['stage'],
+      };
       return reduced;
     },
     RangeError: makeErrorSubclassReducer('RangeError'),
@@ -528,7 +542,11 @@ export function getCommonRevivers(
         ((global as Record<symbol, unknown>)[
           Symbol.for('@workflow/errors//HookConflictError')
         ] as typeof HookConflictError | undefined) ?? HookConflictError;
-      const error = new Ctor(value.token, value.conflictingRunId);
+      const error = new Ctor(
+        value.token,
+        value.conflictingRunId,
+        value.kind === 'start' ? { kind: 'start' } : undefined
+      );
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) {
         (error as Error & { cause?: unknown }).cause = value.cause;
@@ -549,6 +567,16 @@ export function getCommonRevivers(
       if ('cause' in value) {
         (error as Error & { cause?: unknown }).cause = value.cause;
       }
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//WorkflowStartError')
+        ] as typeof WorkflowStartError | undefined) ?? WorkflowStartError;
+      const error = new Ctor(value.runId, value.stage, value.cause);
+      error.message = value.message;
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     RangeError: makeErrorSubclassReviver(global, 'RangeError'),

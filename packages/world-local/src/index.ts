@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { QueuePrefix, World } from '@workflow/world';
+import type { QueuePrefix, World, WorldCapabilities } from '@workflow/world';
 import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
@@ -23,6 +23,7 @@ import {
   releaseOrphanedSteps,
 } from './orphaned-steps.js';
 import { createQueue, type DirectHandler } from './queue.js';
+import { createQueueAuthKey } from './queue-auth-key.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
@@ -121,6 +122,9 @@ async function clearTaggedLocks(basedir: string, tag: string): Promise<void> {
  * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
  * @param args.tag - Optional tag to scope files (e.g., `vitest-0`). When set, files are written
  *   as `{id}.{tag}.json` and `clear()` only deletes files matching this tag.
+ * @param args.queueAuthKey - `'regenerate'` (default) writes a new queue auth key to the data
+ *   directory when the World is created; `'read'` only reads the key a running app wrote (the
+ *   CLI, the web UI). See `Config.queueAuthKey`.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
  * @throws {DataDirVersionError} If the data directory version is incompatible
  */
@@ -133,7 +137,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   warnIfRunningInVercelDeployment(mergedConfig.dataDir);
   const tag = mergedConfig.tag;
-  const queue = createQueue(mergedConfig);
+  // Before the queue, which waits for it: a regenerating World writes the
+  // app's new key before it sends anything.
+  const queueAuthKey = createQueueAuthKey(
+    mergedConfig.dataDir,
+    mergedConfig.queueAuthKey ?? 'regenerate'
+  );
+  const queue = createQueue(mergedConfig, { queueAuthKey });
   const { clearCache: clearStorageCache, ...storage } = createStorage(
     mergedConfig.dataDir,
     tag
@@ -143,27 +153,43 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     tag
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
+  const capabilities = {
+    hookRetention: { active: true },
+    // `start({ experimental_hook })`: the start Hook's token claim, the run and the Hook
+    // entity are written under the claim lock; a refusal is recorded per
+    // candidate. See `admitStartHook` in storage/events-storage.ts.
+    atomicStartHook: { active: true },
+    // Stored whole on the run record; no upload path, so `start()` always
+    // sends the code inline.
+    dynamicWorkflowCode: true,
+    // world-local deduplicates concurrent `hook_received` writes sharing a
+    // `(runId, resumeId)` via a filesystem sidecar claim (see
+    // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
+    // path converges on one event in dev exactly as it does on Vercel.
+    hookResumeDedup: true,
+    // The token claim lock serializes the takeover behind
+    // `createHook({ experimental_force: true })`; see the hook_created
+    // branch of storage/events-storage.ts.
+    hookForceClaim: true,
+    // The queue delivers a single-orchestrator run's orchestrator messages
+    // one at a time (a per-run gate where they are sent and one where they
+    // are handled, so a message another process on the data directory sent
+    // waits too; see queue.ts): with the fence, the two halves of the single-writer guarantee. An in-band
+    // write is stored at its `occurredAt` (events-storage.ts), as the
+    // spec-9 contract requires.
+    maxConcurrency: true,
+    // A per-run in-band count on disk, under a lock file, so every process
+    // on the data directory shares it; see the in-band writer fence in
+    // storage/events-storage.ts.
+    inBandFence: true,
+  } satisfies WorldCapabilities;
   return {
-    specVersion: mintedSpecVersion(),
-    capabilities: {
-      hookRetention: { active: true },
-      // Stored whole on the run record; no upload path, so `start()` always
-      // sends the code inline.
-      dynamicWorkflowCode: true,
-      // world-local deduplicates concurrent `hook_received` writes sharing a
-      // `(runId, resumeId)` via a filesystem sidecar claim (see
-      // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
-      // path converges on one event in dev exactly as it does on Vercel.
-      hookResumeDedup: true,
-      // The token claim lock serializes the takeover behind
-      // `createHook({ experimental_force: true })`; see the hook_created
-      // branch of storage/events-storage.ts.
-      hookForceClaim: true,
-      // A per-run in-band count on disk, under a lock file, so every process
-      // on the data directory shares it; see the in-band writer fence in
-      // storage/events-storage.ts.
-      inBandFence: true,
-    },
+    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
+    // the in-band fence declared above; spec 8 otherwise.
+    specVersion: mintedSpecVersion(process.env, {
+      inBandFence: capabilities.inBandFence,
+    }),
+    capabilities,
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
@@ -220,10 +246,15 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         await releases.settle((message as { runId: string }).runId);
         return queue.queue(queueName, message, opts);
       };
+      // The queue is in memory: the run's step messages and wait timers
+      // died with the previous process, so the recovery delivery sends them
+      // again.
       await reenqueueActiveRuns(
         recoveryRuns,
         releaseThenEnqueue,
-        'world-local'
+        'world-local',
+        undefined,
+        { queueLost: true }
       );
     },
     releaseOrphanedSteps(runId) {
@@ -285,6 +316,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           ...runScopedDirs,
           'hooks',
           'hooks/by-run',
+          'hooks/admissions',
           'waits',
           'streams/runs',
         ];
@@ -367,6 +399,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         resetHookIndexEnsureCache();
         await rm(mergedConfig.dataDir, { recursive: true, force: true });
         await initDataDir(mergedConfig.dataDir);
+        // That removed the queue auth key too: a World that wrote it writes
+        // it again, so the CLI and the app's other processes can still send.
+        await queueAuthKey.restore();
       }
       // The stream indexes are gone, so forget which streams were registered.
       clearStreamerCache();

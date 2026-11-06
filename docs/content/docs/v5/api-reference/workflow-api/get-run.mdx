@@ -199,6 +199,10 @@ export async function POST(req: Request) {
 
 The options object is optional: `await run.cancel()` cancels the run without recording a reason.
 
+## Spec 9 (experimental)
+
+On runs of the experimental spec 9 runtime, `wakeUp()` asks the run's orchestrator to complete the sleeps instead of completing them itself, `stoppedCount` counts the sleeps it asked to complete, and the request is best-effort while the run is active. See [`run.wakeUp()` on spec 9 runs](/docs/changelog/spec-9#runwakeup-and-waitforsleep).
+
 ## Related functions
 
 - [`start()`](/docs/api-reference/workflow-api/start): Start a new workflow and get its run ID.

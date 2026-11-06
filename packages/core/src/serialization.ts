@@ -1,4 +1,5 @@
 import {
+  EncryptionKeyLookupError,
   RuntimeDecryptionError,
   SerializationError,
   StreamError,
@@ -10,6 +11,7 @@ import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { isRetryableWorldError } from './classify-error.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -279,6 +281,24 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
   }
 }
 
+/**
+ * Whether a failed encryption key lookup is worth retrying: a retryable world
+ * error (transport, timeout, `429`, `5xx`), or any error carrying a numeric
+ * HTTP `status` of `429` or `>= 500`. Worlds that fetch keys over HTTP do not
+ * necessarily throw `WorkflowWorldError` for a non-2xx response (world-vercel
+ * throws a plain `Error` with `status`), so the status check covers those.
+ */
+function isTransientKeyLookupError(error: unknown): boolean {
+  if (isRetryableWorldError(error)) {
+    return true;
+  }
+  const status =
+    typeof error === 'object' && error !== null
+      ? (error as { status?: unknown }).status
+      : undefined;
+  return typeof status === 'number' && (status === 429 || status >= 500);
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -349,6 +369,21 @@ export function getSerializeStream(
         // SerializationError (USER_ERROR).
         if (RuntimeDecryptionError.is(error)) {
           controller.error(error);
+          return;
+        }
+        // A key lookup failure is not a SerializationError either: nothing
+        // was serialized yet. A transient failure passes through unwrapped so
+        // the step retries; anything else (e.g. a 404) becomes a fatal
+        // EncryptionKeyLookupError.
+        if (!keyState.resolved) {
+          controller.error(
+            isTransientKeyLookupError(error)
+              ? error
+              : new EncryptionKeyLookupError(
+                  `Failed to resolve the encryption key for stream writes (owner run key lookup failed: ${error instanceof Error ? error.message : String(error)})`,
+                  { cause: error }
+                )
+          );
           return;
         }
         const { message, hint } = formatSerializationError(
@@ -1302,8 +1337,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * optimistically (before `run_started` is durable), the first chunk write to
    * a brand-new stream would otherwise reach the World before the run exists
    * and be rejected as run-not-found. Awaiting this once before the first
-   * flush/close orders the write after the run's creation. `undefined` outside
-   * turbo and on the await path, where the run was already durable.
+   * flush/close orders the write after the run's creation. If it rejects,
+   * every write and the close fail with its error instead of reaching the
+   * World: a refused `run_started` can mean another orchestrator holds the
+   * run, and this body's chunks would land on a stream whose run never
+   * records the step that wrote them. `undefined` outside turbo and on the
+   * await path, where the run was already durable.
    */
   constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
     if (typeof runId !== 'string') {
@@ -1317,17 +1356,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     const worldPromise = getWorldLazy();
 
     // Hold the first server write until the run exists (turbo optimistic
-    // start). Awaited once, then cleared so later flushes pay nothing. The
-    // rejection is swallowed for ordering only: if `run_started` truly failed
-    // the run does not exist, so the write below surfaces the real error.
+    // start). Awaited once, then cleared so later flushes pay nothing. A
+    // rejection is kept, so every later write and the close fail with it.
     let pendingRunReady: Promise<unknown> | undefined = runReadyBarrier;
     const ensureRunReady = async (): Promise<void> => {
       if (pendingRunReady) {
-        try {
-          await pendingRunReady;
-        } catch {
-          // intentional: ordering barrier only, see above.
-        }
+        await pendingRunReady;
         pendingRunReady = undefined;
       }
     };
@@ -1335,15 +1369,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // One stable identity and sequence space per in-memory sink. Start session
     // construction as soon as the run-ready barrier permits, so transports may
     // negotiate eagerly without allowing a write to overtake run creation.
-    // This eager chain cannot strand a new rejection: ensureRunReady absorbs its
-    // ordering-only failure, and every path that can observe worldPromise also
-    // awaits this session promise before it writes, closes, or disposes.
+    // A rejection of this eager chain (a failed run start) is observed by the
+    // write, close and dispose paths, which all await it; the handler below
+    // only keeps it from surfacing as unhandled when none of them runs.
     const writerId = `wrtr_${defaultUlid()}` as const;
     const writeSessionPromise: Promise<StreamWriteSession | undefined> =
       ensureRunReady().then(async () => {
         const world = await worldPromise;
         return world.streams.createWriteSession?.(runId, name, { writerId });
       });
+    writeSessionPromise.catch(() => {});
     let nextChunkSeq = 0;
 
     // ------------------------------------------------------------------
@@ -2002,6 +2037,22 @@ function attachAbortListenerOnce(
 }
 
 /**
+ * Run `pipe` now, or, with a gate, only once it resolves `true`. A `false` or
+ * rejected gate never runs it, and the returned promise still resolves, so an
+ * op that never pipes cannot surface as an unhandled rejection.
+ */
+function afterStreamStartGate(
+  gate: Promise<boolean> | undefined,
+  pipe: () => Promise<void>
+): Promise<void> {
+  if (!gate) return pipe();
+  return gate.then(
+    (open) => (open ? pipe() : undefined),
+    () => undefined
+  );
+}
+
+/**
  * Reducers for serialization boundary from the client side, passing arguments
  * to the workflow handler.
  *
@@ -2034,7 +2085,14 @@ export function getExternalReducers(
   // deadlock. Defaults to `ops` for existing callers that flush everything in
   // the background.
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  // `start({ experimental_hook })`'s arguments: pipe each stream (upload or readback)
+  // only once this resolves `true`, the candidate having been admitted. On
+  // `false` the stream is left untouched (never read, locked, or cancelled),
+  // so a refused duplicate never drains a one-shot source such as a webhook
+  // `request.body` into a run that does not exist. Undefined everywhere else:
+  // pipes start immediately.
+  streamStartGate?: Promise<boolean>
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2056,38 +2114,39 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(
-        runId,
-        name,
-        runReadyBarrier
-      );
-      if (type === 'bytes') {
-        if (framedByteStreams) {
-          ops.push(value.pipeThrough(getByteFramingStream()).pipeTo(writable));
-        } else {
-          ops.push(value.pipeTo(writable));
-        }
-      } else {
-        ops.push(
-          value
-            .pipeThrough(
-              getSerializeStream(
-                getExternalReducers(
-                  global,
-                  ops,
-                  runId,
-                  cryptoKey,
-                  framedByteStreams,
-                  runReadyBarrier,
-                  readbackOps,
-                  framedAbortStreams
-                ),
-                cryptoKey
-              )
-            )
-            .pipeTo(writable)
+      // The server sink is opened with the pipe, so a gated stream that never
+      // pipes never touches its server stream either.
+      const pipe = (): Promise<void> => {
+        const writable = new WorkflowServerWritableStream(
+          runId,
+          name,
+          runReadyBarrier
         );
-      }
+        if (type === 'bytes') {
+          return framedByteStreams
+            ? value.pipeThrough(getByteFramingStream()).pipeTo(writable)
+            : value.pipeTo(writable);
+        }
+        return value
+          .pipeThrough(
+            getSerializeStream(
+              getExternalReducers(
+                global,
+                ops,
+                runId,
+                cryptoKey,
+                framedByteStreams,
+                runReadyBarrier,
+                readbackOps,
+                framedAbortStreams,
+                streamStartGate
+              ),
+              cryptoKey
+            )
+          )
+          .pipeTo(writable);
+      };
+      ops.push(afterStreamStartGate(streamStartGate, pipe));
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
@@ -2134,8 +2193,11 @@ export function getExternalReducers(
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
-      const readable = new WorkflowServerReadableStream(runId, name);
-      readbackOps.push(readable.pipeTo(value));
+      readbackOps.push(
+        afterStreamStartGate(streamStartGate, () =>
+          new WorkflowServerReadableStream(runId, name).pipeTo(value)
+        )
+      );
 
       return { name };
     },
@@ -3882,7 +3944,9 @@ export async function dehydrateWorkflowArguments(
   framedByteStreams = false,
   compression: CompressionMode = false,
   readbackOps: Promise<void>[] = ops,
-  framedAbortStreams = false
+  framedAbortStreams = false,
+  // See getExternalReducers. Only `start({ experimental_hook })` passes one.
+  streamStartGate?: Promise<boolean>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3895,7 +3959,8 @@ export async function dehydrateWorkflowArguments(
         framedByteStreams,
         undefined,
         readbackOps,
-        framedAbortStreams
+        framedAbortStreams,
+        streamStartGate
       )
     );
     return revive(str);
@@ -3913,7 +3978,8 @@ export async function dehydrateWorkflowArguments(
           framedByteStreams,
           undefined,
           readbackOps,
-          framedAbortStreams
+          framedAbortStreams,
+          streamStartGate
         )
       ),
       compression,

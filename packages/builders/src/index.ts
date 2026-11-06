@@ -66,6 +66,7 @@ export {
   useStepPattern,
   useWorkflowPattern,
   type WorkflowPatternMatch,
+  workflowSerdeComputedPropertyPattern,
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';

@@ -383,3 +383,7 @@ Step-to-step overhead (STSO) measures the time the runtime adds between two step
 <MetricVideo metric="stso" />
 
 See [Step-to-step overhead](/docs/performance#step-to-step-overhead-stso) on the Performance page for how it's measured and the latest results.
+
+## Spec 9 (experimental)
+
+The experimental spec 9 runtime writes the same event types with a different model: one orchestrator per run writes every decision behind an in-band fence, step and wait events are plain appends, and an inline step is created by its first `step_started`. See [The event log on spec 9 runs](/docs/changelog/spec-9#the-event-log).

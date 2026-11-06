@@ -577,7 +577,18 @@ async function flushablePipePerChunk(
       if (readResult.done) {
         // Source stream completed - close sink and resolve
         state.streamEnded = true;
-        await writer.close();
+        try {
+          await writer.close();
+        } catch (error) {
+          // A sink errored by its consumer (e.g. the readable side of a
+          // hydrated body cancelled after the source was fully read) rejects
+          // close() with a generic TypeError. Report the sink's stored error
+          // instead, so callers can tell an intentional abort from a failure.
+          throw await writer.closed.then(
+            () => error,
+            (reason: unknown) => reason ?? error
+          );
+        }
         // Resolve done promise if not already resolved
         if (!state.doneResolved) {
           state.doneResolved = true;

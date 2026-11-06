@@ -107,6 +107,11 @@ const HTTP_TRANSPORT_APPS = [
   'hono',
 ];
 
+// Apps whose dedicated deployment opts in to spec 9 runs
+// (WORKFLOW_SPEC_VERSION=9). Every other Vercel lane runs the default, spec 8.
+// Both VMs, since each engine has its own spec 9 orchestrator.
+const SPEC9_APPS = ['nextjs-turbopack'];
+
 function project(name) {
   const found = PROJECTS.find((candidate) => candidate.name === name);
   if (!found) {
@@ -139,6 +144,12 @@ function buildMatrices() {
       include: HTTP_TRANSPORT_APPS.map((name) => ({
         app: appEntry(project(name)),
       })),
+    },
+    'vercel-spec9-matrix': {
+      include: SPEC9_APPS.flatMap((name) => {
+        const app = project(name);
+        return (app.vms ?? VMS).map((vm) => ({ app: appEntry(app), vm }));
+      }),
     },
   };
 }
