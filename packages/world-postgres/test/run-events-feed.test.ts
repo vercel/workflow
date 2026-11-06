@@ -236,6 +236,23 @@ describe.skipIf(process.platform === 'win32')(
       victimFeed.unsubscribe();
     });
 
+    it('refuses every subscription, saying why, when the feed is off', async () => {
+      const off = createRunEventsFeed(pool, { maxLiveSubscriptions: 0 });
+      const offEvents = createEventsStorage(createClient(pool), {
+        runEventsFeed: off,
+      });
+      const errors: unknown[] = [];
+      offEvents.subscribe!(await createRun(), 1, () => {}, {
+        onError: (error) => errors.push(error),
+      });
+      await until(
+        () => errors.length,
+        (n) => n === 1
+      );
+      expect(String(errors[0])).toMatch(/feeds are off in this process/);
+      await off.close();
+    });
+
     it('refuses subscriptions past the per-process cap, through onError', async () => {
       const runId = await createRun();
       const live = [

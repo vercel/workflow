@@ -1156,6 +1156,14 @@ export function createQueue(
   ): Promise<CoalescedJobs> {
     const utils = workerUtils;
     if (!utils) return { removed: 0 };
+    // Reads graphile-worker's internal tables (`_private_jobs`,
+    // `_private_tasks`, `_private_job_queues`), as `job-lease.ts` does: the
+    // public `jobs` view has no payload, which the filter below needs. They
+    // are internal and may change in any graphile-worker release, which is
+    // why `package.json` pins it exactly (0.16.6). Bumping that pin means
+    // checking this query and `job-lease.ts` against the new schema; the
+    // Docker tests (`test/queue-spec9-delivery.test.ts`) fail if coalescing
+    // stops finding jobs.
     const { rows } = await pool.query<{ id: string; payload: unknown }>(
       `SELECT jobs.id, jobs.payload
          FROM graphile_worker._private_jobs AS jobs

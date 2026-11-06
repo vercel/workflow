@@ -71,6 +71,7 @@ export interface RunEventsFeedOptions {
    * left to run lingers on it (`WORKFLOW_ORCHESTRATOR_LINGER_MS`), holding a
    * Graphile worker slot; the cap keeps lingering deliveries from taking
    * every slot of the process while their own background steps wait for one.
+   * `0` turns the feed off: every subscription is refused.
    */
   maxLiveSubscriptions: number;
 }
@@ -245,6 +246,11 @@ export function createRunEventsFeed(
         return () => {};
       };
       if (closed) return refuse('The World is closed');
+      if (options.maxLiveSubscriptions <= 0) {
+        return refuse(
+          'Live run event feeds are off in this process: it has a single worker slot, which a lingering delivery would hold'
+        );
+      }
       if (liveCount >= options.maxLiveSubscriptions) {
         return refuse(
           `This process already holds ${options.maxLiveSubscriptions} live run event feeds`

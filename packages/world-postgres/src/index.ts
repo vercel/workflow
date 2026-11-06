@@ -81,9 +81,12 @@ export function createWorld(
   const jobPrefix = resolveJobPrefix(config);
   // `events.subscribe` for spec 9 orchestrators: one `LISTEN` connection,
   // opened on the first subscription. Lingering on it holds a worker slot,
-  // so at most half of this process's slots linger at once.
+  // so at most half of this process's slots linger at once. With a single
+  // slot the feed is off: a lingering delivery would hold the only slot
+  // while the background steps it waits for queue behind it.
+  const workerSlots = config.queueConcurrency || 50;
   const runEventsFeed = createRunEventsFeed(pool, {
-    maxLiveSubscriptions: Math.floor((config.queueConcurrency || 50) / 2),
+    maxLiveSubscriptions: workerSlots < 2 ? 0 : Math.floor(workerSlots / 2),
   });
   const storage = createStorage(
     drizzle,
