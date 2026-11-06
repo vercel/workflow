@@ -1050,6 +1050,39 @@ describe('streamer', () => {
 
         expect(await readAll(stream)).toEqual(['first\n', 'second\n']);
       });
+
+      it('skips chunks before a startIndex past the tail once they are written', async () => {
+        const { testDir, streamer } = await setupStreamer();
+        const otherProcess = createStreamer(testDir);
+        const streamName = 'start-index-past-tail';
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'c0\n');
+
+        const stream = await streamer.streams.get(TEST_RUN_ID, streamName, 3);
+        await settle();
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'c1\n');
+        // Reaches the reader only through a poll.
+        await otherProcess.streams.write(TEST_RUN_ID, streamName, 'c2\n');
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'c3\n');
+        await streamer.streams.close(TEST_RUN_ID, streamName);
+
+        expect(await readAll(stream)).toEqual(['c3\n']);
+      });
+
+      it('ends a reader whose startIndex is past the end of a closed stream', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'start-index-past-eof';
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'c0\n');
+        await streamer.streams.close(TEST_RUN_ID, streamName);
+
+        const stream = await streamer.streams.get(TEST_RUN_ID, streamName, 5);
+        const reader = stream.getReader();
+        const result = await Promise.race([
+          reader.read(),
+          new Promise((resolve) => setTimeout(() => resolve('pending'), 1000)),
+        ]);
+        expect(result).toEqual({ done: true, value: undefined });
+      });
     });
 
     describe('streams.list', () => {
