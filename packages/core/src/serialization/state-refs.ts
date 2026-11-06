@@ -40,6 +40,8 @@ const SOURCE_STRING_MIN = 128;
 const MAX_ID = 256;
 const MAX_PATH = 64;
 const MAX_DEPTH = 256;
+/** How many recent step-input versions a new value is compared with by value. */
+const MAX_RECENT_INPUTS = 4;
 
 type Dict = Record<string, unknown>;
 interface Version {
@@ -153,13 +155,32 @@ function checkedId(id: unknown, what: string): string {
  * `Set` against changes and never drafts a `Date`.
  */
 function isTrustedLeaf(value: object): boolean {
+  // Brand checks, not `instanceof`: values the workflow VM revives are made
+  // with its own `Date`, `Map` and `Set`, which `instanceof` doesn't match.
   return (
-    value instanceof Date ||
-    value instanceof Map ||
-    value instanceof Set ||
     ArrayBuffer.isView(value) ||
-    value instanceof ArrayBuffer
+    hasBrand(value, () => Date.prototype.getTime.call(value)) ||
+    hasBrand(value, () => Map.prototype.has.call(value, undefined)) ||
+    hasBrand(value, () => Set.prototype.has.call(value, undefined)) ||
+    hasBrand(value, () =>
+      Reflect.apply(
+        Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')
+          ?.get as () => number,
+        value,
+        []
+      )
+    )
   );
+}
+
+/** Whether a built-in method accepts `value`, which only its own type does, from any realm. */
+function hasBrand(_value: object, check: () => unknown): boolean {
+  try {
+    check();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Plain objects and arrays already found deeply frozen; freezing can't be undone. */
@@ -210,6 +231,13 @@ export class StateContext {
    * a known version already holds.
    */
   private readonly owners = new WeakMap<object, string>();
+  /**
+   * Known versions read most recently as step inputs. A step's output is
+   * usually made from its input, so when a new value shares no objects with
+   * a known version (state of strings and numbers, say), it is compared with
+   * these by value instead.
+   */
+  private recentInputs: string[] = [];
   /** Registration order of versions, to prefer the newest when choosing a base. */
   private readonly order = new Map<string, number>();
   /** Objects inside a record being written, which are not records themselves. */
@@ -219,6 +247,12 @@ export class StateContext {
    * payloads) are written as plain values, so any reader can read them.
    */
   private standalone = false;
+  /**
+   * Whether changes refer to hook-payload strings. A context rebuilt by cold
+   * recovery registers every hook payload in the log, but replay registers
+   * only those it delivers, so only replay's context may refer to them.
+   */
+  writesSourceRefs = true;
 
   /** A context for payloads read without the run's log: it writes no records. */
   static standalone(): StateContext {
@@ -323,6 +357,7 @@ export class StateContext {
       if (Array.isArray(node)) stack.push(...node);
       else for (const key of Object.keys(node)) stack.push((node as Dict)[key]);
     }
+    if (counts.size === 0) return this.closestInput(value);
     let best: string | undefined;
     for (const [version, count] of counts) {
       if (!this.versions.has(version)) continue;
@@ -334,6 +369,27 @@ export class StateContext {
             (this.order.get(best as string) ?? 0))
       )
         best = version;
+    }
+    return best;
+  }
+
+  /**
+   * Of the versions recently read as step inputs, the one a new value differs
+   * least from, unless every one would be replaced whole.
+   */
+  private closestInput(value: object): string | undefined {
+    let best: string | undefined;
+    let bestBytes = Number.POSITIVE_INFINITY;
+    for (const version of this.recentInputs) {
+      const entry = this.versions.get(version);
+      if (entry === undefined) continue;
+      const ops = diffState(entry.value, value);
+      if (ops.some((op) => op.op === 'set' && op.path.length === 0)) continue;
+      const bytes = opsBytes(ops);
+      if (bytes < bestBytes) {
+        best = version;
+        bestBytes = bytes;
+      }
     }
     return best;
   }
@@ -497,6 +553,12 @@ export class StateContext {
         throw new WorkflowStateMissingError(
           `Missing workflow state version ${logId}:${version}`
         );
+      if (!register) {
+        this.recentInputs = [
+          version,
+          ...this.recentInputs.filter((v) => v !== version),
+        ].slice(0, MAX_RECENT_INPUTS);
+      }
       return known.value;
     }
     if (known !== undefined) return known.value;
@@ -559,7 +621,7 @@ export class StateContext {
 
   /** Replaces long strings a source already holds; the result is serialized, never kept. */
   private withSourceRefs(ops: readonly StateOp[]): unknown[] {
-    if (this.strings.size === 0) return [...ops];
+    if (!this.writesSourceRefs || this.strings.size === 0) return [...ops];
     const replace = (v: unknown): unknown => {
       if (typeof v === 'string') {
         const at =

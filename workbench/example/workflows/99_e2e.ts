@@ -16,7 +16,6 @@ import {
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
 import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
-import { type Immutable, produce } from 'workflow/state';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -4665,13 +4664,27 @@ export async function dynamicWorkflowDisallowedStep(value: number) {
 }
 
 //////////////////////////////////////////////////////////
-// workflow/state values stored by reference
+// Frozen values stored by reference
 //////////////////////////////////////////////////////////
 
+type StateRefsMessage = { readonly role: string; readonly content: string };
 type StateRefsChat = {
-  history: { role: string; content: string }[];
-  turns: number;
+  readonly history: readonly StateRefsMessage[];
+  readonly turns: number;
 };
+
+/** The next chat, frozen, reusing the unchanged (already frozen) messages. */
+const stateRefsNext = (
+  chat: StateRefsChat,
+  added: StateRefsMessage[]
+): StateRefsChat =>
+  Object.freeze({
+    history: Object.freeze([
+      ...chat.history,
+      ...added.map((m) => Object.freeze({ ...m })),
+    ]),
+    turns: chat.turns + 1,
+  });
 
 const stateRefsMessage = (i: number) =>
   `Turn ${i}: please summarise the attached report and list its three biggest risks. `.repeat(
@@ -4679,7 +4692,7 @@ const stateRefsMessage = (i: number) =>
   );
 
 async function stateRefsReply(
-  chat: Immutable<StateRefsChat>,
+  chat: StateRefsChat,
   text: string,
   failOnce: boolean
 ) {
@@ -4688,23 +4701,20 @@ async function stateRefsReply(
   // rebuilds its input from the run's log.
   if (failOnce && getStepMetadata().attempt < 2)
     throw new Error('transient: retry in a new invocation');
-  return produce(chat, (d) => {
-    d.history.push(
-      { role: 'user', content: text },
-      { role: 'assistant', content: `re ${text.length}` }
-    );
-    d.turns++;
-  });
+  return stateRefsNext(chat, [
+    { role: 'user', content: text },
+    { role: 'assistant', content: `re ${text.length}` },
+  ]);
 }
 
-async function stateRefsSummary(chat: Immutable<StateRefsChat>, i: number) {
+async function stateRefsSummary(chat: StateRefsChat, i: number) {
   'use step';
   return `${i}:${chat.turns}:${chat.history.length}`;
 }
 
 /**
- * State passed from step to step with `produce()`: step inputs are stored as
- * references and outputs as changes. Covers a hook string referenced by later
+ * Frozen state passed from step to step: step inputs are stored as references
+ * and outputs as changes. Covers a hook string referenced by later
  * state, a retry that rebuilds cold, a replay after a sleep, and a fan-out
  * wider than the inline limit (queued steps rebuild cold).
  */
@@ -4714,7 +4724,10 @@ export async function stateRefsWorkflow(
   width: number
 ) {
   'use workflow';
-  let chat: Immutable<StateRefsChat> = { history: [], turns: 0 };
+  let chat: StateRefsChat = Object.freeze({
+    history: Object.freeze([]),
+    turns: 0,
+  });
   using hook = createHook<{ text: string }>({ token });
   const { text } = await hook;
   chat = await stateRefsReply(chat, text, false);

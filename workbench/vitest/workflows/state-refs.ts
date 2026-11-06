@@ -3,9 +3,10 @@
  * reference, through the paths that rebuild them (inline steps, queued steps
  * past the inline limit, retries in a new invocation, replays after a sleep).
  */
+
+import { type Immutable, produce } from 'immer';
 import { createHook, getStepMetadata, sleep } from 'workflow';
 import { start } from 'workflow/api';
-import { type Immutable, produce } from 'workflow/state';
 
 export type Msg = { role: 'user' | 'assistant'; content: string };
 export type Chat = { history: Msg[]; turns: number };

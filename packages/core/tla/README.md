@@ -51,6 +51,13 @@ TLC 1.8.0, `MaxVersions = 4`, `MaxSteps = 3`, `MaxHooks = 1`, run exhaustively:
 2. Step 2 runs cold with a `ref` input to the earlier, clean version.
 3. Recovery reads every output, so it still fails.
 
+## Status after the frozen-value redesign
+
+The code no longer has a `produce()` of its own: any deeply frozen plain value is tracked, found by the objects it shares with known versions. In the model's terms:
+- `PR_WorstCase` (lineage visible) is the normal case now. Workflow-body values are tracked like any frozen value.
+- `Fix_Opaque` is what the code does: state holding a custom-serde class or other non-plain value isn't tracked, so it is written `plain`.
+- `Undelivered` is fixed differently from `Fix_Undelivered`: a context rebuilt by cold recovery writes no hook-string references (`writesSourceRefs`), so only replay's context, whose sources every reader also registers, refers to them. The model hasn't been rerun for this variant.
+
 ## Running
 
 ```bash

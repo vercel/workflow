@@ -1,11 +1,11 @@
 /**
- * Property-based fuzzing of `workflow/state` storage by reference.
+ * Property-based fuzzing of frozen state stored by reference.
  *
  * Each case simulates one run against an in-memory log: a run input, hook
  * payloads, steps called with state (inline in the replay's context, or cold
  * through the real `recoverStateContext`), parallel fan-outs, retries, new
- * invocations that replay the log, `produce()` in the workflow body (lineage
- * visible to the serializer, the worst case) and plain immer results. Every
+ * invocations that replay the log, and immer `produce()` results made in the
+ * workflow body (tracked like any frozen value, the worst case) and in steps. Every
  * value read back, by any reader and at any later time, must equal a plain
  * shadow copy maintained alongside it: same keys in the same order, same
  * holes, same prototypes, same dates and bytes.
@@ -14,6 +14,11 @@
  * `FUZZ_RUNS=20000 pnpm vitest run src/serialization/state-refs.fuzz.test.ts`.
  */
 import { produce as immerProduce } from 'immer';
+
+// Frozen values are what is stored by reference, so both ways of editing
+// held state are immer's own `produce`.
+const produce = immerProduce;
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dehydrateStepArguments,
@@ -25,7 +30,6 @@ import {
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
-import { produce } from '../state.js';
 import {
   bindStateContext,
   registerStateSource,

@@ -3,7 +3,11 @@ import { runtimeLogger } from '../logger.js';
 import { getWorldLazy } from '../runtime/get-world-lazy.js';
 import type { PayloadKey } from './encryption.js';
 import { decodeFormatPrefix, peekFormatPrefix } from './format.js';
-import { StateContext, stateSourceId } from './state-refs.js';
+import {
+  STATE_REF_REDUCER,
+  StateContext,
+  stateSourceId,
+} from './state-refs.js';
 
 const MAX_PAGES = 1000;
 const MAX_BYTES = 256 * 1024 * 1024;
@@ -64,6 +68,9 @@ export async function recoverStateContext(
   const startedAt = Date.now();
   const world = await getWorldLazy();
   const context = new StateContext();
+  // This context sees hook payloads replay may never deliver; see
+  // `writesSourceRefs`.
+  context.writesSourceRefs = false;
   const { prepareReplayPayload } = await import('../serialization.js');
   const ingest = async (value: unknown, source?: string) => {
     if (value === undefined) return;
@@ -73,10 +80,18 @@ export async function recoverStateContext(
       peekFormatPrefix(prepared) !== 'devl'
     )
       return;
+    const payload = decodeFormatPrefix(prepared).payload;
+    // Only payloads recovery reads count: hook payloads and the run input
+    // for their strings, and step outputs that hold state records.
+    if (
+      source === undefined &&
+      !new TextDecoder().decode(payload).includes(STATE_REF_REDUCER)
+    )
+      return;
     context.stats.recoveryBytes += prepared.byteLength;
     if (context.stats.recoveryBytes > MAX_BYTES)
       throw fatal('the run log is larger than the 256 MiB recovery limit');
-    context.ingest(decodeFormatPrefix(prepared).payload, source);
+    context.ingest(payload, source);
   };
   const run = await read('input', () =>
     world.runs.get(runId, { resolveData: 'all' })

@@ -18,7 +18,7 @@ import {
 } from '../workflows/state-refs.js';
 
 /**
- * `workflow/state` values stored by reference, end to end on the local World
+ * Frozen state stored by reference, end to end on the local World
  * (real VM, real queue). Each run is checked for its result and for how its
  * state was stored. QuickJS doesn't write references yet, so there every
  * payload must be stored whole, with the same results.
@@ -83,7 +83,7 @@ function expectStorage(log: Stored[], { patches = true } = {}) {
     expect(outputs(log).some((e) => kinds(e).includes('patch'))).toBe(true);
 }
 
-describe(`workflow/state stored by reference (${refs ? 'node' : 'quickjs: stored whole'})`, () => {
+describe(`frozen state stored by reference (${refs ? 'node' : 'quickjs: stored whole'})`, () => {
   it('a hook-driven chat, with a retry in a new invocation and a replay', async () => {
     const token = `state-refs-chat-${Math.random().toString(36).slice(2)}`;
     const turns = 6;
@@ -213,15 +213,14 @@ describe(`workflow/state stored by reference (${refs ? 'node' : 'quickjs: stored
     await expect(getRun(value.childRunId).returnValue).resolves.toBe(
       '99:3:6:reply to'
     );
-    // The child's run input holds the value whole: it can't refer to this run's log.
+    // The child's run input holds the value as a plain value: it can't refer
+    // to this run's log, and any reader can read it.
     const world = await getWorld();
     const childRun = await world.runs.get(value.childRunId, {
       resolveData: 'all',
     });
     const input = decode(childRun.input as Uint8Array);
-    if (refs) expect(input).toContain('"full"');
-    expect(input).not.toContain('"ref"');
-    expect(input).not.toContain('"patch"');
+    expect(input).not.toContain('StateRefV1');
   }, 60_000);
 
   // Known bug (review on #5215): the engine is chosen per run (`start()`
@@ -251,18 +250,13 @@ describe(`workflow/state stored by reference (${refs ? 'node' : 'quickjs: stored
     60_000
   );
 
-  // Known bug (review on #5215): a cold step can't revive a custom-serde class
-  // inside state, so the queued steps fail and the run fails. The inline steps
-  // pass. QuickJS stores state whole, so it is not affected. Remove `.fails`
-  // once the class is stored without references (or rejected when written).
-  (refs ? it.fails : it)(
-    'a custom-serde class inside state, read by queued steps',
-    async () => {
-      const run = await start(stateRefsClassInState, []);
-      await expect(run.returnValue).resolves.toEqual(
-        [0, 1, 2, 3, 4, 5].map((i) => `${i}:true:1`)
-      );
-    },
-    60_000
-  );
+  // A custom-serde class inside state makes the value not plain data, so it
+  // is stored without references and queued steps read it as usual (this
+  // failed when state was tracked by lineage: cold steps couldn't revive it).
+  it('a custom-serde class inside state, read by queued steps', async () => {
+    const run = await start(stateRefsClassInState, []);
+    await expect(run.returnValue).resolves.toEqual(
+      [0, 1, 2, 3, 4, 5].map((i) => `${i}:true:1`)
+    );
+  }, 60_000);
 });

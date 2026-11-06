@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { parse } from 'devalue';
 import { produce } from 'immer';
 import { describe, expect, it, vi } from 'vitest';
@@ -372,6 +373,14 @@ describe('frozen values stored by reference', () => {
     expect(text(write({ s: tracked }, body))).toContain('"full"');
   });
 
+  it('tracks frozen state whose dates, maps and sets come from the workflow VM', () => {
+    // The workflow VM revives values with its own built-ins.
+    const fromVm = runInNewContext(
+      'Object.freeze({ at: new Date(0), tags: new Set(["a"]), byId: new Map(), bytes: new Uint8Array(2), list: Object.freeze([1]) })'
+    );
+    expect(isFrozenState(fromVm)).toBe(true);
+  });
+
   it('refers to a known version for a frozen copy holding the same data', () => {
     const { body, output1 } = session();
     const v1 = read(output1, body).session as Session;
@@ -445,6 +454,42 @@ describe('frozen values stored by reference', () => {
     expect(out).toContain('"full"');
     expect(out).toContain('"ref"');
     expect(out).not.toContain('"patch"');
+  });
+
+  it('stores a change from the step input for state made only of strings and numbers', () => {
+    const replay = new StateContext();
+    const first = write(
+      {
+        s: produce({ blob: '', log: [] as string[] }, (d) => {
+          d.blob = 'a';
+        }),
+      },
+      replay
+    );
+    const v1 = read(first, replay).s;
+    // The step reads it as its input, then returns a value sharing no objects.
+    const input = workflow.serialize(
+      { s: v1 },
+      { stateContext: replay, stateInput: true }
+    );
+    const given = workflow.deserialize(input, {
+      stateContext: replay,
+      stateInput: true,
+    }) as { s: { blob: string; log: string[] } };
+    const out = write(
+      {
+        s: produce(given.s, (d) => {
+          d.blob = 'b';
+          d.log.push('w1');
+        }),
+      },
+      replay
+    );
+    expect(text(out)).toContain('"patch"');
+    expect(read(out, cold(first)).s).toEqual({
+      blob: 'b',
+      log: ['w1'],
+    });
   });
 
   it('stores a value whole when none of its objects are shared with a known version', () => {
