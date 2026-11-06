@@ -5413,6 +5413,32 @@ describe.concurrent('e2e', () => {
     });
   });
 
+  // https://github.com/vercel/workflow/issues/4897: an `@ai-sdk/openai` model
+  // created only inside the workflow body reaches a step as a serialized
+  // argument. Nothing in the step bundle imports the provider unless discovery
+  // registers it, because the package has no `workflow` dependency.
+  test.skipIf(!isNextJsApp)(
+    'providerModelSerdeWorkflow - an AI SDK model created in the workflow body deserializes in a step',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/provider_model_serde.ts',
+          'providerModelSerdeWorkflow'
+        ),
+        []
+      );
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        provider: 'openai.chat',
+        modelId: 'gpt-4o-mini',
+        isModelInstance: true,
+      });
+    }
+  );
+
   // Regression test for the o2flow v5 upgrade incident (5.0.0-beta.26, fixed
   // by #2752): a plain API route — no workflow directives anywhere in its
   // module graph — importing a `defineHook()` hook from a shared module and
