@@ -4,7 +4,10 @@ import {
   RUN_ERROR_CODES,
   RunExpiredError,
 } from '@workflow/errors';
-import { setWorkflowBasePath } from '@workflow/utils';
+import {
+  resolveWorkflowTargetWorld,
+  setWorkflowBasePath,
+} from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -12,6 +15,7 @@ import {
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  WORKFLOW_FLOW_ROUTE,
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
   type World,
@@ -19,6 +23,7 @@ import {
 import { isRetryableWorldError } from './classify-error.js';
 import { describeError } from './describe-error.js';
 import { type Logger, runtimeLogger } from './logger.js';
+import { afterRunFailed } from './runtime/after-terminal-write.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import { getMaxQueueDeliveries } from './runtime/constants.js';
 import type { Orchestrator } from './runtime/delivery.js';
@@ -30,7 +35,11 @@ import {
   withHealthCheck,
 } from './runtime/helpers.js';
 import { withRunInputs } from './runtime/invocations.js';
-import { dispatchRunFailedHooks } from './runtime/lifecycle-hooks.js';
+import {
+  authorizeQueueDelivery,
+  createQueueAuthRefusalLogger,
+  logQueueAuthSetting,
+} from './runtime/queue-auth.js';
 import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
 import { resolveRunSpec } from './runtime/run-spec-routing.js';
@@ -47,6 +56,7 @@ import {
   getSpanKind,
   getWorkflowTraceMode,
   isUsableTraceCarrier,
+  recordQueueDeliveryRefused,
   trace,
   withTraceContext,
   withWorkflowBaggage,
@@ -300,10 +310,10 @@ export function workflowEntrypoint(
         // when the message turns out to carry resume timing; taking it
         // unconditionally keeps it honest for the deliveries that do.
         const handlerEnteredAtMs = Date.now();
-        // Check if this is a health check message
-        // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
-        // They only write a status response to a stream and do not expose sensitive data.
-        // The stream name includes a unique correlationId that must be known by the caller.
+        // Check if this is a health check message. It is a queue delivery
+        // like any other, so it passed the route's queue auth check (the
+        // World's queue sends it with the key). It only writes a status
+        // response to a stream named by a correlationId the caller knows.
         const healthCheck = parseHealthCheckPayload(message_);
         if (healthCheck) {
           await handleHealthCheckMessage(
@@ -420,6 +430,8 @@ export function workflowEntrypoint(
           );
           let encryptionKey: PayloadKey | undefined;
           let dehydratedError: Uint8Array;
+          // No run is loaded past the ceiling; the terminal write returns it.
+          let failedRun: WorkflowRun | undefined;
           const fenceRefused = new Error(
             `Max-deliveries failure of run "${runId}" was refused by the in-band fence; redelivering to retry it`
           );
@@ -459,6 +471,7 @@ export function workflowEntrypoint(
               );
               throw fenceRefused;
             }
+            failedRun = written.run;
           } catch (err) {
             if (err === fenceRefused) throw err;
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
@@ -500,8 +513,9 @@ export function workflowEntrypoint(
             );
             return;
           }
-          dispatchRunFailedHooks(
-            runId,
+          await afterRunFailed(
+            await getWorld(),
+            failedRun ?? runId,
             workflowName,
             dehydratedError,
             encryptionKey,
@@ -633,7 +647,16 @@ export function workflowEntrypoint(
       })
     );
 
-  let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  // The handler, with the World it was built for (which declares how its
+  // deliveries are authenticated) and the refusal log (process-wide; see
+  // `createQueueAuthRefusalLogger`).
+  let cachedRoute:
+    | {
+        handler: (req: Request) => Promise<Response>;
+        world: World;
+        logQueueAuthRefusal: () => void;
+      }
+    | undefined;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
   const routeModuleBodyInitMs =
@@ -643,7 +666,7 @@ export function workflowEntrypoint(
 
   return withHealthCheck(async (req) => {
     invocationCount += 1;
-    const handlerCached = cachedHandler !== undefined;
+    const handlerCached = cachedRoute !== undefined;
     const spanKind = await getSpanKind('SERVER');
 
     return trace(
@@ -662,12 +685,12 @@ export function workflowEntrypoint(
             ? {}
             : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
           ...Attribute.HttpRequestMethod(req.method),
-          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+          ...Attribute.HttpRoute(WORKFLOW_FLOW_ROUTE),
         },
       },
       async (span) => {
-        if (!cachedHandler) {
-          cachedHandler = await trace('workflow.route.init', async () => {
+        if (!cachedRoute) {
+          cachedRoute = await trace('workflow.route.init', async () => {
             // The full runtime World, not `getWorldHandlers()`. That accessor
             // owns a second, build-time-safe cache, so calling it here built a
             // second World in the same process: duplicate connection pools and
@@ -682,11 +705,38 @@ export function workflowEntrypoint(
               'workflow.route.get_world_handlers',
               async () => getWorld()
             );
-            return handler(worldHandlers);
+            logQueueAuthSetting(worldHandlers);
+            return {
+              handler: handler(worldHandlers),
+              world: worldHandlers,
+              logQueueAuthRefusal: createQueueAuthRefusalLogger(),
+            };
           });
         }
 
-        const response = await cachedHandler(req);
+        // Before the handler reads the body or touches any run: a request
+        // that does not carry the app's queue key is refused and dropped
+        // (see `authorizeQueueDelivery`). Covers every delivery
+        // to this route, health checks and invocations included.
+        const refusal = await authorizeQueueDelivery(cachedRoute.world, req);
+        if (refusal) {
+          cachedRoute.logQueueAuthRefusal();
+          // Counted, not awaited: the 401 does not wait on a meter. The route
+          // label is the route template, never the request's path: routers
+          // send `/flow/`, `/flow//` and the like to this same handler, so the
+          // path would let a forgery flood mint unbounded series.
+          void recordQueueDeliveryRefused({
+            world: resolveWorkflowTargetWorld(),
+            route: WORKFLOW_FLOW_ROUTE,
+            reason: refusal.reason,
+          });
+          span?.setAttributes(
+            Attribute.HttpResponseStatusCode(refusal.response.status)
+          );
+          return refusal.response;
+        }
+
+        const response = await cachedRoute.handler(req);
         if (response instanceof Response) {
           span?.setAttributes(
             Attribute.HttpResponseStatusCode(response.status)

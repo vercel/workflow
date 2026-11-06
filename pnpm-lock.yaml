@@ -1598,6 +1598,9 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
+      '@workflow/world-local':
+        specifier: workspace:*
+        version: link:../world-local
       chalk:
         specifier: 5.6.2
         version: 5.6.2

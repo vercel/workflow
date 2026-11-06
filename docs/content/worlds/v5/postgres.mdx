@@ -232,6 +232,8 @@ Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/d
 
 `POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default, and it accepts any request whose headers and body are well-formed: there is no signature, shared secret, or caller check. Anyone who can reach it can forge or replay a workflow or step invocation, including steps your application would only reach after its own gating. Restrict it before you expose the app.
 
+The runtime does not check deliveries to this route with a [queue key](/worlds/building-a-world#authenticating-deliveries): the Postgres World declares `queueAuthMode: 'skip'` until its messages are delivered in-process and the route is denied ([#5258](https://github.com/vercel/workflow/issues/5258)).
+
 The other routes under `/.well-known/workflow/v1/` differ:
 
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
@@ -287,7 +289,7 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`](#workflow_postgres_application_managed_shutdown) | off | Who coordinates shutdown |
 | [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](#workflow_postgres_headers_timeout_ms) | `0` ms (no deadline) | Hung delivery detection |
 | [`WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`](#workflow_postgres_body_timeout_ms) | `0` ms (no deadline) | Stalled response detection |
-| [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) | `0` s (off) | Redelivery after a process dies |
+| [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) | unset: 300 s for spec 9 named queues only | Redelivery after a process dies |
 | [`WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`](#workflow_postgres_hook_retention_limit_days) | `30` days | Maximum hook retention |
 | [`WORKFLOW_QUEUE_NAMESPACE`](#workflow_queue_namespace) | unset | Queue topic namespace |
 | [`WORKFLOW_STREAM_FLUSH_INTERVAL_MS`](#workflow_stream_flush_interval_ms) | `0` ms | Stream write batching |
@@ -314,7 +316,7 @@ Set the prefix through `WORKFLOW_POSTGRES_JOB_PREFIX` rather than only in code. 
 
 Number of concurrent workers polling for jobs. Default: `50`.
 
-This value also bounds how many parent→child workflow polls can be in flight simultaneously. Every `await childRun.returnValue` inside a workflow holds a worker slot until the child run terminates. If you expect recursive or highly-fanned-out parent/child workflows, raise this ceiling above the peak number of concurrent polls. With the default of 50, the included `fibonacciWorkflow` end-to-end test (`fib(6)`, about 24 concurrent polls at peak) passes; deeper recursion or larger fanouts need a correspondingly larger setting.
+A parent workflow awaiting `childRun.returnValue` of a child it started does not hold a worker slot: it suspends on a system hook the child resumes when it finishes (see [Child Workflows](/cookbook/advanced/child-workflows#how-the-parent-waits)). A `returnValue` that falls back to polling still does, for example one awaited inside a step, or any await while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. Each of those holds a worker slot until its child run terminates, so raise this ceiling above the peak number of such polls in flight.
 
 ### `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
 
@@ -342,29 +344,21 @@ Maximum gap in milliseconds between response body chunks from the workflow handl
 
 ### `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
 
-Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery. Default: `0` (off). `30` is a good value when more than one process shares the database. Programmatic option: `jobLockStaleSeconds`.
+Seconds a running delivery's job lock may go unrenewed before another process releases the job for redelivery. Default: unset (see below). `30` is a good value when more than one process shares the database. Programmatic option: `jobLockStaleSeconds`.
 
-When set, a running delivery renews its lock every quarter of this window, and at least every 10 seconds. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows (about 45 seconds at `30`), instead of after Graphile Worker's fixed 4 hour stale-lock reset or the next restart.
+A running delivery renews its lock every quarter of the window, and at least every 10 seconds. When a process dies mid-delivery, another process redelivers its jobs within about one and a half windows (about 45 seconds at `30`), instead of after Graphile Worker's fixed 4 hour stale-lock reset or the next restart.
+
+Unset, every delivery still renews its lock, and its worker registers as renewing in `workflow.workflow_job_lock_holders` (migration 0030, which `bootstrap` applies). Then only the jobs of a spec 9 run's named queue (its orchestrator deliveries, and invoke mode's executor lane) are released, after 300 seconds unrenewed, and only those whose holder registered. A spec 9 run whose worker was killed therefore continues within about 8 minutes (one and a half windows) instead of 4 hours. A job held by a process on an earlier version, which does not register, is never released this way, so the default is safe during a rolling upgrade. `0` turns renewal and release off.
 
 Use the same value on every process that shares the database, and keep it well above the longest a process can go without running its timers (synchronous work that blocks the event loop) or getting a pool connection. A delivery whose renewals stall past the window is redelivered while it still runs.
 
-It's off by default because of rolling upgrades. A process on an earlier version doesn't renew its locks, so a process that has this on would redeliver any of that process's deliveries that run longer than the window. When the earlier-version process then finishes such a delivery, its acknowledgement, which isn't fenced on the lock holder, can delete the redelivered job's row, and the redelivery loses its retry.
+Setting it releases every job of this World, whoever holds it, so set it only after a rolling upgrade has finished. A process on an earlier version doesn't renew its locks, so a process that has this set would redeliver any of that process's deliveries that run longer than the window. When the earlier-version process then finishes such a delivery, its acknowledgement, which isn't fenced on the lock holder, can delete the redelivered job's row, and the redelivery loses its retry.
 
-To turn it on, set `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` (or `jobLockStaleSeconds: 30`) on every process that shares the database, once all of them run a version that includes this option.
+To set it, use `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS=30` (or `jobLockStaleSeconds: 30`) on every process that shares the database, once all of them run a version that includes this option.
 
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.
-
-### `WORKFLOW_POSTGRES_EXPERIMENTAL_START_HOOK`
-
-Set to `1` (or `true`) to enable [`start({ hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) on the Postgres World. Off by default; without it, `start({ hook })` throws before it enqueues anything.
-
-Stop workers running a previous version before you turn it on. The queue does not route by deployment, so an older worker that picks up a candidate's queued message would create its run without the start Hook, and the start would no longer be idempotent (`start()` reports that the World did not confirm the start Hook). An older runtime replaying a start Hook run can't bind the workflow's `createHook({ token })` to the start Hook either.
-
-For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while start Hooks are live.
-
-Migration `0028_add_start_hook_admissions` is required even with this variable unset, because every Hook insert writes its `claims_token` column. It takes table locks on `workflow_hooks` and then `workflow_runs` (building the new unique index scans `workflow_hooks` first), and gives up after 10 seconds (unless the session sets its own `lock_timeout`), leaving the migration to retry, rather than stall traffic. Apply it with the rest of the migrations before deploying this version.
 
 ### `WORKFLOW_QUEUE_NAMESPACE`
 
@@ -397,6 +391,12 @@ connection string, or with `ALTER DATABASE ... SET workflow.legacy_timezone =
 at most 10 seconds for its locks; if a long transaction holds them,
 `bootstrap` fails and can be run again.
 </Callout>
+
+### Start Hooks
+
+Migration `0028_add_start_hook_admissions` adds [`start({ experimental_hook })`](/docs/api-reference/workflow-api/start#prevent-duplicate-starts) support. It is required for every Postgres World on this version, because every Hook insert writes its `claims_token` column. It takes table locks on `workflow_hooks` and then `workflow_runs` (building the new unique index scans `workflow_hooks` first), and gives up after 10 seconds (unless the session sets its own `lock_timeout`), leaving the migration to retry, rather than stall traffic. Apply it with the rest of the migrations before deploying this version.
+
+Stop workers running a previous version before your app passes `experimental_hook` to `start()`. The queue does not route by deployment, so an older worker that picks up a candidate's queued message would create its run without the start Hook, and the start would no longer be idempotent (`start()` reports that the World did not confirm the start Hook). An older runtime replaying a start Hook run can't bind the workflow's `createHook({ token })` to the start Hook either. For the same reason, don't roll back past migration `0028_add_start_hook_admissions` while start Hooks are in use.
 
 ## Advanced
 
@@ -487,7 +487,7 @@ The Postgres World uses PostgreSQL as a durable backend:
 
 - **Storage**: Workflow runs, events, steps, and hooks are stored in PostgreSQL tables.
 - **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries.
-- **Crash recovery**: The next `start()` re-enqueues active runs. With [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) set, a running delivery also renews its job lock, and if its process dies, any other process redelivers the job once its lock has gone unrenewed for that many seconds.
+- **Crash recovery**: The next `start()` re-enqueues active runs. A running delivery also renews its job lock. If its process dies, any other process redelivers a spec 9 run's orchestrator job once its lock has gone unrenewed for 300 seconds, and with [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) set, any job of this World once its lock has gone unrenewed for that many seconds.
 - **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution. If the database drops the `LISTEN` connection, the World reconnects every second and re-reads persisted chunks for open stream readers, so readers don't miss chunks written during the outage.
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).

@@ -50,7 +50,7 @@ registerStepFunction(STEP_NAME, async (a: number, b: number) => a + b);
 // Wider than any inline budget, so steps also run from their own messages,
 // and a sleep, so the run arms a timer.
 const FAN_OUT = MAX_MAX_INLINE_STEPS + 1;
-const WORKFLOW_CODE = `
+const workflowCode = (sleep: string) => `
   const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")](${JSON.stringify(STEP_NAME)});
   const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
   async function workflow() {
@@ -58,11 +58,19 @@ const WORKFLOW_CODE = `
     const sums = await Promise.all(
       Array.from({ length: ${FAN_OUT} }, (_, i) => add(first, i))
     );
-    await sleep("1s");
+    await sleep(${JSON.stringify(sleep)});
     return await add(sums.length, 0);
   }
   ;globalThis.__private_workflows = new Map();
   globalThis.__private_workflows.set("workflow", workflow);`;
+const WORKFLOW_CODE = workflowCode('1s');
+// A run only arms a timer for a wait that is still pending when its
+// delivery suspends; a wait that already elapsed is resumed by a plain wake
+// instead (the spec 8 engines' exit wait sweep). A test that needs a timer
+// message sleeps long enough that the fan-out's tail and the suspension
+// cannot outlast the sleep, even on a loaded Windows runner, where this file
+// runs about ten times slower than locally.
+const TIMER_WORKFLOW_CODE = workflowCode('3s');
 
 type Sent = { queueName: string; payload: WorkflowInvokePayload };
 
@@ -91,10 +99,14 @@ describe('spec stamps on world-local', () => {
     specVersion: number;
     workflowVm: 'quickjs' | undefined;
     startMessage: (runId: string) => WorkflowInvokePayload;
+    workflowCode?: string;
   }) {
     const local = createWorld({ dataDir });
     world = local;
-    local.registerHandler('__wkf_workflow_', workflowEntrypoint(WORKFLOW_CODE));
+    local.registerHandler(
+      '__wkf_workflow_',
+      workflowEntrypoint(params.workflowCode ?? WORKFLOW_CODE)
+    );
     const sent: Sent[] = [];
     const queue = local.queue.bind(local);
     local.queue = ((queueName, payload, opts) => {
@@ -146,6 +158,7 @@ describe('spec stamps on world-local', () => {
       specVersion,
       workflowVm: engine === 'quickjs' ? 'quickjs' : undefined,
       startMessage: (runId) => ({ runId, runSpecVersion: specVersion }),
+      workflowCode: TIMER_WORKFLOW_CODE,
     });
     const steps = sent.filter((s) => s.payload.stepId !== undefined);
     const timers = sent.filter((s) => s.payload.waitContinuation);

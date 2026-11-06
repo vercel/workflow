@@ -304,7 +304,7 @@ async function findCommittedResumeEvent(
  *   - the owning run is terminal and its minimum retention has ended, or
  *   - the owning run does not exist (a claim can only be written during a
  *     suspension of an existing run, so an ownerless claim is debris), except
- *     for a run's `start({ hook })` Hook (below).
+ *     for a run's `start({ experimental_hook })` Hook (below).
  *
  * A claim from a mid-creation writer is never releasable: its owning run
  * exists and is non-terminal, and its dispose lock does not exist.
@@ -397,7 +397,7 @@ async function isStartHookOrphanReleasable(
 }
 
 /**
- * The outcome of admitting a `start({ hook })` candidate: its run was created
+ * The outcome of admitting a `start({ experimental_hook })` candidate: its run was created
  * by this call, or already existed (an earlier attempt for the candidate, by
  * either path, accepted it).
  */
@@ -406,7 +406,7 @@ type StartHookAdmission =
   | { status: 'existing'; run: WorkflowRun };
 
 /**
- * Admits a `start({ hook })` candidate (see `start-hook.ts` in
+ * Admits a `start({ experimental_hook })` candidate (see `start-hook.ts` in
  * @workflow/world). The decision per candidate is immutable:
  *
  * - **accepted** is the candidate's run record, which `writeRun` creates
@@ -1966,7 +1966,7 @@ export function createEventsStorage(
         eventId = await mintEventId(effectiveRunId);
 
         // Cancelling a run that was never created. If it is a
-        // `start({ hook })` candidate whose admission claimed its token but
+        // `start({ experimental_hook })` candidate whose admission claimed its token but
         // whose writer died before its run (its start Hook's by-run marker is
         // written before the run), its queued copy could still create it:
         // fence its run record path so no copy ever can. Any other missing

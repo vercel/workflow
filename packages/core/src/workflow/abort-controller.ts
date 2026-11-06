@@ -121,9 +121,8 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
       this[ABORT_HOOK_TOKEN] = hookToken;
       this.signal = new WorkflowAbortSignal(streamName, hookToken);
 
-      // Register an internal system hook in the invocations queue.
-      // isSystem prevents token namespace conflicts with user hooks.
-      // Never the run's start Hook id (see `mintHookCorrelationId`).
+      // Register an internal system hook in the invocations queue. Its token
+      // is unique by construction. Never the run's start Hook id (see `mintHookCorrelationId`).
       const correlationId = mintHookCorrelationId(
         ctx.generateUlid,
         ctx.startHook

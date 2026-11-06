@@ -1,4 +1,3 @@
-import { types } from 'node:util';
 import { Script } from 'node:vm';
 import type { Span } from '@opentelemetry/api';
 import {
@@ -29,7 +28,6 @@ import type { WorkflowOrchestratorContext } from './private.js';
 import { isDeliveryIdle } from './private.js';
 import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
-import { responseBodyChunkSize } from './response-body-chunk.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import type { RunStartHook } from './runtime/start-hook-binding.js';
@@ -1141,113 +1139,6 @@ async function createWorkflowSessionInner(
     },
   });
 
-  // Streams inside the workflow VM are handles: either a named stream that
-  // lives in the World (e.g. the body of a Response returned by the `fetch`
-  // step), or a body passed to the in-VM `Request`/`Response` constructors.
-  // They cannot be constructed or piped here, but they can be read. A named
-  // stream is read through one `__builtin_response_read_chunk` step per chunk
-  // (see `responseBodyChunkSize`), so the bytes replay from the event log and
-  // consumer byte limits or `cancel()` stop the read before the whole body is
-  // loaded. In-memory bodies are resolved once per reader and sliced.
-  //
-  // Unlike a real stream, a handle is never locked or disturbed: `locked`
-  // and `bodyUsed` stay false, and every new reader starts again from byte 0
-  // (re-running the chunk steps for a named stream) instead of throwing. This
-  // matches how `json()`/`text()`/`arrayBuffer()` already behave on handles.
-  type StreamHandleSource = { bytes: Uint8Array } | { named: object };
-  const resolveStreamHandleSource = (
-    stream: object,
-    seen: Set<object> = new Set()
-  ): StreamHandleSource => {
-    if (seen.has(stream)) ENOTSUP();
-    seen.add(stream);
-    if (!(BODY_INIT_SYMBOL in stream)) return { named: stream };
-    const bodyInit = (stream as Record<symbol, unknown>)[BODY_INIT_SYMBOL];
-    if (
-      typeof bodyInit === 'string' ||
-      bodyInit instanceof vmGlobalThis.URLSearchParams
-    ) {
-      // Encoded once per reader, not once per chunk.
-      return {
-        bytes: new vmGlobalThis.TextEncoder().encode(String(bodyInit)),
-      };
-    }
-    if (types.isArrayBuffer(bodyInit)) {
-      return { bytes: new vmGlobalThis.Uint8Array(bodyInit) };
-    }
-    if (ArrayBuffer.isView(bodyInit)) {
-      return {
-        bytes: new vmGlobalThis.Uint8Array(
-          bodyInit.buffer,
-          bodyInit.byteOffset,
-          bodyInit.byteLength
-        ),
-      };
-    }
-    if (
-      bodyInit !== null &&
-      typeof bodyInit === 'object' &&
-      bodyInit instanceof ReadableStream
-    ) {
-      return resolveStreamHandleSource(bodyInit, seen);
-    }
-    return ENOTSUP();
-  };
-
-  const readStreamHandleChunk = async (
-    source: StreamHandleSource,
-    offset: number
-  ): Promise<{ value: Uint8Array; done: boolean }> => {
-    if ('bytes' in source) {
-      const { bytes } = source;
-      const end = Math.min(
-        offset + responseBodyChunkSize(offset),
-        bytes.byteLength
-      );
-      return {
-        value: bytes.slice(offset, end),
-        done: end === bytes.byteLength,
-      };
-    }
-    // Only this byte range is materialized in the host and event log.
-    const response = Object.create(Response.prototype);
-    response.status = 200;
-    response.statusText = '';
-    response.headers = new vmGlobalThis.Headers();
-    response.body = source.named;
-    response.type = 'default';
-    response.url = '';
-    response.redirected = false;
-    const result = await useStep<
-      [number],
-      { buffer: ArrayBuffer; done: boolean }
-    >('__builtin_response_read_chunk').call(response, offset);
-    return {
-      value: new vmGlobalThis.Uint8Array(result.buffer),
-      done: result.done,
-    };
-  };
-
-  async function* iterateStreamHandle(reader: {
-    read(): Promise<{ done: boolean; value?: Uint8Array }>;
-    cancel(): Promise<void>;
-    releaseLock(): void;
-  }) {
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        yield value;
-      }
-    } finally {
-      try {
-        await reader.cancel();
-      } finally {
-        reader.releaseLock();
-      }
-    }
-  }
-
   class ReadableStream<T> implements globalThis.ReadableStream<T> {
     constructor() {
       ENOTSUP();
@@ -1257,75 +1148,12 @@ async function createWorkflowSessionInner(
       return false;
     }
 
-    async cancel(): Promise<void> {
-      // The underlying bytes are either in memory or stored in the World,
-      // so there is no connection to release.
+    cancel(): any {
+      ENOTSUP();
     }
 
-    getReader(options?: { mode?: string }): any {
-      if (options?.mode !== undefined) ENOTSUP();
-      let pending = vmGlobalThis.Promise.resolve();
-      let source: StreamHandleSource | undefined;
-      let offset = 0;
-      let done = false;
-      let failure: unknown;
-      let failed = false;
-      let released = false;
-      let resolveClosed: () => void;
-      let rejectClosed: (error: unknown) => void;
-      const closed = new vmGlobalThis.Promise<void>(
-        (resolve: () => void, reject: (error: unknown) => void) => {
-          resolveClosed = resolve;
-          rejectClosed = reject;
-        }
-      );
-      // A failed load also rejects the pending read(); don't report the
-      // `closed` rejection as unhandled when nobody awaits it.
-      closed.catch(() => {});
-      const readNext = async () => {
-        if (released) {
-          throw new vmGlobalThis.TypeError(
-            'This reader has been released and can no longer be read from.'
-          );
-        }
-        if (failed) throw failure;
-        if (done) return { done: true, value: undefined };
-        try {
-          source ??= resolveStreamHandleSource(this);
-          const chunk = await readStreamHandleChunk(source, offset);
-          // Cancellation may have happened while this step was pending.
-          if (done) return { done: true, value: undefined };
-          offset += chunk.value.byteLength;
-          done = chunk.done;
-          if (done) resolveClosed();
-          if (chunk.value.byteLength > 0)
-            return { done: false, value: chunk.value };
-          return { done: true, value: undefined };
-        } catch (error) {
-          failed = true;
-          failure = error;
-          rejectClosed(error);
-          throw error;
-        }
-      };
-      return {
-        closed,
-        read: () => {
-          const result = pending.then(readNext);
-          pending = result.then(
-            () => undefined,
-            () => undefined
-          );
-          return result;
-        },
-        cancel: async () => {
-          done = true;
-          resolveClosed();
-        },
-        releaseLock: () => {
-          released = true;
-        },
-      };
+    getReader(): any {
+      ENOTSUP();
     }
 
     pipeThrough(): any {
@@ -1341,7 +1169,7 @@ async function createWorkflowSessionInner(
     }
 
     values(): any {
-      return iterateStreamHandle(this.getReader());
+      ENOTSUP();
     }
 
     static from(): any {
@@ -1349,7 +1177,7 @@ async function createWorkflowSessionInner(
     }
 
     [Symbol.asyncIterator](): any {
-      return this.values();
+      ENOTSUP();
     }
   }
   vmGlobalThis.ReadableStream = ReadableStream;

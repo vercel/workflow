@@ -237,7 +237,7 @@ export class WorkflowWorldError extends WorkflowError {
 }
 
 /**
- * `WorkflowWorldError.code` for a `start({ hook })` request the World will
+ * `WorkflowWorldError.code` for a `start({ experimental_hook })` request the World will
  * never admit: an invalid start Hook, a retention beyond the World's limit, a
  * candidate too old to be created, or a candidate refused while admission was
  * switched off and recorded as refused. Permanent, so the queued copy of the
@@ -246,7 +246,7 @@ export class WorkflowWorldError extends WorkflowError {
 export const START_HOOK_ADMISSION_REJECTED = 'START_HOOK_ADMISSION_REJECTED';
 
 /**
- * `WorkflowWorldError.code` for a `start({ hook })` request answered while
+ * `WorkflowWorldError.code` for a `start({ experimental_hook })` request answered while
  * admission is switched off on the backend, with no decision recorded for the
  * candidate. Not final: once admission is back on, another copy of the same
  * candidate can still be admitted. `start()` reports it as
@@ -257,13 +257,13 @@ export const START_HOOK_ADMISSION_DISABLED = 'START_HOOK_ADMISSION_DISABLED';
 
 /**
  * `WorkflowWorldError.code` for a `run_cancelled` that reached a
- * `start({ hook })` candidate the World admitted but never created a run for.
+ * `start({ experimental_hook })` candidate the World admitted but never created a run for.
  * The World fenced it, so no copy can create it any more, and released its
  * token as for an ended run. `cancel()` treats it as cancelled.
  */
 export const START_HOOK_CANDIDATE_CANCELLED = 'START_HOOK_CANDIDATE_CANCELLED';
 
-/** Which half of `start({ hook })` could not be confirmed. */
+/** Which half of `start({ experimental_hook })` could not be confirmed. */
 export type WorkflowStartStage = 'queue' | 'admission';
 
 /**
@@ -856,7 +856,7 @@ export class WorkflowRunNotFoundError extends WorkflowError {
  * `createHook` in two or more concurrent runs. Use a unique token per run
  * (or omit the token to let the runtime generate one automatically).
  *
- * `start(workflow, args, { hook })` throws it with `kind: 'start'` for a
+ * `start(workflow, args, { experimental_hook })` throws it with `kind: 'start'` for a
  * duplicate start: no run was created, and `conflictingRunId` owns the token.
  */
 export class HookConflictError extends WorkflowError {
@@ -864,7 +864,7 @@ export class HookConflictError extends WorkflowError {
   // TODO: Make this required once all persisted hook_conflict events and World
   // implementations always include the active hook owner's run ID.
   conflictingRunId?: string;
-  /** `'start'` when a `start({ hook })` was refused; no run was created. */
+  /** `'start'` when a `start({ experimental_hook })` was refused; no run was created. */
   kind?: 'start';
 
   constructor(

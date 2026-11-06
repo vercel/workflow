@@ -6,6 +6,7 @@ import {
 } from '@workflow/world';
 import { runtimeLogger } from '../../logger.js';
 import { REPLAY_RESOLVE_DATA } from '../helpers.js';
+import type { ExternalWork } from './log-state.js';
 import {
   getOrchestratorReadTimeoutMs,
   readWithDeadline,
@@ -76,10 +77,13 @@ export const ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR = 2;
 /** Default of {@link getOrchestratorLingerMs}, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
 
+/** Default of {@link getOrchestratorHookLingerMs}, in milliseconds. */
+export const DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS = 5_000;
+
 /**
  * How long an orchestrator delivery stays live after its last pass found
- * nothing to run, while the run still waits on work done elsewhere: an open
- * hook or a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`, default
+ * nothing to run, while the run still waits on a background step
+ * (`WORKFLOW_ORCHESTRATOR_LINGER_MS`, default
  * {@link DEFAULT_ORCHESTRATOR_LINGER_MS}). Every event another writer appends
  * in that time starts a new pass in the same delivery, and the next pass that
  * finds nothing to run starts the time again, so a burst of resumes or step
@@ -87,10 +91,9 @@ export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
  * Only taken while the World's live feed (`events.subscribe`) is live: a
  * World without one, a subscription that failed, or one that goes down
  * during the linger ends it, since waiting on the poll alone costs a
- * function held open for a poll's latency (`LiveLogFeed.isLive`). Any open hook is
- * enough to take it (see `awaitsExternalWork`), so a run with a long-lived
- * hook holds each of its deliveries this long after its last pass. `0`
- * disables it.
+ * function held open for a poll's latency (`LiveLogFeed.isLive`). A run that
+ * waits only on open hooks lingers for the shorter
+ * {@link getOrchestratorHookLingerMs}. `0` disables both.
  */
 export function getOrchestratorLingerMs(
   env: Record<string, string | undefined> = process.env
@@ -101,6 +104,49 @@ export function getOrchestratorLingerMs(
   return Number.isFinite(value) && value >= 0
     ? value
     : DEFAULT_ORCHESTRATOR_LINGER_MS;
+}
+
+/**
+ * How long an orchestrator delivery lingers (see
+ * {@link getOrchestratorLingerMs}) when the run waits on open hooks and no
+ * background step (`WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS`, default
+ * {@link DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS}), and never longer than
+ * `WORKFLOW_ORCHESTRATOR_LINGER_MS`. Any open hook is enough to take it (see
+ * `externalWorkOf`), however rarely it is resumed, so a run with a long-lived
+ * approval or cancel hook beside a polling `sleep()` holds each of its
+ * deliveries this long after its last pass; the short default keeps that
+ * cost small while a burst of resumes still lands on one warm invocation,
+ * since each resume starts the time again. `0` disables it.
+ */
+export function getOrchestratorHookLingerMs(
+  env: Record<string, string | undefined> = process.env
+): number {
+  const lingerMs = getOrchestratorLingerMs(env);
+  const raw = env.WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS;
+  if (raw === undefined || raw === '') {
+    return Math.min(DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS, lingerMs);
+  }
+  const value = Number(raw);
+  return Math.min(
+    Number.isFinite(value) && value >= 0
+      ? value
+      : DEFAULT_ORCHESTRATOR_HOOK_LINGER_MS,
+    lingerMs
+  );
+}
+
+/**
+ * The linger window for what a run waits on (`externalWorkOf`): the full
+ * window for a background step, the hook window for open hooks alone, and
+ * none when it waits on nothing outside its orchestrator.
+ */
+export function getOrchestratorLingerMsFor(
+  work: ExternalWork | undefined,
+  env: Record<string, string | undefined> = process.env
+): number {
+  if (work === 'step') return getOrchestratorLingerMs(env);
+  if (work === 'hook') return getOrchestratorHookLingerMs(env);
+  return 0;
 }
 
 /**

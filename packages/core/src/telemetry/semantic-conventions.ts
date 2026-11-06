@@ -88,18 +88,18 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
  */
 export const WorkflowDynamic = SemanticConvention<boolean>('workflow.dynamic');
 
-/** Set on a `start()` that reserves a Hook token (`start({ hook })`). */
+/** Set on a `start()` that reserves a Hook token (`start({ experimental_hook })`). */
 export const WorkflowStartHook = SemanticConvention<boolean>(
   'workflow.start_hook'
 );
 
-/** The absolute retention a `start({ hook })` asked for, ISO 8601. */
+/** The absolute retention a `start({ experimental_hook })` asked for, ISO 8601. */
 export const WorkflowStartHookRetentionUntil = SemanticConvention<string>(
   'workflow.start_hook.retention_until'
 );
 
 /**
- * How a `start({ hook })` ended: `accepted` (the candidate is the token's
+ * How a `start({ experimental_hook })` ended: `accepted` (the candidate is the token's
  * owner), `rejected` (another run owns it; no run was created), `uncertain`
  * (queueing or admission could not be confirmed: `WorkflowStartError`), or
  * `failed` (a deterministic World answer or contract error).
@@ -108,13 +108,13 @@ export const WorkflowStartHookOutcome = SemanticConvention<
   'accepted' | 'rejected' | 'uncertain' | 'failed'
 >('workflow.start_hook.outcome');
 
-/** The run that owns the token, on a `rejected` `start({ hook })`. */
+/** The run that owns the token, on a `rejected` `start({ experimental_hook })`. */
 export const WorkflowStartHookConflictingRunId = SemanticConvention<string>(
   'workflow.start_hook.conflicting_run_id'
 );
 
 /**
- * Why the World refused a `start({ hook })` request it will never admit
+ * Why the World refused a `start({ experimental_hook })` request it will never admit
  * (`WorkflowWorldError.reason`): `invalid`, `expired`, `token_mismatch`,
  * `ordinary_run` or `disabled`. `disabled` also marks an answer given while
  * admission was switched off.
@@ -125,7 +125,7 @@ export const WorkflowStartHookRejectionReason = SemanticConvention<string>(
 
 /**
  * The error code (or, without one, the error name) a `failed` or `uncertain`
- * `start({ hook })` ended on. `WORLD_CONTRACT_ERROR` marks a World answer
+ * `start({ experimental_hook })` ended on. `WORLD_CONTRACT_ERROR` marks a World answer
  * that broke the admission contract, such as a refusal naming no owner;
  * `WorkflowStartError:queue` and `WorkflowStartError:admission` mark the
  * stage an `uncertain` start could not confirm.
@@ -135,7 +135,7 @@ export const WorkflowStartHookErrorCode = SemanticConvention<string>(
 );
 
 /**
- * How many times `start({ hook })` re-posted its candidate's `run_created`
+ * How many times `start({ experimental_hook })` re-posted its candidate's `run_created`
  * to confirm an uncertain admission in place. `0` when the first answer
  * settled it.
  */
@@ -144,7 +144,7 @@ export const WorkflowStartHookConfirmAttempts = SemanticConvention<number>(
 );
 
 /**
- * Set when publishing a `start({ hook })` candidate's queue message failed
+ * Set when publishing a `start({ experimental_hook })` candidate's queue message failed
  * without a permanent answer. An `accepted` outcome alongside it means the
  * message was published again after admission.
  */
@@ -218,7 +218,7 @@ export const WorkflowParkedEventType = SemanticConvention<string>(
 );
 
 /**
- * Payloads resumed into the run's start Hook (`start(workflow, args, { hook
+ * Payloads resumed into the run's start Hook (`start(workflow, args, { experimental_hook
  * })`) that the workflow had not opened with `createHook` when the replay
  * stopped. Counted apart from {@link WorkflowParkedEventsCount}: the workflow
  * may claim them later, or never (a start token used only as an idempotency

@@ -22,6 +22,7 @@ import {
 import { runtimeLogger } from '../logger.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
+import { afterRunCancelled } from './after-terminal-write.js';
 import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -230,7 +231,7 @@ export async function wakeRunAfterOutOfBandWrite(
  * Cancel a workflow run.
  *
  * A run that does not exist (yet) is still cancelled through the World: a
- * `start({ hook })` candidate that was admitted but never created a run (the
+ * `start({ experimental_hook })` candidate that was admitted but never created a run (the
  * recovery `WorkflowStartError` points at) is fenced by it, so no copy of it
  * can create the run any more. Otherwise the World answers not found, which
  * is thrown as `WorkflowRunNotFoundError`.
@@ -274,7 +275,10 @@ export async function cancelRun(
       v1Compat: compatMode,
       ...(run && isSingleOrchestratorRun(run) ? { inBand: false } : {}),
     });
-    if (run) await wakeRunAfterOutOfBandWrite(world, run);
+    if (run) {
+      await wakeRunAfterOutOfBandWrite(world, run);
+      await afterRunCancelled(world, run);
+    }
   } catch (err) {
     // The World fenced a candidate that never became a run: cancelled.
     if (
@@ -332,39 +336,37 @@ export async function cancelRuns(
 
   // Fast path: a single batch operation when the world supports it.
   if (world.runs.cancelMany) {
-    return world.runs.cancelMany({
+    const result = await world.runs.cancelMany({
       runIds,
       ...(options?.cancelReason !== undefined
         ? { cancelReason: options.cancelReason }
         : {}),
     });
+    // The batch write cannot resume the completion hooks of parents waiting
+    // on these runs, so do it per cancelled run here (`cancelRun` does the
+    // same on the fallback path below).
+    await forEachConcurrently(
+      result.results.filter(({ outcome }) => outcome === 'cancelled'),
+      ({ runId }) => afterRunCancelled(world, runId)
+    );
+    return result;
   }
 
   // Fallback: bounded-concurrency single-run cancellation.
   const results: BulkCancelWorkflowRunResult[] = new Array(runIds.length);
-  let nextIndex = 0;
-
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const index = nextIndex++;
-      if (index >= runIds.length) return;
-      const runId = runIds[index];
-      try {
-        await cancelRun(world, runId, options);
-        results[index] = { runId, outcome: 'cancelled' };
-      } catch {
-        results[index] = {
-          runId,
-          outcome: 'failed',
-          code: 'internal_error',
-          retryable: true,
-        };
-      }
+  await forEachConcurrently(runIds, async (runId, index) => {
+    try {
+      await cancelRun(world, runId, options);
+      results[index] = { runId, outcome: 'cancelled' };
+    } catch {
+      results[index] = {
+        runId,
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      };
     }
-  };
-
-  const workerCount = Math.min(CANCEL_RUNS_FALLBACK_CONCURRENCY, runIds.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  });
 
   const summary = {
     requested: runIds.length,
@@ -395,6 +397,26 @@ export async function cancelRuns(
   }
 
   return { summary, results };
+}
+
+/**
+ * Runs `fn` over `items` with at most {@link CANCEL_RUNS_FALLBACK_CONCURRENCY}
+ * calls in flight. `fn` must not reject.
+ */
+async function forEachConcurrently<T>(
+  items: readonly T[],
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      await fn(items[index]!, index);
+    }
+  };
+  const workerCount = Math.min(CANCEL_RUNS_FALLBACK_CONCURRENCY, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 }
 
 /**
@@ -498,7 +520,8 @@ function rememberWakeUp(
  * (world-vercel) drops the names, and the waits then run their full length.
  * A delivery is running not only while it has work: after a pass with
  * nothing left to run it stays live while the run waits on an open hook or
- * a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`), so a wake sent just
+ * a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`, or
+ * `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` for open hooks alone), so a wake sent just
  * after a run was active can be dropped too. `stoppedCount` then still
  * counts the waits it asked to complete.
  * A queue that holds the message until the running delivery ends (the Local

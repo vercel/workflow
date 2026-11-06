@@ -46,7 +46,6 @@ import {
   isRetryableWorldError,
   isWorldContractError,
 } from '../../classify-error.js';
-
 import type { WorkflowSuspension } from '../../global.js';
 import { runtimeLogger } from '../../logger.js';
 import { getStepFunction } from '../../private.js';
@@ -73,6 +72,7 @@ import {
   type WorkflowSession,
   type WorkflowSessionRebase,
 } from '../../workflow.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import { COMPUTE_INSTANCE_ID } from '../compute-instance.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -110,13 +110,11 @@ import { readDynamicWorkflowMetadata } from '../dynamic-workflow.js';
 import { maybeWarnApproachingEventLimit } from '../event-limit-warning.js';
 import {
   type EventCreator,
-  findEventSlotGap,
   getWorkflowQueueName,
   isQueueSendFailure,
   type LoadedEventLog,
   loadWorkflowRunEvents,
   maxEventSlot,
-  mergeReportedEvents,
   queueMessage,
   REPLAY_RESOLVE_DATA,
   resolveRunEncryptionKey,
@@ -125,10 +123,6 @@ import {
   settleEventSlotGap,
   slotSnapshotParams,
 } from '../helpers.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import { observeOutOfBandWriters } from '../out-of-band-observation.js';
 import { handleReplayBudgetExhausted } from '../replay-budget.js';
 import { ReplayRecoveryReporter } from '../replay-recovery-reporter.js';
@@ -179,14 +173,15 @@ import {
 } from './in-band-writer.js';
 import {
   getOrchestratorFeedPollIntervalMs,
-  getOrchestratorLingerMs,
+  getOrchestratorLingerMsFor,
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
 } from './live-feed.js';
+import { EventLogIndex } from './log-index.js';
 import {
   analyzeLogSteps,
-  awaitsExternalWork,
   dueWaits,
+  externalWorkOf,
   type InlineStepSpec,
   nextTimerAt,
   openWaits,
@@ -644,7 +639,7 @@ async function runDelivery(
   // does a re-run of a delivery whose queue coalesced other
   // messages into it, which the World reports as one too.
   // A restart in place (see `MAX_RUN_AHEAD_RESTARTS`) is not turbo.
-  // Never for a `start({ hook })` candidate: its `run_started`
+  // Never for a `start({ experimental_hook })` candidate: its `run_started`
   // may refuse it, and turbo runs inline step bodies before that
   // write returns (see `admitsTurboStart`).
   let turbo =
@@ -694,6 +689,18 @@ async function runDelivery(
   // first full load.
   let log: LoadedEventLog | undefined;
   /**
+   * What each write reads of the log (its ids, highest slot and whether it
+   * has a hole), kept up to date as events are merged so that a write costs
+   * O(1) rather than a pass over the log (see `EventLogIndex`). Built again
+   * whenever the log is replaced (a full load, a gap settle) or changed
+   * outside it (a run-ahead repair removing speculative events).
+   */
+  let logIndex: EventLogIndex | undefined;
+  const indexOf = (events: Event[]): EventLogIndex => {
+    if (!logIndex?.covers(events)) logIndex = new EventLogIndex(events);
+    return logIndex;
+  };
+  /**
    * The slot snapshot for a write: how much of the log the
    * decision behind it was made against. Understating is safe
    * (the World reports a wider span), so it is taken from
@@ -703,18 +710,19 @@ async function runDelivery(
   // never a speculative event's predicted slot, which another
   // writer may have taken. The World then reports whatever
   // took one, which is what a run-ahead repair rebuilds from.
-  const slotSnapshot = (): SlotSnapshotParams =>
-    log
-      ? slotSnapshotParams(
-          speculativeSlots.size === 0 && speculativeEvents.size === 0
-            ? log.events
-            : log.events.filter((event) => {
-                if (speculativeEvents.has(event)) return false;
-                const slot = eventIdToSlot(event.eventId);
-                return slot === null || !speculativeSlots.has(slot);
-              })
-        )
-      : {};
+  const slotSnapshot = (): SlotSnapshotParams => {
+    if (!log) return {};
+    const index = indexOf(log.events);
+    const eventCount =
+      speculativeSlots.size === 0 && speculativeEvents.size === 0
+        ? index.maxSlot()
+        : index.maxSlotExcept((event) => {
+            if (speculativeEvents.has(event)) return true;
+            const slot = eventIdToSlot(event.eventId);
+            return slot !== null && speculativeSlots.has(slot);
+          });
+    return eventCount === undefined ? {} : { eventCount };
+  };
   /**
    * The events speculative writes placed in the log at
    * their predicted slots, until their writes confirm them
@@ -798,7 +806,7 @@ async function runDelivery(
       (event) => event.eventId !== own.eventId
     );
     const below = Math.max(
-      maxEventSlot(log.events) ?? 0,
+      indexOf(log.events).maxSlot() ?? 0,
       maxEventSlot(report) ?? 0
     );
     const ownSlot = eventIdToSlot(own.eventId);
@@ -815,7 +823,7 @@ async function runDelivery(
     // their payloads through the same cache.
     for (const event of report) prepareReplayEvent(event);
     prepareReplayEvent(own);
-    mergeReportedEvents(log.events, [...report, own]);
+    indexOf(log.events).merge([...report, own]);
   };
   /** A write's events, with their payloads prepared for replay. */
   const preparedResult = <R extends EventResult>(result: R): R => {
@@ -907,7 +915,7 @@ async function runDelivery(
     for (const event of page.events) {
       prepareReplayEvent(event);
     }
-    mergeReportedEvents(log.events, page.events);
+    indexOf(log.events).merge(page.events);
     log.cursor = page.cursor ?? log.cursor;
     return log;
   };
@@ -1365,7 +1373,7 @@ async function runDelivery(
               // Without the key, a run this event creates could never
               // receive sealed writes.
               encryptionPublicKey: runInput.encryptionPublicKey,
-              // The queued copy of `start({ hook })`: this write may
+              // The queued copy of `start({ experimental_hook })`: this write may
               // be the one that admits or refuses the candidate.
               startHook: runInput.startHook,
             },
@@ -1588,7 +1596,7 @@ async function runDelivery(
             resumeTracking.setupSource = 'run_started';
           }
         } catch (err) {
-          // A refused `start({ hook })` candidate: nothing ran and
+          // A refused `start({ experimental_hook })` candidate: nothing ran and
           // it never becomes a run. Narrowed to the two admission
           // answers; every other error keeps its handling below.
           if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
@@ -1791,16 +1799,19 @@ async function runDelivery(
           stepResends,
           onStepResent: noteResent,
           recovery: recoveryDelivery,
-          lingerDeadlineMs:
-            invocationStartTime +
-            noInlineReplayAfterMs -
-            getInlineStepDeadlineMarginMs(),
+          inlineDeadlineMs: invocationStartTime + noInlineReplayAfterMs,
           continueInNextDelivery: () => {
             continuation.exit = 'quickjs-continue';
             return wakeSelf();
           },
           requestId,
           writer,
+          // Off for the rest of a delivery that run-ahead stopped once, as
+          // on the node engine below.
+          runAheadDepth:
+            isRunAheadDisabledFor(world) || runAheadRestarts > 0
+              ? 0
+              : getRunAheadDepth(),
           onStepMessageSent: noteStepMessageSent,
           onWaitTimerSent: (correlationId) => timedWaits.add(correlationId),
           completedWaits,
@@ -1824,7 +1835,10 @@ async function runDelivery(
           OrchestratorSupersededError.is(err) ||
           turboStartFailure ||
           isRetryableWorldError(err) ||
-          isQueueSendFailure(err)
+          isQueueSendFailure(err) ||
+          // Run-ahead stopped the pass: the delivery restarts in place.
+          RunAheadStopError.is(err) ||
+          RunAheadStopError.is(writer.stopCause)
         ) {
           throw err;
         }
@@ -1990,7 +2004,7 @@ async function runDelivery(
           return !runAheadRepair;
         });
         for (const event of events) prepareReplayEvent(event);
-        mergeReportedEvents(log.events, events);
+        indexOf(log.events).merge(events);
       }
       if (pendingAbsorbs.length > 0) {
         const results = pendingAbsorbs.splice(0);
@@ -2028,7 +2042,7 @@ async function runDelivery(
     const ensureLiveFeed = (): void => {
       if (liveFeed || !log) return;
       liveFeed = new LiveLogFeed(world, runId, {
-        afterSlot: maxEventSlot(log.events) ?? 0,
+        afterSlot: indexOf(log.events).maxSlot() ?? 0,
         cursor: log.cursor,
         pollIntervalMs: getOrchestratorPollIntervalMs(),
         feedPollIntervalMs: getOrchestratorFeedPollIntervalMs(),
@@ -2192,6 +2206,7 @@ async function runDelivery(
       observedHook: 0,
       unknownHook: 0,
       abortSignal: 0,
+      systemHook: 0,
       externalStep: 0,
       waitDue: 0,
     };
@@ -2204,6 +2219,8 @@ async function runDelivery(
           outOfBandBoundaries.unknownHook,
         'workflow.out_of_band.abort_signal_boundaries':
           outOfBandBoundaries.abortSignal,
+        'workflow.out_of_band.system_hook_boundaries':
+          outOfBandBoundaries.systemHook,
         'workflow.out_of_band.external_step_boundaries':
           outOfBandBoundaries.externalStep,
         'workflow.out_of_band.wait_due_boundaries': outOfBandBoundaries.waitDue,
@@ -2417,9 +2434,9 @@ async function runDelivery(
           const slot = eventIdToSlot(write.event.eventId);
           if (slot !== null) ownSlots.add(slot);
         }
-        mergeReportedEvents(log.events, merged);
+        indexOf(log.events).merge(merged);
       }
-      const readLog = !complete || findEventSlotGap(log.events) !== undefined;
+      const readLog = !complete || indexOf(log.events).slotGap() !== undefined;
       if (readLog) {
         runAheadStats.repairReads++;
         await loadAfter();
@@ -2653,7 +2670,7 @@ async function runDelivery(
           });
         }
       });
-      mergeReportedEvents(log.events, speculative);
+      indexOf(log.events).merge(speculative);
       return starts;
     }
     const inlineDeadlineMs = invocationStartTime + noInlineReplayAfterMs;
@@ -2662,23 +2679,23 @@ async function runDelivery(
     /**
      * Keeps a delivery that has nothing left to run live
      * while the run waits on work done elsewhere (see
-     * `getOrchestratorLingerMs`). Resolves `true` once
+     * `getOrchestratorLingerMsFor`). Resolves `true` once
      * another writer appended an event or a wait fell due,
      * so the caller runs another pass, and `false` when the
      * time ran out without either, or the live feed is not
      * (or stops being) live: lingering on the tail poll
      * alone holds the invocation for a poll's latency.
      */
-    const lingerForExternalWork = async (): Promise<boolean> => {
-      const lingerMs = getOrchestratorLingerMs();
-      if (
-        lingerMs <= 0 ||
-        !world.events.subscribe ||
-        !log ||
-        !awaitsExternalWork(log.events)
-      ) {
-        return false;
-      }
+    const lingerForExternalWork = async (
+      observedHookIds?: ReadonlySet<string>
+    ): Promise<boolean> => {
+      if (!world.events.subscribe || !log) return false;
+      // A background step gets the full window, open hooks alone the
+      // shorter hook window. An idle completion hook is not external work.
+      const lingerMs = getOrchestratorLingerMsFor(
+        externalWorkOf(log.events, observedHookIds)
+      );
+      if (lingerMs <= 0) return false;
       const untilMs = Math.min(
         Date.now() + lingerMs,
         inlineDeadlineMs - inlineMarginMs
@@ -2821,8 +2838,10 @@ async function runDelivery(
               { requestId }
             );
             if (
-              consumeOwnResolvingWrite(log.events, preparedResult(completed))
-                .type === 'reload'
+              consumeOwnResolvingWrite(
+                indexOf(log.events),
+                preparedResult(completed)
+              ).type === 'reload'
             ) {
               session = null;
               await fullLoad();
@@ -2844,7 +2863,7 @@ async function runDelivery(
           // fold them in, before judging the log.
           if (
             speculationsBySlot.size > 0 &&
-            findEventSlotGap(log.events) !== undefined
+            indexOf(log.events).slotGap() !== undefined
           ) {
             if ((await drainRunAhead()) === 'repair') {
               await repairRunAhead();
@@ -2852,22 +2871,26 @@ async function runDelivery(
             await writer.idle();
             flushPending();
           }
-          const settled = await settleEventSlotGap(
-            runId,
-            { events: log.events, cursor: log.cursor },
-            { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
-          );
-          if (settled.log.events !== log.events) {
-            session = null;
-          }
-          log = {
-            events: settled.log.events,
-            cursor: settled.log.cursor,
-          };
-          if (settled.gap !== undefined) {
-            throw new CorruptedEventLogError(
-              `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+          // A dense log, which the index answers without a pass, has
+          // nothing to settle.
+          if (indexOf(log.events).slotGap() !== undefined) {
+            const settled = await settleEventSlotGap(
+              runId,
+              { events: log.events, cursor: log.cursor },
+              { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR }
             );
+            if (settled.log.events !== log.events) {
+              session = null;
+            }
+            log = {
+              events: settled.log.events,
+              cursor: settled.log.cursor,
+            };
+            if (settled.gap !== undefined) {
+              throw new CorruptedEventLogError(
+                `Event log for run ${runId} has a hole at slot ${settled.gap.firstMissingSlot}: ${settled.gap.missingCount} of the ${settled.gap.maxSlot} slots up to the log's maximum hold no event.`
+              );
+            }
           }
           if (hasRecordedTerminalRunEvent(log.events, runId)) {
             forgetConsumedPosition(world, runId);
@@ -2913,7 +2936,7 @@ async function runDelivery(
             workflowRun,
             log.events
           );
-          passConsumedSlot = maxEventSlot(log.events) ?? 0;
+          passConsumedSlot = indexOf(log.events).maxSlot() ?? 0;
           const rebase = pendingRebase;
           pendingRebase = undefined;
           let workflowResult: WorkflowResumeResult = session
@@ -2948,7 +2971,7 @@ async function runDelivery(
               drainPendingQueue: pendingQueueDrain(world, (data, params) =>
                 writeInBand(data, params)
               ),
-              // `start({ hook })` runs: the body's createHook with the start
+              // `start({ experimental_hook })` runs: the body's createHook with the start
               // token binds to the Hook the admission created. Undefined for
               // every other run.
               startHook: resolveRunStartHook({
@@ -2999,7 +3022,11 @@ async function runDelivery(
               );
               return undefined;
             }
-            dispatchRunCompletedHooks(runId, workflowName);
+            await afterRunCompleted(
+              world,
+              completed.run ?? workflowRun ?? runId,
+              workflowName
+            );
             span?.setAttributes({
               ...Attribute.WorkflowRunStatus('completed'),
             });
@@ -3211,6 +3238,9 @@ async function runDelivery(
           }
           if (observation.abortSignalHookCount > 0) {
             outOfBandBoundaries.abortSignal++;
+          }
+          if (observation.systemHookCount > 0) {
+            outOfBandBoundaries.systemHook++;
           }
           if (observation.externalStepCount > 0) {
             outOfBandBoundaries.externalStep++;
@@ -3773,13 +3803,13 @@ async function runDelivery(
       }
       // Stay warm for what the run waits on instead of
       // leaving it to a queued wake.
-      if (await lingerForExternalWork()) {
+      if (await lingerForExternalWork(suspension.observedHookIds)) {
         return { type: 'continue', retainSession: retain };
       }
       await armNearDueTimers(log.events);
       await armTimers(log.events);
       recordConsumedPosition(world, runId, {
-        slot: maxEventSlot(log.events) ?? 0,
+        slot: indexOf(log.events).maxSlot() ?? 0,
         ...nextTimerAt(log.events),
       });
       return { type: 'return', result: undefined };
@@ -4063,8 +4093,10 @@ async function runDelivery(
           // speculative writes settle.
           reload = true;
         } else if (
-          consumeOwnResolvingWrite(log.events, preparedResult(result.result))
-            .type === 'reload'
+          consumeOwnResolvingWrite(
+            indexOf(log.events),
+            preparedResult(result.result)
+          ).type === 'reload'
         ) {
           reload = true;
         }
@@ -4575,8 +4607,9 @@ async function runDelivery(
     if (recordedStatus !== undefined && recordedStatus !== 'failed') {
       return undefined;
     }
-    dispatchRunFailedHooks(
-      runId,
+    await afterRunFailed(
+      world,
+      failedResult?.run ?? workflowRun ?? runId,
       workflowName,
       dehydratedError,
       failureKey,
@@ -4612,7 +4645,7 @@ export const spec9Orchestrator: Orchestrator = {
     const writer = new InBandWriter(world, runId);
     writer.adoptSnapshot(requireLoadSnapshot(runId, loaded));
     try {
-      await writer.create(
+      const written = await writer.create(
         {
           eventType: 'run_failed',
           specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -4620,11 +4653,11 @@ export const spec9Orchestrator: Orchestrator = {
         },
         { requestId, ...slotSnapshotParams(loaded.events) }
       );
+      return { run: written?.run };
     } catch (err) {
       if (OrchestratorSupersededError.is(err)) return 'superseded';
       throw err;
     }
-    return 'written';
   },
   runDelivery: runSpec9Delivery,
 };

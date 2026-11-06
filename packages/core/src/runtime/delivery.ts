@@ -41,6 +41,7 @@ import {
   hydrateDynamicWorkflowCode,
   type PayloadKey,
 } from '../serialization.js';
+import { afterRunFailed } from './after-terminal-write.js';
 import {
   DYNAMIC_WORKFLOWS_ENV,
   getMaxEventsOverride,
@@ -54,7 +55,6 @@ import {
 } from './dynamic-workflow.js';
 import { memoizeEncryptionKey, queueMessage } from './helpers.js';
 import type { RunInputActivity } from './invocations.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import type { ReplayBudget } from './replay-budget.js';
 import type { ResumeTtrTracking } from './resume-latency.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
@@ -166,14 +166,15 @@ export interface Orchestrator {
    * Writes the `run_failed` that ends a run past its max queue deliveries.
    * Resolves `'superseded'` when the in-band fence refused the write, which
    * does not prove another orchestrator is running; the caller has the queue
-   * redeliver the message to retry it. Otherwise throws what the World threw.
+   * redeliver the message to retry it. Otherwise resolves the run the write
+   * returned (when the World returned one), or throws what the World threw.
    */
   writeMaxDeliveriesFailure(
     world: World,
     runId: string,
     eventData: RunFailedEventRequest['eventData'],
     requestId: string | undefined
-  ): Promise<'written' | 'superseded'>;
+  ): Promise<{ run: WorkflowRun | undefined } | 'superseded'>;
   /** Runs one delivery of the run's queue message. */
   runDelivery(delivery: WorkflowDelivery): Promise<DeliveryResult>;
 }
@@ -440,6 +441,7 @@ export async function recordFatalRunError({
 
   let encryptionKey: PayloadKey | undefined;
   let dehydratedError: Uint8Array;
+  let failedRun: WorkflowRun | undefined;
   try {
     const getEncryptionKey = memoizeEncryptionKey(world, workflowRun ?? runId);
     encryptionKey = await getEncryptionKey();
@@ -450,7 +452,7 @@ export async function recordFatalRunError({
       globalThis,
       (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
     );
-    await world.events.create(
+    const written = await world.events.create(
       runId,
       {
         eventType: 'run_failed',
@@ -464,6 +466,7 @@ export async function recordFatalRunError({
       // log, so it carries no fence count.
       { requestId, inBand: false }
     );
+    failedRun = written?.run;
   } catch (failErr) {
     if (EntityConflictError.is(failErr) || RunExpiredError.is(failErr)) {
       return;
@@ -481,8 +484,9 @@ export async function recordFatalRunError({
     }
     throw failErr;
   }
-  dispatchRunFailedHooks(
-    runId,
+  await afterRunFailed(
+    world,
+    workflowRun ?? failedRun ?? runId,
     workflowName,
     dehydratedError,
     encryptionKey,
