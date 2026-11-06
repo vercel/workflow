@@ -24,11 +24,9 @@ import { createChunkPlacer } from './stream-chunk-place.js';
 import { withInProcessLock } from './util.js';
 
 // Schema for the run-to-streams mapping file
-const RunStreamsSchema = z.compile(
-  z.object({
-    streams: z.array(z.string()),
-  })
-);
+const RunStreamsSchema = z.object({
+  streams: z.array(z.string()),
+});
 
 /**
  * Lock options for updating a run's stream index

@@ -178,23 +178,21 @@ const ExecutorDelivery = z.object({
 });
 type ExecutorDelivery = z.infer<typeof ExecutorDelivery>;
 
-const GraphileHelpers = z.compile(
-  z.object({
-    abortSignal: z.instanceof(AbortSignal).optional(),
-    job: z.object({
-      attempts: z.number().int().positive(),
-      id: z.string().optional(),
-      locked_by: z.string().nullable().optional(),
-      task_identifier: z.string().optional(),
-      max_attempts: z.number().int().positive().optional(),
-    }),
-    getQueueName: z
-      .custom<() => string | null | Promise<string | null>>(
-        (value) => typeof value === 'function'
-      )
-      .optional(),
-  })
-);
+const GraphileHelpers = z.object({
+  abortSignal: z.instanceof(AbortSignal).optional(),
+  job: z.object({
+    attempts: z.number().int().positive(),
+    id: z.string().optional(),
+    locked_by: z.string().nullable().optional(),
+    task_identifier: z.string().optional(),
+    max_attempts: z.number().int().positive().optional(),
+  }),
+  getQueueName: z
+    .custom<() => string | null | Promise<string | null>>(
+      (value) => typeof value === 'function'
+    )
+    .optional(),
+});
 
 type HttpExecutionResult =
   | { type: 'completed' }
@@ -240,7 +238,14 @@ export function createQueue(
   }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  const localWorld = createWorld({ dataDir: undefined, port });
+  // Only for its queue handler. 'read' so a Postgres app never creates a
+  // queue auth key file or a `.workflow-data` directory: this World declares
+  // queueAuthMode 'skip', and the key is read only if something sends.
+  const localWorld = createWorld({
+    dataDir: undefined,
+    port,
+    queueAuthKey: 'read',
+  });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
   // custom dispatcher, and a queue-owned pool keeps these sockets out of the
@@ -1228,6 +1233,12 @@ export function createQueue(
   }
 
   return {
+    // The runtime does not check the flow route until messages are delivered
+    // in-process and the route is denied
+    // (https://github.com/vercel/workflow/issues/5258). Meanwhile the database
+    // credentials control who can enqueue, and the route has to be protected
+    // at the network edge (see "Protect the queue route" in the docs).
+    queueAuthMode: 'skip',
     createQueueHandler,
     getDeploymentId,
     queue,

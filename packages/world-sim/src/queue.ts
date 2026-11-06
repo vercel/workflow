@@ -275,6 +275,8 @@ export function createSimQueue(opts: {
     );
 
   return {
+    // `drive.ts` delivers every message with this process's key.
+    queueAuthMode: 'loopback',
     queue,
     createQueueHandler,
     async getDeploymentId() {

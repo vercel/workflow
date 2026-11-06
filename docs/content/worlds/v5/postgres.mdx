@@ -232,6 +232,8 @@ Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/d
 
 `POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default, and it accepts any request whose headers and body are well-formed: there is no signature, shared secret, or caller check. Anyone who can reach it can forge or replay a workflow or step invocation, including steps your application would only reach after its own gating. Restrict it before you expose the app.
 
+The runtime does not check deliveries to this route with a [queue key](/worlds/building-a-world#authenticating-deliveries): the Postgres World declares `queueAuthMode: 'skip'` until its messages are delivered in-process and the route is denied ([#5258](https://github.com/vercel/workflow/issues/5258)).
+
 The other routes under `/.well-known/workflow/v1/` differ:
 
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
