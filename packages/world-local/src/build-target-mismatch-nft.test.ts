@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +25,9 @@ describe('build-target-mismatch under @vercel/nft', () => {
   let fakeTmp: string;
 
   beforeEach(async () => {
-    scratch = await mkdtemp(path.join(os.tmpdir(), 'wl-nft-'));
+    // nft reports real paths, so resolve symlinks up front (macOS's temp dir
+    // lives under /var -> /private/var), or nothing below would match.
+    scratch = await realpath(await mkdtemp(path.join(os.tmpdir(), 'wl-nft-')));
     fakeTmp = path.join(scratch, 'tmp');
     await mkdir(fakeTmp);
     await writeFile(path.join(fakeTmp, 'build-machine-file.txt'), 'x');
