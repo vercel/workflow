@@ -104,7 +104,7 @@ interface BaseWorkflowConfig {
    * limit) at the cost of stack traces that reference generated code.
    *
    * `'external'` and `'linked'` write a separate `.map` file; use these
-   * when you want to dashboard source maps to observability tooling but keep
+   * when you want to ship source maps to observability tooling but keep
    * them out of the function bundle.
    *
    * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable;

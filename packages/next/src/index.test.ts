@@ -607,7 +607,7 @@ describe('withWorkflow builder config', () => {
       return patterns;
     }
 
-    // The shape @ai-sdk/openai and @ai-sdk/gateway dashboard: the serde symbols are
+    // The shape @ai-sdk/openai and @ai-sdk/gateway ship: the serde symbols are
     // imported constants used as computed keys, with no directive in the file.
     // See https://github.com/vercel/workflow/issues/4897.
     it.each([
