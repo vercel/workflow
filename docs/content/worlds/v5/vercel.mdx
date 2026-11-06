@@ -406,10 +406,6 @@ Below the floor the deadline starts canceling requests that would have succeeded
 
 The same deadline bounds the [events WebSocket](#workflow_events_transport): opening the socket, including resolving the token it is opened with, and each event write over it.
 
-### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
-
-Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
-
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
 Stream writes upgrade to a WebSocket (`workflow-stream-ws/v1`) instead of one HTTP request per write group. Default: `ws`.

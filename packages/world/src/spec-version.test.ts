@@ -93,19 +93,6 @@ describe('spec version constants', () => {
       );
     });
 
-    it('stamps the slot-identity version when WORKFLOW_SEALED_LOG opts out', () => {
-      for (const raw of ['0', 'false', 'FALSE']) {
-        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
-          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-        );
-      }
-      for (const raw of ['', '1', 'true']) {
-        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw })).toBe(
-          SPEC_VERSION_CURRENT
-        );
-      }
-    });
-
     it('stamps any supported version WORKFLOW_SPEC_VERSION names', () => {
       const fenced = { inBandFence: true };
       for (
@@ -149,36 +136,9 @@ describe('spec version constants', () => {
         expect(String(warn.mock.calls[0]?.[0])).toContain(
           'Ignoring WORKFLOW_SPEC_VERSION'
         );
-        // An ignored value falls through to the sealed-log switch.
-        expect(
-          mintedSpecVersion({
-            WORKFLOW_SPEC_VERSION: 'eight',
-            WORKFLOW_SEALED_LOG: '0',
-          })
-        ).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
         expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '' })).toBe(
           SPEC_VERSION_CURRENT
         );
-      } finally {
-        warn.mockRestore();
-      }
-    });
-
-    it('prefers WORKFLOW_SPEC_VERSION over WORKFLOW_SEALED_LOG, and warns once', () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        const env = {
-          WORKFLOW_SPEC_VERSION: String(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM),
-          WORKFLOW_SEALED_LOG: '0',
-        };
-        expect(mintedSpecVersion(env)).toBe(
-          SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
-        );
-        expect(mintedSpecVersion(env)).toBe(
-          SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
-        );
-        expect(warn).toHaveBeenCalledTimes(1);
-        expect(String(warn.mock.calls[0]?.[0])).toContain('both set');
       } finally {
         warn.mockRestore();
       }
@@ -203,10 +163,6 @@ describe('spec version constants', () => {
         expect(String(warn.mock.calls[0]?.[0])).toContain(
           'capabilities.inBandFence'
         );
-        // The sealed-log switch still decides the fallback.
-        expect(mintedSpecVersion({ ...env, WORKFLOW_SEALED_LOG: '0' })).toBe(
-          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-        );
       } finally {
         warn.mockRestore();
       }
@@ -214,9 +170,6 @@ describe('spec version constants', () => {
 
     it('never stamps the single-orchestrator version unless asked to', () => {
       expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThan(
-        SPEC_VERSION_SINGLE_ORCHESTRATOR
-      );
-      expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: '1' })).toBeLessThan(
         SPEC_VERSION_SINGLE_ORCHESTRATOR
       );
     });

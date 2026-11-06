@@ -192,6 +192,25 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Default: `pg` default
 - Maximum size of the internal `pg.Pool` when the World creates the pool.
 
+### `enableInvoke`
+
+- Environment variable: `WORKFLOW_POSTGRES_INVOKE` (`1` enables)
+- Default: `false`
+- Experimental. Delivers hook resumes to the run's executor instead of writing the hook event and enqueueing a wake-up. Apply the migrations and upgrade producers and workers together before enabling it. See [experimental invocation delivery](/worlds/postgres#experimental-invocation-delivery).
+
+### `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`
+
+- Factory option: none
+- Default: `0` (no deadline)
+- Maximum time a queue delivery waits for the workflow handler to begin responding before it is failed and redelivered.
+- A delivery runs the workflow inline, so a deadline shorter than your longest inline step redelivers a healthy delivery and runs its steps twice. See [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](/worlds/postgres#workflow_postgres_headers_timeout_ms).
+
+### `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`
+
+- Factory option: none
+- Default: `0` (no deadline)
+- Maximum gap between response body chunks from the workflow handler before the delivery is failed and redelivered. The same caution as `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` applies.
+
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 
 - Factory option: none
@@ -298,13 +317,6 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Per-request timeout for Vercel World HTTP calls to workflow-server.
 - At the `10000` floor the run-status long poll disables itself, because its budget is this value minus 10s of headroom.
 
-### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
-
-- Factory option: none
-- CLI flag: none
-- Default: `1000`
-- Maximum stream chunks written in one Vercel World request. Larger batches are split.
-
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
 - Factory option: none
@@ -323,14 +335,6 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: disabled
 - Set `1` to turn off the World's metadata-only `analytics` read namespace, forcing `workflow inspect` and web UI list views onto strongly consistent primary storage. Intended for tests and tooling that read entities immediately after writing them.
-
-### `WORKFLOW_BATCH_TRANSITIONS`
-
-- Surface: environment variable
-- Default: on
-- Set to `0` (or `false`) to **disable** batched event writes, the escape hatch that restores the exact prior one-write-per-event path.
-
-When enabled (the default), a suspension's eager `step_created` and `wait_created` writes fold into batched `events.createBatch` calls (one durable write with per-event outcomes) on Worlds that implement the optional batch API. The fold only engages when the World implements `events.createBatch` (the Vercel World does; Local and Postgres do not), the run's spec version supports slot identity (≥ 6), and the suspension carries no attribute writes. Hook writes in the same suspension go through the single-event path concurrently with the batch. Everything else keeps the single-event path unchanged, so disabling is only needed as an operational escape hatch. Batches are capped at 16 events; larger fan-outs commit in several batches at once. See the [batched event writes changelog](/docs/changelog/batched-event-writes) for the World API contract.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 
@@ -358,3 +362,31 @@ When enabled (the default), a suspension's eager `step_created` and `wait_create
 - Largest WebSocket message the Vercel World sends, header included, for both the events and stream-write transports. The ceiling is the 16 MiB WebSocket message limit.
 - Events: a larger frame is sent as several messages and rebuilt on the other side.
 - Stream writes: a larger write group is split into several ordered write requests; a single chunk too large for one message is written over HTTP, as are the rest of that writer's writes.
+
+### `WORKFLOW_H2_MULTIPLEX`
+
+- Factory option: none
+- CLI flag: none
+- Default: enabled
+- On the Vercel World, lets concurrent event-log requests share one HTTP/2 connection instead of one connection per in-flight request.
+- Set `0` to take the event-log requests off HTTP/2 entirely, back to one request per HTTP/1.1 connection. Use this as the kill switch if HTTP/2 turns out to be at fault for event delivery problems.
+- Has no effect when [`WORKFLOW_NODE_HTTP`](/docs/configuration/runtime-tuning#workflow_node_http) is enabled, which takes the whole HTTP/2 path away.
+
+### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
+
+- Factory option: none
+- CLI flag: none
+- Default: `30000`
+- Total deadline for one request the Vercel World's queue client makes, measured from the moment it is handed to the transport, so it also covers time the request spends waiting for a free connection.
+- Clamped to `[5000, 120000]`.
+- This is the only request path the World cannot bound with `WORKFLOW_REQUEST_TIMEOUT_MS`, because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
+- Keep it below the queue's visibility-renewal interval (60 seconds) so a failed call has room to surface and be retried before the message lease lapses.
+
+### `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`
+
+- Factory option: none
+- CLI flag: none
+- Default: `64`
+- Connections the Vercel World's queue client may open to the queue service.
+- Clamped to `[1, 1024]`.
+- Sized much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out. Lower it only if you have a reason to cap sockets; too low turns invocation concurrency into the limit on how fast messages can be acknowledged.

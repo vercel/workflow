@@ -4,7 +4,6 @@ import {
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
   INLINE_OWNERSHIP_LEASE_SECONDS,
-  isInlineOwnershipEnabled,
   isOptimisticInlineStartEnabled,
   MAX_BATCH_FANOUT_EVENTS,
   MAX_INLINE_OWNERSHIP_LEASE_SECONDS,
@@ -55,45 +54,6 @@ describe('isOptimisticInlineStartEnabled', () => {
   it('stays disabled for any other value', () => {
     process.env.WORKFLOW_OPTIMISTIC_INLINE_START = 'yes';
     expect(isOptimisticInlineStartEnabled()).toBe(false);
-  });
-});
-
-describe('isInlineOwnershipEnabled', () => {
-  const originalEnv = process.env.WORKFLOW_INLINE_OWNERSHIP;
-
-  afterEach(() => {
-    if (originalEnv === undefined) {
-      delete process.env.WORKFLOW_INLINE_OWNERSHIP;
-    } else {
-      process.env.WORKFLOW_INLINE_OWNERSHIP = originalEnv;
-    }
-  });
-
-  it('defaults to enabled when unset', () => {
-    delete process.env.WORKFLOW_INLINE_OWNERSHIP;
-    expect(isInlineOwnershipEnabled()).toBe(true);
-  });
-
-  it('defaults to enabled when empty', () => {
-    process.env.WORKFLOW_INLINE_OWNERSHIP = '';
-    expect(isInlineOwnershipEnabled()).toBe(true);
-  });
-
-  it('is disabled by an explicit "0" (kill switch)', () => {
-    process.env.WORKFLOW_INLINE_OWNERSHIP = '0';
-    expect(isInlineOwnershipEnabled()).toBe(false);
-  });
-
-  it('is disabled by "false" (case-insensitive)', () => {
-    process.env.WORKFLOW_INLINE_OWNERSHIP = 'FALSE';
-    expect(isInlineOwnershipEnabled()).toBe(false);
-  });
-
-  it('stays enabled for "1" and other truthy values', () => {
-    process.env.WORKFLOW_INLINE_OWNERSHIP = '1';
-    expect(isInlineOwnershipEnabled()).toBe(true);
-    process.env.WORKFLOW_INLINE_OWNERSHIP = 'yes';
-    expect(isInlineOwnershipEnabled()).toBe(true);
   });
 });
 
