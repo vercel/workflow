@@ -8138,44 +8138,32 @@ describe('stream pipe ops are observed as soon as they are created (#5055)', () 
   /** Give Node a macrotask boundary to run its unhandled-rejection check. */
   const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 
+  // The step executor dehydrates a return value with the run's encryption key
+  // (world-vercel always supplies one) and unframed byte streams, then calls
+  // `Promise.all(ops)`. Encrypting the payload awaits WebCrypto, which crosses
+  // a macrotask boundary after the reducer has started the pipe, so a source
+  // that has already failed rejects before that handler exists.
   it.each([
-    ['framed', true],
-    ['unframed', false],
-  ])('a step return value carrying a failed response body (%s)', async (_label, framed) => {
+    ['unframed byte stream', 'bytes', false],
+    ['framed byte stream', 'bytes', true],
+    ['object stream', undefined, false],
+  ] as const)('an encrypted step return value carrying a failed %s', async (_label, type, framed) => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
     const capture = captureUnhandledRejections();
     try {
       const ops: Promise<unknown>[] = [];
-      const body = terminatedBody('bytes');
-      expect(getStreamType(body)).toBe('bytes');
+      const body = terminatedBody(type);
+      expect(getStreamType(body)).toBe(type);
       await dehydrateStepReturnValue(
         { body },
         mockRunId,
-        noEncryptionKey,
+        key,
         ops,
         globalThis,
         false,
         framed
       );
       // The step executor attaches its handler right after dehydration.
-      const all = Promise.all(ops);
-      await expect(all).rejects.toThrow('terminated');
-      await settle();
-      expect(capture.messages()).toEqual([]);
-    } finally {
-      capture.stop();
-    }
-  });
-
-  it('a step return value carrying a failed object stream', async () => {
-    const capture = captureUnhandledRejections();
-    try {
-      const ops: Promise<unknown>[] = [];
-      await dehydrateStepReturnValue(
-        { body: terminatedBody() },
-        mockRunId,
-        noEncryptionKey,
-        ops
-      );
       const all = Promise.all(ops);
       await expect(all).rejects.toThrow('terminated');
       await settle();
