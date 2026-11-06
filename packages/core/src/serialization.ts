@@ -2037,6 +2037,24 @@ function attachAbortListenerOnce(
 }
 
 /**
+ * Push a stream pipe onto an ops list, observed from the moment it exists.
+ *
+ * A pipe starts running as soon as a reducer creates it, but whoever owns the
+ * list only attaches a handler later: after the rest of the value has been
+ * serialized, after the step body returns, or never, when the step fails. A
+ * pipe whose source errors in that gap (a returned `fetch()` body whose socket
+ * closes rejects with undici's `TypeError: terminated`) would reject with no
+ * handler attached, and Node treats that as an unhandled rejection, which ends
+ * the process on Vercel (#5055). The no-op handler only marks the rejection as
+ * observed: the list holds the original promise, so `Promise.all(ops)` still
+ * rejects with the pipe's error.
+ */
+function pushPipeOp(ops: Promise<unknown>[], pipe: Promise<void>): void {
+  pipe.catch(() => {});
+  ops.push(pipe);
+}
+
+/**
  * Run `pipe` now, or, with a gate, only once it resolves `true`. A `false` or
  * rejected gate never runs it, and the returned promise still resolves, so an
  * op that never pipes cannot surface as an unhandled rejection.
@@ -2146,7 +2164,7 @@ export function getExternalReducers(
           )
           .pipeTo(writable);
       };
-      ops.push(afterStreamStartGate(streamStartGate, pipe));
+      pushPipeOp(ops, afterStreamStartGate(streamStartGate, pipe));
 
       const s: SerializableSpecial['ReadableStream'] = { name };
       if (type) s.type = type;
@@ -2193,7 +2211,8 @@ export function getExternalReducers(
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
-      readbackOps.push(
+      pushPipeOp(
+        readbackOps,
         afterStreamStartGate(streamStartGate, () =>
           new WorkflowServerReadableStream(runId, name).pipeTo(value)
         )
@@ -2475,14 +2494,16 @@ function getStepReducers(
         );
         if (type === 'bytes') {
           if (framing === 'framed-v1') {
-            ops.push(
+            pushPipeOp(
+              ops,
               value.pipeThrough(getByteFramingStream()).pipeTo(writable)
             );
           } else {
-            ops.push(value.pipeTo(writable));
+            pushPipeOp(ops, value.pipeTo(writable));
           }
         } else {
-          ops.push(
+          pushPipeOp(
+            ops,
             value
               .pipeThrough(
                 getSerializeStream(
@@ -2518,7 +2539,8 @@ function getStepReducers(
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
-        readbackOps.push(
+        pushPipeOp(
+          readbackOps,
           new WorkflowServerReadableStream(runId, name)
             .pipeThrough(
               getDeserializeStream(

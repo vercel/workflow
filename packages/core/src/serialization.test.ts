@@ -8097,3 +8097,116 @@ describe('WorkflowFunction serialization', () => {
     ).rejects.toThrow('Failed to serialize');
   });
 });
+
+// Regression tests for #5055. A reducer starts piping a stream as soon as it
+// serializes it, but the ops list it pushes the pipe onto is only awaited
+// later (after the rest of the value is serialized, after the step body
+// returns) or never (when the step fails). A source that errors in that gap,
+// like a returned `fetch()` body whose socket closes, used to reject with no
+// handler attached: an unhandled rejection, which ends the process on Vercel.
+describe('stream pipe ops are observed as soon as they are created (#5055)', () => {
+  /** The error undici's `fetch` errors a body stream with when its socket closes. */
+  const terminated = () =>
+    new TypeError('terminated', {
+      cause: Object.assign(new Error('other side closed'), {
+        code: 'UND_ERR_SOCKET',
+      }),
+    });
+
+  /**
+   * A stream whose transport has already failed. A `fetch()` response body is
+   * a byte stream, which takes the step reducers' byte-stream pipe.
+   */
+  const terminatedBody = (type?: 'bytes') =>
+    new ReadableStream<Uint8Array>({
+      type,
+      start(controller) {
+        controller.error(terminated());
+      },
+    } as UnderlyingDefaultSource<Uint8Array>);
+
+  const captureUnhandledRejections = () => {
+    const seen: unknown[] = [];
+    const onUnhandled = (reason: unknown) => seen.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    return {
+      messages: () => seen.map((r) => (r as Error)?.message),
+      stop: () => process.off('unhandledRejection', onUnhandled),
+    };
+  };
+
+  /** Give Node a macrotask boundary to run its unhandled-rejection check. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+  // The step executor dehydrates a return value with the run's encryption key
+  // (world-vercel always supplies one) and unframed byte streams, then calls
+  // `Promise.all(ops)`. Encrypting the payload awaits WebCrypto, which crosses
+  // a macrotask boundary after the reducer has started the pipe, so a source
+  // that has already failed rejects before that handler exists.
+  it.each([
+    ['unframed byte stream', 'bytes', false],
+    ['framed byte stream', 'bytes', true],
+    ['object stream', undefined, false],
+  ] as const)('an encrypted step return value carrying a failed %s', async (_label, type, framed) => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const capture = captureUnhandledRejections();
+    try {
+      const ops: Promise<unknown>[] = [];
+      const body = terminatedBody(type);
+      expect(getStreamType(body)).toBe(type);
+      await dehydrateStepReturnValue(
+        { body },
+        mockRunId,
+        key,
+        ops,
+        globalThis,
+        false,
+        framed
+      );
+      // The step executor attaches its handler right after dehydration.
+      const all = Promise.all(ops);
+      await expect(all).rejects.toThrow('terminated');
+      await settle();
+      expect(capture.messages()).toEqual([]);
+    } finally {
+      capture.stop();
+    }
+  });
+
+  it('a stream nobody awaits, as when the step that wrote it fails', async () => {
+    const capture = captureUnhandledRejections();
+    try {
+      const ops: Promise<unknown>[] = [];
+      await dehydrateStepReturnValue(
+        { body: terminatedBody() },
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+      await settle();
+      expect(ops).toHaveLength(1);
+      expect(capture.messages()).toEqual([]);
+    } finally {
+      capture.stop();
+    }
+  });
+
+  it('workflow arguments carrying a failed stream', async () => {
+    const capture = captureUnhandledRejections();
+    try {
+      const ops: Promise<void>[] = [];
+      await dehydrateWorkflowArguments(
+        [terminatedBody()],
+        mockRunId,
+        noEncryptionKey,
+        ops
+      );
+      await settle();
+      expect(ops).toHaveLength(1);
+      await expect(Promise.all(ops)).rejects.toThrow('terminated');
+      expect(capture.messages()).toEqual([]);
+    } finally {
+      capture.stop();
+    }
+  });
+});
