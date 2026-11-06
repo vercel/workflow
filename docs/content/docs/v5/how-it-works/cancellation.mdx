@@ -45,8 +45,8 @@ This gives the workflow deterministic access to the abort state: `controller.sig
 
 When `controller.signal` is serialized as a step argument, a stream name is included in the serialized form. Inside the step, the deserialized `AbortSignal` listens on this stream:
 
-- **On abort**: A cancellation packet is written to the stream
-- **In the step**: A background reader receives the packet and calls `abort()` on the local `AbortController`, firing the signal immediately
+- **On abort**: A length-prefixed cancellation packet is written to the stream
+- **In the step**: A background reader receives the packet and calls `abort()` on the local `AbortController`, firing the signal as soon as the complete packet arrives, even when the transport splits it across reads
 
 This gives steps real-time cancellation without waiting for the workflow to replay.
 

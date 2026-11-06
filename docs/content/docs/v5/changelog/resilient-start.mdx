@@ -34,6 +34,7 @@ The runtime also previously called `world.runs.get(runId)` before `run_started`,
 ### World contract changes
 
 - Posting `run_started` to a **non-existent** run is now allowed when the run input is sent along with the payload. The world creates a `run_created` event first (so the event log is consistent), then creates the `run_started` event normally.
+- A `run_started` that creates the run carries the run's `encryptionPublicKey`. The world stores it on the new run so other runs can still send it encrypted writes.
 - When `run_started` encounters an **already-running** run, all worlds return `{ run }` with `event: undefined` instead of throwing. No duplicate event is created.
 
 ### Queue transport changes
