@@ -834,7 +834,7 @@ export class StateContext {
   /** The display placeholder for a record that could not be rebuilt yet. */
   placeholderFor(record: Dict): unknown {
     if (record.kind === 'source' || record.kind === 'full') return record.value;
-    const text = `<workflow/state ${String(record.version)}>`;
+    const text = `<state ${String(record.version)}>`;
     this.placeholders.add(text);
     return text;
   }

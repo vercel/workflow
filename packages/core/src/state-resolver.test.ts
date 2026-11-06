@@ -47,7 +47,7 @@ describe('createStateResolver', () => {
     const revivers = { ...observabilityRevivers };
     // Without the run's records, a reference is a placeholder.
     expect(hydrateData(input2, revivers)).toEqual({
-      history: expect.stringMatching(/^<workflow\/state /),
+      history: expect.stringMatching(/^<state /),
     });
 
     const resolver = createStateResolver(revivers);
@@ -81,7 +81,7 @@ describe('createStateResolver', () => {
     resolver.add(new Uint8Array([1, 2, 3]));
     expect(
       resolver.revivers.StateRefV1({ kind: 'ref', logId: 'l', version: 'v9' })
-    ).toBe('<workflow/state v9>');
+    ).toBe('<state v9>');
   });
 
   it('rebuilds dates and byte arrays inside state without any revivers', () => {
@@ -135,7 +135,7 @@ describe('createStateResolver', () => {
     const all = { ...observabilityRevivers, ...resolver.revivers };
     expect(
       (hydrateData(input2, all) as { outer: { inner: unknown } }).outer.inner
-    ).toMatch(/^<workflow\/state /);
+    ).toMatch(/^<state /);
     resolver.add(output1);
     expect(hydrateData(input2, all)).toEqual({
       outer: { inner: { n: 1 }, label: 'b' },

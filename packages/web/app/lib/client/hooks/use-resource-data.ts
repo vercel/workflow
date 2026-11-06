@@ -57,7 +57,7 @@ async function fetchResourceWithCorrelationId(
 }
 
 /**
- * Rebuilds a run's `workflow/state` inputs and outputs from its history, read
+ * Rebuilds a run's frozen state inputs and outputs from its history, read
  * once on first need. Keep one per run on screen.
  */
 export function createRunStateHydratorForEnv(
