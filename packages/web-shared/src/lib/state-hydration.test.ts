@@ -1,8 +1,8 @@
+import { produce } from 'immer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // The SDK's own writers, so the fixtures are exactly what a run stores.
 import { StateContext } from '../../../core/src/serialization/state-refs';
 import * as workflow from '../../../core/src/serialization/workflow';
-import { produce } from '../../../core/src/state';
 import { hydrateResourceIOAsync } from './hydration';
 import { createRunStateHydrator } from './state-hydration';
 
