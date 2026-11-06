@@ -3230,7 +3230,9 @@ describe('createWorkflowRunEvent hook_received workflow name', () => {
     });
   });
 
-  it('sends no workflow name when the caller sends none', async () => {
+  it('does not add a workflow name the caller did not send', async () => {
+    // The spec gate itself is core's (`resume-hook.durable.test.ts`); this only
+    // checks the transport never invents the field.
     const meta = await postHookReceived(SPEC_VERSION_SINGLE_ORCHESTRATOR - 1, {
       token: 'tok',
       payload: new Uint8Array([1, 2, 3]),
