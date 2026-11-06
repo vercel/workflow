@@ -29,6 +29,10 @@ const nodeImportExtractRegex = new RegExp(
 const registrationIifeRegex =
   /Symbol\.for\s*\(\s*["']workflow-class-registry["']\s*\)/;
 
+// Source maps may contain source text for classes that esbuild removed.
+const sourceMapCommentRegex =
+  /(?:\/\/[#@]\s*sourceMappingURL=[^\r\n]*|\/\*[#@]\s*sourceMappingURL=[\s\S]*?\*\/)/g;
+
 /**
  * Result of checking a single class for serde compliance.
  */
@@ -81,18 +85,36 @@ export function analyzeSerdeCompliance(options: {
 }): SerdeCheckResult {
   const { sourceCode, workflowCode, manifest } = options;
 
+  const workflowCodeWithoutSourceMaps = workflowCode.replace(
+    sourceMapCommentRegex,
+    ''
+  );
+
   // 1. Extract all Node.js built-in imports from the workflow output
-  const globalNodeImports = extractNodeImports(workflowCode);
+  const globalNodeImports = extractNodeImports(workflowCodeWithoutSourceMaps);
 
   // 2. Check if the manifest contains any serde-registered classes
   const classEntries = extractClassEntries(manifest);
-  const hasSerdeClasses = classEntries.length > 0;
 
   // 3. Check if the workflow output contains registration IIFEs
-  const hasRegistration = registrationIifeRegex.test(workflowCode);
+  const hasRegistration = registrationIifeRegex.test(
+    workflowCodeWithoutSourceMaps
+  );
 
-  // 4. Analyze each class
-  const classes: SerdeClassCheckResult[] = classEntries.map((entry) => {
+  // 4. Analyze each class that survived dead-code elimination. The manifest is
+  // collected before esbuild tree-shakes the workflow bundle, so it can include
+  // classes that are only used inside step bodies and cannot need registration
+  // in the workflow runtime.
+  const classes: SerdeClassCheckResult[] = classEntries.flatMap((entry) => {
+    const registered =
+      hasRegistration &&
+      containsQuotedValue(workflowCodeWithoutSourceMaps, entry.classId);
+    const present =
+      registered ||
+      containsClassDefinition(workflowCodeWithoutSourceMaps, entry.className);
+
+    if (!present) return [];
+
     const issues: string[] = [];
 
     // Check for Node.js imports (these will fail in the workflow sandbox)
@@ -105,7 +127,7 @@ export function analyzeSerdeCompliance(options: {
     }
 
     // Check for registration
-    if (!hasRegistration) {
+    if (!registered) {
       issues.push(
         `No class registration IIFE was generated. ` +
           `Ensure WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE are defined as static methods ` +
@@ -113,16 +135,19 @@ export function analyzeSerdeCompliance(options: {
       );
     }
 
-    return {
-      className: entry.className,
-      classId: entry.classId,
-      detected: true,
-      registered: hasRegistration,
-      nodeImports: globalNodeImports,
-      compliant: globalNodeImports.length === 0 && hasRegistration,
-      issues,
-    };
+    return [
+      {
+        className: entry.className,
+        classId: entry.classId,
+        detected: true,
+        registered,
+        nodeImports: globalNodeImports,
+        compliant: globalNodeImports.length === 0 && registered,
+        issues,
+      },
+    ];
   });
+  const hasSerdeClasses = classes.length > 0;
 
   // 5. Check for classes that have serde patterns in source but weren't detected by SWC
   const sourceHasSerdePatterns =
@@ -154,6 +179,22 @@ export function analyzeSerdeCompliance(options: {
     hasSerdeClasses,
     manifest,
   };
+}
+
+function containsClassDefinition(code: string, className: string): boolean {
+  const escapedClassName = escapeRegex(className);
+  return new RegExp(
+    `(?:\\bclass\\s+_?${escapedClassName}\\b|` +
+      `\\b(?:const|let|var)\\s+${escapedClassName}\\s*=\\s*class\\b)`
+  ).test(code);
+}
+
+function containsQuotedValue(code: string, value: string): boolean {
+  return new RegExp(`["']${escapeRegex(value)}["']`).test(code);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
