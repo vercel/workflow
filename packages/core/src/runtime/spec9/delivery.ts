@@ -29,6 +29,7 @@ import {
   FIRST_EVENT_SLOT,
   type HookResumeTiming,
   IN_BAND_SEQ_AT_RUN_CREATION,
+  isRunCreationEvent,
   isSealedNoopEvent,
   isTerminalWorkflowRunStatus,
   type RunInput,
@@ -521,9 +522,13 @@ async function runDelivery(
     return replayPayloadCache;
   };
   const prepareReplayEvent = (event: Event): void => {
-    if (event.eventType === 'run_created') {
-      startReplayPayloadCache(event.eventData);
-      startWorkflowCompile(event.eventData);
+    if (isRunCreationEvent(event) && 'eventData' in event && event.eventData) {
+      const creation = event.eventData as Pick<
+        WorkflowRun,
+        'workflowName' | 'executionContext'
+      >;
+      startReplayPayloadCache(creation);
+      startWorkflowCompile(creation);
     }
     replayPayloadCache?.prepareEvent(event);
   };
@@ -1650,22 +1655,28 @@ async function runDelivery(
         e.eventType === 'attr_set' ||
         isSealedNoopEvent(e)
     );
-    const runCreated = log.events.find(
-      (event) => event.eventType === 'run_created'
-    );
-    // A log without `run_created` (a legacy run, or a World
-    // whose log starts later) takes the input from the run.
+    // The run's creation: its `run_created`, or the `run_started`
+    // that created it at the first slot (`isRunCreationEvent`).
+    const runCreated = log.events.find(isRunCreationEvent);
+    const createdInput =
+      runCreated && 'eventData' in runCreated
+        ? (runCreated.eventData as { input?: unknown } | undefined)?.input
+        : undefined;
+    // A log without its creation (a legacy run, or a World
+    // whose log starts later), or whose creation was listed
+    // without its input, takes the input from the run.
     let runInputValue: unknown;
     try {
-      runInputValue = runCreated
-        ? runCreated.eventData.input
-        : turbo && runInput
-          ? runInput.input
-          : (
-              await world.runs.get(runId, {
-                resolveData: 'all',
-              })
-            ).input;
+      runInputValue =
+        createdInput !== undefined
+          ? createdInput
+          : turbo && runInput
+            ? runInput.input
+            : (
+                await world.runs.get(runId, {
+                  resolveData: 'all',
+                })
+              ).input;
     } catch (err) {
       if (!(await recordWorkflowSetupFailure(err))) throw err;
       return undefined;

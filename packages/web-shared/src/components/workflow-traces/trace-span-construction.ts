@@ -5,6 +5,7 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
+  isRunCreationEvent,
   isTerminalStepEventType,
   type WorkflowRun,
 } from '@workflow/world';
@@ -401,9 +402,9 @@ export function runToSpan(
 
   // Prefer the event occurrence timestamp when available so the root span
   // lines up with child spans that already use event occurrence time.
-  const runCreatedEvent = runEvents.find(
-    (event) => event.eventType === 'run_created'
-  );
+  // The run's creation: its `run_created`, or on spec >= 9 the `run_started`
+  // that created the run at the first slot (no `run_created` in the log).
+  const runCreatedEvent = runEvents.find(isRunCreationEvent);
   const runStartedEvent = runEvents.find(
     (event) => event.eventType === 'run_started'
   );
