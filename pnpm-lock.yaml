@@ -1347,6 +1347,9 @@ importers:
       ai:
         specifier: 'catalog:'
         version: 6.0.116(zod@4.5.4)
+      immer:
+        specifier: 10.1.1
+        version: 10.1.1
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
