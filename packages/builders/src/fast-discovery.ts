@@ -919,8 +919,12 @@ export async function fastDiscoverEntries({
       return Promise.resolve();
     }
 
-    const cacheKey = `${dirname(importer)}\0${specifier}`;
-    const cached = unfollowedPackageSerdeChecks.get(cacheKey);
+    // Keyed on the specifier alone, not the importer's directory: a large app
+    // imports the same packages from hundreds of directories, and resolving
+    // each pair costs more than discovery saves by skipping the package.
+    // shouldResolveBareSpecifier makes the same one-version-per-name
+    // assumption when it reads the package.json from the working directory.
+    const cached = unfollowedPackageSerdeChecks.get(specifier);
     if (cached) {
       return cached;
     }
@@ -950,7 +954,7 @@ export async function fastDiscoverEntries({
         state.discoveredSerdeFiles.add(resolved);
       }
     })();
-    unfollowedPackageSerdeChecks.set(cacheKey, checkPromise);
+    unfollowedPackageSerdeChecks.set(specifier, checkPromise);
     return checkPromise;
   };
 

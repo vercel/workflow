@@ -424,6 +424,119 @@ export const isSerializable = (value) =>
         false
       );
     });
+
+    // Only the file the import resolves to is checked, so a class that file
+    // only re-exports is not found. These pin that limit, which the
+    // `WORKFLOW_DISCOVER_NODE_MODULES` docs describe.
+    describe('classes the entry file only re-exports', () => {
+      const modelClass = `import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from 'provider-utils';
+
+export class Model {
+  static [WORKFLOW_SERIALIZE](model) { return {}; }
+  static [WORKFLOW_DESERIALIZE](options) { return new this(); }
+}
+`;
+
+      function writePackage(name: string, files: Record<string, string>) {
+        const packageRoot = join(testRoot, 'node_modules', name);
+        writeFile(
+          join(packageRoot, 'package.json'),
+          JSON.stringify({
+            name,
+            version: '1.0.0',
+            type: 'module',
+            sideEffects: false,
+            exports: {
+              './package.json': './package.json',
+              '.': { import: './dist/index.js' },
+            },
+          })
+        );
+        for (const [file, source] of Object.entries(files)) {
+          writeFile(join(packageRoot, file), source);
+        }
+        return (file: string) => normalize(join(packageRoot, file));
+      }
+
+      function writeWorkflowImporting(specifier: string) {
+        const entryFile = join(testRoot, 'src', 'entry.ts');
+        writeFile(entryFile, `import './workflow';\n`);
+        writeFile(
+          join(testRoot, 'src', 'workflow.ts'),
+          `import { Model } from '${specifier}';
+
+export async function chat() {
+  'use workflow';
+  return new Model();
+}
+`
+        );
+        return entryFile;
+      }
+
+      // `gateway` from `ai`: the class lives in `@ai-sdk/gateway`, which the
+      // app reaches only through `ai`.
+      it('does not find a class re-exported from another package', async () => {
+        const definingPackage = writePackage('defining-pkg', {
+          'dist/index.js': modelClass,
+        });
+        const barrelPackage = writePackage('barrel-pkg', {
+          'dist/index.js': `export { Model } from 'defining-pkg';\n`,
+        });
+        const entryFile = writeWorkflowImporting('barrel-pkg');
+
+        const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+          [entryFile],
+          join(testRoot, 'out')
+        );
+
+        expect(
+          discovered.discoveredSerdeFiles.has(barrelPackage('dist/index.js'))
+        ).toBe(false);
+        expect(
+          discovered.discoveredSerdeFiles.has(definingPackage('dist/index.js'))
+        ).toBe(false);
+      });
+
+      it('finds that class when the defining package is imported directly', async () => {
+        const definingPackage = writePackage('defining-pkg', {
+          'dist/index.js': modelClass,
+        });
+        const entryFile = writeWorkflowImporting('defining-pkg');
+
+        const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+          [entryFile],
+          join(testRoot, 'out')
+        );
+
+        expect(
+          discovered.discoveredSerdeFiles.has(definingPackage('dist/index.js'))
+        ).toBe(true);
+      });
+
+      // The shape a bundler's code splitting emits, e.g. tsup's ESM default.
+      it('does not find a class re-exported from a code-split chunk', async () => {
+        const chunkedPackage = writePackage('chunked-pkg', {
+          'dist/index.js': `export { Model } from './chunk-5KXJ2Q4M.js';\n`,
+          'dist/chunk-5KXJ2Q4M.js': modelClass,
+        });
+        const entryFile = writeWorkflowImporting('chunked-pkg');
+
+        const discovered = await createBuilder(testRoot).discoverEntriesPublic(
+          [entryFile],
+          join(testRoot, 'out')
+        );
+
+        expect(
+          discovered.discoveredSerdeFiles.has(chunkedPackage('dist/index.js'))
+        ).toBe(false);
+        expect(
+          discovered.discoveredSerdeFiles.has(
+            chunkedPackage('dist/chunk-5KXJ2Q4M.js')
+          )
+        ).toBe(false);
+      });
+    });
   });
 
   it('discovers files reached through tsconfig path aliases', async () => {
