@@ -2,6 +2,7 @@ import { access, readFile, stat } from 'node:fs/promises';
 import { builtinModules, createRequire } from 'node:module';
 import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { parse as parseWithSwc } from '@swc/core';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
@@ -47,6 +48,11 @@ const IMPORT_SPECIFIER_PATTERNS = [
   /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
+const TYPESCRIPT_SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
+// Matches `import type`, `export type`, inline `{ type X` specifiers, and
+// `import(` (which is also how a `typeof import('x')` type reference starts).
+const POSSIBLE_TYPE_ONLY_IMPORT_PATTERN =
+  /\b(?:import|export)\s+type\b|[{,]\s*type\s+[\w$]|\bimport\s*\(/;
 
 export interface DiscoveredEntries {
   discoveredSteps: Set<string>;
@@ -284,6 +290,179 @@ function extractImportSpecifiers(source: string): string[] {
   }
 
   return Array.from(specifiers);
+}
+
+type AstNode = { type?: unknown; [key: string]: unknown };
+
+function stringLiteralValue(node: unknown): string | undefined {
+  const literal = node as AstNode | null | undefined;
+  return literal?.type === 'StringLiteral' && typeof literal.value === 'string'
+    ? literal.value
+    : undefined;
+}
+
+function hasValueSpecifier(specifiers: unknown): boolean {
+  if (!Array.isArray(specifiers) || specifiers.length === 0) {
+    return true;
+  }
+  return specifiers.some((specifier) => !specifier?.isTypeOnly);
+}
+
+interface AstNodeVisit {
+  /** A module specifier this node loads at runtime. */
+  specifier?: string;
+  /** Whether the walk continues into this node's children. */
+  descend: boolean;
+}
+
+const SKIP_NODE: AstNodeVisit = { descend: false };
+
+function visitStaticImport(node: AstNode): AstNodeVisit {
+  const source = stringLiteralValue(node.source);
+  if (source === undefined) {
+    // `export { x }` without `from` can only reference local bindings.
+    return { descend: true };
+  }
+  const isRuntime = !node.typeOnly && hasValueSpecifier(node.specifiers);
+  return { specifier: isRuntime ? source : undefined, descend: false };
+}
+
+function visitExportAll(node: AstNode): AstNodeVisit {
+  const source = stringLiteralValue(node.source);
+  return { specifier: node.typeOnly ? undefined : source, descend: false };
+}
+
+function visitImportEquals(node: AstNode): AstNodeVisit {
+  const moduleRef = node.moduleRef as AstNode | undefined;
+  if (node.isTypeOnly || moduleRef?.type !== 'TsExternalModuleReference') {
+    return SKIP_NODE;
+  }
+  return {
+    specifier: stringLiteralValue(moduleRef.expression),
+    descend: false,
+  };
+}
+
+function visitModuleDeclaration(node: AstNode): AstNodeVisit {
+  return { descend: !node.declare };
+}
+
+function isRequireCallee(callee: AstNode | undefined): boolean {
+  if (callee?.type === 'Identifier') {
+    return callee.value === 'require';
+  }
+  if (callee?.type === 'MemberExpression') {
+    // `<expr>.require(...)`, e.g. `module.require`; SWC marks `<expr>['require']` as `Computed`.
+    const property = callee.property as AstNode | undefined;
+    return property?.type === 'Identifier' && property.value === 'require';
+  }
+  return false;
+}
+
+function visitCall(node: AstNode): AstNodeVisit {
+  const callee = node.callee as AstNode | undefined;
+  const isImportOrRequire =
+    callee?.type === 'Import' || isRequireCallee(callee);
+  if (!isImportOrRequire || !Array.isArray(node.arguments)) {
+    return { descend: true };
+  }
+  const firstArgument = node.arguments[0] as AstNode | undefined;
+  return {
+    specifier: stringLiteralValue(firstArgument?.expression),
+    descend: true,
+  };
+}
+
+const AST_NODE_VISITORS: Record<string, (node: AstNode) => AstNodeVisit> = {
+  ImportDeclaration: visitStaticImport,
+  ExportNamedDeclaration: visitStaticImport,
+  ExportAllDeclaration: visitExportAll,
+  TsImportEqualsDeclaration: visitImportEquals,
+  TsModuleDeclaration: visitModuleDeclaration,
+  CallExpression: visitCall,
+  // Type positions: nothing below these nodes is evaluated at runtime.
+  TsImportType: () => SKIP_NODE,
+  TsTypeAnnotation: () => SKIP_NODE,
+  TsTypeAliasDeclaration: () => SKIP_NODE,
+  TsInterfaceDeclaration: () => SKIP_NODE,
+};
+
+/**
+ * Collects the import specifiers of a parsed TypeScript module that survive
+ * type erasure: static imports and re-exports with at least one value
+ * binding (or none, for side-effect imports), `import x = require()`, and
+ * string-literal `import()` / `require()` calls. Type-only imports and
+ * re-exports, `typeof import()` and `import()` types, and imports inside
+ * ambient `declare module` blocks are skipped.
+ */
+function collectRuntimeImportSpecifiers(
+  node: unknown,
+  specifiers: Set<string>
+): void {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      collectRuntimeImportSpecifiers(child, specifiers);
+    }
+    return;
+  }
+  if (!node || typeof node !== 'object') {
+    return;
+  }
+
+  const astNode = node as AstNode;
+  const visitor =
+    typeof astNode.type === 'string'
+      ? AST_NODE_VISITORS[astNode.type]
+      : undefined;
+  if (visitor) {
+    const visit = visitor(astNode);
+    if (visit.specifier !== undefined) {
+      specifiers.add(visit.specifier);
+    }
+    if (!visit.descend) {
+      return;
+    }
+  }
+
+  for (const key in astNode) {
+    if (key !== 'span' && key !== 'type') {
+      collectRuntimeImportSpecifiers(astNode[key], specifiers);
+    }
+  }
+}
+
+/**
+ * Returns the import specifiers a file needs at runtime. The regex scan is
+ * used as is, except for TypeScript files whose source may contain type-only
+ * import syntax: those are parsed with SWC so that type-only references are
+ * left out. If parsing fails, the regex scan result is returned.
+ */
+async function extractRuntimeImportSpecifiers(
+  filePath: string,
+  source: string
+): Promise<string[]> {
+  const specifiers = extractImportSpecifiers(source);
+  const extension = extname(filePath).toLowerCase();
+  if (
+    specifiers.length === 0 ||
+    !TYPESCRIPT_SOURCE_EXTENSIONS.has(extension) ||
+    !POSSIBLE_TYPE_ONLY_IMPORT_PATTERN.test(stripCommentsFromSource(source))
+  ) {
+    return specifiers;
+  }
+
+  try {
+    const program = await parseWithSwc(source, {
+      syntax: 'typescript',
+      tsx: extension === '.tsx',
+      target: 'es2022',
+    });
+    const runtimeSpecifiers = new Set<string>();
+    collectRuntimeImportSpecifiers(program.body, runtimeSpecifiers);
+    return Array.from(runtimeSpecifiers);
+  } catch {
+    return specifiers;
+  }
 }
 
 function hasWorkflowDependency(dependencies: unknown): boolean {
@@ -963,7 +1142,7 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    const specifiers = extractImportSpecifiers(source);
+    const specifiers = await extractRuntimeImportSpecifiers(filePath, source);
     if (specifiers.length === 0) {
       return;
     }
