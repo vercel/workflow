@@ -732,21 +732,19 @@ export function createQueue(
     return { messageId };
   };
 
-  const HeaderParser = z.compile(
-    z.object({
-      'x-vqs-queue-name': ValidQueueName,
-      'x-vqs-message-id': MessageId,
-      'x-vqs-message-attempt': z.coerce.number(),
-      // Sent by world-postgres, whose `attempt` restarts on a reschedule.
-      'x-vqs-message-delivery-count': z.coerce
-        .number()
-        .int()
-        .positive()
-        .optional(),
-      // Absent on a delivery from a sender that predates it.
-      'x-vqs-message-created-at': z.iso.datetime().optional(),
-    })
-  );
+  const HeaderParser = z.object({
+    'x-vqs-queue-name': ValidQueueName,
+    'x-vqs-message-id': MessageId,
+    'x-vqs-message-attempt': z.coerce.number(),
+    // Sent by world-postgres, whose `attempt` restarts on a reschedule.
+    'x-vqs-message-delivery-count': z.coerce
+      .number()
+      .int()
+      .positive()
+      .optional(),
+    // Absent on a delivery from a sender that predates it.
+    'x-vqs-message-created-at': z.iso.datetime().optional(),
+  });
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return async (req) => {
