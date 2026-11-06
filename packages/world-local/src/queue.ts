@@ -32,7 +32,7 @@ import { Agent } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
-import { jsonReplacer, jsonReviver } from './fs.js';
+import { jsonReplacer, jsonReviver } from './db/codec.js';
 import { getPackageInfo } from './init.js';
 import type { QueueAuthKey } from './queue-auth-key.js';
 
@@ -72,6 +72,13 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // When the clamped timeout fires, the handler will recalculate remaining time from
 // persistent state and return another timeoutSeconds if needed.
 const MAX_SAFE_TIMEOUT_MS = 2147483647;
+
+// How long close() waits for first delivery attempts already under way (see
+// `firstAttempts` in createQueue) before it aborts them. It only has to cover
+// getting the request to the app (the key, the base URL, a connect, a write):
+// the app's handler does not stop when the sender goes away, so a request the
+// app has read is not lost by aborting before its answer.
+const CLOSE_FIRST_ATTEMPT_WAIT_MS = 1_000;
 
 /**
  * The most deliveries world-local makes of one message (handoffs aside): a
@@ -314,6 +321,16 @@ export function createQueue(
   // isAbortError check in the delivery catch handler.
   const closeController = new AbortController();
   const closeSignal = closeController.signal;
+  /**
+   * The first delivery attempt of each message sent without a delay, until
+   * the attempt has an answer (or has failed). close() waits for them, up to
+   * CLOSE_FIRST_ATTEMPT_WAIT_MS, before it aborts: a short-lived sender (the
+   * CLI's `wf start`, a script) closes its World right after `start()`
+   * returns, and aborting a first attempt that has not reached the app yet
+   * loses the message (the queue is in memory), leaving the new run pending.
+   */
+  const firstAttempts = new Set<Promise<void>>();
+  let closing: Promise<void> | undefined;
 
   /**
    * holds inflight messages by idempotency key to ensure
@@ -382,6 +399,19 @@ export function createQueue(
       cleanup.push(() => {
         inflightMessages.delete(key);
       });
+    }
+
+    let firstAttemptDone = () => {};
+    if (!(opts?.delaySeconds && opts.delaySeconds > 0)) {
+      let resolve = () => {};
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      firstAttempts.add(promise);
+      firstAttemptDone = () => {
+        firstAttempts.delete(promise);
+        resolve();
+      };
     }
 
     (async () => {
@@ -504,9 +534,11 @@ export function createQueue(
                     signal: closeSignal,
                   } as any);
             }
+            firstAttemptDone();
             delivery++;
             text = await response.text();
           } catch (err) {
+            firstAttemptDone();
             endDelivery();
             // A transport can fail before response headers or while consuming
             // the body. Both are transient: back off and retry the same
@@ -662,6 +694,7 @@ export function createQueue(
           }
         );
       } finally {
+        firstAttemptDone();
         endDelivery();
       }
     })()
@@ -814,13 +847,29 @@ export function createQueue(
     registerRoute(prefix: QueuePrefix, path: string) {
       routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
     },
-    async close() {
+    close() {
       // Idempotent: shutdown paths (CLI signal handlers, test teardown)
       // may close the queue more than once.
-      if (closeSignal.aborted) return;
-      closeController.abort();
-      if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
-      await httpAgent?.close();
+      closing ??= (async () => {
+        if (firstAttempts.size > 0) {
+          let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
+          await Promise.race([
+            Promise.allSettled([...firstAttempts]),
+            new Promise<void>((resolve) => {
+              timer = globalThis.setTimeout(
+                resolve,
+                CLOSE_FIRST_ATTEMPT_WAIT_MS
+              );
+              timer.unref?.();
+            }),
+          ]);
+          globalThis.clearTimeout(timer);
+        }
+        closeController.abort();
+        if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
+        await httpAgent?.close();
+      })();
+      return closing;
     },
   };
 }

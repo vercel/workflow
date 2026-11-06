@@ -25,6 +25,11 @@ import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
 
+// Windows runners are much slower at this fan-out (every database open and
+// close is), so give it room there.
+const SLOW_RUNNER = process.platform === 'win32';
+if (SLOW_RUNNER) vi.setConfig({ testTimeout: 180_000, hookTimeout: 60_000 });
+
 // Every routing decision, in delivery order. A result carrying `run` is a
 // routing read of the run.
 const { routed } = vi.hoisted(() => ({ routed: [] as RunSpec[] }));
@@ -136,7 +141,7 @@ describe('spec stamps on world-local', () => {
         const run = await local.runs.get(runId);
         expect(run.status).toBe('completed');
       },
-      { timeout: 30_000, interval: 50 }
+      { timeout: SLOW_RUNNER ? 150_000 : 30_000, interval: 50 }
     );
     return { runId, sent };
   }
