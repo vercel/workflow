@@ -94,7 +94,7 @@ import {
   writeJSON,
 } from '../fs.js';
 import { withInProcessLock } from '../util.js';
-import { withFenceFileLock } from './fence-lock.js';
+import { isFileStale, withFenceFileLock } from './fence-lock.js';
 import { stripEventDataRefs } from './filters.js';
 import {
   fenceStartHookCandidate,
@@ -765,6 +765,25 @@ async function findExistingHookCreatedEventId(
     filter: (event) =>
       event.eventType === 'hook_created' &&
       event.correlationId === correlationId,
+    limit: 1,
+    getCreatedAt: getObjectCreatedAt('evnt'),
+    getId: (event) => event.eventId,
+  });
+  return result.data[0]?.eventId ?? null;
+}
+
+async function findExistingStepEventId(
+  basedir: string,
+  runId: string,
+  stepId: string,
+  eventType: 'step_created' | 'step_completed'
+): Promise<string | null> {
+  const result = await paginatedFileSystemQuery({
+    directory: path.join(basedir, runEntityDir('events', runId)),
+    schema: ReadEventSchema,
+    filePrefix: `${runId}-`,
+    filter: (event) =>
+      event.eventType === eventType && event.correlationId === stepId,
     limit: 1,
     getCreatedAt: getObjectCreatedAt('evnt'),
     getId: (event) => event.eventId,
@@ -1621,6 +1640,137 @@ export function createEventsStorage(
     }
   }
 
+  /**
+   * Completes a partial `step_created` transition (marker written, record or
+   * event missing) under the caller's fence lock. Throws `EntityConflictError`
+   * when the transition is already complete (a duplicate) or the marker is
+   * fresh (a live writer may still be running).
+   */
+  async function recoverStepCreated(
+    basedir: string,
+    effectiveRunId: string,
+    data: CreateEventRequest,
+    now: Date,
+    effectiveSpecVersion: number,
+    stepCreatedLockPath: string,
+    tag?: string
+  ): Promise<void> {
+    const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+    const existingStep = await readJSONWithFallback(
+      basedir,
+      runEntityDir('steps', effectiveRunId),
+      stepCompositeKey,
+      StepSchema,
+      tag
+    );
+    const existingEventId = await findExistingStepEventId(
+      basedir,
+      effectiveRunId,
+      data.correlationId as string,
+      'step_created'
+    );
+
+    if (existingStep && existingEventId) {
+      throw new EntityConflictError(
+        `Step "${data.correlationId}" already created`
+      );
+    }
+
+    if (!(await isFileStale(stepCreatedLockPath))) {
+      // EntityConflictError would make the runtime treat this as a benign
+      // duplicate and drop the step. TooEarlyError redelivers the message,
+      // and the marker becomes stale by the next attempt. 5s gives the
+      // original writer time to die (SIGKILL) without waiting the full
+      // 30s staleness threshold.
+      throw new TooEarlyError(
+        `Step "${data.correlationId}" already created (marker is fresh; writer may still be alive)`,
+        { retryAfter: 5 }
+      );
+    }
+
+    if (!existingStep) {
+      const stepData = data.eventData as { stepName: string; input: any };
+      await writeJSON(
+        taggedPath(
+          basedir,
+          runEntityDir('steps', effectiveRunId),
+          stepCompositeKey,
+          tag
+        ),
+        {
+          runId: effectiveRunId,
+          stepId: data.correlationId,
+          stepName: stepData.stepName,
+          status: 'pending',
+          input: stepData.input,
+          output: undefined,
+          error: undefined,
+          attempt: 0,
+          startedAt: undefined,
+          completedAt: undefined,
+          createdAt: now,
+          updatedAt: now,
+          specVersion: effectiveSpecVersion,
+        }
+      );
+    } else if (existingStep.status !== 'pending') {
+      throw new EntityConflictError(
+        `Step "${data.correlationId}" already created in state "${existingStep.status}"`
+      );
+    }
+  }
+
+  /**
+   * Repair a missing `step_completed` event for an already-completed step.
+   * Called when the runtime redelivers `step_started` (or `step_completed`)
+   * after a crash between the completed record and its event.
+   *
+   * Takes `completedStep` as a parameter (not a closure over `validatedStep`)
+   * so the type is `Step`, not `Step | null`.
+   */
+  async function repairMissingStepCompleted(
+    basedir: string,
+    runId: string,
+    correlationId: string,
+    completedStep: Step,
+    now: Date,
+    specVersion: number,
+    terminalLockPath: string
+  ): Promise<void> {
+    const existingEventId = await findExistingStepEventId(
+      basedir,
+      runId,
+      correlationId,
+      'step_completed'
+    );
+    if (existingEventId) return;
+    await withFenceFileLock(`${terminalLockPath}.recovery`, runId, async () => {
+      const stillMissing =
+        (await findExistingStepEventId(
+          basedir,
+          runId,
+          correlationId,
+          'step_completed'
+        )) === null;
+      if (!stillMissing) return;
+      if (!(await isFileStale(terminalLockPath))) {
+        throw new TooEarlyError(
+          'Cannot modify step in terminal state (marker is fresh; writer may still be alive)',
+          { retryAfter: 5 }
+        );
+      }
+      await storeEvent({
+        eventType: 'step_completed',
+        runId,
+        correlationId,
+        eventId: await mintEventId(runId),
+        createdAt: now,
+        specVersion,
+        eventData: { result: completedStep.output },
+      });
+    });
+  }
+
   const storage: LocalEventsStorage = {
     clearCache,
     async create(
@@ -2076,6 +2226,7 @@ export function createEventsStorage(
           // Check if run requires a newer world version
           if (requiresNewerWorld(currentRun.specVersion)) {
             throw new RunNotSupportedError(
+              // biome-ignore lint/style/noNonNullAssertion: requiresNewerWorld returns false for undefined, so specVersion is defined here
               currentRun.specVersion!,
               SPEC_VERSION_MAX_SUPPORTED
             );
@@ -2159,6 +2310,52 @@ export function createEventsStorage(
           // (non-lazy) step_started falls through to the step-validation
           // block below, which uses RunExpiredError for terminal runs.
           if (createsChildEntity) {
+            // A `step_started` on a completed step whose `step_completed` event
+            // is missing still reaches this branch when the run itself is
+            // terminal. Repair the missing event before rejecting, so replay
+            // can progress past the step.
+            if (
+              data.eventType === 'step_started' &&
+              data.correlationId &&
+              !lazyStepStart
+            ) {
+              const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+              const existingStep = await readJSONWithFallback(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                StepSchema,
+                tag
+              );
+              if (existingStep?.status === 'completed') {
+                const existingEventId = await findExistingStepEventId(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId,
+                  'step_completed'
+                );
+                if (!existingEventId) {
+                  const lockName = tag
+                    ? `${effectiveRunId}-${data.correlationId}.terminal.${tag}`
+                    : `${effectiveRunId}-${data.correlationId}.terminal`;
+                  const terminalLockPath = resolveWithinBase(
+                    basedir,
+                    '.locks',
+                    'steps',
+                    lockName
+                  );
+                  await repairMissingStepCompleted(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId,
+                    existingStep,
+                    now,
+                    effectiveSpecVersion,
+                    terminalLockPath
+                  );
+                }
+              }
+            }
             throw new EntityConflictError(
               `Cannot create new entities on run in terminal state "${currentRun.status}"`
             );
@@ -2214,9 +2411,68 @@ export function createEventsStorage(
           // guard against in that case, so these checks are skipped.
           if (validatedStep) {
             if (isTerminalStepStatus(validatedStep.status)) {
-              throw new EntityConflictError(
-                `Cannot modify step in terminal state "${validatedStep.status}"`
-              );
+              // `step_completed` on an already-completed step: if only the
+              // event is missing, let the normal flow publish it (a complete
+              // duplicate still throws). This is the direct path.
+              if (
+                data.eventType === 'step_completed' &&
+                validatedStep.status === 'completed'
+              ) {
+                const existingEventId = await findExistingStepEventId(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId,
+                  'step_completed'
+                );
+                if (!existingEventId) {
+                  // Allow the completion to proceed (only the event is missing).
+                } else {
+                  throw new EntityConflictError(
+                    `Cannot modify step in terminal state "${validatedStep.status}"`
+                  );
+                }
+              } else if (
+                // `step_started` on an already-completed step: the runtime
+                // actually sends this after a crash, not `step_completed`.
+                // Repair the missing event from the persisted record, then
+                // throw the conflict so the runtime skips the step body.
+                data.eventType === 'step_started' &&
+                validatedStep.status === 'completed'
+              ) {
+                const existingEventId = await findExistingStepEventId(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId,
+                  'step_completed'
+                );
+                if (!existingEventId) {
+                  const lockName = tag
+                    ? `${effectiveRunId}-${data.correlationId}.terminal.${tag}`
+                    : `${effectiveRunId}-${data.correlationId}.terminal`;
+                  const terminalLockPath = resolveWithinBase(
+                    basedir,
+                    '.locks',
+                    'steps',
+                    lockName
+                  );
+                  await repairMissingStepCompleted(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId,
+                    validatedStep,
+                    now,
+                    effectiveSpecVersion,
+                    terminalLockPath
+                  );
+                }
+                throw new EntityConflictError(
+                  `Cannot modify step in terminal state "${validatedStep.status}"`
+                );
+              } else {
+                throw new EntityConflictError(
+                  `Cannot modify step in terminal state "${validatedStep.status}"`
+                );
+              }
             }
 
             // On terminal runs: only allow completing/failing in-progress
@@ -2978,40 +3234,66 @@ export function createEventsStorage(
             ''
           );
           if (!stepCreatedClaimed) {
-            throw new EntityConflictError(
-              `Step "${data.correlationId}" already created`
+            // Serialize recovery across Worlds sharing the data directory:
+            // only one recoverer may publish the missing step_created event.
+            // The publish happens *inside* the lock, so a second recoverer
+            // cannot publish the same event after we release it.
+            prePublishedEvent = await withFenceFileLock(
+              `${stepCreatedLockPath}.recovery`,
+              effectiveRunId,
+              async () => {
+                await recoverStepCreated(
+                  basedir,
+                  effectiveRunId,
+                  data,
+                  now,
+                  effectiveSpecVersion,
+                  stepCreatedLockPath,
+                  tag
+                );
+                return await storeEvent(event);
+              }
+            );
+            eventId = prePublishedEvent.eventId;
+            step =
+              (await readJSONWithFallback(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                `${effectiveRunId}-${data.correlationId}`,
+                StepSchema,
+                tag
+              )) ?? undefined;
+          } else {
+            const stepData = data.eventData as {
+              stepName: string;
+              input: any;
+            };
+            step = {
+              runId: effectiveRunId,
+              stepId: data.correlationId,
+              stepName: stepData.stepName,
+              status: 'pending',
+              input: stepData.input,
+              output: undefined,
+              error: undefined,
+              attempt: 0,
+              startedAt: undefined,
+              completedAt: undefined,
+              createdAt: now,
+              updatedAt: now,
+              specVersion: effectiveSpecVersion,
+            };
+            const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+            await writeJSON(
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
+              step
             );
           }
-          const stepData = data.eventData as {
-            stepName: string;
-            input: any;
-          };
-          step = {
-            runId: effectiveRunId,
-            stepId: data.correlationId,
-            stepName: stepData.stepName,
-            status: 'pending',
-            input: stepData.input,
-            output: undefined,
-            error: undefined,
-            attempt: 0,
-            startedAt: undefined,
-            completedAt: undefined,
-            createdAt: now,
-            updatedAt: now,
-            // Propagate specVersion from the event to the step entity
-            specVersion: effectiveSpecVersion,
-          };
-          const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          await writeJSON(
-            taggedPath(
-              basedir,
-              runEntityDir('steps', effectiveRunId),
-              stepCompositeKey,
-              tag
-            ),
-            step
-          );
         } else if (data.eventType === 'step_started') {
           // step_started: Increments attempt, sets status to 'running'
           // Sets startedAt only on the first start (not updated on retries)
@@ -3180,27 +3462,130 @@ export function createEventsStorage(
             );
             const claimed = await writeExclusive(terminalLockPath, '');
             if (!claimed) {
-              throw new EntityConflictError(
-                'Cannot modify step in terminal state'
+              // Serialize recovery across Worlds sharing the data directory:
+              // only one recoverer may complete the transition. The publish
+              // happens inside the lock, so a second recoverer cannot publish
+              // the same event after we release it.
+              prePublishedEvent = await withFenceFileLock(
+                `${terminalLockPath}.recovery`,
+                effectiveRunId,
+                async () => {
+                  const existingStep = await readJSONWithFallback(
+                    basedir,
+                    runEntityDir('steps', effectiveRunId),
+                    stepCompositeKey,
+                    StepSchema,
+                    tag
+                  );
+                  const existingEventId = await findExistingStepEventId(
+                    basedir,
+                    effectiveRunId,
+                    data.correlationId,
+                    'step_completed'
+                  );
+
+                  if (existingStep?.status === 'completed' && existingEventId) {
+                    throw new EntityConflictError(
+                      'Cannot modify step in terminal state "completed"'
+                    );
+                  }
+                  if (existingStep?.status === 'failed') {
+                    throw new EntityConflictError(
+                      'Cannot modify step in terminal state "failed"'
+                    );
+                  }
+
+                  if (!(await isFileStale(terminalLockPath))) {
+                    // Use a retryable error so the runtime redelivers.
+                    throw new TooEarlyError(
+                      'Cannot modify step in terminal state (marker is fresh; writer may still be alive)',
+                      { retryAfter: 5 }
+                    );
+                  }
+
+                  if (
+                    existingStep?.status === 'running' ||
+                    existingStep?.status === 'pending'
+                  ) {
+                    await writeJSON(
+                      taggedPath(
+                        basedir,
+                        runEntityDir('steps', effectiveRunId),
+                        stepCompositeKey,
+                        tag
+                      ),
+                      {
+                        ...existingStep,
+                        status: 'completed',
+                        output: completedData.result,
+                        completedAt: now,
+                        updatedAt: now,
+                      },
+                      { overwrite: true }
+                    );
+                  } else if (
+                    existingStep?.status === 'completed' &&
+                    !existingEventId &&
+                    event.eventType === 'step_completed'
+                  ) {
+                    // Keep eventData fields (stepName, workflowName,
+                    // telemetry); only override result.
+                    event = {
+                      ...event,
+                      eventData: {
+                        ...event.eventData,
+                        result: existingStep.output,
+                      },
+                    };
+                  } else if (!existingStep) {
+                    await writeJSON(
+                      taggedPath(
+                        basedir,
+                        runEntityDir('steps', effectiveRunId),
+                        stepCompositeKey,
+                        tag
+                      ),
+                      {
+                        ...validatedStep,
+                        status: 'completed',
+                        output: completedData.result,
+                        completedAt: now,
+                        updatedAt: now,
+                      },
+                      { overwrite: true }
+                    );
+                  }
+                  return await storeEvent(event);
+                }
+              );
+              eventId = prePublishedEvent.eventId;
+              step =
+                (await readJSONWithFallback(
+                  basedir,
+                  runEntityDir('steps', effectiveRunId),
+                  stepCompositeKey,
+                  StepSchema,
+                  tag
+                )) ?? undefined;
+            } else {
+              step = {
+                ...validatedStep,
+                status: 'completed',
+                output: completedData.result,
+                completedAt: now,
+                updatedAt: now,
+              };
+              await writeJSON(
+                taggedPath(
+                  basedir,
+                  runEntityDir('steps', effectiveRunId),
+                  stepCompositeKey,
+                  tag
+                ),
+                step,
+                { overwrite: true }
               );
             }
-            step = {
-              ...validatedStep,
-              status: 'completed',
-              output: completedData.result,
-              completedAt: now,
-              updatedAt: now,
-            };
-            await writeJSON(
-              taggedPath(
-                basedir,
-                runEntityDir('steps', effectiveRunId),
-                stepCompositeKey,
-                tag
-              ),
-              step,
-              { overwrite: true }
-            );
           }
         } else if (data.eventType === 'step_failed' && 'eventData' in data) {
           // step_failed: Terminal state with error
