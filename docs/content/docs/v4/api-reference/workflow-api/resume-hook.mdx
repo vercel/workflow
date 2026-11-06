@@ -18,6 +18,10 @@ It creates a `hook_received` event and re-triggers the workflow to continue exec
 `resumeHook` is a runtime function that must be called from outside a workflow function.
 </Callout>
 
+<Callout type="warn">
+`resumeHook()` does not check who is calling it. Authenticate the caller and confirm they may resume this hook before calling it; knowing the token is not enough. The examples below omit that check for brevity. See [Hook and webhook security](/docs/foundations/hooks#security).
+</Callout>
+
 ```typescript lineNumbers
 import { resumeHook } from "workflow/api";
 

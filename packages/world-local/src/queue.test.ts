@@ -2,7 +2,13 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setWorkflowBasePath } from '@workflow/utils';
 import type { WorkflowInvokePayload } from '@workflow/world';
-import { MessageId, NODE_HTTP_ENV_VAR, ValidQueueName } from '@workflow/world';
+import {
+  MessageId,
+  NODE_HTTP_ENV_VAR,
+  QUEUE_MIN_STEP_REDELIVERY_SPAN_MS,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  ValidQueueName,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import {
@@ -10,6 +16,8 @@ import {
   DEFAULT_BODY_TIMEOUT_MS,
   DEFAULT_HEADERS_TIMEOUT_MS,
   getQueueAgentOptions,
+  localRetryDelayMs,
+  MAX_LOCAL_SAFETY_LIMIT,
 } from './queue';
 
 // Mock node:timers/promises so setTimeout resolves immediately
@@ -123,6 +131,38 @@ describe('queue timeout re-enqueue', () => {
     expect(body).toEqual({ ok: true });
   });
 
+  it('createQueueHandler reports a delivery-count header as deliveryCount, separate from attempt', async () => {
+    const metas: { attempt: number; deliveryCount?: number }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, meta) => {
+        metas.push({
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+        });
+        return undefined;
+      }
+    );
+    const request = (extra: Record<string, string>) =>
+      new Request('http://localhost/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__wkf_workflow_test',
+          'x-vqs-message-id': 'msg_01ABC',
+          'x-vqs-message-attempt': '1',
+          ...extra,
+        },
+        body: JSON.stringify(workflowPayload),
+      });
+    await handler(request({ 'x-vqs-message-delivery-count': '3' }));
+    await handler(request({}));
+    expect(metas).toEqual([
+      { attempt: 1, deliveryCount: 3 },
+      { attempt: 1, deliveryCount: 1 },
+    ]);
+  });
+
   it('treats invocation return values containing timeoutSeconds as data', async () => {
     const result = { timeoutSeconds: 123, value: 'data' };
     const handler = localQueue.createQueueHandler(
@@ -197,6 +237,102 @@ describe('queue timeout re-enqueue', () => {
     // The queue fires off processing asynchronously, so we need to wait
     await vi.waitFor(() => {
       expect(callCount).toBe(3);
+    });
+  });
+
+  it('redelivers the SAME message on timeoutSeconds: one id, one createdAt, increasing deliveryCount', async () => {
+    const metas: {
+      messageId: string;
+      deliveryCount?: number;
+      attempt: number;
+      createdAt?: Date;
+    }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_body, meta) => {
+        metas.push(meta);
+        return metas.length < 3 ? { timeoutSeconds: 1 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const { messageId } = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC', retentionSeconds: 3600 }
+    );
+
+    await vi.waitFor(() => {
+      expect(metas).toHaveLength(3);
+    });
+    expect(metas.map((meta) => meta.messageId)).toEqual([
+      messageId,
+      messageId,
+      messageId,
+    ]);
+    expect(metas.map((meta) => meta.deliveryCount)).toEqual([1, 2, 3]);
+    expect(metas.map((meta) => meta.attempt)).toEqual([1, 2, 3]);
+    expect(metas[0]?.createdAt).toBeInstanceOf(Date);
+    expect(new Set(metas.map((meta) => meta.createdAt?.getTime())).size).toBe(
+      1
+    );
+  });
+
+  it('dedupes a second send under the same idempotency key while the first message is retrying', async () => {
+    let calls = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        if (calls === 1) {
+          await held;
+          return { timeoutSeconds: 1 };
+        }
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+
+    const first = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    await vi.waitFor(() => {
+      expect(calls).toBe(1);
+    });
+    const second = await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      workflowPayload,
+      { idempotencyKey: 'step_01ABC' }
+    );
+    expect(second.messageId).toBe(first.messageId);
+    release();
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+  });
+
+  it('delivers a wake sent without an idempotency key every time', async () => {
+    let calls = 0;
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => {
+        calls++;
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    const wake = { runId: 'run_01ABC' };
+    const a = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    const b = await localQueue.queue('__wkf_workflow_test' as any, wake);
+    expect(a.messageId).not.toBe(b.messageId);
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
     });
   });
 
@@ -558,18 +694,26 @@ describe('queue transport timeouts', () => {
     vi.restoreAllMocks();
   });
 
-  it('bounds queue requests by default', () => {
-    expect(getQueueAgentOptions()).toMatchObject({
+  it('places no deadline on queue requests by default', () => {
+    const defaults = getQueueAgentOptions();
+    expect(defaults).toMatchObject({
       bodyTimeout: DEFAULT_BODY_TIMEOUT_MS,
       headersTimeout: DEFAULT_HEADERS_TIMEOUT_MS,
     });
+
+    // `0` is the documented value that disables a deadline.
+    process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '0';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
+    const unbounded = getQueueAgentOptions();
+    expect(defaults.headersTimeout).toBe(unbounded.headersTimeout);
+    expect(defaults.bodyTimeout).toBe(unbounded.bodyTimeout);
   });
 
-  it('honors environment overrides, including 0', () => {
+  it('honors environment overrides', () => {
     process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '1234';
-    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '5678';
     expect(getQueueAgentOptions()).toMatchObject({
-      bodyTimeout: 0,
+      bodyTimeout: 5678,
       headersTimeout: 1234,
     });
   });
@@ -617,7 +761,7 @@ describe('queue transport timeouts', () => {
     expect(outcome).toBe('closed');
   });
 
-  it('redelivers when a handler accepts a request but never responds', async () => {
+  it('redelivers when a handler exceeds an opt-in headers deadline', async () => {
     let requests = 0;
     server = createServer((_request, response) => {
       requests++;
@@ -651,7 +795,7 @@ describe('queue transport timeouts', () => {
     }
   });
 
-  it('redelivers when a handler response body stalls', async () => {
+  it('redelivers when a handler response body exceeds an opt-in body deadline', async () => {
     let requests = 0;
     server = createServer((_request, response) => {
       requests++;
@@ -778,5 +922,446 @@ describe('node:http mode', () => {
     const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
     await expect(localQueue.close()).resolves.toBeUndefined();
     await expect(localQueue.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('per-run orchestrator serialization', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+  const spec9 = (runId: string) => ({
+    runId,
+    runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  });
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Registers a handler that records every delivery and holds each one until
+   * the test releases it, tracking how many deliveries of each run's
+   * orchestrator overlap.
+   */
+  function holdingHandler() {
+    const started: { runId: string; stepId?: string }[] = [];
+    const releases: (() => void)[] = [];
+    const active = new Map<string, number>();
+    const maxActive = new Map<string, number>();
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (message) => {
+        const { runId, stepId } = message as {
+          runId: string;
+          stepId?: string;
+        };
+        const key = stepId ? `${runId}/${stepId}` : runId;
+        active.set(key, (active.get(key) ?? 0) + 1);
+        maxActive.set(
+          key,
+          Math.max(maxActive.get(key) ?? 0, active.get(key) ?? 0)
+        );
+        started.push({ runId, stepId });
+        await new Promise<void>((resolve) => releases.push(resolve));
+        active.set(key, (active.get(key) ?? 1) - 1);
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    return { started, releases, maxActive, handler };
+  }
+
+  it('holds a second orchestrator delivery of a spec 9 run until the first finishes', async () => {
+    const { started, releases, maxActive } = holdingHandler();
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+    await vi.waitFor(() => expect(started).toHaveLength(1));
+    // Give the second delivery every chance to start.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(started).toHaveLength(1);
+
+    releases[0]?.();
+    await vi.waitFor(() => expect(started).toHaveLength(2));
+    releases[1]?.();
+    expect(maxActive.get('run_a')).toBe(1);
+  });
+
+  // A spec 8 orchestrator can hold an inline step until another wake of
+  // the same run aborts it, so its deliveries must not wait for each other.
+  it('never holds back an orchestrator delivery of a spec 8 or unstamped run', async () => {
+    const { started, releases } = holdingHandler();
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR - 1,
+    });
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR - 1,
+    });
+    await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
+    await localQueue.queue('__wkf_workflow_test' as any, { runId: 'run_b' });
+    await vi.waitFor(() => expect(started).toHaveLength(4));
+    for (const release of releases) release();
+  });
+
+  it('keeps different runs, and a run’s steps, in parallel with its orchestrator', async () => {
+    const { started, releases } = holdingHandler();
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+    await localQueue.queue('__wkf_workflow_test' as any, spec9('run_b'));
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      stepId: 'step_1',
+      stepName: 'add',
+    });
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_a',
+      stepId: 'step_2',
+      stepName: 'add',
+    });
+    await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      {
+        __healthCheck: true,
+        correlationId: 'hc_1',
+        runId: 'run_a',
+      } as any
+    );
+    await vi.waitFor(() => expect(started).toHaveLength(5));
+    for (const release of releases) release();
+  });
+
+  // A script or test process that calls `start()` or `resumeHook()` sends its
+  // messages with a queue of its own, which the sending gate cannot see; the
+  // handler of the process serving the routes holds them back instead.
+  it('holds back a delivery sent by another process’s queue', async () => {
+    const { started, releases, maxActive, handler } = holdingHandler();
+    const otherProcess = createQueue({ baseUrl: 'http://localhost:3000' });
+    try {
+      // The other process's messages reach this process's handler.
+      otherProcess.registerHandler('__wkf_workflow_', handler);
+      await localQueue.queue('__wkf_workflow_test' as any, spec9('run_a'));
+      await otherProcess.queue('__wkf_workflow_test' as any, spec9('run_a'));
+      await vi.waitFor(() => expect(started).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(started).toHaveLength(1);
+
+      releases[0]?.();
+      await vi.waitFor(() => expect(started).toHaveLength(2));
+      releases[1]?.();
+      expect(maxActive.get('run_a')).toBe(1);
+    } finally {
+      await otherProcess.close();
+    }
+  });
+
+  it('frees the run while a delivery waits out its timeoutSeconds', async () => {
+    let firstCalls = 0;
+    const order: string[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (message) => {
+        const { tag } = message as { tag: string };
+        order.push(tag);
+        if (tag === 'first' && firstCalls++ === 0) {
+          return { timeoutSeconds: 1 };
+        }
+        return undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    // `setTimeout` from node:timers/promises is mocked to resolve at once, so
+    // hold the redelivery delay open on a promise this test controls.
+    const { setTimeout: mockedSleep } = await import('node:timers/promises');
+    let wakeRedelivery!: () => void;
+    vi.mocked(mockedSleep).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          wakeRedelivery = () => resolve(undefined);
+        }) as any
+    );
+    await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      { ...spec9('run_a'), tag: 'first' } as any
+    );
+    await vi.waitFor(() => expect(order).toEqual(['first']));
+    await localQueue.queue(
+      '__wkf_workflow_test' as any,
+      { ...spec9('run_a'), tag: 'second' } as any
+    );
+    // The first message is between deliveries, so the second one runs.
+    await vi.waitFor(() => expect(order).toEqual(['first', 'second']));
+    wakeRedelivery();
+    await vi.waitFor(() => expect(order).toEqual(['first', 'second', 'first']));
+  });
+});
+
+describe('handoff', () => {
+  let localQueue: ReturnType<typeof createQueue>;
+
+  beforeEach(() => {
+    localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+  });
+
+  afterEach(async () => {
+    await localQueue.close();
+    vi.restoreAllMocks();
+  });
+
+  /** Delivers one message, answering `{ timeoutSeconds: 0 }` twice. */
+  async function deliveriesOf(payload: Record<string, unknown>) {
+    const seen: { attempt: number; deliveryCount?: number; id: string }[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async (_message, meta) => {
+        seen.push({
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+          id: meta.messageId,
+        });
+        return seen.length < 3 ? { timeoutSeconds: 0 } : undefined;
+      }
+    );
+    localQueue.registerHandler('__wkf_workflow_', handler);
+    await localQueue.queue('__wkf_workflow_test' as any, payload as any);
+    await vi.waitFor(() => expect(seen).toHaveLength(3));
+    return seen;
+  }
+
+  it('redelivers a spec 9 message at once without counting the handed-off deliveries as attempts', async () => {
+    const seen = await deliveriesOf({
+      runId: 'run_a',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    expect(seen.map((d) => d.attempt)).toEqual([1, 1, 1]);
+    expect(seen.map((d) => d.deliveryCount)).toEqual([1, 2, 3]);
+    expect(new Set(seen.map((d) => d.id)).size).toBe(1);
+  });
+
+  it('counts an earlier run’s immediate redelivery as an attempt', async () => {
+    const seen = await deliveriesOf({ runId: 'run_a' });
+    expect(seen.map((d) => d.attempt)).toEqual([1, 2, 3]);
+    expect(seen.map((d) => d.deliveryCount)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('per-prefix delivery routes', () => {
+  let server: Server | undefined;
+
+  afterEach(async () => {
+    if (server !== undefined) {
+      const toClose = server;
+      server = undefined;
+      toClose.closeAllConnections();
+      await new Promise((resolve) => toClose.close(resolve));
+    }
+    setWorkflowBasePath(undefined);
+  });
+
+  /** A server that answers `servedPaths` with 200 and anything else with 404, recording every request. */
+  async function startServer(servedPaths: Set<string>) {
+    const requests: { path: string; queueName: string }[] = [];
+    server = createServer((request, response) => {
+      requests.push({
+        path: request.url ?? '',
+        queueName: request.headers['x-vqs-queue-name'] as string,
+      });
+      request.resume();
+      const served = servedPaths.has(request.url ?? '');
+      response.statusCode = served ? 200 : 404;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(served ? { ok: true } : { error: 'nf' }));
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+    return { requests, origin: `http://127.0.0.1:${port}` };
+  }
+
+  it("sends a prefix with no registered route to the Workflow SDK's flow route", async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/.well-known/workflow/v1/flow'])
+    );
+    const localQueue = createQueue({ baseUrl: origin });
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]).toEqual({
+        path: '/.well-known/workflow/v1/flow',
+        queueName: '__agent_wkf_workflow_session',
+      });
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('delivers a prefix with a registered route there, and only that prefix', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/.well-known/workflow/v1/flow', '/api/agent/queue'])
+    );
+    const localQueue = createQueue({ baseUrl: origin });
+    localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await localQueue.queue(
+        '__wkf_workflow_myWorkflow' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(requests).toHaveLength(2));
+      expect(requests).toEqual(
+        expect.arrayContaining([
+          {
+            path: '/api/agent/queue',
+            queueName: '__agent_wkf_workflow_session',
+          },
+          {
+            path: '/.well-known/workflow/v1/flow',
+            queueName: '__wkf_workflow_myWorkflow',
+          },
+        ])
+      );
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('resolves a route under the base URL, like the flow route', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/base/api/agent/queue'])
+    );
+    const localQueue = createQueue({ baseUrl: `${origin}/base` });
+    localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]?.path).toBe('/base/api/agent/queue');
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('prefers an in-process handler over a route for the same prefix', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/api/agent/queue'])
+    );
+    const localQueue = createQueue({ baseUrl: origin });
+    const handler = vi.fn(async (req: Request) => {
+      expect(new URL(req.url).pathname).toBe('/api/agent/queue');
+      return Response.json({ ok: true });
+    });
+    localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+    localQueue.registerHandler('__agent_wkf_workflow_', handler);
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      expect(requests).toHaveLength(0);
+    } finally {
+      await localQueue.close();
+    }
+  });
+
+  it('a route registered after a message was enqueued takes its next attempt', async () => {
+    const { requests, origin } = await startServer(
+      new Set(['/api/agent/queue'])
+    );
+    const consoleError = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => {});
+    const localQueue = createQueue({ baseUrl: origin });
+    try {
+      await localQueue.queue(
+        '__agent_wkf_workflow_session' as ValidQueueName,
+        workflowPayload
+      );
+      // The first attempt goes to the flow route, which this app doesn't have.
+      // The server records the request before the client reads the 404 and
+      // logs it, so wait for the log too.
+      await vi.waitFor(() => {
+        expect(requests.length).toBeGreaterThan(0);
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining('HTTP 404'),
+          expect.objectContaining({
+            hint: expect.stringContaining('world.registerRoute'),
+          })
+        );
+      });
+      expect(requests[0]?.path).toBe('/.well-known/workflow/v1/flow');
+
+      localQueue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
+      await vi.waitFor(() =>
+        expect(requests.at(-1)?.path).toBe('/api/agent/queue')
+      );
+      const settled = requests.length;
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
+      expect(requests).toHaveLength(settled);
+    } finally {
+      consoleError.mockRestore();
+      await localQueue.close();
+    }
+  });
+
+  it('rejects an invalid prefix or route', () => {
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+    expect(() =>
+      localQueue.registerRoute('__agent_wkf_workflow_', 'api/agent/queue')
+    ).toThrow(TypeError);
+    expect(() =>
+      localQueue.registerRoute('agent' as never, '/api/agent/queue')
+    ).toThrow();
+  });
+
+  it("refuses a message outside the handler's prefix, naming both", async () => {
+    const localQueue = createQueue({ baseUrl: 'http://localhost:3000' });
+    const handler = vi.fn();
+    const route = localQueue.createQueueHandler('__wkf_workflow_', handler);
+    const response = await route(
+      new Request('http://localhost:3000/.well-known/workflow/v1/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__agent_wkf_workflow_session',
+          'x-vqs-message-id': 'msg_01ABC',
+          'x-vqs-message-attempt': '1',
+        },
+        body: JSON.stringify(workflowPayload),
+      })
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: 'Unhandled queue',
+      detail:
+        'This route handles queue prefix "__wkf_workflow_", not "__agent_wkf_workflow_session".',
+    });
+    expect(handler).not.toHaveBeenCalled();
+    await localQueue.close();
+  });
+});
+
+describe('localRetryDelayMs', () => {
+  it("keeps retrying a failing message for longer than a step message's stall window", () => {
+    let spanMs = 0;
+    let previous = 0;
+    for (let failed = 1; failed < MAX_LOCAL_SAFETY_LIMIT; failed++) {
+      const delay = localRetryDelayMs(failed);
+      expect(delay).toBeGreaterThanOrEqual(previous);
+      previous = delay;
+      spanMs += delay;
+    }
+    expect(spanMs).toBeGreaterThan(QUEUE_MIN_STEP_REDELIVERY_SPAN_MS);
   });
 });

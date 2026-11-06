@@ -10,6 +10,7 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { globalSingleton } from '@workflow/utils';
+import { runtimeLogger } from '../logger.js';
 
 // All three live on `globalThis` (see `globalSingleton`) rather than at module
 // scope. The resolved port is a fact about the process, not about one copy of
@@ -45,21 +46,15 @@ export async function getPortLazy(): Promise<number | undefined> {
     return portState.inFlight;
   }
 
+  // An explicit `PORT` wins over detection, matching the order the local
+  // world uses to address its own queue requests. It also skips the OS query.
+  const envPort = parseEnvPort(process.env.PORT);
+  if (envPort !== undefined) {
+    return envPort;
+  }
+
   if (!portState.getPort) {
-    try {
-      // Construct specifier at runtime to defeat bundler static analysis.
-      const spec = ['@workflow/utils', 'get-port'].join('/');
-      // Use process.cwd()-based createRequire for CJS/ESM compatibility.
-      // import.meta.url is unavailable in CJS re-bundled outputs.
-      const _require = createRequire(
-        pathToFileURL(process.cwd() + '/package.json').href
-      );
-      const mod = _require(spec);
-      portState.getPort = mod.getPort;
-    } catch {
-      // Module not available (e.g., in a browser or minimal bundle)
-      portState.getPort = async () => undefined;
-    }
+    portState.getPort = loadGetPort();
   }
 
   // `portState.getPort` is always assigned by the block above; the fallback keeps the
@@ -79,6 +74,77 @@ export async function getPortLazy(): Promise<number | undefined> {
       portState.inFlight = undefined;
     });
   return portState.inFlight;
+}
+
+function parseEnvPort(value: string | undefined): number | undefined {
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  const port = Number(value);
+  return port > 0 && port <= 65535 ? port : undefined;
+}
+
+/**
+ * Loads `getPort` from `@workflow/utils/get-port`.
+ *
+ * The specifier is resolved from a chain of bases rather than only from
+ * `process.cwd()`. Under a strict `node_modules` layout (pnpm without
+ * hoisting) the app usually depends on `workflow` but not on
+ * `@workflow/utils`, so a cwd-based lookup fails. `workflow` and
+ * `@workflow/core` both depend on `@workflow/utils`, so resolving relative to
+ * either package finds it. `import.meta.url` is not used as a base because it
+ * is unavailable in CJS re-bundled outputs.
+ */
+function loadGetPort(): () => Promise<number | undefined> {
+  // Construct specifiers at runtime to defeat bundler static analysis.
+  const spec = ['@workflow/utils', 'get-port'].join('/');
+  const errors: string[] = [];
+  const record = (error: unknown) =>
+    errors.push(error instanceof Error ? error.message : String(error));
+
+  let req: NodeJS.Require;
+  try {
+    req = createRequire(pathToFileURL(`${process.cwd()}/package.json`).href);
+  } catch (error) {
+    record(error);
+    return failedGetPort(errors);
+  }
+  // Each hop resolves the next package relative to the last base that
+  // resolved: cwd -> `workflow` -> `@workflow/core`. A hop that does not
+  // resolve is skipped, so an app depending on `@workflow/core` alone is
+  // still covered.
+  const hops = ['workflow', ['@workflow', 'core'].join('/')];
+  for (let i = 0; ; i++) {
+    try {
+      const mod = req(spec);
+      if (typeof mod?.getPort === 'function') {
+        return mod.getPort;
+      }
+      record(`${spec} has no getPort export`);
+    } catch (error) {
+      record(error);
+    }
+    let advanced = false;
+    while (!advanced && i < hops.length) {
+      try {
+        req = createRequire(req.resolve(hops[i]));
+        advanced = true;
+      } catch (error) {
+        record(error);
+        i++;
+      }
+    }
+    if (!advanced) return failedGetPort(errors);
+  }
+}
+
+// Prints once per process: the failed loader is cached in `portState.getPort`,
+// so later calls never reach it again. Only non-Vercel deployments resolve the
+// port (on Vercel the URL comes from `VERCEL_URL`), so this never prints there.
+function failedGetPort(errors: string[]): () => Promise<number | undefined> {
+  runtimeLogger.warn(
+    'Could not detect the port this server listens on, so webhook and workflow URLs fall back to port 3000. Set the PORT environment variable to the port your server listens on.',
+    { errors }
+  );
+  return async () => undefined;
 }
 
 /**

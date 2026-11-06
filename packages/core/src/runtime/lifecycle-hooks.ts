@@ -1,47 +1,51 @@
+import type { Span } from '@opentelemetry/api';
 import { WorkflowRunFailedError } from '@workflow/errors';
 import { runtimeLogger } from '../logger.js';
 import type { PayloadKey } from '../serialization/encryption.js';
-import { getExternalRevivers, hydrateRunError } from '../serialization.js';
+import { hydrateRunError } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
+import * as Attribute from '../telemetry/semantic-conventions.js';
 import { trace } from '../telemetry.js';
-import { getErrorName, getErrorStack } from '../types.js';
+import { getErrorMessage, getErrorName, getErrorStack } from '../types.js';
 import { Run } from './run.js';
 import { safeWaitUntil } from './wait-until.js';
 
-/**
- * Parameters passed to an {@link WorkflowLifecycleHooks.onRunCompleted}
- * handler.
- */
-export interface RunCompletedHookParams {
-  /** The workflow name, available without fetching the run. */
+interface RunHookParams {
+  /**
+   * The machine-readable workflow identifier, such as
+   * `workflow//./src/workflows/order//processOrder`, available without a read.
+   * Unlike this string, `run.workflowName` is a Promise that fetches metadata.
+   */
   workflowName: string;
   /**
-   * The completed run. The instance hydrates lazily, so reading
+   * The transitioned run. The instance hydrates lazily, so reading
    * `run.returnValue` (or any other accessor) fetches from the backend only
    * when the handler actually uses it.
    */
   run: Run<unknown>;
 }
 
+/** Parameters passed to an {@link WorkflowLifecycleHooks.onRunCompleted} handler. */
+export type RunCompletedHookParams = RunHookParams;
+
 /**
  * Parameters passed to an {@link WorkflowLifecycleHooks.onRunFailed}
  * handler.
  */
-export interface RunFailedHookParams {
-  /** The workflow name, available without fetching the run. */
-  workflowName: string;
+export interface RunFailedHookParams extends RunHookParams {
   /**
-   * The failed run. The instance hydrates lazily, so accessors fetch from
-   * the backend only when the handler actually uses them.
-   */
-  run: Run<unknown>;
-  /**
-   * The failure, in the same shape `run.returnValue` rejects with: a
-   * `WorkflowRunFailedError` whose `errorCode` carries the failure
-   * classification (e.g. `USER_ERROR`, `RUNTIME_ERROR`) and whose `cause` is
-   * the hydrated persisted value (registered Error subclass identity preserved).
-   * Streams are read only when consumed; abort signals reflect their persisted
-   * state without live subscriptions. If hydration fails, `cause` is a generic
-   * Error, matching `run.returnValue`'s fallback.
+   * The persisted failure hydrated for reporting. Unlike `run.returnValue`,
+   * readable streams load only when consumed and abort signals reflect their
+   * persisted state without live subscriptions. Writable streams retain their
+   * normal forwarding setup.
+   *
+   * This `WorkflowRunFailedError` has an `errorCode` carrying the failure
+   * classification (e.g. `USER_ERROR`, `RUNTIME_ERROR`). Its `cause` is
+   * the hydrated persisted value. Custom serialization revives registered
+   * classes using the runtime's module copy, which may differ from the
+   * handler's copy. Use error-class `.is()` helpers rather than `instanceof`.
+   * If hydration fails, `cause` is a generic Error, matching
+   * `run.returnValue`'s fallback.
    */
   error: WorkflowRunFailedError;
 }
@@ -59,7 +63,7 @@ export interface WorkflowLifecycleHooks {
 
 /**
  * The registry lives on `globalThis` under a `Symbol.for` key so that every
- * copy of `@workflow/core` in the process (bundled + unbundled, ESM + CJS)
+ * copy of `@workflow/core` in the process (including separate bundler layers)
  * shares one list, the same pattern as the cross-realm error-class registry in
  * `@workflow/errors` and the World cache in `get-world-lazy.ts`. The property
  * is non-writable/non-configurable so accidental clobbering is loud; the
@@ -87,9 +91,12 @@ function getRegistry(): WorkflowLifecycleHooks[] {
  * centralized reporting (e.g. forwarding failed runs to Sentry) without
  * wrapping every workflow body.
  *
- * Register early in the process lifecycle so handlers exist before the first
- * run finishes: in Next.js, `instrumentation.ts` is the natural place; in any
- * other app, any module that loads at startup works.
+ * Register in the host process that executes workflows, before it handles
+ * requests, never in a workflow or step. In Next.js 16.3+ use
+ * `instrumentation.ts`; restart `next dev` after editing handlers. App startup
+ * registration does not reach the separate flow functions emitted by the
+ * Vercel Build Output API integrations. See the lifecycle hooks guide for
+ * framework-specific support and registration locations.
  *
  * Semantics:
  * - Handlers run on the host (full Node.js), never inside the workflow VM.
@@ -98,17 +105,25 @@ function getRegistry(): WorkflowLifecycleHooks[] {
  *   CLI or dashboard) do not fire handlers in the app.
  * - Handlers are fire-and-forget: they cannot delay or change the run's
  *   outcome, and a throwing handler is logged and swallowed. On Vercel,
- *   `waitUntil` keeps the invocation alive. On other hosts handlers run
+ *   `waitUntil` keeps the invocation alive for handlers and background stream
+ *   operations from the hydrated failure. On other hosts handlers run
  *   detached, and freezing serverless hosts may not let them finish.
  * - Reporting is best effort: callbacks are not retried if the invocation
  *   dies before they finish. Use the event log as the system of record.
  * - Multiple registrations are allowed; handlers run in registration order.
+ *   Registrations are not deduplicated. Unregister the previous hooks before
+ *   registering again during hot reload or module re-evaluation.
  *
  * @returns A function that unregisters these hooks.
  */
 export function registerLifecycleHooks(
   hooks: WorkflowLifecycleHooks
 ): () => void {
+  if (contextStorage.getStore()) {
+    throw new Error(
+      'registerLifecycleHooks must be called at host startup, not inside a step function. Register before handling workflow requests (for example, in instrumentation.ts on Next.js).'
+    );
+  }
   const registry = getRegistry();
   registry.push(hooks);
   return () => {
@@ -130,45 +145,117 @@ function dispatch<TParams>(
   runId: string,
   workflowName: string,
   event: 'onRunCompleted' | 'onRunFailed',
-  prepare: () => Promise<TParams>,
+  prepare: (
+    ops: Promise<void>[],
+    onHydrationError: (err: unknown) => void
+  ) => Promise<TParams>,
   invoke: (
     hooks: WorkflowLifecycleHooks,
     params: TParams
   ) => void | Promise<void> | undefined
 ): void {
-  // Snapshot so an unregister inside a handler cannot skew iteration.
-  const registered = getRegistry().filter((hooks) => hooks[event]);
-  if (registered.length === 0) {
-    return;
-  }
-  safeWaitUntil(
-    trace(`workflow.lifecycle.${event}`, async () => {
-      const params = await prepare();
-      for (const hooks of registered) {
-        try {
-          await invoke(hooks, params);
-        } catch (err) {
-          runtimeLogger.error(`Workflow lifecycle ${event} handler threw`, {
-            workflowRunId: runId,
-            workflowName,
-            errorName: getErrorName(err),
-            errorMessage: err instanceof Error ? err.message : String(err),
-            errorStack: getErrorStack(err),
-          });
-        }
+  let lifecycleSpan: Span | undefined;
+  const logFailure = (what: string, err: unknown): void => {
+    // One hostile accessor must not erase the other fields or the log line.
+    const read = (get: () => string, fallback: string): string => {
+      try {
+        return get();
+      } catch {
+        return fallback;
       }
-    }),
-    // Covers a `prepare()` rejection; handler failures are caught above.
-    (err) => {
-      runtimeLogger.error(`Workflow lifecycle ${event} dispatch failed`, {
+    };
+    const errorName = read(() => getErrorName(err), 'Error');
+    const errorMessage = read(
+      () => getErrorMessage(err),
+      '[unavailable error message]'
+    );
+    const errorStack = read(() => getErrorStack(err), '');
+    try {
+      lifecycleSpan?.addEvent('workflow.lifecycle.failure', {
+        phase: what,
+        'exception.type': errorName,
+        'exception.message': errorMessage,
+        'exception.stacktrace': errorStack,
+      });
+    } catch {
+      // A custom tracer must not prevent logging or later handlers.
+    }
+    try {
+      runtimeLogger.error(`Workflow lifecycle ${event} ${what}`, {
         workflowRunId: runId,
         workflowName,
-        errorName: getErrorName(err),
-        errorMessage: err instanceof Error ? err.message : String(err),
-        errorStack: getErrorStack(err),
+        errorName,
+        errorMessage,
+        errorStack,
       });
+    } catch {
+      // Even error accessors and custom log sinks can throw. Reporting must
+      // never affect a terminal write or prevent later handlers from running.
     }
-  );
+  };
+
+  try {
+    // Snapshot before reading user-supplied properties: a getter may throw or
+    // unregister hooks, just as a handler can.
+    const registered = getRegistry()
+      .slice()
+      .filter((hooks) => {
+        try {
+          return Boolean(hooks[event]);
+        } catch (err) {
+          logFailure('handler property access threw', err);
+          return false;
+        }
+      });
+    if (registered.length === 0) return;
+
+    safeWaitUntil(
+      trace(
+        `workflow.lifecycle.${event}`,
+        {
+          attributes: {
+            ...Attribute.WorkflowRunId(runId),
+            ...Attribute.WorkflowName(workflowName),
+          },
+        },
+        async (span) => {
+          lifecycleSpan = span;
+          const ops: Promise<void>[] = [];
+          try {
+            const params = await prepare(ops, (err) =>
+              logFailure('error hydration failed', err)
+            );
+            for (const hooks of registered) {
+              try {
+                await invoke(hooks, params);
+              } catch (err) {
+                logFailure('handler threw', err);
+              }
+            }
+          } finally {
+            // Hydration and handlers can start background pipes. Keep all of
+            // them alive, even if preparation, a handler, or another pipe fails.
+            // Nested streams can append operations while a batch is draining.
+            let drained = 0;
+            while (drained < ops.length) {
+              const batch = ops.slice(drained);
+              drained = ops.length;
+              const results = await Promise.allSettled(batch);
+              for (const result of results) {
+                if (result.status === 'rejected') {
+                  logFailure('stream operation failed', result.reason);
+                }
+              }
+            }
+          }
+        }
+      ),
+      (err) => logFailure('dispatch failed', err)
+    );
+  } catch (err) {
+    // Includes synchronous registry access and scheduling failures.
+    logFailure('dispatch failed', err);
+  }
 }
 
 /**
@@ -190,28 +277,31 @@ export function dispatchRunCompletedHooks(
 
 /**
  * Hydrate the exact error the terminal writer persisted, without re-running
- * serializers or opening streams a reporting handler may never consume.
+ * serializers or reading streams a reporting handler may never consume.
  * Use the same fallback as `Run.returnValue` when the host cannot revive it.
  */
 async function hydrateForHandlers(
   error: unknown,
   runId: string,
-  encryptionKey: PayloadKey | undefined
+  encryptionKey: PayloadKey | undefined,
+  ops: Promise<void>[],
+  onError: (err: unknown) => void
 ): Promise<unknown> {
   try {
-    const ops: Promise<void>[] = [];
     return await hydrateRunError(
       error,
       runId,
       encryptionKey,
       ops,
       globalThis,
-      getExternalRevivers(globalThis, ops, runId, encryptionKey, {
+      undefined,
+      {
         lazyStreams: true,
         liveAbortSignals: false,
-      })
+      }
     );
-  } catch {
+  } catch (err) {
+    onError(err);
     return new Error('Failed to hydrate workflow run error');
   }
 }
@@ -234,12 +324,18 @@ export function dispatchRunFailedHooks(
     runId,
     workflowName,
     'onRunFailed',
-    async () => ({
+    async (ops, onHydrationError) => ({
       run: new Run(runId),
       workflowName,
       error: new WorkflowRunFailedError(
         runId,
-        await hydrateForHandlers(error, runId, encryptionKey),
+        await hydrateForHandlers(
+          error,
+          runId,
+          encryptionKey,
+          ops,
+          onHydrationError
+        ),
         { errorCode }
       ),
     }),

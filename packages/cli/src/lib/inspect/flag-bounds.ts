@@ -16,7 +16,7 @@ import { parseAttributeFilters } from './attribute-filter.js';
  * another.
  *
  * Larger pages are still reachable by paging: the listings follow cursors,
- * and `--interactive` walks them.
+ * `--all` reads every page, and `--interactive` walks them.
  */
 const MAX_LIMIT = 100;
 
@@ -94,6 +94,66 @@ export function validateAttributeScope(
   return undefined;
 }
 
+/**
+ * Validate that a lookup scoped to a run names its run.
+ *
+ * Checked before backend setup, so the mistake costs no auth and project
+ * lookup and the message says what to add. `opensWebUi` marks `--url`/`--web`,
+ * whose deep links do not need the run.
+ */
+export function validateRunScope(
+  resource: string,
+  hasId: boolean,
+  hasRunId: boolean,
+  opensWebUi = false
+): string | undefined {
+  if (!hasId || hasRunId || opensWebUi) return undefined;
+  if (resource === 'stream') {
+    return "inspect stream needs --runId: a stream name is scoped to its run. Usage: `workflow inspect stream <stream-id> --runId=<run-id>`. List a run's streams with `workflow inspect streams --runId=<run-id>`.";
+  }
+  if (resource === 'step') {
+    return "inspect step needs --runId: a step id names a step within its run. Usage: `workflow inspect step <step-id> --runId=<run-id>`. List a run's steps with `workflow inspect steps --runId=<run-id>`.";
+  }
+  if (resource === 'event') {
+    return "inspect event needs --runId: an event id names a slot in its run. Usage: `workflow inspect event <event-id> --runId=<run-id>`. List a run's events with `workflow inspect events --runId=<run-id>`.";
+  }
+  return undefined;
+}
+
+/** The listings `--all` pages through: the ones whose JSON is a bare array. */
+const ALL_RESOURCES = new Set(['step', 'event', 'sleep']);
+
+/**
+ * Validate that `--all` was given to a listing that pages it.
+ *
+ * `--all` exists for the listings whose `--json` output is a bare array and
+ * so cannot carry a cursor. The runs, hooks, and attributes listings print
+ * the cursor in their JSON page object; accepting `--all` there and ignoring
+ * it would be the silent drop these bounds exist to prevent.
+ */
+export function validateAllScope(
+  resource: string,
+  hasId: boolean,
+  all: boolean,
+  interactive = false,
+  opensWebUi = false
+): string | undefined {
+  if (!all) return undefined;
+  if (opensWebUi) {
+    return '--all reads every page here and cannot be forwarded to the web UI; drop --all, or drop --url/--web.';
+  }
+  if (!ALL_RESOURCES.has(resource)) {
+    return `--all pages through the steps, events, and sleeps listings, not ${resource}. Their --json output carries a cursor: pass it back with --cursor.`;
+  }
+  if (hasId) {
+    return `--all pages through a listing; \`inspect ${resource} <id>\` names one item. Drop the flag or the ID.`;
+  }
+  if (interactive) {
+    return '--all prints every page at once; drop --interactive (-i), which pages through them one at a time.';
+  }
+  return undefined;
+}
+
 /** Flags {@link validateInspectFlags} checks, as `inspect` parsed them. */
 export interface InspectFlagBounds {
   /** Normalized resource, e.g. `run`, `steps` → `step`. */
@@ -107,6 +167,8 @@ export interface InspectFlagBounds {
   /** True for `--url`, `--web`, or the `web` resource. */
   opensWebUi: boolean;
   withData?: boolean;
+  all?: boolean;
+  interactive?: boolean;
 }
 
 /**
@@ -133,6 +195,19 @@ export function validateInspectFlags(
       Boolean(flags.attribute?.length),
       flags.opensWebUi,
       Boolean(flags.withData)
+    ) ??
+    validateAllScope(
+      flags.resource,
+      flags.hasId,
+      Boolean(flags.all),
+      Boolean(flags.interactive),
+      flags.opensWebUi
+    ) ??
+    validateRunScope(
+      flags.resource,
+      flags.hasId,
+      flags.runId !== undefined,
+      flags.opensWebUi
     );
   if (error) return { error };
 

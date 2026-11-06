@@ -1,8 +1,20 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { serve } from '@hono/node-server';
+import {
+  type AnyEventRequest,
+  type CreateEventParams,
+  type EventLogSnapshot,
+  type EventResult,
+  type EventsResolveData,
+  getEventDataPayloadField,
+  SPEC_VERSION_CURRENT,
+} from '@workflow/world';
 import { Hono } from 'hono';
+import { ulid } from 'ulid';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { getWorld } from 'workflow/runtime';
+import { getWorld, healthCheck } from 'workflow/runtime';
 import * as z from 'zod';
 import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
@@ -45,11 +57,133 @@ const Invoke = z.compile(
     })
 );
 
+/** An `attr_set` for the fence routes below to send in-band. */
+const fenceAttrSet = (value: string) =>
+  ({
+    eventType: 'attr_set',
+    specVersion: SPEC_VERSION_CURRENT,
+    eventData: {
+      changes: [{ key: 'fence_probe', value }],
+      writer: { type: 'workflow' },
+    },
+  }) as AnyEventRequest;
+
+/**
+ * A run's in-band fence counters: the list snapshot where the World lists
+ * one, else the counters a refusal carries. The refused write expects a count
+ * no run holds, so the fence refuses it before writing or allocating
+ * anything. See the in-band fence section of the building-a-world guide.
+ */
+async function fenceCountersOf(
+  world: Awaited<ReturnType<typeof getWorld>>,
+  runId: string
+): Promise<EventLogSnapshot | null> {
+  const { snapshot } = await world.events.list({ runId });
+  if (snapshot) return snapshot;
+  // Without its overloads, so the probe can send any request.
+  const create = world.events.create.bind(world.events) as (
+    runId: string,
+    data: AnyEventRequest,
+    params?: CreateEventParams
+  ) => Promise<EventResult>;
+  const refusal = await create(runId, fenceAttrSet('count'), {
+    inBand: true,
+    expectedSeqInBand: Number.MAX_SAFE_INTEGER,
+  }).then(
+    () => null,
+    (error: unknown) =>
+      error as { name?: unknown; seq?: unknown; seqInBand?: unknown }
+  );
+  if (
+    refusal?.name === 'InBandSupersededError' &&
+    typeof refusal.seq === 'number' &&
+    typeof refusal.seqInBand === 'number'
+  ) {
+    return { seq: refusal.seq, seqInBand: refusal.seqInBand };
+  }
+  return null;
+}
+
+/**
+ * A meter provider that counts what the runtime adds to its counters, so a
+ * test can read `workflow.queue.delivery.refused` back over HTTP. Registered
+ * on the process-global OpenTelemetry API the runtime loads, before any
+ * request; `available` is false when that API cannot be loaded.
+ */
+const counters = await (async () => {
+  const sums = new Map<string, Map<string, number>>();
+  // Not a dependency of this package (the runtime's optional peer), so it is
+  // loaded by a non-literal specifier and typed by hand.
+  const specifier = '@opentelemetry/api';
+  type OtelApi = {
+    metrics: { setGlobalMeterProvider(provider: unknown): unknown };
+  };
+  let api: OtelApi | undefined;
+  try {
+    api = (await import(specifier)) as OtelApi;
+  } catch {
+    try {
+      // Resolved next to @workflow/core, which loads it the same way.
+      api = createRequire(import.meta.resolve('@workflow/core/runtime'))(
+        specifier
+      ) as OtelApi;
+    } catch {}
+  }
+  if (!api) return { available: false, sums };
+  const noop = () => ({ add() {}, record() {}, addCallback() {} });
+  const meter = new Proxy(
+    {
+      createCounter: (name: string) => ({
+        add(value: number, attributes: Record<string, unknown> = {}) {
+          const byAttributes = sums.get(name) ?? new Map<string, number>();
+          sums.set(name, byAttributes);
+          const key = JSON.stringify(
+            Object.fromEntries(Object.entries(attributes).sort())
+          );
+          byAttributes.set(key, (byAttributes.get(key) ?? 0) + value);
+        },
+      }),
+    } as Record<string, unknown>,
+    { get: (target, prop: string) => target[prop] ?? noop }
+  );
+  api.metrics.setGlobalMeterProvider({ getMeter: () => meter });
+  return { available: true, sums };
+})();
+
 // Track flow handler invocations per run for testing inline execution
 // per-copy-ok: this file is a standalone test server entry (it calls `serve()`
 // below), so it runs as its own process with one module instance. There is no
 // host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
+
+// The first delivery each run received, as an observer who does not hold the
+// queue auth key would see it: the body and every header but the key. Lets a
+// test replay a real delivery.
+// per-copy-ok: standalone test server process, as for the map above.
+const firstDeliveries = new Map<
+  string,
+  { headers: Record<string, string>; body: string }
+>();
+
+/**
+ * A digest of an event's payload field (its `input`, `result`, `output`, …),
+ * or null when the event carries none. Lets a test compare what two reads of
+ * the same log returned without shipping the payloads themselves.
+ */
+function payloadDigest(event: {
+  eventType: string;
+  eventData?: unknown;
+}): string | null {
+  const field = getEventDataPayloadField(event.eventType);
+  const eventData = event.eventData as Record<string, unknown> | undefined;
+  if (!field || !eventData || !(field in eventData)) return null;
+  const value = eventData[field];
+  const bytes =
+    value instanceof Uint8Array
+      ? value
+      : Buffer.from(JSON.stringify(value) ?? 'undefined');
+  return createHash('sha256').update(bytes).digest('hex');
+}
 
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
@@ -61,7 +195,8 @@ const app = new Hono()
     // /_flow-invocations after seeing the run as completed.
     const cloned = ctx.req.raw.clone();
     try {
-      const body = (await cloned.json()) as Record<string, unknown>;
+      const text = await cloned.text();
+      const body = JSON.parse(text) as Record<string, unknown>;
       const runId =
         typeof body?.runId === 'string'
           ? body.runId
@@ -69,6 +204,12 @@ const app = new Hono()
                 ?.runId === 'string'
             ? ((body.payload as Record<string, unknown>).runId as string)
             : undefined;
+      if (runId && !firstDeliveries.has(runId)) {
+        const headers = Object.fromEntries(ctx.req.raw.headers);
+        // `QUEUE_AUTH_HEADER` in @workflow/utils.
+        delete headers['x-workflow-auth'];
+        firstDeliveries.set(runId, { headers, body: text });
+      }
       if (runId) {
         flowInvocationCounts.set(
           runId,
@@ -83,6 +224,23 @@ const app = new Hono()
   .get('/_flow-invocations/:runId', (ctx) => {
     const count = flowInvocationCounts.get(ctx.req.param('runId')) ?? 0;
     return ctx.json({ count });
+  })
+  .get('/_first-delivery/:runId', (ctx) => {
+    const delivery = firstDeliveries.get(ctx.req.param('runId'));
+    return delivery ? ctx.json(delivery) : ctx.json(null, 404);
+  })
+  .post('/_health-check', async (ctx) => {
+    // A queue health check: a message through the World's own queue to the
+    // flow route above, answered on a stream.
+    const result = await healthCheck(await getWorld(), { timeout: 20_000 });
+    return ctx.json(result);
+  })
+  .get('/_counters/:name', (ctx) => {
+    // Each series of the counter: its attributes and its sum.
+    const series = [...(counters.sums.get(ctx.req.param('name')) ?? [])].map(
+      ([attributes, sum]) => ({ attributes: JSON.parse(attributes), sum })
+    );
+    return ctx.json({ available: counters.available, series });
   })
   .get('/_manifest', (ctx) => ctx.json(manifest))
   .post('/invoke', async (ctx) => {
@@ -124,30 +282,106 @@ const app = new Hono()
   })
   .get('/runs/:runId/events', async (ctx) => {
     const runId = ctx.req.param('runId');
+    const resolveData = ctx.req.query('resolveData') as
+      | EventsResolveData
+      | undefined;
     const world = await getWorld();
     const allEvents: {
       eventId: string;
       eventType: string;
       correlationId?: string;
+      payloadDigest: string | null;
     }[] = [];
     let cursor: string | undefined;
+    // The in-band fence snapshot of the first page, which the whole listing
+    // covers (see `EventListResponse.snapshot`).
+    let snapshot: EventLogSnapshot | null | undefined;
     while (true) {
       const page = await world.events.list({
         runId,
         pagination: { sortOrder: 'asc', cursor },
+        ...(resolveData ? { resolveData } : {}),
       });
+      if (snapshot === undefined) snapshot = page.snapshot ?? null;
       for (const e of page.data) {
         allEvents.push({
           eventId: e.eventId,
           eventType: e.eventType,
           correlationId: e.correlationId,
+          payloadDigest: payloadDigest(e),
         });
       }
       if (!page.hasMore) break;
       cursor = page.cursor ?? undefined;
       if (!cursor) break;
     }
-    return ctx.json({ events: allEvents });
+    return ctx.json({ events: allEvents, snapshot });
+  })
+  .get('/_queue-auth', async (ctx) => {
+    // The World's declared queue auth mode; only 'loopback' is checked.
+    const world = await getWorld();
+    return ctx.json({ queueAuthMode: world.queueAuthMode ?? null });
+  })
+  .get('/_capabilities', async (ctx) => {
+    const world = await getWorld();
+    return ctx.json(world.capabilities ?? {});
+  })
+  .get('/runs/:runId/fence-counters', async (ctx) => {
+    const world = await getWorld();
+    return ctx.json({
+      counters: await fenceCountersOf(world, ctx.req.param('runId')),
+    });
+  })
+  .post('/_fence-probe', async (ctx) => {
+    // Drives the in-band fence on a run of its own, created directly through
+    // the World so no orchestrator writes to it concurrently.
+    const world = await getWorld();
+    // Without its overloads, so the probe can send any request.
+    const create = world.events.create.bind(world.events) as (
+      runId: string,
+      data: AnyEventRequest,
+      params?: CreateEventParams
+    ) => Promise<EventResult>;
+    const runId = `wrun_${ulid()}`;
+    const created = await create(runId, {
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: {
+        deploymentId: await world.getDeploymentId(),
+        workflowName: 'fenceProbe',
+        input: new Uint8Array([1]),
+      },
+    } as AnyEventRequest);
+    const id = created.event?.runId ?? created.run?.runId ?? runId;
+    // The list snapshot, or a refusal's counters where the World lists none.
+    const countersOf = () => fenceCountersOf(world, id);
+
+    const atCreation = await countersOf();
+    const current = atCreation?.seqInBand ?? 0;
+    // A count one behind the World's, as a superseded orchestrator holds.
+    const refusal = await create(id, fenceAttrSet('stale'), {
+      inBand: true,
+      expectedSeqInBand: current - 1,
+    }).then(
+      () => null,
+      (error: unknown) => ({
+        name: (error as Error)?.name,
+        status: (error as { status?: unknown })?.status ?? null,
+      })
+    );
+    const afterRefusal = await countersOf();
+    const accepted = await create(id, fenceAttrSet('current'), {
+      inBand: true,
+      expectedSeqInBand: current,
+    });
+    const afterAccept = await countersOf();
+    return ctx.json({
+      atCreation,
+      refusal,
+      afterRefusal,
+      acceptedEventId: accepted.event?.eventId ?? null,
+      afterAccept,
+    });
   });
 
 serve(

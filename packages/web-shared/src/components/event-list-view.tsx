@@ -171,11 +171,24 @@ export function buildNameMaps(
 } {
   const correlationNameMap = new Map<string, string>();
 
-  // Map step correlationId (= stepId) → parsed step name from step_created events
+  // Map step correlationId (= stepId) → parsed step name. Taken from
+  // step_created, or from step_started for a step whose creation the World
+  // recorded on its start alone (no step_created in the log).
   if (events) {
     for (const event of events) {
-      if (event.eventType === 'step_created' && event.correlationId) {
-        const stepName = event.eventData?.stepName ?? '';
+      if (
+        (event.eventType === 'step_created' ||
+          event.eventType === 'step_started') &&
+        event.correlationId
+      ) {
+        const stepName = event.eventData?.stepName;
+        if (typeof stepName !== 'string') continue;
+        if (
+          event.eventType === 'step_started' &&
+          correlationNameMap.has(event.correlationId)
+        ) {
+          continue;
+        }
         const parsed =
           parseStepName(String(stepName)) ??
           parseWorkflowName(String(stepName));

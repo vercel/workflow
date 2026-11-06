@@ -126,6 +126,12 @@ Configure Workflow through `WorkflowModule.forRoot()`.
 - Default: `false`
 - Skips bundle generation when bundles are already pre-built.
 
+### `bypassBodyParser`
+
+- Environment override: none
+- Default: `true`
+- Keeps the application's body parsers away from `.well-known/workflow/v1`, so queue deliveries are not rejected by Express's 100 KB limit and signed webhook bodies stay byte-exact. Other routes are untouched. On Fastify, where the body limit is enforced per instance rather than per route, nothing is patched and a limit low enough to reject deliveries is reported at startup instead.
+
 ## Astro
 
 ### `sourcemap`

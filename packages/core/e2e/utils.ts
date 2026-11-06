@@ -8,7 +8,7 @@ import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
-import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
 import { hydrateRunError } from '../src/serialization';
@@ -161,6 +161,22 @@ export interface ConformanceConfig {
    * test cannot leave a stale exemption behind that silently covers nothing.
    */
   unsupported?: Record<string, string>;
+  /**
+   * The highest spec version the app's runtime accepts. For `workbench/python`
+   * that is `SPEC_VERSION_MAX_SUPPORTED` in vercel-py's
+   * `src/vercel-workflow/vercel/workflow/_internal/world.py`, at the commit
+   * `workbench/python/uv.lock` pins.
+   *
+   * The harness starts runs as the deployment under test, so `start()` takes
+   * them for same-deployment starts and stamps this SDK's version. A runtime
+   * that accepts less rejects every such run, and it stays `pending`. Runs are
+   * stamped with the lower of the two instead (see
+   * {@link startAtTargetSpecVersion}). Keep it in step with the SDK pin: set
+   * too high, every run stays `pending` (see the hint in
+   * {@link warmDeployment}); set too low, runs are under-stamped and tests of
+   * newer features fail or skip.
+   */
+  maxSpecVersion?: number;
 }
 
 export const CONFORMANCE_CONFIG_FILENAME = 'e2e-conformance.json';
@@ -195,7 +211,7 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  const { language, fixtures, unsupported } = (parsed ??
+  const { language, fixtures, unsupported, maxSpecVersion } = (parsed ??
     {}) as Partial<ConformanceConfig>;
   if (typeof language !== 'string' || !Array.isArray(fixtures)) {
     throw new Error(
@@ -214,7 +230,16 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  conformanceConfigCache = { language, fixtures, unsupported };
+  if (
+    maxSpecVersion !== undefined &&
+    !(Number.isInteger(maxSpecVersion) && maxSpecVersion >= 1)
+  ) {
+    throw new Error(
+      `${configPath}: "maxSpecVersion" must be a positive integer`
+    );
+  }
+
+  conformanceConfigCache = { language, fixtures, unsupported, maxSpecVersion };
   return conformanceConfigCache;
 }
 
@@ -331,6 +356,14 @@ export function hasStepSourceMaps(): boolean {
   // bundles have no inline map (dev-on/prod-off). Users can still opt in via
   // the `sourcemap` option or the `WORKFLOW_SOURCEMAP` env var.
   if (appName === 'nest') {
+    return false;
+  }
+
+  // Nuxt 4.6's dev server replaces `Error.prepareStackTrace` and only remaps
+  // modules vite-node evaluated, which disables Node's `--enable-source-maps`
+  // for the natively imported step bundle even though it carries a valid
+  // inline map. Remove once https://github.com/nuxt/nuxt/pull/36833 ships.
+  if (appName === 'nuxt') {
     return false;
   }
 
@@ -641,9 +674,78 @@ const manifestRetryTimeoutMs = Number(
 const manifestRetryIntervalMs = 250;
 
 /**
+ * How long a manifest fetch keeps retrying a failure that says nothing about
+ * the manifest: a request a dev server reset while it restarted its worker
+ * after a rebuild (Nitro's dev runner closes the old worker with requests in
+ * flight), a 5xx or 429, or a request that never answered.
+ */
+const manifestTransientRetryMs = Number(
+  process.env.WORKFLOW_E2E_MANIFEST_TRANSIENT_RETRY_MS ?? '30000'
+);
+/** Bounds one manifest request, so one a reload swallowed is retried. */
+const manifestAttemptTimeoutMs = 10_000;
+
+/** Statuses a manifest fetch retries: the server, not the manifest, failed. */
+function isTransientManifestStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+/** A manifest fetch the server answered definitively: not retried. */
+class ManifestFetchError extends Error {}
+
+let manifestRequest: Promise<WorkflowManifest> | null = null;
+
+/**
+ * One manifest request: the manifest, or why a retry may still get it.
+ * Throws a {@link ManifestFetchError} when one cannot.
+ */
+async function attemptManifest(
+  url: string
+): Promise<{ manifest: WorkflowManifest } | { failure: string }> {
+  try {
+    const res = await fetchWithTrustedSources(url, {
+      signal: AbortSignal.timeout(manifestAttemptTimeoutMs),
+    });
+    if (res.ok) return { manifest: (await res.json()) as WorkflowManifest };
+    const failure = `${res.status} ${await res.text()}`;
+    if (isTransientManifestStatus(res.status)) return { failure };
+    throw new ManifestFetchError(
+      `Failed to fetch manifest from ${url}: ${failure}`
+    );
+  } catch (error) {
+    if (error instanceof ManifestFetchError) throw error;
+    // A thrown fetch: the connection was reset or refused, or the attempt
+    // timed out.
+    const cause =
+      error instanceof Error && error.cause instanceof Error
+        ? ` (${error.cause.message})`
+        : '';
+    return {
+      failure: `${error instanceof Error ? error.message : String(error)}${cause}`,
+    };
+  }
+}
+
+async function requestManifest(url: string): Promise<WorkflowManifest> {
+  const deadline = Date.now() + manifestTransientRetryMs;
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await attemptManifest(url);
+    if ('manifest' in outcome) return outcome.manifest;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Failed to fetch manifest from ${url} after ${attempt} attempts over ${manifestTransientRetryMs}ms: ${outcome.failure}`
+      );
+    }
+    await sleep(manifestRetryIntervalMs);
+  }
+}
+
+/**
  * Fetches the workflow manifest from the deployment URL.
  * The manifest is served at /.well-known/workflow/v1/manifest.json by each
- * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
+ * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set. Concurrent callers
+ * share one request, which retries transient failures (see
+ * `manifestTransientRetryMs`); a 4xx fails at once.
  */
 export async function fetchManifest(
   deploymentUrl: string,
@@ -651,17 +753,14 @@ export async function fetchManifest(
 ): Promise<WorkflowManifest> {
   const forceRefresh = options?.forceRefresh ?? false;
   if (cachedManifest && !forceRefresh) return cachedManifest;
-
-  const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
-  const res = await fetch(url, {
-    headers: await getTrustedSourcesHeaders(),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
-    );
+  if (!manifestRequest) {
+    const url = createWorkflowUrl(deploymentUrl, { type: 'manifest' });
+    const request = requestManifest(url).finally(() => {
+      if (manifestRequest === request) manifestRequest = null;
+    });
+    manifestRequest = request;
   }
-  cachedManifest = (await res.json()) as WorkflowManifest;
+  cachedManifest = await manifestRequest;
   return cachedManifest;
 }
 
@@ -1068,6 +1167,45 @@ export async function waitForRunPickup(
 }
 
 /**
+ * `start()` stamped with the highest spec version the app's runtime accepts
+ * when that is lower than this process's (see
+ * {@link ConformanceConfig.maxSpecVersion}). An explicit `specVersion` still
+ * wins. Use it wherever the suite would call `start()` directly.
+ */
+export async function startAtTargetSpecVersion<T>(
+  ...args: Parameters<typeof runtimeStart<T>>
+): Promise<Run<T>> {
+  const target = getConformanceConfig()?.maxSpecVersion;
+  if (target === undefined) return runtimeStart<T>(...args);
+  const [workflow, argsOrOptions, maybeOptions] = args as unknown as [
+    Parameters<typeof runtimeStart<T>>[0],
+    unknown,
+    Record<string, unknown> | undefined,
+  ];
+  const optionsFirst =
+    argsOrOptions !== undefined && !Array.isArray(argsOrOptions);
+  const options = (optionsFirst ? argsOrOptions : maybeOptions) as
+    | Record<string, unknown>
+    | undefined;
+  if (options?.specVersion !== undefined) return runtimeStart<T>(...args);
+  const world =
+    (options?.world as { specVersion?: number } | undefined) ??
+    (await getWorld());
+  const local = world.specVersion;
+  if (local === undefined || target >= local) return runtimeStart<T>(...args);
+  const stamped = { ...options, specVersion: target };
+  return (
+    optionsFirst
+      ? runtimeStart<T>(workflow, stamped as never)
+      : runtimeStart<T>(
+          workflow,
+          (argsOrOptions ?? []) as never,
+          stamped as never
+        )
+  ) as Promise<Run<T>>;
+}
+
+/**
  * `start()` + `trackRun()` with a pickup watchdog.
  *
  * A run that is still `pending` after {@link PICKUP_BUDGET_MS} was never
@@ -1082,13 +1220,13 @@ export async function waitForRunPickup(
 export async function startTracked<T>(
   ...args: Parameters<typeof runtimeStart<T>>
 ): Promise<Run<T>> {
-  const run = await runtimeStart<T>(...args);
+  const run = await startAtTargetSpecVersion<T>(...args);
   trackRun(run);
   if (await waitForRunPickup(run)) {
     return run;
   }
 
-  const replacement = await runtimeStart<T>(...args);
+  const replacement = await startAtTargetSpecVersion<T>(...args);
   trackRun(replacement);
   recordInfraEvent({
     kind: 'run-pickup-stall',
@@ -1189,6 +1327,16 @@ export async function warmDeployment(
           `${totalBudgetMs}ms (${stalledProbeRunIds.length} abandoned); ` +
           `proceeding — the per-test pickup watchdog still guards`
       );
+      const maxSpecVersion = getConformanceConfig()?.maxSpecVersion;
+      if (maxSpecVersion !== undefined) {
+        // The failure this field exists to prevent looks exactly like a
+        // stalled queue, so name it where the stall is reported.
+        console.warn(
+          `[e2e] If the app's runtime rejects every run, check "maxSpecVersion" ` +
+            `(${maxSpecVersion}) in ${CONFORMANCE_CONFIG_FILENAME} against the ` +
+            `highest spec version its SDK accepts.`
+        );
+      }
       return;
     }
   }

@@ -39,8 +39,16 @@ export interface HookInvocationQueueItem {
   token: string;
   /** Earliest time the token can be reused after the run ends. */
   tokenRetentionUntil?: Date;
+  /** `createHook({ experimental_force })`: take the token over if held. */
+  force?: boolean;
   metadata?: Serializable;
   hasCreatedEvent?: boolean;
+  /**
+   * The run's start Hook: created by the run's admission, so it never has a
+   * `hook_created` of its own (`hasCreatedEvent` is set from the start).
+   * Disposal still writes an ordinary `hook_disposed`.
+   */
+  startHook?: true;
   /** Whether the workflow is awaiting `hook.getConflict()` for this hook */
   hasConflictAwaiter?: boolean;
   disposed?: boolean;
@@ -87,6 +95,16 @@ export class WorkflowSuspension extends Error {
   attributeCount: number;
   hookDisposedCount: number;
   abortCount: number;
+  /**
+   * Correlation ids of the open hooks that workflow code was waiting on a
+   * payload for when the VM went idle, i.e. the hooks whose `hook_received`
+   * could change what this suspension leads to. A hook absent from the set has
+   * no waiting consumer, so a payload landing for it is buffered and inert
+   * until the first `await`. `undefined` when the suspension was built without
+   * the workflow context that tracks awaiters, which callers must read as
+   * "every open hook is observed". See `runtime/out-of-band-observation.ts`.
+   */
+  observedHookIds?: ReadonlySet<string>;
 
   constructor(itemsInput: Map<string, QueueItem>, global: typeof globalThis) {
     // Convert Map to array for iteration and storage

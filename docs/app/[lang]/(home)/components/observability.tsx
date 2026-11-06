@@ -50,8 +50,8 @@ const rows = [
 
 export const Observability = () => (
   <div className="grid grid-rows-[auto_1fr] gap-12 py-8 sm:py-12">
-    <h2 className="font-medium text-xl tracking-tight sm:text-2xl text-muted-foreground">
-      <span className="text-foreground">Observability</span>. Inspect every run
+    <h2 className="font-medium text-xl tracking-tight sm:text-2xl text-gray-900">
+      <span className="text-gray-1000">Observability</span>. Inspect every run
       end‑to‑end. Pause, replay, and time‑travel through steps with traces,
       logs, and metrics automatically.
     </h2>
@@ -82,7 +82,7 @@ export const Observability = () => (
                 )}
               >
                 <div className="flex justify-between items-center px-2 pt-1 pb-[6px]">
-                  <span className="text-[11px] font-mono font-medium text-foreground">
+                  <span className="text-[11px] font-mono font-medium text-gray-1000">
                     {row.label}
                   </span>
                   {index === 0 && (

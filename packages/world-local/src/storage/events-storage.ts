@@ -3,25 +3,36 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   EntityConflictError,
+  HookConflictError,
+  HookForceClaimedError,
   HookNotFoundError,
+  InBandSupersededError,
   RunExpiredError,
   RunNotSupportedError,
+  START_HOOK_ADMISSION_REJECTED,
+  START_HOOK_CANDIDATE_CANCELLED,
+  ThrottleError,
   TooEarlyError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { debugLog, globalSingleton } from '@workflow/utils';
 import type {
   AnyEventRequest,
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventLogSnapshot,
   EventResult,
+  EventsResolveData,
   Hook,
   HookCreatedEventRequest,
+  ListEventsParams,
   PaginatedResponse,
   PaginationOptions,
-  ResolveData,
   SerializedData,
+  StartHook,
+  StartHookRejectionReason,
   Step,
   Storage,
   Wait,
@@ -29,28 +40,37 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
+  entityResolveData,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
+  getMaxEventsForRun,
   getMaxEventsPerRun,
   HookSchema,
+  IN_BAND_SEQ_AT_RUN_CREATION,
   isChildEntityCreationEvent,
   isHookEventRequiringExistence,
   isHookLifecycleEventType,
   isLegacySpecVersion,
   isSlotEventId,
+  isStartHookId,
   isStepEventType,
   isTerminalRunEventType,
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  START_HOOK_CANDIDATE_MAX_AGE_MS,
   StepSchema,
   slotToEventId,
+  startHookId,
   ulidToDate,
   validateAttributeChanges,
   validateUlidTimestamp,
   WaitSchema,
-  WorkflowRunSchema,
 } from '@workflow/world';
 import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
@@ -65,6 +85,7 @@ import {
   readJSON,
   readJSONWithFallback,
   resolveWithinBase,
+  runEntityDir,
   SORT_KEY_CURSOR_PREFIX,
   stripTag,
   taggedPath,
@@ -72,8 +93,11 @@ import {
   writeExclusive,
   writeJSON,
 } from '../fs.js';
+import { withInProcessLock } from '../util.js';
+import { withFenceFileLock } from './fence-lock.js';
 import { stripEventDataRefs } from './filters.js';
 import {
+  fenceStartHookCandidate,
   getObjectCreatedAt,
   type HookTokenClaim,
   hookDisposeLockPath,
@@ -82,18 +106,26 @@ import {
   hookTokenClaimPath,
   isHookDisposalCommitted,
   isRunTerminalCommitted,
+  isWithinStartHookOrphanGrace,
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
+  RunRecordSchema,
+  readHookDisposeLock,
   readHookTokenClaim,
+  readStartHookFence,
+  readStartHookRejection,
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
+  type StartHookRejection,
   scanRunEventIds,
+  startHookRejectionPath,
   withHookTokenClaimLock,
 } from './helpers.js';
 import {
   deleteHookByRunMarker,
+  hookByRunMarkerPath,
   writeHookByRunMarker,
   writeHookCreatedIndexEntries,
 } from './hook-index.js';
@@ -111,6 +143,7 @@ import {
 } from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { withRunFileLock } from './runs-storage.js';
+import { startHookRecord, withStartHookId } from './start-hook.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -121,6 +154,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * from the ceiling rather than restate it.
  */
 export const MAX_CACHED_EVENT_ENTRIES = 1000;
+
+/**
+ * How many times a forced `hook_created` re-reads the token's holder after it
+ * changed between that read and the claim lock. Each retry means another
+ * claimer took the token in between.
+ */
+const MAX_FORCE_CLAIM_VICTIM_RETRIES = 100;
 
 function getHookRetentionLimitMs(): number {
   const days = Number(
@@ -239,7 +279,7 @@ async function findCommittedResumeEvent(
   for (const eventId of scan.ids) {
     const event = await readJSONWithFallback(
       basedir,
-      'events',
+      runEntityDir('events', runId),
       `${runId}-${eventId}`,
       ReadEventSchema,
       tag
@@ -263,15 +303,26 @@ async function findCommittedResumeEvent(
  *     lost to a crash between the lock write and the claim delete), or
  *   - the owning run is terminal and its minimum retention has ended, or
  *   - the owning run does not exist (a claim can only be written during a
- *     suspension of an existing run, so an ownerless claim is debris).
+ *     suspension of an existing run, so an ownerless claim is debris), except
+ *     for a run's `start({ experimental_hook })` Hook (below).
  *
  * A claim from a mid-creation writer is never releasable: its owning run
  * exists and is non-terminal, and its dispose lock does not exist.
+ *
+ * A start Hook's claim is written under the claim lock immediately before its
+ * run, so one whose run record is missing is an admission whose writer died
+ * (or stalled) before creating the run. No caller was told it was admitted,
+ * but a stalled writer could still write the run, so it holds for the orphan
+ * grace first, and is then fenced: the run record path gets a fence, so the
+ * writer's exclusive publication fails if it ever resumes. Once its run
+ * exists it is an ordinary Hook's claim.
  */
 async function isHookTokenClaimReleasable(
   basedir: string,
   claim: HookTokenClaim,
-  tag?: string
+  tag: string | undefined,
+  /** Who would take the token: named by the fence of a run-less start Hook. */
+  contender: { token: string; runId: string }
 ): Promise<boolean> {
   if (
     claim.hookId &&
@@ -283,11 +334,14 @@ async function isHookTokenClaimReleasable(
     basedir,
     'runs',
     claim.runId,
-    WorkflowRunSchema,
+    RunRecordSchema,
     tag
   );
   if (!owningRun) {
-    return true;
+    return claim.hookId !== undefined &&
+      isStartHookId(claim.runId, claim.hookId)
+      ? isStartHookOrphanReleasable(basedir, claim, tag, contender)
+      : true;
   }
   if (!isTerminalWorkflowRunStatus(owningRun.status)) {
     return false;
@@ -296,6 +350,351 @@ async function isHookTokenClaimReleasable(
     !claim.tokenRetentionUntil ||
     claim.tokenRetentionUntil.getTime() <= Date.now()
   );
+}
+
+/**
+ * Whether the claim of a start Hook whose run record is missing may be taken
+ * (see `isHookTokenClaimReleasable`): never inside the orphan grace, and past
+ * it only once the candidate's run record path is fenced.
+ */
+async function isStartHookOrphanReleasable(
+  basedir: string,
+  claim: HookTokenClaim,
+  tag: string | undefined,
+  contender: { token: string; runId: string }
+): Promise<boolean> {
+  // Already fenced (a cancellation, or an earlier contender): the candidate
+  // can never be created.
+  if (await readStartHookFence(basedir, claim.runId, tag)) return true;
+  if (isWithinStartHookOrphanGrace(claim)) return false;
+  if (
+    await fenceStartHookCandidate(basedir, claim.runId, tag, {
+      token: contender.token,
+      conflictingRunId: contender.runId,
+    })
+  ) {
+    startHookLog('fenced an orphaned candidate past its grace', {
+      runId: claim.runId,
+      conflictingRunId: contender.runId,
+    });
+    return true;
+  }
+  // The path holds a record after all: a fence, or the run, published since
+  // the read above. A run that now exists is decided by the ordinary rules.
+  const run = await readJSONWithFallback(
+    basedir,
+    'runs',
+    claim.runId,
+    RunRecordSchema,
+    tag
+  );
+  if (!run) return true;
+  if (!isTerminalWorkflowRunStatus(run.status)) return false;
+  return (
+    !claim.tokenRetentionUntil ||
+    claim.tokenRetentionUntil.getTime() <= Date.now()
+  );
+}
+
+/**
+ * The outcome of admitting a `start({ experimental_hook })` candidate: its run was created
+ * by this call, or already existed (an earlier attempt for the candidate, by
+ * either path, accepted it).
+ */
+type StartHookAdmission =
+  | { status: 'created' }
+  | { status: 'existing'; run: WorkflowRun };
+
+/**
+ * Admits a `start({ experimental_hook })` candidate (see `start-hook.ts` in
+ * @workflow/world). The decision per candidate is immutable:
+ *
+ * - **accepted** is the candidate's run record, which `writeRun` creates
+ *   under the token claim lock. Under that lock, in this order: the start
+ *   Hook's (`startHookId(runId)`) index entries and by-run marker, its token
+ *   claim (an ordinary claim, keyed to the run's first event slot, where its
+ *   `run_created` stands for the Hook's creation), the run record (the
+ *   decision), then the Hook entity. Reads that find the claim
+ *   and the run but not the entity rebuild it from the run record. A later
+ *   attempt finds the run and gets `existing`, which re-ensures the Hook.
+ * - **rejected** is a refusal record naming the owner, written under the same
+ *   lock before the refusal is answered, so later attempts answer the same
+ *   owner even once the token is free.
+ *
+ * A claim whose writer died before its run was never observed as admitted.
+ * Within the orphan grace a retry of that candidate decides again; past it, a
+ * contender fences the candidate's run record path and takes the token (see
+ * `isHookTokenClaimReleasable`), and every later attempt for the candidate,
+ * including its stalled writer's publication, is refused naming the
+ * contender.
+ */
+async function admitStartHook({
+  basedir,
+  tag,
+  runId,
+  startHook,
+  hook,
+  writeRun,
+}: {
+  basedir: string;
+  tag?: string;
+  runId: string;
+  startHook: StartHook;
+  /** The start Hook entity the admission writes (`startHookRecord`). */
+  hook: Hook;
+  /** Exclusively creates the candidate's run record; false if it exists. */
+  writeRun: () => Promise<boolean>;
+}): Promise<StartHookAdmission> {
+  const hookId = startHookId(runId);
+  // The start Hook's creation is its run's `run_created`, always at the
+  // first slot.
+  const createdEventId = slotToEventId(FIRST_EVENT_SLOT);
+
+  const decided = async (): Promise<StartHookAdmission | null> => {
+    const rejection = await readStartHookRejection(basedir, runId, tag);
+    if (rejection) {
+      if (rejection.token !== startHook.token) {
+        throw startHookRejected(
+          `Workflow run "${runId}" was already decided for a different start Hook token`,
+          'token_mismatch'
+        );
+      }
+      throw new HookConflictError(rejection.token, rejection.conflictingRunId);
+    }
+    // Fenced: the candidate's token went to another run after its writer
+    // stalled past the orphan grace, or it was cancelled before its run
+    // existed, so it can never be admitted.
+    const fence = await readStartHookFence(basedir, runId, tag);
+    if (fence) {
+      if (fence.conflictingRunId === undefined) {
+        throw startHookRejected(
+          `Workflow run "${runId}" was fenced as an orphan and can never be created`,
+          'expired'
+        );
+      }
+      throw new HookConflictError(startHook.token, fence.conflictingRunId);
+    }
+    const run = await readJSONWithFallback(
+      basedir,
+      'runs',
+      runId,
+      RunRecordSchema,
+      tag
+    );
+    if (!run) return null;
+    if (run.startHook?.token !== startHook.token) {
+      throw startHookRejected(
+        `Workflow run "${runId}" already exists without this start Hook`,
+        'ordinary_run'
+      );
+    }
+    return { status: 'existing', run };
+  };
+
+  /**
+   * Re-ensures an admitted run's start Hook after a crash between its run
+   * record and its entity. Only while the claim still names the Hook: once
+   * it was disposed, taken over or released at the run's end, there is
+   * nothing to restore.
+   */
+  const ensureHook = async (run: WorkflowRun) => {
+    const existingHook = startHookRecord(run);
+    if (!existingHook) return;
+    const claim = await readHookTokenClaim(
+      hookTokenClaimPath(basedir, startHook.token)
+    );
+    if (claim?.runId !== runId || claim.hookId !== hookId) return;
+    if (await isHookDisposalCommitted(basedir, hookId, tag)) return;
+    await writeHookCreatedIndexEntries(
+      basedir,
+      existingHook.token,
+      runId,
+      hookId,
+      createdEventId,
+      tag
+    );
+    await writeHookByRunMarker(basedir, runId, hookId, tag);
+    await writeExclusive(
+      taggedPath(basedir, 'hooks', hookId, tag),
+      JSON.stringify(existingHook, jsonReplacer, 2)
+    );
+  };
+
+  const replay = await decided();
+  if (replay?.status === 'existing') {
+    await ensureHook(replay.run);
+    return replay;
+  }
+
+  return withHookTokenClaimLock(basedir, startHook.token, async (signal) => {
+    const replay = await decided();
+    if (replay?.status === 'existing') {
+      await ensureHook(replay.run);
+      return replay;
+    }
+
+    // The run_created path already refuses ids past this age; the queued
+    // copy's run_started does not, so bound it here too.
+    const candidateTime = ulidToDate(runId.replace(/^wrun_/, ''));
+    if (
+      candidateTime &&
+      Date.now() - candidateTime.getTime() > START_HOOK_CANDIDATE_MAX_AGE_MS
+    ) {
+      throw startHookRejected(
+        `Workflow run "${runId}" is too old to be admitted with a start Hook`,
+        'expired'
+      );
+    }
+
+    const claimPath = hookTokenClaimPath(basedir, startHook.token);
+    let claim = await readHookTokenClaim(claimPath);
+    if (!claim) {
+      // Repair a missing or corrupt claim from the event log first: a live
+      // Hook whose claim file was lost still owns the token.
+      signal.throwIfAborted();
+      await deleteJSON(claimPath);
+      await rebuildLiveHookByTokenFromEventLog(basedir, startHook.token, tag);
+      claim = await readHookTokenClaim(claimPath);
+    }
+
+    // This candidate's own claim, left by an attempt that died before its
+    // run: it decides again.
+    const ownClaim = claim?.runId === runId && claim.hookId === hookId;
+    if (claim && !ownClaim) {
+      if (
+        !(await isHookTokenClaimReleasable(basedir, claim, tag, {
+          token: startHook.token,
+          runId,
+        }))
+      ) {
+        signal.throwIfAborted();
+        const rejection: StartHookRejection = {
+          runId,
+          token: startHook.token,
+          conflictingRunId: claim.runId,
+        };
+        const rejectionPath = startHookRejectionPath(basedir, runId, tag);
+        if (!(await writeExclusive(rejectionPath, JSON.stringify(rejection)))) {
+          // A concurrent attempt for this candidate recorded it first.
+          const stored = await readStartHookRejection(basedir, runId, tag);
+          throw new HookConflictError(
+            startHook.token,
+            stored?.conflictingRunId ?? claim.runId
+          );
+        }
+        startHookLog('refused a candidate', {
+          runId,
+          conflictingRunId: claim.runId,
+        });
+        throw new HookConflictError(startHook.token, claim.runId);
+      }
+      // The previous owner is done; clear its leftovers before taking over.
+      startHookLog("released an ended owner's token to a candidate", {
+        runId,
+        previousRunId: claim.runId,
+      });
+      signal.throwIfAborted();
+      await deleteJSON(claimPath);
+      if (claim.hookId) {
+        await deleteJSON(taggedPath(basedir, 'hooks', claim.hookId, tag));
+        await deleteJSON(
+          hookRecoveryMarkerPath(
+            basedir,
+            startHook.token,
+            claim.runId,
+            claim.hookId
+          )
+        );
+        await deleteHookByRunMarker(basedir, claim.runId, claim.hookId, tag);
+      }
+    }
+
+    // Index entries and by-run marker first, before the claim and the
+    // writes they index (see hook-index.ts): the run's end always finds its
+    // start Hook, and a cancellation of a candidate whose writer died
+    // anywhere past this point finds it to fence.
+    signal.throwIfAborted();
+    await writeHookCreatedIndexEntries(
+      basedir,
+      startHook.token,
+      runId,
+      hookId,
+      createdEventId,
+      tag
+    );
+    await writeHookByRunMarker(basedir, runId, hookId, tag);
+    signal.throwIfAborted();
+    const startHookClaim = {
+      token: startHook.token,
+      runId,
+      hookId,
+      eventId: createdEventId,
+      ...(startHook.tokenRetentionUntil
+        ? { tokenRetentionUntil: startHook.tokenRetentionUntil }
+        : {}),
+      reservedAt: Date.now(),
+    };
+    if (ownClaim) {
+      await write(claimPath, JSON.stringify(startHookClaim), {
+        overwrite: true,
+      });
+    } else {
+      assert(await writeExclusive(claimPath, JSON.stringify(startHookClaim)));
+    }
+    signal.throwIfAborted();
+    if (await writeRun()) {
+      await writeExclusive(
+        taggedPath(basedir, 'hooks', hookId, tag),
+        JSON.stringify(hook, jsonReplacer, 2)
+      );
+      startHookLog('accepted a candidate', { runId });
+      return { status: 'created' };
+    }
+    // Created concurrently by an attempt that did not take this lock, which
+    // only a run without this start Hook can be, or fenced since the read
+    // above.
+    const replayed = await decided();
+    assert(replayed);
+    return replayed;
+  });
+}
+
+/**
+ * A start Hook admission breadcrumb, under `DEBUG=workflow:*`. Names runs,
+ * never the token: a token is the caller's idempotency key and may carry
+ * user data.
+ */
+function startHookLog(message: string, detail: Record<string, string>): void {
+  debugLog(`[world-local] start Hook: ${message}`, detail);
+}
+
+/**
+ * A `hook_created` retarget breadcrumb, under `DEBUG=workflow:*`: a lost
+ * publish moved the creation (an interrupted creation, or siblings that drew
+ * the same slot). Names the run and hook, never the token.
+ */
+function hookCreatedRetargetLog(
+  how: 'followed' | 'found' | 'drawn',
+  input: { runId: string; hookId: string; from: string },
+  to: string
+): void {
+  debugLog(`[world-local] hook_created retargeted (${how})`, {
+    runId: input.runId,
+    hookId: input.hookId,
+    from: input.from,
+    to,
+  });
+}
+
+function startHookRejected(
+  message: string,
+  reason: StartHookRejectionReason
+): WorkflowWorldError {
+  return new WorkflowWorldError(message, {
+    status: 400,
+    code: START_HOOK_ADMISSION_REJECTED,
+    reason,
+  });
 }
 
 async function readHookRecoveryMarker(
@@ -364,7 +763,7 @@ async function findExistingHookCreatedEventId(
   correlationId: string
 ): Promise<string | null> {
   const result = await paginatedFileSystemQuery({
-    directory: path.join(basedir, 'events'),
+    directory: path.join(basedir, runEntityDir('events', runId)),
     schema: ReadEventSchema,
     filePrefix: `${runId}-`,
     filter: (event) =>
@@ -407,7 +806,7 @@ async function repairHookEntityFromPersistedEvent(
   const compositeKey = `${runId}-${persistedEventId}`;
   const persistedEvent = await readJSONWithFallback(
     basedir,
-    'events',
+    runEntityDir('events', runId),
     compositeKey,
     ReadEventSchema,
     tag
@@ -484,38 +883,25 @@ async function pinCanonicalEventIdForLegacyClaim(
 }
 
 /**
- * In-process per-key async mutex backed by a caller-supplied `Map`.
- * Used by `createEventsStorage` to serialize same-key event writes
- * (`step_*` for the same step, `hook_created` for the same hook).
- * The map is instantiated per-storage-instance: different
- * instances do NOT share locks, so two instances sharing one data
- * directory behave exactly like two separate OS processes from the
- * locking standpoint. Cross-instance / cross-process arbitration
- * relies on the on-disk constraint / claim files instead.
+ * Whether `error` is a refusal this World raises before it writes anything:
+ * the conflict, not-found, expired and too-early errors of the event
+ * lifecycle checks, or any error carrying a 4xx status. The in-band fence
+ * leaves its count alone for these, and counts every other failure.
  */
-function withInProcessLock<T>(
-  locks: Map<string, Promise<unknown>>,
-  key: string,
-  fn: () => Promise<T>
-): Promise<T> {
-  const prev = locks.get(key);
-  const taskBox: { task?: Promise<T> } = {};
-  const task = (async () => {
-    if (prev) {
-      // Wait for the previous task to settle; don't inherit its errors.
-      await prev.catch(() => undefined);
-    }
-    try {
-      return await fn();
-    } finally {
-      if (locks.get(key) === taskBox.task) {
-        locks.delete(key);
-      }
-    }
-  })();
-  taskBox.task = task;
-  locks.set(key, task);
-  return task;
+function isDefinitiveRefusal(error: unknown): boolean {
+  if (
+    EntityConflictError.is(error) ||
+    RunExpiredError.is(error) ||
+    TooEarlyError.is(error) ||
+    HookNotFoundError.is(error) ||
+    HookForceClaimedError.is(error) ||
+    WorkflowRunNotFoundError.is(error) ||
+    RunNotSupportedError.is(error)
+  ) {
+    return true;
+  }
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && status >= 400 && status < 500;
 }
 
 /**
@@ -562,7 +948,7 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
   return withRunFileLock(runId, async () => {
     const fresh = await readJSON(
       taggedPath(basedir, 'runs', runId, tag),
-      WorkflowRunSchema
+      RunRecordSchema
     );
     const attributes = fresh?.attributes ?? proposed.attributes;
     let next: T = { ...proposed, attributes };
@@ -603,6 +989,35 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
+/**
+ * The in-band fence's in-process locks, keyed by data directory and run. On
+ * `globalThis` (see `globalSingleton`) so every storage instance and every
+ * bundled copy of this module in one process takes turns before any of them
+ * takes the file lock that orders writers across processes.
+ */
+function inBandFenceState() {
+  return globalSingleton('@workflow/world-local//inBandFence', 2, () => ({
+    locks: new Map<string, Promise<unknown>>(),
+  }));
+}
+
+/**
+ * A run's in-band count on disk, at `.locks/runs/<runId>.in-band[.tag]`:
+ * `seqInBand`, and while an in-band write is between its check and its
+ * publish, `pending` (the count it was accepted at). Written atomically
+ * (temp file and rename) under the run's fence lock; read without it.
+ */
+const InBandCountSchema = z.object({
+  seqInBand: z.number().int().nonnegative(),
+  pending: z.number().int().nonnegative().optional(),
+});
+type InBandCount = z.infer<typeof InBandCountSchema>;
+
+function inBandCountPath(basedir: string, runId: string, tag?: string) {
+  const name = tag ? `${runId}.in-band.${tag}` : `${runId}.in-band`;
+  return resolveWithinBase(basedir, '.locks', 'runs', name);
+}
+
 export type LocalEventsStorage = Storage['events'] & {
   clearCache(): void;
 };
@@ -691,10 +1106,10 @@ export function createEventsStorage(
     const fileId = `${runId}-${slotToEventId(slot)}`;
     for (const candidate of tag
       ? [
-          taggedPath(basedir, 'events', fileId, tag),
-          taggedPath(basedir, 'events', fileId),
+          taggedPath(basedir, runEntityDir('events', runId), fileId, tag),
+          taggedPath(basedir, runEntityDir('events', runId), fileId),
         ]
-      : [taggedPath(basedir, 'events', fileId)]) {
+      : [taggedPath(basedir, runEntityDir('events', runId), fileId)]) {
       try {
         await fs.stat(candidate);
         return true;
@@ -879,7 +1294,7 @@ export function createEventsStorage(
     for (let attempt = 0; ; attempt++) {
       const eventPath = taggedPath(
         basedir,
-        'events',
+        runEntityDir('events', current.runId),
         `${current.runId}-${current.eventId}`,
         tag
       );
@@ -906,9 +1321,107 @@ export function createEventsStorage(
     }
   }
 
+  /**
+   * Where a slot-numbered `hook_created` publishes next, after its publish at
+   * `from` lost to an event that is not this hook's creation.
+   *
+   * The token claim names the one position every writer of the hook is
+   * publishing to, and it moves only here, under the claim lock:
+   * - The claim names another position: another writer moved it. Follow it.
+   * - `lookForExisting` and this hook's `hook_created` is in the log: an older
+   *   writer bumped past the claimed position without recording where it
+   *   published. Index that creation (the older writer indexed only the
+   *   claimed position) and point the claim there; the publish then collides
+   *   with it and reports the duplicate.
+   * - Otherwise: draw a fresh slot, index it, and point the claim there.
+   *
+   * Returns `null` when the claim no longer belongs to this hook (a disposal
+   * or a takeover), whose path answers for the creation.
+   */
+  async function retargetHookCreatedClaim(input: {
+    runId: string;
+    hookId: string;
+    token: string;
+    from: string;
+    lookForExisting: boolean;
+  }): Promise<string | null> {
+    const claimPath = hookTokenClaimPath(basedir, input.token);
+    return withHookTokenClaimLock(basedir, input.token, async (signal) => {
+      const claim = await readHookTokenClaim(claimPath);
+      if (claim?.runId !== input.runId || claim.hookId !== input.hookId) {
+        return null;
+      }
+      if (claim.eventId && claim.eventId !== input.from) {
+        hookCreatedRetargetLog('followed', input, claim.eventId);
+        return claim.eventId;
+      }
+      let target = input.lookForExisting
+        ? await findExistingHookCreatedEventId(
+            basedir,
+            input.runId,
+            input.hookId
+          )
+        : null;
+      const found = target !== null;
+      if (target === null) {
+        const slot = await drawEventSlot(input.runId, {
+          atLeast: (eventIdToSlot(input.from) ?? 0) + 1,
+        });
+        assert(slot !== null);
+        target = slotToEventId(slot);
+      }
+      // Index before the claim names it (see hook-index.ts crash-ordering
+      // invariant). A found creation needs this too: its older writer indexed
+      // the claimed position, not the one it published at, and the cache
+      // rebuild from the index would otherwise miss a live hook.
+      await writeHookCreatedIndexEntries(
+        basedir,
+        input.token,
+        input.runId,
+        input.hookId,
+        target,
+        tag
+      );
+      // A holder that lost the lock must not put its snapshot of the claim
+      // back over a takeover or disposal that happened meanwhile.
+      signal.throwIfAborted();
+      // HookTokenClaimSchema does not keep the token.
+      await write(
+        claimPath,
+        JSON.stringify({ token: input.token, ...claim, eventId: target }),
+        { overwrite: true }
+      );
+      hookCreatedRetargetLog(found ? 'found' : 'drawn', input, target);
+      return target;
+    });
+  }
+
+  /**
+   * Refuse a `hook_received` to a hook whose disposal is committed. The
+   * run's own disposal is the final `HookNotFoundError`; a takeover
+   * (`experimental_force`, the lock names the claimer) is a redirect —
+   * `HookForceClaimedError` — because the token now resolves to another live
+   * hook and `resumeHook()` retries there with the same `resumeId`.
+   */
+  async function refuseDisposedHookDelivery(
+    hookId: string,
+    token: unknown
+  ): Promise<void> {
+    const lock = await readHookDisposeLock(basedir, hookId, tag);
+    if (!lock.committed) return;
+    if (lock.forceClaimedBy) {
+      throw new HookForceClaimedError(
+        typeof token === 'string' ? token : '',
+        lock.forceClaimedBy.runId,
+        lock.forceClaimedBy.hookId
+      );
+    }
+    throw new HookNotFoundError(hookId);
+  }
+
   const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
     paginatedFileSystemQuery({
-      directory: path.join(basedir, 'events'),
+      directory: path.join(basedir, runEntityDir('events', runId)),
       schema: ReadEventSchema,
       cachedItems: eventCache,
       filePrefix: `${runId}-`,
@@ -920,6 +1433,104 @@ export function createEventsStorage(
       getSortKey: eventSortKey,
       getSortKeyFromFileId: (fileId) => eventSortKeyFromFileId(runId, fileId),
     });
+
+  const missingRunCreatedError = (runId: string, reason: string) =>
+    new WorkflowWorldError(
+      `Cannot restore missing run_created for workflow run "${runId}": ${reason}`
+    );
+
+  /**
+   * Publishes a run's creation at its fixed first slot without ever bumping.
+   * `writeExclusive` is the complete cross-process arbitration: it holds no
+   * lock while writing its temp file, and the hard link either publishes this
+   * event or reveals the winner.
+   */
+  async function publishRunCreatedAtFirstSlot(event: Event): Promise<boolean> {
+    const eventId = slotToEventId(FIRST_EVENT_SLOT);
+    const firstSlotEvent =
+      event.eventId === eventId ? event : { ...event, eventId };
+    const eventPath = taggedPath(
+      basedir,
+      runEntityDir('events', event.runId),
+      `${event.runId}-${eventId}`,
+      tag
+    );
+    const serializedEvent = JSON.stringify(firstSlotEvent, jsonReplacer, 2);
+    if (await writeExclusive(eventPath, serializedEvent)) {
+      notePublishedSlot(event.runId, eventId);
+      rememberStoredEvent(firstSlotEvent, eventPath, serializedEvent);
+      return true;
+    }
+
+    const occupant = await readJSONWithFallback(
+      basedir,
+      runEntityDir('events', event.runId),
+      `${event.runId}-${eventId}`,
+      ReadEventSchema,
+      tag
+    );
+    if (
+      occupant?.eventType === 'run_created' &&
+      occupant.runId === event.runId
+    ) {
+      notePublishedSlot(event.runId, eventId);
+      return false;
+    }
+    throw missingRunCreatedError(
+      event.runId,
+      `event slot ${FIRST_EVENT_SLOT} is occupied by ${
+        occupant ? `"${occupant.eventType}"` : 'an unreadable event'
+      }`
+    );
+  }
+
+  /**
+   * Restores the first event of a pending run whose entity write survived but
+   * whose creation-event write did not. The run record is the only authority:
+   * a redelivered event may carry different data.
+   */
+  async function restoreMissingRunCreated(run: WorkflowRun): Promise<void> {
+    const firstPage = await queryRunEvents(run.runId, {
+      limit: 1,
+      sortOrder: 'asc',
+    });
+    const first = firstPage.data[0];
+    if (first) {
+      if (first.eventType === 'run_created' && first.runId === run.runId) {
+        return;
+      }
+      throw missingRunCreatedError(
+        run.runId,
+        `the event log is not empty (its first event is "${first.eventType}")`
+      );
+    }
+    if (run.input === undefined) {
+      throw missingRunCreatedError(run.runId, 'the original input is missing');
+    }
+
+    const eventId = slotToEventId(FIRST_EVENT_SLOT);
+    const event: Event = {
+      eventType: 'run_created',
+      runId: run.runId,
+      eventId,
+      createdAt: run.createdAt,
+      specVersion: run.specVersion,
+      eventData: {
+        deploymentId: run.deploymentId,
+        workflowName: run.workflowName,
+        input: run.input,
+        executionContext: run.executionContext,
+        attributes: run.attributes,
+        encryptionPublicKey: run.encryptionPublicKey,
+        ...(run.startHook ? { startHook: run.startHook } : {}),
+      },
+    };
+    if (await publishRunCreatedAtFirstSlot(event)) {
+      console.warn(
+        `[world-local] restored missing run_created for ${run.runId} (creation was interrupted or is still in flight)`
+      );
+    }
+  }
 
   // Per-instance in-process mutexes. Two storage instances sharing
   // one data directory get independent lock maps, which makes them
@@ -939,6 +1550,40 @@ export function createEventsStorage(
   // in-process invocation enters the dedup branch.
   const stepLocks = new Map<string, Promise<unknown>>();
   const hookLocks = new Map<string, Promise<unknown>>();
+  const hookLockKey = (runId: string, hookId: string) =>
+    tag ? `${runId}-${hookId}.hook.${tag}` : `${runId}-${hookId}.hook`;
+
+  /**
+   * Whether `runId` was admitted with a start Hook: its by-run marker, which
+   * the admission writes before the run record, exists.
+   */
+  /**
+   * `run`'s start Hook from its run record, while its token claim still names
+   * it (not disposed, taken over, or released at the run's end).
+   */
+  async function liveStartHookOf(run: WorkflowRun): Promise<Hook | null> {
+    const hook = startHookRecord(run);
+    if (!hook) return null;
+    const claim = await readHookTokenClaim(
+      hookTokenClaimPath(basedir, hook.token)
+    );
+    return claim?.runId === hook.runId && claim.hookId === hook.hookId
+      ? hook
+      : null;
+  }
+
+  async function isAdmittedStartHookCandidate(runId: string): Promise<boolean> {
+    if (!runId.startsWith('wrun_')) return false;
+    try {
+      await fs.stat(
+        hookByRunMarkerPath(basedir, runId, startHookId(runId), tag)
+      );
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  }
 
   const storage: LocalEventsStorage = {
     clearCache,
@@ -956,6 +1601,31 @@ export function createEventsStorage(
         throw new WorkflowWorldError(
           `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Local World.`,
           { status: 400 }
+        );
+      }
+      // A run's start Hook id is taken by its admission, which writes no
+      // `hook_created` for it (see `start-hook.ts` in @workflow/world).
+      if (
+        data.eventType === 'hook_created' &&
+        runId &&
+        isStartHookId(runId, data.correlationId)
+      ) {
+        throw new WorkflowWorldError(
+          `Hook id "${data.correlationId}" is the start Hook of workflow run "${runId}" and is created by its admission`,
+          { status: 400 }
+        );
+      }
+      const startHookRetention =
+        data.eventType === 'run_created' || data.eventType === 'run_started'
+          ? data.eventData?.startHook?.tokenRetentionUntil
+          : undefined;
+      if (
+        startHookRetention !== undefined &&
+        startHookRetention.getTime() > Date.now() + hookRetentionLimitMs
+      ) {
+        throw startHookRejected(
+          `Hook minimum retention cannot exceed ${hookRetentionLimitMs / DAY_MS} days in the Local World.`,
+          'invalid'
         );
       }
 
@@ -1011,10 +1681,11 @@ export function createEventsStorage(
         runId &&
         data.correlationId
       ) {
-        const lockKey = tag
-          ? `${runId}-${data.correlationId}.hook.${tag}`
-          : `${runId}-${data.correlationId}.hook`;
-        return withInProcessLock(hookLocks, lockKey, createImpl);
+        return withInProcessLock(
+          hookLocks,
+          hookLockKey(runId, data.correlationId),
+          createImpl
+        );
       }
       return createImpl();
 
@@ -1033,12 +1704,24 @@ export function createEventsStorage(
         // drawn at function entry would sort after it.
         let eventId = '';
         let eventIdPinned = false;
+        // A `hook_created` that adopted an existing token claim rather than
+        // writing it. Its first lost publish looks for a creation an older
+        // writer published without recording it (see
+        // `retargetHookCreatedClaim`).
+        let hookCreatedAdoptedClaim = false;
         // The eventId currently recorded in this resume's `(runId, resumeId)`
         // claim, when one was written or read below. An unpinned publish is
         // free to land somewhere else, and the claim is the fast path other
         // writers read first, so it is corrected once the append commits.
         let resumeClaimRecordedId: string | null = null;
-        const now = new Date();
+        // An in-band write's time is the one its orchestrator chose
+        // (`occurredAt`), as on world-vercel's slot-identity runs: an
+        // orchestrator that runs ahead of its writes has already handed the
+        // event to the workflow with that time, and replay must read the same.
+        const now =
+          params?.inBand === true && params.occurredAt
+            ? new Date(params.occurredAt)
+            : new Date();
 
         // For run_created events, use client-provided runId or generate one server-side
         let effectiveRunId: string;
@@ -1057,7 +1740,17 @@ export function createEventsStorage(
             'wrun_'
           );
           if (validationError) {
-            throw new WorkflowWorldError(validationError);
+            // A start Hook candidate this old can never be created (the orphan
+            // bound), so its refusal is permanent for both of its copies.
+            throw new WorkflowWorldError(validationError, {
+              ...(data.eventData.startHook
+                ? {
+                    status: 400,
+                    code: START_HOOK_ADMISSION_REJECTED,
+                    reason: 'expired',
+                  }
+                : {}),
+            });
           }
         }
 
@@ -1069,6 +1762,7 @@ export function createEventsStorage(
         // on running steps, and running steps are always allowed to modify regardless
         // of run state. This optimization saves filesystem reads per step event.
         let currentRun: WorkflowRun | null = null;
+        let createdByResilientStart = false;
         const skipRunValidationEvents = ['step_completed', 'step_retrying'];
         if (
           data.eventType !== 'run_created' &&
@@ -1078,7 +1772,7 @@ export function createEventsStorage(
             basedir,
             'runs',
             effectiveRunId,
-            WorkflowRunSchema,
+            RunRecordSchema,
             tag
           );
 
@@ -1099,6 +1793,8 @@ export function createEventsStorage(
               attributes?: Record<string, string>;
               allowReservedAttributes?: true;
               encryptionPublicKey?: string;
+              dynamicWorkflowCode?: SerializedData;
+              startHook?: StartHook;
             };
             if (
               runInputData.deploymentId &&
@@ -1135,14 +1831,42 @@ export function createEventsStorage(
                 // run from the queued message, which is exactly when the key
                 // would otherwise be lost for the rest of the run's life.
                 encryptionPublicKey: runInputData.encryptionPublicKey,
+                // Same reasoning: a dynamic run recreated without its code
+                // would be created unable to replay.
+                dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
+                ...(runInputData.startHook
+                  ? {
+                      startHook: withStartHookId(
+                        runInputData.startHook,
+                        effectiveRunId
+                      ),
+                    }
+                  : {}),
                 createdAt: now,
                 updatedAt: now,
               };
               const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
-              const created = await writeExclusive(
-                runPath,
-                JSON.stringify(createdRun, jsonReplacer)
-              );
+              const writeRun = () =>
+                writeExclusive(
+                  runPath,
+                  JSON.stringify(createdRun, jsonReplacer)
+                );
+              // The queued copy of an atomic start: it may admit the
+              // candidate before the direct `run_created` does, and a refused
+              // candidate throws HookConflictError here, creating nothing.
+              const createdStartHook = startHookRecord(createdRun);
+              const created = createdStartHook
+                ? (
+                    await admitStartHook({
+                      basedir,
+                      tag,
+                      runId: effectiveRunId,
+                      startHook: runInputData.startHook as StartHook,
+                      hook: createdStartHook,
+                      writeRun,
+                    })
+                  ).status === 'created'
+                : await writeRun();
 
               if (created) {
                 // We created the run, so also write the run_created event.
@@ -1164,10 +1888,23 @@ export function createEventsStorage(
                     allowReservedAttributes:
                       runInputData.allowReservedAttributes,
                     encryptionPublicKey: runInputData.encryptionPublicKey,
+                    ...(createdRun.startHook
+                      ? { startHook: createdRun.startHook }
+                      : {}),
                   },
                 };
-                await storeEvent(runCreatedEvent);
-                currentRun = createdRun;
+                const published =
+                  await publishRunCreatedAtFirstSlot(runCreatedEvent);
+                currentRun = published
+                  ? createdRun
+                  : await readJSONWithFallback(
+                      basedir,
+                      'runs',
+                      effectiveRunId,
+                      RunRecordSchema,
+                      tag
+                    );
+                createdByResilientStart = true;
               } else {
                 // Run already exists (concurrent run_created won the
                 // race). Re-read it so downstream logic sees the real state.
@@ -1175,11 +1912,48 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   effectiveRunId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
               }
             }
+          }
+        }
+
+        // A pending run whose creation was interrupted has a run record but no
+        // `run_created`. Restore it before any event that could become the run's
+        // first event takes slot 1. Runs created just above by resilient start,
+        // and legacy or newer-spec runs, are skipped.
+        if (
+          currentRun?.status === 'pending' &&
+          !createdByResilientStart &&
+          !requiresNewerWorld(currentRun.specVersion) &&
+          !isLegacySpecVersion(currentRun.specVersion) &&
+          (data.eventType === 'run_started' ||
+            data.eventType === 'attr_set' ||
+            data.eventType === 'run_cancelled' ||
+            data.eventType === 'run_failed' ||
+            // A start Hook takes deliveries from its admission on, while the
+            // run is still pending, so one must never take slot 1 from the
+            // `run_created` that stands for the Hook's creation.
+            (data.eventType === 'hook_received' &&
+              isStartHookId(effectiveRunId, data.correlationId)))
+        ) {
+          if (
+            data.eventType === 'run_cancelled' ||
+            data.eventType === 'run_failed'
+          ) {
+            try {
+              await restoreMissingRunCreated(currentRun);
+            } catch (error) {
+              const reason =
+                error instanceof Error ? error.message : String(error);
+              console.warn(
+                `[world-local] could not restore missing run_created for ${currentRun.runId}: ${reason}`
+              );
+            }
+          } else {
+            await restoreMissingRunCreated(currentRun);
           }
         }
 
@@ -1190,6 +1964,59 @@ export function createEventsStorage(
         // terminal state) return without publishing, and the position stays
         // available to the next writer.
         eventId = await mintEventId(effectiveRunId);
+
+        // Cancelling a run that was never created. If it is a
+        // `start({ experimental_hook })` candidate whose admission claimed its token but
+        // whose writer died before its run (its start Hook's by-run marker is
+        // written before the run), its queued copy could still create it:
+        // fence its run record path so no copy ever can. Any other missing
+        // run is answered not found and left alone, so it can still be
+        // created. Only an id young enough to still be created is fenced.
+        if (!currentRun && data.eventType === 'run_cancelled') {
+          const cancelledCandidateTime = ulidToDate(
+            effectiveRunId.replace(/^wrun_/, '')
+          );
+          if (
+            cancelledCandidateTime &&
+            Date.now() - cancelledCandidateTime.getTime() <=
+              START_HOOK_CANDIDATE_MAX_AGE_MS &&
+            (await isAdmittedStartHookCandidate(effectiveRunId))
+          ) {
+            const fenced = await fenceStartHookCandidate(
+              basedir,
+              effectiveRunId,
+              tag,
+              {}
+            );
+            if (fenced) {
+              startHookLog('fenced a cancelled candidate with no run', {
+                runId: effectiveRunId,
+              });
+            } else {
+              const raced = await readJSONWithFallback(
+                basedir,
+                'runs',
+                effectiveRunId,
+                RunRecordSchema,
+                tag
+              );
+              if (raced) {
+                // Created since the read above: the retry cancels it.
+                throw new WorkflowWorldError(
+                  `Workflow run "${effectiveRunId}" was created while being cancelled; retry`,
+                  { status: 503 }
+                );
+              }
+              // Fenced already, by an earlier cancel or an orphan release.
+            }
+            // The candidate can never become a run: it is cancelled.
+            throw new WorkflowWorldError(
+              `Workflow run "${effectiveRunId}" was a start Hook candidate with no run; it is now fenced and can never be created`,
+              { status: 409, code: START_HOOK_CANDIDATE_CANCELLED }
+            );
+          }
+          throw new WorkflowRunNotFoundError(effectiveRunId);
+        }
 
         // These events are rejected on a non-existent run to match the
         // postgres and vercel worlds, which both surface this as a
@@ -1214,7 +2041,7 @@ export function createEventsStorage(
           if (requiresNewerWorld(currentRun.specVersion)) {
             throw new RunNotSupportedError(
               currentRun.specVersion!,
-              SPEC_VERSION_CURRENT
+              SPEC_VERSION_MAX_SUPPORTED
             );
           }
 
@@ -1225,7 +2052,7 @@ export function createEventsStorage(
               effectiveRunId,
               data,
               currentRun,
-              params
+              params && { resolveData: entityResolveData(params.resolveData) }
             );
           }
         }
@@ -1243,6 +2070,12 @@ export function createEventsStorage(
         const createsChildEntity = isChildEntityCreationEvent(data);
         const lazyStepStart =
           createsChildEntity && data.eventType === 'step_started';
+        // A single-orchestrator run (spec >= 9) records an inline step's
+        // creation on its `step_started` alone: no synthetic `step_created`,
+        // and the start keeps its input.
+        const creationOnStart = (): boolean =>
+          lazyStepStart &&
+          (currentRun?.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR;
 
         // Run terminal state validation
         if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
@@ -1264,7 +2097,9 @@ export function createEventsStorage(
             return {
               event: stripEventDataRefs(stored, resolveData),
               run: currentRun,
-              ...(currentRun ? { maxEvents: getMaxEventsPerRun() } : {}),
+              ...(currentRun
+                ? { maxEvents: getMaxEventsForRun(currentRun) }
+                : {}),
             };
           }
 
@@ -1309,7 +2144,7 @@ export function createEventsStorage(
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           validatedStep = await readJSONWithFallback(
             basedir,
-            'steps',
+            runEntityDir('steps', effectiveRunId),
             stepCompositeKey,
             StepSchema,
             tag
@@ -1401,7 +2236,7 @@ export function createEventsStorage(
             ) {
               const atClaimedId = await readJSONWithFallback(
                 basedir,
-                'events',
+                runEntityDir('events', effectiveRunId),
                 `${effectiveRunId}-${committedClaim.eventId}`,
                 ReadEventSchema,
                 tag
@@ -1429,19 +2264,25 @@ export function createEventsStorage(
           // acceptance observes the same order replay will: once disposal
           // has committed, the resume is rejected exactly like one that
           // arrived after teardown finished.
-          if (
-            data.eventType === 'hook_received' &&
-            (await isHookDisposalCommitted(basedir, data.correlationId, tag))
-          ) {
-            throw new HookNotFoundError(data.correlationId);
+          if (data.eventType === 'hook_received') {
+            await refuseDisposedHookDelivery(
+              data.correlationId,
+              (data.eventData as { token?: unknown } | undefined)?.token
+            );
           }
-          const existingHook = await readJSONWithFallback(
-            basedir,
-            'hooks',
-            data.correlationId,
-            HookSchema,
-            tag
-          );
+          const existingHook =
+            (await readJSONWithFallback(
+              basedir,
+              'hooks',
+              data.correlationId,
+              HookSchema,
+              tag
+            )) ??
+            // A start Hook whose admission has written the run but not yet
+            // (or, after a crash, never) the entity: the run record holds it.
+            (currentRun && isStartHookId(effectiveRunId, data.correlationId)
+              ? await liveStartHookOf(currentRun)
+              : null);
 
           if (!existingHook) {
             throw new HookNotFoundError(data.correlationId);
@@ -1494,7 +2335,7 @@ export function createEventsStorage(
               }
               const atClaimedId = await readJSONWithFallback(
                 basedir,
-                'events',
+                runEntityDir('events', effectiveRunId),
                 `${effectiveRunId}-${claim.eventId}`,
                 ReadEventSchema,
                 tag
@@ -1590,6 +2431,10 @@ export function createEventsStorage(
         // createdAt persisted in the durable token claim so
         // concurrent / cross-process workers converge on a single
         // event in the log.
+        // A hook takeover journals this hook's `hook_created` inside the
+        // token claim lock (see the hook_created branch); the generic publish
+        // below then has nothing left to write.
+        let prePublishedEvent: Event | undefined;
         let event: Event = {
           ...data,
           runId: effectiveRunId,
@@ -1611,12 +2456,31 @@ export function createEventsStorage(
         if (data.eventType === 'run_started' && 'eventData' in event) {
           delete (event as any).eventData;
         }
+        // Dynamic source is materialized onto the run and never retained on
+        // the creation event as a second durable copy.
+        if (event.eventType === 'run_created' && event.eventData) {
+          const {
+            dynamicWorkflowCode: _dynamicWorkflowCode,
+            dynamicWorkflowCodeRef: _dynamicWorkflowCodeRef,
+            ...eventData
+          } = event.eventData;
+          // The stored start Hook names its id: the log's record of the
+          // Hook's creation (see `start-hook.ts` in @workflow/world).
+          if (eventData.startHook) {
+            eventData.startHook = withStartHookId(
+              eventData.startHook,
+              effectiveRunId
+            );
+          }
+          event = { ...event, eventData };
+        }
         // Strip only the step `input` from the lazy step_started event row:
         // it belongs on the synthetic step_created written above. stepName is
         // preserved for the client replay consumer's step-name divergence
         // check (packages/core/src/step.ts).
         if (
           lazyStepStart &&
+          !creationOnStart() &&
           event.eventType === 'step_started' &&
           event.eventData
         ) {
@@ -1709,6 +2573,8 @@ export function createEventsStorage(
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
             encryptionPublicKey?: string;
+            dynamicWorkflowCode?: SerializedData;
+            startHook?: StartHook;
           };
           validateAttributeChanges(
             Object.entries(runData.attributes ?? {}).map(([key, value]) => ({
@@ -1734,6 +2600,18 @@ export function createEventsStorage(
             completedAt: undefined,
             attributes: runData.attributes ?? {},
             encryptionPublicKey: runData.encryptionPublicKey,
+            // A dynamic run's own workflow code. Stored on the run record
+            // rather than the event because the run is what replay reads;
+            // there is no ref layer here, so the bytes sit inline in the
+            // record's JSON. `start()` never sends a ref against this world —
+            // it has no upload path to send one to — so the inline field is
+            // the only shape to handle.
+            dynamicWorkflowCode: runData.dynamicWorkflowCode,
+            ...(runData.startHook
+              ? {
+                  startHook: withStartHookId(runData.startHook, effectiveRunId),
+                }
+              : {}),
             createdAt: now,
             updatedAt: now,
           };
@@ -1742,11 +2620,52 @@ export function createEventsStorage(
           // start path (run_started on non-existent run) that could result in
           // duplicate run_created events in the event log.
           const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
-          const created = await writeExclusive(
-            runPath,
-            JSON.stringify(run, jsonReplacer, 2)
-          );
-          if (!created) {
+          const runRecord = run;
+          const writeRun = () =>
+            writeExclusive(runPath, JSON.stringify(runRecord, jsonReplacer, 2));
+          const createdStartHook = startHookRecord(runRecord);
+          if (runData.startHook && createdStartHook) {
+            // Atomic start: the start Hook and the run are decided together.
+            // A refused candidate throws HookConflictError here; one already
+            // accepted (by a retry of this write, or by its queued copy)
+            // answers with its run and the run_created at its first slot
+            // rather than EntityConflictError.
+            const admission = await admitStartHook({
+              basedir,
+              tag,
+              runId: effectiveRunId,
+              startHook: runData.startHook,
+              hook: createdStartHook,
+              writeRun,
+            });
+            if (admission.status === 'existing') {
+              const existing = admission.run;
+              if (existing.status === 'pending') {
+                await restoreMissingRunCreated(existing);
+              }
+              const created = await readJSONWithFallback(
+                basedir,
+                runEntityDir('events', effectiveRunId),
+                `${effectiveRunId}-${slotToEventId(FIRST_EVENT_SLOT)}`,
+                ReadEventSchema,
+                tag
+              );
+              if (created?.eventType !== 'run_created') {
+                throw missingRunCreatedError(
+                  effectiveRunId,
+                  'the admitted run has no run_created at its first slot'
+                );
+              }
+              return {
+                event: stripEventDataRefs(
+                  created,
+                  params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
+                ),
+                run: existing,
+                maxEvents: getMaxEventsForRun(existing),
+              };
+            }
+          } else if (!(await writeRun())) {
             throw new EntityConflictError(
               `Workflow run "${effectiveRunId}" already exists`
             );
@@ -1761,7 +2680,7 @@ export function createEventsStorage(
               if (params?.skipPreload) {
                 return {
                   run: currentRun,
-                  maxEvents: getMaxEventsPerRun(),
+                  maxEvents: getMaxEventsForRun(currentRun),
                 };
               }
               const preloaded = await queryRunEvents(effectiveRunId, {
@@ -1772,7 +2691,7 @@ export function createEventsStorage(
                 events: preloaded.data,
                 cursor: preloaded.cursor,
                 hasMore: preloaded.hasMore,
-                maxEvents: getMaxEventsPerRun(),
+                maxEvents: getMaxEventsForRun(currentRun),
               };
             }
 
@@ -1797,6 +2716,13 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -1827,6 +2753,13 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -1868,6 +2801,13 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -1901,6 +2841,13 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
+                startHook: currentRun.startHook,
               }
             );
             run = written.run;
@@ -1914,7 +2861,7 @@ export function createEventsStorage(
           run = await withRunFileLock(effectiveRunId, async () => {
             const fresh = await readJSON(
               taggedPath(basedir, 'runs', effectiveRunId, tag),
-              WorkflowRunSchema
+              RunRecordSchema
             );
             if (!fresh) {
               throw new WorkflowRunNotFoundError(effectiveRunId);
@@ -2021,7 +2968,12 @@ export function createEventsStorage(
           };
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           await writeJSON(
-            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            taggedPath(
+              basedir,
+              runEntityDir('steps', effectiveRunId),
+              stepCompositeKey,
+              tag
+            ),
             step
           );
         } else if (data.eventType === 'step_started') {
@@ -2080,7 +3032,7 @@ export function createEventsStorage(
               await writeJSON(
                 taggedPath(
                   basedir,
-                  'steps',
+                  runEntityDir('steps', effectiveRunId),
                   `${effectiveRunId}-${data.correlationId}`,
                   tag
                 ),
@@ -2111,7 +3063,7 @@ export function createEventsStorage(
                   input: lazyData.input,
                 },
               };
-              await storeEvent(stepCreatedEvent);
+              if (!creationOnStart()) await storeEvent(stepCreatedEvent);
               validatedStep = createdStep;
               stepCreatedLazily = true;
             }
@@ -2141,7 +3093,7 @@ export function createEventsStorage(
             const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
             const freshStep = await readJSONWithFallback(
               basedir,
-              'steps',
+              runEntityDir('steps', effectiveRunId),
               stepCompositeKey,
               StepSchema,
               tag
@@ -2164,7 +3116,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -2199,7 +3156,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -2239,7 +3201,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -2261,7 +3228,12 @@ export function createEventsStorage(
               updatedAt: now,
             };
             await writeJSON(
-              taggedPath(basedir, 'steps', stepCompositeKey, tag),
+              taggedPath(
+                basedir,
+                runEntityDir('steps', effectiveRunId),
+                stepCompositeKey,
+                tag
+              ),
               step,
               { overwrite: true }
             );
@@ -2281,22 +3253,31 @@ export function createEventsStorage(
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment
           // below.
-          const claimContent = JSON.stringify({
-            token: hookData.token,
-            hookId: data.correlationId,
-            runId: effectiveRunId,
-            eventId,
-            tokenRetentionUntil: hookData.tokenRetentionUntil,
-          });
+          // Who a forced creation took the token from, decided inside the
+          // claim lock below and carried onto the claim, the hook entity
+          // (`claimedFrom`) and the journaled row (`forceClaimedFrom`).
+          let claimedFrom:
+            | NonNullable<HookTokenClaim['claimedFrom']>
+            | undefined;
+          const claimContent = () =>
+            JSON.stringify({
+              token: hookData.token,
+              hookId: data.correlationId,
+              runId: effectiveRunId,
+              eventId,
+              tokenRetentionUntil: hookData.tokenRetentionUntil,
+              ...(claimedFrom && { claimedFrom }),
+            });
 
           // Serialize claim replacement so a committed disposal or terminal
           // run cannot race its successor and create a spurious conflict
           // (issue #2778). Missing claim caches are rebuilt from the event log;
           // stale owners are removed before the successor is admitted.
-          const claimResult = await withHookTokenClaimLock(
-            basedir,
-            hookData.token,
-            async (signal) => {
+          const claimToken = (lockedVictim?: {
+            runId: string;
+            hookId: string;
+          }) =>
+            withHookTokenClaimLock(basedir, hookData.token, async (signal) => {
               let existingClaim = await readHookTokenClaim(constraintPath);
               if (!existingClaim) {
                 // Repair a missing or corrupt claim from the event log.
@@ -2312,7 +3293,7 @@ export function createEventsStorage(
 
               if (!existingClaim) {
                 signal.throwIfAborted();
-                assert(await writeExclusive(constraintPath, claimContent));
+                assert(await writeExclusive(constraintPath, claimContent()));
                 return { status: 'claimed' as const };
               }
               if (
@@ -2322,15 +3303,221 @@ export function createEventsStorage(
                 return { status: 'owned' as const, claim: existingClaim };
               }
               if (
-                !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
+                !(await isHookTokenClaimReleasable(
+                  basedir,
+                  existingClaim,
+                  tag,
+                  { token: hookData.token, runId: effectiveRunId }
+                ))
               ) {
-                return { status: 'conflict' as const, claim: existingClaim };
+                if (hookData.force !== true || !existingClaim.hookId) {
+                  return { status: 'conflict' as const, claim: existingClaim };
+                }
+                if (
+                  existingClaim.runId !== lockedVictim?.runId ||
+                  existingClaim.hookId !== lockedVictim?.hookId
+                ) {
+                  // Retry under the per-hook lock of the hook holding it now.
+                  return { status: 'victim-changed' as const };
+                }
+                // `createHook({ experimental_force: true })`: take the token
+                // over. Same order as workflow-server (docs/hook-force-claim.md,
+                // specs/HookForceClaim.tla): tell the victim FIRST — its
+                // dispose lock, naming us, then its `hook_disposed` row — so a
+                // delivery that already resolved the victim is refused (and
+                // redirected, see `refuseDisposedHookDelivery`) rather than
+                // landing in a run that no longer holds the token; only then
+                // release its claim and take it. The claim lock we hold
+                // serializes this against other creators; the dispose lock
+                // serializes it against the victim's own disposal.
+                signal.throwIfAborted();
+                // The victim's claim is written before its `hook_created` is
+                // published (see the entity-write ordering below). In one
+                // process this takeover first waits on the victim's per-hook
+                // key, which the creation holds across both, so it cannot
+                // meet the creation midway; from another instance (per-hook
+                // keys are not shared) it can meet a creation still in
+                // flight. That is fine: the creator's publish is refused by
+                // the journal guard (its own disposal is committed by then)
+                // and its replay reads the disposal with no creation — the
+                // runtime handles exactly that. Nothing waits here: while this lock is held the token
+                // resolves to nothing, and every millisecond of that is a
+                // `getHookByToken` that misses.
+                const victimRun = await readJSONWithFallback(
+                  basedir,
+                  'runs',
+                  existingClaim.runId,
+                  RunRecordSchema,
+                  tag
+                );
+                // A start Hook whose run is not written yet (its admitting
+                // writer stalled or died, and the classifier above still
+                // holds it): it cannot be told, and its writer could still
+                // publish the run. Retry until the run exists, or until the
+                // classifier fences the candidate and releases the token.
+                if (
+                  victimRun === null &&
+                  isStartHookId(existingClaim.runId, existingClaim.hookId)
+                ) {
+                  throw new ThrottleError(
+                    `The start Hook holding this token belongs to a run that is still being created; retry`,
+                    { retryAfter: 1 }
+                  );
+                }
+                const victimRunning =
+                  victimRun !== null &&
+                  !isTerminalWorkflowRunStatus(victimRun.status);
+                // Wake-targeting fields only for a victim that is still
+                // running: a finished one has no row to read and nothing to
+                // wake, and an invoke of a completed run can race its own
+                // terminal write. Without them the runtime skips the wake.
+                claimedFrom = {
+                  runId: existingClaim.runId,
+                  hookId: existingClaim.hookId,
+                  ...(victimRunning && {
+                    workflowName: victimRun.workflowName,
+                    deploymentId: victimRun.deploymentId,
+                    runSpecVersion: victimRun.specVersion,
+                  }),
+                };
+                // A running victim must be able to READ the disposal about to
+                // land in its log. A runtime below
+                // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM takes
+                // `hook_disposed{forceClaimedBy}` for its own `dispose()` and
+                // leaves `await hook` pending forever, so it is not taken
+                // from: the claimer gets the ordinary conflict, marked so its
+                // runtime knows the World declined on purpose. Decided from
+                // the victim's persisted version, never this request's.
+                if (
+                  victimRunning &&
+                  (victimRun.specVersion ?? SPEC_VERSION_LEGACY) <
+                    SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+                ) {
+                  return {
+                    status: 'conflict' as const,
+                    claim: existingClaim,
+                    forceRefusedReason: 'victim-spec-version' as const,
+                  };
+                }
+                // The token must resolve to SOME live hook at every instant of
+                // the takeover (a resume that resolves nothing is a lost
+                // payload, not a redirect), and a hook it resolves to must
+                // already have its `hook_created` in its log (a delivery
+                // landing before the creation is a row the QuickJS engine
+                // cannot park). So, before the victim is told: journal this
+                // hook's creation, then write its entity — `findHookByToken`
+                // falls through a force-disposed owner to the entity holding
+                // the token now — and only then lock the victim and re-point
+                // the claim. A crash anywhere in between is repaired by the
+                // retry: the creation is found rather than written twice, and
+                // the token has not moved until the last step.
+                const journaledEventId = await findExistingHookCreatedEventId(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId
+                );
+                if (journaledEventId) {
+                  eventId = journaledEventId;
+                  prePublishedEvent = { ...event, eventId } as Event;
+                } else {
+                  prePublishedEvent = await storeEvent({
+                    ...event,
+                    eventData: {
+                      ...(event.eventData as Record<string, unknown>),
+                      forceClaimedFrom: claimedFrom,
+                    },
+                  } as Event);
+                  eventId = prePublishedEvent.eventId;
+                }
+                await writeHookByRunMarker(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId,
+                  tag
+                );
+                await writeJSON(
+                  taggedPath(basedir, 'hooks', data.correlationId, tag),
+                  {
+                    runId: effectiveRunId,
+                    hookId: data.correlationId,
+                    token: hookData.token,
+                    metadata: hookData.metadata,
+                    ownerId: 'local-owner',
+                    projectId: 'local-project',
+                    environment: 'local',
+                    createdAt: now,
+                    specVersion: effectiveSpecVersion,
+                    isWebhook: hookData.isWebhook ?? false,
+                    isSystem: hookData.isSystem ?? false,
+                    tokenRetentionUntil: hookData.tokenRetentionUntil,
+                    claimedFrom,
+                  } satisfies Hook,
+                  { overwrite: true }
+                );
+                // The victim's dispose lock, naming us, is written for a
+                // finished victim too (with no row: nothing reads its log).
+                // It is what marks the victim's hook closed for good: a
+                // finished victim's retained token would otherwise still
+                // look live to a cache rebuild from the token index
+                // (`findAvailableHookCreatedEvent`), which could then hand
+                // the token back to the victim instead of to us.
+                const lockWritten = await writeExclusive(
+                  hookDisposeLockPath(basedir, existingClaim.hookId, tag),
+                  JSON.stringify({
+                    forceClaimedBy: {
+                      runId: effectiveRunId,
+                      hookId: data.correlationId,
+                    },
+                  })
+                );
+                if (victimRunning) {
+                  if (lockWritten) {
+                    // A start Hook can be taken while its run is still
+                    // pending: its `run_created` must hold slot 1 first.
+                    if (
+                      victimRun.status === 'pending' &&
+                      isStartHookId(existingClaim.runId, existingClaim.hookId)
+                    ) {
+                      await restoreMissingRunCreated(victimRun);
+                    }
+                    // The victim's row. Its own id in its own log: the
+                    // takeover is the one writer of another run's log.
+                    const disposedEvent: Event = {
+                      eventType: 'hook_disposed',
+                      correlationId: existingClaim.hookId,
+                      eventData: {
+                        token: hookData.token,
+                        forceClaimedBy: {
+                          runId: effectiveRunId,
+                          hookId: data.correlationId,
+                        },
+                      },
+                      runId: existingClaim.runId,
+                      eventId: await mintEventId(existingClaim.runId),
+                      createdAt: new Date(),
+                      specVersion: victimRun.specVersion,
+                    };
+                    await storeEvent(disposedEvent);
+                  }
+                  // Not written: the victim disposed the hook itself in the
+                  // meantime, which released the token below all the same.
+                }
+                // Fall through to the release below with the victim told.
               }
 
               // The previous owner committed its release but did not finish
               // cleanup. Remove that lifetime before admitting a successor.
+              // A takeover re-points the claim in place (one atomic rename)
+              // rather than deleting and re-creating it, so the token never
+              // resolves to nothing in between.
               signal.throwIfAborted();
-              await deleteJSON(constraintPath);
+              if (claimedFrom) {
+                await write(constraintPath, claimContent(), {
+                  overwrite: true,
+                });
+              } else {
+                await deleteJSON(constraintPath);
+              }
               if (existingClaim.hookId) {
                 await deleteJSON(
                   taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
@@ -2351,10 +3538,66 @@ export function createEventsStorage(
                 );
               }
               signal.throwIfAborted();
-              assert(await writeExclusive(constraintPath, claimContent));
+              if (!claimedFrom) {
+                assert(await writeExclusive(constraintPath, claimContent()));
+              }
               return { status: 'claimed' as const };
+            });
+          // A takeover writes the victim's dispose lock and `hook_disposed`
+          // row, so it also holds the victim's per-hook lock: a resume to the
+          // victim checks that dispose lock and appends under that lock, and
+          // must not pass the check and then land behind the row (#4923).
+          // Order: this hook's key (held by `create`), the victim's key, then
+          // the token claim lock. The victim's own `hook_disposed` takes its
+          // key and then the claim lock, so the victim's key must not be
+          // taken inside the claim lock. There is no cycle: a resume takes
+          // only its hook's key, and a hook becomes a holder (someone's
+          // victim) only after its own takeover is done waiting. The holder
+          // is read here and confirmed under the claim lock; a change of
+          // holder in between retries under the new holder's key. Like every
+          // per-hook lock, this serializes within one process. Across
+          // instances sharing a data directory only the resume's last-instant
+          // dispose-lock check remains, and the window is wider than for an
+          // ordinary disposal: the takeover appends the victim's row right
+          // after its dispose lock, with no teardown in between to absorb a
+          // resume that passed that check.
+          let claimResult: Awaited<ReturnType<typeof claimToken>>;
+          for (let attempt = 0; ; attempt++) {
+            // Every `victim-changed` means another claimer took the token in
+            // between, so this ends. The bound turns a disagreement between
+            // the read here and the one under the claim lock into an error
+            // instead of a spin.
+            if (attempt === MAX_FORCE_CLAIM_VICTIM_RETRIES) {
+              throw new WorkflowWorldError(
+                `Hook token holder kept changing during a forced claim of "${data.correlationId}"`
+              );
             }
-          );
+            const holder =
+              hookData.force === true
+                ? await readHookTokenClaim(constraintPath)
+                : null;
+            const victim =
+              holder?.hookId &&
+              !(
+                holder.runId === effectiveRunId &&
+                holder.hookId === data.correlationId
+              )
+                ? { runId: holder.runId, hookId: holder.hookId }
+                : undefined;
+            claimResult = victim
+              ? await withInProcessLock(
+                  hookLocks,
+                  hookLockKey(victim.runId, victim.hookId),
+                  () => claimToken(victim)
+                )
+              : await claimToken();
+            if (claimResult.status !== 'victim-changed') break;
+          }
+          if (claimResult.status === 'owned' && claimResult.claim.claimedFrom) {
+            // A retry adopting a forced claim still names the victim, so the
+            // runtime still wakes it.
+            claimedFrom = claimResult.claim.claimedFrom;
+          }
 
           // The claim and Hook entity are written before `hook_created`, so a
           // crash can leave either cache without the durable event. A retry by
@@ -2406,9 +3649,12 @@ export function createEventsStorage(
             }
 
             // Pinned: this id is the convergence point for every writer of
-            // this hook, so it must not be bumped past a slot collision. A
-            // collision here means the canonical event is already published,
-            // which is exactly the duplicate the handler below repairs from.
+            // this hook, so it must not be bumped past a slot collision. Under
+            // ULIDs a collision means the canonical event is already
+            // published, which is the duplicate the handler below repairs
+            // from. Under slot ids the claimed position may hold an unrelated
+            // event (its writer stopped before publishing), so a lost publish
+            // re-targets through the claim (`retargetHookCreatedClaim`).
             eventId = canonicalEventId;
             eventIdPinned = true;
             const canonicalCreatedAt =
@@ -2436,6 +3682,9 @@ export function createEventsStorage(
               eventData: {
                 token: hookData.token,
                 conflictingRunId: existingClaim.runId,
+                ...(claimResult.forceRefusedReason !== undefined && {
+                  forceRefusedReason: claimResult.forceRefusedReason,
+                }),
               },
               runId: effectiveRunId,
               eventId,
@@ -2484,6 +3733,18 @@ export function createEventsStorage(
           // Defer the Hook entity write until the event publish succeeds. A
           // retry may carry different metadata, so writing it first could make
           // the entity disagree with the already-committed event (PR #2295).
+          if (claimedFrom) {
+            event = {
+              ...event,
+              eventData: {
+                ...(event.eventData as Record<string, unknown>),
+                // Wake-targeting fields included: a replay of this run
+                // republishes the victim's wake from this row alone when the
+                // invocation that created the hook died before waking it.
+                forceClaimedFrom: claimedFrom,
+              },
+            } as Event;
+          }
           const persistedHookData =
             event.eventData as HookCreatedEventRequest['eventData'];
           hook = {
@@ -2500,14 +3761,19 @@ export function createEventsStorage(
             isWebhook: persistedHookData.isWebhook ?? false,
             isSystem: persistedHookData.isSystem ?? false,
             tokenRetentionUntil: persistedHookData.tokenRetentionUntil,
+            ...(claimedFrom && { claimedFrom }),
           };
           hookEntityWriteOptions =
-            claimResult.status === 'owned' ? { overwrite: true } : undefined;
+            claimResult.status === 'owned' || claimedFrom
+              ? { overwrite: true }
+              : undefined;
 
           // Index entries before the event publish (see hook-index.ts
-          // crash-ordering invariant). `eventId` is final here: the
-          // dedup-recovery branch above already reassigned it to the
-          // canonical id when applicable.
+          // crash-ordering invariant). `eventId` is the first target here:
+          // the dedup-recovery branch above already reassigned it to the
+          // canonical id when applicable. On a slot-numbered run a lost
+          // publish can still move it (`retargetHookCreatedClaim`), which
+          // indexes each later target itself.
           await writeHookCreatedIndexEntries(
             basedir,
             hookData.token,
@@ -2516,6 +3782,8 @@ export function createEventsStorage(
             eventId,
             tag
           );
+
+          hookCreatedAdoptedClaim = claimResult.status === 'owned';
         } else if (data.eventType === 'hook_disposed') {
           // hook_disposed: Deletes hook entity, rejects duplicates.
           // Uses writeExclusive on a lock file to atomically prevent concurrent
@@ -2698,17 +3966,37 @@ export function createEventsStorage(
         // filesystem) to the single event write below, matching the
         // module's convention that the on-disk lock file (not the
         // in-process mutex) is the durable source of truth.
-        if (
-          data.eventType === 'hook_received' &&
-          data.correlationId &&
-          (await isHookDisposalCommitted(basedir, data.correlationId, tag))
-        ) {
-          throw new HookNotFoundError(data.correlationId);
+        if (data.eventType === 'hook_received' && data.correlationId) {
+          await refuseDisposedHookDelivery(
+            data.correlationId,
+            (data.eventData as { token?: unknown } | undefined)?.token
+          );
+        }
+
+        // The journal guard for a creation (workflow-server's ConditionCheck
+        // on the run's own marker, `ForceUnguardedJournal.cfg`): between this
+        // hook's claim above and its `hook_created` publish here, another run
+        // may have force-claimed the token and written THIS hook's
+        // `hook_disposed`. Appending the creation now would put a
+        // non-parkable row behind a retired consumer, so nothing is written
+        // and the request is refused with the 409 the runtime swallows; its
+        // replay reads the disposal and rejects the hook's awaiters.
+        if (data.eventType === 'hook_created' && data.correlationId) {
+          const own = await readHookDisposeLock(
+            basedir,
+            data.correlationId,
+            tag
+          );
+          if (own.committed && own.forceClaimedBy) {
+            throw new EntityConflictError(
+              `Hook "${data.correlationId}" was force-claimed by another run before its creation was journaled`
+            );
+          }
         }
 
         let eventPath = taggedPath(
           basedir,
-          'events',
+          runEntityDir('events', effectiveRunId),
           `${effectiveRunId}-${eventId}`,
           tag
         );
@@ -2733,13 +4021,21 @@ export function createEventsStorage(
          *   `hook_received`'s resume claim), which exist precisely so two
          *   writers converge on ONE event (bumping would publish a second).
          *
-         * A pinned id is only ever read back from a claim its own writer
-         * recorded before publishing, and that writer bumps only when the
-         * position it recorded is already occupied. So an adopter that finds
-         * the claim stale finds the slot taken too: it collides, and the
-         * collision is the benign-duplicate path this dedup already has. It
-         * never publishes a second `hook_created` into a free slot.
+         * A slot-numbered `hook_created` never bumps here: it moves through
+         * its token claim (`retargetHookCreatedClaim`), so the claim always
+         * names the one position every writer of that hook is publishing to.
          */
+        const moveEventTo = (nextEventId: string): void => {
+          eventId = nextEventId;
+          event = { ...event, eventId };
+          eventPath = taggedPath(
+            basedir,
+            runEntityDir('events', effectiveRunId),
+            `${effectiveRunId}-${eventId}`,
+            tag
+          );
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+        };
         const bumpEventSlot = async (attempt: number): Promise<boolean> => {
           const current = eventIdToSlot(eventId);
           if (eventIdPinned || current === null) {
@@ -2756,15 +4052,7 @@ export function createEventsStorage(
           if (slot === null) {
             return false;
           }
-          eventId = slotToEventId(slot);
-          event = { ...event, eventId };
-          eventPath = taggedPath(
-            basedir,
-            'events',
-            `${effectiveRunId}-${eventId}`,
-            tag
-          );
-          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          moveEventTo(slotToEventId(slot));
           return true;
         };
 
@@ -2801,7 +4089,20 @@ export function createEventsStorage(
         // committed, so step 3 rejects it. Rejections before step 4 unlink
         // a file no reader can see.
         let eventPublished = false;
-        for (let attempt = 0; ; attempt++) {
+        if (prePublishedEvent) {
+          // Journaled inside the takeover's claim lock, at the id the claim
+          // now records. Nothing to write; carry on as after a publish.
+          event = prePublishedEvent;
+          eventPath = taggedPath(
+            basedir,
+            runEntityDir('events', effectiveRunId),
+            `${effectiveRunId}-${eventId}`,
+            tag
+          );
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          eventPublished = true;
+        }
+        for (let attempt = 0; !eventPublished; attempt++) {
           if (data.eventType === 'hook_received') {
             // Step 1: fast path. The marker is the authoritative durable
             // signal; the run-state read additionally rejects runs whose
@@ -2818,7 +4119,7 @@ export function createEventsStorage(
                   basedir,
                   'runs',
                   effectiveRunId,
-                  WorkflowRunSchema,
+                  RunRecordSchema,
                   tag
                 );
             if (
@@ -2888,6 +4189,49 @@ export function createEventsStorage(
             notePublishedSlot(effectiveRunId, eventId);
             break;
           }
+          // A run's creation is permanently slot 1. Recovery can win that
+          // slot while the original publisher is paused; converge on that
+          // same event and surface the EntityConflictError that start()
+          // already treats as benign. Any other occupant is corrupt history,
+          // not a reason to move run_created to a later slot.
+          if (data.eventType === 'run_created') {
+            const slot = eventIdToSlot(eventId);
+            const occupant = await readJSONWithFallback(
+              basedir,
+              runEntityDir('events', effectiveRunId),
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            );
+            if (
+              slot === FIRST_EVENT_SLOT &&
+              occupant?.eventType === 'run_created' &&
+              occupant.runId === effectiveRunId
+            ) {
+              // An admitted start Hook candidate answers with its decision,
+              // never EntityConflictError: a delivery to its start Hook can
+              // restore the run_created from the run record while this
+              // publisher is between its admission and this write.
+              if (run?.startHook) {
+                return {
+                  event: stripEventDataRefs(
+                    occupant,
+                    params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION
+                  ),
+                  run,
+                  maxEvents: getMaxEventsForRun(run),
+                };
+              }
+              break;
+            }
+            throw new WorkflowWorldError(
+              `Cannot publish run_created for workflow run "${effectiveRunId}": event slot ${
+                slot ?? eventId
+              } is occupied by ${
+                occupant ? `"${occupant.eventType}"` : 'an unreadable event'
+              }`
+            );
+          }
           // Losing this publish to THIS SAME resume is the convergence the
           // claim exists to force, and it has to be answered before the bump
           // rather than after the loop, because only one of the two takers of
@@ -2907,7 +4251,7 @@ export function createEventsStorage(
           if (data.eventType === 'hook_received' && params?.resumeId) {
             const occupant = await readJSONWithFallback(
               basedir,
-              'events',
+              runEntityDir('events', effectiveRunId),
               `${effectiveRunId}-${eventId}`,
               ReadEventSchema,
               tag
@@ -2925,6 +4269,42 @@ export function createEventsStorage(
               // rewrite to do: the resume is committed, exactly once, and
               // both writers return that one event.
               return { event: occupant };
+            }
+          }
+          // The hook claim owner is unpinned too: an adopter can publish
+          // first while the owner is preparing its write. Converge on that
+          // same hook before bumping, or the owner appends a second creation
+          // and only then rejects at the deferred entity write. An unrelated
+          // occupant moves the creation to the claim's next target.
+          if (data.eventType === 'hook_created' && data.correlationId) {
+            const occupant = await readJSONWithFallback(
+              basedir,
+              runEntityDir('events', effectiveRunId),
+              `${effectiveRunId}-${eventId}`,
+              ReadEventSchema,
+              tag
+            );
+            if (
+              occupant?.eventType === 'hook_created' &&
+              occupant.correlationId === data.correlationId
+            ) {
+              break;
+            }
+            if (isSlotEventId(eventId)) {
+              const target = await retargetHookCreatedClaim({
+                runId: effectiveRunId,
+                hookId: data.correlationId,
+                token: (data.eventData as HookCreatedEventRequest['eventData'])
+                  .token,
+                from: eventId,
+                lookForExisting: hookCreatedAdoptedClaim,
+              });
+              hookCreatedAdoptedClaim = false;
+              if (target === null) {
+                break;
+              }
+              moveEventTo(target);
+              continue;
             }
           }
           if (!(await bumpEventSlot(attempt))) {
@@ -3099,8 +4479,9 @@ export function createEventsStorage(
           hook,
           wait,
           ...(stepCreatedLazily ? { stepCreated: true } : {}),
-          // Per-run event ceiling (mirrors the Vercel World).
-          ...(run ? { maxEvents: getMaxEventsPerRun() } : {}),
+          // Per-run event ceiling (mirrors the Vercel World, including the
+          // QuickJS-snapshot exemption).
+          ...(run ? { maxEvents: getMaxEventsForRun(run) } : {}),
         };
 
         if (!eventPage) return result;
@@ -3120,7 +4501,7 @@ export function createEventsStorage(
       const compositeKey = `${runId}-${eventId}`;
       const event = await readJSONWithFallback(
         basedir,
-        'events',
+        runEntityDir('events', runId),
         compositeKey,
         ReadEventSchema,
         tag
@@ -3160,7 +4541,7 @@ export function createEventsStorage(
       assertSafeEntityId('runId', params.runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
-        directory: path.join(basedir, 'events'),
+        directory: path.join(basedir, runEntityDir('events', params.runId)),
         schema: ReadEventSchema,
         cachedItems: eventCache,
         // Scoped to the run's own event files, since a correlation id
@@ -3212,7 +4593,7 @@ export function createEventsStorage(
   async function reportSkippedSlots(
     result: EventResult,
     askedFor: number,
-    resolveData: ResolveData
+    resolveData: EventsResolveData
   ): Promise<EventResult> {
     if (!result.event) {
       return result;
@@ -3277,5 +4658,170 @@ export function createEventsStorage(
     return reportSkippedSlots(result, params.eventCount, resolveData);
   }) as LocalEventsStorage['create'];
 
-  return { ...storage, create };
+  // ------------------------------------------------------------------
+  // In-band writer fence (WorldCapabilities.inBandFence)
+  // ------------------------------------------------------------------
+  //
+  // A per-run count, on disk, of the positions accepted from in-band writes
+  // (writes by the run's orchestrator). `list` reports it as
+  // `snapshot.seqInBand`, read before the listing; an in-band create is
+  // accepted only when its `expectedSeqInBand` equals it, and otherwise
+  // refused with `InBandSupersededError` before anything is written, so a
+  // refusal leaves no event behind. Out-of-band writes never touch it.
+  //
+  // The counter is a fence token, not a count of events in the log: what
+  // keeps it sound is that a snapshot and the fence read the same number, and
+  // that an accepted write advances it by the amount the writer advances its
+  // own copy (one per create). It is incremented after the write publishes,
+  // so a snapshot never counts an in-band write whose event the listing
+  // that follows could miss.
+  //
+  // The count lives in a file (`inBandCountPath`) and every check-and-advance
+  // runs under a lock directory next to it (`withFenceFileLock`), after an
+  // in-process lock shared by every storage instance in the process: so two
+  // processes on one data directory fence each other, as two storage
+  // instances in one process do, and a restart keeps every count.
+  // Between its check and its publish an accepted write marks the count
+  // `pending`. A writer that died there (its lock is taken over) leaves the
+  // mark, and the next writer through the lock counts that write as if it
+  // landed: it may have, and counting a write that did not land only costs a
+  // superseded redelivery, while missing one that did would let a stale
+  // writer in. A snapshot reports the count without a pending write.
+  const fenceState = inBandFenceState();
+  const fenceKey = (runId: string) =>
+    `${path.resolve(basedir)}\0${slotStateKey(runId)}`;
+
+  const readInBandCount = async (runId: string): Promise<InBandCount> =>
+    (await readJSON(
+      inBandCountPath(basedir, runId, tag),
+      InBandCountSchema
+    )) ?? {
+      seqInBand: IN_BAND_SEQ_AT_RUN_CREATION,
+    };
+
+  const writeInBandCount = (runId: string, count: InBandCount) =>
+    writeJSON(inBandCountPath(basedir, runId, tag), count, {
+      overwrite: true,
+    });
+
+  /** The highest slot published for `runId` as of now, or `undefined` for a ULID-numbered run. */
+  async function readTopSlot(runId: string): Promise<number | undefined> {
+    const state = runSlotState.get(slotStateKey(runId));
+    if (state === null) return undefined;
+    const scan = await scanRunEventIds(basedir, runId, tag);
+    if (state === undefined && scan.count > 0 && !scan.usesSlots) {
+      return undefined;
+    }
+    return Math.max(state?.published ?? 0, scan.maxSlot);
+  }
+
+  /**
+   * The count an in-band write is checked against, under the fence lock. A
+   * `pending` mark there was left by a writer that died between its check
+   * and its publish: it is counted now, and the mark cleared.
+   */
+  async function settledInBandCount(runId: string): Promise<number> {
+    const count = await readInBandCount(runId);
+    if (count.pending === undefined) return count.seqInBand;
+    const settled = Math.max(count.seqInBand, count.pending + 1);
+    await writeInBandCount(runId, { seqInBand: settled });
+    return settled;
+  }
+
+  async function supersededAt(
+    runId: string,
+    expected: number,
+    current: number
+  ): Promise<InBandSupersededError> {
+    const seq = await readTopSlot(runId).catch(() => undefined);
+    return new InBandSupersededError(
+      `In-band write on run ${runId} expected seqInBand ${expected}, but the run is at ${current}. Another orchestrator wrote in-band events this one has not seen; stop writing and redeliver.`,
+      { seqInBand: current, ...(seq !== undefined ? { seq } : {}) }
+    );
+  }
+
+  /** Run `fn` holding the run's fence lock: in this process, then across processes. */
+  function withFenceLock<T>(runId: string, fn: () => Promise<T>): Promise<T> {
+    return withInProcessLock(fenceState.locks, fenceKey(runId), async () => {
+      const countPath = inBandCountPath(basedir, runId, tag);
+      await fs.mkdir(path.dirname(countPath), { recursive: true });
+      return withFenceFileLock(`${countPath}.lock`, runId, fn);
+    });
+  }
+
+  const fencedCreate = (async (
+    runId: string | null,
+    request: AnyEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult> => {
+    const data = request as CreateEventRequest;
+    // `run_created` opens the run's in-band count at
+    // IN_BAND_SEQ_AT_RUN_CREATION and is never fenced itself.
+    if (!params?.inBand || !runId || request.eventType === 'run_created') {
+      return create(runId as string, data, params);
+    }
+    const expected = params.expectedSeqInBand;
+    if (
+      expected === undefined ||
+      !Number.isSafeInteger(expected) ||
+      expected < 0
+    ) {
+      throw new WorkflowWorldError(
+        `An in-band write to run ${runId} must carry a nonnegative integer expectedSeqInBand`,
+        { status: 400 }
+      );
+    }
+    assertSafeEntityId('runId', runId);
+    return withFenceLock(runId, async () => {
+      const current = await settledInBandCount(runId);
+      if (current !== expected)
+        throw await supersededAt(runId, expected, current);
+      await writeInBandCount(runId, { seqInBand: current, pending: current });
+      let result: EventResult;
+      try {
+        result = await create(runId, data, params);
+      } catch (error) {
+        // A definitive refusal (4xx) wrote nothing. Anything else may have
+        // published before failing; counting a write that did not land only
+        // costs a superseded redelivery, while missing one that did would
+        // let a stale writer in.
+        await writeInBandCount(runId, {
+          seqInBand: isDefinitiveRefusal(error) ? current : current + 1,
+        });
+        throw error;
+      }
+      // A create can succeed without appending (`run_started` on a run that
+      // is already running returns the run and no event); it allocated no
+      // position, so the count stays.
+      const allocated = result.event ? 1 : 0;
+      await writeInBandCount(runId, { seqInBand: current + allocated });
+      return { ...result, allocated };
+    });
+  }) as LocalEventsStorage['create'];
+
+  /**
+   * The fence snapshot for `runId`, read before a listing: the in-band count
+   * first, then the highest published slot. `undefined` for a run whose
+   * events are ULID-numbered, which predates the fence.
+   */
+  async function readEventLogSnapshot(
+    runId: string
+  ): Promise<EventLogSnapshot | undefined> {
+    const { seqInBand } = await readInBandCount(runId);
+    const state = runSlotState.get(slotStateKey(runId));
+    if (state === null) return undefined;
+    if (state !== undefined) return { seq: state.published, seqInBand };
+    const scan = await scanRunEventIds(basedir, runId, tag);
+    if (scan.count > 0 && !scan.usesSlots) return undefined;
+    return { seq: scan.maxSlot, seqInBand };
+  }
+
+  const list = (async (params: ListEventsParams) => {
+    assertSafeEntityId('runId', params.runId);
+    const snapshot = await readEventLogSnapshot(params.runId);
+    const result = await storage.list(params);
+    return snapshot ? { ...result, snapshot } : result;
+  }) as LocalEventsStorage['list'];
+
+  return { ...storage, create: fencedCreate, list };
 }

@@ -17,7 +17,7 @@ const classes = {
   card: cn('rounded-sm transition-colors'),
   anchor: cn(
     'absolute top-2 right-2 text-lg font-black',
-    'before:content-["#"] hover:text-foreground',
+    'before:content-["#"] hover:text-gray-1000',
     'px-2 py-1 opacity-0 group-hover:opacity-100 transition-opacity'
   ),
 };
@@ -26,7 +26,7 @@ export const TSDoc: FC<TSDocProps> = ({
   definition: rawDefinition,
   typeLinkMap = {},
   noParametersContent = (
-    <p className="text-muted-foreground">
+    <p className="text-gray-900">
       This function does not accept any parameters.
     </p>
   ),
@@ -99,7 +99,7 @@ function FunctionSignature({
   showReturns = true,
   showThrows = true,
   noParametersContent = (
-    <p className="text-muted-foreground">
+    <p className="text-gray-900">
       This function does not accept any parameters.
     </p>
   ),
@@ -163,7 +163,7 @@ function FunctionSignature({
                 'text-sm relative p-3 border before:content-["Type:_"]'
               )}
             >
-              <code className="bg-muted px-1.5 py-0.5 rounded text-sm">
+              <code className="bg-gray-100 px-1.5 py-0.5 rounded text-sm">
                 {linkify(signature.returns.type, typeLinkMap)}
               </code>
             </div>
@@ -190,7 +190,7 @@ function FunctionSignature({
                   return (
                     <Row key={id} id={id}>
                       <td className="relative table-cell pr-3">
-                        <code className="bg-muted px-1.5 py-0.5 rounded text-xs whitespace-nowrap my-0">
+                        <code className="bg-gray-100 px-1.5 py-0.5 rounded text-xs whitespace-nowrap my-0">
                           {linkify(type, typeLinkMap)}
                         </code>
                       </td>
@@ -207,7 +207,7 @@ function FunctionSignature({
               </tbody>
             </table>
           ) : (
-            <p className="text-muted-foreground">
+            <p className="text-gray-900">
               This function does not throw any errors.
             </p>
           )}
@@ -240,7 +240,7 @@ const NameCell: FC<{
       {name && (
         <code
           className={cn(
-            'bg-muted px-1.5 py-0.5 rounded text-xs whitespace-nowrap my-0',
+            'bg-gray-100 px-1.5 py-0.5 rounded text-xs whitespace-nowrap my-0',
             optional && 'after:content-["?"]'
           )}
         >
@@ -368,7 +368,7 @@ function linkify(
       parts.push(
         <code
           key={parts.length}
-          className="bg-muted px-1 py-0.5 rounded text-xs"
+          className="bg-gray-100 px-1 py-0.5 rounded text-xs"
         >
           {codeText}
         </code>

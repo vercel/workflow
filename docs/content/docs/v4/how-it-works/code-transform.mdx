@@ -70,8 +70,9 @@ flowchart LR
 
 ## Detailed transformation examples
 
-<Tabs items={["Step Mode", "Workflow Mode", "Client Mode"]}>
-<Tab value="Step Mode">
+<TabsWithChildren tabs={["Step Mode","Workflow Mode","Client Mode"]}>
+
+<TabContent order={1}>
 
 **Step Mode** creates the step execution bundle served at `/.well-known/workflow/v1/step`.
 
@@ -110,8 +111,9 @@ export async function createUser(email: string) {
 
 **ID Format:** Step IDs follow the pattern `step//{filepath}//{functionName}`, where the filepath is relative to your project root.
 
-</Tab>
-<Tab value="Workflow Mode">
+</TabContent>
+
+<TabContent order={2}>
 
 **Workflow Mode** creates the workflow execution bundle served at `/.well-known/workflow/v1/flow`.
 
@@ -161,8 +163,9 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 
 **ID Format:** Workflow IDs follow the pattern `workflow//{filepath}//{functionName}`. The `workflowId` property is attached to the function to allow [`start()`](/docs/api-reference/workflow-api/start) to work at runtime.
 
-</Tab>
-<Tab value="Client Mode">
+</TabContent>
+
+<TabContent order={3}>
 
 **Client Mode** transforms workflow functions in your application code to prevent direct execution.
 
@@ -206,8 +209,9 @@ The IDs are generated exactly like in workflow mode to ensure they can be direct
   All framework integrations include client mode as a loader by default.
 </Callout>
 
-</Tab>
-</Tabs>
+</TabContent>
+
+</TabsWithChildren>
 
 ## Generated files
 

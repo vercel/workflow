@@ -169,9 +169,11 @@ async function getDarwinPorts(pid: number): Promise<number[]> {
  */
 async function getWindowsPorts(pid: number): Promise<number[]> {
   try {
+    // No `-p tcp`: on Windows it lists IPv4 sockets only, which hides servers
+    // bound to `::1` (Vite's default `localhost` host resolves there).
     const { stdout } = await execFileAsync('cmd', [
       '/c',
-      'netstat -ano -p tcp | findstr LISTENING',
+      'netstat -ano | findstr LISTENING',
     ]);
 
     return parseWindowsNetstatPortsForPid(stdout, pid);

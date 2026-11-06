@@ -16,7 +16,6 @@ class TestBuilder extends BaseBuilder {
       inputFiles: [inputFile],
       outfile,
       bundleFinalOutput: false,
-      includeMetafile: true,
       discoveredEntries,
     });
   }

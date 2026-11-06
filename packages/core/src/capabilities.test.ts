@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { getRunCapabilities } from './capabilities.js';
+import {
+  getCompressionMode,
+  getCurrentNodeVersion,
+  getRunCapabilities,
+  nodeVersionSupportsZstd,
+} from './capabilities.js';
 import { SerializationFormat } from './serialization.js';
 
 describe('getRunCapabilities', () => {
@@ -103,4 +108,63 @@ describe('getRunCapabilities', () => {
       expect(getRunCapabilities(version).framedByteStreams).toBe(true);
     });
   });
+
+  describe('zstd and the Node.js version', () => {
+    it.each([
+      ['20.19.0', false],
+      ['22.14.0', false],
+      ['22.15.0', true],
+      ['22.20.0', true],
+      ['23.7.0', false],
+      ['23.8.0', true],
+      ['24.0.0', true],
+      ['26.1.0', true],
+      [undefined, false],
+      ['not-a-version', false],
+    ])('nodeVersionSupportsZstd(%s) is %s', (nodeVersion, expected) => {
+      expect(nodeVersionSupportsZstd(nodeVersion)).toBe(expected);
+      expect(
+        getRunCapabilities('5.0.0', nodeVersion).supportedFormats.has(
+          SerializationFormat.ZSTD
+        )
+      ).toBe(expected);
+    });
+
+    it('records a Node.js version that matches the current runtime', () => {
+      expect(getCurrentNodeVersion()).toBe(process.versions.node);
+    });
+
+    it('maps capabilities to a compression mode', () => {
+      expect(getCompressionMode(getRunCapabilities('5.0.0', '24.0.0'))).toBe(
+        true
+      );
+      expect(getCompressionMode(getRunCapabilities('5.0.0', '20.19.0'))).toBe(
+        'gzip'
+      );
+      expect(getCompressionMode(getRunCapabilities('5.0.0'))).toBe('gzip');
+      expect(
+        getCompressionMode(getRunCapabilities('5.0.0-beta.17', '24.0.0'))
+      ).toBe(false);
+    });
+  });
+});
+
+describe('framedAbortStreams compatibility', () => {
+  it.each([
+    undefined,
+    '',
+    'dev',
+    '4.2.0',
+    '5.0.0',
+    '5.2.3',
+    '5.3.0-beta.1',
+  ])('keeps unframed writes for unknown/older core %s', (version) =>
+    expect(getRunCapabilities(version).framedAbortStreams).toBe(false));
+
+  it.each([
+    '5.3.0',
+    '5.3.1',
+    '6.0.0',
+  ])('supports framed abort packets for core %s', (version) =>
+    expect(getRunCapabilities(version).framedAbortStreams).toBe(true));
 });

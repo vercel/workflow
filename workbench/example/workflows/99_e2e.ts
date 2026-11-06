@@ -15,6 +15,7 @@ import {
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
+import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -242,6 +243,34 @@ export async function stepWinsRaceWorkflow() {
   ]);
   const endTime = Date.now();
   return { winner, durationMs: endTime - startTime };
+}
+
+//////////////////////////////////////////////////////////
+
+// Times come from inside the step, on the host clock: the workflow's own
+// `Date.now()` is the replay clock, which says nothing about when a step ran.
+async function timedDelayStep(ms: number, label: string) {
+  'use step';
+  const startedAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return { label, startedAt, endedAt: Date.now() };
+}
+
+/**
+ * A two-step chain beside one long step (vercel/workflow#4457). The chain's
+ * second step should start once its first settles, not once the long step
+ * beside it does.
+ */
+export async function parallelBranchesAdvanceIndependentlyWorkflow() {
+  'use workflow';
+  const [chain, long] = await Promise.all([
+    (async () => [
+      await timedDelayStep(500, 'chain1'),
+      await timedDelayStep(500, 'chain2'),
+    ])(),
+    timedDelayStep(10_000, 'long'),
+  ]);
+  return { chain, long };
 }
 
 //////////////////////////////////////////////////////////
@@ -908,6 +937,215 @@ export async function hookSignalOwnerWorkflow(token: string, message: string) {
 }
 
 /**
+ * The owner of a `start({ experimental_hook })` token. The start Hook exists from
+ * admission; `createHook()` with the start token binds this run to it (no
+ * write, never a conflict) and collects `expected` payloads, including any
+ * resumed before the body got here.
+ */
+export async function startHookOwnerWorkflow(token: string, expected: number) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+
+  // The start Hook is this run's own, so binding to it never conflicts.
+  const conflict = await hook.getConflict();
+  if (conflict) {
+    return { conflictRunId: conflict.runId, messages: [] as string[] };
+  }
+
+  const messages: string[] = [];
+  for await (const payload of hook) {
+    messages.push(payload.message);
+    if (messages.length >= expected) break;
+  }
+  return { conflictRunId: null, messages };
+}
+
+/**
+ * A `start({ experimental_hook })` run that waits on a separate gate token before it opens
+ * its start Hook, then reads `expected` payloads from it: payloads resumed
+ * before the gate opens are already in the log when `createHook()` runs.
+ */
+export async function startHookGateThenClaimWorkflow(
+  token: string,
+  gateToken: string,
+  expected: number
+) {
+  'use workflow';
+
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+  using hook = createHook<{ message: string }>({ token });
+  const messages: string[] = [];
+  for await (const payload of hook) {
+    messages.push(payload.message);
+    if (messages.length >= expected) break;
+  }
+  return { messages };
+}
+
+/**
+ * A `start({ experimental_hook })` run that never opens its start Hook: the token is only
+ * its idempotency key. It waits on a separate gate token so a test can
+ * observe it while it runs.
+ */
+export async function startHookUnclaimedWorkflow(
+  gateToken: string,
+  value: string
+) {
+  'use workflow';
+
+  using gate = createHook<{ release: true }>({ token: gateToken });
+  await gate;
+  return { value };
+}
+
+/**
+ * A `start({ experimental_hook })` run that opens its start Hook late: it first waits on
+ * a gate token, then calls `createHook()` with the start token and awaits one
+ * payload. If another run force-claimed the token meanwhile, the await
+ * rejects with HookForceClaimedError, which this reports.
+ */
+export async function startHookLateClaimWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+
+  using hook = createHook<{ message: string }>({ token });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, message: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * A `start({ experimental_hook })` run that reads one payload from its start Hook and
+ * disposes it (which frees the token), waits on a gate token, then calls
+ * `createHook()` with the same token again: an ordinary new Hook, which
+ * conflicts if another run took the token in between.
+ */
+export async function startHookReclaimWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  const messages: string[] = [];
+  {
+    using hook = createHook<{ message: string }>({ token });
+    messages.push((await hook).message);
+  }
+  {
+    using gate = createHook<{ release: true }>({ token: gateToken });
+    await gate;
+  }
+  using again = createHook<{ message: string }>({ token });
+  const conflict = await again.getConflict();
+  if (conflict) {
+    return { messages, conflictRunId: conflict.runId };
+  }
+  messages.push((await again).message);
+  return { messages, conflictRunId: null };
+}
+
+/**
+ * A `start({ experimental_hook })` run that opens its start Hook but never reads from it:
+ * payloads resumed to it stay unconsumed, and the run still completes.
+ */
+export async function startHookClaimUnreadWorkflow(
+  token: string,
+  gateToken: string
+) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+  using gate = createHook<{ release: true }>({ token: gateToken });
+  await gate;
+  return { hookToken: hook.token };
+}
+
+/**
+ * Reads one payload from its start Hook and ends without disposing it, so a
+ * retention set on `start({ experimental_hook })` keeps the token past the run's end.
+ */
+export async function startHookRetainedOwnerWorkflow(token: string) {
+  'use workflow';
+
+  // Deliberately not `using`: disposing would free the token at scope exit.
+  const hook = createHook<{ message: string }>({ token });
+  const payload = await hook;
+  return { message: payload.message };
+}
+
+/**
+ * Passes an option that belongs on `start({ experimental_hook })` to `createHook()` with
+ * the start token, which throws.
+ */
+export async function startHookOptionsOnStartTokenWorkflow(
+  token: string,
+  option: 'metadata' | 'retention'
+) {
+  'use workflow';
+
+  using hook =
+    option === 'metadata'
+      ? createHook<{ message: string }>({ token, metadata: { late: true } })
+      : createHook<{ message: string }>({
+          token,
+          experimental_minRetention: '1h',
+        });
+  const payload = await hook;
+  return { message: payload.message };
+}
+
+/**
+ * Opens its start Hook, then calls `createHook()` with the same token again
+ * while the first is live: an ordinary second Hook, which conflicts with this
+ * very run. The start Hook still receives its payload.
+ */
+export async function startHookSecondCreateWorkflow(token: string) {
+  'use workflow';
+
+  using first = createHook<{ message: string }>({ token });
+  const second = createHook<{ message: string }>({ token });
+  const firstConflict = await first.getConflict();
+  const secondConflict = await second.getConflict();
+  const secondError = secondConflict
+    ? await second.then(
+        () => null,
+        (err: unknown) =>
+          HookConflictError.is(err)
+            ? (err.conflictingRunId ?? null)
+            : Promise.reject(err)
+      )
+    : null;
+  const payload = await first;
+  return {
+    runId: getWorkflowMetadata().workflowRunId,
+    firstConflictRunId: firstConflict ? firstConflict.runId : null,
+    secondConflictRunId: secondConflict ? secondConflict.runId : null,
+    secondErrorRunId: secondError,
+    message: payload.message,
+  };
+}
+
+/**
  * "Supersede the owner" strategy (newest-wins): cancel the active owner
  * and claim the released token. Cancellation disposes the owner's hooks;
  * the retry loop covers the window where disposal has not propagated.
@@ -932,6 +1170,191 @@ export async function hookSupersedeOwnerWorkflow(token: string) {
   }
 
   throw new Error(`Could not claim ${token} after cancelling the owner`);
+}
+
+//////////////////////////////////////////////////////////
+// createHook({ experimental_force: true })
+
+/**
+ * Owns `token` until another run takes it. Awaits one payload; when the token
+ * is taken over first, `await hook` rejects with HookForceClaimedError, which
+ * this workflow catches and reports — the run completes, so a completed run
+ * proves both the durable signal and the wake reached it.
+ */
+export async function hookForceClaimVictimWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, received: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+        claimedByHookId: err.claimedByHookId ?? null,
+        token: err.token,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Takes `token` over and awaits one payload, but — like the victim — reports
+ * a later takeover instead of failing. The middle link of a chain.
+ */
+export async function hookForceClaimVictimWorkflowForced(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, received: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+        claimedByHookId: err.claimedByHookId ?? null,
+        token: err.token,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Takes `token` over from whoever holds it and awaits one payload.
+ */
+export async function hookForceClaimClaimerWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  const conflict = await hook.getConflict();
+  const payload = await hook;
+  return {
+    role: 'claimer' as const,
+    conflict: conflict ? conflict.runId : null,
+    received: payload.message,
+  };
+}
+
+/**
+ * Iterates payloads until the token is taken over, then reports what it
+ * received before that. Payloads delivered before the takeover stay with
+ * this run; the error arrives only once they are drained.
+ */
+export async function hookForceClaimIteratingVictimWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ n: number }>({ token });
+  const received: number[] = [];
+  try {
+    for await (const payload of hook) {
+      received.push(payload.n);
+    }
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return { received, claimedByRunId: err.claimedByRunId };
+    }
+    throw err;
+  }
+  return { received, claimedByRunId: null };
+}
+
+/**
+ * Takes `token` over and collects `count` payloads.
+ */
+export async function hookForceClaimCollectorWorkflow(
+  token: string,
+  count: number
+) {
+  'use workflow';
+
+  using hook = createHook<{ n: number }>({ token, experimental_force: true });
+  const received: number[] = [];
+  for await (const payload of hook) {
+    received.push(payload.n);
+    if (received.length >= count) break;
+  }
+  return { received };
+}
+
+/**
+ * Holds `token` past its own completion (`experimental_minRetention`), so a
+ * later forced creation takes it from a finished run.
+ */
+export async function hookForceClaimRetainedVictimWorkflow(token: string) {
+  'use workflow';
+
+  // Deliberately not `using`: disposing would release the token at scope
+  // exit, and the point is a token that outlives its run.
+  const hook = createHook<{ message: string }>({
+    token,
+    experimental_minRetention: '1h',
+  });
+  const payload = await hook;
+  return { received: payload.message };
+}
+
+/**
+ * Takes over its own earlier hook: the first hook's awaiter rejects with
+ * HookForceClaimedError naming this same run, the second receives the payload.
+ */
+export async function hookForceClaimOwnHookWorkflow(token: string) {
+  'use workflow';
+
+  const first = createHook<{ message: string }>({ token });
+  const firstOutcome = first.then(
+    (payload) => ({ ok: true as const, message: payload.message }),
+    (err: unknown) =>
+      HookForceClaimedError.is(err)
+        ? { ok: false as const, claimedByRunId: err.claimedByRunId }
+        : Promise.reject(err)
+  );
+  using second = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  const payload = await second;
+  const firstResult = await firstOutcome;
+  first.dispose();
+  return { first: firstResult, second: payload.message };
+}
+
+/**
+ * Forces `token` but treats a refusal as the ordinary conflict it is: the
+ * World declines to take a token from a run whose runtime could not read the
+ * disposal (started below `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`), and the
+ * forced hook then rejects with `HookConflictError` naming that run.
+ */
+export async function hookForceClaimTolerantClaimerWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  try {
+    const payload = await hook;
+    return { role: 'claimer' as const, received: payload.message };
+  } catch (err) {
+    if (HookConflictError.is(err)) {
+      return {
+        role: 'refused' as const,
+        conflictingRunId: err.conflictingRunId ?? null,
+      };
+    }
+    throw err;
+  }
 }
 
 //////////////////////////////////////////////////////////
@@ -1905,6 +2328,29 @@ export async function crossContextSerdeWorkflow() {
     sum: { x: sum.x, y: sum.y, z: sum.z },
     scaled: { x: scaled.x, y: scaled.y, z: scaled.z },
     arraySum: { x: arraySum.x, y: arraySum.y, z: arraySum.z },
+  };
+}
+
+//////////////////////////////////////////////////////////
+// Serde classes keyed by imported WORKFLOW_SERIALIZE symbols
+//////////////////////////////////////////////////////////
+
+import { createTemperature, warmTemperature } from './serde-steps';
+
+/**
+ * Round-trips a class whose only serde marker is a computed key imported from
+ * a non-`@workflow` module (the `@ai-sdk/openai` shape from #4897). The
+ * workflow never imports Temperature; it only moves instances between steps.
+ */
+export async function importedSerdeKeyWorkflow() {
+  'use workflow';
+
+  const cold = await createTemperature(20);
+  const warm = await warmTemperature(cold, 5);
+
+  return {
+    cold: { celsius: cold.celsius },
+    warm: { celsius: warm.celsius },
   };
 }
 
@@ -3128,6 +3574,97 @@ export async function hookWithSleepFinalStepWorkflow(token: string) {
 
 //////////////////////////////////////////////////////////
 
+/**
+ * https://github.com/vercel/workflow/issues/4264 A hook raced against sleep()
+ * and awaited again after losing the race. The next payload must reach the
+ * await that is still pending, not the awaiter enrolled by the lost race.
+ */
+export async function hookRaceAfterLostRaceWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+
+  const first = await Promise.race([
+    hook.then(() => 'hook' as const),
+    sleep('1s').then(() => 'sleep' as const),
+  ]);
+
+  const second = await Promise.race([
+    hook.then((payload) => payload.value),
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  return { first, second };
+}
+
+/**
+ * https://github.com/vercel/workflow/issues/4264 Several races lost in a row,
+ * each abandoning its own `hook.then()`, then a race the hook wins, then a
+ * sequential await. The delivery must reach the pending await, and the next
+ * await must receive the next payload, not the one just delivered.
+ */
+export async function hookRaceLoopAfterLostRacesWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+
+  const lost: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    lost.push(
+      await Promise.race([
+        hook.then((payload) => payload.value),
+        sleep('1s').then(() => 'sleep' as const),
+      ])
+    );
+  }
+
+  const delivered = await Promise.race([
+    hook.then((payload) => payload.value),
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  const next = await Promise.race([
+    hook.then((payload) => payload.value),
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  return { lost, delivered, next };
+}
+
+async function hookRaceReminderStep() {
+  'use step';
+  // Long enough for the test to resume the hook while this step runs.
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+}
+
+/**
+ * The pattern the hooks docs recommend for waiting again after a timeout:
+ * create the hook promise once and race it on every attempt. A payload
+ * recorded while a step runs between the races must reach the second race.
+ */
+export async function hookRaceOncePromiseWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ value: string }>({ token });
+  const approval = hook.then((payload) => payload.value);
+
+  const first = await Promise.race([
+    approval,
+    sleep('1s').then(() => 'timeout' as const),
+  ]);
+
+  await hookRaceReminderStep();
+
+  const second = await Promise.race([
+    approval,
+    sleep('30s').then(() => 'timeout' as const),
+  ]);
+
+  return { first, second };
+}
+
+//////////////////////////////////////////////////////////
+
 async function addNumbers(a: number, b: number) {
   'use step';
   return a + b;
@@ -3378,18 +3915,88 @@ export async function startFromWorkflow(inputValue: number) {
 }
 
 /**
+ * Child for the child-run completion tests: sleeps first so the parent's
+ * first read finds it still running and the parent has to suspend on the
+ * completion hook, then doubles `value` or fails.
+ */
+export async function slowChildWorkflow(value: number, fail: boolean) {
+  'use workflow';
+  await sleep('2s');
+  if (fail) {
+    throw new FatalError(`slow child failed for ${value}`);
+  }
+  return await doubleValue(value);
+}
+
+/**
+ * Parent that awaits a child's `returnValue` directly from workflow code.
+ * The wait goes through the system completion hook rather than a polling
+ * step; the e2e test checks the parent's event log for it.
+ */
+export async function awaitChildReturnValueWorkflow(
+  value: number,
+  fail: boolean
+) {
+  'use workflow';
+  const childRun = await start(slowChildWorkflow, [value, fail]);
+  try {
+    const childResult = await childRun.returnValue;
+    return { childRunId: childRun.runId, childResult };
+  } catch (error) {
+    return {
+      childRunId: childRun.runId,
+      childError: (error as Error).name,
+      childErrorCause: ((error as Error).cause as Error | undefined)?.message,
+    };
+  }
+}
+
+/**
+ * Child for the fan-out completion test: finishes only once the test resumes
+ * its hook, then doubles `value`. The test resumes it after the parent is
+ * suspended on its completion hook, so the child's resume always lands on it
+ * (a child that finished before the parent registered would be answered by
+ * the parent's status read instead, with no `hook_received`).
+ */
+export async function gatedChildWorkflow(token: string, value: number) {
+  'use workflow';
+  using hook = createHook<Record<string, never>>({ token });
+  await hook;
+  return await doubleValue(value);
+}
+
+/**
+ * Parent that fans out to several children and awaits them all. Every child
+ * resumes the parent's one completion hook, so the parent's log holds a
+ * single system hook however many children it waits on. Child `i` waits on
+ * the hook `${tokenPrefix}:${i}`.
+ */
+export async function awaitChildrenFanOutWorkflow(
+  values: number[],
+  tokenPrefix: string
+) {
+  'use workflow';
+  const runs = await Promise.all(
+    values.map((value, i) =>
+      start(gatedChildWorkflow, [`${tokenPrefix}:${i}`, value])
+    )
+  );
+  const results = await Promise.all(runs.map((run) => run.returnValue));
+  return { childRunIds: runs.map((run) => run.runId), results };
+}
+
+/**
  * Recursive Fibonacci workflow. start() is called directly to spawn
  * child workflows for fib(n-1) and fib(n-2).
  *
- * WORKER POOL CAVEAT: each `runA.returnValue` / `runB.returnValue` await
- * resolves by polling the child run's status inside a step that holds a
- * worker slot until the child completes. In worker-based worlds (notably
- * `world-postgres`), the peak number of these in-flight polls must fit
- * within `queueConcurrency`, or the workflow will deadlock — all slots
- * end up held by parents waiting for children that can't get a slot to
- * start. For `fib(n)`, the recursion tree produces roughly `2·(T(n)−leaves)`
- * concurrent polls at peak; fib(6) needs ~24 slots, fib(10) needs
- * hundreds. If you raise `n`, raise `queueConcurrency` accordingly.
+ * Each `runA.returnValue` / `runB.returnValue` await suspends the parent on
+ * the child-run completion hook, which the child resumes when it finishes,
+ * so a waiting parent holds no worker slot. (Before that hook existed, each
+ * await polled inside a step that held a slot until the child completed, and
+ * a deep enough tree deadlocked worker-based worlds such as `world-postgres`
+ * once every slot was held by a waiting parent. With
+ * `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` the awaits poll again, and that
+ * caveat applies: fib(6) needs ~24 slots, fib(10) hundreds.)
  */
 export async function fibonacciWorkflow(n: number): Promise<number> {
   'use workflow';
@@ -3949,4 +4556,109 @@ export async function lifecycleHookObserver(token: string) {
   'use workflow';
   using hook = createHook<Record<string, unknown>>({ token });
   return await hook;
+}
+
+//////////////////////////////////////////////////////////
+// Dynamic workflows (source generated by the app at runtime)
+//////////////////////////////////////////////////////////
+
+/**
+ * Stands in for orchestration an app assembles at runtime from its own
+ * templates. Built here rather than inlined as a constant so the source
+ * really is assembled per call.
+ *
+ * Only `steps`, `sleep` and `createHook` are in scope inside it; `steps.add`
+ * resolves to the `add` step this file already exports and deploys.
+ */
+function generateDynamicSource(opts: { sleepFor?: string } = {}) {
+  const pause = opts.sleepFor
+    ? `  await sleep(${JSON.stringify(opts.sleepFor)});\n`
+    : '';
+  return `
+async function workflow(input) {
+  "use workflow";
+  const doubled = await steps.add(input.value, input.value);
+${pause}  const total = await steps.add(doubled, 1);
+  return { total };
+}
+`;
+}
+
+/**
+ * Starts a dynamic run from inside the deployment.
+ *
+ * This is the shape that matters for dynamic workflows and the reason it lives
+ * in the app rather than in the test runner: `experimental_dynamic.steps` is given the
+ * *imported* `add` function, so the `.stepId` the build-time transform stamped
+ * on it is what binds the source to a registered step. A caller outside the
+ * deployment cannot do that — it has no handle on the function — and would
+ * have to fall back to an explicit `{ stepId }` reference.
+ *
+ * In a step rather than in workflow code so the options object (which holds a
+ * function reference) is never serialized across a step boundary.
+ */
+async function startDynamicRun(value: number, sleepFor?: string) {
+  'use step';
+  const run = await start(generateDynamicSource({ sleepFor }), [{ value }], {
+    experimental_dynamic: { steps: { add } },
+  });
+  return { runId: run.runId };
+}
+
+/**
+ * Generates a workflow, starts it, and hands back the child's run ID.
+ *
+ * The child is deliberately NOT awaited here: `returnValue` polls from inside
+ * a step that holds a worker slot until the child finishes, which is the
+ * deadlock hazard documented on `fibonacciWorkflow`. The e2e runner awaits the
+ * child itself, which also lets it read the child's stored record.
+ */
+export async function dynamicWorkflowFromApp(value: number) {
+  'use workflow';
+  const child = await startDynamicRun(value);
+  return { parentInput: value, childRunId: child.runId };
+}
+
+/**
+ * Same, but the generated source suspends partway through.
+ *
+ * The suspension is the point: the delivery that resumes the child holds no
+ * in-memory copy of its code and no run input on the message, so it has to
+ * read the stored code back and decrypt it. That is the path a dynamic run
+ * dies on if the code is not durably stored (see the `world-local` fix in
+ * this PR).
+ */
+export async function dynamicWorkflowFromAppWithSleep(value: number) {
+  'use workflow';
+  const child = await startDynamicRun(value, '2s');
+  return { parentInput: value, childRunId: child.runId };
+}
+
+async function startDisallowedDynamicRun(value: number) {
+  'use step';
+  const run = await start(
+    `
+async function workflow(input) {
+  "use workflow";
+  return await steps.notAuthorized(input.value, 1);
+}
+`,
+    [{ value }],
+    { experimental_dynamic: { steps: { add } } }
+  );
+  return { runId: run.runId };
+}
+
+/**
+ * Generates source that reaches for a step it was never given.
+ *
+ * `steps` is frozen and holds only the aliases passed through
+ * `experimental_dynamic.steps`, so the child must fail rather than dispatch a step the app
+ * did not authorize. Returns the child's run ID for the runner to inspect —
+ * the *child* failing is the expected outcome, so the parent must not.
+ */
+export async function dynamicWorkflowDisallowedStep(value: number) {
+  'use workflow';
+  const child = await startDisallowedDynamicRun(value);
+  return { childRunId: child.runId };
 }

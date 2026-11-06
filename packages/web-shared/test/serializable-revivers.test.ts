@@ -80,6 +80,7 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
   BigInt64Array: [['BigInt64Array', 1], '.'],
   BigUint64Array: [['BigUint64Array', 1], '.'],
   Class: [['Class', 1], { classId: 2 }, 'class//Example'],
+  DataViewBytes: [['DataViewBytes', 1], '.'],
   Date: [['Date', 1], '2025-01-01T00:00:00.000Z'],
   DOMException: [
     ['DOMException', 1],
@@ -99,6 +100,14 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     'Hook token "approval-token" is already in use by another workflow (run "wrun_conflicting")',
     'approval-token',
     'wrun_conflicting',
+  ],
+  HookForceClaimedError: [
+    ['HookForceClaimedError', 1],
+    { message: 2, token: 3, claimedByRunId: 4, claimedByHookId: 5 },
+    'Hook token "channel:general" was force-claimed by another workflow (run "wrun_claimer")',
+    'channel:general',
+    'wrun_claimer',
+    'hook_claimer',
   ],
   Instance: [
     ['Instance', 1],
@@ -183,6 +192,13 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     ['WorkflowFunction', 1],
     { workflowId: 2 },
     'workflow//example',
+  ],
+  WorkflowStartError: [
+    ['WorkflowStartError', 1],
+    { message: 2, runId: 3, stage: 4 },
+    'Could not confirm whether workflow run "wrun_candidate" was admitted: timeout',
+    'wrun_candidate',
+    'admission',
   ],
   WritableStream: [['WritableStream', 1], { name: 2 }, 'stream-a'],
 };

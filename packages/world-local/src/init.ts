@@ -1,14 +1,19 @@
+import { randomBytes } from 'node:crypto';
 import {
   access,
   constants,
   mkdir,
+  opendir,
   readFile,
+  rm,
   unlink,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { globalSingleton } from '@workflow/utils';
+import { clearCreatedFilesCache, RUN_SCOPED_ENTITY_DIRS } from './fs.js';
+import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 
 /** Package name - hardcoded since it doesn't change */
 const PACKAGE_NAME = '@workflow/world-local';
@@ -202,14 +207,16 @@ export function upgradeVersion(
   oldVersion: ParsedVersion,
   newVersion: ParsedVersion
 ): void {
-  console.log(
+  // stderr: CLI commands print JSON on stdout.
+  console.warn(
     `[world-local] Upgrading from version ${formatVersion(oldVersion)} to ${formatVersion(newVersion)}`
   );
 }
 
 /**
  * Ensures the data directory exists and is writable.
- * Creates the directory if it doesn't exist.
+ * Creates the directory if it doesn't exist, and its `.gitignore` if it has
+ * none.
  *
  * @param dataDir - The path to the data directory
  * @throws {DataDirAccessError} If the directory cannot be created or accessed
@@ -244,10 +251,14 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
     );
   }
 
-  // Verify the directory is writable by attempting to write a temp file
+  // Verify the directory is writable by attempting to write a temp file.
+  // Its name is unique per call: concurrent checks of one directory (a World
+  // writing its queue auth key while start() initializes the directory, or
+  // two processes) must not share a file, because on Windows unlinking a file
+  // another call still has open fails with EPERM.
   const testFile = path.join(
     absolutePath,
-    `.workflow-write-test-${Date.now()}`
+    `.workflow-write-test-${process.pid}-${randomBytes(6).toString('hex')}`
   );
   try {
     await writeFile(testFile, '');
@@ -264,6 +275,13 @@ export async function ensureDataDir(dataDir: string): Promise<void> {
       nodeError.code
     );
   }
+
+  // A `.gitignore` that ignores everything in the directory, run data and the
+  // queue auth key alike, whenever there is none. `wx` never overwrites one
+  // that is already there, and a failure here never fails the World.
+  await writeFile(path.join(absolutePath, '.gitignore'), '*\n', {
+    flag: 'wx',
+  }).catch(() => {});
 }
 
 /**
@@ -307,6 +325,87 @@ async function writeVersionFile(
 }
 
 /**
+ * Name of an event or step file in the old flat layout:
+ * `wrun_<id>-<eventId|stepId>[.<tag>].json`.
+ */
+const FLAT_ENTITY_FILE = /^wrun_[0-9A-Za-z]+-[^/\\]+\.json$/;
+
+interface EntityDirsLayout {
+  /** Root-level files named like old flat-layout event/step files. */
+  flat: string[];
+  /** Root-level `.json` entries that are neither of the above. */
+  unrecognized: string[];
+  /** Whether any per-run subdirectory exists. */
+  runScoped: boolean;
+}
+
+function classifyEntityDirEntry(
+  layout: EntityDirsLayout,
+  entityDir: string,
+  entry: import('node:fs').Dirent
+): void {
+  if (entry.isDirectory()) {
+    layout.runScoped = true;
+    return;
+  }
+  if (!entry.name.endsWith('.json')) return;
+  const relative = path.join(entityDir, entry.name);
+  if (entry.isFile() && FLAT_ENTITY_FILE.test(entry.name)) {
+    layout.flat.push(relative);
+  } else {
+    layout.unrecognized.push(relative);
+  }
+}
+
+/**
+ * What `events/` and `steps/` hold at their root: per-run subdirectories,
+ * old flat-layout event/step files, or `.json` entries this package did not
+ * write (non-JSON entries such as `.DS_Store` or temp files are ignored).
+ */
+async function inspectEntityDirs(dataDir: string): Promise<EntityDirsLayout> {
+  const layout: EntityDirsLayout = {
+    flat: [],
+    unrecognized: [],
+    runScoped: false,
+  };
+  for (const entityDir of RUN_SCOPED_ENTITY_DIRS) {
+    // A missing directory is reported by opendir() on Node, but only on the
+    // first read on Bun, so both are inside the try.
+    try {
+      for await (const entry of await opendir(path.join(dataDir, entityDir))) {
+        classifyEntityDirEntry(layout, entityDir, entry);
+      }
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+  }
+  return layout;
+}
+
+/**
+ * Thrown by {@link initDataDir} for a data directory it can neither use nor
+ * safely identify as old flat-layout data: per-run directories mixed with
+ * flat event/step files (an older release, or another implementation, is
+ * still writing to it), or `.json` entries it did not write.
+ */
+export class DataDirLayoutError extends Error {
+  constructor(
+    public readonly dataDir: string,
+    public readonly files: string[]
+  ) {
+    const shown = files.slice(0, 5).join(', ');
+    super(
+      `[world-local] ${path.resolve(dataDir)} holds ${files.length} event/step ` +
+        `file(s) this version does not read (${shown}${files.length > 5 ? ', …' : ''}). ` +
+        `If an older version of ${PACKAGE_NAME} is using this directory, stop it. ` +
+        `Then delete the directory, or move or remove those files.`
+    );
+    this.name = 'DataDirLayoutError';
+  }
+}
+
+/**
  * Gets the suggested downgrade version based on the old version.
  * If a specific version is suggested in the error, use that.
  * Otherwise, suggest the previous minor version if patch is 0,
@@ -334,6 +433,32 @@ function getSuggestedDowngradeVersion(
 export async function initDataDir(dataDir: string): Promise<void> {
   // First ensure the directory exists and is accessible
   await ensureDataDir(dataDir);
+
+  // Local run data from the old flat layout is not migrated: a directory that
+  // holds only such data is wiped and started over. Anything else outside
+  // the per-run layout is refused rather than deleted.
+  const layout = await inspectEntityDirs(dataDir);
+  if (
+    layout.unrecognized.length > 0 ||
+    (layout.runScoped && layout.flat.length > 0)
+  ) {
+    throw new DataDirLayoutError(dataDir, [
+      ...layout.unrecognized,
+      ...layout.flat,
+    ]);
+  }
+  if (layout.flat.length > 0) {
+    console.warn(
+      `[world-local] Deleting local workflow data in "${path.resolve(dataDir)}": ` +
+        `it was written by an older version of ${PACKAGE_NAME} with an ` +
+        `incompatible storage layout.`
+    );
+    clearCreatedFilesCache();
+    resetHookIndexEnsureCache();
+    // Retries ENOTEMPTY from another process writing into it meanwhile.
+    await rm(dataDir, { recursive: true, force: true, maxRetries: 3 });
+    await ensureDataDir(dataDir);
+  }
 
   const packageInfo = await getPackageInfo();
   const currentVersion = parseVersion(packageInfo.version);

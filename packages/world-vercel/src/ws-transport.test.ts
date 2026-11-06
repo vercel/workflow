@@ -23,9 +23,10 @@ import {
   it,
   vi,
 } from 'vitest';
-import { encodeFrame } from './frames.js';
+import { decodeFrame, encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
+import { encodeWsFrameMessages, WsPartAssembler } from './ws-parts.js';
 import {
   getWsEventsTransport,
   isWsEventsTransportEnabled,
@@ -51,8 +52,9 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     readonly url: string;
     readonly headers: Record<string, string>;
     readonly sent: Uint8Array[] = [];
-    /** Queued failures for upcoming `send` calls. */
-    readonly sendErrors: Error[] = [];
+    /** Queued outcomes for upcoming `send` calls: an error fails that send,
+     *  `undefined` lets it through. */
+    readonly sendErrors: Array<Error | undefined> = [];
     private readonly listeners = new Map<string, Listener[]>();
 
     constructor(url: string, options?: { headers?: Record<string, string> }) {
@@ -86,6 +88,14 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
       if (this.readyState === FakeSocket.CLOSED) return;
       this.readyState = FakeSocket.CLOSED;
       this.emit('close', code);
+    }
+
+    terminate(): void {
+      if (this.readyState === FakeSocket.CONNECTING) {
+        this.failHandshake(new Error('terminated while connecting'));
+        return;
+      }
+      this.close(1006);
     }
 
     // ---- test drivers ----
@@ -216,6 +226,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+  delete process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES;
   delete process.env.DEBUG;
 });
 
@@ -278,6 +289,186 @@ describe('request/reply', () => {
 
     await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
     await expect(first).resolves.toMatchObject({ meta: { reqId: 1 } });
+  });
+});
+
+describe('large frames', () => {
+  /** Byte equality without a deep diff, which is slow on multi-MiB arrays. */
+  const sameBytes = (a: Uint8Array | undefined, b: Uint8Array) =>
+    a !== undefined && Buffer.from(a).equals(Buffer.from(b));
+  // The smallest message limit the env var allows.
+  const LIMIT = 2 * 1024 * 1024;
+  const bytes = (size: number) => {
+    const out = new Uint8Array(size);
+    for (let i = 0; i < size; i++) out[i] = (i * 7 + 3) & 0xff;
+    return out;
+  };
+
+  beforeEach(() => {
+    process.env.WORKFLOW_WS_MAX_MESSAGE_BYTES = String(LIMIT);
+  });
+
+  it('sends a request over the limit as parts that rebuild to the frame', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const payload = bytes(LIMIT * 3 + 5);
+    const event = { eventType: 'step_completed', specVersion: 4 };
+    const promise = transport.request((reqId) =>
+      encodeFrame({ reqId, type: 'event', event }, payload)
+    );
+    const socket = await nextSocket();
+    socket.open();
+    await tick();
+
+    expect(socket.sent.length).toBeGreaterThan(2);
+    for (const message of socket.sent) {
+      expect(message.byteLength).toBeLessThanOrEqual(LIMIT);
+    }
+    const assembler = new WsPartAssembler();
+    const frames = socket.sent.flatMap((message) => {
+      const frame = assembler.accept(decodeFrame(message));
+      return frame ? [frame] : [];
+    });
+    expect(frames).toHaveLength(1);
+    expect(frames[0]?.meta).toEqual({ reqId: 1, type: 'event', event });
+    expect(sameBytes(frames[0]?.body, payload)).toBe(true);
+
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({
+      meta: { reqId: 1, status: 201 },
+      requestParts: socket.sent.length,
+      replyParts: 1,
+    });
+  });
+
+  it('offers the frame-parts flag on every upgrade', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { socket } = await connectAndSend(transport);
+    expect(socket.headers['x-workflow-ws-flags']).toBe('frame-parts');
+  });
+
+  it('fails the request when a later part cannot be sent', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request((reqId) =>
+      encodeFrame(
+        { reqId, type: 'event', event: { eventType: 'step_completed' } },
+        bytes(LIMIT * 3)
+      )
+    );
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+    socket.sendErrors.push(undefined, new Error('EPIPE'));
+    socket.open();
+    await tick();
+
+    await expect(promise).rejects.toThrow(/send failed: EPIPE/);
+  });
+
+  it('fails the request when the socket closes partway through a split reply', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    const [head] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 3),
+      LIMIT
+    );
+    if (head) socket.deliver(head);
+    await tick();
+    socket.close(1006);
+    await tick();
+
+    await expect(promise).rejects.toThrow(/closed \(code 1006\)/);
+  });
+
+  it('reads through a split reply for a request that already settled', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise: first, socket } = await connectAndSend(transport);
+    const second = transport.request(eventFrame);
+    await tick();
+    socket.deliver(ackFrame(2));
+    await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
+
+    // A late split reply for reqId 2, which is no longer pending, then the
+    // reply request 1 is waiting for.
+    for (const part of encodeWsFrameMessages(
+      { reqId: 2, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    )) {
+      socket.deliver(part);
+    }
+    socket.deliver(ackFrame(1));
+    await tick();
+
+    await expect(first).resolves.toMatchObject({ meta: { reqId: 1 } });
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+    expect(loggedErrors()).toMatch(/split reply for unknown reqId 2/);
+  });
+
+  it('sends a request under the limit as one message', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    expect(socket.sent).toHaveLength(1);
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({ requestParts: 1 });
+  });
+
+  it('rebuilds a reply sent as parts and resolves the matching request', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise: first, socket } = await connectAndSend(transport);
+    const second = transport.request(eventFrame);
+    await tick();
+
+    const replyBody = bytes(LIMIT * 4);
+    const parts = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      replyBody,
+      LIMIT
+    );
+    // A whole reply for another request can arrive between parts.
+    const [head, ...rest] = parts;
+    if (head) socket.deliver(head);
+    socket.deliver(ackFrame(2, 201));
+    for (const part of rest) socket.deliver(part);
+    await tick();
+
+    await expect(second).resolves.toMatchObject({ meta: { reqId: 2 } });
+    await expect(first).resolves.toMatchObject({
+      meta: { reqId: 1, type: 'event_ack', status: 200 },
+      replyParts: parts.length,
+    });
+    expect(sameBytes((await first).body, replyBody)).toBe(true);
+  });
+
+  it('fails the connection on a whole reply for a reqId whose split reply is open', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    const [head] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    );
+    if (head) socket.deliver(head);
+    socket.deliver(ackFrame(1));
+    await tick();
+
+    await expect(promise).rejects.toThrow(/while its split frame is open/);
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+  });
+
+  it('fails the connection on a part that breaks the protocol', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+
+    const [, continuation] = encodeWsFrameMessages(
+      { reqId: 1, type: 'event_ack', status: 200 },
+      bytes(LIMIT * 2),
+      LIMIT
+    );
+    if (continuation) socket.deliver(continuation);
+    await tick();
+
+    await expect(promise).rejects.toThrow(/part protocol.*no open frame/);
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
   });
 });
 
@@ -485,10 +676,11 @@ describe('failures are never silent', () => {
     void promise.catch(() => {});
 
     await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(30_000);
 
-    // A socket that swallowed a request is not the one to send the retry on.
-    expect(latest()).not.toBe(socket);
+    expect(socket.readyState).toBe(3);
+    expect(sockets).toHaveLength(1);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 
   it('disarms the deadline once a reply lands', async () => {
@@ -538,6 +730,128 @@ describe('failures are never silent', () => {
     await tick();
 
     expect(loggedWithoutDebug()).not.toContain('drain notice');
+  });
+});
+
+describe('handshake deadline', () => {
+  it('fails a write waiting on a handshake that never completes', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/handshake .* timed out after/);
+    expect(socket.readyState).toBe(3);
+    expect(socket.sent).toHaveLength(0);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('terminates a stalled socket whose channel was already released, without an error log', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    transport.open();
+    const socket = await nextSocket();
+    transport.release('invocation complete');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    expect(socket.readyState).toBe(3);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('closes the channel so later writes take HTTP', async () => {
+    const config = { token: 'test-token' };
+    openWsChannel('wrun_1', config);
+    await nextSocket();
+    expect(resolveWsTransport('wrun_1', config)).not.toBeNull();
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(resolveWsTransport('wrun_1', config)).toBeNull();
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('covers a token fetch that never resolves', async () => {
+    let release: (value: Record<string, string>) => void = () => {};
+    const stalledHeaders = () =>
+      new Promise<Record<string, string>>((resolve) => {
+        release = resolve;
+      });
+    const transport = getWsEventsTransport(WS_URL, stalledHeaders);
+    transport.open();
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+
+    await expect(promise).rejects.toThrow(/handshake .* timed out after/);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
+
+    release({ authorization: 'Bearer late' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(sockets).toHaveLength(0);
+  });
+
+  it('honours WORKFLOW_REQUEST_TIMEOUT_MS', async () => {
+    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = '15000';
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    const socket = await nextSocket();
+
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(socket.readyState).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    await expect(promise).rejects.toThrow(/timed out after 15000ms/);
+  });
+
+  it('is disarmed once the handshake completes', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    socket.deliver(ackFrame(1));
+    await expect(promise).resolves.toMatchObject({ meta: { reqId: 1 } });
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+
+    expect(socket.readyState).toBe(1);
+    expect(getWsEventsTransport(WS_URL, headers)).toBe(transport);
+    expect(loggedErrors()).not.toContain('timed out');
+  });
+
+  it('is disarmed once a handshake fails on its own', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const promise = transport.request(eventFrame);
+    void promise.catch(() => {});
+    (await nextSocket()).failHandshake();
+    await expect(promise).rejects.toThrow('ECONNREFUSED');
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS * 2);
+
+    expect(loggedErrors()).not.toContain('handshake');
+  });
+
+  it('bounds a stalled eager reconnect and stops reconnecting', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { promise, socket } = await connectAndSend(transport);
+    socket.close(1006);
+    await expect(promise).rejects.toThrow();
+
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sockets).toHaveLength(2);
+    const joined = transport.request(eventFrame);
+    void joined.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS + 1);
+    await expect(joined).rejects.toThrow(/handshake .* timed out/);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1].readyState).toBe(3);
+    expect(getWsEventsTransport(WS_URL, headers)).not.toBe(transport);
   });
 });
 

@@ -54,6 +54,14 @@ Full base URL override for HTTPS or custom hostnames. Default: `http://localhost
 
 Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
+### `WORKFLOW_QUEUE_AUTH`
+
+Whether the flow route accepts only deliveries sent by the app's own processes. Default: `on`. Every delivery carries the app's queue key, and the route refuses a request without it with a `401` and touches no run.
+
+The key is a random value in the file `queue-auth-key` in the [data directory](#data-directory-layout). The app writes a new one each time it starts, when it first uses its World and before it sends anything, so a restart needs no wait. A script that calls `start()` with the same data directory writes a new key the same way, and the app accepts it. The CLI and the web UI only read the key, so point them at the app's data directory (`WORKFLOW_LOCAL_DATA_DIR`). Several app processes on one data directory (PM2 with `-i N`, `node:cluster`, Nitro's `node-cluster` preset) end up on the newest key in the file.
+
+A refused delivery is retried at once when the key in the file has changed, and otherwise a few times with a short backoff, then logged once and given up; its run is left as it was. Keep the CLI and the web UI on the same release as the app's `@workflow/world-local`: an older one sends no key. Set `off` on the app to accept deliveries from a process that cannot read its data directory, on a trusted machine only. `off` is refused while dynamic workflows are enabled. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+
 ### `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`
 
 Maximum number of concurrent queue message handlers. Default: `1000`
@@ -70,11 +78,13 @@ How often a wait for a terminal run status re-reads the run file, in millisecond
 
 ### `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`
 
-Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `30000`. Set to `0` to disable.
+Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `0` (no deadline).
+
+A delivery executes inline steps before the handler responds, so a deadline shorter than your longest step redelivers a healthy delivery while it is still running and executes the same step again. Set this only if you would rather a hung handler be redelivered, and set it above the longest inline work you expect.
 
 ### `WORKFLOW_LOCAL_BODY_TIMEOUT_MS`
 
-Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `30000`. Set to `0` to disable.
+Maximum gap in milliseconds between response body chunks from a local queue handler before redelivering the durable message. Default: `0` (no deadline). The same caution as `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS` applies.
 
 ### `WORKFLOW_NODE_HTTP`
 
@@ -83,6 +93,12 @@ Whether queue deliveries go out through Node's built-in `node:http` and `node:ht
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
 Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
+
+Recovery also hands back to the queue any step that was running inline when the previous process exited. The step runs again right away instead of after the inline-ownership lease (about 14 minutes), and the interrupted attempt counts toward its retries. A step with `maxRetries: 0` that was interrupted mid-body therefore fails on restart with an "exceeded max retries" error instead of running again once the lease expires, as it already does after a crash on the Vercel World.
+
+If you turn recovery off and re-enqueue runs yourself, call `releaseOrphanedSteps(runId)` before re-enqueueing each run. It is a method of `LocalWorld`, the type `createWorld()` from `@workflow/world-local` returns. The `World` type that `getWorld()` returns does not declare it, so a caller holding a `World` needs the `LocalWorld` type to call it.
+
+A step counts as abandoned only if it started before the Local World loaded in the current process or worker thread. Steps started since then are never released, so runs this process picks up during or after recovery are not affected, and calling `releaseOrphanedSteps()` late is safe. Recovery assumes that nothing else is running workflows on the same data directory and `tag`. That includes an earlier worker thread of the same process: some dev servers reload into a new worker thread, and until the old one stops, the new one may dispatch a step the old one is still running, so the step can run twice. If several processes or workers run workflows on one data directory, turn recovery off or give each one its own `tag`.
 
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
@@ -115,6 +131,36 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 `createWorld()` also accepts `tag`, which scopes local storage files to a suffix. It is mainly used by test harnesses that share one `.workflow-data` directory.
 
+### Queue consumers other than the Workflow SDK
+
+The Local World delivers queue messages over HTTP to the app, and by default every message goes to the Workflow SDK's flow route, `/.well-known/workflow/v1/flow`. A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix (`__{namespace}_wkf_workflow_`) and tells the World where those go:
+
+```typescript title="lib/agent-queue.ts" lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const PREFIX = "__agent_wkf_workflow_";
+
+export async function registerAgentQueue(
+  handler: (req: Request) => Promise<Response>
+) {
+  const world = await getWorld();
+  // Over HTTP: deliveries for this prefix go to the app's own route.
+  world.registerRoute?.(PREFIX, "/api/agent/queue");
+  // In this process: deliveries skip HTTP entirely.
+  world.registerHandler?.(PREFIX, handler);
+}
+```
+
+`registerHandler()` takes precedence over `registerRoute()` for the same prefix. A prefix with neither still goes to the flow route, which answers `400` for a prefix it does not handle, and the Local World retries the message every five seconds, so a route registered later takes the next attempt. When the World restarts, `start()` re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`), so register the route or handler before calling `start()`.
+
+## Data directory layout
+
+Each run's event and step files are stored in their own directory (`events/<runId>/`, `steps/<runId>/`). Data written by `@workflow/world-local` releases before 5.1.0 uses a flat layout and is not migrated: when the World starts on a data directory that holds only flat-layout files, it logs a warning, deletes the directory, and starts with an empty one. The CLI and web UI only read the data directory and never delete it. Older releases see no events or steps in the new layout, so clear `.workflow-data` by hand before downgrading.
+
+A directory that mixes both layouts, or holds `.json` files in `events/` or `steps/` that the World did not write, is never deleted: starting fails with a `DataDirLayoutError` that lists the files.
+
+The data directory also holds the app's queue key, `queue-auth-key` (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)). The file is readable and writable only by its owner (mode `0600`); Windows does not enforce that mode the same way, and the file gets the directory's permissions. The World writes a `.gitignore` containing `*` into the data directory when it has none, so neither the key nor the run data is committed, and never replaces one that is already there.
+
 ## Limitations
 
 The Local World is designed for development, not production:
@@ -122,6 +168,6 @@ The Local World is designed for development, not production:
 - **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
 - **Filesystem storage**: Data is stored in local JSON files.
 - **Single instance**: The Local World cannot handle distributed deployments.
-- **No authentication**: The Local World is suitable only for local development.
+- **Minimal authentication**: The flow route accepts only deliveries carrying the app's queue key (see [`WORKFLOW_QUEUE_AUTH`](#workflow_queue_auth)), but nothing else is authenticated. Anyone who can read the data directory can read the key. The Local World is suitable only for local development.
 
 For production deployments, use the [Vercel World](/worlds/vercel), which handles execution, persistence, multi-tenancy, scale, observability, and security for you on Vercel, or check out the [Postgres World](/worlds/postgres) - a tested reference implementation that implements the complete World spec and can be used to deploy workflows anywhere.

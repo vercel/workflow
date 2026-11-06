@@ -17,6 +17,10 @@ This function publishes a workflow invocation carrying the request; the runtime 
 `resumeWebhook` is a runtime function that must be called from outside a workflow function.
 </Callout>
 
+<Callout type="warn">
+The webhook token is the only authorization `resumeWebhook()` and the public webhook route perform. Verify requests before acting on them. See [Hook and webhook security](/docs/foundations/hooks#security).
+</Callout>
+
 ```typescript lineNumbers
 import { resumeWebhook } from "workflow/api";
 

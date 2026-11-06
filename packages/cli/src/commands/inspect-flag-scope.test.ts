@@ -178,3 +178,115 @@ describe('inspect --attribute conflicts and syntax', () => {
     expect(state.setupCliWorld).not.toHaveBeenCalled();
   });
 });
+
+describe('inspect --all', () => {
+  it.each([
+    ['the runs listing', ['runs', '--all'], '--all pages through'],
+    ['the hooks listing', ['hooks', '--all'], '--all pages through'],
+    ['an ID', ['events', 'evnt_1', '--all'], 'names one item'],
+    [
+      '--interactive',
+      ['events', '--runId', VALID_RUN, '--all', '-i'],
+      'drop --interactive',
+    ],
+  ])('rejects it with %s before backend setup', async (_label, argv, expected) => {
+    expect(await runInspect(argv)).toContain(expected);
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('lets it through on the events listing', async () => {
+    const message = await runInspect([
+      'events',
+      '--runId',
+      VALID_RUN,
+      '--all',
+      '--backend',
+      'local',
+    ]);
+    expect(message).not.toContain('--all');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});
+
+describe('inspect lookups scoped to a run', () => {
+  // Used to reach the backend first and then throw "--run is required".
+  it('rejects a stream ID without --runId before backend setup', async () => {
+    const message = await runInspect(['stream', 'strm_01K4BZQ5T2J8HXFM6WD3PN']);
+    expect(message).toContain('inspect stream needs --runId');
+    expect(message).toContain('--runId=<run-id>');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('lets a stream ID through with --runId', async () => {
+    const message = await runInspect([
+      'stream',
+      'strm_01K4BZQ5T2J8HXFM6WD3PN',
+      '--runId',
+      VALID_RUN,
+    ]);
+    expect(message).not.toContain('needs --runId');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});
+
+describe('inspect resource aliases', () => {
+  // `st` is listed as the stream alias but was read as `step`.
+  it('reads st as stream', async () => {
+    const message = await runInspect(['st', 'strm_01K4BZQ5T2J8HXFM6WD3PN']);
+    expect(message).toContain('inspect stream needs --runId');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+});
+
+describe('inspect event <id>', () => {
+  it('rejects an event ID without --runId before backend setup', async () => {
+    const message = await runInspect([
+      'event',
+      'evnt_00000000000000000000000003',
+    ]);
+    expect(message).toContain('inspect event needs --runId');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  // Used to fail with "Event-ID is not supported for events".
+  it('lets an event ID through with --runId', async () => {
+    const message = await runInspect([
+      'event',
+      'evnt_00000000000000000000000003',
+      '--runId',
+      VALID_RUN,
+    ]);
+    expect(message).not.toContain('not supported');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});
+
+describe('inspect step <id>', () => {
+  // Used to look in the newest run, which is not the step's run unless it
+  // happens to be the newest.
+  it('rejects a step ID without --runId before backend setup', async () => {
+    const message = await runInspect([
+      'step',
+      'step_01K4BZQ5T2J8HXFM6WD3PNAVCE',
+    ]);
+    expect(message).toContain('inspect step needs --runId');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('lets a step ID through with --runId', async () => {
+    const message = await runInspect([
+      'step',
+      'step_01K4BZQ5T2J8HXFM6WD3PNAVCE',
+      '--runId',
+      VALID_RUN,
+    ]);
+    expect(message).not.toContain('needs --runId');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+
+  it('still lists the latest run steps without --runId', async () => {
+    const message = await runInspect(['steps']);
+    expect(message).not.toContain('needs --runId');
+    expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});

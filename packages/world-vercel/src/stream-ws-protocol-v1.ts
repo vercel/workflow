@@ -19,6 +19,14 @@ export const STREAM_WS_PROTOCOL_V1 = 'workflow-stream-ws/v1';
 export const STREAM_WS_V1_MAX_CHUNKS_PER_WRITE = MAX_CHUNKS_PER_STREAM_WRITE;
 /** Shared v1 size bound for each decoded chunk. */
 export const STREAM_WS_V1_MAX_CHUNK_BYTES = 10 * 1024 * 1024;
+/**
+ * Upper bound on a write message's bytes outside its chunk records: the two
+ * u32 frame length prefixes plus the CBOR metadata, which is at most 60 bytes
+ * (safe-integer `reqId` and `chunkSeq`, `numChunks` at the count bound).
+ */
+export const STREAM_WS_V1_WRITE_ENVELOPE_MAX_BYTES = 128;
+/** Each chunk record in a write body is a u32 length prefix plus its bytes. */
+const CHUNK_RECORD_PREFIX_BYTES = 4;
 
 const NonnegativeIntegerSchema = z.number().int().nonnegative();
 const RequestIdSchema = NonnegativeIntegerSchema;
@@ -68,12 +76,17 @@ export const StreamWsCloseAckMetaSchema = z.object({
   reqId: RequestIdSchema,
 });
 
-/** An absent request id makes the error connection-fatal. */
+/**
+ * An absent request id makes the error connection-fatal. A correlated 429 is
+ * the one retryable rejection: the request did not apply. `retryAfter` is the
+ * server handler's `Retry-After` header, verbatim, when it set one.
+ */
 export const StreamWsErrorMetaSchema = z.object({
   type: z.literal('error'),
   reqId: RequestIdSchema.optional(),
   status: z.number().int(),
   message: z.string().optional(),
+  retryAfter: z.string().optional(),
 });
 
 /**
@@ -96,9 +109,17 @@ export const StreamWsReplyMetaSchema = z.discriminatedUnion('type', [
 /*
  * v1 pipelining is ordered and fail-stop. The server executes requests serially
  * in receive order. Its first failed request prevents later queued writes or
- * closes from executing and poisons the writer. An unknown client outcome is
- * likewise never replayed. The whole WebSocket-message ceiling is deliberately
- * implementation- and measurement-defined beyond the per-chunk/count bounds.
+ * closes from executing and poisons the writer. The exception is a correlated
+ * 429, which did not apply: a client with no other request outstanding may
+ * resend it after `retryAfter`. An unknown client outcome is never replayed.
+ *
+ * A whole encoded message is at most 16 MiB (2^24 bytes), because the Vercel
+ * proxy drops any larger WebSocket frame without a close frame, which the
+ * client only observes seconds later as code 1006. The sender's limit is
+ * `WORKFLOW_WS_MAX_MESSAGE_BYTES` (`wsMaxMessageBytes` in `ws-parts.ts`), so
+ * one stream-write group may become several ordered write requests, each
+ * bounded by chunk count and message bytes, with `chunkSeq` advancing across
+ * them.
  */
 
 export type StreamWriterId = z.infer<typeof StreamWriterIdSchema>;
@@ -155,6 +176,36 @@ export function encodeStreamWsWriteRequest(
     }
   }
   return encodeFrame(parsed, encodeNormalizedMultiChunks(binaryChunks));
+}
+
+/**
+ * Returns the exclusive end of the longest run of `chunks` starting at `start`
+ * that fits one write request: at most `STREAM_WS_V1_MAX_CHUNKS_PER_WRITE`
+ * chunks, and an encoded message of at most `maxMessageBytes` (using the
+ * envelope bound, so no encoding is needed). Always takes at least one chunk;
+ * a single chunk too large for one message is left to the encoded-size check
+ * before send.
+ */
+export function streamWsWriteBatchEnd(
+  chunks: readonly Uint8Array[],
+  start: number,
+  maxMessageBytes: number
+): number {
+  const countEnd = Math.min(
+    chunks.length,
+    start + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
+  );
+  let bytes =
+    STREAM_WS_V1_WRITE_ENVELOPE_MAX_BYTES +
+    CHUNK_RECORD_PREFIX_BYTES +
+    chunks[start].byteLength;
+  let end = start + 1;
+  while (end < countEnd) {
+    bytes += CHUNK_RECORD_PREFIX_BYTES + chunks[end].byteLength;
+    if (bytes > maxMessageBytes) break;
+    end++;
+  }
+  return end;
 }
 
 /** Encodes one complete v1 close message with an empty body. */

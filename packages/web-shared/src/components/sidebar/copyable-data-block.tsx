@@ -31,7 +31,7 @@ export function EncryptedDataBlock() {
             title={
               ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined
             }
-            size="xs"
+            size="tiny"
           >
             {ctx.isDecrypting ? (
               <Spinner size={10} />

@@ -1,7 +1,7 @@
 name: Performance Benchmarks
 
-# Measures the workflow runtime's core latency metrics (TTFS, STSO, WO, CRTT,
-# CDV — see packages/core/e2e/benchmark.test.ts for definitions) against a
+# Measures the workflow runtime's core latency metrics (TTFS, STSO, WO,
+# fan-out — see packages/core/e2e/benchmark.test.ts for definitions) against a
 # deployed workbench app and posts the results as a sticky PR comment. Re-runs update
 # the same comment; previous results stay available in a collapsed history
 # section (state is embedded in the comment body itself).
@@ -29,7 +29,7 @@ jobs:
       fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Classify changed files
         id: scope
@@ -52,10 +52,10 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Find existing benchmark comment
-        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -64,7 +64,7 @@ jobs:
 
       - name: Save existing comment body
         if: steps.find-comment.outputs.comment-id != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -87,7 +87,7 @@ jobs:
             --output "$RUNNER_TEMP/comment.md"
 
       - name: Update PR comment
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           path: ${{ runner.temp }}/comment.md
@@ -96,10 +96,8 @@ jobs:
   # backend (e.g. postgres or local), add a matrix entry with
   # `world: postgres` / `world: local` and gate the Vercel-specific steps —
   # the runner (packages/core/e2e/benchmark.test.ts) already selects its
-  # backend from the same env vars as the e2e tests. CRTT is measured inside
-  # the workflow (benchCrttWorkflow's parallel reader/writer steps read/write
-  # on the deployment), so it does not need `run.getReadable()` to work from
-  # the test process; the runner only polls returnValue for the aggregates.
+  # backend from the same env vars as the e2e tests. Streaming delivery
+  # performance is measured in durabench; stream correctness stays in E2E.
   benchmark:
     name: Benchmark (${{ matrix.target.world }}, ${{ matrix.target.app }})
     runs-on: ubuntu-latest
@@ -119,8 +117,6 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      deployments: read
-      statuses: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -134,7 +130,7 @@ jobs:
             project-slug: "example-nextjs-workflow-turbopack"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -146,23 +142,21 @@ jobs:
       - name: Build packages
         run: pnpm turbo run build --filter='@workflow/cli'
 
-      - name: Wait for Vercel deployment
-        id: waitForDeployment
+      - name: Resolve Vercel deployment
+        id: deployment
         if: matrix.target.world == 'vercel'
-        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        uses: ./.github/actions/resolve-vercel-deployment
         with:
-          project-slug: ${{ matrix.target.project-slug }}
-          timeout: 1000
-          check-interval: 15
-          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          project-id: ${{ matrix.target.project-id }}
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
 
       - name: Run benchmarks
         env:
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.target.app }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ steps.deployment.outputs.environment == 'preview' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.target.project-id }}
@@ -180,7 +174,7 @@ jobs:
       - name: Upload benchmark results
         # Partial results are still useful when a scenario failed
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ matrix.target.app }}-${{ matrix.target.world }}
           path: bench-results-*.json
@@ -200,11 +194,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download benchmark results
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: bench-results-*
           path: benchmark-results
@@ -241,7 +235,7 @@ jobs:
             || echo "Run $run_id has no benchmark artifacts; skipping baseline"
 
       - name: Find existing benchmark comment
-        uses: peter-evans/find-comment@3eae4d37986fb5a8592848f6a574fdf654e61f9e # v3.1.0
+        uses: peter-evans/find-comment@b30e6a3c0ed37e7c023ccd3f1db5c6c0b0c23aad # v4.0.0
         id: find-comment
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -250,7 +244,7 @@ jobs:
 
       - name: Save existing comment body
         if: steps.find-comment.outputs.comment-id != ''
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -277,7 +271,7 @@ jobs:
           cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Update PR comment
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: benchmark-results
           path: ${{ runner.temp }}/comment.md

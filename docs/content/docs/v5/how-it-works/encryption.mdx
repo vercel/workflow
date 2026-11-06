@@ -36,7 +36,9 @@ Metadata such as workflow names, step names, entity IDs, timestamps, and lifecyc
 
 ### Compression
 
-Payloads are compressed before encryption. A format prefix on the stored value records the compression codec (gzip, with zstd support in the format), and the inner payload keeps its own serialization format prefix after decompression. Repetitive payloads compress heavily. AI token streams average around 80% smaller, reducing storage and network transfer. Like encryption, compression is automatic and requires no code changes.
+Payloads are compressed before encryption. A format prefix on the stored value records the compression codec, and the inner payload keeps its own serialization format prefix after decompression. Repetitive payloads compress heavily. AI token streams average around 80% smaller, reducing storage and network transfer. Like encryption, compression is automatic and requires no code changes.
+
+The codec is zstd when both the writer and the run's deployment run Node.js 22.15+ (or 23.8+), and gzip otherwise. Runs started on an older Node.js version stay readable after you upgrade the project's Node.js version. To force a codec, set [`WORKFLOW_COMPRESSION_CODEC`](/docs/configuration/runtime-tuning#workflow_compression_codec).
 
 ### Key management
 
@@ -97,7 +99,7 @@ getEncryptionKeyForRun?(
 ): Promise<Uint8Array | undefined>;
 ```
 
-Use `getEncryptionKeyForRun(run)` when the run entity already exists. Use `getEncryptionKeyForRun(runId, context?)` in runtime paths like `start()` where the run has not been created yet but the world may still need context such as `deploymentId`.
+Use `getEncryptionKeyForRun(run)` when the runtime already holds the run entity. Use `getEncryptionKeyForRun(runId, context?)` everywhere else: in paths like `start()` where the run does not exist yet, and in paths that have a run id but no reason to load the run's payloads, such as resolving the key for a stream read. Either way `context` carries whatever the World needs to find the key, such as `deploymentId`.
 
 To add encryption support to a custom `World`:
 

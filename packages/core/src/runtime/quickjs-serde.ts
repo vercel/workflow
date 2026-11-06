@@ -133,6 +133,9 @@ const BRANDED_SAMPLES = `({
   Float64Array: new Float64Array(0),
   BigInt64Array: new BigInt64Array(0),
   BigUint64Array: new BigUint64Array(0),
+  ...(typeof Float16Array === 'function'
+    ? { Float16Array: new Float16Array(0) }
+    : {}),
 })`;
 
 /**
@@ -203,6 +206,7 @@ const CAPTURE_INTRINSICS = `(() => {
     Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
     Int32Array, Uint32Array, Float32Array, Float64Array,
     BigInt64Array, BigUint64Array,
+    Float16Array: g.Float16Array,
     Error,
     AggregateError: g.AggregateError,
     EvalError, RangeError, ReferenceError, SyntaxError, TypeError, URIError,
@@ -254,9 +258,11 @@ const SYMBOL_NAMES = [
   'workflow-class-registry',
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
+  '@workflow/errors//HookForceClaimedError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
+  '@workflow/errors//WorkflowStartError',
 ] as const;
 type SymbolName = (typeof SYMBOL_NAMES)[number];
 
@@ -485,6 +491,14 @@ export function createQuickJSSerde(
   ]) {
     typedArrayConstructors.set(name, at(name));
   }
+  // `Float16Array` has no workflow reducer: it takes devalue's built-in
+  // typed-array branch, matching the node:vm engine's wire format. Optional
+  // because a capture root adopted from a snapshot taken before this capture
+  // existed does not carry it.
+  {
+    const float16Array = optional('Float16Array');
+    if (float16Array) typedArrayConstructors.set('Float16Array', float16Array);
+  }
 
   const symbols = new Map<SymbolName, JSValueHandle>();
   {
@@ -654,6 +668,19 @@ export function createQuickJSSerde(
   };
 
   const newGuestString = (value: string): JSValueHandle => vm.newString(value);
+
+  /**
+   * `HookConflictError`'s third constructor argument for a reduced value:
+   * `{ kind: 'start' }` for a refused `start({ experimental_hook })`, else undefined.
+   */
+  const startConflictOptions = (value: JSValueHandle): JSValueHandle => {
+    if (ownString(value, 'kind') !== 'start') return vm.undefined;
+    const options = vm.newObject();
+    const kind = vm.newString('start');
+    options.setProp('kind', kind);
+    kind.dispose();
+    return options;
+  };
 
   /** Collect Set values / Map entries via captured forEach. */
   const collect = (
@@ -827,7 +854,23 @@ export function createQuickJSSerde(
       if (!isDataView) {
         info.length = call(i.viewLength, value).consume((h) => h.toNumber());
       }
-      return info;
+      if (info.byteLength === info.bufferByteLength) return info;
+      // Reached only for views no reducer claims (`Float16Array`). devalue's
+      // built-in encoding emits the whole backing buffer plus offset/length,
+      // which would put bytes outside the view on the wire. Hand it a fresh
+      // guest buffer holding only the viewed bytes instead, so it encodes the
+      // compact `[tag, buffer]` form, byte-identical to the node:vm engine
+      // (serialization/hardened.ts). The guest buffer is claimed by the
+      // `ArrayBuffer` reducer like any other and swept with the pass's
+      // handle scope.
+      const viewed = viewBytes(value).slice();
+      return {
+        buffer: vm.newArrayBuffer(viewed.buffer as ArrayBuffer),
+        byteOffset: 0,
+        byteLength: info.byteLength,
+        bufferByteLength: info.byteLength,
+        length: info.length,
+      };
     },
     toArrayBuffer: (value) =>
       isHandle(value) ? value.toArrayBuffer() : d.toArrayBuffer(value),
@@ -922,9 +965,22 @@ export function createQuickJSSerde(
     return result;
   };
 
+  /**
+   * The own `signal` property, only when it holds an object. Plain objects
+   * such as fetch options carry `signal: undefined` (the AI SDK always
+   * passes one), and reading symbol keys off that handle throws.
+   */
+  const ownSignal = (value: JSValueHandle): JSValueHandle | undefined => {
+    const signal = own(value, 'signal');
+    if (!signal) return undefined;
+    if (signal.typeof === 'object' && !signal.isNull) return signal;
+    signal.dispose();
+    return undefined;
+  };
+
   const reduceAbort = (value: JSValueHandle): unknown => {
     // streamName/hookToken live on the signal (or the controller's signal).
-    const signal = own(value, 'signal');
+    const signal = ownSignal(value);
     const holder = signal ?? value;
     const streamName =
       ownSymbolString(value, 'WORKFLOW_ABORT_STREAM_NAME') ??
@@ -958,7 +1014,7 @@ export function createQuickJSSerde(
       if (!guestHasOwn(value, 'signal')) return false;
       const hasStamp =
         ownSymbolString(value, 'WORKFLOW_ABORT_STREAM_NAME') !== undefined ||
-        own(value, 'signal')?.consume(
+        ownSignal(value)?.consume(
           (signal) =>
             ownSymbolString(signal, 'WORKFLOW_ABORT_STREAM_NAME') !== undefined
         );
@@ -1064,6 +1120,17 @@ export function createQuickJSSerde(
       isHandle(value) && tagOfHandle(value) === 'BigUint64Array'
         ? bytesToBase64(viewBytes(value))
         : false,
+    // Mirrors the typed-array reducers, and for the same reason: devalue's
+    // built-in DataView encoding emits the whole backing ArrayBuffer, so a
+    // view onto a slice of a larger buffer would put the rest of that
+    // buffer on the wire. `viewBytes` copies only the viewed range. The tag
+    // is not `DataView`, so payloads already written under that name still
+    // take the built-in parse branch (`fromViewInfo` below) with their
+    // bounds intact; see serialization/reducers/common.ts.
+    DataViewBytes: (value) =>
+      isHandle(value) && tagOfHandle(value) === 'DataView'
+        ? bytesToBase64(viewBytes(value))
+        : false,
     Date: (value) => {
       if (!isHandle(value) || tagOfHandle(value) !== 'Date') return false;
       const time = call(i.dateGetTime, value).consume((h) => h.toNumber());
@@ -1114,6 +1181,40 @@ export function createQuickJSSerde(
       } else {
         conflictingRunId?.dispose();
       }
+      if (ownString(value, 'kind') === 'start') reduced.kind = 'start';
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
+    HookForceClaimedError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'HookForceClaimedError')
+        return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        token: own(value, 'token'),
+        claimedByRunId: own(value, 'claimedByRunId'),
+      };
+      const claimedByHookId = own(value, 'claimedByHookId');
+      if (claimedByHookId && !claimedByHookId.isUndefined) {
+        reduced.claimedByHookId = claimedByHookId;
+      } else {
+        claimedByHookId?.dispose();
+      }
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
+    WorkflowStartError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'WorkflowStartError') return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        runId: own(value, 'runId'),
+        stage: own(value, 'stage'),
+      };
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
@@ -1695,6 +1796,10 @@ export function createQuickJSSerde(
       buildTypedArray('BigInt64Array', value),
     BigUint64Array: (value: string | JSValueHandle) =>
       buildTypedArray('BigUint64Array', value),
+    // No `DataView` reviver: older payloads under that tag must keep taking
+    // the built-in branch, which restores their bounds via `fromViewInfo`.
+    DataViewBytes: (value: string | JSValueHandle) =>
+      buildTypedArray('DataView', value),
     Date: (value: JSValueHandle | string) => {
       // The reducer emits '.' for invalid dates and an ISO string otherwise.
       const iso = isHandle(value) ? value.toString() : value;
@@ -1765,12 +1870,14 @@ export function createQuickJSSerde(
       const cls = registeredErrorClass('@workflow/errors//HookConflictError');
       let error: JSValueHandle;
       if (cls) {
-        // Constructor takes (token, conflictingRunId).
+        // Constructor takes (token, conflictingRunId, { kind }).
         const token = own(value, 'token') ?? vm.undefined;
         const conflictingRunId = own(value, 'conflictingRunId') ?? vm.undefined;
-        error = vm.construct(cls, token, conflictingRunId);
+        const options = startConflictOptions(value);
+        error = vm.construct(cls, token, conflictingRunId, options);
         if (token !== vm.undefined) token.dispose();
         if (conflictingRunId !== vm.undefined) conflictingRunId.dispose();
+        if (options !== vm.undefined) options.dispose();
         const stack = own(value, 'stack');
         if (stack && !stack.isUndefined) define(error, 'stack', stack);
         stack?.dispose();
@@ -1792,6 +1899,73 @@ export function createQuickJSSerde(
           define(error, 'conflictingRunId', conflictingRunId);
         }
         conflictingRunId?.dispose();
+        const kind = own(value, 'kind');
+        if (kind && !kind.isUndefined) define(error, 'kind', kind);
+        kind?.dispose();
+      }
+      return error;
+    },
+    HookForceClaimedError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass(
+        '@workflow/errors//HookForceClaimedError'
+      );
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (token, claimedByRunId, claimedByHookId).
+        const token = own(value, 'token') ?? vm.undefined;
+        const claimedByRunId = own(value, 'claimedByRunId') ?? vm.undefined;
+        const claimedByHookId = own(value, 'claimedByHookId') ?? vm.undefined;
+        error = vm.construct(cls, token, claimedByRunId, claimedByHookId);
+        if (token !== vm.undefined) token.dispose();
+        if (claimedByRunId !== vm.undefined) claimedByRunId.dispose();
+        if (claimedByHookId !== vm.undefined) claimedByHookId.dispose();
+        const stack = own(value, 'stack');
+        if (stack && !stack.isUndefined) define(error, 'stack', stack);
+        stack?.dispose();
+        if (guestHasOwn(value, 'cause')) {
+          const cause = own(value, 'cause') ?? vm.undefined;
+          define(error, 'cause', cause);
+          if (cause !== vm.undefined) cause.dispose();
+        }
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'HookForceClaimedError' });
+        for (const field of ['token', 'claimedByRunId', 'claimedByHookId']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
+      }
+      return error;
+    },
+    WorkflowStartError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass('@workflow/errors//WorkflowStartError');
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (runId, stage, cause).
+        const runId = own(value, 'runId') ?? vm.undefined;
+        const stage = own(value, 'stage') ?? vm.undefined;
+        const cause = guestHasOwn(value, 'cause')
+          ? (own(value, 'cause') ?? vm.undefined)
+          : vm.undefined;
+        error = vm.construct(cls, runId, stage, cause);
+        if (runId !== vm.undefined) runId.dispose();
+        if (stage !== vm.undefined) stage.dispose();
+        if (cause !== vm.undefined) cause.dispose();
+        const message = own(value, 'message');
+        if (message && !message.isUndefined) define(error, 'message', message);
+        message?.dispose();
+        const stack = own(value, 'stack');
+        if (stack && !stack.isUndefined) define(error, 'stack', stack);
+        stack?.dispose();
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'WorkflowStartError' });
+        for (const field of ['runId', 'stage']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
       }
       return error;
     },

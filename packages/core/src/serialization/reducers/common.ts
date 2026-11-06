@@ -13,9 +13,11 @@ import { types } from 'node:util';
 import {
   FatalError,
   HookConflictError,
+  HookForceClaimedError,
   RetryableError,
   RuntimeDecryptionError,
   StreamError,
+  WorkflowStartError,
 } from '@workflow/errors';
 import {
   arrayBufferByteLength,
@@ -239,6 +241,23 @@ export function getCommonReducers(
       types.isBigInt64Array(value) && viewToBase64(value),
     BigUint64Array: (value) =>
       types.isBigUint64Array(value) && viewToBase64(value),
+    // Claims `DataView` for the same reason every typed array is claimed:
+    // devalue's built-in `DataView` encoding emits the *whole* backing
+    // ArrayBuffer plus the view's offset and length. For a view onto Node's
+    // shared `Buffer` pool (`Buffer.allocUnsafe`, and `Buffer.from` below
+    // `Buffer.poolSize >>> 1`) that whole buffer is 8 KiB of unrelated
+    // allocations, so a four-byte view would persist bytes the workflow
+    // never handed us into the run's event log. Base64 of the viewed range
+    // keeps the payload to the bytes the view actually spans.
+    //
+    // The tag deliberately is *not* `DataView`. devalue skips its built-in
+    // branch for any tag that has a custom reviver, so registering one under
+    // that name would strip the bounds off `["DataView", buf, offset, length]`
+    // tuples already in event logs — the o11y UI and CLI read those with
+    // current code, and would render the whole pooled slab this reducer
+    // exists to keep out. Under a distinct tag the built-in branch stays
+    // reachable and those payloads still revive with their bounds.
+    DataViewBytes: (value) => types.isDataView(value) && viewToBase64(value),
     Date: (value) => {
       // Brand check + captured intrinsics: a sandbox-side patch of
       // `Date.prototype.toISOString` (e.g. a Temporal polyfill wrapping it)
@@ -287,6 +306,38 @@ export function getCommonReducers(
       if (conflictingRunId !== undefined) {
         reduced.conflictingRunId = conflictingRunId;
       }
+      if (readProperty(value, 'kind') === 'start') reduced.kind = 'start';
+      return reduced;
+    },
+    HookForceClaimedError: (value) => {
+      const base = reduceNamedErrorSubclassBase('HookForceClaimedError', value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['HookForceClaimedError'] = {
+        ...base,
+        token: readProperty(value, 'token') as HookForceClaimedError['token'],
+        claimedByRunId: readProperty(
+          value,
+          'claimedByRunId'
+        ) as HookForceClaimedError['claimedByRunId'],
+      };
+      const claimedByHookId = readProperty(value, 'claimedByHookId') as
+        | HookForceClaimedError['claimedByHookId']
+        | undefined;
+      if (claimedByHookId !== undefined) {
+        reduced.claimedByHookId = claimedByHookId;
+      }
+      return reduced;
+    },
+    // WorkflowStartError carries the candidate run and the stage that could
+    // not be confirmed; `start()` is a step, so it crosses into workflows.
+    WorkflowStartError: (value) => {
+      const base = reduceNamedErrorSubclassBase('WorkflowStartError', value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['WorkflowStartError'] = {
+        ...base,
+        runId: readProperty(value, 'runId') as WorkflowStartError['runId'],
+        stage: readProperty(value, 'stage') as WorkflowStartError['stage'],
+      };
       return reduced;
     },
     RangeError: makeErrorSubclassReducer('RangeError'),
@@ -451,6 +502,10 @@ export function getCommonRevivers(
       new global.BigInt64Array(reviveArrayBuffer(value, global)),
     BigUint64Array: (value: string) =>
       new global.BigUint64Array(reviveArrayBuffer(value, global)),
+    // No `DataView` reviver: see the `DataViewBytes` reducer. Older payloads
+    // tagged `DataView` must keep reaching devalue's built-in branch.
+    DataViewBytes: (value: string) =>
+      new global.DataView(reviveArrayBuffer(value, global)),
     Date: (value) => new global.Date(value),
     DOMException: (value) => {
       const error = new global.DOMException(value.message, value.name);
@@ -487,11 +542,41 @@ export function getCommonRevivers(
         ((global as Record<symbol, unknown>)[
           Symbol.for('@workflow/errors//HookConflictError')
         ] as typeof HookConflictError | undefined) ?? HookConflictError;
-      const error = new Ctor(value.token, value.conflictingRunId);
+      const error = new Ctor(
+        value.token,
+        value.conflictingRunId,
+        value.kind === 'start' ? { kind: 'start' } : undefined
+      );
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) {
         (error as Error & { cause?: unknown }).cause = value.cause;
       }
+      return error;
+    },
+    HookForceClaimedError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//HookForceClaimedError')
+        ] as typeof HookForceClaimedError | undefined) ?? HookForceClaimedError;
+      const error = new Ctor(
+        value.token,
+        value.claimedByRunId,
+        value.claimedByHookId
+      );
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) {
+        (error as Error & { cause?: unknown }).cause = value.cause;
+      }
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//WorkflowStartError')
+        ] as typeof WorkflowStartError | undefined) ?? WorkflowStartError;
+      const error = new Ctor(value.runId, value.stage, value.cause);
+      error.message = value.message;
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     RangeError: makeErrorSubclassReviver(global, 'RangeError'),

@@ -12,6 +12,8 @@ related:
 
 You can check for cancellation before awaiting by inspecting `run.status`.
 
+A canceled run is terminal, so this error is non-retryable (`fatal: true`). Inside a workflow, `await run.returnValue` runs as a step, and that step fails on its first attempt instead of spending its retry budget re-reading a run that cannot change. Errors from *failing to read* the run, such as a transport blip, stay retryable.
+
 ```typescript lineNumbers
 import { WorkflowRunCancelledError } from "workflow/errors"
 declare const run: { status: Promise<string>; returnValue: Promise<any> }; // @setup
@@ -34,6 +36,11 @@ definition={`
 interface WorkflowRunCancelledError {
   /** The ID of the canceled run. */
   runId: string;
+  /**
+   * Always \`true\`. A canceled run is terminal, so a step that reads one is
+   * not retried.
+   */
+  fatal: true;
   /** The error message. */
   message: string;
 }

@@ -108,6 +108,22 @@ export interface Webhook<T extends Request> extends Hook<T> {
   url: string;
 }
 
+/**
+ * Options accepted by the orchestrator's `createHook` for hooks the SDK
+ * itself creates (the `AbortController` signal hook, the child-run completion
+ * hook). Deliberately not part of the public {@link HookOptions}.
+ *
+ * A system hook is an ordinary hook (same tokens, conflicts, resumes and
+ * disposal) that is recorded with `isSystem: true`, so observability can
+ * label it and the runtime can treat it as written by another run: its
+ * resumes come from outside this run's replay.
+ *
+ * @internal
+ */
+export interface SystemHookOptions extends HookOptions {
+  isSystem?: boolean;
+}
+
 export interface HookOptions {
   /**
    * Unique token that is used to associate with the hook.
@@ -172,6 +188,44 @@ export interface HookOptions {
   experimental_minRetention?: StringValue | Date | number;
 
   /**
+   * **Experimental.** Take the token over if another run currently holds it.
+   *
+   * Without this, a `token` that another active run already registered makes
+   * the hook reject with `HookConflictError`. With it, this run always ends
+   * up owning the token: the other run's hook is disposed and its awaiters
+   * reject with `HookForceClaimedError`, that run is woken so it can react,
+   * and every `resumeHook(token)` from then on reaches this run — including
+   * one that was already in flight when the takeover happened. Payloads the
+   * previous owner received before the takeover stay with it.
+   *
+   * Any number of runs forcing the same token converge on one owner; each
+   * run that loses it gets `HookForceClaimedError`, and none can get stuck.
+   * A finished run holding the token under `experimental_minRetention` is
+   * taken over silently. A run can also take over a token held by its own
+   * earlier hook.
+   *
+   * A token is only taken from a run whose runtime understands being taken
+   * from (started at spec version 8 or later). For an older run the World
+   * declines and the hook rejects with the ordinary `HookConflictError`,
+   * as if this option had not been set.
+   *
+   * Requires an explicit `token` (a generated token can never conflict) and
+   * is not available on `createWebhook()`. `createHook()` throws if the
+   * configured World does not support this experimental option.
+   *
+   * @example
+   *
+   * ```ts
+   * // Whichever run for this channel starts most recently owns its hook.
+   * const hook = createHook<SlackMessage>({
+   *   token: `slack_webhook:${channelId}`,
+   *   experimental_force: true,
+   * });
+   * ```
+   */
+  experimental_force?: boolean;
+
+  /**
    * Additional user-defined data to include with the hook payload.
    *
    * Read it back outside the workflow with `getHookByToken()`, where
@@ -208,7 +262,7 @@ export interface HookOptions {
 export interface WebhookOptions
   extends Omit<
     HookOptions,
-    'token' | 'isWebhook' | 'experimental_minRetention'
+    'token' | 'isWebhook' | 'experimental_minRetention' | 'experimental_force'
   > {
   /**
    * If set to a `Response` object, the webhook will automatically

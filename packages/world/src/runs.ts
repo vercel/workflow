@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
+import { StartHookSchema } from './start-hook.js';
 
 // Workflow run schemas
 export const WorkflowRunStatusSchema = z.compile(
@@ -64,6 +65,13 @@ export const WorkflowRunBaseSchema = z.compile(
     input: SerializedDataSchema.optional(),
     output: SerializedDataSchema.optional(),
     /**
+     * A dynamic run's workflow VM code, serialized through the run-payload
+     * pipeline. Compression is conditional on protocol support and benefit;
+     * encryption is conditional on the World supplying run key material.
+     * Replay reads this opaque payload from the run rather than creation events.
+     */
+    dynamicWorkflowCode: SerializedDataSchema.optional(),
+    /**
      * The thrown value from a run_failed event, serialized via the workflow
      * serialization pipeline. To display the error to a user, hydrate it via
      * `hydrateRunError` (with the encryption key if encryption is enabled).
@@ -115,6 +123,14 @@ export const WorkflowRunBaseSchema = z.compile(
      * implement `getEncryptionKeyForRun` (encryption disabled).
      */
     encryptionPublicKey: z.string().optional(),
+    /**
+     * The start Hook this run was admitted with through `start({ experimental_hook })`,
+     * echoed by a World that admitted it (see `start-hook.ts`), with its
+     * `hookId` (`startHookId(runId)`). Required on the `run_created` response,
+     * on `runs.get` and on the `run_started` response. Never forwarded when a
+     * run is re-run: a re-run is a new run by intent.
+     */
+    startHook: StartHookSchema.optional(),
     expiredAt: z.coerce.date().optional(),
     startedAt: z.coerce.date().optional(),
     completedAt: z.coerce.date().optional(),
@@ -163,12 +179,17 @@ export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 export type StartedWorkflowRun = WorkflowRun & { startedAt: Date };
 
 /**
- * WorkflowRun with input/output fields excluded (when resolveData='none').
+ * WorkflowRun with its payload fields excluded (when resolveData='none'):
+ * input, output, and a dynamic run's stored workflow code.
  * Used for listing runs without fetching the full serialized data.
  */
-export type WorkflowRunWithoutData = Omit<WorkflowRun, 'input' | 'output'> & {
+export type WorkflowRunWithoutData = Omit<
+  WorkflowRun,
+  'input' | 'output' | 'dynamicWorkflowCode'
+> & {
   input: undefined;
   output: undefined;
+  dynamicWorkflowCode?: undefined;
 };
 
 // Request types

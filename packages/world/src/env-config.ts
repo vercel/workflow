@@ -43,7 +43,8 @@ const globalStore = globalThis as typeof globalThis &
 // biome-ignore lint/suspicious/noAssignInExpressions: off-module state idiom
 const warnedEnvValues = (globalStore[WarnedEnvValuesKey] ??= new Set<string>());
 
-function warnOnce(key: string, message: string): void {
+/** Warns `[workflow] <message>` once per process for `key`. */
+export function warnOnce(key: string, message: string): void {
   if (warnedEnvValues.has(key)) return;
   warnedEnvValues.add(key);
   // `@workflow/world` has no logger dependency; match the package's existing
@@ -123,6 +124,49 @@ export function getMaxEventsPerRun(): number {
     { integer: true }
   );
   return maxEvents > 0 ? maxEvents : DEFAULT_MAX_EVENTS_PER_RUN;
+}
+
+/**
+ * Whether a run is exempt from the default per-run event ceiling: its
+ * persisted `executionContext` selects the QuickJS VM with a positive
+ * safe-integer `snapshotThreshold`. Snapshotting keeps resume cost bounded
+ * regardless of log length, so these runs don't need the ceiling.
+ *
+ * Mirrors the Vercel World's server-side policy so runs behave the same
+ * locally and in production.
+ */
+export function isEventLimitExemptRun(run?: {
+  executionContext?: unknown;
+}): boolean {
+  const context = run?.executionContext as
+    | { workflowVm?: unknown; snapshotThreshold?: unknown }
+    | null
+    | undefined;
+  if (context === null || typeof context !== 'object') return false;
+  const { workflowVm, snapshotThreshold } = context;
+  return (
+    workflowVm === 'quickjs' &&
+    typeof snapshotThreshold === 'number' &&
+    Number.isSafeInteger(snapshotThreshold) &&
+    snapshotThreshold > 0
+  );
+}
+
+/**
+ * The event ceiling a World advertises (as `maxEvents`) for a specific
+ * run. Exempt runs (see {@link isEventLimitExemptRun}) get
+ * `Number.MAX_SAFE_INTEGER`, which is effectively unlimited while staying a
+ * positive integer for SDKs that validate one. Other runs get
+ * {@link getMaxEventsPerRun}.
+ *
+ * Use {@link getMaxEventsPerRun} (not this) for page sizes and scan bounds.
+ */
+export function getMaxEventsForRun(run?: {
+  executionContext?: unknown;
+}): number {
+  return isEventLimitExemptRun(run)
+    ? Number.MAX_SAFE_INTEGER
+    : getMaxEventsPerRun();
 }
 
 /**

@@ -1,16 +1,31 @@
-import { EntityConflictError, StreamError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  START_HOOK_CANDIDATE_CANCELLED,
+  StreamError,
+  WorkflowRunNotFoundError,
+  WorkflowRuntimeError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
   type BulkCancelWorkflowRunsResult,
   type Event,
   isLegacySpecVersion,
+  SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { runtimeLogger } from '../logger.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
+import { afterRunCancelled } from './after-terminal-write.js';
+import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import { start } from './start.js';
 
 export interface RecreateRunOptions {
@@ -25,10 +40,23 @@ export interface RecreateRunOptions {
    * for is never picked up.
    */
   namespace?: string;
+  /**
+   * Region for the new run. Defaults to the source run's region, as reported
+   * by `World.regionForRunId`, so a replay is placed where the original run's
+   * data lives instead of in whatever region the calling process runs in.
+   * When the world can't derive one, `start()`'s own region resolution
+   * applies.
+   */
+  region?: string;
 }
 
 export interface StopSleepResult {
-  /** Number of pending sleeps that were stopped */
+  /**
+   * Number of pending sleeps the call stopped. On a single-orchestrator run
+   * (spec version 9 and later) it is the number the call asked the run's
+   * orchestrator to complete, which may not complete early (see
+   * {@link wakeUpRun}).
+   */
   stoppedCount: number;
 }
 
@@ -87,6 +115,18 @@ export async function recreateRunFromExisting(
 ): Promise<string> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
+    // A dynamic run's workflow function is not in the deployment's bundle;
+    // it lives on the run, encrypted under that run's key. Starting a new run
+    // by workflow name alone would create one with the dynamic id and no code
+    // behind it, which no delivery could ever execute. Carrying the code
+    // over means decrypting it and re-encrypting under the new run's key,
+    // which this path does not do yet, so refuse rather than create a run
+    // that fails on its first delivery.
+    if (readDynamicWorkflowMetadata(run.executionContext)) {
+      throw new WorkflowRuntimeError(
+        `Run ${runId} is a dynamic workflow run; re-running it is not supported. Start it again from its source with start(source, args, { experimental_dynamic }).`
+      );
+    }
     const rawKey = await world.getEncryptionKeyForRun?.(run);
     const encryptionKey = rawKey
       ? await deriveRunPayloadKeys(rawKey)
@@ -99,10 +139,21 @@ export async function recreateRunFromExisting(
         globalThis
       )
     );
-    const specVersion =
-      options.specVersion ?? run.specVersion ?? SPEC_VERSION_LEGACY;
     const deploymentId = options.deploymentId ?? run.deploymentId;
+    // The source run's spec version describes the deployment that executed
+    // it, so it is only a valid default for a replay on that same
+    // deployment. When the replay is redirected elsewhere, leave it unset
+    // and let `start()` resolve the target's version from its capability
+    // probe, instead of pinning the replay to the old deployment's.
+    const specVersion =
+      options.specVersion ??
+      (deploymentId === run.deploymentId
+        ? (run.specVersion ?? SPEC_VERSION_LEGACY)
+        : undefined);
+    const region = options.region ?? world.regionForRunId?.(runId) ?? undefined;
 
+    // Never forward the source run's `startHook`: a re-run is a new run by
+    // intent, and the reservation would refuse it as a duplicate.
     const newRun = await start(
       { workflowId: run.workflowName },
       workflowArgs as unknown[],
@@ -112,6 +163,7 @@ export async function recreateRunFromExisting(
         specVersion,
         replayedFromRunId: runId,
         namespace: options.namespace,
+        ...(region !== undefined ? { region } : {}),
       }
     );
     return newRun.runId;
@@ -124,7 +176,65 @@ export async function recreateRunFromExisting(
 }
 
 /**
+ * Whether `run` has a single orchestrator (spec version 9 and later), whose
+ * writes are classified in-band or out-of-band. Older runs make neither
+ * distinction, and their writes go out as they always did.
+ */
+export function isSingleOrchestratorRun(
+  run: Pick<WorkflowRun, 'specVersion'>
+): boolean {
+  return (
+    (run.specVersion ?? SPEC_VERSION_LEGACY) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+  );
+}
+
+/**
+ * Wakes a single-orchestrator run's orchestrator after an out-of-band write
+ * (a cancellation), so a live or later orchestrator observes it. No
+ * idempotency key: a duplicate wake costs a cheap delivery, a key could lose
+ * the wakeup. Best effort: the write already committed, and the next
+ * delivery of the run reads it either way. Older runs are not woken: their
+ * next delivery observes the write, as it always did.
+ */
+export async function wakeRunAfterOutOfBandWrite(
+  world: World,
+  run: Pick<
+    WorkflowRun,
+    'runId' | 'workflowName' | 'deploymentId' | 'specVersion'
+  >
+): Promise<void> {
+  if (!isSingleOrchestratorRun(run)) return;
+  try {
+    await world.queue(
+      getWorkflowQueueName(run.workflowName),
+      {
+        runId: run.runId,
+        requestedAt: new Date(),
+        runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+      },
+      {
+        deploymentId: run.deploymentId,
+        ...(run.specVersion !== undefined
+          ? { specVersion: run.specVersion }
+          : {}),
+      }
+    );
+  } catch (err) {
+    runtimeLogger.warn('Failed to wake the run after an out-of-band write', {
+      workflowRunId: run.runId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Cancel a workflow run.
+ *
+ * A run that does not exist (yet) is still cancelled through the World: a
+ * `start({ experimental_hook })` candidate that was admitted but never created a run (the
+ * recovery `WorkflowStartError` points at) is fenced by it, so no copy of it
+ * can create the run any more. Otherwise the World answers not found, which
+ * is thrown as `WorkflowRunNotFoundError`.
  *
  * @param options - Optional cancellation settings. `cancelReason` records a
  *   free-text reason (max 512 chars) on the run_cancelled event.
@@ -134,9 +244,25 @@ export async function cancelRun(
   runId: string,
   options?: CancelRunOptions
 ): Promise<void> {
+  let missing = false;
   try {
-    const run = await world.runs.get(runId, { resolveData: 'none' });
-    const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
+    const run = await world.runs
+      .get(runId, { resolveData: 'none' })
+      .catch((err: unknown) => {
+        // Only a World with start Hooks can have a candidate with no run
+        // to fence; anywhere else a missing run stays a plain not-found.
+        if (
+          !WorkflowRunNotFoundError.is(err) ||
+          world.capabilities?.atomicStartHook?.active !== true
+        ) {
+          throw err;
+        }
+        missing = true;
+        return undefined;
+      });
+    const specVersion = run
+      ? specVersionForRunWrite(run.specVersion, SPEC_VERSION_LEGACY)
+      : SPEC_VERSION_CURRENT;
     const compatMode = isLegacySpecVersion(specVersion);
     const eventRequest = {
       eventType: 'run_cancelled' as const,
@@ -145,8 +271,23 @@ export async function cancelRun(
         ? { eventData: { cancelReason: options.cancelReason } }
         : {}),
     };
-    await world.events.create(runId, eventRequest, { v1Compat: compatMode });
+    await world.events.create(runId, eventRequest, {
+      v1Compat: compatMode,
+      ...(run && isSingleOrchestratorRun(run) ? { inBand: false } : {}),
+    });
+    if (run) {
+      await wakeRunAfterOutOfBandWrite(world, run);
+      await afterRunCancelled(world, run);
+    }
   } catch (err) {
+    // The World fenced a candidate that never became a run: cancelled.
+    if (
+      WorkflowWorldError.is(err) &&
+      err.code === START_HOOK_CANDIDATE_CANCELLED
+    ) {
+      return;
+    }
+    if (missing && WorkflowRunNotFoundError.is(err)) throw err;
     throw new Error(
       `Failed to cancel run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
@@ -195,39 +336,37 @@ export async function cancelRuns(
 
   // Fast path: a single batch operation when the world supports it.
   if (world.runs.cancelMany) {
-    return world.runs.cancelMany({
+    const result = await world.runs.cancelMany({
       runIds,
       ...(options?.cancelReason !== undefined
         ? { cancelReason: options.cancelReason }
         : {}),
     });
+    // The batch write cannot resume the completion hooks of parents waiting
+    // on these runs, so do it per cancelled run here (`cancelRun` does the
+    // same on the fallback path below).
+    await forEachConcurrently(
+      result.results.filter(({ outcome }) => outcome === 'cancelled'),
+      ({ runId }) => afterRunCancelled(world, runId)
+    );
+    return result;
   }
 
   // Fallback: bounded-concurrency single-run cancellation.
   const results: BulkCancelWorkflowRunResult[] = new Array(runIds.length);
-  let nextIndex = 0;
-
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const index = nextIndex++;
-      if (index >= runIds.length) return;
-      const runId = runIds[index];
-      try {
-        await cancelRun(world, runId, options);
-        results[index] = { runId, outcome: 'cancelled' };
-      } catch {
-        results[index] = {
-          runId,
-          outcome: 'failed',
-          code: 'internal_error',
-          retryable: true,
-        };
-      }
+  await forEachConcurrently(runIds, async (runId, index) => {
+    try {
+      await cancelRun(world, runId, options);
+      results[index] = { runId, outcome: 'cancelled' };
+    } catch {
+      results[index] = {
+        runId,
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      };
     }
-  };
-
-  const workerCount = Math.min(CANCEL_RUNS_FALLBACK_CONCURRENCY, runIds.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  });
 
   const summary = {
     requested: runIds.length,
@@ -261,6 +400,26 @@ export async function cancelRuns(
 }
 
 /**
+ * Runs `fn` over `items` with at most {@link CANCEL_RUNS_FALLBACK_CONCURRENCY}
+ * calls in flight. `fn` must not reject.
+ */
+async function forEachConcurrently<T>(
+  items: readonly T[],
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= items.length) return;
+      await fn(items[index]!, index);
+    }
+  };
+  const workerCount = Math.min(CANCEL_RUNS_FALLBACK_CONCURRENCY, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+}
+
+/**
  * Re-enqueue a workflow run.
  */
 export async function reenqueueRun(
@@ -274,10 +433,14 @@ export async function reenqueueRun(
       getWorkflowQueueName(run.workflowName, options?.namespace),
       {
         runId,
+        runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
       },
       {
         deploymentId: run.deploymentId,
-        specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+        specVersion: specVersionForRunWrite(
+          run.specVersion,
+          SPEC_VERSION_LEGACY
+        ),
       }
     );
   } catch (err) {
@@ -288,8 +451,82 @@ export async function reenqueueRun(
   }
 }
 
+// On `globalThis` (see `globalSingleton`): the waits a `wakeUpRun` in this
+// process named and their orchestrator may not have completed yet, by run.
+// Read by `@workflow/vitest`'s `waitForSleep`, which would otherwise hand
+// back a sleep that is already being woken. Bounded: the oldest runs are
+// forgotten first.
+const MAX_TRACKED_WAKE_UP_RUNS = 1000;
+const wakeUps = globalSingleton(
+  '@workflow/core//pendingWakeUpWaits',
+  1,
+  () => ({ byRun: new Map<string, Set<string>>() })
+);
+
+/**
+ * Waits of `runId` that a `run.wakeUp()` in this process asked its
+ * orchestrator to complete. On a single-orchestrator run `wakeUp` returns
+ * before the orchestrator writes their `wait_completed`; a caller looking for
+ * the run's next pending sleep skips these.
+ *
+ * A wait stays here only once its wake message was published. It also stays
+ * when a queue that coalesces the run's orchestrator messages merged that
+ * message into a delivery that was already running, which drops its names
+ * (see {@link wakeUpRun}): the wait then runs its full length while it is
+ * listed here, and a caller skipping it misses a sleep that is still open.
+ * world-local and world-postgres deliver the message after the running
+ * delivery, so this does not happen there.
+ */
+export function pendingWakeUpWaits(runId: string): ReadonlySet<string> {
+  return wakeUps.byRun.get(runId) ?? new Set();
+}
+
+/**
+ * Lists `correlationIds` as being woken, before their wake is published so a
+ * caller reading meanwhile already skips them. Returns the rollback for a
+ * publish that failed: it forgets the ids this call added, and keeps any an
+ * earlier wake listed.
+ */
+function rememberWakeUp(
+  runId: string,
+  correlationIds: readonly string[]
+): () => void {
+  const waits = wakeUps.byRun.get(runId) ?? new Set<string>();
+  const added = correlationIds.filter((id) => !waits.has(id));
+  for (const id of added) waits.add(id);
+  wakeUps.byRun.delete(runId);
+  wakeUps.byRun.set(runId, waits);
+  while (wakeUps.byRun.size > MAX_TRACKED_WAKE_UP_RUNS) {
+    const oldest = wakeUps.byRun.keys().next().value;
+    if (oldest === undefined) break;
+    wakeUps.byRun.delete(oldest);
+  }
+  return () => {
+    const current = wakeUps.byRun.get(runId);
+    if (!current) return;
+    for (const id of added) current.delete(id);
+    if (current.size === 0) wakeUps.byRun.delete(runId);
+  };
+}
+
 /**
  * Wake up a workflow run by interrupting pending sleep() calls.
+ *
+ * On a single-orchestrator run (spec version 9 and later) the run's
+ * orchestrator completes the waits: this names them on an ordinary
+ * orchestrator message and returns once that message is enqueued, so their
+ * `wait_completed` lands shortly after. That is best-effort: a queue that
+ * coalesces the run's orchestrator messages into a delivery already running
+ * (world-vercel) drops the names, and the waits then run their full length.
+ * A delivery is running not only while it has work: after a pass with
+ * nothing left to run it stays live while the run waits on an open hook or
+ * a background step (`WORKFLOW_ORCHESTRATOR_LINGER_MS`, or
+ * `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` for open hooks alone), so a wake sent just
+ * after a run was active can be dropped too. `stoppedCount` then still
+ * counts the waits it asked to complete.
+ * A queue that holds the message until the running delivery ends (the Local
+ * and Postgres Worlds) delivers it after that delivery. Older runs get
+ * `wait_completed` written here.
  */
 export async function wakeUpRun(
   world: World,
@@ -308,6 +545,9 @@ export async function wakeUpRun(
         runId,
         pagination: { sortOrder: 'asc', ...(cursor ? { cursor } : {}) },
         resolveData: 'none',
+        ...(run.specVersion !== undefined && {
+          specVersion: run.specVersion,
+        }),
       });
       allEvents.push(...eventsResult.data);
       cursor = eventsResult.hasMore ? eventsResult.cursor : null;
@@ -334,6 +574,47 @@ export async function wakeUpRun(
       );
     }
 
+    // A single-orchestrator run's waits are completed by its orchestrator
+    // alone (in-band), so a wake-up names the waits on an orchestrator
+    // message instead of writing `wait_completed` beside it. The names live
+    // only on that message, and it is keyed like every orchestrator message:
+    // coalesced into a delivery that is already running, which re-reads only
+    // the log, the names are lost, including while that delivery lingers
+    // after its last pass. `stoppedCount` counts the waits it asked to
+    // complete, not completions.
+    if ((run.specVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR) {
+      const correlationIds = pendingWaits.flatMap((event) =>
+        event.correlationId ? [event.correlationId] : []
+      );
+      if (correlationIds.length > 0) {
+        const forget = rememberWakeUp(runId, correlationIds);
+        try {
+          await world.queue(
+            getWorkflowQueueName(run.workflowName, options?.namespace),
+            {
+              runId,
+              runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+              completeWaits: correlationIds,
+            },
+            {
+              deploymentId: run.deploymentId,
+              specVersion: specVersionForRunWrite(
+                run.specVersion,
+                SPEC_VERSION_LEGACY
+              ),
+            }
+          );
+        } catch (err) {
+          // Nothing was published, or the outcome is unknown: either way a
+          // later `waitForSleep` must still see the sleep as open. Waking it
+          // again is harmless.
+          forget();
+          throw err;
+        }
+      }
+      return { stoppedCount: correlationIds.length };
+    }
+
     const errors: Error[] = [];
     let stoppedCount = 0;
 
@@ -347,13 +628,16 @@ export async function wakeUpRun(
         : {
             eventType: 'wait_completed' as const,
             correlationId: waitEvent.correlationId,
-            specVersion: run.specVersion,
+            specVersion: specVersionForRunWrite(run.specVersion),
             eventData: {
               resumeAt: waitEvent.eventData.resumeAt,
             },
           };
       try {
-        await world.events.create(runId, eventData, { v1Compat: compatMode });
+        await world.events.create(runId, eventData, {
+          v1Compat: compatMode,
+          inBand: false,
+        });
         stoppedCount++;
       } catch (err) {
         if (EntityConflictError.is(err)) {
@@ -369,10 +653,14 @@ export async function wakeUpRun(
         getWorkflowQueueName(run.workflowName, options?.namespace),
         {
           runId,
+          runSpecVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
         },
         {
           deploymentId: run.deploymentId,
-          specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+          specVersion: specVersionForRunWrite(
+            run.specVersion,
+            SPEC_VERSION_LEGACY
+          ),
         }
       );
     }

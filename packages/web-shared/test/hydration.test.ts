@@ -123,6 +123,30 @@ describe('getWebRevivers — error family', () => {
     expect(revived.conflictingRunId).toBe('wrun_conflicting');
   });
 
+  it('hydrates a HookForceClaimedError with the claimer preserved', () => {
+    const revived = hydrateData(
+      [
+        ['HookForceClaimedError', 1],
+        { message: 2, token: 3, claimedByRunId: 4, claimedByHookId: 5 },
+        'Hook token "channel:general" was force-claimed by another workflow (run "wrun_claimer")',
+        'channel:general',
+        'wrun_claimer',
+        'hook_claimer',
+      ],
+      REVIVERS
+    ) as Error & {
+      token?: string;
+      claimedByRunId?: string;
+      claimedByHookId?: string;
+    };
+
+    expect(revived).toBeInstanceOf(Error);
+    expect(revived.name).toBe('HookForceClaimedError');
+    expect(revived.token).toBe('channel:general');
+    expect(revived.claimedByRunId).toBe('wrun_claimer');
+    expect(revived.claimedByHookId).toBe('hook_claimer');
+  });
+
   it('hydrates a RetryableError with retryAfter as a Date', async () => {
     const retryAt = new Date('2025-01-01T00:00:00.000Z');
     const revived = await roundTrip<Error & { retryAfter: Date }>(

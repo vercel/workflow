@@ -2,9 +2,16 @@ import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
+  generatedWorkflowPathPattern,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
+  turbopackContentPattern,
+  useStepPattern,
+  useWorkflowPattern,
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
+  workflowSerdeComputedPropertyPattern,
+  workflowSerdeImportPattern,
+  workflowSerdeSymbolPattern,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
@@ -44,19 +51,34 @@ const WORKFLOW_BUNDLE_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
 ];
-const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
-const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
-const workflowSerdeImportPattern = /from\s+(['"])@workflow\/serde\1/;
-const workflowSerdeSymbolPattern =
-  /Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\1\s*\)/;
-const workflowSerdeComputedPropertyPattern =
-  /\[\s*WORKFLOW_(?:SERIALIZE|DESERIALIZE)\s*\]/;
 
 const PSEUDO_EXTERNAL_PACKAGES = new Set(['server-only', 'client-only']);
 const warnedAutoRemovedServerExternalPackages = new Set<string>();
 const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
 const globalConfig = globalThis as typeof globalThis &
   Record<symbol, string | undefined>;
+
+// Per-process record of started (or in-flight) workflow builds, keyed by
+// working dir. WORKFLOW_NEXT_PRIVATE_BUILT alone is not enough: in `next dev`,
+// any env change seen by Next's dev watcher (an `.env*` file changing, or the
+// client router filter changing because an app route was added/removed or the
+// watcher's first pass landed after the render server started) forces an
+// @next/env reload. That restores process.env to its initial snapshot, which
+// drops the flag because it's set inside the config function rather than while
+// the config module loads. If this happens before Next re-evaluates
+// next.config, we'd rebuild and start a second watcher.
+// See https://github.com/vercel/workflow/issues/4309.
+// It lives on globalThis (not module scope) so it survives the config module
+// being re-required, and it's intentionally shared by every copy of
+// @workflow/next loaded in the process.
+const WORKFLOW_BUILDS_SYMBOL = Symbol.for('@workflow/next/workflowBuilds');
+
+function getWorkflowBuilds(): Map<string, Promise<void>> {
+  const globalWithBuilds = globalThis as typeof globalThis &
+    Record<symbol, Map<string, Promise<void>> | undefined>;
+  globalWithBuilds[WORKFLOW_BUILDS_SYMBOL] ??= new Map();
+  return globalWithBuilds[WORKFLOW_BUILDS_SYMBOL];
+}
 
 // Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
 function setWorkflowBasePath(basePath: string | undefined): void {
@@ -642,13 +664,12 @@ export function withWorkflow(
                 all: [
                   ...(existingRules[key]?.condition?.all || []),
                   // Exclude generated workflow route files from transformation
-                  { not: { path: /[/\\]\.well-known[/\\]workflow[/\\]/ } },
-                  // Match files with workflow directives or custom serialization patterns
-                  // Uses backreferences (\2, \3) to ensure matching quote types
-                  {
-                    content:
-                      /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
-                  },
+                  { not: { path: generatedWorkflowPathPattern } },
+                  // Match files with workflow directives or custom serialization
+                  // patterns, including `static [WORKFLOW_SERIALIZE]` computed keys
+                  // (e.g. @ai-sdk/openai). Shared with the builders so the two
+                  // can't drift apart.
+                  { content: turbopackContentPattern },
                 ],
               },
             }
@@ -688,9 +709,23 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
-      const workflowBuilder = await getWorkflowBuilder();
+      const builds = getWorkflowBuilds();
+      let build = builds.get(workingDir);
+      if (!build) {
+        build = (async () => {
+          const workflowBuilder = await getWorkflowBuilder();
+          await workflowBuilder.build();
+        })();
+        builds.set(workingDir, build);
+        // Allow a retry on the next evaluation if the build failed.
+        build.catch(() => {
+          if (builds.get(workingDir) === build) {
+            builds.delete(workingDir);
+          }
+        });
+      }
 
-      await workflowBuilder.build();
+      await build;
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
     }
 

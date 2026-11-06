@@ -24,6 +24,7 @@ export type Serializable =
   | bigint
   | BigInt64Array
   | BigUint64Array
+  | DataView
   | Date
   | DOMException
   | Error

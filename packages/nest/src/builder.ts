@@ -106,6 +106,19 @@ export class NestLocalBuilder extends BaseBuilder {
       format: 'esm',
       bundleFinalOutput: false,
       externalizeNonSteps: true,
+      // The WorkflowController loads these bundles straight off disk with
+      // Node's ESM loader, with no bundler in between. An externalized local
+      // import therefore has to be something Node itself can resolve, and a
+      // plain `.ts` helper imported by a step is not: Node only runs
+      // TypeScript from 22.18 on, and its type stripping still rejects the
+      // enums, parameter properties and decorators a NestJS codebase is full
+      // of. Bundling those dependencies keeps the output loadable on every
+      // supported Node.
+      //
+      // CommonJS projects keep externalizing them, because
+      // `#rewriteStepsBundleForCjs` rewrites those imports to `require()` the
+      // compiled files in `distDir` — a path with its own CI coverage.
+      bundleTransitiveLocalStepDependencies: this.#moduleType !== 'commonjs',
     });
 
     // When the NestJS project compiles to CJS via SWC, the ESM steps bundle

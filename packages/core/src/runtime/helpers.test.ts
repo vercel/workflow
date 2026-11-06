@@ -1,7 +1,7 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
   decrypt,
@@ -10,8 +10,10 @@ import {
   peekFormatPrefix,
   SerializationFormat,
 } from '../serialization.js';
+import { DYNAMIC_WORKFLOWS_ENV } from './constants.js';
 import {
   appendUniqueEvents,
+  DYNAMIC_WORKFLOW_VERSION,
   findEventSlotGap,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -263,6 +265,26 @@ describe('healthCheck response parsing', () => {
     expect(result.workflowCoreVersion).toBe('5.0.0-beta.7');
   });
 
+  it('surfaces dynamicWorkflowVersion when present in the response', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: 1 })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBe(1);
+  });
+
+  it('omits malformed dynamicWorkflowVersion values', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: true, dynamicWorkflowVersion: '1' })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.dynamicWorkflowVersion).toBeUndefined();
+  });
+
   it('omits workflowCoreVersion when the response does not include the field', async () => {
     // Independent of specVersion — the field is omitted by any responder
     // running an older `@workflow/core` that predates the addition of
@@ -301,6 +323,24 @@ describe('healthCheck response parsing', () => {
 
     expect(result.healthy).toBe(true);
     expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('surfaces nodeVersion from the target and drops a non-string value', async () => {
+    const ok = await healthCheck(
+      makeWorldWithResponse(
+        JSON.stringify({ healthy: true, specVersion: 3, nodeVersion: '24.1.0' })
+      ),
+      { timeout: 1000 }
+    );
+    expect(ok.nodeVersion).toBe('24.1.0');
+
+    const bad = await healthCheck(
+      makeWorldWithResponse(
+        JSON.stringify({ healthy: true, specVersion: 3, nodeVersion: 24 })
+      ),
+      { timeout: 1000 }
+    );
+    expect(bad.nodeVersion).toBeUndefined();
   });
 
   it('surfaces hookResumeInputVersion from the target so the caller stamps the consumer value', async () => {
@@ -361,6 +401,72 @@ describe('healthCheck response parsing', () => {
 
     expect(result.healthy).toBe(true);
     expect(result.hookResumeInputVersion).toBeUndefined();
+  });
+
+  it('surfaces the target World capabilities, ignoring ones this build does not know', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        capabilities: {
+          hookRetention: { active: true },
+          atomicStartHook: { active: true },
+          someFutureCapability: { active: true },
+        },
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.capabilities).toEqual({
+      hookRetention: { active: true },
+      atomicStartHook: { active: true },
+    });
+  });
+
+  it('reads malformed capabilities as unsupported and keeps the rest of the response', async () => {
+    // A peer on another SDK version must never read as unhealthy because of
+    // its capabilities: a capability can only fail closed.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        hookResumeInputVersion: 2,
+        capabilities: {
+          atomicStartHook: { active: 'yes' },
+          hookRetention: { active: true },
+        },
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.specVersion).toBe(3);
+    expect(result.hookResumeInputVersion).toBe(2);
+    expect(result.capabilities).toEqual({ hookRetention: { active: true } });
+  });
+
+  it('omits capabilities that are not an object', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        capabilities: 'all of them',
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.capabilities).toBeUndefined();
   });
 
   it('returns healthy with no fields for non-JSON plain-text responses', async () => {
@@ -449,6 +555,7 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenCalledWith({
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 
@@ -576,10 +683,12 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenNthCalledWith(1, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+      resolveData: 'skip-step-inputs',
     });
     expect(eventsListMock).toHaveBeenNthCalledWith(2, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 
@@ -781,6 +890,29 @@ describe('settleEventSlotGap', () => {
     );
     expect(settled.log.cursor).toBe('eid:filled');
     expect(eventsListMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the events the caller held that the re-read came back without', async () => {
+    // The orchestrator's log holds its own writes from their responses (and,
+    // with run-ahead, an outcome consumed before its write committed). The
+    // re-read fills the hole below such an event but may not carry the event
+    // itself yet; dropping it would lose a position this delivery took.
+    eventsListMock.mockResolvedValueOnce({
+      data: slotLog(1, 2, 3),
+      cursor: 'eid:filled',
+      hasMore: false,
+    });
+
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 2, 4),
+      cursor: 'eid:stale',
+    });
+
+    expect(settled.gap).toBeUndefined();
+    expect(settled.log.events.map((e) => e.eventId)).toEqual(
+      slotLog(1, 2, 3, 4).map((e) => e.eventId)
+    );
+    expect(settled.log.cursor).toBe('eid:filled');
   });
 
   it('reports a hole that survives every re-read', async () => {
@@ -1032,7 +1164,7 @@ describe('health check run public key', () => {
     vi.mocked(getWorldLazy).mockReturnValue(world as any);
 
     await handleHealthCheckMessage(
-      { __healthCheck: true, correlationId: 'corr_1', runId: 'wrun_1' },
+      { __healthCheck: true, correlationId: 'corr_1', probeRunId: 'wrun_1' },
       'workflow'
     );
 
@@ -1040,6 +1172,57 @@ describe('health check run public key', () => {
     expect(writtenResponse(write).encryptionPublicKey).toBe(
       bytesToBase64(publicKey)
     );
+  });
+
+  it('returns the run public key for a probe using the legacy runId key', async () => {
+    // Callers released before the probeRunId rename still send runId; they
+    // should keep getting the key from this deployment.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+    const { world, write } = responderWorld(getEncryptionKeyForRun);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_legacy', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    expect(getEncryptionKeyForRun).toHaveBeenCalledWith('wrun_1');
+    const { publicKey } = await deriveRunKeyPair(MATERIAL);
+    expect(writtenResponse(write).encryptionPublicKey).toBe(
+      bytesToBase64(publicKey)
+    );
+  });
+
+  it('reports the responding World capabilities', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    (world as { capabilities?: unknown }).capabilities = {
+      atomicStartHook: { active: true },
+    };
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_caps' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).capabilities).toEqual({
+      atomicStartHook: { active: true },
+    });
+  });
+
+  it('reports the responding deployment Node.js version', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_node' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).nodeVersion).toBe(process.versions.node);
   });
 
   it('omits the key when the probe names no run', async () => {
@@ -1066,7 +1249,7 @@ describe('health check run public key', () => {
     vi.mocked(getWorldLazy).mockReturnValue(world as any);
 
     await handleHealthCheckMessage(
-      { __healthCheck: true, correlationId: 'corr_3', runId: 'wrun_1' },
+      { __healthCheck: true, correlationId: 'corr_3', probeRunId: 'wrun_1' },
       'workflow'
     );
 
@@ -1085,7 +1268,7 @@ describe('health check run public key', () => {
     vi.mocked(getWorldLazy).mockReturnValue(world as any);
 
     await handleHealthCheckMessage(
-      { __healthCheck: true, correlationId: 'corr_4', runId: 'wrun_1' },
+      { __healthCheck: true, correlationId: 'corr_4', probeRunId: 'wrun_1' },
       'workflow'
     );
 
@@ -1093,6 +1276,44 @@ describe('health check run public key', () => {
     expect(response.healthy).toBe(true);
     expect(response.encryptionPublicKey).toBeUndefined();
     expect(response.workflowCoreVersion).toBeDefined();
+  });
+});
+
+describe('health check dynamic workflow version', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  async function respond() {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue({
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+    } as any);
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_dynamic' },
+      'workflow'
+    );
+    return JSON.parse(write.mock.calls[0][2] as string);
+  }
+
+  it('omits dynamicWorkflowVersion when the deployment has not opted in', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, undefined);
+    const response = await respond();
+    expect(response.healthy).toBe(true);
+    expect(response).not.toHaveProperty('dynamicWorkflowVersion');
+  });
+
+  it('omits dynamicWorkflowVersion for a value other than 1 or true', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, 'false');
+    expect(await respond()).not.toHaveProperty('dynamicWorkflowVersion');
+  });
+
+  it('advertises dynamicWorkflowVersion when the deployment has opted in', async () => {
+    vi.stubEnv(DYNAMIC_WORKFLOWS_ENV, 'true');
+    expect((await respond()).dynamicWorkflowVersion).toBe(
+      DYNAMIC_WORKFLOW_VERSION
+    );
   });
 });
 

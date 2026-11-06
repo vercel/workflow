@@ -205,8 +205,9 @@ export function computeStepLatencyTracking(params: {
   /** See {@link StepLatencyTracking.preStepBlockingMs}. */
   preStepBlockingMs: number;
   /**
-   * The accumulator's value as of the suspension that wrote the run's first
-   * attr_set (its hook phase runs before its attr writes). When the
+   * The accumulator's value as of the start of the suspension that wrote the
+   * run's first attr_set (that suspension's hook writes run alongside its attr
+   * writes, so the hook time it reports falls after the attr commit). When the
    * measurement ends at the attr write, only hook time from before that
    * point may be subtracted; later hook writes fall outside the measured
    * window. Undefined when no attr suspension happened in this invocation
@@ -345,9 +346,9 @@ export function computeStepLatencyEventData(params: {
   /** Whether the body ran optimistically, without awaiting step_started. */
   optimisticStart: boolean;
   /**
-   * Whether the step's `step_created` + `step_started` pair was pre-claimed
-   * inside the suspension handler's batched fan-out write (no start POST of
-   * its own at all).
+   * Whether the step's start was written by its creation (an inline step's
+   * creation-bearing `step_started`), so the executor sent no start POST of
+   * its own at all.
    */
   preclaimedStart?: boolean;
 }): StepLatencyEventData | undefined {

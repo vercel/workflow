@@ -8,6 +8,7 @@
     "and only once the test passes. Never shrink it without saying why."
   ],
   "language": "python",
+  "maxSpecVersion": 7,
   "fixtures": [
     "abortParallelWorkflow",
     "abortReasonWorkflow",

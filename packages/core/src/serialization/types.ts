@@ -2,7 +2,10 @@
  * Shared types for the serialization system.
  */
 
-import type { RuntimeDecryptionErrorContext } from '@workflow/errors';
+import type {
+  RuntimeDecryptionErrorContext,
+  WorkflowStartStage,
+} from '@workflow/errors';
 
 // ---- Format Prefix ----
 
@@ -72,6 +75,10 @@ export interface SerializableSpecial {
   BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
+  // A `DataView`, as base64 of the bytes it views. Not tagged `DataView`:
+  // that tag belongs to devalue's built-in encoding, which payloads written
+  // before this one still use. See `reducers/common.ts`.
+  DataViewBytes: string; // base64 string of the viewed bytes only
   Date: string; // ISO string
   DOMException: {
     message: string;
@@ -92,6 +99,23 @@ export interface SerializableSpecial {
     token: string;
     // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
+    /** `'start'` for a refused `start({ experimental_hook })`; rebuilds its wording. */
+    kind?: 'start';
+  };
+  HookForceClaimedError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    token: string;
+    claimedByRunId: string;
+    claimedByHookId?: string;
+  };
+  WorkflowStartError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    runId: string;
+    stage: WorkflowStartStage;
   };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string

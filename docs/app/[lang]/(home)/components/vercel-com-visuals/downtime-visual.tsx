@@ -1,6 +1,6 @@
 'use client';
 
-import { Spinner } from '@vercel/geistdocs/components/spinner';
+import { LoaderCircle } from 'lucide-react';
 import { AnimatePresence, motion, useInView } from 'motion/react';
 import type { JSX } from 'react';
 import { useEffect, useRef, useState } from 'react';
@@ -118,7 +118,7 @@ function Item({ title, subtitle, seconds }: ItemProps) {
                   exit={{ opacity: 0 }}
                   layout
                 >
-                  <Spinner className="size-3" />
+                  <LoaderCircle className="size-3 animate-spin" />
                 </motion.span>
               )}
             </AnimatePresence>

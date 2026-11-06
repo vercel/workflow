@@ -50,7 +50,7 @@ export async function paymentWebhook(orderId: string) {
 
 ### Step function for processing
 
-Each webhook request is processed in its own step, giving you full Node.js access for validation, database writes, and responding to the caller:
+Each webhook request is processed in its own step, giving you full Node.js access for validation, database writes, and responding to the caller. In production, verify the provider's signature here before trusting the body; the example omits it for brevity.
 
 ```typescript
 import { type RequestWithResponse } from "workflow";
@@ -176,6 +176,7 @@ export async function POST(request: Request) {
 - **`respondWith: "manual"`** gives you control over the HTTP response from inside a step. Use this when you need to validate the request before responding.
 - **`for await` on a webhook** lets you process multiple events from the same URL. Use `break` to stop listening after a terminal event.
 - **Webhooks auto-generate URLs** at `/.well-known/workflow/v1/webhook/:token`. Pass this URL to external services.
+- **The URL is the only authorization.** Anyone with the webhook URL can send it a request, so verify the provider's signature in the processing step before acting on the payload. See [Hook and webhook security](/docs/foundations/hooks#security).
 - **Race webhooks against `sleep()`** for deadlines. If the callback doesn't arrive in time, the workflow can take a fallback action.
 - **For large payloads**, use a hook and reference token instead of passing the data through the workflow. The event log serializes all step inputs and outputs, so large payloads hurt performance.
 

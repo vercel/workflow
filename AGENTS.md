@@ -74,7 +74,12 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 
 # Step 1: Start the dev server in background
 # NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
-cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+# NOTE: WORKFLOW_QUEUE_AUTH=off matches the e2e-local CI lanes, which keep
+# queue auth off until the team decides to run them with it on. It is refused
+# while dynamic workflows are enabled; the dynamic-workflow e2e runs with auth
+# on and starts its runs through the app (see the header of
+# packages/core/e2e/e2e-dynamic-workflow.test.ts).
+cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 WORKFLOW_QUEUE_AUTH=off pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
 # Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
@@ -166,13 +171,27 @@ world-postgres it first brings up the container and applies migrations, and
 leaves Postgres running for the next iteration unless `--teardown` is passed;
 the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
 under `--world local`, whose only state is a data directory the script clears
-before each run.
+before each run. Under `--world local` it also exports `WORKFLOW_QUEUE_AUTH=off`,
+as the e2e-local CI lanes do until the team decides to run them with queue auth
+on. world-postgres needs no such setting: it declares
+`queueAuthMode: 'skip'`, so its flow route is not checked.
 
 Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates
 them with an exclusive `link(2)` against a directory that two processes (the app
 and the harness) both write to. A slot race a transaction closes is not
 automatically closed by a filesystem.
+
+Export `WORKFLOW_SPEC_VERSION=9` to race the single orchestrator; CI runs both
+worlds at the default spec and at spec 9. Read the world-local spec 9 cell with
+one difference in mind: its run gate is in-process, and the harness calls
+`start()` and `resumeHook()` from its own process, so those messages reach the
+app through the harness' queue and overlap the app's own deliveries of the run.
+The in-band fence refuses each overlap (logged as "keep being refused by the
+in-band fence"), so the run stays correct but slower: on a 4-core box,
+`hook-storm` took about 300s a run at spec 9 against 150s at spec 8, and the
+same two-run `step-storm` logged 60 refusals on world-local and none on
+world-postgres, whose named queue gates across processes.
 
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
 Their defaults live only in `event-log-race-repro.test.ts`; neither the CI
@@ -388,6 +407,7 @@ The job pins `WORKFLOW_SOURCEMAP`, `WORKFLOW_PUBLIC_MANIFEST`, and `WORKFLOW_TAR
 - READMEs should not contain outdated or incorrect information about package capabilities
 - When modifying package functionality, ensure corresponding README updates are included
 - Document every user-configurable environment variable in the docs.
+- Write docs as a description of how things work now, not as a changelog: no "no longer", "now", "was added", or history of past behavior. That belongs in changesets and PR descriptions. Keep pages short; don't add explanation the reader doesn't need to act.
 - When modifying skill files in `skills/`, always bump the `version` field in the frontmatter metadata
 
 ### Docs preview links in PR descriptions
@@ -410,8 +430,10 @@ This repository uses a dual-branch release model with [changesets](https://githu
 
 ### Branch model
 
-- **`main`**: Bleeding-edge / beta channel. Changesets are in pre-release mode (`beta` tag). Published packages get the `beta` npm dist-tag (e.g. `5.0.0-beta.3`).
-- **`stable`**: GA / production channel. Changesets are in regular mode. Published packages get the `latest` npm dist-tag (e.g. `4.2.1`).
+- **`main`**: Current GA line (5.x). Changesets are in regular mode; published packages get the `latest` npm dist-tag (e.g. `5.0.0`). `main` re-enters pre-release mode only while a new major is baking, and publishes `beta`/`rc` dist-tags for as long as it stays there.
+- **`stable`**: 4.x maintenance line. Changesets are in regular mode; published packages get the `previous` npm dist-tag (`ci:publish` passes `--tag previous`), so a 4.x patch never moves `latest` off 5.x. The tag is not version-numbered because npm rejects tag names that parse as a semver range (`v4`, `4.x`).
+
+Before 5.0.0 this was inverted: `main` was the beta channel and `stable` owned `latest`. The `stable` side of the flip is a separate commit on that branch; see "Retiring a major" below for the order the two have to land in.
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
@@ -432,14 +454,16 @@ Because those PRs have no deployment of their own, CI treats them specially: the
 
 ### Changesets
 
-- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy, so they always have the same version number
+- `workflow`, `@workflow/core`, and `@workflow/world-vercel` use changesets' "fixed" versioning strategy, so they always have the same version number. A changeset touching only one of the three still republishes all of them, and the other two get a `No changes in this release.` changelog section.
+  - `@workflow/world-vercel` joined the group at 5.0.0. `@workflow/core` already depended on it (`"@workflow/world-vercel": "workspace:*"`, published as an exact pin), so a world-vercel release always dragged core along; nothing pulled the other way, and the adapter drifted five betas behind by 5.0.0. Since the adapter reports its own version to the backend (`WorkflowClientVersion` in `packages/world-vercel/src/events-v4.ts`), that drift made the reported version ambiguous.
+  - The other worlds (`@workflow/world`, `@workflow/world-postgres`, `@workflow/world-local`) are deliberately **not** in the group. They version independently and are expected to drift from the SDK version.
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
   - Never list a package from the `ignore` array in `.changeset/config.json` (private workbench and simulation packages such as `@workflow/world-sim`), even when the PR changes it. Changesets rejects a changeset that mixes ignored and published packages, and the failure only surfaces in the Release job on `main`. `node scripts/check-changesets.mjs` runs that validation locally; CI runs it in `lint.yml`.
   - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes
-  - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
+  - The bump type determines the released version on both branches. While `main` is in pre-release mode it only increments `beta.N`, but the type is still recorded and applies when pre mode exits and when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
 - When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse: one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
@@ -470,7 +494,7 @@ When in doubt, AI is told to decline: a missed fix can be forced through later v
 
 ### Pre-release lifecycle
 
-The `main` branch uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
+`main` is **not** in pre-release mode today — it ships GA 5.x versions straight to the `latest` dist-tag. The steps below apply when baking the next major, at which point `main` uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
 
 Changesets that a "Version Packages (beta)" merge has already turned into a beta live in `.changeset/pre/` (changesets v3 keeps them there instead of listing their ids in `pre.json`, which now holds only `mode` and `tag`). Only the `.md` files directly under `.changeset/` are pending. Do not edit or delete anything under `.changeset/pre/`: those files become the final stable release's changelog when pre mode exits.
 
@@ -483,10 +507,22 @@ Changesets that a "Version Packages (beta)" merge has already turned into a beta
 - Merge PRs with changesets to `main` as normal
 - Each "Version Packages (beta)" PR merge publishes the next `beta.N` increment
 
-**Graduating to stable:**
+**Graduating to GA:**
 1. (Optional) Transition to release candidates: `pnpm changeset pre enter rc` (publishes `X.Y.Z-rc.N`)
 2. Exit pre-release mode: `pnpm changeset pre exit`
-3. The next "Version Packages" PR will publish the final stable version to npm
+3. The next "Version Packages" PR will publish the final GA version to npm under the `latest` dist-tag. That PR is enormous — exiting pre mode consumes every `.changeset/pre/*.md` at once, so it deletes hundreds of files and rewrites every CHANGELOG. Review it for *shape* (version bumps and changelogs only, nothing else touched), not line by line.
+4. Retire the outgoing major — see below.
+
+Note that between the `pre exit` merge and the "Version Packages" merge, `main` cannot cut another beta: the pending changesets all belong to the GA release now. Do not exit pre mode until you intend to ship GA promptly. Throughout that window the manifests on `main` are still `5.0.0-beta.N` — `pre exit` bumps nothing, it only flips `.changeset/pre.json` to `{"mode": "exit"}` so the next `changeset version` writes GA versions and deletes the file. Anything that keys off the release channel has to treat exit mode as still-a-prerelease for that reason; `scripts/check-published.mjs` does.
+
+### Retiring a major
+
+When a new major takes over `latest`, the outgoing major moves to a maintenance branch (`stable`) and needs its own dist-tag so its patches never reclaim `latest`:
+
+- Pin the maintenance branch's `ci:publish` to that tag: `changeset publish --tag previous`. The tag must not parse as a semver range — npm rejects `v4` and `4.x` (`Tag name must not be a valid SemVer range`), which is why it is `previous` and not version-numbered.
+- Pass the same tag to the publication check: `node scripts/check-published.mjs --tag previous`. That script defaults to the tag in `.changeset/pre.json` when that file exists and `latest` otherwise, so on a maintenance branch — which is in regular mode and has no `pre.json` — it would otherwise assert that `latest` points at the version just published and fail every release.
+
+**Order matters, and getting it wrong is a user-visible regression.** The maintenance branch must keep publishing to `latest` right up until the new major's GA actually lands on npm. Pinning it to `previous` early does not "leave `latest` where it is" — it *freezes* `latest` at the last release before the pin, so `npm install workflow` silently stops picking up maintenance patches. This happened once: #3091 pinned 4.x to `previous` on 2026-07-24 while 4.x was still the GA line, and #3168 reverted it four days later, about three hours before `4.7.0` would have shipped without moving `latest`. Land the maintenance-branch pin **after** the new major's GA publish, not before.
 
 ## Common patterns
 

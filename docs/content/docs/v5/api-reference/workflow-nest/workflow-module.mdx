@@ -86,6 +86,7 @@ Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-buil
 | `basePath` | `string` | adopted from `app.setGlobalPrefix()` | Route prefix the workflow endpoints are served under, applied to generated callback and webhook URLs. Set it when a reverse proxy mounts the app on a sub-path NestJS cannot see. |
 | `manageWorldLifecycle` | `boolean` | `false` | Start the target World's background workers with the app and close them on shutdown. Required for self-hosted Worlds, which otherwise never pick up runs. |
 | `preloadBundles` | `boolean` | `false` when `VERCEL` is set, else `true` | Load the generated bundles during startup instead of on the first request. On Vercel, dedicated functions serve the bundles, so there is nothing to preload. |
+| `bypassBodyParser` | `boolean` | `true` | Keep the application's body parsers away from `.well-known/workflow/v1`, so queue deliveries are not rejected by Express's 100 KB limit and signed webhook bodies stay byte-exact. The application's own routes are untouched. On Fastify, where the body limit is enforced per instance rather than per route, nothing is patched and a limit low enough to reject deliveries is reported at startup instead. |
 | `workingDir` | `string` | `process.cwd()` | Working directory for the NestJS application. |
 | `dirs` | `string[]` | `['src']` | Directories to scan for workflow files. |
 | `outDir` | `string` | `'.nestjs/workflow'` (relative to `workingDir`) | Output directory for generated workflow bundles. |
@@ -126,8 +127,15 @@ The older `WORKFLOW_OPTIONS` token resolves to the same value and is kept for co
 
 | Hook | Behaviour |
 | --- | --- |
-| `onModuleInit` | Reconciles the base path against `app.setGlobalPrefix()`, builds the bundles (or verifies they exist when `skipBuild` is set), optionally starts the World, and preloads the bundles. |
+| `onModuleInit` | Takes the application's body parsers off the workflow routes (unless `bypassBodyParser` is `false`), reconciles the base path against `app.setGlobalPrefix()`, builds the bundles (or verifies they exist when `skipBuild` is set), optionally starts the World, and preloads the bundles. |
 | `onApplicationShutdown` | Closes the World when `manageWorldLifecycle` is set. Call `app.enableShutdownHooks()` so this runs on a signal. |
+
+<Callout type="warn">
+`WorkflowModule` reads NestJS's global prefix and HTTP adapter through the
+injector, which only works while a single copy of `@nestjs/core` is installed.
+With two copies the injection tokens differ, prefix handling and the
+body-parser bypass both stop working, and a warning is logged at startup.
+</Callout>
 
 <Callout type="warn">
 Workflows and steps run outside the NestJS injector, so providers cannot be injected into `"use workflow"` or `"use step"` code. See [NestJS dependency injection is not available in workflows and steps](/docs/getting-started/nestjs#nestjs-dependency-injection-is-not-available-in-workflows-and-steps).

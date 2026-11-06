@@ -682,7 +682,13 @@ export const Python = (props: ComponentProps<'svg'>) => (
 export const Next = (props: ComponentProps<'svg'>) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" {...props}>
     <title>Next.js</title>
-    <circle cx="64" cy="64" r="62" strokeWidth="4" className="stroke-border" />
+    <circle
+      cx="64"
+      cy="64"
+      r="62"
+      strokeWidth="4"
+      className="stroke-gray-alpha-400"
+    />
     <path
       fill="url(#SVGlFdwveZx)"
       d="M106.317 112.014L49.167 38.4H38.4v51.179h8.614v-40.24l52.54 67.884a64 64 0 0 0 6.763-5.209"
@@ -724,7 +730,7 @@ export const Frameworks = () => {
         <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Universally Compatible
         </h2>
-        <p className="text-muted-foreground sm:text-lg">
+        <p className="text-gray-900 sm:text-lg">
           Works with the frameworks you already use with more coming soon.
         </p>
       </div>

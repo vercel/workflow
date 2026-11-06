@@ -17,6 +17,10 @@ This is a lightweight wrapper around [`createHook()`](/docs/api-reference/workfl
 We recommend using `defineHook()` over `createHook()` in production codebases for better type safety and optional runtime validation.
 </Callout>
 
+<Callout type="warn">
+Schema validation checks the payload's shape, not who sent it. Authorize callers before calling `resume()`. See [Hook and webhook security](/docs/foundations/hooks#security).
+</Callout>
+
 ```ts lineNumbers
 import { defineHook } from "workflow";
 

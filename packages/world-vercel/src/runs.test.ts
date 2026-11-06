@@ -3,6 +3,7 @@ import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import {
   cancelWorkflowRuns,
+  getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
 } from './runs.js';
@@ -67,6 +68,117 @@ describe('getWorkflowRuns', () => {
       'wrun_first',
     ]);
     expect(runs[0]?.input).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('run reads of dynamic workflow code', () => {
+  const code = new Uint8Array([10, 10, 10]);
+  /** A gzip-prefixed payload that throws if anything tries to decompress it. */
+  const corruptCompressedCode = new Uint8Array([
+    ...new TextEncoder().encode('gzip'),
+    1,
+    2,
+    3,
+  ]);
+
+  function dynamicRun(dynamicWorkflowCode: Uint8Array) {
+    return {
+      runId: 'wrun_dynamic',
+      status: 'running',
+      deploymentId: 'dpl_1',
+      workflowName:
+        'workflow//dynamic/0123456789abcdef0123456789abcdef//workflow',
+      dynamicWorkflowCode,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    };
+  }
+
+  function agentReturningRun(
+    remoteRefBehavior: 'lazy' | 'resolve',
+    dynamicWorkflowCode = code
+  ) {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v2/runs/wrun_dynamic?remoteRefBehavior=${remoteRefBehavior}`,
+        method: 'GET',
+      })
+      .reply(200, () => encode(dynamicRun(dynamicWorkflowCode)), {
+        headers: { 'content-type': 'application/cbor' },
+      });
+    return agent;
+  }
+
+  it("omits the code with resolveData: 'none' without decompressing it", async () => {
+    const agent = agentReturningRun('lazy', corruptCompressedCode);
+
+    const run = await getWorkflowRun(
+      'wrun_dynamic',
+      { resolveData: 'none' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(run).not.toHaveProperty('dynamicWorkflowCode');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it("omits the code from a resolveData: 'none' list without decompressing it", async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v2/runs?remoteRefBehavior=lazy',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        () =>
+          encode({
+            data: [dynamicRun(corruptCompressedCode)],
+            cursor: null,
+            hasMore: false,
+          }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    const runs = await listWorkflowRuns(
+      { resolveData: 'none' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(runs.data).toHaveLength(1);
+    expect(runs.data[0]).not.toHaveProperty('dynamicWorkflowCode');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it("classifies corrupt code on resolveData: 'all' as a contract error", async () => {
+    const agent = agentReturningRun('resolve', corruptCompressedCode);
+
+    await expect(
+      getWorkflowRun(
+        'wrun_dynamic',
+        { resolveData: 'all' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({ code: 'WORLD_CONTRACT_ERROR' });
+    agent.assertNoPendingInterceptors();
+  });
+
+  it("returns the code with resolveData: 'all'", async () => {
+    const agent = agentReturningRun('resolve');
+
+    const run = await getWorkflowRun(
+      'wrun_dynamic',
+      { resolveData: 'all' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(run.dynamicWorkflowCode).toEqual(code);
     agent.assertNoPendingInterceptors();
   });
 });

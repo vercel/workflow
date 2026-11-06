@@ -405,6 +405,20 @@
         }
       ],
       "setup": "pnpm exec workflow-world-setup && node --input-type=module -e 'import { createRequire } from \"node:module\"; import { ensureTenantPartitions } from \"@evelandhq/workflow-world\"; const { Pool } = createRequire(import.meta.resolve(\"@evelandhq/workflow-world\"))(\"pg\"); const pool = new Pool({ connectionString: process.env.WORKFLOW_WORLD_URL }); try { await ensureTenantPartitions(pool, process.env.WORKFLOW_WORLD_TENANT_ID); } finally { await pool.end(); }'"
+    },
+    {
+      "id": "browser",
+      "type": "community",
+      "package": "workflow-world-browser",
+      "name": "Browser",
+      "description": "Runs in the browser: IndexedDB storage, a durable queue consumed by one tab at a time, and streams over BroadcastChannel.",
+      "repository": "https://github.com/pranaygp/workflow-world-browser",
+      "docs": "https://github.com/pranaygp/workflow-world-browser#readme",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "workflow-world-browser"
+      },
+      "services": []
     }
   ]
 }

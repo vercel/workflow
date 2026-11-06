@@ -215,7 +215,10 @@ describe('checkWorkflowVersionSkew', () => {
     ).toBeUndefined();
     expect(warn).not.toHaveBeenCalled();
 
+    // The check compares the app's @workflow/core with the harness's, not
+    // with @workflow/vitest's own version: those are released independently.
     const resolved = collectWorkflowVersions(packageRoot);
-    expect(resolved.harnessCore?.version).toBe(resolved.vitest?.version);
+    expect(resolved.harnessCore).toBeDefined();
+    expect(resolved.appCore?.dir).toBe(resolved.harnessCore?.dir);
   });
 });

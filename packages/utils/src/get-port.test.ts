@@ -74,20 +74,28 @@ describe('getPort', () => {
     expect(port2).toEqual(port3);
   });
 
-  it('should handle IPv6 addresses', async () => {
+  it('should handle IPv6 addresses', async (ctx) => {
     const server = http.createServer();
     servers.push(server);
 
     try {
-      server.listen(0, '::1'); // IPv6 localhost
-      const port = await getPort();
-      const addr = server.address() as AddressInfo;
-
-      expect(port).toEqual(addr.port);
-    } catch {
-      // Skip test if IPv6 is not available
-      console.log('IPv6 not available, skipping test');
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '::1', resolve);
+      });
+    } catch (error) {
+      // Skip only when the host has no IPv6 loopback.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EADDRNOTAVAIL' || code === 'EAFNOSUPPORT') {
+        ctx.skip();
+      }
+      throw error;
     }
+
+    const port = await getPort();
+    const addr = server.address() as AddressInfo;
+
+    expect(port).toEqual(addr.port);
   });
 
   it('should handle multiple calls in sequence', async () => {
@@ -319,14 +327,23 @@ describe('getWorkflowPort', () => {
     await new Promise<void>((resolve) => slowServer.listen(0, resolve));
     await new Promise<void>((resolve) => fastServer.listen(0, resolve));
 
+    // Longer than the 500ms default, so the slow probe outlasting the default
+    // shows the custom timeout applies; and long enough that the fast
+    // server's probe (this process's first fetch) answers within it on a
+    // loaded Windows runner. A probe that times out counts as no workflow
+    // server, which would fall back to the first port.
+    const timeout = 1_500;
     const start = Date.now();
-    const port = await getWorkflowPort({ timeout: 100 });
+    const port = await getWorkflowPort({ timeout });
     const elapsed = Date.now() - start;
 
     const fastAddr = fastServer.address() as AddressInfo;
     expect(port).toBe(fastAddr.port);
+    // The probes run in parallel, so the never-answering server holds the
+    // call for its timeout and no longer.
+    expect(elapsed).toBeGreaterThanOrEqual(timeout - 50);
     // Windows enumerates ports through netstat before applying the probe timeout.
-    expect(elapsed).toBeLessThan(5000);
+    expect(elapsed).toBeLessThan(timeout + 5000);
   });
 
   it('should handle concurrent getWorkflowPort calls', async () => {
@@ -359,6 +376,37 @@ describe('getWorkflowPort', () => {
       expect(port).toBe(addr.port);
     });
   });
+
+  it('should find a workflow server on localhost next to an IPv4 listener', async () => {
+    // For example a debugger on 127.0.0.1 and a Vite dev server on its
+    // default `localhost` host, which resolves to ::1 on Windows.
+    const ipv4Server = http.createServer((_req, res) => {
+      res.writeHead(404);
+      res.end();
+    });
+    const workflowServer = http.createServer((req, res) => {
+      if (req.url?.includes('__health')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Workflow SDK endpoint is healthy');
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    servers.push(ipv4Server, workflowServer);
+
+    await new Promise<void>((resolve) =>
+      ipv4Server.listen(0, '127.0.0.1', resolve)
+    );
+    await new Promise<void>((resolve) =>
+      workflowServer.listen(0, 'localhost', resolve)
+    );
+
+    const port = await getWorkflowPort();
+    const workflowAddr = workflowServer.address() as AddressInfo;
+
+    expect(port).toBe(workflowAddr.port);
+  });
 });
 
 describe('parseWindowsNetstatPortsForPid', () => {
@@ -376,5 +424,20 @@ describe('parseWindowsNetstatPortsForPid', () => {
     );
 
     expect(ports).toEqual([3000, 3001]);
+  });
+
+  it('reports a dual-stack listener once', () => {
+    // Rows in `netstat -ano` format (without `-p tcp`): a server on `::`
+    // gets an IPv4 and an IPv6 row, a server on `::1` only one.
+    const ports = parseWindowsNetstatPortsForPid(
+      [
+        '  TCP    0.0.0.0:56875          0.0.0.0:0              LISTENING       12140',
+        '  TCP    [::]:56875             [::]:0                 LISTENING       12140',
+        '  TCP    [::1]:56871            [::]:0                 LISTENING       12140',
+      ].join('\r\n'),
+      12140
+    );
+
+    expect(ports).toEqual([56875, 56871]);
   });
 });

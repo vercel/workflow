@@ -1,7 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { RETENTION_ATTRIBUTE } from '@workflow/world';
-import { Pool } from 'pg';
+import { RETENTION_ATTRIBUTE, startHookId } from '@workflow/world';
 import { ulid } from 'ulid';
 import {
   afterAll,
@@ -15,12 +14,21 @@ import {
 import { createClient } from '../src/drizzle/index.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
 import { createStreamer } from '../src/streamer.js';
+import { TestPool } from './pool.js';
 
 type EventsStorage = ReturnType<typeof createEventsStorage>;
 
 /** Every payload-bearing column, CBOR half and legacy JSON twin alike. */
 const PAYLOAD_COLUMNS = {
-  runs: ['input_cbor', 'input', 'output_cbor', 'output', 'error_cbor', 'error'],
+  runs: [
+    'input_cbor',
+    'input',
+    'output_cbor',
+    'output',
+    'error_cbor',
+    'error',
+    'dynamic_workflow_code_cbor',
+  ],
   steps: [
     'input_cbor',
     'input',
@@ -41,7 +49,7 @@ describe('Retention ($retention: 0)', () => {
   }
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  let pool: Pool;
+  let pool: TestPool;
   let drizzle: ReturnType<typeof createClient>;
   let runs: ReturnType<typeof createRunsStorage>;
   let events: EventsStorage;
@@ -59,7 +67,7 @@ describe('Retention ($retention: 0)', () => {
       env: process.env,
     });
 
-    pool = new Pool({ connectionString: dbUrl, max: 4 });
+    pool = new TestPool({ connectionString: dbUrl, max: 4 });
     drizzle = createClient(pool);
     runs = createRunsStorage(drizzle);
     events = createEventsStorage(drizzle);
@@ -97,6 +105,9 @@ describe('Retention ($retention: 0)', () => {
         workflowName: 'retention-workflow',
         input: new Uint8Array([1, 2, 3]),
         executionContext: { userId: 'user-1' },
+        // A dynamic run's stored code is a run payload too, and the only one
+        // that lives in a column of its own.
+        dynamicWorkflowCode: new Uint8Array([14, 15, 16]),
         ...(attributes ? { attributes, allowReservedAttributes: true } : {}),
       },
     });
@@ -219,6 +230,66 @@ describe('Retention ($retention: 0)', () => {
   }
 
   describe('$retention: "0"', () => {
+    it("drops a start Hook's metadata from its Hook row, keeping the Hook and its token for its retention", async () => {
+      const runId = `wrun_${ulid()}`;
+      const token = `start-${ulid()}`;
+      const tokenRetentionUntil = new Date(Date.now() + 60 * 60 * 1000);
+      await events.create(runId, {
+        eventType: 'run_created',
+        eventData: {
+          deploymentId: 'deployment-1',
+          workflowName: 'retention-workflow',
+          input: new Uint8Array([1]),
+          attributes: { [RETENTION_ATTRIBUTE]: '0' },
+          allowReservedAttributes: true,
+          startHook: {
+            token,
+            tokenRetentionUntil,
+            metadata: new Uint8Array([21, 22]),
+          },
+        },
+      } as never);
+      await events.create(runId, { eventType: 'run_started' });
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([2]) },
+      });
+
+      const run = await runs.get(runId);
+      expect(run.startHook?.token).toBe(token);
+      expect(run.startHook?.metadata).toBeUndefined();
+      expect(run.startHook?.tokenRetentionUntil?.getTime()).toBe(
+        tokenRetentionUntil.getTime()
+      );
+      const { rows } = await pool.query(
+        `SELECT hook_id, metadata_cbor, token_retention_until
+           FROM workflow.workflow_hooks
+          WHERE token = $1`,
+        [token]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].hook_id).toBe(startHookId(runId));
+      expect(rows[0].metadata_cbor).toBeNull();
+      expect(rows[0].token_retention_until.getTime()).toBe(
+        tokenRetentionUntil.getTime()
+      );
+      // The start Hook still holds the token for its retention.
+      const contender = `wrun_${ulid()}`;
+      const refused = await events
+        .create(contender, {
+          eventType: 'run_created',
+          eventData: {
+            deploymentId: 'deployment-1',
+            workflowName: 'retention-workflow',
+            input: new Uint8Array([1]),
+            startHook: { token },
+          },
+        } as never)
+        .catch((e: unknown) => e);
+      expect(refused).toMatchObject({ conflictingRunId: runId });
+      expect(await countRemainingPayloads(runId)).toBe(0);
+    });
+
     it('nulls every payload column, CBOR and legacy JSON alike, and stamps expiredAt', async () => {
       const { runId, streamId } = await seedRun({ [RETENTION_ATTRIBUTE]: '0' });
 

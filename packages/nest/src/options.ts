@@ -68,6 +68,23 @@ export interface WorkflowModuleOptions extends NestBuilderOptions {
    * contain the bundles instead of the Nest catch-all
    */
   preloadBundles?: boolean;
+  /**
+   * Keep the application's body parser away from the workflow routes.
+   *
+   * Queue deliveries carry run inputs, step inputs and step outputs in the
+   * request body, and Express's parser — which NestJS installs by default —
+   * rejects anything over 100 KB with `413` before a controller sees it. On
+   * Express the parsers are made to stand aside for `.well-known/workflow/v1`
+   * only, which also delivers webhook bodies byte-for-byte without
+   * `{ rawBody: true }`. The application's own routes are untouched.
+   *
+   * On Fastify the body limit is enforced per instance rather than per route,
+   * so nothing is patched; a limit low enough to reject deliveries is reported
+   * at startup instead. Turn this off to silence that too.
+   *
+   * @default true
+   */
+  bypassBodyParser?: boolean;
 }
 
 /**
@@ -140,6 +157,81 @@ export function basePathReachesRoutes(
   return generating.endsWith(globalPrefix);
 }
 
+/**
+ * Shape of a single entry in `setGlobalPrefix(prefix, { exclude })` after
+ * NestJS has normalized it. `RequestMethod.ALL` is `5`, and NestJS also treats
+ * `-1` as "every method".
+ */
+type ExcludedRoute = {
+  path?: string;
+  requestMethod?: number;
+  pathRegex?: { test?: (path: string) => boolean };
+};
+
+const REQUEST_METHOD_ALL = 5;
+
+function matchesExcludedRoute(route: unknown, path: string): boolean {
+  if (typeof route === 'string') {
+    return normalizeBasePath(route) === normalizeBasePath(path);
+  }
+  const entry = route as ExcludedRoute | null | undefined;
+  if (!entry) return false;
+  const method = entry.requestMethod;
+  // Only an all-method exclusion takes the workflow routes out of the prefix
+  // for every delivery; a method-scoped one would leave some of them prefixed
+  // and some not, which no single generated base path can serve.
+  if (method !== undefined && method !== REQUEST_METHOD_ALL && method !== -1) {
+    return false;
+  }
+  if (typeof entry.pathRegex?.test === 'function') {
+    return entry.pathRegex.test(path);
+  }
+  if (typeof entry.path === 'string') {
+    return normalizeBasePath(entry.path) === normalizeBasePath(path);
+  }
+  return false;
+}
+
+/**
+ * Whether `setGlobalPrefix(prefix, { exclude })` took the workflow routes out
+ * of the global prefix.
+ *
+ * An excluded route is served at the origin root while the rest of the
+ * application sits under the prefix, so adopting the prefix for generated URLs
+ * would point every queue delivery and webhook at a path NestJS does not
+ * route.
+ */
+export function workflowRoutesExcludedFromGlobalPrefix(
+  globalPrefixOptions: unknown,
+  path = '/.well-known/workflow/v1/flow'
+): boolean {
+  const exclude = (globalPrefixOptions as { exclude?: unknown } | undefined)
+    ?.exclude;
+  if (!Array.isArray(exclude)) return false;
+  return exclude.some((route) => matchesExcludedRoute(route, path));
+}
+
+/** Minimal view of the `ApplicationConfig` bits the base path depends on. */
+export type GlobalPrefixSource = {
+  getGlobalPrefix?: () => string;
+  getGlobalPrefixOptions?: () => unknown;
+};
+
+/**
+ * The global prefix the workflow routes are actually reachable under.
+ *
+ * Empty when there is no prefix, or when `setGlobalPrefix(prefix, { exclude })`
+ * took the workflow routes back out of it.
+ */
+export function servedGlobalPrefix(
+  appConfig: GlobalPrefixSource | undefined
+): string {
+  const globalPrefix = normalizeBasePath(appConfig?.getGlobalPrefix?.() ?? '');
+  if (!globalPrefix) return '';
+  const options = appConfig?.getGlobalPrefixOptions?.();
+  return workflowRoutesExcludedFromGlobalPrefix(options) ? '' : globalPrefix;
+}
+
 export interface ResolvedWorkflowModuleOptions extends WorkflowModuleOptions {
   workingDir: string;
   outDir: string;
@@ -147,6 +239,7 @@ export interface ResolvedWorkflowModuleOptions extends WorkflowModuleOptions {
   skipBuild: boolean;
   preloadBundles: boolean;
   manageWorldLifecycle: boolean;
+  bypassBodyParser: boolean;
 }
 
 /**
@@ -172,6 +265,7 @@ export function resolveModuleOptions(
     skipBuild: options.skipBuild ?? Boolean(env.VERCEL),
     preloadBundles: options.preloadBundles ?? !env.VERCEL,
     manageWorldLifecycle: options.manageWorldLifecycle ?? false,
+    bypassBodyParser: options.bypassBodyParser ?? true,
   };
 }
 

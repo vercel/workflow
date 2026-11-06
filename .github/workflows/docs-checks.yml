@@ -23,14 +23,14 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Build packages
@@ -60,14 +60,14 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Waiting for the Docs Vercel deployment

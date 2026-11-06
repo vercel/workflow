@@ -1,0 +1,70 @@
+---
+title: HookForceClaimedError
+description: Thrown to a hook's awaiters when another workflow run takes its token over with experimental_force.
+type: reference
+summary: Catch HookForceClaimedError when a run created with experimental_force took a hook token this run was waiting on.
+related:
+  - /docs/api-reference/workflow/create-hook
+  - /docs/foundations/hooks
+  - /docs/errors/hook-force-claimed
+---
+
+`HookForceClaimedError` is thrown when awaiting a hook whose token another workflow run took over with [`createHook({ experimental_force: true })`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The hook is disposed and receives no further payloads; the error names the run that now owns the token. See the [hook-force-claimed](/docs/errors/hook-force-claimed) error guide for how to react.
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+import { HookForceClaimedError } from "workflow/errors";
+
+export async function channelWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ text: string }>({ token: `channel:${channelId}` });
+
+  try {
+    const message = await hook;
+    return { message };
+  } catch (error) {
+    if (HookForceClaimedError.is(error)) { // [!code highlight]
+      console.log(
+        `Token "${error.token}" now belongs to run ${error.claimedByRunId}`
+      );
+      return { replacedBy: error.claimedByRunId };
+    }
+    throw error;
+  }
+}
+```
+
+## API signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface HookForceClaimedError {
+  /** The hook token that was taken over. */
+  token: string;
+  /** The run that took the token. */
+  claimedByRunId: string;
+  /** The hook in that run the token now belongs to, when known. */
+  claimedByHookId?: string;
+  /** The error message. */
+  message: string;
+}
+export default HookForceClaimedError;`}
+/>
+
+### Static methods
+
+#### `HookForceClaimedError.is(value)`
+
+Type-safe check for `HookForceClaimedError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
+
+```typescript
+import { HookForceClaimedError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (HookForceClaimedError.is(error)) {
+  // error is typed as HookForceClaimedError
+}
+```

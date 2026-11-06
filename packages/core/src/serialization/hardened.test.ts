@@ -578,6 +578,42 @@ describe('hardened serialization: wire-format parity', () => {
     expect(revived.get('x-a')).toBe('1');
   });
 
+  // Shaped like srvx's NodeRequestHeaders (Nitro's incoming request
+  // headers): inherits from Headers.prototype and forwards to a wrapped
+  // native instance, but has no native header state of its own.
+  it('round-trips a Headers look-alike that wraps a native instance', () => {
+    class ForwardingHeaders {
+      #inner: Headers;
+      constructor(init: HeadersInit) {
+        this.#inner = new Headers(init);
+      }
+      get(name: string) {
+        return this.#inner.get(name);
+      }
+      entries() {
+        return this.#inner.entries();
+      }
+      [Symbol.iterator]() {
+        return this.entries();
+      }
+    }
+    Object.setPrototypeOf(ForwardingHeaders.prototype, Headers.prototype);
+    const headers = new ForwardingHeaders({
+      'content-type': 'application/json',
+      'x-a': '1',
+    }) as unknown as Headers;
+
+    const guestCodeStats: GuestCodeStats = { executions: [] };
+    const bytes = devalueCodec.serialize(headers, 'step', { guestCodeStats });
+    expect(guestCodeStats.executions).toEqual([
+      { kind: 'method', detail: 'Headers[Symbol.iterator]' },
+    ]);
+
+    const revived = devalueCodec.deserialize(bytes, 'step') as Headers;
+    expect(revived).toBeInstanceOf(Headers);
+    expect([...revived]).toEqual([...headers]);
+  });
+
   // Error payloads carry realm-specific stack text (devalue stores the frames
   // as separate string elements), so these assert a structural round trip
   // rather than byte parity.

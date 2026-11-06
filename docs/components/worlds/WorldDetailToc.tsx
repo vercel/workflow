@@ -55,8 +55,8 @@ export function WorldDetailToc({ items }: WorldDetailTocProps) {
           className={cn(
             'block text-sm py-1 border-l-2 pl-3 transition-colors',
             activeId === item.id
-              ? 'border-primary text-foreground font-medium'
-              : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground'
+              ? 'border-gray-1000 text-gray-1000 font-medium'
+              : 'border-transparent text-gray-900 hover:text-gray-1000 hover:border-gray-900'
           )}
         >
           {item.title}

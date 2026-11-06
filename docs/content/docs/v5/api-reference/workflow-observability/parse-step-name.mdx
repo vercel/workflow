@@ -33,7 +33,7 @@ const parsed = parseStepName("step//./src/workflows/order//processPayment"); // 
 
 | Property | Description |
 |----------|-------------|
-| `shortName` | The display name: the last segment of the function name. For nested steps like `processOrder/chargeCard`, this is `"chargeCard"`. |
+| `shortName` | The display name: the last segment of the function name. For nested steps like `processOrder/chargeCard`, this is `"chargeCard"`. When same-named nested steps require disambiguation, the generated `~N` suffix is preserved (for example, `"chargeCard~1"`). |
 | `moduleSpecifier` | The module the step is defined in: a relative path (`./src/workflows/order`) or a package specifier (`@myorg/tasks@2.0.0`). |
 | `functionName` | The full function name including nesting (e.g. `processOrder/chargeCard`). |
 

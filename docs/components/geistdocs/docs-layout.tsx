@@ -1,6 +1,6 @@
 import { GeistdocsDocsLayout as PackageDocsLayout } from '@vercel/geistdocs/layout';
 import { GeistdocsVersionSelect } from '@vercel/geistdocs/versions';
-import type { ComponentProps, CSSProperties, ReactNode } from 'react';
+import type { ComponentProps, ReactNode } from 'react';
 import { config } from '@/lib/geistdocs/config';
 import { getVersionSwitchPaths } from '@/lib/geistdocs/version-switch-paths';
 
@@ -9,7 +9,7 @@ type DocsTreeNode = DocsTree['children'][number];
 
 const SIDEBAR_ITEM_BADGES: Array<{ suffix: string; label: string }> = [
   { suffix: '/docs/getting-started/python', label: 'Beta' },
-  { suffix: '/v5/docs/getting-started/python', label: 'Beta' },
+  { suffix: '/v4/docs/getting-started/python', label: 'Beta' },
 ];
 
 const getSidebarBadge = (url?: string) =>
@@ -150,7 +150,9 @@ export const DocsLayout = ({
       className: 'bg-background-200 max-w-[1448px] mx-auto',
       style: {
         '--fd-docs-row-1': '4rem',
-      } as CSSProperties,
+      } as NonNullable<
+        ComponentProps<typeof PackageDocsLayout>['containerProps']
+      >['style'],
     }}
     sidebarTop={
       config.versions ? (

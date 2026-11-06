@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { turbopackContentPattern } from '@workflow/builders';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -80,6 +81,9 @@ describe('withWorkflow builder config', () => {
     delete process.env.WORKFLOW_LOCAL_DATA_DIR;
     delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
     delete process.env.WORKFLOW_TARGET_WORLD;
+    delete (globalThis as Record<symbol, unknown>)[
+      Symbol.for('@workflow/next/workflowBuilds')
+    ];
   });
 
   afterEach(() => {
@@ -134,6 +138,69 @@ describe('withWorkflow builder config', () => {
     expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledWith(
       process.cwd()
     );
+  });
+
+  it('builds once per process when Next resets process.env between config evaluations', async () => {
+    // Next 16 dev re-evaluates next.config (validateTurboNextConfig) after
+    // startup, and a forced @next/env reload in between (triggered by any env
+    // change the dev watcher sees, e.g. an `.env*` edit or an app route being
+    // added) restores process.env to its initial snapshot, dropping
+    // WORKFLOW_NEXT_PRIVATE_BUILT.
+    const config = withWorkflow({});
+
+    await config('phase-development-server', { defaultConfig: {} });
+    delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
+    await config('phase-development-server', { defaultConfig: {} });
+
+    expect(buildMock).toHaveBeenCalledOnce();
+    expect(builderConfigs).toHaveLength(1);
+    expect(process.env.WORKFLOW_NEXT_PRIVATE_BUILT).toBe('1');
+  });
+
+  it('shares an in-flight build between concurrent config evaluations', async () => {
+    buildMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 20))
+    );
+    const config = withWorkflow({});
+
+    await Promise.all([
+      config('phase-development-server', { defaultConfig: {} }),
+      config('phase-development-server', { defaultConfig: {} }),
+    ]);
+
+    expect(buildMock).toHaveBeenCalledOnce();
+  });
+
+  it('retries the build on the next config evaluation after a failed build', async () => {
+    buildMock.mockImplementationOnce(async () => {
+      throw new Error('boom');
+    });
+    const config = withWorkflow({});
+
+    await expect(
+      config('phase-development-server', { defaultConfig: {} })
+    ).rejects.toThrow('boom');
+    expect(process.env.WORKFLOW_NEXT_PRIVATE_BUILT).toBeUndefined();
+
+    await config('phase-development-server', { defaultConfig: {} });
+
+    expect(buildMock).toHaveBeenCalledTimes(2);
+    expect(process.env.WORKFLOW_NEXT_PRIVATE_BUILT).toBe('1');
+  });
+
+  it('builds once when the plugin module is re-imported between config evaluations', async () => {
+    // Next may re-require next.config (and this plugin) when it re-evaluates
+    // the config, so the build record must not live in module scope.
+    await withWorkflow({})('phase-development-server', { defaultConfig: {} });
+    delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
+
+    vi.resetModules();
+    const { withWorkflow: freshWithWorkflow } = await import('./index.js');
+    await freshWithWorkflow({})('phase-development-server', {
+      defaultConfig: {},
+    });
+
+    expect(buildMock).toHaveBeenCalledOnce();
   });
 
   it('does not prewarm the SWC plugin cache for the production server', async () => {
@@ -435,5 +502,71 @@ describe('withWorkflow builder config', () => {
       process.chdir(originalCwd);
       rmSync(projectDir, { recursive: true, force: true });
     }
+  });
+
+  describe('turbopack rule content condition', () => {
+    async function getRuleContentPatterns(): Promise<[string, RegExp][]> {
+      const nextConfig = await withWorkflow({})('phase-production-build', {
+        defaultConfig: {},
+      });
+      const rules = (nextConfig.turbopack?.rules ?? {}) as Record<
+        string,
+        { condition?: { all?: { content?: RegExp }[] } }
+      >;
+      const patterns = Object.entries(rules).flatMap(([key, rule]) =>
+        (rule.condition?.all ?? [])
+          .filter((entry) => entry.content instanceof RegExp)
+          .map((entry) => [key, entry.content as RegExp] as [string, RegExp])
+      );
+      expect(patterns.length).toBeGreaterThan(0);
+      return patterns;
+    }
+
+    // The shape @ai-sdk/openai and @ai-sdk/gateway ship: the serde symbols are
+    // imported constants used as computed keys, with no directive in the file.
+    // See https://github.com/vercel/workflow/issues/4897.
+    it.each([
+      [
+        'static [WORKFLOW_SERIALIZE]',
+        'class OpenAIResponsesLanguageModel {\n  static [WORKFLOW_SERIALIZE](model) {\n    return model.config;\n  }\n}',
+      ],
+      [
+        'static [WORKFLOW_DESERIALIZE]',
+        'class OpenAIResponsesLanguageModel {\n  static [ WORKFLOW_DESERIALIZE ](options) {\n    return new this(options);\n  }\n}',
+      ],
+    ])('sends files using %s to the workflow loader', async (_, source) => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test(source), `rule ${key}`).toBe(true);
+      }
+    });
+
+    it.each([
+      ['"use workflow"', 'export async function wf() {\n  "use workflow";\n}'],
+      ["'use step'", "export async function s() {\n  'use step';\n}"],
+      [
+        '@workflow/serde import',
+        "import { WORKFLOW_SERIALIZE } from '@workflow/serde';",
+      ],
+      [
+        'Symbol.for serde key',
+        'class Point {\n  static [Symbol.for("workflow-serialize")](p) {}\n}',
+      ],
+    ])('still sends files using %s to the workflow loader', async (_, source) => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test(source), `rule ${key}`).toBe(true);
+      }
+    });
+
+    it('uses the builders pattern itself, not a copy', async () => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern, `rule ${key}`).toBe(turbopackContentPattern);
+      }
+    });
+
+    it('skips files with no workflow patterns', async () => {
+      for (const [key, pattern] of await getRuleContentPatterns()) {
+        expect(pattern.test('export const x = 1;'), `rule ${key}`).toBe(false);
+      }
+    });
   });
 });

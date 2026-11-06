@@ -1,0 +1,149 @@
+import {
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  type World,
+} from '@workflow/world';
+import { describe, expect, it, vi } from 'vitest';
+import { publishForceClaimVictimWake } from './hook-wake.js';
+
+vi.mock('../logger.js', () => ({
+  runtimeLogger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+}));
+
+function worldWithQueue(queue: World['queue']): World {
+  return { queue } as unknown as World;
+}
+
+describe('publishForceClaimVictimWake', () => {
+  const hook = {
+    hookId: 'hook_claimer',
+    claimedFrom: {
+      runId: 'wrun_victim',
+      hookId: 'hook_victim',
+      workflowName: 'victimWorkflow',
+      deploymentId: 'dpl_victim',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    },
+  };
+
+  it("publishes a plain invoke to the victim's queue, on its deployment, keyed by the claimer's hook", async () => {
+    const queue = vi.fn().mockResolvedValue(undefined);
+    const outcome = await publishForceClaimVictimWake(
+      worldWithQueue(queue),
+      'wrun_claimer',
+      hook
+    );
+    expect(outcome).toBe('published');
+    expect(queue).toHaveBeenCalledTimes(1);
+    const [queueName, message, options] = queue.mock.calls[0];
+    expect(queueName).toContain('victimWorkflow');
+    expect(message).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    expect(options).toMatchObject({
+      deploymentId: 'dpl_victim',
+      specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+    });
+    // A wake carries no idempotency key.
+    expect(options).not.toHaveProperty('idempotencyKey');
+  });
+
+  it("keys the wake by the claimer's hook when the victim is an older run", async () => {
+    const queue = vi.fn().mockResolvedValue(undefined);
+    await publishForceClaimVictimWake(worldWithQueue(queue), 'wrun_claimer', {
+      ...hook,
+      claimedFrom: {
+        ...hook.claimedFrom,
+        runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+      },
+    });
+    const [, message, options] = queue.mock.calls[0];
+    expect(message).toEqual({
+      runId: 'wrun_victim',
+      runSpecVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+    });
+    // An older run replays in full on every delivery, so the claimer's
+    // republishes collapse into one wake.
+    expect(options).toMatchObject({
+      idempotencyKey: 'hook-force-claim-hook_claimer',
+    });
+  });
+
+  it("leaves the routing hint off when the victim's version is unknown", async () => {
+    const queue = vi.fn().mockResolvedValue(undefined);
+    const { runSpecVersion: _unknown, ...claimedFrom } = hook.claimedFrom;
+    await publishForceClaimVictimWake(worldWithQueue(queue), 'wrun_claimer', {
+      ...hook,
+      claimedFrom,
+    });
+    const [, message, options] = queue.mock.calls[0];
+    // Routing reads the run instead of trusting a guessed version.
+    expect(message).toEqual({ runId: 'wrun_victim' });
+    // The transport still takes the legacy format every deployment reads.
+    expect(options).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
+      idempotencyKey: 'hook-force-claim-hook_claimer',
+    });
+  });
+
+  it('skips a hook that took nothing over, and a run taking over its own hook', async () => {
+    const queue = vi.fn();
+    expect(
+      await publishForceClaimVictimWake(worldWithQueue(queue), 'wrun_x', {
+        hookId: 'hook_x',
+      })
+    ).toBe('skipped');
+    expect(
+      await publishForceClaimVictimWake(
+        worldWithQueue(queue),
+        'wrun_victim',
+        hook
+      )
+    ).toBe('skipped');
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('retries a transport-shaped failure, then reports failure without throwing', async () => {
+    const transient = Object.assign(new Error('boom'), { status: 503 });
+    const queue = vi
+      .fn()
+      .mockRejectedValueOnce(transient)
+      .mockResolvedValueOnce(undefined);
+    expect(
+      await publishForceClaimVictimWake(
+        worldWithQueue(queue),
+        'wrun_claimer',
+        hook
+      )
+    ).toBe('published');
+    expect(queue).toHaveBeenCalledTimes(2);
+
+    const always = vi.fn().mockRejectedValue(transient);
+    expect(
+      await publishForceClaimVictimWake(
+        worldWithQueue(always),
+        'wrun_claimer',
+        hook
+      )
+    ).toBe('failed');
+    // Initial attempt + two retries.
+    expect(always).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not retry a definitive rejection', async () => {
+    const definitive = Object.assign(new Error('nope'), {
+      name: 'BadRequestError',
+    });
+    const queue = vi.fn().mockRejectedValue(definitive);
+    expect(
+      await publishForceClaimVictimWake(
+        worldWithQueue(queue),
+        'wrun_claimer',
+        hook
+      )
+    ).toBe('failed');
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+});

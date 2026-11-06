@@ -10,7 +10,7 @@ type WorkflowLog = {
 };
 
 const Loading = (
-  <Loader2Icon className="size-[13px] text-muted-foreground animate-spin" />
+  <Loader2Icon className="size-[13px] text-gray-900 animate-spin" />
 );
 const Success = (
   <div>
@@ -155,7 +155,7 @@ export const WorkflowExample = ({
 
   return (
     <div className="relative isolate w-full">
-      <div className="bg-background border rounded-md overflow-x-auto pb-[52px]">
+      <div className="bg-background-100 border rounded-md overflow-x-auto pb-[52px]">
         <div className="relative">
           <div className="flex absolute z-10 flex-col left-[18px] top-[69px] pointer-events-none select-none">
             {renderIndicator(lineStates[0])}

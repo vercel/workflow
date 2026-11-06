@@ -56,12 +56,12 @@ export default defineConfig({
 | --- | --- | --- | --- |
 | `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles, which helps stay under the Vercel 250 MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
 
-<Accordion type="single" collapsible>
-  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
-    <AccordionTrigger className="text-sm">
-      ### Set up IntelliSense for TypeScript (optional)
-    </AccordionTrigger>
-    <AccordionContent className="[&_p]:my-2">
+<Details>
+<Summary className="[&_h3]:my-0">
+
+### Set up IntelliSense for TypeScript (optional)
+
+</Summary>
 
 To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.json`:
 
@@ -78,9 +78,7 @@ To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.jso
 }
 ```
 
-    </AccordionContent>
-  </AccordionItem>
-</Accordion>
+</Details>
 
 </Step>
 

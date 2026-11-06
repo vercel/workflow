@@ -5,7 +5,6 @@ import {
   WorkflowDeploymentMismatchError,
 } from '@workflow/errors';
 import {
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowRun,
   type World,
@@ -13,8 +12,10 @@ import {
 import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
+import { afterRunFailed } from './after-terminal-write.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
-import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
+import type { EventCreator } from './helpers.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 
 /** Cap on the re-route backoff, in seconds. */
 const MAX_REROUTE_DELAY_SECONDS = 8;
@@ -124,6 +125,7 @@ export async function guardDeploymentAffinity({
   reenqueue,
   isDeploymentUnavailableError,
   beforeStop,
+  writeEvent,
 }: {
   world: World;
   run: Pick<WorkflowRun, 'runId' | 'deploymentId' | 'specVersion'>;
@@ -150,6 +152,12 @@ export async function guardDeploymentAffinity({
    * deployment's own `run_started`), so that write must have landed first.
    */
   beforeStop?: () => Promise<void>;
+  /**
+   * Writes the terminal `run_failed`. The orchestrator passes its in-band
+   * writer; a background step's invocation passes nothing and the event is
+   * written out-of-band.
+   */
+  writeEvent?: EventCreator;
 }): Promise<DeploymentAffinityResult> {
   // Deployment affinity is only meaningful in worlds whose deployments are
   // atomic and immutable, which the World declares (world-vercel does) and
@@ -193,34 +201,31 @@ export async function guardDeploymentAffinity({
       { recoveryAttempts, cause }
     );
 
+    let dehydratedError: Uint8Array;
     try {
       // Unencrypted: the pinned deployment's key may no longer be available.
-      const dehydratedError = await dehydrateRunError(
+      dehydratedError = await dehydrateRunError(
         error,
         run.runId,
         undefined,
         undefined,
         (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
       );
-      await world.events.create(
-        run.runId,
-        {
-          eventType: 'run_failed',
-          specVersion: SPEC_VERSION_CURRENT,
-          eventData: {
-            error: dehydratedError,
-            errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
-          },
+      const runFailed = {
+        eventType: 'run_failed',
+        // Written by a deployment that is, by definition, not the run's own.
+        specVersion: specVersionForRunWrite(run.specVersion),
+        eventData: {
+          error: dehydratedError,
+          errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
         },
-        { requestId }
-      );
-      dispatchRunFailedHooks(
-        run.runId,
-        workflowName,
-        dehydratedError,
-        undefined,
-        RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
-      );
+      } as const;
+      await (writeEvent
+        ? writeEvent(runFailed, { requestId })
+        : world.events.create(run.runId, runFailed, {
+            requestId,
+            inBand: false,
+          }));
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or
       // it was canceled/expired), so still stop. Anything else is a transient
@@ -231,7 +236,16 @@ export async function guardDeploymentAffinity({
       ) {
         throw failError;
       }
+      return result('failed', run.deploymentId, recoveryAttempts);
     }
+    await afterRunFailed(
+      world,
+      run,
+      workflowName,
+      dehydratedError,
+      undefined,
+      RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
+    );
     return result('failed', run.deploymentId, recoveryAttempts);
   };
 

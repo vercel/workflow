@@ -35,7 +35,7 @@ export async function serialize(
     // Compress before encrypting, since encrypted bytes don't compress.
     const compressed = await compress(
       prefixed,
-      options?.compression === true,
+      options?.compression ?? false,
       options?.compressionStats
     );
     return encryptData(compressed, encryptionKey);

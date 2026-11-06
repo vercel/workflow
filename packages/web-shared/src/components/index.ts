@@ -31,6 +31,7 @@ export { type StreamChunk, StreamViewer } from './stream-viewer';
 export { StreamViewerSkeleton } from './stream-viewer-skeleton';
 export { TraceViewer } from './trace-viewer';
 export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
+export { Button, type ButtonProps, buttonVariants } from './ui/button';
 export {
   DataInspector,
   type DataInspectorProps,

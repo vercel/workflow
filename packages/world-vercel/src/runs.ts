@@ -70,6 +70,9 @@ const WorkflowRunWireWithRefsSchema = z.compile(
     // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
     input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
     output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+    // Discarded by `filterRunData`: `resolveData: 'none'` never returns a
+    // dynamic run's code, whatever shape the backend sends it in.
+    dynamicWorkflowCode: z.any().optional(),
   })
 );
 
@@ -91,7 +94,13 @@ function filterRunData(
   resolveData: 'none' | 'all'
 ): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
-    const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
+    // The code is dropped before normalizing, so it is never decompressed.
+    const {
+      inputRef: _inputRef,
+      outputRef: _outputRef,
+      dynamicWorkflowCode: _dynamicWorkflowCode,
+      ...rest
+    } = run;
     const deserialized = normalizeWorkflowRunData(
       deserializeError<WorkflowRun>(rest) as unknown as Record<string, unknown>
     );
@@ -215,9 +224,21 @@ export async function getWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+  return readRunOrNotFound(id, { resolveData }, config);
+}
 
+/**
+ * The plain run read, with a `404` raised as `WorkflowRunNotFoundError`.
+ * `waitForWorkflowRunTerminalStatus` falls back to this with the caller's
+ * `signal`, which `GetWorkflowRunParams` has no field for.
+ */
+async function readRunOrNotFound(
+  id: string,
+  params: { resolveData: 'none' | 'all'; signal?: AbortSignal },
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
   try {
-    return await readRun(id, { resolveData }, config);
+    return await readRun(id, params, config);
   } catch (error) {
     if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
@@ -396,30 +417,24 @@ export async function waitForWorkflowRunTerminalStatus(
     )
   );
 
+  const signal = params?.signal;
+
   const { baseUrl } = getHttpUrl(config);
   const unsupportedUntil = longPoll.unsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
 
   if (waitMs === 0 || Date.now() < unsupportedUntil) {
-    return getWorkflowRun(id, { resolveData }, config);
+    return readRunOrNotFound(id, { resolveData, signal }, config);
   }
 
   try {
-    return await readRun(
-      id,
-      {
-        resolveData,
-        waitMs,
-        ...(params?.signal ? { signal: params.signal } : {}),
-      },
-      config
-    );
+    return await readRun(id, { resolveData, waitMs, signal }, config);
   } catch (error) {
     // The caller cancelled on purpose. That is not a verdict on the route, so
     // it propagates rather than degrading; otherwise an ordinary abort would
     // both cost an extra read and switch the fast path off for every run in
     // this process. Checked first because an abort surfaces with the same
     // `TIMEOUT` code as a request that ran out of time on its own.
-    if (params?.signal?.aborted) {
+    if (signal?.aborted) {
       throw error;
     }
     if (!(error instanceof WorkflowWorldError) || !isLongPollUnusable(error)) {
@@ -427,7 +442,7 @@ export async function waitForWorkflowRunTerminalStatus(
     }
 
     // Throws WorkflowRunNotFoundError when the run is what was missing.
-    const run = await getWorkflowRun(id, { resolveData }, config);
+    const run = await readRunOrNotFound(id, { resolveData, signal }, config);
     longPoll.unsupportedUntilByBaseUrl.set(
       baseUrl,
       Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS

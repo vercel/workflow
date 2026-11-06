@@ -97,6 +97,11 @@ export function getCommonReducers(): Partial<Reducers> {
       value instanceof BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof BigUint64Array && viewToBase64(value),
+    // Claimed rather than left to devalue, which encodes a DataView as its
+    // whole backing ArrayBuffer plus offset/length. The tag is not `DataView`
+    // so that older payloads under that name keep reaching devalue's built-in
+    // branch with their bounds; see the host-side common.ts.
+    DataViewBytes: (value) => value instanceof DataView && viewToBase64(value),
     Date: (value) => {
       if (!(value instanceof Date)) return false;
       const valid = !Number.isNaN(value.getDate());
@@ -146,6 +151,37 @@ export function getCommonReducers(): Partial<Reducers> {
       if ((value as any).conflictingRunId !== undefined) {
         reduced.conflictingRunId = (value as any).conflictingRunId;
       }
+      if ((value as any).kind === 'start') reduced.kind = 'start';
+      if ('cause' in value) reduced.cause = (value as any).cause;
+      return reduced;
+    },
+    // HookForceClaimedError carries the token and who took it; mirror the
+    // host-side common.ts reducer.
+    HookForceClaimedError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'HookForceClaimedError')
+        return false;
+      const reduced: SerializableSpecial['HookForceClaimedError'] = {
+        message: value.message,
+        stack: value.stack,
+        token: (value as any).token,
+        claimedByRunId: (value as any).claimedByRunId,
+      };
+      if ((value as any).claimedByHookId !== undefined) {
+        reduced.claimedByHookId = (value as any).claimedByHookId;
+      }
+      if ('cause' in value) reduced.cause = (value as any).cause;
+      return reduced;
+    },
+    // WorkflowStartError: mirror the host-side common.ts reducer.
+    WorkflowStartError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'WorkflowStartError')
+        return false;
+      const reduced: SerializableSpecial['WorkflowStartError'] = {
+        message: value.message,
+        stack: value.stack,
+        runId: (value as any).runId,
+        stage: (value as any).stage,
+      };
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
@@ -370,6 +406,7 @@ export function getCommonRevivers(): Partial<Revivers> {
       new BigInt64Array(reviveArrayBuffer(value)),
     BigUint64Array: (value: string) =>
       new BigUint64Array(reviveArrayBuffer(value)),
+    DataViewBytes: (value: string) => new DataView(reviveArrayBuffer(value)),
     Date: (value) => new Date(value),
     DOMException: (value) => {
       const error = new DOMException(value.message, value.name);
@@ -414,7 +451,11 @@ export function getCommonRevivers(): Partial<Revivers> {
       ];
       let error: Error;
       if (typeof Cls === 'function') {
-        error = new Cls(value.token, value.conflictingRunId);
+        error = new Cls(
+          value.token,
+          value.conflictingRunId,
+          value.kind === 'start' ? { kind: 'start' } : undefined
+        );
       } else {
         error = new Error(value.message);
         error.name = 'HookConflictError';
@@ -422,9 +463,52 @@ export function getCommonRevivers(): Partial<Revivers> {
         if (value.conflictingRunId !== undefined) {
           (error as any).conflictingRunId = value.conflictingRunId;
         }
+        if (value.kind === 'start') (error as any).kind = 'start';
       }
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) (error as any).cause = (value as any).cause;
+      return error;
+    },
+    HookForceClaimedError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//HookForceClaimedError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(
+          value.token,
+          value.claimedByRunId,
+          value.claimedByHookId
+        );
+      } else {
+        error = new Error(value.message);
+        error.name = 'HookForceClaimedError';
+        (error as any).token = value.token;
+        (error as any).claimedByRunId = value.claimedByRunId;
+        if (value.claimedByHookId !== undefined) {
+          (error as any).claimedByHookId = value.claimedByHookId;
+        }
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) (error as any).cause = (value as any).cause;
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//WorkflowStartError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.runId, value.stage, value.cause);
+      } else {
+        error = new Error(value.message);
+        error.name = 'WorkflowStartError';
+        (error as any).runId = value.runId;
+        (error as any).stage = value.stage;
+        if ('cause' in value) (error as any).cause = (value as any).cause;
+      }
+      error.message = value.message;
+      if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
     RangeError: makeNamedErrorSubclassReviver('RangeError'),

@@ -152,4 +152,137 @@ describe('QuickJSLogView', () => {
     view.absorb({ event: slotEvent(4) }, { deliverEvent: true });
     expect(view.bufferedCount).toBe(0);
   });
+
+  describe('events through the cursor', () => {
+    it('counts listed pages and complete inline deltas', () => {
+      const view = new QuickJSLogView([slotEvent(1), slotEvent(2)], 'c2', 2);
+      expect(view.eventsThroughCursor).toBe(2);
+      view.advanceCursor('c3', 1);
+      view.markFed([slotEvent(3)]);
+      expect(view.eventsThroughCursor).toBe(3);
+      // A delta read from the current cursor moves the cursor and the
+      // count together, even before the VM is given its events.
+      view.absorbDelta('c3', {
+        events: [slotEvent(4), slotEvent(5)],
+        cursor: 'c5',
+        hasMore: false,
+      });
+      expect(view.logCursor).toBe('c5');
+      expect(view.eventsThroughCursor).toBe(5);
+      expect(view.bufferedCount).toBe(2);
+    });
+
+    it('covers nothing at the start of the log', () => {
+      const view = new QuickJSLogView([slotEvent(1)], null);
+      expect(view.eventsThroughCursor).toBe(0);
+      view.advanceCursor('c1', 1);
+      expect(view.eventsThroughCursor).toBe(1);
+    });
+
+    it('forgets the count when a read has no count or no cursor', () => {
+      const unknown = new QuickJSLogView([slotEvent(1)], 'c1', 1);
+      unknown.advanceCursor('c2');
+      expect(unknown.eventsThroughCursor).toBeUndefined();
+
+      const uncovered = new QuickJSLogView([slotEvent(1)], 'c1', 1);
+      uncovered.advanceCursor(null, 1);
+      expect(uncovered.eventsThroughCursor).toBeUndefined();
+
+      const empty = new QuickJSLogView([slotEvent(1)], 'c1', 1);
+      empty.advanceCursor(null, 0);
+      expect(empty.eventsThroughCursor).toBe(1);
+    });
+
+    it('resets on a full re-read', () => {
+      const view = new QuickJSLogView([slotEvent(3)], 'c3');
+      expect(view.eventsThroughCursor).toBeUndefined();
+      view.setPosition('c3', 3);
+      expect(view.eventsThroughCursor).toBe(3);
+    });
+  });
+
+  describe('run-ahead speculative events', () => {
+    const outcome = (slot: number, correlationId = 'step_a'): Event =>
+      ({
+        ...slotEvent(slot),
+        eventType: 'step_completed',
+        correlationId,
+      }) as unknown as Event;
+
+    it('feeds a speculative event in position order, and never names its position', () => {
+      const view = new QuickJSLogView([slotEvent(1), slotEvent(2)], 'c2');
+      // Slot 3 is a sibling write still in flight; the outcome is placed at 4.
+      expect(view.queueSpeculative([outcome(4)])).toBe(true);
+      expect(view.speculativeCount).toBe(1);
+      expect(view.snapshotParams()).toEqual({ eventCount: 2 });
+      expect(view.takeContiguous()).toEqual([]);
+      view.absorb({ event: slotEvent(3) }, { deliverEvent: true });
+      expect(slots(view.takeContiguous())).toEqual([3, 4]);
+      // Fed, but unconfirmed until its write comes back.
+      expect(view.speculativeCount).toBe(1);
+      view.absorb({ event: outcome(4) }, { deliverEvent: true });
+      expect(view.speculativeCount).toBe(0);
+      expect(view.snapshotParams()).toEqual({ eventCount: 4 });
+      expect(view.takeContiguous()).toEqual([]);
+    });
+
+    it('hands the VM the committed copy when it confirms an unfed speculative event', () => {
+      const view = new QuickJSLogView([slotEvent(1)], 'c1');
+      const placed = outcome(3);
+      expect(view.queueSpeculative([placed])).toBe(true);
+      const committed = { ...outcome(3), specVersion: 9 } as Event;
+      view.absorb({ event: committed }, { deliverEvent: true });
+      view.absorb({ event: slotEvent(2) }, { deliverEvent: true });
+      const fed = view.takeContiguous();
+      expect(slots(fed)).toEqual([2, 3]);
+      expect(fed[1]).toBe(committed);
+    });
+
+    it('reports another writer taking a speculative position, from any source', () => {
+      const view = new QuickJSLogView([slotEvent(1)], 'c1');
+      const displaced: [string, string][] = [];
+      view.onDisplaced = (event, placed) =>
+        displaced.push([event.eventType, placed.eventType]);
+      expect(view.queueSpeculative([outcome(2)])).toBe(true);
+      // A skipped-slot report.
+      view.absorb({ events: [slotEvent(2)], hasMore: false });
+      expect(displaced).toEqual([['attr_set', 'step_completed']]);
+      // A listing returns it under the speculative event's id.
+      view.screen(slotEvent(2));
+      expect(displaced).toHaveLength(2);
+      // The event this invocation placed is not another writer's.
+      view.screen(outcome(2));
+      expect(displaced).toHaveLength(2);
+      expect(view.speculativeCount).toBe(0);
+    });
+
+    it('refuses a stale prediction, all or nothing', () => {
+      const view = new QuickJSLogView([slotEvent(1), slotEvent(2)], 'c2');
+      expect(view.queueSpeculative([outcome(2)])).toBe(false);
+      // A position this view already knows of from a write's response.
+      view.absorb({ event: slotEvent(4) });
+      expect(
+        view.queueSpeculative([outcome(4, 'step_a'), outcome(5, 'step_b')])
+      ).toBe(false);
+      expect(view.speculativeCount).toBe(0);
+      expect(view.bufferedCount).toBe(0);
+      expect(view.queueSpeculative([outcome(5), outcome(6, 'step_b')])).toBe(
+        true
+      );
+      expect(view.speculativeCount).toBe(2);
+    });
+
+    it('does not advance the cursor on a delta while speculative events are queued', () => {
+      const view = new QuickJSLogView([slotEvent(1)], 'c1', 1);
+      expect(view.queueSpeculative([outcome(3)])).toBe(true);
+      expect(
+        view.absorbDelta('c1', {
+          events: [slotEvent(2)],
+          cursor: 'c2',
+          hasMore: false,
+        })
+      ).toBe(false);
+      expect(view.logCursor).toBe('c1');
+    });
+  });
 });

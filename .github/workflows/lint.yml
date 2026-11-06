@@ -19,14 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Biome check
@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Check WORKFLOW_SERVER_URL_OVERRIDE is empty
         run: |
@@ -59,12 +59,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24.x
+        uses: actions/setup-node@v6
         with:
-          node-version: 22.x
+          node-version: 24.x
 
       # `turbo test` only runs a package's tests if that package declares a
       # `test` script, so a suite can exist for months without ever running.
@@ -77,29 +77,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24.x
+        uses: actions/setup-node@v6
         with:
-          node-version: 22.x
+          node-version: 24.x
 
-      - name: Run .github/scripts unit tests
-        run: node --test ".github/scripts/**/*.test.js"
+      # Suites under `scripts/` are named file by file: the rest of that
+      # directory is vitest files, which `node --test` cannot import.
+      - name: Run CI script unit tests
+        run: node --test ".github/scripts/**/*.test.js" ".github/actions/**/*.test.js" "scripts/trusted-sources-headers.test.mjs"
 
   changesets:
     name: Changesets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       # `changeset version` (release.yml) assembles a release plan from every
@@ -118,14 +120,14 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: true
           require-lockfile: true
-          runtime: node@22
+          runtime: node@24
           cache: true
 
       - name: Setup Bun
