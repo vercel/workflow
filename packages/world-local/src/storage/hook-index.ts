@@ -46,7 +46,7 @@ import { hookCreatedFromRunCreated } from './start-hook.js';
  * dangling entry pointing at a write that never landed. Readers skip
  * those. A committed event/entity invisible to the index cannot occur.
  *
- * A run's `start({ hook })` Hook has no `hook_created`: its admission writes
+ * A run's `start({ experimental_hook })` Hook has no `hook_created`: its admission writes
  * the entries pointing at the run's `run_created` (its first slot), which
  * readers take as the creation it stands for (`hookCreatedFromRunCreated`).
  *
@@ -54,18 +54,14 @@ import { hookCreatedFromRunCreated } from './start-hook.js';
  * (`ensureHookIndexes`) guarded by a completion marker.
  */
 
-const IndexEntrySchema = z.compile(
-  z.object({
-    runId: z.string(),
-  })
-);
+const IndexEntrySchema = z.object({
+  runId: z.string(),
+});
 
-const ByRunMarkerSchema = z.compile(
-  z.object({
-    hookId: z.string(),
-    tag: z.string().optional(),
-  })
-);
+const ByRunMarkerSchema = z.object({
+  hookId: z.string(),
+  tag: z.string().optional(),
+});
 
 // No `.json` extension so entity listings never pick it up.
 const INDEX_COMPLETE_MARKER = '.hook-index-complete';

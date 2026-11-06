@@ -405,35 +405,33 @@ export function hookTokenClaimPath(basedir: string, token: string): string {
   return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
 }
 
-export const HookTokenClaimSchema = z.compile(
-  z.object({
-    // Legacy claims omitted hookId. Keeping it optional preserves their
-    // existing cross-hook conflict behavior (see #2283).
-    hookId: z.string().optional(),
-    runId: z.string(),
-    // Legacy claims also omitted eventId. Their recovery marker pins the
-    // canonical hook_created event before concurrent retries publish it.
-    eventId: z.string().optional(),
-    tokenRetentionUntil: z.coerce.date().optional(),
-    // When an admission wrote this claim for its run's `start({ hook })` Hook
-    // (ms since the epoch), for the orphan grace
-    // (`START_HOOK_ORPHAN_GRACE_MS`). Only read while the claim's run record
-    // is missing.
-    reservedAt: z.number().optional(),
-    // Set when this claim took the token from another run
-    // (`experimental_force`), so a retry that adopts the claim can still
-    // report — and wake — the run it came from.
-    claimedFrom: z
-      .object({
-        runId: z.string(),
-        hookId: z.string(),
-        workflowName: z.string().optional(),
-        deploymentId: z.string().optional(),
-        runSpecVersion: z.number().optional(),
-      })
-      .optional(),
-  })
-);
+export const HookTokenClaimSchema = z.object({
+  // Legacy claims omitted hookId. Keeping it optional preserves their
+  // existing cross-hook conflict behavior (see #2283).
+  hookId: z.string().optional(),
+  runId: z.string(),
+  // Legacy claims also omitted eventId. Their recovery marker pins the
+  // canonical hook_created event before concurrent retries publish it.
+  eventId: z.string().optional(),
+  tokenRetentionUntil: z.coerce.date().optional(),
+  // When an admission wrote this claim for its run's `start({ experimental_hook })` Hook
+  // (ms since the epoch), for the orphan grace
+  // (`START_HOOK_ORPHAN_GRACE_MS`). Only read while the claim's run record
+  // is missing.
+  reservedAt: z.number().optional(),
+  // Set when this claim took the token from another run
+  // (`experimental_force`), so a retry that adopts the claim can still
+  // report — and wake — the run it came from.
+  claimedFrom: z
+    .object({
+      runId: z.string(),
+      hookId: z.string(),
+      workflowName: z.string().optional(),
+      deploymentId: z.string().optional(),
+      runSpecVersion: z.number().optional(),
+    })
+    .optional(),
+});
 
 export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
 
@@ -490,24 +488,23 @@ export const START_HOOK_ORPHAN_GRACE_MS = 2 * HOOK_TOKEN_CLAIM_LOCK_STALE_MS;
  * cancellation's fence (a `run_cancelled` for an admitted candidate that was
  * never created) names none, and later attempts are refused permanently.
  */
-export const StartHookFenceSchema = z.compile(
-  z.object({
-    startHookFence: z.object({
-      /** Absent on a cancellation's fence, which knows only the run id. */
-      token: z.string().optional(),
-      conflictingRunId: z.string().optional(),
-    }),
-  })
-);
+export const StartHookFenceSchema = z.object({
+  startHookFence: z.object({
+    /** Absent on a cancellation's fence, which knows only the run id. */
+    token: z.string().optional(),
+    conflictingRunId: z.string().optional(),
+  }),
+});
 export type StartHookFence = z.infer<typeof StartHookFenceSchema>;
 
 /**
  * A run record file as world-local reads it: a run, or `null` for a start
  * Hook fence (no run). Every read of a run record goes through this.
  */
-export const RunRecordSchema: z.ZodType<WorkflowRun | null> = z.compile(
-  z.union([StartHookFenceSchema.transform(() => null), WorkflowRunSchema])
-) as z.ZodType<WorkflowRun | null>;
+export const RunRecordSchema: z.ZodType<WorkflowRun | null> = z.union([
+  StartHookFenceSchema.transform(() => null),
+  WorkflowRunSchema,
+]) as z.ZodType<WorkflowRun | null>;
 
 /** A run record path's fence, if it holds one. */
 export async function readStartHookFence(
@@ -571,7 +568,7 @@ export async function withHookTokenClaimLock<T>(
 }
 
 /**
- * Path of the record of a refused `start({ hook })` candidate. Only refusals
+ * Path of the record of a refused `start({ experimental_hook })` candidate. Only refusals
  * are recorded: an accepted candidate's decision is its run record, which is
  * written under the token claim lock right after the start Hook's claim.
  */

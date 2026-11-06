@@ -99,7 +99,7 @@ export interface SerializableSpecial {
     token: string;
     // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
-    /** `'start'` for a refused `start({ hook })`; rebuilds its wording. */
+    /** `'start'` for a refused `start({ experimental_hook })`; rebuilds its wording. */
     kind?: 'start';
   };
   HookForceClaimedError: {

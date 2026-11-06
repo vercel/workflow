@@ -209,11 +209,9 @@ function getHookRetentionLimitMs(): number {
  * lifetimes can never share one marker (see
  * `hookRecoveryMarkerPath`).
  */
-const HookRecoveryMarkerSchema = z.compile(
-  z.object({
-    eventId: z.string(),
-  })
-);
+const HookRecoveryMarkerSchema = z.object({
+  eventId: z.string(),
+});
 
 /**
  * Durable `(runId, resumeId)` claim for a lazy hook resume. Written via
@@ -224,15 +222,13 @@ const HookRecoveryMarkerSchema = z.compile(
  * records the content hash so a reused `resumeId` carrying a different payload
  * can be rejected as a conflict, matching the server's constraint.
  */
-const HookResumeClaimSchema = z.compile(
-  z.object({
-    runId: z.string(),
-    resumeId: z.string(),
-    hookId: z.string(),
-    eventId: z.string(),
-    payloadDigest: z.string().optional(),
-  })
-);
+const HookResumeClaimSchema = z.object({
+  runId: z.string(),
+  resumeId: z.string(),
+  hookId: z.string(),
+  eventId: z.string(),
+  payloadDigest: z.string().optional(),
+});
 
 /**
  * Whether `event` is the `hook_received` a resume claim stands for.
@@ -304,7 +300,7 @@ async function findCommittedResumeEvent(
  *   - the owning run is terminal and its minimum retention has ended, or
  *   - the owning run does not exist (a claim can only be written during a
  *     suspension of an existing run, so an ownerless claim is debris), except
- *     for a run's `start({ hook })` Hook (below).
+ *     for a run's `start({ experimental_hook })` Hook (below).
  *
  * A claim from a mid-creation writer is never releasable: its owning run
  * exists and is non-terminal, and its dispose lock does not exist.
@@ -397,7 +393,7 @@ async function isStartHookOrphanReleasable(
 }
 
 /**
- * The outcome of admitting a `start({ hook })` candidate: its run was created
+ * The outcome of admitting a `start({ experimental_hook })` candidate: its run was created
  * by this call, or already existed (an earlier attempt for the candidate, by
  * either path, accepted it).
  */
@@ -406,7 +402,7 @@ type StartHookAdmission =
   | { status: 'existing'; run: WorkflowRun };
 
 /**
- * Admits a `start({ hook })` candidate (see `start-hook.ts` in
+ * Admits a `start({ experimental_hook })` candidate (see `start-hook.ts` in
  * @workflow/world). The decision per candidate is immutable:
  *
  * - **accepted** is the candidate's run record, which `writeRun` creates
@@ -1001,6 +997,14 @@ function inBandFenceState() {
   }));
 }
 
+function stepPublicationLocks() {
+  return globalSingleton(
+    '@workflow/world-local//stepPublication',
+    1,
+    () => new Map<string, Promise<unknown>>()
+  );
+}
+
 /**
  * A run's in-band count on disk, at `.locks/runs/<runId>.in-band[.tag]`:
  * `seqInBand`, and while an in-band write is between its check and its
@@ -1026,6 +1030,35 @@ export function createEventsStorage(
   basedir: string,
   tag?: string
 ): LocalEventsStorage {
+  // Independent steps may draw the same candidate before any one publishes.
+  // Take turns only around publication, rebasing under the turn before making
+  // a temporary file. Share the turn across instances and bundled layers in
+  // this process; writeExclusive still arbitrates with other processes and
+  // non-step writers. No slot is reserved ahead of a successful publication.
+  function withStepPublicationTurn<T>(
+    event: Event,
+    publish: () => Promise<T>
+  ): Promise<T> {
+    if (!isStepEventType(event.eventType) || !isSlotEventId(event.eventId)) {
+      return publish();
+    }
+    return withInProcessLock(
+      stepPublicationLocks(),
+      JSON.stringify([path.resolve(basedir), tag ?? null, event.runId]),
+      publish
+    );
+  }
+
+  async function rebaseStepEvent(event: Event): Promise<Event> {
+    const candidate = eventIdToSlot(event.eventId);
+    if (!isStepEventType(event.eventType) || candidate === null) return event;
+    const slot = await drawEventSlot(event.runId, { atLeast: candidate });
+    assert(slot !== null);
+    return slot === candidate
+      ? event
+      : { ...event, eventId: slotToEventId(slot) };
+  }
+
   const hookRetentionLimitMs = getHookRetentionLimitMs();
   // Events are append-only. Keep a bounded window of locally persisted events
   // available to immediate replay without rereading JSON files. Payload bytes
@@ -1091,10 +1124,11 @@ export function createEventsStorage(
   // what keeps the log dense, and it is not a rare path: a duplicate
   // `step_started` from a concurrent replay is rejected on every storm.
   //
-  // The cost is that two in-flight writers hold the same candidate. The
-  // exclusive publish arbitrates and the loser bumps, which is the same
-  // mechanism two instances sharing one directory (a test-only configuration
-  // this backend supports) already rely on.
+  // The cost is that two in-flight writers can hold the same candidate. Step
+  // events in one process avoid that by publishing under a shared per-run
+  // turn that rebases the candidate first (`withStepPublicationTurn`). For
+  // other processes and non-step events, the exclusive publish arbitrates and
+  // the loser bumps.
   const runSlotState = new Map<string, { published: number } | null>();
 
   function slotStateKey(runId: string): string {
@@ -1290,35 +1324,37 @@ export function createEventsStorage(
    * same event and the write stays an overwrite.
    */
   async function storeEvent(event: Event): Promise<Event> {
-    let current = event;
-    for (let attempt = 0; ; attempt++) {
-      const eventPath = taggedPath(
-        basedir,
-        runEntityDir('events', current.runId),
-        `${current.runId}-${current.eventId}`,
-        tag
-      );
-      const serializedEvent = JSON.stringify(current, jsonReplacer, 2);
-      const slot = eventIdToSlot(current.eventId);
-      if (slot === null) {
-        await write(eventPath, serializedEvent);
-        rememberStoredEvent(current, eventPath, serializedEvent);
-        return current;
+    return withStepPublicationTurn(event, async () => {
+      let current = await rebaseStepEvent(event);
+      for (let attempt = 0; ; attempt++) {
+        const eventPath = taggedPath(
+          basedir,
+          runEntityDir('events', current.runId),
+          `${current.runId}-${current.eventId}`,
+          tag
+        );
+        const serializedEvent = JSON.stringify(current, jsonReplacer, 2);
+        const slot = eventIdToSlot(current.eventId);
+        if (slot === null) {
+          await write(eventPath, serializedEvent);
+          rememberStoredEvent(current, eventPath, serializedEvent);
+          return current;
+        }
+        if (await writeExclusive(eventPath, serializedEvent)) {
+          notePublishedSlot(current.runId, current.eventId);
+          rememberStoredEvent(current, eventPath, serializedEvent);
+          return current;
+        }
+        const next = await drawEventSlot(current.runId, {
+          rescan: attempt > 0 && attempt % 8 === 0,
+          atLeast: slot + 1,
+        });
+        // `next` is null only for a ULID-numbered run, which the branch above
+        // already returned for.
+        assert(next !== null);
+        current = { ...current, eventId: slotToEventId(next) };
       }
-      if (await writeExclusive(eventPath, serializedEvent)) {
-        notePublishedSlot(current.runId, current.eventId);
-        rememberStoredEvent(current, eventPath, serializedEvent);
-        return current;
-      }
-      const next = await drawEventSlot(current.runId, {
-        rescan: attempt > 0 && attempt % 8 === 0,
-        atLeast: slot + 1,
-      });
-      // `next` is null only for a ULID-numbered run, which the branch above
-      // already returned for.
-      assert(next !== null);
-      current = { ...current, eventId: slotToEventId(next) };
-    }
+    });
   }
 
   /**
@@ -1966,7 +2002,7 @@ export function createEventsStorage(
         eventId = await mintEventId(effectiveRunId);
 
         // Cancelling a run that was never created. If it is a
-        // `start({ hook })` candidate whose admission claimed its token but
+        // `start({ experimental_hook })` candidate whose admission claimed its token but
         // whose writer died before its run (its start Hook's by-run marker is
         // written before the run), its queued copy could still create it:
         // fence its run record path so no copy ever can. Any other missing
@@ -4179,6 +4215,23 @@ export function createEventsStorage(
               // cleanup on every outcome (already gone when reaped).
               await deleteJSON(stagedPath).catch(() => {});
             }
+          } else if (
+            isStepEventType(event.eventType) &&
+            isSlotEventId(event.eventId)
+          ) {
+            eventPublished = await withStepPublicationTurn(event, async () => {
+              const rebased = await rebaseStepEvent(event);
+              if (rebased !== event) moveEventTo(rebased.eventId);
+              const published = await writeExclusive(
+                eventPath,
+                serializedEvent
+              );
+              if (published) {
+                // Advance before the next publisher enters the turn.
+                notePublishedSlot(effectiveRunId, eventId);
+              }
+              return published;
+            });
           } else {
             eventPublished = await writeExclusive(eventPath, serializedEvent);
           }
@@ -4186,6 +4239,8 @@ export function createEventsStorage(
           if (eventPublished) {
             // The position is occupied now, so the next draw for this run
             // starts above it. Only a committed publish moves the watermark.
+            // Step events already advanced it inside their turn; repeating
+            // that is a no-op, and this is the advance for every other path.
             notePublishedSlot(effectiveRunId, eventId);
             break;
           }

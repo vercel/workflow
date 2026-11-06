@@ -1221,6 +1221,43 @@ describe('postgres queue http execution', () => {
     );
   });
 
+  it('by default releases only stale per-run named-queue jobs of renewing holders', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', jobPrefix: 'myapp_' },
+      pool,
+      { defaultJobLockStaleSeconds: 1 }
+    );
+    await queue.start();
+    await vi.waitFor(
+      () => {
+        expect(pool.query).toHaveBeenCalledWith(
+          expect.stringContaining('"workflow"."workflow_job_lock_holders"'),
+          [
+            1,
+            ['myapp_flows', 'myapp_flows_executor'],
+            'myapp_flows:',
+            ':executor',
+          ]
+        );
+      },
+      { timeout: 2_000 }
+    );
+  });
+
+  it('turns renewal and the release of stale locks off with jobLockStaleSeconds: 0', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', jobLockStaleSeconds: 0 },
+      pool,
+      { defaultJobLockStaleSeconds: 1 }
+    );
+    await queue.start();
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect(pool.query).not.toHaveBeenCalledWith(
+      expect.stringContaining('_private_tasks'),
+      expect.anything()
+    );
+  });
+
   it('keeps the queue prefix, and the route registered for it, on the job', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     queue.registerRoute('__agent_wkf_workflow_', '/api/agent/queue');
@@ -1438,9 +1475,10 @@ describe('postgres queue http execution', () => {
 
 function buildQueue(
   config: Parameters<typeof createQueue>[0],
-  pgPool: Parameters<typeof createQueue>[1]
+  pgPool: Parameters<typeof createQueue>[1],
+  internal?: Parameters<typeof createQueue>[2]
 ) {
-  const queue = createQueue(config, pgPool);
+  const queue = createQueue(config, pgPool, internal);
   createdQueues.push(queue);
   return queue;
 }

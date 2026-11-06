@@ -2086,7 +2086,7 @@ export function getExternalReducers(
   // the background.
   readbackOps: Promise<void>[] = ops,
   framedAbortStreams = false,
-  // `start({ hook })`'s arguments: pipe each stream (upload or readback)
+  // `start({ experimental_hook })`'s arguments: pipe each stream (upload or readback)
   // only once this resolves `true`, the candidate having been admitted. On
   // `false` the stream is left untouched (never read, locked, or cancelled),
   // so a refused duplicate never drains a one-shot source such as a webhook
@@ -3945,7 +3945,7 @@ export async function dehydrateWorkflowArguments(
   compression: CompressionMode = false,
   readbackOps: Promise<void>[] = ops,
   framedAbortStreams = false,
-  // See getExternalReducers. Only `start({ hook })` passes one.
+  // See getExternalReducers. Only `start({ experimental_hook })` passes one.
   streamStartGate?: Promise<boolean>
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {

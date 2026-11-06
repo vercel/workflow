@@ -1,5 +1,5 @@
 /**
- * The node:vm engine's side of a `start(workflow, args, { hook })` run: the
+ * The node:vm engine's side of a `start(workflow, args, { experimental_hook })` run: the
  * World created the run's start Hook (id `startHookId(runId)`) when it
  * admitted the run, so payloads can be in the log before the body opens the
  * Hook, before `run_started` even, or the body may never open it at all.
@@ -8,7 +8,12 @@
  */
 import { WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun, World } from '@workflow/world';
-import { SPEC_VERSION_CURRENT, startHookId } from '@workflow/world';
+import {
+  FIRST_EVENT_SLOT,
+  SPEC_VERSION_CURRENT,
+  slotToEventId,
+  startHookId,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HookInvocationQueueItem, WorkflowSuspension } from '../global.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
@@ -215,6 +220,31 @@ describe('resolveRunStartHook', () => {
     ).toEqual({ ...START_HOOK, tokenRetentionUntil: until });
   });
 
+  it('reads a run_started that records the creation at the first slot', () => {
+    // Spec 9: the resilient start's run_started created the run and carries
+    // its creation data; the log has no run_created.
+    const creatingStart = {
+      eventId: slotToEventId(FIRST_EVENT_SLOT),
+      runId: RUN_ID,
+      createdAt: at(0),
+      eventType: 'run_started',
+      eventData: { startHook: { token: TOKEN } },
+    } as unknown as Event;
+    expect(
+      resolveRunStartHook({ events: [creatingStart], workflowRun: run })
+    ).toEqual(START_HOOK);
+    // A start above the first slot is not the creation: its fields are not
+    // read.
+    expect(
+      resolveRunStartHook({
+        events: [
+          { ...creatingStart, eventId: slotToEventId(FIRST_EVENT_SLOT + 1) },
+        ],
+        workflowRun: run,
+      })
+    ).toBeUndefined();
+  });
+
   it('throws when two sources name different tokens', () => {
     expect(() =>
       resolveRunStartHook({
@@ -328,7 +358,7 @@ describe('createHook with the start token (node:vm)', () => {
     });
   });
 
-  it('throws on options only a write could apply, naming start({ hook })', async () => {
+  it('throws on options only a write could apply, naming start({ experimental_hook })', async () => {
     for (const option of [
       `metadata: { a: 1 }`,
       `experimental_minRetention: '1h'`,
@@ -346,7 +376,9 @@ describe('createHook with the start token (node:vm)', () => {
       );
       const message = await output(result);
       expect(message).toMatch(/start token/);
-      expect(message).toMatch(/start\(workflow, args, \{ hook \}\)/);
+      expect(message).toMatch(
+        /start\(workflow, args, \{ experimental_hook \}\)/
+      );
     }
   });
 

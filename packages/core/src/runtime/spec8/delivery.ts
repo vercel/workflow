@@ -67,6 +67,7 @@ import {
   type WorkflowResumeResult,
   type WorkflowSession,
 } from '../../workflow.js';
+import { afterRunCompleted, afterRunFailed } from '../after-terminal-write.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
   getOpenWaitClockSkewMs,
@@ -114,10 +115,6 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from '../helpers.js';
-import {
-  dispatchRunCompletedHooks,
-  dispatchRunFailedHooks,
-} from '../lifecycle-hooks.js';
 import {
   type OutOfBandObservation,
   observeOutOfBandWriters,
@@ -322,6 +319,7 @@ async function runDelivery(
     observedHook: 0,
     unknownHook: 0,
     abortSignal: 0,
+    systemHook: 0,
     externalStep: 0,
     waitDue: 0,
   };
@@ -1758,7 +1756,7 @@ async function runDelivery(
               // Without the key, a run this event creates could never
               // receive sealed writes.
               encryptionPublicKey: runInput.encryptionPublicKey,
-              // The queued copy of `start({ hook })`: this
+              // The queued copy of `start({ experimental_hook })`: this
               // write may be the one that admits or refuses
               // the candidate.
               startHook: runInput.startHook,
@@ -1957,7 +1955,7 @@ async function runDelivery(
         }
         startWorkflowCompile(workflowRun);
       } catch (err) {
-        // A refused `start({ hook })` candidate's queued copy: nothing
+        // A refused `start({ experimental_hook })` candidate's queued copy: nothing
         // ran, ack. Narrowed to the two admission answers.
         if (ackRefusedStartHookCandidate(err, runInput, runId, span)) {
           return;
@@ -2967,7 +2965,7 @@ async function runDelivery(
             inlineStepsInFlight.ids
           ),
           worldCapabilities: world.capabilities,
-          // `start({ hook })` runs: the body's createHook with the start
+          // `start({ experimental_hook })` runs: the body's createHook with the start
           // token binds to the Hook the admission created. Undefined for
           // every other run.
           startHook: resolveRunStartHook({
@@ -3031,7 +3029,7 @@ async function runDelivery(
         }
         throw err;
       }
-      dispatchRunCompletedHooks(runId, workflowName);
+      await afterRunCompleted(world, workflowRun ?? runId, workflowName);
 
       span?.setAttributes({
         ...Attribute.WorkflowRunStatus('completed'),
@@ -3241,8 +3239,9 @@ async function runDelivery(
             }
             throw failErr;
           }
-          dispatchRunFailedHooks(
-            runId,
+          await afterRunFailed(
+            world,
+            workflowRun ?? runId,
             workflowName,
             dehydratedError,
             failureKey,
@@ -4296,6 +4295,9 @@ async function runDelivery(
             if (outOfBandObservation.abortSignalHookCount > 0) {
               outOfBandBoundaries.abortSignal++;
             }
+            if (outOfBandObservation.systemHookCount > 0) {
+              outOfBandBoundaries.systemHook++;
+            }
             if (outOfBandObservation.externalStepCount > 0) {
               outOfBandBoundaries.externalStep++;
             }
@@ -4311,6 +4313,8 @@ async function runDelivery(
               outOfBandBoundaries.unknownHook,
             'workflow.out_of_band.abort_signal_boundaries':
               outOfBandBoundaries.abortSignal,
+            'workflow.out_of_band.system_hook_boundaries':
+              outOfBandBoundaries.systemHook,
             'workflow.out_of_band.external_step_boundaries':
               outOfBandBoundaries.externalStep,
             'workflow.out_of_band.wait_due_boundaries':
@@ -5012,8 +5016,9 @@ async function runDelivery(
           }
           throw failErr;
         }
-        dispatchRunFailedHooks(
-          runId,
+        await afterRunFailed(
+          world,
+          workflowRun ?? runId,
           workflowName,
           dehydratedError,
           failureKey,
@@ -5038,7 +5043,7 @@ async function runDelivery(
 export const spec8Orchestrator: Orchestrator = {
   countsTowardMaxDeliveries: () => true,
   async writeMaxDeliveriesFailure(world, runId, eventData, requestId) {
-    await world.events.create(
+    const written = await world.events.create(
       runId,
       {
         eventType: 'run_failed',
@@ -5047,7 +5052,7 @@ export const spec8Orchestrator: Orchestrator = {
       },
       { requestId }
     );
-    return 'written';
+    return { run: written?.run };
   },
   runDelivery: runSpec8Delivery,
 };

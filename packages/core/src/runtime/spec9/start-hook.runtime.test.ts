@@ -1,5 +1,5 @@
 /**
- * The queued copy of a `start({ hook })` candidate on the single-orchestrator
+ * The queued copy of a `start({ experimental_hook })` candidate on the single-orchestrator
  * engine: its `run_started` carries the start Hook request and may be the write
  * that admits or refuses the candidate. A refused candidate runs no code, creates
  * nothing and acknowledges, through every path a delivery can take before
@@ -511,7 +511,7 @@ describe.each([
 });
 
 /**
- * A `start({ hook })` run the World admitted with a payload already resumed
+ * A `start({ experimental_hook })` run the World admitted with a payload already resumed
  * into its start Hook: the log holds `run_created` (carrying the start Hook)
  * and a `hook_received` for `startHookId(runId)` while the run is still
  * pending, and the first orchestrator message is still queued.

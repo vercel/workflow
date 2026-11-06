@@ -1,5 +1,17 @@
 # @workflow/cli
 
+## 5.0.8
+
+### Patch Changes
+
+- [#5243](https://github.com/vercel/workflow/pull/5243) [`9bed0a7`](https://github.com/vercel/workflow/commit/9bed0a7138f5988cdda6ede33a77c0317b7aea9f) Thanks [@pranaygp](https://github.com/pranaygp)! - `workflow health` now gives its local server check the `--timeout` it was run with instead of a fixed 5 seconds, and reports a server that answered with an error status as such rather than as unreachable.
+- Updated dependencies [[`11a904f`](https://github.com/vercel/workflow/commit/11a904fe197483278c2eceb625c13d3c72933b41), [`e1bce44`](https://github.com/vercel/workflow/commit/e1bce44d3faacff855a35265d47afe3819abed1a), [`50d425f`](https://github.com/vercel/workflow/commit/50d425fac77ec212422d57a832411c4515c0ba3c), [`50a61e7`](https://github.com/vercel/workflow/commit/50a61e7da425c18bce3df4205450aaf3f5539289), [`c805b90`](https://github.com/vercel/workflow/commit/c805b906e251198bc9b9f4a5340ec144fa288b62), [`f98fca1`](https://github.com/vercel/workflow/commit/f98fca13f6659e222db7803511b5e92443e7db63), [`a4123ba`](https://github.com/vercel/workflow/commit/a4123baf9768084f4b31604d609672392cb43c84)]:
+  - @workflow/builders@5.0.8
+  - @workflow/core@5.4.0
+  - @workflow/world-vercel@5.4.0
+  - @workflow/world-local@5.2.1
+  - @workflow/web@5.0.8
+
 ## 5.0.7
 
 ### Patch Changes

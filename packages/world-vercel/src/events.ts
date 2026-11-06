@@ -55,6 +55,7 @@ import {
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
+  isRunCreationEvent,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   mintedSpecVersion,
@@ -942,7 +943,7 @@ async function createWorkflowRunEventInner(
   if (data.eventType === 'run_created') {
     const validationError = validateWorkflowRunIdTimestamp(id);
     if (validationError) {
-      // A `start({ hook })` candidate gets the answer the backend gives it
+      // A `start({ experimental_hook })` candidate gets the answer the backend gives it
       // (a permanent admission rejection), so its queued copy stops retrying.
       if ((data.eventData as { startHook?: unknown }).startHook) {
         throw new WorkflowWorldError(validationError, {
@@ -1123,17 +1124,35 @@ async function createWorkflowRunEventInner(
 
 /**
  * Reconstruct the run entity from a streamed replay log: identity and input
- * from `run_created`, start time from `run_started`, later `attr_set` events
- * folded into `attributes`/`updatedAt`. Returns undefined when reconstruction
+ * from the run's creation (`run_created`, or a creating `run_started`), start
+ * time from `run_started`, later `attr_set` events folded into
+ * `attributes`/`updatedAt`. Returns undefined when reconstruction
  * is incomplete so each caller can choose whether that is fatal. The
  * reconstructed status is always `running`: a terminal event
  * committed concurrently still rides in the log itself, and the runtime's
  * replay-time terminal detection handles it.
  */
+type RunCreatedEventData = Extract<
+  Event,
+  { eventType: 'run_created' }
+>['eventData'];
+
 function reconstructRunFromReplayEvents(events: Event[]) {
-  const runCreated = events.find((event) => event.eventType === 'run_created');
+  // The run's creation: its `run_created`, or on spec >= 9 the `run_started`
+  // that created the run at the first slot, which carries the same fields.
+  const creation = events.find(isRunCreationEvent);
   const runStarted = events.find((event) => event.eventType === 'run_started');
-  if (!runCreated || !runStarted) return;
+  if (!creation || !runStarted) return;
+  const creationData = (
+    'eventData' in creation ? creation.eventData : undefined
+  ) as Partial<RunCreatedEventData> | undefined;
+  if (!creationData?.deploymentId || !creationData.workflowName) return;
+  const runCreated = {
+    runId: creation.runId,
+    specVersion: creation.specVersion,
+    createdAt: creation.createdAt,
+    eventData: creationData as RunCreatedEventData,
+  };
 
   let attributes = runCreated.eventData.attributes ?? {};
   let updatedAt = runStarted.createdAt;
@@ -1156,7 +1175,7 @@ function reconstructRunFromReplayEvents(events: Event[]) {
       input: runCreated.eventData.input,
       attributes,
       encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-      // The start Hook echo (`start({ hook })`): the backend keeps it on
+      // The start Hook echo (`start({ experimental_hook })`): the backend keeps it on
       // `run_created`, without its metadata.
       ...(runCreated.eventData.startHook
         ? { startHook: runCreated.eventData.startHook }

@@ -2771,7 +2771,7 @@ function createUnfencedEventsStorage(
                   isSystem: eventData.isSystem ?? false,
                   // Every Hook claims its token: the claim index, not the
                   // read above, decides between concurrent creations
-                  // (another run's Hook, or a `start({ hook })` admission).
+                  // (another run's Hook, or a `start({ experimental_hook })` admission).
                   claimsToken: true,
                 })
                 // Only a duplicate of this same hook (its id) is skipped;
