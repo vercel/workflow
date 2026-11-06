@@ -11,7 +11,7 @@ fi
 status=0
 for cfg in ${@:-*.cfg}; do
   name="${cfg%.cfg}"
-  out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -workers auto -deadlock \
+  out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -workers auto -deadlock -noGenerateSpecTE \
     -metadir "${TMPDIR:-/tmp}/tlc-$name" -config "$cfg" StateRefs.tla 2>&1 || true)
   states=$(grep -oE '[0-9,]+ distinct states found' <<<"$out" | tail -1)
   if grep -q 'No error has been found' <<<"$out"; then result=holds
