@@ -943,7 +943,7 @@ const getFramedStreamMaxTotalReconnects = (): number =>
   );
 
 /**
- * Consecutive live-read sessions that may end without delivering a frame while
+ * Consecutive live-read sessions that may end without receiving any bytes while
  * the stream's metadata reports a chunk at the resume index, before the read
  * fails. Such a session is not waiting for new data: the chunk is known to
  * exist but was not served, so the index is a hole (the chunk is missing from
@@ -984,7 +984,7 @@ const getFramedStreamMaxStallsBelowTail = (): number =>
  * trusted (legacy behavior) rather than failing a read that may well be
  * complete.
  *
- * A session that ends without delivering a frame while the metadata reports
+ * A session that ends without receiving any bytes while the metadata reports
  * a chunk at the resume index is a stall at a hole (a chunk missing from
  * storage). After `FRAMED_STREAM_MAX_STALLS_BELOW_TAIL` consecutive stalls the
  * read errors with a `StreamError` naming the missing index, so the consumer
@@ -1081,14 +1081,17 @@ export function createReconnectingFramedStream(
 
   /**
    * Called when a session ends. Throws once consecutive sessions have ended
-   * without a frame while the metadata reports a chunk at the resume index.
-   * Metadata is only fetched for zero-frame sessions (unless the caller
-   * already has it), so sessions that deliver data pay nothing extra.
+   * without receiving any bytes while the metadata reports a chunk at the
+   * resume index. Metadata is only fetched for sessions that received nothing
+   * (unless the caller already has it), so sessions that deliver data pay
+   * nothing extra.
    */
   async function assertNotStalledAtHole(
     info?: StreamInfoResponse
   ): Promise<void> {
-    if (consumedFrames > 0) {
+    // Partial-frame bytes count as progress: the server is serving the chunk
+    // at the resume index (a large one cut mid-body), so it is not a hole.
+    if (consumedFrames > 0 || buffer.length > 0) {
       stallsBelowTail = 0;
       return;
     }

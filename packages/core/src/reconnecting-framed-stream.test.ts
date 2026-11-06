@@ -924,6 +924,70 @@ describe('createReconnectingFramedStream', () => {
       });
     }
 
+    it('does not treat a chunk cut mid-frame as a hole', async () => {
+      // Chunk 2 is large and every early session is cut partway through it.
+      // The server is serving the chunk, so this is slow progress, not a hole.
+      const big = encodeFrame(new Uint8Array(64).fill(2));
+      let atTwo = 0;
+      const { world } = makeWorldWithScriptedStreams(
+        {
+          0: () =>
+            scriptedStream([
+              { kind: 'value', value: payloadFrame(0) },
+              { kind: 'value', value: payloadFrame(1) },
+              { kind: 'error', err: new Error('cut') },
+            ]),
+          2: () =>
+            ++atTwo <= 5
+              ? scriptedStream([
+                  { kind: 'value', value: big.slice(0, 20) },
+                  { kind: 'error', err: new Error('cut') },
+                ])
+              : scriptedStream([{ kind: 'value', value: big }]),
+        },
+        async () => ({ tailIndex: 2, done: true })
+      );
+      setWorld(world);
+
+      const chunks = await readAll(
+        createReconnectingFramedStream(RUN_ID, 's', 0)
+      );
+      expect(chunks).toEqual([payloadFrame(0), payloadFrame(1), big]);
+      expect(atTwo).toBe(6);
+    });
+
+    it('counts only consecutive stalls, resetting when a session delivers', async () => {
+      // Two stalls at index 2, then chunk 2 arrives; two more stalls at
+      // index 3, then chunk 3 arrives. Four stalls in total, but never three
+      // in a row, so the read completes.
+      const seen: Record<number, number> = {};
+      const stallTwiceThen = (idx: number) => () => {
+        seen[idx] = (seen[idx] ?? 0) + 1;
+        return seen[idx] <= 2
+          ? scriptedStream([{ kind: 'close' }])
+          : scriptedStream([{ kind: 'value', value: payloadFrame(idx) }]);
+      };
+      const { world, calls } = makeWorldWithScriptedStreams(
+        {
+          0: () =>
+            scriptedStream([
+              { kind: 'value', value: payloadFrame(0) },
+              { kind: 'value', value: payloadFrame(1) },
+            ]),
+          2: stallTwiceThen(2),
+          3: stallTwiceThen(3),
+        },
+        async () => ({ tailIndex: 3, done: true })
+      );
+      setWorld(world);
+
+      const chunks = await readAll(
+        createReconnectingFramedStream(RUN_ID, 's', 0)
+      );
+      expect(chunks).toEqual([0, 1, 2, 3].map(payloadFrame));
+      expect(calls).toEqual([0, 2, 2, 2, 3, 3, 3]);
+    });
+
     it('keeps waiting when the session is idle at the tail', async () => {
       // Position 2 with tail 1: the reader is caught up and waiting for new
       // chunks, which is not a hole. The next session delivers.
