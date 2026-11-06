@@ -105,6 +105,7 @@ import {
 import * as stepModule from './serialization/step.js';
 
 export { createStateResolver, type StateResolver } from './state-resolver.js';
+export { stateSourceId } from './serialization/state-refs.js';
 
 import {
   type FormatPrefix,
