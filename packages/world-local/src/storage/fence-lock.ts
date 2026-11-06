@@ -68,13 +68,18 @@ const RETRY_DELAY_MS = 100;
 const GATE_STALE_MS = 5_000;
 const OWNER_FILE = 'owner.json';
 
+/**
+ * Who holds a lock file: also the owner a step or wait claim names (see
+ * `claim-owner.ts`), so both judge a dead holder by the same rules.
+ */
 const OwnerSchema = z.object({
   pid: z.number().int().positive(),
   host: z.string(),
   pidNamespace: z.string().optional(),
   token: z.string(),
 });
-type Owner = z.infer<typeof OwnerSchema>;
+export type LockOwner = z.infer<typeof OwnerSchema>;
+type Owner = LockOwner;
 
 /** This process's pid namespace (Linux), so a pid recorded in another container is never checked here. */
 const pidNamespace = (() => {
@@ -111,6 +116,21 @@ function installExitHook() {
   });
 }
 
+/** The owner this thread writes into a lock it takes under `token`. */
+export function lockOwner(token: string): LockOwner {
+  return {
+    pid: process.pid,
+    host: os.hostname(),
+    ...(pidNamespace !== undefined ? { pidNamespace } : {}),
+    token,
+  };
+}
+
+/** The owner a lock's content names, or `null` when it names none. */
+export function parseLockOwner(raw: string): LockOwner | null {
+  return parseOwner(raw);
+}
+
 function parseOwner(raw: string): Owner | null {
   try {
     const parsed = OwnerSchema.safeParse(JSON.parse(raw));
@@ -144,14 +164,27 @@ async function inspect(
   return { owner, mtimeMs: stat.mtimeMs };
 }
 
+/**
+ * Whether this thread can tell if `owner`'s process still runs: it is on this
+ * host, in this pid namespace, and not this process's own pid (a previous
+ * process that had this pid, or another thread of this one, can't be told
+ * apart). An owner that can't be checked is only ever judged by age.
+ */
+export function isLockHolderCheckable(owner: LockOwner): boolean {
+  return (
+    owner.host === os.hostname() &&
+    owner.pidNamespace === pidNamespace &&
+    owner.pid !== process.pid
+  );
+}
+
+/** Whether `owner`'s process is known to be gone. False when it may still run. */
+export function isLockHolderDead(owner: LockOwner): boolean {
+  return isHolderDead(owner);
+}
+
 function isHolderDead(owner: Owner): boolean {
-  if (
-    owner.host !== os.hostname() ||
-    owner.pidNamespace !== pidNamespace ||
-    // A previous process that had this pid, or another thread of this one:
-    // they can't be told apart.
-    owner.pid === process.pid
-  ) {
+  if (!isLockHolderCheckable(owner)) {
     return false;
   }
   try {
@@ -337,16 +370,7 @@ export async function withOwnedFileLock<T>(
   heldLocks().held.set(token, lockPath);
   installExitHook();
   try {
-    await acquire(
-      lockPath,
-      {
-        pid: process.pid,
-        host: os.hostname(),
-        ...(pidNamespace !== undefined ? { pidNamespace } : {}),
-        token,
-      },
-      errors.acquire
-    );
+    await acquire(lockPath, lockOwner(token), errors.acquire);
   } catch (error) {
     heldLocks().held.delete(token);
     throw error;

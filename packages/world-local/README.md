@@ -30,6 +30,17 @@ record before it continues. Recovery only repairs an empty event log. A start
 rejects non-empty history rather than guessing a missing prefix, but cancelling or
 failing the run still succeeds.
 
+A step or wait write that a killed process left unfinished, with its claim
+file written and its event not, is finished by the next write of that step or
+wait. The claim names its writer the way the in-band fence lock names its
+holder. The next write takes it over once that writer is known to have exited
+(on this host and in this pid namespace), or once the claim is 30 seconds old.
+On startup, `start()` (or `releaseOrphanedSteps(runId)` with
+`recoverActiveRuns: false`) also writes the missing event of every step or
+wait the previous process saved as finished, before the run is delivered again.
+After that, a claim that names a process or worker thread that loaded the Local
+World before this one is taken over at once by the next write.
+
 Its HTTP queue handler supports receiving `invoke: true` messages and returns
 the callback's value as `{ result }`. For example, a callback returning
 `{ timeoutSeconds: 5 }` produces `{ result: { timeoutSeconds: 5 } }`. The value is

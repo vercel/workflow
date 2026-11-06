@@ -11,7 +11,15 @@
  * engines are covered: each derives inline ownership from the event log on its
  * own.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  unlink,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { globalSingleton } from '@workflow/utils';
@@ -25,6 +33,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
+  dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   hydrateStepError,
 } from '../serialization.js';
@@ -229,6 +238,185 @@ describe('world-local restart recovery of an inline step', () => {
     expect((error as Error).message).toBe(
       'The process running this step exited before it finished.'
     );
+  });
+});
+
+/**
+ * A process that dies after saving a step as completed and before logging its
+ * `step_completed` leaves a step the replay never sees finish. The run must
+ * finish with the saved result, without running the step body again.
+ */
+describe('world-local restart recovery of a completed step without its event', () => {
+  let dataDir: string;
+  const worlds: LocalWorld[] = [];
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'wf-restart-unlogged-'));
+  });
+
+  afterEach(async () => {
+    setWorld(undefined);
+    await Promise.all(worlds.splice(0).map((world) => world.close()));
+    await rm(dataDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    });
+  });
+
+  /**
+   * Runs the workflow until its step body is running, then leaves the state of
+   * a process that died between saving the step as completed (with
+   * `'saved'`) and logging it. Saving through the storage writes the event
+   * too, so the event file is removed. Returns the run, its step, and the
+   * step's terminal claim.
+   */
+  async function completeWithoutEvent(specVersion: number) {
+    let bodyRuns = 0;
+    let entered!: () => void;
+    const firstBodyEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    registerStepFunction(STEP_NAME, async () => {
+      bodyRuns += 1;
+      entered();
+      // The process exits mid-step; its result is saved below instead.
+      return new Promise(() => {});
+    });
+    const previous = createWorld({ dataDir });
+    worlds.push(previous);
+    previous.registerHandler(
+      '__wkf_workflow_',
+      workflowEntrypoint(WORKFLOW_CODE)
+    );
+    setWorld(previous as unknown as World);
+    await previous.start();
+    const created = await previous.events.create(null, {
+      eventType: 'run_created',
+      specVersion,
+      eventData: {
+        deploymentId: 'dpl_restart_unlogged',
+        workflowName: 'workflow',
+        input: await dehydrateWorkflowArguments([], 'wrun_', undefined, []),
+      },
+    });
+    const runId = created.run?.runId as string;
+    await previous.queue('__wkf_workflow_workflow', { runId });
+    await firstBodyEntered;
+    const stepId = (await previous.events.list({ runId })).data.find(
+      (e: Event) => e.eventType === 'step_started'
+    )?.correlationId as string;
+    await previous.events.create(runId, {
+      eventType: 'step_completed',
+      specVersion,
+      correlationId: stepId,
+      eventData: {
+        stepName: STEP_NAME,
+        result: await dehydrateStepReturnValue('saved', runId, undefined),
+      },
+    });
+    await previous.close();
+    const eventsDir = join(dataDir, 'events', runId);
+    for (const file of await readdir(eventsDir)) {
+      const event = JSON.parse(await readFile(join(eventsDir, file), 'utf8'));
+      if (event.eventType === 'step_completed') {
+        await unlink(join(eventsDir, file));
+      }
+    }
+    const claim = join(
+      dataDir,
+      '.locks',
+      'steps',
+      `${runId}-${stepId}.terminal`
+    );
+    return { runId, claim, bodyRuns: () => bodyRuns };
+  }
+
+  async function expectSavedResult(world: LocalWorld, runId: string) {
+    await vi.waitFor(
+      async () => {
+        const run = await world.runs.get(runId);
+        expect(run.status).toBe('completed');
+      },
+      { timeout: 20_000, interval: 50 }
+    );
+    const completed = (await world.events.list({ runId })).data.filter(
+      (e: Event) => e.eventType === 'step_completed'
+    );
+    expect(completed).toHaveLength(1);
+  }
+
+  // The previous process's claim names its realm, so startup repair writes
+  // the event before the run is delivered again, whatever the claim's age and
+  // even where its writer can't be checked (a container restart).
+  it.each([
+    { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM },
+    { specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR },
+  ])('writes the event at startup and finishes with the saved result (spec $specVersion)', async ({
+    specVersion,
+  }) => {
+    const { runId, bodyRuns } = await completeWithoutEvent(specVersion);
+    await simulateProcessRestart();
+
+    const restarted = createWorld({ dataDir });
+    worlds.push(restarted);
+    restarted.registerHandler(
+      '__wkf_workflow_',
+      workflowEntrypoint(WORKFLOW_CODE)
+    );
+    setWorld(restarted as unknown as World);
+    const restartedAt = Date.now();
+    await restarted.start();
+
+    await expectSavedResult(restarted, runId);
+    // No wait for the claim's 30 s age rule.
+    expect(Date.now() - restartedAt).toBeLessThan(20_000);
+    expect(bodyRuns()).toBe(1);
+  });
+
+  // A claim whose writer can't be checked and that startup can't date (an
+  // older world-local's empty claim, written as this process starts) is taken
+  // over only once it is 30 s old. Until then world-local refuses the
+  // orchestrator's start with `TooEarlyError`, which the runtime must
+  // redeliver, not drop. (A spec 8 run's inline step is not started again
+  // before its inline-ownership lease ends, so it isn't covered here.)
+  it('redelivers the start until an unverifiable claim is old, then finishes with the saved result (spec 9)', async () => {
+    const { runId, claim, bodyRuns } = await completeWithoutEvent(
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
+    await simulateProcessRestart();
+    await writeFile(claim, '');
+
+    // Shorten the redelivery the runtime asks for once the claim is aged, so
+    // the test doesn't wait 30 s; the delay it asked for is kept to check.
+    const delays: number[] = [];
+    const restarted = createWorld({ dataDir });
+    worlds.push(restarted);
+    const handle = workflowEntrypoint(WORKFLOW_CODE);
+    restarted.registerHandler('__wkf_workflow_', async (request) => {
+      const response = await handle(request);
+      let timeoutSeconds = Number.NaN;
+      try {
+        timeoutSeconds = Number(
+          JSON.parse(await response.clone().text()).timeoutSeconds
+        );
+      } catch {}
+      if (!(timeoutSeconds > 1)) return response;
+      delays.push(timeoutSeconds);
+      const aged = new Date(Date.now() - 31_000);
+      await utimes(claim, aged, aged);
+      return Response.json({ timeoutSeconds: 1 });
+    });
+    setWorld(restarted as unknown as World);
+    await restarted.start();
+
+    await expectSavedResult(restarted, runId);
+    // Redelivered after the time the claim had left, not dropped.
+    expect(delays).toHaveLength(1);
+    expect(delays[0]).toBeGreaterThan(20);
+    expect(delays[0]).toBeLessThanOrEqual(30);
+    expect(bodyRuns()).toBe(1);
   });
 });
 

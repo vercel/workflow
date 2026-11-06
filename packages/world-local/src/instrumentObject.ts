@@ -26,6 +26,7 @@ const RUN_ID_ARG_INDEX_BY_METHOD: Record<string, number> = {
   'world.steps.get': 0,
   'world.events.create': 0,
   'world.events.get': 0,
+  'world.events.repairUnloggedTerminalEvents': 0,
 };
 
 const RUN_ID_PARAM_METHODS = new Set([

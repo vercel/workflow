@@ -1,5 +1,5 @@
 import { EntityConflictError } from '@workflow/errors';
-import { globalSingleton } from '@workflow/utils';
+import { debugLog } from '@workflow/utils';
 import {
   type Event,
   isStepEventType,
@@ -8,29 +8,38 @@ import {
   SPEC_VERSION_MAX_SUPPORTED,
   type Storage,
 } from '@workflow/world';
+import type {
+  LocalEventsStorage,
+  RepairUnloggedOptions,
+} from './storage/events-storage.js';
 
 export const ORPHANED_STEP_ERROR_MESSAGE =
   'The process running this step exited before it finished.';
 
+import { realmBoot } from './realm-boot.js';
+
+export { realmBoot };
+
 /**
- * When world-local first loaded in this JavaScript realm (process or worker
- * thread). Any step this realm starts is stamped after it, so a stamp at or
- * after it may belong to a live owner here and is never released.
- *
- * On `globalThis` (see `globalSingleton`) so every module copy in the realm
- * shares the earliest load time. `performance.timeOrigin` is not used because
- * Node shares it across a process's worker threads, so it can't mark a reload
- * into a new worker.
+ * The storage `releaseOrphanedSteps` reads and writes. world-local's own
+ * events storage also finishes the writes a crash cut short (see
+ * `repairUnloggedTerminalEvents`).
  */
-export const realmBoot = globalSingleton(
-  '@workflow/world-local//realmBoot',
-  1,
-  () => ({ bootedAt: Date.now() })
-);
+type RecoveryStorage = Pick<Storage, 'runs' | 'steps'> & {
+  events: Storage['events'] &
+    Partial<
+      Pick<
+        LocalEventsStorage,
+        'abandonClaimsWrittenBefore' | 'repairUnloggedTerminalEvents'
+      >
+    >;
+};
 
 /**
  * Hand every step still inline-owned by a queue message of a previous process
- * back to the queue, by writing `step_retrying` for it.
+ * back to the queue, by writing `step_retrying` for it, after writing the
+ * missing event of every step or wait the previous process saved as finished
+ * and died before logging.
  *
  * A step that runs inline records its queue message on `step_started`
  * (`ownerMessageId`), and until a lease expires, core defers to that owner
@@ -57,14 +66,44 @@ export const realmBoot = globalSingleton(
  * another process.
  */
 export async function releaseOrphanedSteps(
-  storage: Pick<Storage, 'events' | 'runs' | 'steps'>,
+  storage: RecoveryStorage,
   runId: string
 ): Promise<void> {
-  const running = await listRunningStepIds(storage.steps, runId);
-  // Every releasable step is `running`, so most runs need no event scan.
-  if (running.size === 0) return;
+  // A claim written by a realm that booted before this one can only be a
+  // previous process's under this function's contract, so every later write
+  // treats it as abandoned too, not only the repair below.
+  const abandonedBefore = realmBoot.bootedAt;
+  storage.events.abandonClaimsWrittenBefore?.(abandonedBefore);
+  const { running, finished } = await listStepStates(storage.steps, runId);
+  const repair = storage.events.repairUnloggedTerminalEvents;
+  // Every releasable step is `running`, so without a repair to run most runs
+  // need no event scan.
+  if (running.size === 0 && !repair) return;
   const run = await storage.runs.get(runId, { resolveData: 'none' });
   if (isTerminalWorkflowRunStatus(run.status)) return;
+  // A step or wait the previous process saved as finished, and died before
+  // logging, gets its event now, before the run is delivered again. Its claim
+  // predates this realm, so under this function's contract its writer is gone
+  // even where the fence lock's rules can't tell (this process's own pid
+  // after a container restart, another host).
+  if (repair) {
+    await repairUnlogged(repair.bind(storage.events), runId, {
+      abandonedBefore,
+      finishedStepIds: finished,
+    });
+  }
+  if (running.size > 0) {
+    await releaseRunningSteps(storage, runId, run.specVersion, running);
+  }
+}
+
+/** Writes `step_retrying` for each of `running` that a previous realm owned. */
+async function releaseRunningSteps(
+  storage: RecoveryStorage,
+  runId: string,
+  runSpecVersion: number | undefined,
+  running: ReadonlySet<string>
+): Promise<void> {
   for (const [stepId, step] of await readStepOwnership(storage.events, runId)) {
     if (!running.has(stepId) || !isOrphaned(step)) continue;
     try {
@@ -73,7 +112,7 @@ export async function releaseOrphanedSteps(
         // The run's own version, so a reader of an older run never meets an
         // event stamped above what it supports.
         specVersion: Math.min(
-          run.specVersion ?? SPEC_VERSION_CURRENT,
+          runSpecVersion ?? SPEC_VERSION_CURRENT,
           SPEC_VERSION_MAX_SUPPORTED
         ),
         correlationId: stepId,
@@ -86,6 +125,20 @@ export async function releaseOrphanedSteps(
       // The step finished between the read and this write: nothing to release.
       if (!EntityConflictError.is(err)) throw err;
     }
+  }
+}
+
+/** Runs the events storage's startup repair of `runId`, and logs what it wrote. */
+async function repairUnlogged(
+  repair: LocalEventsStorage['repairUnloggedTerminalEvents'],
+  runId: string,
+  options: RepairUnloggedOptions
+): Promise<void> {
+  const repaired = await repair(runId, options);
+  if (repaired > 0) {
+    debugLog(
+      `[world-local] wrote ${repaired} missing step or wait event(s) of run ${runId} at startup`
+    );
   }
 }
 
@@ -103,7 +156,7 @@ export const RELEASE_CONCURRENCY = 8;
  * recoverable, just only once the lease expires. So neither method rejects.
  */
 export function createReleasePipeline(
-  storage: Pick<Storage, 'events' | 'runs' | 'steps'>,
+  storage: RecoveryStorage,
   concurrency = RELEASE_CONCURRENCY
 ) {
   const limit = createLimiter(concurrency);
@@ -177,11 +230,13 @@ function isOrphaned(step: StepOwnership): boolean {
   );
 }
 
-async function listRunningStepIds(
+/** The run's steps that are `running`, and those saved as finished. */
+async function listStepStates(
   steps: Storage['steps'],
   runId: string
-): Promise<Set<string>> {
+): Promise<{ running: Set<string>; finished: Set<string> }> {
   const running = new Set<string>();
+  const finished = new Set<string>();
   let cursor: string | undefined;
   do {
     // The largest page: each page re-reads the run's step files, so the
@@ -193,10 +248,13 @@ async function listRunningStepIds(
     });
     for (const step of page.data) {
       if (step.status === 'running') running.add(step.stepId);
+      if (step.status === 'completed' || step.status === 'failed') {
+        finished.add(step.stepId);
+      }
     }
     cursor = page.hasMore ? (page.cursor ?? undefined) : undefined;
   } while (cursor);
-  return running;
+  return { running, finished };
 }
 
 async function readStepOwnership(
