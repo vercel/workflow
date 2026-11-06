@@ -340,10 +340,12 @@ describe('large frames', () => {
     });
   });
 
-  it('offers the frame-parts flag on every upgrade', async () => {
+  it('offers the frame-parts and run-heartbeat flags on every upgrade', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
     const { socket } = await connectAndSend(transport);
-    expect(socket.headers['x-workflow-ws-flags']).toBe('frame-parts');
+    expect(socket.headers['x-workflow-ws-flags']).toBe(
+      'frame-parts, run-heartbeat'
+    );
   });
 
   it('fails the request when a later part cannot be sent', async () => {
