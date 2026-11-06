@@ -49,12 +49,8 @@ function storedRun() {
 }
 
 describe('createRunStateHydrator', () => {
-  beforeEach(() => {
-    process.env.WORKFLOW_STATE_REFS = '1';
-  });
-  afterEach(() => {
-    delete process.env.WORKFLOW_STATE_REFS;
-  });
+  beforeEach(() => {});
+  afterEach(() => {});
 
   it('shows the actual input and output of a step, reading the history once', async () => {
     const run = storedRun();

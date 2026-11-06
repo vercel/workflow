@@ -14,7 +14,7 @@ type Revivers = Record<string, (value: any) => any>;
  * Rebuilds `workflow/state` values for inspection, without running workflow
  * code.
  *
- * With `WORKFLOW_STATE_REFS=1`, a step input can hold a reference to a version
+ * A step input can hold a reference to a `workflow/state` version
  * stored by an earlier step, and a step output only its change. A resolver is
  * fed the run's persisted payloads once, then its revivers rebuild those values
  * for any step of the run. Keep one resolver per run and reuse it across
