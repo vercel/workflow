@@ -543,7 +543,7 @@ export async function hydrateResourceIOWithKey<T>(
  * but can also inflate compressed browser payloads through the registered
  * zstd WASM decoder. When a key is provided, encrypted fields are decrypted
  * first and then inflated/hydrated. `extraRevivers` are merged over the web
- * revivers, for example a run's `workflow/state` revivers (see
+ * revivers, for example a run's frozen state revivers (see
  * `createRunStateHydrator`).
  */
 export async function hydrateResourceIOAsync<T>(
