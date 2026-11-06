@@ -64,7 +64,7 @@ describe('createRunStateHydrator', () => {
 
     // Without the history the input is only a placeholder.
     const plain = (await hydrateResourceIOAsync(step)) as any;
-    expect(plain.input.history).toMatch(/^<workflow\/state /);
+    expect(plain.input.history).toMatch(/^<state /);
 
     const shown = (await hydrator.hydrate(step)) as any;
     expect(shown.input.history).toEqual([{ role: 'user', content: 'hello' }]);
@@ -106,7 +106,7 @@ describe('createRunStateHydrator', () => {
 
     // The first read happened before the step that stored the state.
     expect(((await hydrator.hydrate(step)) as any).input.history).toMatch(
-      /^<workflow\/state /
+      /^<state /
     );
     expect(((await hydrator.hydrate(step)) as any).input.history).toEqual([
       { role: 'user', content: 'hello' },

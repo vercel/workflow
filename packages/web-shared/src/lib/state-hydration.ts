@@ -1,7 +1,7 @@
 /**
- * Shows the actual values of `workflow/state` inputs and outputs.
+ * Shows the actual values of frozen state stored by reference.
  *
- * A step input can be a reference to `workflow/state` an earlier step
+ * A step input can be a reference to frozen state an earlier step
  * stored, and a step output only its change from that state.
  * Rebuilding them needs the run's earlier payloads. A run state hydrator reads
  * them once, only when a hydrated value needs them, and reuses them for every
@@ -36,7 +36,7 @@ export interface RunStateHydratorOptions {
 
 export interface RunStateHydrator {
   /**
-   * Like `hydrateResourceIOAsync`, but also rebuilds `workflow/state` values,
+   * Like `hydrateResourceIOAsync`, but also rebuilds frozen state values,
    * reading the run's history the first time a value needs it.
    */
   hydrate<T>(resource: T, key?: Uint8Array): Promise<T>;
@@ -45,7 +45,7 @@ export interface RunStateHydrator {
 type Dict = Record<string, unknown>;
 
 /**
- * The payload of an event that `workflow/state` values can build on, and the
+ * The payload of an event that frozen state values can build on, and the
  * id later state refers to its strings by (hook payloads only).
  */
 function stateSourceOf(
