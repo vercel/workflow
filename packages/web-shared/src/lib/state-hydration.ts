@@ -1,8 +1,8 @@
 /**
  * Shows the actual values of `workflow/state` inputs and outputs.
  *
- * With `WORKFLOW_STATE_REFS=1`, a step input can be a reference to state an
- * earlier step stored, and a step output only its change from that state.
+ * A step input can be a reference to `workflow/state` an earlier step
+ * stored, and a step output only its change from that state.
  * Rebuilding them needs the run's earlier payloads. A run state hydrator reads
  * them once, only when a hydrated value needs them, and reuses them for every
  * later inspection of the run.
