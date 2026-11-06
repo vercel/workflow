@@ -190,9 +190,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           if (specifierIsPath) {
             resolvedPath = await enhancedResolve(args.resolveDir, specifier);
           } else {
-            // Resolve from project root so nested deps aren't externalized
             resolvedPath = await enhancedResolve(
-              build.initialOptions.absWorkingDir || process.cwd(),
+              args.resolveDir,
               specifier
             ).catch(() => undefined); // swallow so esbuild fallback below can try
 
@@ -345,6 +344,13 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                   .replace(/\.cts$/, '.cjs');
               }
             } else {
+              const runtimePath = await enhancedResolve(
+                workingDir,
+                specifier
+              ).catch(() => undefined);
+              if (runtimePath !== resolvedPath) {
+                return null;
+              }
               externalPath = specifier;
             }
 
