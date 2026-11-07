@@ -1178,7 +1178,7 @@ describe('open', () => {
 });
 
 /**
- * workflow-server tags a `drain` with why it is closing. `max_duration` means
+ * The backend tags a `drain` with why it is closing. `max_duration` means
  * the socket aged out and a plain reconnect is right; `auth_expiry` means the
  * *bearer* ran out, and reconnecting with the same one just earns a 401.
  */

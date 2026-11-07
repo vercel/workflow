@@ -347,7 +347,7 @@ export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
  * Every field is advisory and the whole object is optional, in all three
  * directions that matter for a rolling deploy: a new producer's timing is
  * ignored by an old consumer, a new consumer reports no TTR for an old
- * message, and workflow-server never reads it at all.
+ * message, and the world-vercel backend never reads it at all.
  *
  * `strategy` and `setupSource` are deliberately typed as plain strings rather
  * than enums: an unrecognized value from a newer producer must not fail the

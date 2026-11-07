@@ -47,11 +47,10 @@ describe('workflow-stream-ws/v1 contract', () => {
     expect(STREAM_WS_PROTOCOL_V1).toBe('workflow-stream-ws/v1');
   });
 
-  it('matches workflow-server’s canonical fixture byte-for-byte', async () => {
+  it('matches the backend’s canonical fixture byte-for-byte', async () => {
     const fixtureBytes = await readFile(
       new URL('./__fixtures__/workflow-stream-ws-v1.json', import.meta.url)
     );
-    // Canonical source: workflow-server#876, #1051
     // test/fixtures/workflow-stream-ws-v1.json
     expect(createHash('sha256').update(fixtureBytes).digest('hex')).toBe(
       '485d36a30bac6dfee3f3d4f62dc23cd2ac866ee8d1826bce9cdca2c2394c0001'
