@@ -1973,6 +1973,8 @@ async function runDelivery(
     const pendingAbsorbs: Array<Parameters<typeof absorbWrite>[0]> = [];
     const pendingFeedEvents: Event[] = [];
     let liveFeed: LiveLogFeed | undefined;
+    /** Removes the live feed's listener on the writer's commits. */
+    let stopFeedActivity: (() => void) | undefined;
     // Set when an inline step finished with stream writes
     // still flushing; the delivery hands off once no body runs.
     let pendingStreamOps = false;
@@ -2066,6 +2068,10 @@ async function runDelivery(
         onFeedDown: notifyProgress,
       });
       liveFeed.start();
+      // Without a push, the poll's backoff starts over on each write of
+      // this delivery (see `LiveLogFeed.noteActivity`).
+      const feed = liveFeed;
+      stopFeedActivity = writer.addCommitListener(() => feed.noteActivity());
     };
     /** Lets every running inline body settle; stops the feed. */
     const drainInline = async (): Promise<void> => {
@@ -2080,6 +2086,8 @@ async function runDelivery(
       // Speculative outcome writes settle before the delivery
       // ends, whichever way it ends.
       await settleRunAhead();
+      stopFeedActivity?.();
+      stopFeedActivity = undefined;
       liveFeed?.stop();
       liveFeed = undefined;
       if (trailingCreationFailure !== undefined) {
