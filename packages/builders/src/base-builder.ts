@@ -1157,7 +1157,7 @@ export const __steps_registered = true;
       keepNames: true,
       minify: false,
       // A directly loaded steps bundle (Nitro dev) is not compiled again, so
-      // compile JSX here. 'automatic' still honors `jsxImportSource`/`jsxFactory`.
+      // compile JSX here. 'automatic' still honors the tsconfig's `jsxImportSource`.
       jsx: bundleTransitiveLocalStepDependencies ? 'automatic' : 'preserve',
       logLevel: 'error',
       // Use tsconfig for path alias resolution.
