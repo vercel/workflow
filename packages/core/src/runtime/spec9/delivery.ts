@@ -2161,9 +2161,13 @@ async function runDelivery(
     let runAheadFailure: unknown;
     /**
      * The classifications under which speculative writes are
-     * in flight: what may and may not land below them.
+     * in flight: what may and may not land below them, each
+     * with the count of its writes still in flight. A context
+     * leaves once its last write settled, so the hazard check
+     * reads at most the depth's worth of them, not one per
+     * boundary the delivery ever ran ahead of.
      */
-    const runAheadContexts = new Set<RunAheadContext>();
+    const runAheadContexts = new Map<RunAheadContext, number>();
     /**
      * For each speculative event whose write committed at
      * another slot, the id it committed under.
@@ -2178,11 +2182,24 @@ async function runDelivery(
     const runAheadSensitiveHookIds = new Set<string>();
     /** Handed to the next resume of the retained session. */
     let pendingRebase: WorkflowSessionRebase | undefined;
-    const noteRunAheadContext = (context: RunAheadContext): void => {
-      runAheadContexts.add(context);
+    /**
+     * Records that a speculative write is in flight under
+     * `context`. Returns its release, called once the write
+     * settled (after its own commit checks ran).
+     */
+    const noteRunAheadContext = (context: RunAheadContext): (() => void) => {
+      runAheadContexts.set(context, (runAheadContexts.get(context) ?? 0) + 1);
       for (const id of context.sensitiveHookIds) {
         runAheadSensitiveHookIds.add(id);
       }
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const left = (runAheadContexts.get(context) ?? 0) - 1;
+        if (left > 0) runAheadContexts.set(context, left);
+        else runAheadContexts.delete(context);
+      };
     };
     const runAheadStats = {
       runAhead: 0,
@@ -2270,17 +2287,21 @@ async function runDelivery(
       // Every step this delivery runs inline writes its own
       // events, until a retry moves it to its own message; the
       // hooks are those any boundary still in flight was
-      // sensitive to.
-      const sensitiveHookIds = new Set<string>();
-      const selfStepIds = new Set<string>(selfWrittenStepIds());
-      for (const context of runAheadContexts) {
-        for (const id of context.sensitiveHookIds) {
-          sensitiveHookIds.add(id);
-        }
-        for (const id of context.selfStepIds) {
-          if (!retriedInBackground.has(id)) selfStepIds.add(id);
-        }
-      }
+      // sensitive to. Answered per id rather than copied into
+      // new sets: this runs for every feed event and every
+      // reported event while a speculative write is in flight,
+      // and the delivery's steps grow with the run.
+      const contexts = [...runAheadContexts.keys()];
+      const sensitiveHookIds = {
+        has: (id: string) =>
+          contexts.some((context) => context.sensitiveHookIds.has(id)),
+      };
+      const selfStepIds = {
+        has: (id: string) =>
+          isSelfWrittenStep(id) ||
+          (!retriedInBackground.has(id) &&
+            contexts.some((context) => context.selfStepIds.has(id))),
+      };
       const reason = runAheadHazard(
         event,
         { sensitiveHookIds, selfStepIds },
@@ -2493,7 +2514,7 @@ async function runDelivery(
       } as Event;
       speculativeSlots.add(slot);
       speculativeEvents.add(event);
-      noteRunAheadContext(context);
+      const releaseContext = noteRunAheadContext(context);
       const commit = writer.createAhead(
         data,
         {
@@ -2525,6 +2546,7 @@ async function runDelivery(
       );
       const settled = commit.then(
         (result) => {
+          releaseContext();
           speculativeSlots.delete(slot);
           speculationsBySlot.delete(slot);
           if (!runAheadRepair) {
@@ -2536,6 +2558,7 @@ async function runDelivery(
           notifyProgress();
         },
         (error: unknown) => {
+          releaseContext();
           speculationsBySlot.delete(slot);
           if (runAheadFailure === undefined) {
             runAheadStats.failureStops++;
@@ -2572,7 +2595,7 @@ async function runDelivery(
             createdAt: occurredAt,
           }) as Event
       );
-      noteRunAheadContext(context);
+      const releaseContext = noteRunAheadContext(context);
       const postSentAtMs = Date.now();
       const verifyCreation = (result: EventBatchResult) => {
         for (const below of result.events ?? []) {
@@ -2622,6 +2645,7 @@ async function runDelivery(
       );
       const settled = commit.then(
         (result) => {
+          releaseContext();
           speculative.forEach((_, index) => {
             speculativeSlots.delete(first + index);
             speculationsBySlot.delete(first + index);
@@ -2654,6 +2678,7 @@ async function runDelivery(
           notifyProgress();
         },
         (error: unknown) => {
+          releaseContext();
           speculative.forEach((_, index) => {
             speculationsBySlot.delete(first + index);
           });
