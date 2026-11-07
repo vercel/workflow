@@ -2711,9 +2711,9 @@ function createUnfencedEventsStorage(
         // can be force-claimed by another run the moment its row exists, and
         // that takeover appends OUR `hook_disposed`; a `hook_created` journaled
         // afterwards would land behind it — a non-parkable row no consumer of
-        // the replay can claim (workflow-server guards its journal with a
-        // ConditionCheck on the run's own marker for the same reason; see
-        // `ForceUnguardedJournal.cfg`). One transaction makes the ordering
+        // the replay can claim (world-vercel guards its journal with a
+        // condition on the run's own marker for the same reason). One
+        // transaction makes the ordering
         // impossible to get wrong: the takeover's row lock waits for this
         // commit, so the disposal always follows the creation.
         // The `hook_created` journals below run before the generic publish's
@@ -2891,8 +2891,7 @@ function createUnfencedEventsStorage(
             forceRefusedReason = null;
           } else {
             // `createHook({ experimental_force: true })`: take the token over.
-            // One transaction, the same order as workflow-server
-            // (docs/hook-force-claim.md, specs/HookForceClaim.tla): the
+            // One transaction, the same order as the world-vercel backend: the
             // victim's `hook_disposed{forceClaimedBy}` row first, then its
             // hook row deleted, then ours inserted with `claimedFrom`. The
             // victim's row lock (`FOR UPDATE`) is what the concurrent

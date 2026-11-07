@@ -825,7 +825,7 @@ export interface WorldCapabilities {
    *      the re-pointing if the claimer had not, so `resumeHook()` can follow
    *      the token to its new owner and retry with the same `resumeId`.
    *
-   * Formalised in `workflow-server/specs/HookForceClaim.tla`. A World that
+   * A World that
    * cannot give these guarantees must leave this unset; the runtime then
    * rejects `experimental_force` at `createHook()` time.
    */

@@ -44,7 +44,7 @@ export function isBatchTransitionsEnabled(): boolean {
  * Ceiling on events per `createBatch` call from the batched fan-out fold.
  * The server's transaction budgets are the hard limit: each fan-out event
  * costs 2 transaction items server-side (entity + event row) against the
- * 100-item DynamoDB cap, and inline payloads count against a 768 KB byte
+ * server's 100-item cap, and inline payloads count against a 768 KB byte
  * budget. A fan-out larger than this commits in successive batches, all in
  * flight at once (split batches lose cross-batch atomicity, which is exactly
  * the per-event-write crash surface, and every batch still converges on retry

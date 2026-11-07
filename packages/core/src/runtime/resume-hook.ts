@@ -1023,7 +1023,7 @@ async function resumeHookAttempt<T = any>(
       HookNotFoundError.is(err) || RunExpiredError.is(err);
     // A spec 9 run's backend keys the payload ref by workflow name. Sending
     // it lets the backend skip the run-stamp read it would otherwise make
-    // just for that name, one DynamoDB round trip on every resume; a backend
+    // just for that name, one storage round trip on every resume; a backend
     // that does not use it ignores it. Older runs keep their exact write.
     const workflowNameForRefKey =
       !v1Compat &&

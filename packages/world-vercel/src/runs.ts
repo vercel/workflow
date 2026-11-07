@@ -244,7 +244,7 @@ async function readRunOrNotFound(
 }
 
 /**
- * Issue one run read against workflow-server and normalize it into the World's
+ * Issue one run read against the backend and normalize it into the World's
  * `WorkflowRun` shape.
  *
  * `waitMs`, when set, targets the long-pollable `GET /v2/runs/:runId/status`
@@ -309,7 +309,7 @@ const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
 /**
  * Suppression deadline per base URL, because one process can hold worlds
  * pointed at different backends: the api.vercel.com proxy (with
- * `projectConfig`) and workflow-server directly resolve to different hosts,
+ * `projectConfig`) and the backend directly resolve to different hosts,
  * which can be on different versions. A miss against one must not disable the
  * fast path for the other. Bounded by construction: the key is the resolved
  * base URL, of which a process has a handful at most.
@@ -362,7 +362,7 @@ function isLongPollUnusable(error: WorkflowWorldError): boolean {
 }
 
 /**
- * Wait for a run to reach a terminal status, using workflow-server's
+ * Wait for a run to reach a terminal status, using the backend's
  * long-pollable `GET /v2/runs/:runId/status` route.
  *
  * Implements `Storage['runs'].waitForTerminalStatus`: resolves as soon as the

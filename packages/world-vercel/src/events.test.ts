@@ -2991,7 +2991,7 @@ describe("resolveData 'skip-step-inputs'", () => {
       })
       .reply(
         400,
-        // Verbatim what workflow-server main (cf26719) answers.
+        // Verbatim what the backend answers.
         {
           success: false,
           error: 'validation-error',

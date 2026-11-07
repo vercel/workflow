@@ -37,7 +37,7 @@ import {
 import { version } from './version.js';
 
 /**
- * Inline workflow-server URL override. Must remain an empty string on
+ * Inline backend URL override. Must remain an empty string on
  * `main`. It is rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
@@ -67,7 +67,7 @@ export const MAX_BODY_PARSE_RETRIES = 2;
 const BODY_PARSE_RETRY_BASE_MS = 100;
 
 /**
- * Effective workflow-server URL override. The inline constant wins when
+ * Effective backend URL override. The inline constant wins when
  * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
  *
  * When set, requests bypass the default production host
@@ -209,7 +209,7 @@ export const getHttpUrl = (
   // Use proxy when we have project config (for authentication via Vercel API)
   const usingProxy = Boolean(projectConfig?.projectId && projectConfig?.teamId);
   // When using proxy, requests go through api.vercel.com (with x-vercel-workflow-api-url header if override is set)
-  // When not using proxy, use the default workflow-server URL (with /api path appended)
+  // When not using proxy, use the default backend URL (with /api path appended)
   const baseUrl = usingProxy
     ? customProxyUrl || defaultProxyUrl
     : `${defaultHost}/api`;
@@ -294,8 +294,8 @@ export const getHeaders = (
     }
   }
   // Only set workflow-api-url header when using the proxy, since the proxy
-  // forwards it to the workflow-server. When not using proxy, requests go
-  // directly to the workflow-server so this header has no effect.
+  // forwards it to the backend. When not using proxy, requests go
+  // directly to the backend so this header has no effect.
   const workflowServerUrlOverride = getWorkflowServerUrlOverride();
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
@@ -321,7 +321,7 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
     }
     headers.set('Authorization', `Bearer ${config.token}`);
   } else {
-    // Direct workflow-server path. The bearer prefers an explicit
+    // Direct backend path. The bearer prefers an explicit
     // config.token (CLI / GitHub Actions runner / local dev) and falls
     // back to the per-request Vercel OIDC token. The trusted-sources
     // bypass header always uses the per-request OIDC token.
@@ -388,7 +388,7 @@ export async function makeRequest<T>({
       headers.set('Accept', 'application/cbor');
 
       // Explicitly propagate the active trace context (traceparent /
-      // tracestate / baggage) onto the outgoing request so workflow-server
+      // tracestate / baggage) onto the outgoing request so the backend
       // can parent its spans to this client span without relying on the
       // customer app having undici auto-instrumentation. No-ops when no
       // OTEL SDK is registered.

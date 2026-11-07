@@ -1853,7 +1853,7 @@ async function postEventFrameOverWs(
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
   // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
   // returned null for the proxy World, so this is always the direct
-  // workflow-server origin the socket itself points at.
+  // backend origin the socket itself points at.
   const restUrl = eventsV4Url(getHttpUrl(config).baseUrl, input);
 
   return withHttpClientSpan(

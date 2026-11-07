@@ -447,7 +447,7 @@ jobs:
           # suites keep a fresh token throughout the run instead of using
           # a single pre-minted token that would expire mid-suite.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
-          # Preview deployments are wired to the protected workflow-server
+          # Preview deployments are wired to the protected world-vercel backend
           # preview and production deployments to the public
           # vercel-workflow.com server; the harness has to read run state
           # from the same server the app writes it to.
