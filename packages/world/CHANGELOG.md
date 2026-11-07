@@ -1,5 +1,19 @@
 # @workflow/world
 
+## 5.2.0
+
+### Minor Changes
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Add `Queue.queueAuthMode` (`'loopback' | 'skip'`), declaring how the runtime authenticates a World's deliveries to the flow route. Optional; a World that declares none is not checked.
+
+### Patch Changes
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5270](https://github.com/vercel/workflow/pull/5270) [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a run's creation is recorded on its first `run_started` alone, with no separate `run_created`.
+
+- [#5281](https://github.com/vercel/workflow/pull/5281) [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: `resumeHook()` and `resumeWebhook()` now send the run's workflow name with their `hook_received`
+
 ## 5.1.0
 
 ### Minor Changes

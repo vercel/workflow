@@ -1,5 +1,17 @@
 # @workflow/next
 
+## 5.1.0
+
+### Minor Changes
+
+- [#4339](https://github.com/vercel/workflow/pull/4339) [`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `workflows.experimentalRoutePrefix` option to `withWorkflow()`, backed by the same field on the Next.js builder config. It emits the generated workflow routes, their queue trigger config and the manifest below a route segment the app owns (e.g. `/dashboard/.well-known/workflow/v1/flow`). Can be used to host workflow routes within a Microfrontends child app
+
+### Patch Changes
+
+- Updated dependencies [[`f292ef0`](https://github.com/vercel/workflow/commit/f292ef05cadbd5320298568050e39c96ef19f813), [`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`b7534aa`](https://github.com/vercel/workflow/commit/b7534aa6d102bd4caa584d28f6c3daef59478dc6), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1)]:
+  - @workflow/core@5.5.0
+  - @workflow/builders@5.1.0
+
 ## 5.0.8
 
 ### Patch Changes

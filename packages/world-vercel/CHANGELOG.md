@@ -1,5 +1,27 @@
 # @workflow/world-vercel
 
+## 5.5.0
+
+### Minor Changes
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Declare `queueAuthMode: 'skip'`: the flow route only Vercel Queues can trigger takes a message ID, so the runtime does not check a key.
+
+### Patch Changes
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5292](https://github.com/vercel/workflow/pull/5292) [`7153e09`](https://github.com/vercel/workflow/commit/7153e0973c7244eec8b6b3dd349a83eb96ac9743) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Keep idle queue connections for 60s instead of 10s, so instances that publish every 10-60s reuse a warm connection instead of paying a TCP and TLS handshake inside each send.
+
+- [#5270](https://github.com/vercel/workflow/pull/5270) [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a run's creation is recorded on its first `run_started` alone, with no separate `run_created`.
+
+- [#5279](https://github.com/vercel/workflow/pull/5279) [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: watch the live feed with backend heartbeats. world-vercel lists the `run-heartbeat` WS flag. Against a backend that confirms heartbeats on `subscribe_ack`, a feed silent for three heartbeat intervals ends through `onError`, a heartbeat naming a slot the feed never delivered makes it read and deliver the missing events from the log, and a heartbeat for another subscription ends the feed.
+
+- [#5172](https://github.com/vercel/workflow/pull/5172) [`87847c5`](https://github.com/vercel/workflow/commit/87847c52cbc44793e51ab9196786c0f1290413d5) Thanks [@abhiramshaji-cyber](https://github.com/abhiramshaji-cyber)! - Bound the events WebSocket handshake, including the token fetch before it, by `WORKFLOW_REQUEST_TIMEOUT_MS`, and close the channel when a handshake or a write over it times out, so later event writes fall back to HTTP instead of hanging until `maxDuration`.
+- Updated dependencies [[`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/world@5.2.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
 ## 5.4.0
 
 ### Patch Changes
