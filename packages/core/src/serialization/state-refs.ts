@@ -95,11 +95,24 @@ export class StateSourceRef {
 
 const OPAQUE = Symbol.for('@workflow/core//state-refs-opaque');
 /**
- * Tags devalue decodes itself, such as `null` for null-prototype objects.
- * Recovery leaves them to devalue; only unknown custom types become
- * placeholders.
+ * Tags devalue decodes itself and Workflow's reducers never write, such as
+ * `null` for null-prototype objects or a `Float16Array`. Recovery leaves them
+ * to devalue; only unknown custom types become placeholders.
  */
-const DEVALUE_BUILTIN_TAGS = new Set(['null', 'Object', 'DataView']);
+const DEVALUE_BUILTIN_TAGS = new Set([
+  'null',
+  'Object',
+  'DataView',
+  'Float16Array',
+  'Temporal.Duration',
+  'Temporal.Instant',
+  'Temporal.PlainDate',
+  'Temporal.PlainTime',
+  'Temporal.PlainDateTime',
+  'Temporal.PlainMonthDay',
+  'Temporal.PlainYearMonth',
+  'Temporal.ZonedDateTime',
+]);
 
 function base64Bytes(value: string): ArrayBuffer {
   const text = globalThis.atob(value === '.' ? '' : value);

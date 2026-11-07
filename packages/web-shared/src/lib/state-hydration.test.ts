@@ -79,6 +79,26 @@ describe('createRunStateHydrator', () => {
     expect(loadRunInput).toHaveBeenCalledTimes(1);
   });
 
+  it('stops reading when the events cursor does not advance', async () => {
+    const run = storedRun();
+    // A misbehaving backend: always more, always the same cursor.
+    const loadEvents = vi.fn(async () => ({
+      data: [],
+      cursor: 'stuck',
+      hasMore: true,
+    }));
+    const hydrator = createRunStateHydrator({
+      loadRunInput: async () => run.runInput,
+      loadEvents,
+    });
+    const shown = (await hydrator.hydrate({
+      stepId: 's2',
+      input: run.input2,
+    })) as any;
+    expect(shown.input.history).toMatch(/^<state /);
+    expect(loadEvents).toHaveBeenCalledTimes(2);
+  });
+
   it('does not read the history for values that do not need it', async () => {
     const loadEvents = vi.fn();
     const hydrator = createRunStateHydrator({
