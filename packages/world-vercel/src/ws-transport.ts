@@ -90,11 +90,16 @@ interface PendingRequest {
  */
 export interface WsPushSubscriber {
   onPush(frame: DecodedFrame): void;
+  /** A live feed's `run_heartbeat` frame (only sent to a client that lists `run-heartbeat`). */
+  onHeartbeat?(frame: DecodedFrame): void;
   onClose(error: WsTransportError): void;
 }
 
 /** Frame type of a live-feed push. */
 export const RUN_EVENT_FRAME_TYPE = 'run_event';
+
+/** Frame type of a live feed's heartbeat. */
+export const RUN_HEARTBEAT_FRAME_TYPE = 'run_heartbeat';
 
 /**
  * Everything scoped to one socket. `nextReqId` and `pending` live here rather
@@ -714,6 +719,20 @@ class WsEventsTransport {
           `(reason: ${reason}, graceMs: ${decoded.meta.graceMs ?? 'unspecified'}); ` +
           `connection will close soon.`
       );
+      return;
+    }
+
+    if (decoded.meta.type === RUN_HEARTBEAT_FRAME_TYPE) {
+      // Unsolicited, like a push: it answers no pending request.
+      for (const subscriber of [...this.pushSubscribers]) {
+        try {
+          subscriber.onHeartbeat?.(decoded);
+        } catch (err) {
+          console.error(
+            `world-vercel: ws live-feed subscriber threw on a heartbeat: ${describeError(err)}`
+          );
+        }
+      }
       return;
     }
 

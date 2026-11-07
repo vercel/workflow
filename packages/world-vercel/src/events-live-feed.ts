@@ -29,6 +29,36 @@
  * with no slot and an empty body; the feed then ends and `onError` gets that
  * status, code and message.
  *
+ * Heartbeats. This client lists `run-heartbeat` in its upgrade flags. A
+ * backend that sends heartbeats says so on the ack (`heartbeatMs`), and then
+ * pushes, after a successful read once it has sent nothing for `heartbeatMs`,
+ *
+ *   { reqId, type: 'run_heartbeat', slot }
+ *
+ * naming the highest slot it has pushed. On such an ack the feed watches
+ * itself, within the `subscribe` contract (`onEvent` and `onError` only):
+ *
+ * - no push and no heartbeat for {@link HEARTBEAT_SILENCE_FACTOR} times
+ *   `heartbeatMs` ends the feed (`onError`): it died without a sign (a
+ *   half-open socket, a backend feed that stopped without a notice, reads
+ *   failing for that long);
+ * - a heartbeat naming a slot above the last one delivered means pushes went
+ *   missing (a replacement subscription that started above this one): the
+ *   feed reads the log after its last delivered slot and delivers what
+ *   continues the sequence from there, in slot order. A read that fails ends
+ *   the feed (`onError`). This narrows gaps; it does not rule them out. The
+ *   feed only guarantees that it delivers slots in increasing order, each at
+ *   most once: a push above the gap that lands while the read is in flight
+ *   moves the last delivered slot past it, and the read's events below that
+ *   are then dropped. The runtime accepts only the slot it expects next, so
+ *   it holds such a push and its own log poll fills the gap, as it does for
+ *   any push that skips a slot;
+ * - a heartbeat under another `reqId` after this subscription's ack ends the
+ *   feed: a later `subscribe` on the connection replaced it.
+ *
+ * Against a backend that predates heartbeats the ack has no `heartbeatMs`,
+ * and none of this is armed.
+ *
  * The subscription lives on the connection. When the socket closes (drain,
  * transport failure, release) the feed ends and `onError` is called once; it
  * is not resumed on reconnect. Nothing depends on the feed for correctness:
@@ -46,6 +76,7 @@ import {
   type Event,
   type EventsSubscribeOptions,
   eventIdToSlot,
+  slotToEventId,
 } from '@workflow/world';
 import { decodeEventFrame } from './events-v4.js';
 import { type DecodedFrame, decodeFrame, encodeFrame } from './frames.js';
@@ -54,6 +85,42 @@ import { isWsEventsTransportPossible } from './ws-transport-enabled.js';
 
 /** Request frame type that opens a live-feed subscription. */
 export const SUBSCRIBE_FRAME_TYPE = 'subscribe';
+
+/**
+ * How many heartbeat intervals of silence end a watched feed. The backend
+ * sends a heartbeat within one interval plus one idle read (5 s) of its last
+ * frame, so three leaves room for a slow read and network delay.
+ */
+export const HEARTBEAT_SILENCE_FACTOR = 3;
+
+/**
+ * Reads the run's log after a slot (one page, slot order, `resolveData:
+ * 'all'`): how a heartbeat-revealed gap is filled. `storage.ts` passes
+ * `events.list` with {@link cursorAfterSlot}.
+ */
+export type ReadEventsAfter = (
+  afterSlot: number
+) => Promise<{ data: Event[]; hasMore: boolean }>;
+
+/** Most events one gap-filling read asks for. */
+export const GAP_FILL_PAGE_SIZE = 100;
+
+/**
+ * The backend's list cursor that selects everything after `slot`. The
+ * backend's events list takes `eid:<eventId>` as the cursor for "after this
+ * event", the form it returns as `cursor` itself.
+ */
+export function cursorAfterSlot(slot: number): string {
+  return `eid:${slotToEventId(slot)}`;
+}
+
+/** The ack's heartbeat interval, when it confirms heartbeats. */
+function ackedHeartbeatMs(meta: Record<string, unknown>): number | undefined {
+  const value = meta.heartbeatMs;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
 
 /** Raised through `onError` when the feed cannot start or stops. */
 export class LiveFeedError extends Error {
@@ -113,14 +180,55 @@ export function subscribeRunEvents(
   afterSlot: number,
   onEvent: (event: Event) => void,
   options: EventsSubscribeOptions = {},
-  config?: APIConfig
+  config?: APIConfig,
+  /** Fills a gap a heartbeat reveals; without it a gap ends the feed. */
+  readEventsAfter?: ReadEventsAfter
 ): () => void {
   let active = true;
   let lastSlot = afterSlot;
   let teardown: (() => void) | undefined;
+  /** This subscription's `reqId` on the connection, once sent. */
+  let ownReqId: number | undefined;
+  /** Whether the backend acked this subscription. */
+  let acked = false;
+  /** The silence that ends a watched feed; set once an ack confirms heartbeats. */
+  let silenceMs: number | undefined;
+  let silenceTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The highest slot a heartbeat said the backend pushed. */
+  let fillThrough = afterSlot;
+  /** Whether a gap-filling read is running. */
+  let filling = false;
+  /**
+   * The highest slot a fill gave up on: its read returned nothing that
+   * continues the sequence. A heartbeat naming the same slot again does not
+   * read again; one naming a higher slot does.
+   */
+  let unfilledThrough = afterSlot;
+
+  const clearSilence = () => {
+    if (silenceTimer !== undefined) clearTimeout(silenceTimer);
+    silenceTimer = undefined;
+  };
+  /** Starts the silence clock over: the backend was heard from. */
+  const heard = () => {
+    if (!active || silenceMs === undefined) return;
+    clearSilence();
+    silenceTimer = setTimeout(() => {
+      silenceTimer = undefined;
+      fail(
+        new LiveFeedError(
+          `world-vercel: live feed for ${runId} went silent: no push or heartbeat for ${silenceMs}ms`,
+          { code: 'run-feed-silent' }
+        )
+      );
+    }, silenceMs);
+    // Never keep a process alive for the watchdog alone.
+    (silenceTimer as { unref?: () => void }).unref?.();
+  };
 
   const stop = () => {
     active = false;
+    clearSilence();
     const run = teardown;
     teardown = undefined;
     run?.();
@@ -146,6 +254,86 @@ export function subscribeRunEvents(
     }
   };
 
+  const onHeartbeat = (frame: DecodedFrame) => {
+    if (!active || !acked) return;
+    if (frame.meta.reqId !== ownReqId) {
+      fail(
+        new LiveFeedError(
+          `world-vercel: live feed for ${runId} was replaced by a later subscription on the connection`,
+          { code: 'run-feed-replaced' }
+        )
+      );
+      return;
+    }
+    heard();
+    const slot = frame.meta.slot;
+    if (typeof slot === 'number' && Number.isSafeInteger(slot)) {
+      fillGap(slot);
+    }
+  };
+
+  /**
+   * The backend pushed through `throughSlot`, above what this subscription
+   * delivered: read the log after the last delivered slot and deliver the
+   * missing events in slot order. Stops at a position the read does not
+   * return yet (the runtime's own poll covers it), and ends the feed when the
+   * read fails.
+   */
+  const fillGap = (throughSlot: number) => {
+    if (throughSlot > fillThrough) fillThrough = throughSlot;
+    if (
+      filling ||
+      !active ||
+      lastSlot >= fillThrough ||
+      fillThrough <= unfilledThrough
+    ) {
+      return;
+    }
+    if (!readEventsAfter) {
+      fail(
+        new LiveFeedError(
+          `world-vercel: live feed for ${runId} missed pushes up to slot ${fillThrough}`,
+          { code: 'run-feed-gap' }
+        )
+      );
+      return;
+    }
+    filling = true;
+    void (async () => {
+      try {
+        while (active && lastSlot < fillThrough) {
+          const page = await readEventsAfter(lastSlot);
+          let advanced = false;
+          for (const event of page.data) {
+            if (!active) return;
+            if (event.runId !== runId) continue;
+            const slot = eventIdToSlot(event.eventId);
+            if (slot === null || slot <= lastSlot) continue;
+            if (slot !== lastSlot + 1) break;
+            lastSlot = slot;
+            advanced = true;
+            onEvent(event);
+          }
+          if (!advanced) {
+            unfilledThrough = fillThrough;
+            break;
+          }
+        }
+      } catch (error) {
+        fail(
+          new LiveFeedError(
+            `world-vercel: live feed for ${runId} could not read the events it missed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { cause: error, code: 'run-feed-gap' }
+          )
+        );
+      } finally {
+        filling = false;
+      }
+    })();
+  };
+
   const deliver = (frame: DecodedFrame) => {
     if (!active) return;
     const ended = endedByBackend(runId, frame);
@@ -153,6 +341,7 @@ export function subscribeRunEvents(
       fail(ended);
       return;
     }
+    heard();
     const event = decodePushedEvent(frame);
     if (!event) {
       fail(
@@ -165,8 +354,9 @@ export function subscribeRunEvents(
     if (event.runId !== runId) return;
     const slot = pushedSlot(frame, event);
     if (slot !== null) {
-      // At most once per slot; the runtime discards anything else out of
-      // order on its own.
+      // Increasing slots, each at most once; not necessarily without gaps
+      // (see the heartbeat notes above). The runtime holds a push above a
+      // gap until its poll fills it.
       if (slot <= lastSlot) return;
       lastSlot = slot;
     }
@@ -202,6 +392,7 @@ export function subscribeRunEvents(
       }
       const removeSubscriber = resolved.transport.addPushSubscriber({
         onPush: deliver,
+        onHeartbeat,
         onClose: fail,
       });
       teardown = () => {
@@ -209,15 +400,23 @@ export function subscribeRunEvents(
         release();
       };
       return resolved.transport
-        .request((reqId) =>
-          encodeFrame(
+        .request((reqId) => {
+          ownReqId = reqId;
+          return encodeFrame(
             { reqId, type: SUBSCRIBE_FRAME_TYPE, afterSlot },
             new Uint8Array(0)
-          )
-        )
+          );
+        })
         .then((reply) => {
           const { status } = reply.meta;
           if (typeof status === 'number' && status >= 200 && status < 300) {
+            if (!active) return;
+            acked = true;
+            const heartbeatMs = ackedHeartbeatMs(reply.meta);
+            if (heartbeatMs !== undefined) {
+              silenceMs = heartbeatMs * HEARTBEAT_SILENCE_FACTOR;
+              heard();
+            }
             return;
           }
           fail(
