@@ -223,14 +223,12 @@ describe(`frozen state stored by reference (${refs ? 'node' : 'quickjs: stored w
     expect(input).not.toContain('StateRefV1');
   }, 60_000);
 
-  // Known bug (review on #5215): the engine is chosen per run (`start()`
-  // stamps the client's WORKFLOW_VM into the run), but whether references are
-  // written is decided by the env of the process the step runs in. A run
-  // started with WORKFLOW_VM=quickjs whose steps run without it gets
-  // references its QuickJS VM can't read ("Unknown type StateRefV1"). Remove
-  // `.fails` once the writer follows the run's engine.
+  // The engine is chosen per run (`start()` stamps the client's WORKFLOW_VM
+  // into the run), while a step's process may run without it. A Node VM
+  // workflow marks its step inputs, so a step of a QuickJS run writes no
+  // records its workflow can't read.
   // Only meaningful where steps run without WORKFLOW_VM (the node leg).
-  (refs ? it.fails : it.skip)(
+  (refs ? it : it.skip)(
     'a run started on QuickJS while steps run without WORKFLOW_VM',
     async () => {
       const previous = process.env.WORKFLOW_VM;

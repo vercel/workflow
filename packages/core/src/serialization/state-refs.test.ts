@@ -3,8 +3,11 @@ import { parse } from 'devalue';
 import { produce } from 'immer';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  dehydrateStepArguments,
+  dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
+  hydrateStepArguments,
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
@@ -14,6 +17,7 @@ import {
   isFrozenState,
   STATE_REF_REDUCER,
   StateContext,
+  stateContextForData,
   stateSourceId,
 } from './state-refs.js';
 import * as workflow from './workflow.js';
@@ -316,6 +320,46 @@ describe('frozen values stored by reference', () => {
         decodeFormatPrefix(ref).payload as Uint8Array
       )
     ).toBe(true);
+  });
+
+  it("writes no records for a step whose run can't read them", async () => {
+    const frozen = produce({ list: [] as number[] }, (d) => {
+      d.list.push(1);
+    });
+    const outputOf = async (global: Record<string, any>) => {
+      const input = await dehydrateStepArguments(
+        { args: [frozen], closureVars: undefined, thisVal: undefined },
+        'wrun_1',
+        undefined,
+        global
+      );
+      const hydrated = await hydrateStepArguments(input, 'wrun_1', undefined);
+      const out = await dehydrateStepReturnValue(
+        produce(hydrated.args[0] as { list: number[] }, (d) => {
+          d.list.push(2);
+        }),
+        'wrun_1',
+        undefined,
+        [],
+        globalThis,
+        false,
+        false,
+        false,
+        undefined,
+        [],
+        false,
+        stateContextForData(hydrated)
+      );
+      return text(out as Uint8Array);
+    };
+    // A Node VM workflow (a state context bound to its global) marks the input.
+    const vm = Object.create(globalThis);
+    bindStateContext(vm, new StateContext());
+    expect(await outputOf(vm)).toContain('StateRefV1');
+    // A QuickJS workflow doesn't, so the step writes plain values.
+    expect(await outputOf(Object.create(globalThis))).not.toContain(
+      'StateRefV1'
+    );
   });
 
   it('writes run arguments and return values whole so they read without the run log', async () => {

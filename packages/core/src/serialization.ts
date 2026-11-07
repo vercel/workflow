@@ -97,6 +97,7 @@ import {
 import { recoverStateContext } from './serialization/state-recovery.js';
 import {
   bindStateContextData,
+  STATE_REFS_FIELD,
   StateContext,
   stateContextForData,
   stateContextForGlobal,
@@ -4130,7 +4131,14 @@ export async function dehydrateStepArguments(
     const guestCodeStats: GuestCodeStats = guestCodeStatsOut ?? {
       executions: [],
     };
-    const result = await stepModule.serialize(value, key, {
+    // A workflow running in a replay that reads state records (one is bound
+    // to its global) says so on a step's input, so the step knows it may
+    // write them.
+    const envelope =
+      stateContextForGlobal(global) !== undefined
+        ? markedStepInvocation(value)
+        : undefined;
+    const result = await stepModule.serialize(envelope ?? value, key, {
       global,
       stateInput: true,
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
@@ -4149,6 +4157,28 @@ export async function dehydrateStepArguments(
     const { message, hint } = formatSerializationError('step arguments', cause);
     throw new SerializationError(message, { hint, cause });
   }
+}
+
+/**
+ * A step invocation's `{ args, closureVars, thisVal }` with
+ * {@link STATE_REFS_FIELD} set, or `undefined` for anything else this
+ * serializes (hook metadata, placeholders). Only own data properties are
+ * read, so no workflow code runs.
+ */
+function markedStepInvocation(value: unknown): object | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    return undefined;
+  const keys = ['args', 'closureVars', 'thisVal'] as const;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    if (!(keys as readonly string[]).includes(key)) return undefined;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return undefined;
+    out[key] = descriptor.value;
+  }
+  if (!('args' in out)) return undefined;
+  out[STATE_REFS_FIELD] = 1;
+  return out;
 }
 
 /**
@@ -4194,7 +4224,12 @@ export async function hydrateStepArguments(
   // The step's output must be encoded against the same context (possibly just
   // recovered) so a state change can refer to the version it builds on. A step
   // whose input needed none still writes its output into the run's log.
-  bindStateContextData(result, options.stateContext ?? new StateContext());
+  const outputContext = options.stateContext ?? new StateContext();
+  // Only a workflow that reads state records gets them back: a QuickJS run's
+  // inputs don't carry the field (see `STATE_REFS_FIELD`).
+  if ((result as Record<string, unknown> | null)?.[STATE_REFS_FIELD] !== 1)
+    outputContext.writesRecords = false;
+  bindStateContextData(result, outputContext);
   await recordCompression(compressionStats, 'deserialize');
   return result;
 }

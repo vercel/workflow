@@ -64,6 +64,14 @@ export class WorkflowStateMissingError extends Error {
   override name = 'WorkflowStateMissingError';
 }
 
+/**
+ * Set on a step input by a workflow that reads state records (the Node VM
+ * engine). A step writes records only when its input has it: the run's
+ * workflow reads the step's output, and a QuickJS workflow can't read them,
+ * whatever the step process's own `WORKFLOW_VM` says.
+ */
+export const STATE_REFS_FIELD = 'stateRefs';
+
 /** The id a reader registers a payload's strings under (see `addSource`). */
 export function stateSourceId(
   event: { eventType: string; eventId?: string } | 'run-input'
@@ -253,6 +261,11 @@ export class StateContext {
    * only those it delivers, so only replay's context may refer to them.
    */
   writesSourceRefs = true;
+  /**
+   * Whether this context writes state records at all. Off for a step whose
+   * run's workflow can't read them (a QuickJS run): see `STATE_REFS_FIELD`.
+   */
+  writesRecords = true;
 
   /** A context for payloads read without the run's log: it writes no records. */
   static standalone(): StateContext {
@@ -301,7 +314,12 @@ export class StateContext {
     }
     // Not written for the QuickJS VM, nor for payloads read without the log;
     // reading records is always supported.
-    if (this.standalone || !stateRefsEnabled() || !isFrozenState(value))
+    if (
+      this.standalone ||
+      !this.writesRecords ||
+      !stateRefsEnabled() ||
+      !isFrozenState(value)
+    )
       return false;
     return this.reduceTracked(value, register);
   }
