@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
+import {
+  getTsconfigExtendsSpecifiers,
+  resolveTsconfigExtendsPath,
+} from './tsconfig-extends.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 
 export interface DecoratorOptions {
@@ -37,10 +41,10 @@ export async function getDecoratorOptionsFromTsConfig(
   }
 
   try {
-    const content = await readFile(tsconfigPath, 'utf-8');
-    const tsconfig: { compilerOptions?: Record<string, unknown> } =
-      JSON5.parse(content);
-    const compilerOptions = tsconfig.compilerOptions || {};
+    const compilerOptions = await readEffectiveCompilerOptions(
+      resolve(tsconfigPath),
+      new Set()
+    );
 
     // Match Next.js behavior: enable decorators only when experimentalDecorators is true
     const experimentalDecorators =
@@ -56,6 +60,55 @@ export async function getDecoratorOptionsFromTsConfig(
   } catch {
     // If we can't read or parse the tsconfig, return defaults
     return defaultOptions;
+  }
+}
+
+/**
+ * Reads a tsconfig's `compilerOptions` merged with those it inherits through
+ * `extends`, the way TypeScript does: base configs apply first, in order for an
+ * `extends` array, and the config's own options override them key by key.
+ *
+ * `ancestors` holds the configs currently being read, so a circular `extends`
+ * stops instead of recursing forever. The config itself must be readable; an
+ * unresolvable or unreadable base contributes nothing.
+ */
+async function readEffectiveCompilerOptions(
+  tsconfigPath: string,
+  ancestors: Set<string>
+): Promise<Record<string, unknown>> {
+  if (ancestors.has(tsconfigPath)) {
+    return {};
+  }
+
+  const content = await readFile(tsconfigPath, 'utf-8');
+  const tsconfig: {
+    extends?: unknown;
+    compilerOptions?: Record<string, unknown>;
+  } = JSON5.parse(content);
+
+  ancestors.add(tsconfigPath);
+  try {
+    const merged: Record<string, unknown> = {};
+    for (const specifier of getTsconfigExtendsSpecifiers(tsconfig.extends)) {
+      const basePath = await resolveTsconfigExtendsPath(
+        specifier,
+        tsconfigPath
+      );
+      if (!basePath) {
+        continue;
+      }
+      try {
+        Object.assign(
+          merged,
+          await readEffectiveCompilerOptions(resolve(basePath), ancestors)
+        );
+      } catch {
+        // An unreadable base contributes nothing.
+      }
+    }
+    return Object.assign(merged, tsconfig.compilerOptions);
+  } finally {
+    ancestors.delete(tsconfigPath);
   }
 }
 
