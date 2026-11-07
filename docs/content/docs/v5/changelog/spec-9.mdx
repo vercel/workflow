@@ -909,7 +909,7 @@ sequenceDiagram
     Note over O: a suspension with a hook or a wait ends optimistic starts for the delivery
 ```
 
-The optimistic start applies only while every step of the boundary is inline and the boundary has no wait and no step that failed to serialize (`spec9/delivery.ts`). A boundary with a background step commits its creations first.
+The optimistic start applies while the boundary has no wait and no step that failed to serialize, and each of its inline steps allows retries (`spec9/delivery.ts`). A boundary of only inline steps starts its bodies while their creation commits. A fan-out, with background steps beside the inline ones, does the same for its inline bodies: they start while the creation batches commit, and each inline start is the one its first batch carries. Each background step's message still goes out only once its own creation committed, so nothing runs elsewhere before it is durable. On QuickJS a fan-out commits its creations first.
 
 #### Why turbo is safe on spec 9 runs (and where it stops)
 
@@ -2035,7 +2035,7 @@ export async function resizeAll(urls: string[]) {
 
 #### How the creations are split
 
-The suspension's events are the inline steps' creation-bearing `step_started` events first, then the background steps' `step_created` (`packages/core/src/runtime/spec9/step-wait-creation.ts`). They go out in batches of up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and 512 KiB, in order, so the inline starts share the first batch with background creations (`batchChunks`). The inline bodies start once that first batch commits. This is the node engine's path (`spec9/delivery.ts`); the QuickJS engine writes a suspension's creations through its own code in `spec9/quickjs-entrypoint.ts`, which these numbers were not checked against.
+The suspension's events are the inline steps' creation-bearing `step_started` events first, then the background steps' `step_created` (`packages/core/src/runtime/spec9/step-wait-creation.ts`). They go out in batches of up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and 512 KiB, in order, so the inline starts share the first batch with background creations (`batchChunks`). The inline bodies start once that first batch commits, except on a turbo first delivery, where they start while it commits (see [Turbo](#turbo)). This is the node engine's path (`spec9/delivery.ts`); the QuickJS engine writes a suspension's creations through its own code in `spec9/quickjs-entrypoint.ts`, which these numbers were not checked against.
 
 | `WORKFLOW_MAX_INLINE_STEPS` | Events | Batches | First batch | Later batches | Step-message sends |
 |---|---|---|---|---|---|
