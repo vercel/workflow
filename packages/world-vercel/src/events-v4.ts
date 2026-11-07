@@ -1231,7 +1231,9 @@ export async function createWorkflowRunEventV4<T extends EventType>(
     // Absent means no socket was resolvable for this run, not that the write
     // failed, so fall through to HTTP. Under a per-workflow override that is
     // every run of a workflow that isn't listed.
-    const reply = await postEventFrameOverWs(input, config);
+    const reply = await postEventFrameOverWs(input, config, {
+      requireOpenSocket: input.eventType === 'run_started',
+    });
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
     assertWsFallbackAllowed(input.eventType);
   }
@@ -1837,7 +1839,21 @@ async function postEventFrameOverWs(
     eventType: EventType;
     skipPreload?: true;
   },
-  config: APIConfig | undefined
+  config: APIConfig | undefined,
+  options: {
+    /**
+     * Take the socket only once its handshake is done; while it is still
+     * connecting, answer `undefined` so the write goes over HTTP instead of
+     * waiting for it. For `run_started`: a delivery writes it first, as the
+     * flow route's unawaited `openWsChannel` is still connecting, and every
+     * later write of the delivery waits for it (on spec 9 it is the in-band
+     * writer's first write, and turbo's barrier). The pooled HTTP connection
+     * is usually warm by then; the handshake keeps going for the writes after
+     * it. The in-band writer sends one write at a time, so the two transports
+     * never reorder its writes.
+     */
+    requireOpenSocket?: boolean;
+  } = {}
 ): Promise<FrameResponseLike | undefined> {
   // Dynamic so `ws` initializes only on a deployment that opted in. The gate
   // at the call site lives in its own import-free module for exactly this
@@ -1850,6 +1866,7 @@ async function postEventFrameOverWs(
   // caller falls through to HTTP, which opens its own.
   if (!resolved) return undefined;
   const { transport, wsUrl } = resolved;
+  if (options.requireOpenSocket && !transport.isConnected()) return undefined;
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
   // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
   // returned null for the proxy World, so this is always the direct

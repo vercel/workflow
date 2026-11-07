@@ -371,6 +371,15 @@ class WsEventsTransport {
     conn?.ws.close(1000, reason);
   }
 
+  /**
+   * Whether a request now would go out at once: the socket finished its
+   * handshake and is open. False while the first handshake (or a reconnect)
+   * is still in flight, when a request would wait for it.
+   */
+  isConnected(): boolean {
+    return !this.closed && this.connection?.ws.readyState === WebSocket.OPEN;
+  }
+
   private ensureConnected(): Promise<Connection> {
     const conn = this.connection;
     if (conn && conn.ws.readyState === WebSocket.OPEN) {
