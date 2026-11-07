@@ -208,6 +208,11 @@ export function isFrozenState(value: unknown, depth = 0): boolean {
   if (frozenState.has(value)) return true;
   if (depth > MAX_DEPTH || !Object.isFrozen(value)) return false;
   if (!Array.isArray(value) && !isPlainObject(value)) return false;
+  // Freezing an accessor does not freeze the value it returns.
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || !('value' in descriptor)) return false;
+  }
   const children = Array.isArray(value)
     ? value
     : Object.keys(value).map((key) => (value as Dict)[key]);

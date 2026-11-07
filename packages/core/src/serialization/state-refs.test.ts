@@ -54,6 +54,24 @@ function session() {
 }
 
 describe('frozen values stored by reference', () => {
+  it('stores frozen accessors as plain values rather than stale references', () => {
+    let current = 'before';
+    const state = Object.freeze({
+      get value() {
+        return current;
+      },
+    });
+    const context = new StateContext();
+    const first = write({ state }, context);
+    current = 'after';
+    const second = workflow.serialize(
+      { state },
+      { stateContext: context, stateInput: true }
+    );
+    expect(text(second)).not.toContain(STATE_REF_REDUCER);
+    expect(read(second, cold(first)).state.value).toBe('after');
+  });
+
   it('stores values in full for the QuickJS VM, and still reads references', () => {
     const { body, output1 } = session();
     const v1 = read(output1, body).session;
