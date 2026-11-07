@@ -6533,6 +6533,27 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  testJsOnly(
+    'stateRefsWorkflow - workflow/state stored by reference through a retry, a replay and a wide fan-out',
+    { timeout: 120_000 },
+    async () => {
+      const token = `state-refs-${Math.random().toString(36).slice(2)}`;
+      const run = await start(await e2e('stateRefsWorkflow'), [token, 8, 8]);
+      await waitForHook(token, { runId: run.runId });
+      const text =
+        'A long user message that later state refers to instead of storing again. '.repeat(
+          3
+        );
+      await resumeHook(token, { text });
+      await expect(run.returnValue).resolves.toEqual({
+        turns: 8,
+        first: text,
+        last: 'Turn 7:',
+        fan: Array.from({ length: 8 }, (_, i) => `${i}:8:16`),
+      });
+    }
+  );
+
   // ==========================================================================
   // setAttributes
   // ==========================================================================
