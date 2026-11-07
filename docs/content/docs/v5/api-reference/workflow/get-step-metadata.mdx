@@ -66,15 +66,15 @@ async function chargeUser(userId: string, amount: number) {
 ```typescript lineNumbers
 import { getStepMetadata } from "workflow";
 
-async function syncUser(userId: string) {
+async function welcomeUser(userId: string) {
   "use step";
   const { attempt, maxAttempts } = getStepMetadata();
 
   try {
-    return await syncToCrm(userId);
+    return await sendWelcomeEmail(userId);
   } catch (error) {
     if (attempt < maxAttempts) throw error; // [!code highlight]
-    console.error(`Giving up on ${userId}`, error);
+    console.error(`Giving up on the welcome email for ${userId}`, error);
     return null;
   }
 }
