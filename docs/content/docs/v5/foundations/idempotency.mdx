@@ -184,7 +184,7 @@ There is no default retention.
 
 Cancelling the owner ends the run, so it releases the token too, once any retention has passed.
 
-An owner that waits on something that never arrives holds its token until it ends, and every `start()` with the token is refused until then. Bound the wait in the workflow, for example by [racing the Hook against `sleep()`](/docs/foundations/hooks#waiting-with-a-timeout), so the run ends on its own. As a backstop, a caller refused with `HookConflictError` can [cancel](/docs/api-reference/workflow-api/get-run#cancel-a-run) an owner whose `status` is `"running"` and whose `createdAt` is older than any healthy run. Measure the age from the owner's `createdAt`, not from when the work was due, so a run that started a moment ago is never cancelled. An owner stuck in `pending` needs no cancel: `start()` re-publishes its message.
+An owner that waits for an event that never comes keeps its token. Every `start()` with that token is refused. To prevent this, set a time limit on the wait in the workflow. See [Waiting with a timeout](/docs/foundations/hooks#waiting-with-a-timeout). If an owner still holds the token too long, the refused caller can [cancel](/docs/api-reference/workflow-api/get-run#cancel-a-run) it. Cancel only an owner whose `status` is `"running"` and whose age is more than a healthy run takes. Calculate the age from the owner's `createdAt`. If you calculate it from the time the work was due, you can cancel a run that started a moment ago. Do not cancel an owner that is `pending`. `start()` sends its message again.
 
 ### Take care with the start Hook's lifecycle
 
