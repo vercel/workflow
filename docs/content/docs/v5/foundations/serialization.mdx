@@ -116,9 +116,95 @@ async function updateUserStep(user: { id: string; name: string; email: string })
 }
 ```
 
+<Callout>
+Deeply frozen values are the exception: they come back frozen, and are stored by reference. See [Frozen values](#frozen-values).
+</Callout>
+
 **Custom classes:**
 
 - Class instances that implement [`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`](#custom-class-serialization)
+
+## Frozen values
+
+State that grows across steps, such as a conversation history passed into every step, is stored again by every step that receives it, so total storage grows with the square of the number of steps. If you pass that state as a **deeply frozen** value, Workflow stores each step's change instead:
+
+- A step input that holds a value Workflow already stored is written as a reference to it, about 80 bytes.
+- A step output is written as its change from the stored value it was made from, for example "the previous history plus two messages".
+
+Workflow finds what changed by identity. A frozen object can't change, so an object that appears in both versions is unchanged and needs no comparison.
+
+The easiest way to make deeply frozen values is [immer](https://immerjs.github.io/immer/)'s `produce`, which freezes its results and shares every unchanged object with the previous value:
+
+```typescript lineNumbers
+import { produce } from "immer";
+
+type Message = { role: "user" | "assistant"; content: string };
+declare function reply(history: readonly Message[], text: string): Promise<string>; // @setup
+declare const messages: AsyncIterable<{ text: string }>; // @setup
+
+async function turn(history: readonly Message[], text: string) {
+  "use step";
+  const answer = await reply(history, text);
+  return produce(history, (draft) => {
+    draft.push({ role: "user", content: text }, { role: "assistant", content: answer });
+  });
+}
+
+export async function chat() {
+  "use workflow";
+  let history: readonly Message[] = Object.freeze([]);
+  for await (const { text } of messages) {
+    history = await turn(history, text); // each input is a reference, each output a change
+  }
+}
+```
+
+Without immer, freeze every object you create, and reuse the frozen objects you didn't change:
+
+```typescript lineNumbers
+type Message = { role: "user" | "assistant"; content: string };
+declare const history: readonly Message[]; // @setup
+declare const text: string; // @setup
+
+const next = Object.freeze([
+  ...history, // unchanged messages, already frozen, reused as they are
+  Object.freeze({ role: "user" as const, content: text }),
+]);
+```
+
+### Rules
+
+- **Frozen values come back frozen.** Changing one in place throws a `TypeError`. Make the next version with `produce` (or a new frozen copy) instead.
+- **`Date`, `Map`, `Set` and byte arrays are trusted.** Inside a frozen value they are treated as unchanging, even though JavaScript lets you change a `Date` or a `Map` after freezing. Change them only by replacing them inside `produce`. Immer already prevents changes to frozen `Map` and `Set` values.
+- **Only deeply frozen plain data counts.** A value that isn't frozen, is only frozen at the top, or holds a class instance or another custom type is stored in full.
+- **A new value is linked by the objects it shares.** A value whose objects are all new, for example one made only of numbers and strings, is stored in full each time. That's fine for small values.
+- **Some payloads are always stored in full:** run inputs, including values passed to another run through `start()`, workflow return values (so `run.returnValue` reads them as usual), and hook payloads.
+- **A long change history is written whole again** once its changes outgrow the value, which bounds how much a replay has to apply.
+- With `WORKFLOW_VM=quickjs`, values are stored in full, because that VM can't read references yet.
+
+### Inspecting stored values
+
+A step input that holds a reference, and a step output that holds a change, can only be rebuilt from the run's earlier records. Workflow does that during replay, so your code always receives whole values.
+
+To show the actual values in an inspection tool, create a resolver for the run with `createStateResolver()` from `workflow/observability`. Feed it the run's persisted payloads once, in event-log order, and merge its revivers over the ones you hydrate with:
+
+```typescript lineNumbers
+import { createStateResolver, hydrateData, observabilityRevivers, stateSourceId } from "workflow/observability";
+declare const runInput: unknown; // @setup
+declare const events: { eventId: string; eventType: string; eventData?: { payload?: unknown; result?: unknown } }[]; // @setup
+declare const stepInput: unknown; // @setup
+
+const resolver = createStateResolver(observabilityRevivers);
+resolver.add(runInput, stateSourceId("run-input"));
+for (const event of events) {
+  if (event.eventType === "hook_received") resolver.add(event.eventData?.payload, stateSourceId(event));
+  if (event.eventType === "step_completed") resolver.add(event.eventData?.result);
+}
+
+const input = hydrateData(stepInput, { ...observabilityRevivers, ...resolver.revivers });
+```
+
+Pass decrypted payloads. Keep one resolver per run and reuse it across inspections. A web inspector built on `@workflow/web-shared` can use `createRunStateHydrator()` instead: it reads the run's history through loaders you give it, only the first time a value needs it, and handles encrypted and compressed payloads. The Workflow web UI uses it for its span details.
 
 ## Streaming
 
