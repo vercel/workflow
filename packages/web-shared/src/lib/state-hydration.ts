@@ -44,6 +44,9 @@ export interface RunStateHydrator {
 
 type Dict = Record<string, unknown>;
 
+/** Like the runtime's cold recovery, never read more than this many pages per read. */
+const MAX_PAGES = 1000;
+
 /**
  * The payload of an event that frozen state values can build on, and the
  * id later state refers to its strings by (hook payloads only).
@@ -128,7 +131,9 @@ export function createRunStateHydrator(
       );
       current.startedInput = true;
     }
-    for (;;) {
+    // A cursor that repeats would otherwise loop forever in the browser.
+    const cursors = new Set<string>();
+    for (let pages = 0; pages < MAX_PAGES; pages++) {
       const page = await options.loadEvents(current.cursor);
       for (const event of page.data) {
         // A re-read from the last cursor can repeat events.
@@ -142,7 +147,8 @@ export function createRunStateHydrator(
           await add(current.resolver, payload.value, key, payload.source);
       }
       if (page.cursor) current.cursor = page.cursor;
-      if (!page.hasMore || !page.cursor) return;
+      if (!page.hasMore || !page.cursor || cursors.has(page.cursor)) return;
+      cursors.add(page.cursor);
     }
   };
 

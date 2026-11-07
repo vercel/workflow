@@ -929,7 +929,8 @@ describe('frozen values stored by reference', () => {
     const second = write(
       {
         s: produce(v1 as { items: unknown[] }, (d) => {
-          d.items.push(at, new Uint8Array([1, 2]));
+          // Float16Array is encoded by devalue itself, not by Workflow's reducers.
+          d.items.push(at, new Uint8Array([1, 2]), new Float16Array([1.5]));
         }),
       },
       body
@@ -940,6 +941,7 @@ describe('frozen values stored by reference', () => {
     ).s;
     expect(recovered.items[1]).toEqual(at);
     expect(recovered.items[2]).toEqual(new Uint8Array([1, 2]));
+    expect(recovered.items[3]).toEqual(new Float16Array([1.5]));
 
     const unknown = new TextEncoder().encode(
       JSON.stringify([
