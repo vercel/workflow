@@ -1156,7 +1156,15 @@ export const __steps_registered = true;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      jsx: 'preserve',
+      // When project-local files are bundled for direct runtime loading (e.g.
+      // Nitro dev, which imports this file from disk), nothing compiles the
+      // output afterwards, so JSX in those files must be compiled here.
+      // 'automatic' still honors the tsconfig's `jsxImportSource` and
+      // `jsxFactory`; esbuild would otherwise read a tsconfig `"jsx":
+      // "preserve"` (or no `jsx`) as classic `React.createElement`, which
+      // needs React in scope. Otherwise the output goes to another bundler,
+      // so JSX is preserved for it.
+      jsx: bundleTransitiveLocalStepDependencies ? 'automatic' : 'preserve',
       logLevel: 'error',
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
