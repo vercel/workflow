@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
+import {
+  getTsconfigExtendsSpecifiers,
+  resolveTsconfigExtendsPath,
+} from './tsconfig-extends.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 
 export interface DecoratorOptions {
@@ -37,10 +41,10 @@ export async function getDecoratorOptionsFromTsConfig(
   }
 
   try {
-    const content = await readFile(tsconfigPath, 'utf-8');
-    const tsconfig: { compilerOptions?: Record<string, unknown> } =
-      JSON5.parse(content);
-    const compilerOptions = tsconfig.compilerOptions || {};
+    const compilerOptions = await readEffectiveCompilerOptions(
+      resolve(tsconfigPath),
+      new Set()
+    );
 
     // Match Next.js behavior: enable decorators only when experimentalDecorators is true
     const experimentalDecorators =
@@ -56,6 +60,50 @@ export async function getDecoratorOptionsFromTsConfig(
   } catch {
     // If we can't read or parse the tsconfig, return defaults
     return defaultOptions;
+  }
+}
+
+/**
+ * Reads `compilerOptions` merged through `extends` as TypeScript does: bases
+ * first, in order, then the config's own options. Stops on circular extends.
+ */
+async function readEffectiveCompilerOptions(
+  tsconfigPath: string,
+  ancestors: Set<string>
+): Promise<Record<string, unknown>> {
+  if (ancestors.has(tsconfigPath)) {
+    return {};
+  }
+
+  const content = await readFile(tsconfigPath, 'utf-8');
+  const tsconfig: {
+    extends?: unknown;
+    compilerOptions?: Record<string, unknown>;
+  } = JSON5.parse(content);
+
+  ancestors.add(tsconfigPath);
+  try {
+    const merged: Record<string, unknown> = {};
+    for (const specifier of getTsconfigExtendsSpecifiers(tsconfig.extends)) {
+      const basePath = await resolveTsconfigExtendsPath(
+        specifier,
+        tsconfigPath
+      );
+      if (!basePath) {
+        continue;
+      }
+      try {
+        Object.assign(
+          merged,
+          await readEffectiveCompilerOptions(resolve(basePath), ancestors)
+        );
+      } catch {
+        // An unreadable base contributes nothing.
+      }
+    }
+    return Object.assign(merged, tsconfig.compilerOptions);
+  } finally {
+    ancestors.delete(tsconfigPath);
   }
 }
 
