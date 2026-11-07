@@ -127,6 +127,7 @@
     "@workflow/tsconfig": "workspace:*",
     "cross-env": "10.1.0",
     "genversion": "3.2.0",
+    "immer": "10.1.1",
     "typescript": "catalog:"
   },
   "peerDependencies": {
