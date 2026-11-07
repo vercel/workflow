@@ -184,7 +184,7 @@ There is no default retention.
 
 Cancelling the owner ends the run, so it releases the token too, once any retention has passed.
 
-An owner that waits for an event that never comes keeps its token. Every `start()` with that token is refused. To prevent this, set a time limit on the wait in the workflow. See [Waiting with a timeout](/docs/foundations/hooks#waiting-with-a-timeout). If an owner still holds the token too long, the refused caller can [cancel](/docs/api-reference/workflow-api/get-run#cancel-a-run) it. Cancel only an owner whose `status` is `"running"` and whose age is more than a healthy run takes. Calculate the age from the owner's `createdAt`. If you calculate it from the time the work was due, you can cancel a run that started a moment ago. Do not cancel an owner that is `pending`. `start()` sends its message again.
+A run started with `experimental_hook` holds its token until the run ends. If the run never ends, for example because it waits for a Hook that nobody resumes, every later `start()` with the token throws `HookConflictError`. Add a timeout to the wait so the run always ends. See [Waiting with a timeout](/docs/foundations/hooks#waiting-with-a-timeout). As a fallback, the code that catches the `HookConflictError` can [cancel](/docs/api-reference/workflow-api/get-run#cancel-a-run) the run with `getRun(error.conflictingRunId)`. Cancel it only if its `status` is `"running"` and its `createdAt` is older than your longest healthy run. Use `createdAt`, not the time the work was due, or you can cancel a run that just started. Do not cancel a `pending` run. `start()` already sends its message again.
 
 ### Take care with the start Hook's lifecycle
 
