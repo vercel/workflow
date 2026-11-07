@@ -7,7 +7,6 @@ import {
   opsBytes,
   type StateOp,
 } from '../state.js';
-import { getCommonRevivers } from './reducers/common.js';
 
 /**
  * Stores frozen values passed between steps by reference.
@@ -96,34 +95,65 @@ export class StateSourceRef {
 
 const OPAQUE = Symbol.for('@workflow/core//state-refs-opaque');
 /**
- * Tags devalue decodes itself, such as `null` for null-prototype objects.
- * Recovery must leave them to devalue; only unknown custom types become
- * placeholders.
+ * Tags devalue decodes itself and Workflow's reducers never write, such as
+ * `null` for null-prototype objects or a `Float16Array`. Recovery leaves them
+ * to devalue; only unknown custom types become placeholders.
  */
 const DEVALUE_BUILTIN_TAGS = new Set([
   'null',
   'Object',
-  'Date',
-  'Set',
-  'Map',
-  'RegExp',
-  'BigInt',
-  'URL',
-  'URLSearchParams',
-  'ArrayBuffer',
-  'Int8Array',
-  'Uint8Array',
-  'Uint8ClampedArray',
-  'Int16Array',
-  'Uint16Array',
-  'Int32Array',
-  'Uint32Array',
+  'DataView',
   'Float16Array',
-  'Float32Array',
-  'Float64Array',
-  'BigInt64Array',
-  'BigUint64Array',
+  'Temporal.Duration',
+  'Temporal.Instant',
+  'Temporal.PlainDate',
+  'Temporal.PlainTime',
+  'Temporal.PlainDateTime',
+  'Temporal.PlainMonthDay',
+  'Temporal.PlainYearMonth',
+  'Temporal.ZonedDateTime',
 ]);
+
+function base64Bytes(value: string): ArrayBuffer {
+  const text = globalThis.atob(value === '.' ? '' : value);
+  const bytes = new Uint8Array(text.length);
+  for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+  return bytes.buffer;
+}
+
+const typedArray =
+  (Ctor: new (buffer: ArrayBuffer) => unknown) => (value: string) =>
+    new Ctor(base64Bytes(value));
+
+/**
+ * Plain data types in the formats Workflow's own reducers write them, decoded
+ * without Node built-ins, so state rebuilds the same way in a browser.
+ * Callers' revivers take precedence.
+ */
+const VALUE_REVIVERS: Record<string, (value: any) => unknown> = {
+  ArrayBuffer: base64Bytes,
+  BigInt: (value: string) => BigInt(value),
+  BigInt64Array: typedArray(BigInt64Array),
+  BigUint64Array: typedArray(BigUint64Array),
+  DataViewBytes: typedArray(DataView),
+  Date: (value: string) => new Date(value),
+  Float32Array: typedArray(Float32Array),
+  Float64Array: typedArray(Float64Array),
+  Int8Array: typedArray(Int8Array),
+  Int16Array: typedArray(Int16Array),
+  Int32Array: typedArray(Int32Array),
+  Map: (value: Iterable<[unknown, unknown]>) => new Map(value),
+  RegExp: (value: { source: string; flags: string }) =>
+    new RegExp(value.source, value.flags),
+  Set: (value: Iterable<unknown>) => new Set(value),
+  URL: (value: string) => new URL(value),
+  URLSearchParams: (value: string) =>
+    new URLSearchParams(value === '.' ? '' : value),
+  Uint8Array: typedArray(Uint8Array),
+  Uint8ClampedArray: typedArray(Uint8ClampedArray),
+  Uint16Array: typedArray(Uint16Array),
+  Uint32Array: typedArray(Uint32Array),
+};
 
 function deepFreeze(value: unknown): void {
   if (!value || typeof value !== 'object' || Object.isFrozen(value)) return;
@@ -601,6 +631,10 @@ export class StateContext {
       value = applyStateOps(base.value, ops);
       bytesSinceFull = base.bytesSinceFull + opsBytes(ops);
     }
+    // A value built around a placeholder (inspection only) is not the stored
+    // value: keep it out of the context so a later read can rebuild it.
+    if (this.placeholders.size > 0 && this.holdsPlaceholder(value))
+      return value;
     deepFreeze(value);
     if (register) this.register(version, { logId, value, bytesSinceFull });
     return value;
@@ -688,7 +722,31 @@ export class StateContext {
     return v;
   }
 
+  /** Inspection tools display values that recovery would refuse to rebuild. */
+  allowPlaceholders = false;
+
+  /** Placeholders handed out for records this context could not rebuild (inspection only). */
+  private readonly placeholders = new Set<string>();
+
+  /** The display placeholder for a record that could not be rebuilt yet. */
+  placeholderFor(record: Dict): unknown {
+    if (record.kind === 'source' || record.kind === 'full') return record.value;
+    const text = `<state ${String(record.version)}>`;
+    this.placeholders.add(text);
+    return text;
+  }
+
+  private holdsPlaceholder(value: unknown, depth = 0): boolean {
+    if (typeof value === 'string') return this.placeholders.has(value);
+    if (depth > 256 || value === null || typeof value !== 'object')
+      return false;
+    for (const key of Object.keys(value))
+      if (this.holdsPlaceholder((value as Dict)[key], depth + 1)) return true;
+    return false;
+  }
+
   private assertKnownTypes(value: unknown, depth = 0): void {
+    if (this.allowPlaceholders) return;
     if (depth > 256 || value === null || typeof value !== 'object') return;
     if ((value as Dict)[OPAQUE as unknown as string] === true)
       throw new Error(
@@ -703,28 +761,33 @@ export class StateContext {
    * the format prefix) without running workflow code. Other custom types become
    * placeholders, which fail loudly if they end up inside tracked state.
    */
-  ingest(payload: Uint8Array, source?: string): void {
+  ingest(
+    payload: Uint8Array,
+    common: Record<string, (value: any) => unknown> = {},
+    source?: string
+  ): void {
     const text = new TextDecoder().decode(payload);
     if (source === undefined && !text.includes(STATE_REF_REDUCER)) return;
     const opaque = () => ({ [OPAQUE]: true });
-    // Workflow's own encodings of Date, Map, typed arrays and the like revive as
-    // usual; anything that needs workflow code (streams, class instances) does not.
-    const common = getCommonRevivers(globalThis) as Record<
-      string,
-      (v: any) => unknown
-    >;
+    // `common` revives types encoded by Workflow's own reducers (dates, maps,
+    // typed arrays, or display versions of them); anything else that needs
+    // workflow code (streams, class instances) becomes a placeholder.
+    // State records always go to this context, even if `common` has its own
+    // (display) revivers for them.
     const pick = (key: string | symbol) =>
       typeof key !== 'string'
         ? undefined
-        : Object.hasOwn(common, key)
-          ? common[key]
-          : DEVALUE_BUILTIN_TAGS.has(key)
-            ? undefined
-            : key === STATE_REF_REDUCER
-              ? this.revive
-              : key === STATE_SOURCE_REDUCER
-                ? this.reviveSourceRef
-                : opaque;
+        : key === STATE_REF_REDUCER
+          ? this.revive
+          : key === STATE_SOURCE_REDUCER
+            ? this.reviveSourceRef
+            : Object.hasOwn(common, key)
+              ? common[key]
+              : Object.hasOwn(VALUE_REVIVERS, key)
+                ? VALUE_REVIVERS[key]
+                : DEVALUE_BUILTIN_TAGS.has(key)
+                  ? undefined
+                  : opaque;
     const revivers = new Proxy({} as Record<string, (v: any) => unknown>, {
       get: (_t, key) => pick(key),
       has: (_t, key) => pick(key) !== undefined,

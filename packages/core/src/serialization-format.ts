@@ -344,7 +344,13 @@ async function decompressAsync(
   return out;
 }
 
+export { stateSourceId } from './serialization/state-refs.js';
 // ---------------------------------------------------------------------------
+export {
+  createStateResolver,
+  type StateResolver,
+} from './state-resolver.js';
+
 // Revivers type (shared across all environments)
 // ---------------------------------------------------------------------------
 
@@ -434,6 +440,19 @@ export async function hydrateDataWithKey(
   revivers: Revivers,
   key: import('./serialization/encryption.js').DecryptionKey | undefined
 ): Promise<unknown> {
+  // Delegate the (decrypted/decompressed) result to sync hydrateData
+  return hydrateData(await decodePayloadWithKey(value, key), revivers);
+}
+
+/**
+ * Decrypts (when `key` opens it) and decompresses a persisted payload, without
+ * hydrating it. A value that is not encrypted or compressed is returned as is;
+ * one `key` cannot open stays encrypted.
+ */
+export async function decodePayloadWithKey(
+  value: unknown,
+  key: import('./serialization/encryption.js').DecryptionKey | undefined
+): Promise<unknown> {
   let data = value;
   if (data instanceof Uint8Array && isEncryptedData(data) && key) {
     // Envelope-aware decrypt: handles both `encr` (AES-GCM under the run's
@@ -458,8 +477,7 @@ export async function hydrateDataWithKey(
     const { format, payload } = decodeFormatPrefix(data);
     data = await decompressAsync(format, payload);
   }
-  // Delegate the (decrypted/decompressed) result to sync hydrateData
-  return hydrateData(data, revivers);
+  return data;
 }
 
 // ---------------------------------------------------------------------------
