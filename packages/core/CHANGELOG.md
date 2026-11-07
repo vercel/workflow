@@ -1,5 +1,35 @@
 # @workflow/core
 
+## 5.5.0
+
+### Minor Changes
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Refuse deliveries to the flow route without the app's queue key, for Worlds that declare `queueAuthMode: 'loopback'`, with a marked 401 before any run is touched, and count refusals on `workflow.queue.delivery.refused`. `WORKFLOW_QUEUE_AUTH=off` turns the check off, except while dynamic workflows are enabled. Warn when the flow route starts on a World that declares no `queueAuthMode` (once, then at most once a minute when routes restart).
+
+### Patch Changes
+
+- [#5249](https://github.com/vercel/workflow/pull/5249) [`f292ef0`](https://github.com/vercel/workflow/commit/f292ef05cadbd5320298568050e39c96ef19f813) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reading a started child's `run.returnValue` inside the parent workflow no longer starts waiting until the promise is awaited (its first `then`, `catch` or `finally`), so a parent that reads it early keeps spec 9 run-ahead for the steps before the await. The parent's child-run completion hook also stays open between waits instead of being disposed and registered again, and an open completion hook stops run-ahead only while something waits on it.
+
+- [#5270](https://github.com/vercel/workflow/pull/5270) [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Read event logs where a run's creation is recorded on its first `run_started` alone, with no separate `run_created`.
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: a run that waits only on open hooks now lingers for `WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS` (default 5 seconds, never more than `WORKFLOW_ORCHESTRATOR_LINGER_MS`) instead of the full 30 seconds after each idle pass, so a long-lived approval or cancel hook beside a polling `sleep()` holds each wake for up to 5 seconds. A run with a background step still open keeps the full linger.
+
+- [#5281](https://github.com/vercel/workflow/pull/5281) [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: `resumeHook()` and `resumeWebhook()` now send the run's workflow name with their `hook_received`
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9 node engine: keep the loaded event log's ids, highest slot and hole check in an incremental index, so an in-band write no longer rescans the whole log. On 2000 sequential inline steps in one delivery, time per step drops from about 18 ms to about 12 ms in the in-memory benchmark.
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9 QuickJS orchestrator: hand off to the next delivery at the invocation's inline deadline, and create new steps as background steps within `WORKFLOW_INLINE_STEP_DEADLINE_MARGIN_MS` of it, as the node engine does. A delivery whose inline step ran past the deadline no longer starts the next inline step and runs into the function's maximum duration.
+
+- [#5261](https://github.com/vercel/workflow/pull/5261) [`b7534aa`](https://github.com/vercel/workflow/commit/b7534aa6d102bd4caa584d28f6c3daef59478dc6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: the QuickJS engine (`WORKFLOW_VM=quickjs`) now runs ahead of its writes as the node engine does, on by default with `WORKFLOW_RUN_AHEAD_DEPTH` (default 10, `0` turns it off). At a boundary no other writer can change, an inline step's outcome reaches the workflow before its `step_completed` commits, and the next steps' creations go out ahead in one batch while their bodies start. If another writer takes a slot a speculative write was placed at, QuickJS restarts the delivery in place from a fresh load, with run-ahead off for the rest of it. The node engine repairs such a write in place instead. Because the QuickJS clock advances to every event the VM reads, a boundary whose code read the clock while the VM held an unconfirmed speculative event waits for its writes to commit before deciding anything.
+
+- [#5279](https://github.com/vercel/workflow/pull/5279) [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Spec 9: a background step's early redelivery while a `retryAfter` is still ahead now decides from the step's latest event (one newest-first `listByCorrelationId` read without payloads) instead of reading the run's whole log. Each step delivery's span records what it read (`step.delivery.log_read`).
+- Updated dependencies [[`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`7153e09`](https://github.com/vercel/workflow/commit/7153e0973c7244eec8b6b3dd349a83eb96ac9743), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf), [`87847c5`](https://github.com/vercel/workflow/commit/87847c52cbc44793e51ab9196786c0f1290413d5)]:
+  - @workflow/world@5.2.0
+  - @workflow/world-vercel@5.5.0
+  - @workflow/world-local@5.3.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
 ## 5.4.0
 
 ### Minor Changes

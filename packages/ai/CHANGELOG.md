@@ -1,5 +1,12 @@
 # @workflow/ai
 
+## 5.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/utils@5.1.0
+
 ## 5.0.3
 
 ### Patch Changes

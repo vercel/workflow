@@ -1,5 +1,23 @@
 # @workflow/cli
 
+## 5.1.0
+
+### Minor Changes
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Send queue deliveries with the app's queue auth key, read from its data directory.
+
+### Patch Changes
+
+- Updated dependencies [[`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`f292ef0`](https://github.com/vercel/workflow/commit/f292ef05cadbd5320298568050e39c96ef19f813), [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090), [`285c60d`](https://github.com/vercel/workflow/commit/285c60daf2eb35d5fa048ce064aea5470acf8198), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`7153e09`](https://github.com/vercel/workflow/commit/7153e0973c7244eec8b6b3dd349a83eb96ac9743), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb), [`b7534aa`](https://github.com/vercel/workflow/commit/b7534aa6d102bd4caa584d28f6c3daef59478dc6), [`7ace801`](https://github.com/vercel/workflow/commit/7ace8019179527945dcd94d65b81cad9aebf84b1), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf), [`87847c5`](https://github.com/vercel/workflow/commit/87847c52cbc44793e51ab9196786c0f1290413d5)]:
+  - @workflow/world@5.2.0
+  - @workflow/world-vercel@5.5.0
+  - @workflow/world-local@5.3.0
+  - @workflow/core@5.5.0
+  - @workflow/builders@5.1.0
+  - @workflow/utils@5.1.0
+  - @workflow/web@5.1.0
+  - @workflow/errors@5.1.1
+
 ## 5.0.8
 
 ### Patch Changes

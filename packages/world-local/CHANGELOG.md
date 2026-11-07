@@ -1,5 +1,21 @@
 # @workflow/world-local
 
+## 5.3.0
+
+### Minor Changes
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Authenticate queue deliveries (`queueAuthMode: 'loopback'`) with a key in `queue-auth-key` in the data directory, written owner-only each time the app starts and read by the CLI and the web UI (`queueAuthKey: 'read'`). Retry a refused delivery at once when the key changed (up to 16 times per message), give it up after 5 other refusals, and write a `.gitignore` into a data directory that has none.
+
+### Patch Changes
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5025](https://github.com/vercel/workflow/pull/5025) [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090) Thanks [@pranaygp](https://github.com/pranaygp)! - Avoid repeated filesystem publication collisions between concurrent step events in one process.
+- Updated dependencies [[`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/world@5.2.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
 ## 5.2.1
 
 ### Patch Changes

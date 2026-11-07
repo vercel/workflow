@@ -1,5 +1,22 @@
 # @workflow/world-postgres
 
+## 5.2.0
+
+### Minor Changes
+
+- [#5248](https://github.com/vercel/workflow/pull/5248) [`f9b32b2`](https://github.com/vercel/workflow/commit/f9b32b250e2ddc81e52bebfd0628044c8e78a9cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Recover a spec 9 run whose worker died mid-delivery within about 8 minutes by default, instead of after Graphile Worker's 4 hours. With `jobLockStaleSeconds` unset, every delivery now renews its job lock and registers its worker as renewing, and another process releases a job in a spec 9 run's named queue once its lock has gone unrenewed for 300 seconds, if its holder registered. Jobs held by processes on earlier versions are never released this way, so the default is safe during a rolling upgrade. Setting `jobLockStaleSeconds` keeps releasing every job after that window, and `0` turns renewal off. Run `bootstrap` to apply migration `0030_add_job_lock_holders`; without it nothing is released, and a warning names the migration.
+
+### Patch Changes
+
+- [#5283](https://github.com/vercel/workflow/pull/5283) [`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate with Zod's standard parser instead of `z.compile`, removing about 200 ms of schema compilation from each cold start without changing what is validated.
+
+- [#5179](https://github.com/vercel/workflow/pull/5179) [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b) Thanks [@NishitaSikka](https://github.com/NishitaSikka)! - Declare `queueAuthMode: 'skip'` until messages are delivered in-process ([#5258](https://github.com/vercel/workflow/issues/5258)); protect the flow route at the network edge. The internal Local World only reads the queue auth key, so a Postgres app creates no key file or `.workflow-data` directory.
+- Updated dependencies [[`d56e791`](https://github.com/vercel/workflow/commit/d56e79184dca534b68ee960b92f08150825503ea), [`71f6cd8`](https://github.com/vercel/workflow/commit/71f6cd8f7aecbd8a1e2e77272d896c9bc76d4090), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`6e007c4`](https://github.com/vercel/workflow/commit/6e007c4a0254ca2c0d89103384a1f0ae1205007b), [`ef6343a`](https://github.com/vercel/workflow/commit/ef6343aa79bbdef1e99200952c4b4f5a24cdfe35), [`566cb8a`](https://github.com/vercel/workflow/commit/566cb8ac0593f93a0f6662e7d74865a1a77a2012), [`54f7fd4`](https://github.com/vercel/workflow/commit/54f7fd49bca10252db7691c5c73e74bc9a9f8ebf)]:
+  - @workflow/world@5.2.0
+  - @workflow/world-local@5.3.0
+  - @workflow/utils@5.1.0
+  - @workflow/errors@5.1.1
+
 ## 5.1.1
 
 ### Patch Changes
