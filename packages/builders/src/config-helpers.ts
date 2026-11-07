@@ -64,13 +64,8 @@ export async function getDecoratorOptionsFromTsConfig(
 }
 
 /**
- * Reads a tsconfig's `compilerOptions` merged with those it inherits through
- * `extends`, the way TypeScript does: base configs apply first, in order for an
- * `extends` array, and the config's own options override them key by key.
- *
- * `ancestors` holds the configs currently being read, so a circular `extends`
- * stops instead of recursing forever. The config itself must be readable; an
- * unresolvable or unreadable base contributes nothing.
+ * Reads `compilerOptions` merged through `extends` as TypeScript does: bases
+ * first, in order, then the config's own options. Stops on circular extends.
  */
 async function readEffectiveCompilerOptions(
   tsconfigPath: string,

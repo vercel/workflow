@@ -4,12 +4,7 @@ import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
 
 const require = createRequire(import.meta.url);
 
-/**
- * Normalizes a tsconfig `extends` value to the list of specifiers it names.
- *
- * TypeScript accepts a single string or, since 5.0, an array of strings, where
- * later entries override earlier ones. Anything else names no base config.
- */
+/** A tsconfig `extends` value as a list: a string, or an array (TypeScript 5.0+). */
 export function getTsconfigExtendsSpecifiers(value: unknown): string[] {
   if (typeof value === 'string') {
     return [value];
@@ -20,13 +15,6 @@ export function getTsconfigExtendsSpecifiers(value: unknown): string[] {
   return [];
 }
 
-/**
- * Resolves one tsconfig `extends` specifier to the file it names.
- *
- * Relative and absolute paths resolve against the extending config's
- * directory. Anything else is a package specifier, resolved from that
- * directory as a module, then as `<specifier>/tsconfig.json`.
- */
 export async function resolveTsconfigExtendsPath(
   extendsValue: string,
   tsconfigPath: string
