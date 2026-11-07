@@ -3225,3 +3225,89 @@ describe("resolveData 'skip-step-inputs'", () => {
     agent.assertNoPendingInterceptors();
   });
 });
+
+/**
+ * A spec 9 `hook_received` names its workflow in the frame meta, so the
+ * backend builds the payload ref key without reading the run stamp first. The
+ * route does not change: a by-token resume stays on the ordinary v5 endpoint,
+ * and an older run's write is unchanged.
+ */
+describe('createWorkflowRunEvent hook_received workflow name', () => {
+  async function postHookReceived(
+    specVersion: number,
+    eventData: Record<string, unknown>
+  ): Promise<Record<string, unknown> | undefined> {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/${eventsApiVersion(specVersion)}/runs/wrun_1/events/hook_received`,
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return createEventBody({
+            eventType: 'hook_received',
+            specVersion,
+            correlationId: 'hook_1',
+            eventData: { token: 'tok' },
+          } as AnyEventRequest);
+        },
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+          },
+        }
+      );
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'hook_received',
+        specVersion,
+        correlationId: 'hook_1',
+        eventData,
+      } as AnyEventRequest,
+      {
+        inBand: false,
+        resumeId: 'resume_1',
+        resumePayloadDigest: 'a'.repeat(64),
+      },
+      { token: 'test-token', dispatcher: agent }
+    );
+    agent.assertNoPendingInterceptors();
+    return capturedMeta;
+  }
+
+  it('carries a spec 9 run workflow name on the ordinary v5 route', async () => {
+    const meta = await postHookReceived(SPEC_VERSION_SINGLE_ORCHESTRATOR, {
+      token: 'tok',
+      workflowName: 'processOrder',
+      payload: new Uint8Array([1, 2, 3]),
+    });
+    expect(meta).toMatchObject({
+      eventType: 'hook_received',
+      correlationId: 'hook_1',
+      hookToken: 'tok',
+      workflowName: 'processOrder',
+      inBand: false,
+      resumeId: 'resume_1',
+      resumePayloadDigest: 'a'.repeat(64),
+    });
+  });
+
+  it('does not add a workflow name the caller did not send', async () => {
+    // The spec gate itself is core's (`resume-hook.durable.test.ts`); this only
+    // checks the transport never invents the field.
+    const meta = await postHookReceived(SPEC_VERSION_SINGLE_ORCHESTRATOR - 1, {
+      token: 'tok',
+      payload: new Uint8Array([1, 2, 3]),
+    });
+    expect(meta).toBeDefined();
+    expect(meta).not.toHaveProperty('workflowName');
+  });
+});
