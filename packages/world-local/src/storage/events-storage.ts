@@ -3357,8 +3357,8 @@ export function createEventsStorage(
                   return { status: 'victim-changed' as const };
                 }
                 // `createHook({ experimental_force: true })`: take the token
-                // over. Same order as workflow-server (docs/hook-force-claim.md,
-                // specs/HookForceClaim.tla): tell the victim FIRST — its
+                // over. Same order as the world-vercel backend: tell the
+                // victim FIRST — its
                 // dispose lock, naming us, then its `hook_disposed` row — so a
                 // delivery that already resolved the victim is refused (and
                 // redirected, see `refuseDisposedHookDelivery`) rather than
@@ -4009,8 +4009,8 @@ export function createEventsStorage(
           );
         }
 
-        // The journal guard for a creation (workflow-server's ConditionCheck
-        // on the run's own marker, `ForceUnguardedJournal.cfg`): between this
+        // The journal guard for a creation (world-vercel conditions the write
+        // on the run's own marker): between this
         // hook's claim above and its `hook_created` publish here, another run
         // may have force-claimed the token and written THIS hook's
         // `hook_disposed`. Appending the creation now would put a

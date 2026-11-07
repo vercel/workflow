@@ -679,7 +679,7 @@ export function queueAuth(world: string) {
   );
 
   // The web UI's run actions, which call these helpers on a Local World
-  // created with queueAuthKey: 'read' (workflow-server-actions.server.ts).
+  // created with queueAuthKey: 'read' (packages/web server actions).
   test.skipIf(world !== 'local')(
     "the web UI's cancel, recreate, re-enqueue and wake-up reach the running app",
     { timeout: 120_000 },

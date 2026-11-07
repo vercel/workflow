@@ -4062,8 +4062,8 @@ describe.concurrent('e2e', () => {
         // A finished victim gets no wake target from the local and postgres
         // Worlds (nothing for it to read; an invoke of a completed run only
         // races its own terminal write). Not asserted here: the deployed
-        // Vercel World gains the same behaviour with
-        // vercel/workflow-server#988, and until that is live it still hands
+        // Vercel World gains the same behaviour in a later backend release, and
+        // until that is live it still hands
         // the target back — harmlessly, as the server refuses a second
         // terminal write.
         await resumeHook(token, { message: 'after' });
