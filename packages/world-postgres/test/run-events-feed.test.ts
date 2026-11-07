@@ -236,6 +236,52 @@ describe.skipIf(process.platform === 'win32')(
       victimFeed.unsubscribe();
     });
 
+    it("stops at a hook resume, leaving it to the resume's wake, but delivers the workflow's own hook_received", async () => {
+      const runId = await createRun();
+      const token = `feed-resume-${ulid()}`;
+      await writer.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC,
+      } as AnyEventRequest);
+      await writer.create(runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_a',
+        specVersion: SPEC,
+        eventData: { token },
+      } as AnyEventRequest);
+      const sub = subscribe(runId, 3);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // What an AbortController's abort writes: no resumeId.
+      await writer.create(runId, {
+        eventType: 'hook_received',
+        correlationId: 'hook_a',
+        specVersion: SPEC,
+        eventData: { token, payload: new Uint8Array([1]) },
+      } as AnyEventRequest);
+      await until(sub.slots, (slots) => slots.length === 1);
+      expect(sub.slots()).toEqual([4]);
+      // What resumeHook() writes: a resumeId.
+      await writer.create(
+        runId,
+        {
+          eventType: 'hook_received',
+          correlationId: 'hook_a',
+          specVersion: SPEC,
+          eventData: { token, payload: new Uint8Array([2]) },
+        } as AnyEventRequest,
+        { resumeId: `resume_${ulid()}` }
+      );
+      await until(
+        () => sub.errors.length,
+        (n) => n === 1
+      );
+      expect(String(sub.errors[0])).toMatch(/stopped at a hook resume/);
+      // Not delivered, and nothing after it.
+      await writer.create(runId, waitCreated('wait_after'));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(sub.slots()).toEqual([4]);
+    });
+
     it('refuses every subscription, saying why, when the feed is off', async () => {
       const off = createRunEventsFeed(pool, { maxLiveSubscriptions: 0 });
       const offEvents = createEventsStorage(createClient(pool), {

@@ -31,6 +31,31 @@ import { listenChannel } from './streamer.js';
  * `NOTIFY`) is found by the next announcement of the run, or by that poll.
  */
 
+/**
+ * Whether an event is a hook resume another writer made with `resumeHook()`
+ * (or a webhook): a `hook_received` with a `resumeId`. The workflow's own
+ * `hook_received` (an `AbortController` abort) carries none.
+ *
+ * The feed does not deliver one: it ends the subscription there instead
+ * (`onError`). The resume's wake carries its producer's timing
+ * (`hookResumeTiming`), which is where the runtime starts its hook-resume
+ * latency measurement (`workflow.resume.total_ms`). A delivery that picked
+ * the resume up from the feed would consume it with no timing, and the wake
+ * that follows would find nothing left to run, so the resume would go
+ * unmeasured. Ending the feed lets a delivery that is only waiting stop
+ * lingering and acknowledge; the wake (delivered, or coalesced into that
+ * delivery's re-run with its timing) then consumes the resume and measures
+ * it, as without a feed. A delivery that is running an inline body falls
+ * back to its log poll, as it did without a feed. Step outcomes and every
+ * other event still come through the feed.
+ */
+function isHookResume(event: Event): boolean {
+  return (
+    event.eventType === 'hook_received' &&
+    typeof (event as { resumeId?: unknown }).resumeId === 'string'
+  );
+}
+
 /** `NOTIFY` channel carrying the run ids of committed spec 9 event writes. */
 export const RUN_EVENTS_TOPIC = 'workflow_run_events';
 
@@ -172,6 +197,16 @@ export function createRunEventsFeed(
           if (slot !== subscription.lastSlot + 1) {
             contiguous = false;
             break;
+          }
+          if (isHookResume(event)) {
+            // Left to the resume's own wake: see `isHookResume`.
+            fail(
+              subscription,
+              new Error(
+                `Live run event feed of ${subscription.runId} stopped at a hook resume (slot ${slot}), which its wake delivers`
+              )
+            );
+            return;
           }
           subscription.lastSlot = slot;
           subscription.onEvent(event);
