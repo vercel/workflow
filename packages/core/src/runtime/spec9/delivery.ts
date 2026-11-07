@@ -2189,6 +2189,10 @@ async function runDelivery(
      */
     const noteRunAheadContext = (context: RunAheadContext): (() => void) => {
       runAheadContexts.set(context, (runAheadContexts.get(context) ?? 0) + 1);
+      runAheadStats.contextsMax = Math.max(
+        runAheadStats.contextsMax,
+        runAheadContexts.size
+      );
       for (const id of context.sensitiveHookIds) {
         runAheadSensitiveHookIds.add(id);
       }
@@ -2220,6 +2224,13 @@ async function runDelivery(
       repairsRetained: 0,
       /** Repairs that had to read the log after all. */
       repairReads: 0,
+      /**
+       * The most classifications in flight at once: what one
+       * hazard check reads. At most one per speculative write
+       * in flight, so it stays within the depth however long
+       * the delivery runs.
+       */
+      contextsMax: 0,
     };
     const markRunAheadRepair = (
       cause: 'feed' | 'outcome' | 'creation'
@@ -2268,6 +2279,7 @@ async function runDelivery(
         'workflow.run_ahead.repair_ms': runAheadStats.repairMs,
         'workflow.run_ahead.repairs_retained': runAheadStats.repairsRetained,
         'workflow.run_ahead.repair_reads': runAheadStats.repairReads,
+        'workflow.run_ahead.contexts_max': runAheadStats.contextsMax,
       });
     };
     /**
@@ -2291,6 +2303,31 @@ async function runDelivery(
       // new sets: this runs for every feed event and every
       // reported event while a speculative write is in flight,
       // and the delivery's steps grow with the run.
+      //
+      // Only the contexts of writes still in flight are read,
+      // where every context since the last drain once was. That
+      // is narrower on purpose, and changes no verdict that
+      // matters:
+      // - An event below a write that settled was already
+      //   judged against that write's context: the writer runs
+      //   the write's `verify` (its skipped-slot report through
+      //   this check) before the write settles and releases the
+      //   context. A foreign event there also displaced the
+      //   write's predicted slot, which is a repair.
+      // - A context's `sensitiveHookIds` are empty: contexts
+      //   are only made at inert boundaries, and a hook
+      //   `runAheadContextFor` counts as sensitive (observed,
+      //   unknown, or an AbortController's) makes a boundary not
+      //   inert. Dropping a context drops no hook.
+      // - Every step a settled boundary ran here is in
+      //   `ranInline`, which `isSelfWrittenStep` reads. The one
+      //   step it no longer covers is one a settled boundary
+      //   counted as its own but this delivery never ran inline
+      //   (it became a background step, say, because the inline
+      //   margin passed between the classification and the
+      //   plan). Its events come from its own message, so the
+      //   boundary's inert verdict was wrong about it, and
+      //   reporting them is what this check is for.
       const contexts = [...runAheadContexts.keys()];
       const sensitiveHookIds = {
         has: (id: string) =>
