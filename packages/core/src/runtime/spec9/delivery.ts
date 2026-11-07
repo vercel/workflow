@@ -3434,6 +3434,41 @@ async function runDelivery(
         plan.failedCount === 0 &&
         plan.waitCount === 0 &&
         plan.steps.every((step) => step.inline);
+      // Turbo: a fan-out boundary (inline steps beside background
+      // steps) starts its inline bodies while the creations commit
+      // too. The single-orchestrator guarantee that makes
+      // `optimisticCreation` safe holds whatever else the boundary
+      // creates, and each background step's message still goes out
+      // only once its own creation committed.
+      const inlinePlanned = plan.steps.filter((step) => step.inline);
+      const optimisticFanOut =
+        !optimisticCreation &&
+        turboOptimistic &&
+        mayInline &&
+        plan.failedCount === 0 &&
+        plan.waitCount === 0 &&
+        inlinePlanned.length > 0 &&
+        inlinePlanned.length < plan.steps.length &&
+        inlinePlanned.every((step) => mayRunBeforeItsStart(step.stepName));
+      /** The messages of the background steps a batch created. */
+      const backgroundMessagesOf = (
+        batch: Awaited<ReturnType<typeof plan.commit>>
+      ): StepMessageSpec[] =>
+        batch.createdSteps.flatMap((step) =>
+          step.inline
+            ? []
+            : [
+                {
+                  correlationId: step.correlationId,
+                  stepName: step.stepName,
+                  stepCreatedEventId: step.event?.eventId,
+                  ...(step.event
+                    ? { stepCreatedAt: new Date(step.event.createdAt) }
+                    : {}),
+                  input: step.input,
+                },
+              ]
+        );
       let created: Awaited<ReturnType<typeof plan.commit>>;
       let newInline: Array<
         Omit<CreatedStep, 'event'> & {
@@ -3517,6 +3552,54 @@ async function runDelivery(
           serializationBlockers: plan.serializationBlockers,
         };
         newInline = plan.steps;
+      } else if (optimisticFanOut) {
+        deferAbsorbs = true;
+        // The batches go out as on the awaited path below, and each
+        // later batch's background steps are enqueued once it
+        // committed; the first batch's once it committed too.
+        const chunks = plan.commitInChunks((batch) =>
+          trackInFlightCreation(
+            enqueueStepMessages(run, backgroundMessagesOf(batch))
+          )
+        );
+        creationBatchesQueuing.add(chunks.queued);
+        void chunks.queued.then(() =>
+          creationBatchesQueuing.delete(chunks.queued)
+        );
+        trackInFlightCreation(
+          chunks.first.then((first) =>
+            enqueueStepMessages(run, backgroundMessagesOf(first))
+          )
+        );
+        trackInFlightCreation(chunks.rest);
+        // Inline steps come first in the plan's events, so the first
+        // batch carries every inline creation-bearing start.
+        creationGate = chunks.first.then((first) => {
+          const inline = new Map(
+            first.createdSteps.flatMap((step) =>
+              step.inline ? [[step.correlationId, step] as const] : []
+            )
+          );
+          if (inlinePlanned.some((step) => !inline.has(step.correlationId))) {
+            // A batch item was refused after its body started.
+            // Redeliver; the next delivery loads the log and decides
+            // from it.
+            throw new WorkflowWorldError(
+              'A step_started of an inline step started ahead of its commit was not committed',
+              { status: 503 }
+            );
+          }
+          return inline;
+        });
+        creationGate.catch(() => {});
+        created = {
+          createdSteps: [],
+          failedStepCorrelationIds: new Set(),
+          createdWaits: [],
+          serializationBlockerCount: plan.serializationBlockerCount,
+          serializationBlockers: plan.serializationBlockers,
+        };
+        newInline = inlinePlanned;
       } else if (
         writer.supportsBatch &&
         plan.events.length > MAX_BATCH_EVENTS &&
@@ -3537,24 +3620,7 @@ async function runDelivery(
         // `creationsInFlight`).
         const chunks = plan.commitInChunks((batch) =>
           trackInFlightCreation(
-            enqueueStepMessages(
-              run,
-              batch.createdSteps.flatMap((step) =>
-                step.inline
-                  ? []
-                  : [
-                      {
-                        correlationId: step.correlationId,
-                        stepName: step.stepName,
-                        stepCreatedEventId: step.event?.eventId,
-                        ...(step.event
-                          ? { stepCreatedAt: new Date(step.event.createdAt) }
-                          : {}),
-                        input: step.input,
-                      },
-                    ]
-              )
-            )
+            enqueueStepMessages(run, backgroundMessagesOf(batch))
           )
         );
         creationBatchesQueuing.add(chunks.queued);
