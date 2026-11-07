@@ -186,31 +186,30 @@ Cancelling the owner ends the run, so it releases the token too, once any retent
 
 ### Replace an owner that never ends
 
-An owner that waits on something that never arrives holds its token forever, and every later `start()` with the token is refused. When a healthy run always ends within a known time, the caller that is refused can cancel an owner older than that, and leave the start to its next attempt:
+An owner that waits on something that never arrives holds its token forever, and every later `start()` with the token is refused. When a healthy run always ends within a known time, the refused caller can cancel an owner older than that with [`run.cancel()`](/docs/api-reference/workflow-api/get-run#cancel-a-run), and leave the start to its next attempt:
 
-```typescript title="app/api/reminders/route.ts" lineNumbers
+```typescript title="app/api/orders/route.ts" lineNumbers
 import { getRun, start } from "workflow/api";
 import { HookConflictError } from "workflow/errors";
-import { sendReminder } from "./workflows/send-reminder";
+import { processOrder } from "./workflows/process-order";
 
-// Longer than any healthy run of sendReminder takes.
+// Longer than any healthy run of processOrder takes.
 const STUCK_AFTER_MS = 90 * 60 * 1000;
 
 export async function POST(request: Request) {
-  const { reminderId } = await request.json();
+  const { orderId } = await request.json();
 
   try {
-    const run = await start(sendReminder, [reminderId], {
-      experimental_hook: { token: `reminder:${reminderId}` },
+    const run = await start(processOrder, [orderId], {
+      experimental_hook: { token: `order:${orderId}` },
     });
     return Response.json({ runId: run.runId, started: true });
   } catch (error) {
     if (!HookConflictError.is(error)) throw error;
 
     const owner = getRun(error.conflictingRunId);
-    const status = await owner.status;
     const age = Date.now() - (await owner.createdAt).getTime();
-    if ((status === "pending" || status === "running") && age > STUCK_AFTER_MS) {
+    if (["pending", "running"].includes(await owner.status) && age > STUCK_AFTER_MS) {
       await owner.cancel({ cancelReason: "Held its token past the time limit" }); // [!code highlight]
     }
     return Response.json({ runId: owner.runId, started: false });
@@ -218,7 +217,7 @@ export async function POST(request: Request) {
 }
 ```
 
-The age is the owner's own, counted from its `createdAt`, so a run that started a moment ago is never cancelled, however old the work it does. The request that cancels starts nothing: the next `start()` with the token is admitted as a new run, once any retention has passed.
+The age counts from the owner's own `createdAt`, so a run that started a moment ago is never cancelled, however old the work it does. The request that cancels starts nothing: the next `start()` with the token is admitted as a new run, once any retention has passed.
 
 ### Take care with the start Hook's lifecycle
 
