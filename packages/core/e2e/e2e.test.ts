@@ -3921,10 +3921,21 @@ describe.concurrent('e2e', () => {
         // Every resume that resolves succeeded somewhere; the assertion is
         // that "somewhere" is exactly one of the two logs, and that the
         // victim's are all ordered before its disposal.
-        const resumes: Promise<unknown>[] = [];
+        //
+        // Each resume is settled as soon as it is fired. A rejection that
+        // only met its handler after this loop (which spans a start() and
+        // ~1s of sleeps) would also surface as an unhandled rejection, which
+        // vitest reports as a run-level error that fails the job even after
+        // this test passes on retry.
+        const resumes: Promise<PromiseSettledResult<unknown>>[] = [];
         let claimer: Run<unknown> | undefined;
         for (let n = 1; n <= TOTAL; n++) {
-          resumes.push(resumeHook(token, { n }));
+          resumes.push(
+            resumeHook(token, { n }).then(
+              (value) => ({ status: 'fulfilled', value }) as const,
+              (reason: unknown) => ({ status: 'rejected', reason }) as const
+            )
+          );
           if (n === 6) {
             claimer = await start(
               await e2e('hookForceClaimCollectorWorkflow'),
@@ -3934,7 +3945,7 @@ describe.concurrent('e2e', () => {
           await sleep(40);
         }
         assert(claimer);
-        const settled = await Promise.allSettled(resumes);
+        const settled = await Promise.all(resumes);
         const succeeded = settled.filter(
           (r) => r.status === 'fulfilled'
         ).length;
