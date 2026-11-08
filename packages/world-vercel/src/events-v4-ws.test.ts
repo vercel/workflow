@@ -769,20 +769,46 @@ describe('run_started while the socket is still connecting', () => {
     expectedSeqInBand: 1,
   } as const;
 
+  /** What a `run_started` write answers with, over either transport. */
+  const runStartedBody = () =>
+    new Uint8Array(
+      encode({
+        event: {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          createdAt: CREATED_AT,
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+        run: {
+          runId: 'wrun_1',
+          status: 'running',
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          startedAt: CREATED_AT,
+          createdAt: CREATED_AT,
+          updatedAt: CREATED_AT,
+        },
+      })
+    );
+
   const transportWith = (connected: boolean) => ({
     transport: { request: requestMock, isConnected: () => connected },
     wsUrl: WS_URL,
   });
 
-  const httpAgent = (path: string) => {
+  const httpAgent = () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
     const agent = new MockAgent();
     agent.disableNetConnect();
     agent
       .get(origin)
-      .intercept({ path, method: 'POST' })
-      .reply(200, materializedBody(), {
+      .intercept({
+        path: '/api/v5/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(200, runStartedBody(), {
         headers: {
           'x-wf-event-id': 'evnt_1',
           'x-wf-run-id': 'wrun_1',
@@ -792,30 +818,35 @@ describe('run_started while the socket is still connecting', () => {
     return agent;
   };
 
-  it('goes over HTTP instead of waiting for the handshake', async () => {
+  it('goes over HTTP instead of waiting for the handshake, with the same result', async () => {
     resolveWsTransportMock.mockReturnValueOnce(transportWith(false));
-    const agent = httpAgent('/api/v5/runs/wrun_1/events/run_started');
+    const agent = httpAgent();
 
-    // Only the transport choice is under test: the reply fixture is shaped
-    // for step_completed, so decoding it as a run_started may fail.
-    await createWorkflowRunEventV4(runStartedInput, {
+    const result = await createWorkflowRunEventV4(runStartedInput, {
       token: 'test-token',
       dispatcher: agent,
-    }).catch(() => undefined);
+    });
 
     expect(requestMock).not.toHaveBeenCalled();
     agent.assertNoPendingInterceptors();
+    expect(result.event).toMatchObject({
+      eventId: 'evnt_1',
+      eventType: 'run_started',
+    });
+    expect(result.run).toMatchObject({ status: 'running' });
   });
 
   it('takes the socket once it is open', async () => {
     resolveWsTransportMock.mockReturnValueOnce(transportWith(true));
-    requestMock.mockResolvedValueOnce(ack());
+    requestMock.mockResolvedValueOnce(ack({}, runStartedBody()));
 
-    await createWorkflowRunEventV4(runStartedInput, {
+    const result = await createWorkflowRunEventV4(runStartedInput, {
       token: 'test-token',
-    }).catch(() => undefined);
+    });
 
     expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(result.event).toMatchObject({ eventType: 'run_started' });
+    expect(result.run).toMatchObject({ status: 'running' });
   });
 
   it('leaves other writes waiting for the handshake', async () => {
