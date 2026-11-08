@@ -24,9 +24,13 @@ let unconfirmed: number[] = [];
 let incStarted = 0;
 /** Children `cra_readFinished` reports as finished. */
 let finished: string[] = [];
+/** Releases the held outcome writes once every `cra_inc` body started. */
+let releaseOutcomes: () => void = () => {};
+let outcomesHeld: Promise<void> = Promise.resolve();
 
 registerStepFunction('cra_inc', async (n: number) => {
   incStarted++;
+  if (incStarted >= STEPS) releaseOutcomes();
   const world = currentWorld;
   if (world) {
     const committed = eventsOf(world, 'step_completed').filter(
@@ -81,10 +85,31 @@ const STEPS = 6;
 const RAN_AHEAD = [0, 1, 2, 3, 4, 5];
 const DRAINED = [0, 0, 0, 0, 0, 0];
 
+/**
+ * How long an outcome write waits for the loop's last body at most. A run
+ * that waits for each outcome before its next step (`DRAINED`) never starts
+ * it while the outcome is held, so this lets the write go.
+ */
+const HOLD_FALLBACK_MS = 300;
+
+/**
+ * Holds every `step_completed` back until all `STEPS` loop bodies started,
+ * as a remote World's slow round trip would. A run that runs ahead starts
+ * each body while the earlier outcomes are still held, whatever the
+ * machine's speed; a fixed delay instead lets an outcome commit before the
+ * next body starts on a slow runner, and the counts come out short.
+ */
 const slowOutcomes = {
   async beforeCreate(data: { eventType: string }) {
     if (data.eventType === 'step_completed') {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        outcomesHeld,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, HOLD_FALLBACK_MS);
+        }),
+      ]);
+      clearTimeout(timer);
     }
   },
 };
@@ -109,6 +134,9 @@ beforeEach(() => {
   unconfirmed = [];
   incStarted = 0;
   finished = [];
+  outcomesHeld = new Promise((resolve) => {
+    releaseOutcomes = resolve;
+  });
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
   vi.stubEnv('VERCEL_URL', 'run-ahead.example.test');
 });
