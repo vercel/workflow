@@ -4,18 +4,38 @@ import {
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
+  QUEUE_ROUTE_DENIED_CODE,
   verifyQueueAuthKey,
 } from '@workflow/utils';
-import type { World } from '@workflow/world';
+import type { QueueAuthMode, QueuePrefix, World } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 
 /**
- * Environment variable that turns the queue delivery check off: `off`
- * accepts unauthenticated deliveries on a World in `'loopback'` mode (a
- * trusted network). Anything else, including unset, leaves it on.
+ * Environment variable that turns the flow route's check off: `off` accepts
+ * unauthenticated deliveries on a World in `'loopback'` mode (a trusted
+ * network), and makes the route of a `'deny'` World accept HTTP again (an
+ * emergency override; see {@link isQueueRouteDenied}). Anything else,
+ * including unset, leaves the check on.
  */
 export const QUEUE_AUTH_ENV = 'WORKFLOW_QUEUE_AUTH';
+
+/** A World's mode, and the one in effect for a prefix in this process. */
+type QueueAuthWorld = Pick<World, 'queueAuthMode' | 'queueAuthModeFor'>;
+
+/**
+ * The mode in effect for `prefix`: the World's per-prefix answer when it has
+ * one (see `Queue.queueAuthModeFor`), else its declared mode.
+ */
+export function effectiveQueueAuthMode(
+  world: QueueAuthWorld,
+  prefix?: QueuePrefix
+): QueueAuthMode | undefined {
+  if (prefix !== undefined && typeof world.queueAuthModeFor === 'function') {
+    return world.queueAuthModeFor(prefix);
+  }
+  return world.queueAuthMode;
+}
 
 /**
  * Whether `world`'s flow route is checked at all. Opt-in: only a World that
@@ -31,6 +51,28 @@ function isQueueAuthOffRequested(): boolean {
 }
 
 /**
+ * Whether `WORKFLOW_QUEUE_AUTH=off` is in force: requested, and not refused
+ * because dynamic workflows are enabled (a forged delivery could then
+ * execute stored dynamic code). Read on every call, so neither setting can
+ * be captured once and outlive a change.
+ */
+function isQueueAuthOff(): boolean {
+  return isQueueAuthOffRequested() && !isDynamicWorkflowsEnabled();
+}
+
+/**
+ * Whether the flow route refuses every HTTP request for `prefix`: the mode
+ * in effect is `'deny'` (the World delivers in process, and this process
+ * holds the handler), and the emergency override is not in force.
+ */
+export function isQueueRouteDenied(
+  world: QueueAuthWorld,
+  prefix?: QueuePrefix
+): boolean {
+  return effectiveQueueAuthMode(world, prefix) === 'deny' && !isQueueAuthOff();
+}
+
+/**
  * Whether deliveries to `world`'s queue routes must carry the process's
  * queue auth key. Reads the environment on every call, so neither setting can
  * be captured once and outlive a change: `WORKFLOW_QUEUE_AUTH=off` is refused
@@ -41,7 +83,7 @@ export function isQueueAuthEnforced(
   world: Pick<World, 'queueAuthMode'>
 ): boolean {
   if (!isLoopbackChecked(world)) return false;
-  return !isQueueAuthOffRequested() || isDynamicWorkflowsEnabled();
+  return !isQueueAuthOff();
 }
 
 /**
@@ -52,8 +94,9 @@ export function isQueueAuthEnforced(
  * then at most once a minute, with the number of calls since.
  */
 const settingLogs = () =>
-  globalSingleton('@workflow/core//queueAuthSettingLogs', 1, () => ({
+  globalSingleton('@workflow/core//queueAuthSettingLogs', 2, () => ({
     off: createLogLimiter(),
+    denyOff: createLogLimiter(),
     refusedOff: createLogLimiter(),
     unrecognized: createLogLimiter(),
   }));
@@ -102,7 +145,8 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
     warnUndeclaredQueueAuthMode();
     return;
   }
-  if (!isLoopbackChecked(world)) return;
+  const denies = world.queueAuthMode === 'deny';
+  if (!isLoopbackChecked(world) && !denies) return;
   const raw = process.env[QUEUE_AUTH_ENV];
   const log = settingLogs();
   if (isQueueAuthOffRequested()) {
@@ -110,9 +154,24 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
       log.refusedOff((routesSinceLastLog) =>
         runtimeLogger.error(
           `${QUEUE_AUTH_ENV}=off is refused because dynamic workflows are enabled ` +
-            '(WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS). Queue deliveries are still ' +
-            'authenticated: a delivery that does not carry the app’s queue key ' +
-            'is refused with a 401.',
+            '(WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS). ' +
+            (denies
+              ? 'The flow route still accepts no HTTP request: a delivery over HTTP is refused with a 403.'
+              : 'Queue deliveries are still authenticated: a delivery that does not carry the app’s queue key is refused with a 401.'),
+          { routesSinceLastLog }
+        )
+      );
+      return;
+    }
+    if (denies) {
+      log.denyOff((routesSinceLastLog) =>
+        runtimeLogger.warn(
+          `THE FLOW ROUTE ACCEPTS HTTP REQUESTS (${QUEUE_AUTH_ENV}=off). This World ` +
+            'delivers in process and its route (POST /.well-known/workflow/v1/flow) ' +
+            'would otherwise refuse every HTTP request; with the override, anyone who ' +
+            'can reach this server can start runs, fail a running one, or re-trigger ' +
+            'its steps. This is an emergency override, for a rolling upgrade whose ' +
+            'old workers still deliver over HTTP: remove it once they are drained.',
           { routesSinceLastLog }
         )
       );
@@ -144,8 +203,11 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
   }
 }
 
-/** Why a delivery was refused: it carried no key, or not the app's. */
-export type QueueAuthRefusalReason = 'no-key' | 'wrong-key';
+/**
+ * Why a delivery was refused: it carried no key, or not the app's
+ * (`'loopback'`), or the route accepts no HTTP at all (`'deny'`).
+ */
+export type QueueAuthRefusalReason = 'no-key' | 'wrong-key' | 'denied';
 
 export interface QueueAuthRefusal {
   reason: QueueAuthRefusalReason;
@@ -168,9 +230,26 @@ export interface QueueAuthRefusal {
  * few times before giving the message up.
  */
 export async function authorizeQueueDelivery(
-  world: Pick<World, 'queueAuthMode'>,
-  req: Request
+  world: QueueAuthWorld,
+  req: Request,
+  prefix?: QueuePrefix
 ): Promise<QueueAuthRefusal | undefined> {
+  if (isQueueRouteDenied(world, prefix)) {
+    // Final, unlike the 401 below: no key would make the route accept the
+    // request, so a sender must not retry it. Unmarked for the same reason:
+    // the marker tells a `'loopback'` sender to reload its key and retry.
+    return {
+      reason: 'denied',
+      response: Response.json(
+        {
+          error:
+            'This route accepts no HTTP requests: the World delivers workflow messages in process',
+          code: QUEUE_ROUTE_DENIED_CODE,
+        },
+        { status: 403 }
+      ),
+    };
+  }
   if (!isQueueAuthEnforced(world)) return undefined;
   const presented = req.headers.get(QUEUE_AUTH_HEADER);
   // The key in memory first; storage only on a mismatch (see
@@ -185,14 +264,41 @@ export async function authorizeQueueDelivery(
   };
 }
 
+const denialLog = () =>
+  globalSingleton('@workflow/core//queueRouteDenialLog', 1, () => ({
+    limit: createLogLimiter(),
+  }));
+
 /**
  * A rate-limited logger for refused deliveries, shared by every route in the
  * process (see `settingLogs`): the first refusal is logged at once, later
  * ones at most once a minute with a count, so a flood of forged requests
- * cannot flood the logs, whether the route is built once or per request.
+ * cannot flood the logs, whether the route is built once or per request. A
+ * `'denied'` refusal has its own line and limiter: what to do about it is
+ * different.
  */
-export function createQueueAuthRefusalLogger(): () => void {
-  return () =>
+export function createQueueAuthRefusalLogger(): (
+  reason?: QueueAuthRefusalReason
+) => void {
+  return (reason) => {
+    if (reason === 'denied') {
+      denialLog().limit((refusedSinceLastLog) => {
+        runtimeLogger.warn(
+          'Refused an HTTP request to the flow route with a 403: this World ' +
+            'delivers workflow messages in process, and the route accepts no HTTP ' +
+            'request. No run was touched. During a rolling upgrade the sender is ' +
+            'usually a worker on an earlier release, which still delivers over ' +
+            'HTTP: each of its deliveries is refused and retried, and every retry ' +
+            'counts toward the attempt limit, until that worker is drained. Drain ' +
+            'old workers before upgrading. As an emergency override, ' +
+            `${QUEUE_AUTH_ENV}=off makes this route accept HTTP again (refused ` +
+            'while dynamic workflows are enabled); remove it once the old workers ' +
+            'are gone.',
+          { refusedSinceLastLog }
+        );
+      });
+      return;
+    }
     refusalLog().limit((refusedSinceLastLog) => {
       runtimeLogger.warn(
         'Refused a queue delivery with a 401: it did not carry the app’s current ' +
@@ -204,4 +310,5 @@ export function createQueueAuthRefusalLogger(): () => void {
         { refusedSinceLastLog }
       );
     });
+  };
 }

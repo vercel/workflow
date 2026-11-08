@@ -148,6 +148,14 @@ export const QUEUE_AUTH_REFUSED_HEADER = 'x-workflow-auth-refused';
 export const QUEUE_AUTH_REFUSED_CODE = 'QUEUE_AUTH_REFUSED';
 
 /**
+ * The `code` in the body of the 403 the runtime answers an HTTP request to
+ * the flow route of a World that delivers in process (`queueAuthMode:
+ * 'deny'`). Final, unlike {@link QUEUE_AUTH_REFUSED_CODE}: no key would make
+ * the route accept the request, so a sender must not retry it.
+ */
+export const QUEUE_ROUTE_DENIED_CODE = 'QUEUE_ROUTE_DENIED';
+
+/**
  * Whether `response` is the runtime's queue auth refusal: a 401 carrying
  * {@link QUEUE_AUTH_REFUSED_HEADER}. A 401 without it is not, and keeps the
  * queue's ordinary retry behavior.

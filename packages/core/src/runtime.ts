@@ -41,6 +41,7 @@ import {
   authorizeQueueDelivery,
   createQueueAuthRefusalLogger,
   logQueueAuthSetting,
+  type QueueAuthRefusalReason,
 } from './runtime/queue-auth.js';
 import { ReplayBudget } from './runtime/replay-budget.js';
 import { resumeTrackingFromMessage } from './runtime/resume-latency.js';
@@ -667,7 +668,7 @@ export function workflowEntrypoint(
     | {
         handler: (req: Request) => Promise<Response>;
         world: World;
-        logQueueAuthRefusal: () => void;
+        logQueueAuthRefusal: (reason?: QueueAuthRefusalReason) => void;
       }
     | undefined;
   let invocationCount = 0;
@@ -747,10 +748,14 @@ export function workflowEntrypoint(
         // `registerHandler`, from the World in this process.
         const refusal =
           transport === 'http'
-            ? await authorizeQueueDelivery(cachedRoute.world, req)
+            ? await authorizeQueueDelivery(
+                cachedRoute.world,
+                req,
+                workflowPrefix
+              )
             : undefined;
         if (refusal) {
-          cachedRoute.logQueueAuthRefusal();
+          cachedRoute.logQueueAuthRefusal(refusal.reason);
           // Counted, not awaited: the 401 does not wait on a meter. The route
           // label is the route template, never the request's path: routers
           // send `/flow/`, `/flow//` and the like to this same handler, so the

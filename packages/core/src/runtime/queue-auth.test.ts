@@ -5,9 +5,14 @@ import {
   QUEUE_AUTH_HEADER,
   QUEUE_AUTH_REFUSED_CODE,
   QUEUE_AUTH_REFUSED_HEADER,
+  QUEUE_ROUTE_DENIED_CODE,
   resetGlobalSingletonForTest,
 } from '@workflow/utils';
-import { type QueueAuthMode, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  IN_PROCESS_QUEUE_HANDLER,
+  type QueueAuthMode,
+  SPEC_VERSION_CURRENT,
+} from '@workflow/world';
 import {
   afterAll,
   afterEach,
@@ -22,7 +27,9 @@ import { workflowEntrypoint } from '../runtime.js';
 import {
   authorizeQueueDelivery,
   createQueueAuthRefusalLogger,
+  effectiveQueueAuthMode,
   isQueueAuthEnforced,
+  isQueueRouteDenied,
   logQueueAuthSetting,
 } from './queue-auth.js';
 import { setWorld } from './world.js';
@@ -64,8 +71,9 @@ afterEach(() => {
     '@workflow/core//undeclaredQueueAuthModeWarning',
     1
   );
-  resetGlobalSingletonForTest('@workflow/core//queueAuthSettingLogs', 1);
+  resetGlobalSingletonForTest('@workflow/core//queueAuthSettingLogs', 2);
   resetGlobalSingletonForTest('@workflow/core//queueAuthRefusalLog', 1);
+  resetGlobalSingletonForTest('@workflow/core//queueRouteDenialLog', 1);
 });
 
 const undeclaredWarning = expect.stringContaining('declares no queueAuthMode');
@@ -76,6 +84,8 @@ describe('isQueueAuthEnforced', () => {
     // Opt-in: a World that declares nothing is not checked.
     [undefined, false],
     ['skip', false],
+    // A denied route is not key-checked: it takes no HTTP at all.
+    ['deny', false],
   ])('mode %s: enforced=%s by default', (mode, enforced) => {
     expect(isQueueAuthEnforced({ queueAuthMode: mode })).toBe(enforced);
   });
@@ -104,6 +114,43 @@ describe('isQueueAuthEnforced', () => {
     expect(isQueueAuthEnforced(world)).toBe(true);
     vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '0');
     expect(isQueueAuthEnforced(world)).toBe(false);
+  });
+});
+
+describe('isQueueRouteDenied', () => {
+  it.each<[QueueAuthMode | undefined, boolean]>([
+    ['deny', true],
+    ['loopback', false],
+    ['skip', false],
+    [undefined, false],
+  ])('mode %s: denied=%s by default', (mode, denied) => {
+    expect(isQueueRouteDenied({ queueAuthMode: mode })).toBe(denied);
+  });
+
+  it('asks the World for the mode in effect for the prefix, when it can say', () => {
+    const world = {
+      queueAuthMode: 'deny' as const,
+      queueAuthModeFor: (prefix: string) =>
+        prefix === '__wkf_workflow_' ? ('deny' as const) : ('skip' as const),
+    };
+    expect(effectiveQueueAuthMode(world, '__wkf_workflow_')).toBe('deny');
+    expect(effectiveQueueAuthMode(world, '__other_wkf_workflow_')).toBe('skip');
+    // Without a prefix, the declared mode.
+    expect(effectiveQueueAuthMode(world)).toBe('deny');
+    expect(isQueueRouteDenied(world, '__wkf_workflow_')).toBe(true);
+    expect(isQueueRouteDenied(world, '__other_wkf_workflow_')).toBe(false);
+  });
+
+  it('WORKFLOW_QUEUE_AUTH=off makes the route accept HTTP again, except under dynamic workflows', () => {
+    const world = { queueAuthMode: 'deny' as const };
+    vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
+    expect(isQueueRouteDenied(world)).toBe(false);
+    vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
+    expect(isQueueRouteDenied(world)).toBe(true);
+    vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '0');
+    expect(isQueueRouteDenied(world)).toBe(false);
+    vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'on');
+    expect(isQueueRouteDenied(world)).toBe(true);
   });
 });
 
@@ -145,6 +192,35 @@ describe('authorizeQueueDelivery', () => {
   it("does not check a World that declares 'skip'", async () => {
     expect(
       await authorizeQueueDelivery({ queueAuthMode: 'skip' }, delivery())
+    ).toBe(undefined);
+  });
+
+  it("refuses every request to a 'deny' route with an unmarked 403, key or no key", async () => {
+    const deny = { queueAuthMode: 'deny' as const };
+    for (const request of [delivery(), withKey()]) {
+      const refusal = await authorizeQueueDelivery(deny, request);
+      expect(refusal?.reason).toBe('denied');
+      expect(refusal?.response.status).toBe(403);
+      // Not the 401's marker: that tells a sender to reload its key and
+      // retry, and no key makes this route accept a request.
+      expect(refusal?.response.headers.get(QUEUE_AUTH_REFUSED_HEADER)).toBe(
+        null
+      );
+      expect(refusal && isQueueAuthRefusal(refusal.response)).toBe(false);
+      await expect(refusal?.response.json()).resolves.toEqual({
+        error: expect.stringContaining('accepts no HTTP requests'),
+        code: QUEUE_ROUTE_DENIED_CODE,
+      });
+    }
+  });
+
+  it("lets a request through a 'deny' World for a prefix whose handler it does not hold", async () => {
+    const world = {
+      queueAuthMode: 'deny' as const,
+      queueAuthModeFor: () => 'skip' as const,
+    };
+    expect(
+      await authorizeQueueDelivery(world, delivery(), '__wkf_workflow_')
     ).toBe(undefined);
   });
 });
@@ -216,6 +292,38 @@ describe('logQueueAuthSetting', () => {
     });
   });
 
+  it("is silent for a 'deny' World by default", () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const error = vi.spyOn(runtimeLogger, 'error');
+    logQueueAuthSetting({ queueAuthMode: 'deny' });
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("warns loudly when off makes a 'deny' route accept HTTP, naming it an emergency override", () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
+    logQueueAuthSetting({ queueAuthMode: 'deny' });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('THE FLOW ROUTE ACCEPTS HTTP REQUESTS'),
+      { routesSinceLastLog: 1 }
+    );
+    const [message] = warn.mock.calls[0] as [string];
+    expect(message).toContain('emergency override');
+    expect(message).toContain('old workers');
+  });
+
+  it("logs an error when off is refused under dynamic workflows on a 'deny' World", () => {
+    const error = vi.spyOn(runtimeLogger, 'error');
+    vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
+    vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
+    logQueueAuthSetting({ queueAuthMode: 'deny' });
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('still accepts no HTTP request'),
+      { routesSinceLastLog: 1 }
+    );
+  });
+
   it('warns about an unrecognized value', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn');
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'disabled');
@@ -228,6 +336,23 @@ describe('logQueueAuthSetting', () => {
 });
 
 describe('createQueueAuthRefusalLogger', () => {
+  it('explains a denied request: drain old workers, and the emergency override', () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const logRefusal = createQueueAuthRefusalLogger();
+    logRefusal('denied');
+    logRefusal('denied');
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message] = warn.mock.calls[0] as [string];
+    expect(message).toContain('403');
+    expect(message).toContain('Drain old workers before upgrading');
+    expect(message).toContain('counts toward the attempt limit');
+    expect(message).toContain('WORKFLOW_QUEUE_AUTH=off');
+    // Its own limiter: a key refusal still logs.
+    logRefusal('no-key');
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls[1]?.[0]).toContain('401');
+  });
+
   it('logs the first refusal, then at most once a minute with a count', () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(runtimeLogger, 'warn');
@@ -249,11 +374,15 @@ describe('workflowEntrypoint queue auth', () => {
    * storage records every write, so a test sees whether a refused request
    * reached the handler or touched a run.
    */
-  function installWorld(queueAuthMode: QueueAuthMode | undefined) {
+  function installWorld(
+    queueAuthMode: QueueAuthMode | undefined,
+    extra: Record<string, unknown> = {}
+  ) {
     const routed: Request[] = [];
     const writes = vi.fn();
     setWorld({
       ...(queueAuthMode === undefined ? {} : { queueAuthMode }),
+      ...extra,
       specVersion: SPEC_VERSION_CURRENT,
       getDeploymentId: async () => 'dpl_test',
       createQueueHandler: vi.fn(() => async (req: Request) => {
@@ -435,6 +564,63 @@ describe('workflowEntrypoint queue auth', () => {
     const response = await route(withKey());
 
     expect(response.status).toBe(200);
+    expect(routed).toHaveLength(1);
+  });
+
+  it("refuses every HTTP request to the flow route of a 'deny' World, before the handler, and counts it", async () => {
+    counterAdds.mockClear();
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    const { routed, writes, route } = installWorld('deny');
+
+    const forged = await route(
+      delivery({
+        'x-vqs-message-attempt': '49',
+        [QUEUE_AUTH_HEADER]: getQueueAuthKey(),
+      })
+    );
+    expect(forged.status).toBe(403);
+    await expect(forged.json()).resolves.toMatchObject({
+      code: QUEUE_ROUTE_DENIED_CODE,
+    });
+    expect(routed).toHaveLength(0);
+    expect(writes).not.toHaveBeenCalled();
+    expect(counterAdds).toHaveBeenCalledWith(1, {
+      'workflow.world': expect.any(String),
+      'http.route': '/.well-known/workflow/v1/flow',
+      'workflow.queue.refusal_reason': 'denied',
+    });
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Drain old workers'),
+      expect.anything()
+    );
+  });
+
+  it("lets the in-process entry of a 'deny' World's route through", async () => {
+    const { routed, route } = installWorld('deny');
+    const entry = route[IN_PROCESS_QUEUE_HANDLER];
+    expect((await entry!(delivery())).status).toBe(200);
+    expect(routed).toHaveLength(1);
+  });
+
+  it("asks a 'deny' World for the mode in effect for the SDK prefix", async () => {
+    const { routed, route } = installWorld('deny', {
+      queueAuthModeFor: (prefix: string) =>
+        prefix === '__wkf_workflow_' ? 'skip' : 'deny',
+    });
+    // Not registered in this process: the route stays open, as 'skip'.
+    expect((await route(delivery())).status).toBe(200);
+    expect(routed).toHaveLength(1);
+  });
+
+  it("WORKFLOW_QUEUE_AUTH=off makes a 'deny' route accept HTTP exactly as 'skip' does", async () => {
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
+    const { routed, route } = installWorld('deny');
+    expect((await route(delivery())).status).toBe(200);
+    expect(routed).toHaveLength(1);
+    // Read per delivery: enabling dynamic workflows closes it again.
+    vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
+    expect((await route(delivery())).status).toBe(403);
     expect(routed).toHaveLength(1);
   });
 

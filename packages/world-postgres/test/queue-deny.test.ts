@@ -6,22 +6,44 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
 import { ulid } from 'ulid';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 // These integration tests exercise the built runtime, like the conformance suite.
-import { setWorld, workflowEntrypoint } from '../../core/dist/runtime.js';
+import {
+  registerWorkflowHandler,
+  setWorld,
+  workflowEntrypoint,
+} from '../../core/dist/runtime.js';
 import { createWorld } from '../src/index.js';
 import { TestPool } from './pool.js';
 
 /**
  * The Postgres World delivers its messages in-process, so its flow route
- * (`POST /.well-known/workflow/v1/flow`) has no legitimate HTTP caller. The
- * runtime refuses every request that reaches it over HTTP before reading the
- * body or touching any run; only the `?__health` probe keeps answering.
+ * (`POST /.well-known/workflow/v1/flow`) has no legitimate HTTP caller. In a
+ * process that registered the flow handler (a worker), the runtime refuses
+ * every request that reaches the route over HTTP with a 403, before reading
+ * the body or touching any run; only the `?__health` probe keeps answering.
+ * `WORKFLOW_QUEUE_AUTH=off` is the emergency override that makes the route
+ * accept HTTP again, as it did before deliveries went in process.
  */
 const code = `
 async function noop() { return 'ok'; }
 globalThis.__private_workflows = new Map([['noop', noop]]);
 `;
+
+const expectDenied = async (response: Response) => {
+  expect(response.status).toBe(403);
+  // Not the 401's "reload your key and retry" marker: final.
+  expect(response.headers.get('x-workflow-auth-refused')).toBe(null);
+  expect(await response.json()).toMatchObject({ code: 'QUEUE_ROUTE_DENIED' });
+};
 
 const FLOW_URL = createWorkflowUrl('http://localhost:3000', { type: 'flow' });
 
@@ -72,9 +94,16 @@ describe.skipIf(process.platform === 'win32')(
       await utils.release();
       world = createWorld({ pool, applicationManagedShutdown: true });
       setWorld(world);
-      // The app's flow route, as the framework integrations mount it.
+      // The app's flow route, as the framework integrations mount it, and
+      // handed to the World as they do when the app starts: this process is a
+      // worker.
       handler = workflowEntrypoint(code);
+      expect(await registerWorkflowHandler(handler)).toBe(true);
     }, 120_000);
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
 
     afterAll(async () => {
       setWorld(undefined);
@@ -83,14 +112,16 @@ describe.skipIf(process.platform === 'win32')(
       await container?.stop();
     });
 
+    it('declares deny, in effect where the handler is registered', () => {
+      expect(world.queueAuthMode).toBe('deny');
+      expect(world.queueAuthModeFor?.('__wkf_workflow_')).toBe('deny');
+      // A prefix this process holds no handler for stays open.
+      expect(world.queueAuthModeFor?.('__other_wkf_workflow_')).toBe('skip');
+    });
+
     it('refuses a forged delivery before touching any run', async () => {
       const runId = `wrun_${ulid()}`;
-      const response = await handler(forge({ runId }));
-      expect(response.status).toBe(401);
-      expect(response.headers.get('x-workflow-auth-refused')).toBe('1');
-      expect(await response.json()).toMatchObject({
-        code: 'QUEUE_AUTH_REFUSED',
-      });
+      await expectDenied(await handler(forge({ runId })));
       // Nothing was written for the run the forged body named.
       await expect(world.runs.get(runId)).rejects.toThrow();
       const { rows } = await pool.query(
@@ -101,26 +132,61 @@ describe.skipIf(process.platform === 'win32')(
     });
 
     it('refuses a forged delivery that claims the executor lane', async () => {
-      const response = await handler(
-        forge(
-          { runId: `wrun_${ulid()}`, invoke: true, requestId: 'req_forged' },
-          {
-            'x-workflow-postgres-executor-job': '1',
-            'x-workflow-postgres-executor-worker': 'forged',
-            'x-workflow-postgres-executor-attempt': '1',
-          }
+      await expectDenied(
+        await handler(
+          forge(
+            { runId: `wrun_${ulid()}`, invoke: true, requestId: 'req_forged' },
+            {
+              'x-workflow-postgres-executor-job': '1',
+              'x-workflow-postgres-executor-worker': 'forged',
+              'x-workflow-postgres-executor-attempt': '1',
+            }
+          )
         )
       );
-      expect(response.status).toBe(401);
-      expect(response.headers.get('x-workflow-auth-refused')).toBe('1');
     });
 
     it('refuses a forged delivery past the delivery cap', async () => {
       // Claiming a high attempt is how a forger fails a running run.
-      const response = await handler(
-        forge({ runId: `wrun_${ulid()}` }, { 'x-vqs-message-attempt': '49' })
+      await expectDenied(
+        await handler(
+          forge({ runId: `wrun_${ulid()}` }, { 'x-vqs-message-attempt': '49' })
+        )
       );
-      expect(response.status).toBe(401);
+    });
+
+    it('refuses an HTTP delivery of a run while its in-process delivery is running (an old worker next to a new one)', async () => {
+      // A rolling upgrade: a worker on an earlier release still POSTs the
+      // run's deliveries over HTTP while this process runs them in process.
+      // The HTTP one is refused at once, without waiting on the run's gate
+      // (the refusal precedes the body), and the in-process one finishes.
+      const runId = `wrun_${ulid()}`;
+      const entry = (
+        handler as unknown as Record<
+          symbol,
+          (req: Request) => Promise<Response>
+        >
+      )[Symbol.for('@workflow/world//inProcessQueueHandler')];
+      const inFlight = entry(forge({ runId }));
+      await expectDenied(await handler(forge({ runId })));
+      // The in-process delivery reached the handler (the run does not exist,
+      // so it fails there, which is the handler's answer, not a refusal).
+      expect((await inFlight).status).not.toBe(403);
+    });
+
+    it('WORKFLOW_QUEUE_AUTH=off makes the route accept HTTP again, as before deliveries went in process', async () => {
+      vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
+      const response = await handler(forge({ runId: `wrun_${ulid()}` }));
+      // Handled, not refused: the handler ran the delivery (the run does not
+      // exist, so it answers an error of its own).
+      expect(response.status).not.toBe(403);
+      expect(response.status).not.toBe(401);
+    });
+
+    it('WORKFLOW_QUEUE_AUTH=off is refused while dynamic workflows are enabled', async () => {
+      vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
+      vi.stubEnv('WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS', '1');
+      await expectDenied(await handler(forge({ runId: `wrun_${ulid()}` })));
     });
 
     it('keeps the ?__health probe reachable', async () => {

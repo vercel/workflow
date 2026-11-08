@@ -1187,6 +1187,13 @@ export function createQueue(
     // flow route takes no HTTP at all. The database credentials control who
     // can enqueue.
     queueAuthMode: 'deny',
+    // In effect only where the flow handler is registered (a worker); a
+    // process that was never handed the route (an app on an integration
+    // that does not register it, a custom server) keeps the route open as
+    // `'skip'` rather than refuse deliveries nothing in it can run.
+    queueAuthModeFor(prefix) {
+      return directHandlers.has(prefix) ? 'deny' : 'skip';
+    },
     createQueueHandler,
     getDeploymentId,
     queue,

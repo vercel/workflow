@@ -139,25 +139,55 @@ async function refusalCounts(server: Server) {
   return series;
 }
 
+/** The server's World's declared `queueAuthMode`. */
+async function queueAuthModeOf(server: Server): Promise<string | null> {
+  const { queueAuthMode } = (await fetch(
+    `http://localhost:${server.info.port}/_queue-auth`
+  ).then((response) => response.json())) as { queueAuthMode: string | null };
+  return queueAuthMode;
+}
+
 /**
  * Skips the running test unless the server's World declares
- * `queueAuthMode: 'loopback'`, the only mode whose flow route is checked. A
- * World that declares `'skip'` (world-vercel, world-postgres) or declares
- * nothing (opt-in) leaves the route unchecked, so there is no refusal to
- * assert.
+ * `queueAuthMode: 'loopback'`, the mode whose flow route is key-checked. A
+ * World that declares `'deny'` (world-postgres) refuses HTTP outright (see
+ * `skipUnlessDenied`); one that declares `'skip'` (world-vercel) or nothing
+ * (opt-in) leaves the route unchecked, so there is no refusal to assert.
  */
 async function skipUnlessKeyChecked(
   server: Server,
   ctx: { skip: (note?: string) => void }
 ) {
-  const { queueAuthMode } = (await fetch(
-    `http://localhost:${server.info.port}/_queue-auth`
-  ).then((response) => response.json())) as { queueAuthMode: string | null };
+  const queueAuthMode = await queueAuthModeOf(server);
   if (queueAuthMode !== 'loopback') {
     ctx.skip(
-      `this World declares queueAuthMode: ${JSON.stringify(queueAuthMode)}, so its flow route is not checked`
+      `this World declares queueAuthMode: ${JSON.stringify(queueAuthMode)}, so its flow route is not key-checked`
     );
   }
+}
+
+/** Skips the running test unless the server's World declares `'deny'`. */
+async function skipUnlessDenied(
+  server: Server,
+  ctx: { skip: (note?: string) => void }
+) {
+  const queueAuthMode = await queueAuthModeOf(server);
+  if (queueAuthMode !== 'deny') {
+    ctx.skip(
+      `this World declares queueAuthMode: ${JSON.stringify(queueAuthMode)}, so its flow route takes HTTP`
+    );
+  }
+}
+
+/**
+ * Asserts `response` is the runtime's refusal of an HTTP request to a route
+ * that takes none: a 403 with the stable code, and without the 401's
+ * "reload your key and retry" marker.
+ */
+async function expectDenied(response: Response) {
+  expect(response.status).toBe(403);
+  expect(response.headers.get('x-workflow-auth-refused')).toBe(null);
+  expect(await response.json()).toMatchObject({ code: 'QUEUE_ROUTE_DENIED' });
 }
 
 /** The id the build gives `name` in `workflows/<file>.ts`. */
@@ -260,11 +290,183 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 1_500));
  * the app's queue key, which its processes share. Everything a request
  * from outside could do with it, start a run, fail a running one through the
  * max-deliveries path, re-trigger a step, or replay a real delivery, is
- * refused with a 401 and changes no run state. The refusal tests skip on a
- * World that declares `queueAuthMode: 'skip'` (world-postgres); the health-check
- * test runs on every World.
+ * refused with a 401 and changes no run state. On a World that declares
+ * `'deny'` (world-postgres), which delivers in process, the route refuses
+ * every HTTP request with a 403, and the same forgeries change nothing. Each
+ * group of tests skips on the other World; the health-check test runs on
+ * every World.
  */
 export function queueAuth(world: string) {
+  test(
+    'a World that delivers in process refuses every HTTP request to the flow route and runs its jobs anyway',
+    { timeout: 60_000 },
+    async (ctx) => {
+      const server = await startServer({ world });
+      await skipUnlessDenied(server, ctx);
+      const fetcher = createFetcher(server);
+
+      // Runs complete: the server registered the route and runs the jobs in
+      // process (`registerWorkflowHandler` in server.mts).
+      const { runId: realRunId } = await fetcher.invoke(
+        'workflows/addition.ts',
+        'addition',
+        [1, 2]
+      );
+      await waitForStatus(fetcher, realRunId, 'completed');
+      const completedBefore = await runState(fetcher, realRunId);
+      const { runId, queueName } = await parkedRun(fetcher);
+      const before = await runState(fetcher, runId);
+
+      // A new run through the resilient-start path, a run failed through
+      // the max-deliveries path, and a replayed real first delivery: all
+      // refused, with or without a key.
+      const forgedRunId = `wrun_${ulid()}`;
+      await expectDenied(
+        await forge(
+          server,
+          {
+            runId: forgedRunId,
+            requestedAt: new Date().toISOString(),
+            runInput: {
+              input: [],
+              deploymentId: 'dpl_forged',
+              workflowName: queueName.slice('__wkf_workflow_'.length),
+              specVersion: 8,
+            },
+          },
+          { 'x-vqs-queue-name': queueName }
+        )
+      );
+      await expectDenied(
+        await forge(
+          server,
+          { runId, requestedAt: new Date().toISOString() },
+          {
+            'x-vqs-queue-name': queueName,
+            'x-vqs-message-attempt': '49',
+            'x-vqs-message-delivery-count': '49',
+            'x-workflow-auth': 'A'.repeat(43),
+          }
+        )
+      );
+      const recorded = await fetch(
+        `http://localhost:${server.info.port}/_first-delivery/${realRunId}`
+      );
+      expect(recorded.status).toBe(200);
+      const delivery = (await recorded.json()) as {
+        headers: Record<string, string>;
+        body: string;
+      };
+      await expectDenied(
+        await fetch(flowUrl(server), {
+          method: 'POST',
+          headers: delivery.headers,
+          body: delivery.body,
+        })
+      );
+
+      await settle();
+      expect(await runState(fetcher, runId)).toEqual(before);
+      expect(await runState(fetcher, realRunId)).toEqual(completedBefore);
+      expect(
+        (
+          await fetch(
+            `http://localhost:${server.info.port}/runs/${forgedRunId}`
+          )
+        ).ok
+      ).toBe(false);
+
+      // Counted, under its own reason.
+      expect(await refusalCounts(server)).toEqual([
+        {
+          attributes: {
+            'http.route': '/.well-known/workflow/v1/flow',
+            'workflow.queue.refusal_reason': 'denied',
+            'workflow.world': world,
+          },
+          sum: 3,
+        },
+      ]);
+      expect(server.getOutput()).toContain(
+        'Drain old workers before upgrading'
+      );
+    }
+  );
+
+  test(
+    'WORKFLOW_QUEUE_AUTH=off makes the route of a World that delivers in process accept HTTP again',
+    { timeout: 60_000 },
+    async (ctx) => {
+      const server = await startServer({
+        world,
+        env: { WORKFLOW_QUEUE_AUTH: 'off' },
+      });
+      await skipUnlessDenied(server, ctx);
+      const fetcher = createFetcher(server);
+      const { runId, queueName } = await parkedRun(fetcher);
+
+      // The override: a request from outside fails the running run through
+      // the max-deliveries path, as it could before deliveries went in
+      // process. Redelivered until it takes, as a queue would (see the
+      // 'loopback' variant of this test).
+      const statuses: number[] = [];
+      await vi.waitFor(
+        async () => {
+          const pastCap = await forge(
+            server,
+            { runId, requestedAt: new Date().toISOString() },
+            {
+              'x-vqs-queue-name': queueName,
+              'x-vqs-message-attempt': '49',
+              'x-vqs-message-delivery-count': '49',
+            }
+          );
+          statuses.push(pastCap.status);
+          expect((await fetcher.getRun(runId)).status).toBe('failed');
+        },
+        { interval: 500, timeout: 30_000 }
+      );
+      expect(statuses).not.toContain(403);
+      expect(server.getOutput()).toContain(
+        'THE FLOW ROUTE ACCEPTS HTTP REQUESTS'
+      );
+    }
+  );
+
+  test(
+    'WORKFLOW_QUEUE_AUTH=off is refused while dynamic workflows are enabled on a World that delivers in process',
+    { timeout: 60_000 },
+    async (ctx) => {
+      const server = await startServer({
+        world,
+        env: {
+          WORKFLOW_QUEUE_AUTH: 'off',
+          WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS: '1',
+        },
+      });
+      await skipUnlessDenied(server, ctx);
+      const fetcher = createFetcher(server);
+      const { runId, queueName } = await parkedRun(fetcher);
+      const before = await runState(fetcher, runId);
+      await expectDenied(
+        await forge(
+          server,
+          { runId, requestedAt: new Date().toISOString() },
+          {
+            'x-vqs-queue-name': queueName,
+            'x-vqs-message-attempt': '49',
+            'x-vqs-message-delivery-count': '49',
+          }
+        )
+      );
+      await settle();
+      expect(await runState(fetcher, runId)).toEqual(before);
+      expect(server.getOutput()).toContain(
+        'WORKFLOW_QUEUE_AUTH=off is refused'
+      );
+    }
+  );
+
   test(
     'forged flow-route requests are refused and change no run state',
     { timeout: 60_000 },
@@ -764,8 +966,8 @@ export function queueAuth(world: string) {
     }
   );
 
-  // world-postgres's internal Local World only reads the key, and only when
-  // it sends: a Postgres app writes no key file and no data directory.
+  // A Postgres app has no Local World in it: it writes no key file and no
+  // data directory.
   test.skipIf(world === 'local')(
     'a Postgres app creates no queue auth key file and no Local data directory',
     { timeout: 60_000 },

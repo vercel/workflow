@@ -1059,6 +1059,18 @@ export interface Queue {
   queueAuthMode?: QueueAuthMode;
 
   /**
+   * Optional. The mode in effect for `prefix` in this process, when it can
+   * differ from {@link Queue.queueAuthMode}. A World that declares `'deny'`
+   * returns `'deny'` for a prefix whose flow handler is registered in this
+   * process (the process is a worker, and the route needs no HTTP) and
+   * `'skip'` for one that is not, so a process that was never handed the
+   * route does not refuse what it cannot deliver itself. The runtime asks
+   * before each HTTP request to the flow route; when absent, the declared
+   * mode holds everywhere.
+   */
+  queueAuthModeFor?(prefix: QueuePrefix): QueueAuthMode;
+
+  /**
    * Send an invocation to a run's executor. Must be enabled via capabilities.invoke.
    * An invocation carries an out-of-band request that must be processed by the
    * executor. The executor's response is propagated back and errors are rethrown
