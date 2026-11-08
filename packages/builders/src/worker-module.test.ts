@@ -19,7 +19,11 @@ describe('createWorkflowWorkerModuleCode', () => {
     );
   });
 
-  async function load(options: { wrapped?: boolean; reloads?: boolean }) {
+  async function load(options: {
+    wrapped?: boolean;
+    reloads?: boolean;
+    namespace?: string;
+  }) {
     const dir = await mkdtemp(join(tmpdir(), 'worker-module-'));
     dirs.push(dir);
     // The route module, versioned so a test can rebuild it.
@@ -94,5 +98,32 @@ export async function getWorld() { return { async start() { started.push('start'
     expect(await (await route(new Request('http://x/'))).text()).toBe(
       'http 1 event'
     );
+  });
+
+  it('registers under the namespace the route was built with', async () => {
+    const { worker, runtime } = await load({ namespace: 'ns' });
+    await worker.registerWorkflowWorker();
+    expect(runtime.registered[0].options).toEqual({ namespace: 'ns' });
+
+    const reloading = await load({ namespace: 'ns', reloads: true });
+    await reloading.worker.registerWorkflowWorker();
+    expect(reloading.runtime.registered[0].options).toEqual({
+      namespace: 'ns',
+      reloads: true,
+    });
+  });
+
+  it('bakes WORKFLOW_QUEUE_NAMESPACE in at generation time', async () => {
+    process.env.WORKFLOW_QUEUE_NAMESPACE = 'built';
+    let loaded: Awaited<ReturnType<typeof load>>;
+    try {
+      loaded = await load({});
+    } finally {
+      delete process.env.WORKFLOW_QUEUE_NAMESPACE;
+    }
+    await loaded.worker.registerWorkflowWorker();
+    expect(loaded.runtime.registered[0].options).toEqual({
+      namespace: 'built',
+    });
   });
 });

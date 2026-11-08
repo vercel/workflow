@@ -15,6 +15,7 @@ import {
   createWorkflowWorkerModuleCode,
   type WorkflowManifest,
 } from '@workflow/builders';
+import type { InProcessWorkerState } from '@workflow/utils';
 import type { NextConfig as ProjectNextConfig } from 'next';
 import Watchpack from 'watchpack';
 import {
@@ -996,13 +997,14 @@ export async function getNextBuilderEager(
      * leaves the previous build serving until the next request to the route.
      */
     private async refreshWorkerRoute(): Promise<void> {
-      // The worker state `registerWorkflowHandler` keeps in @workflow/core,
-      // under `globalSingleton`'s key for that name and shape version.
-      const worker = (
-        globalThis as typeof globalThis & {
-          [key: symbol]: { registered?: boolean } | undefined;
-        }
-      )[Symbol.for('@workflow/core//inProcessWorker/v1')];
+      // The worker state `registerWorkflowHandler` keeps in @workflow/core.
+      const { IN_PROCESS_WORKER_STATE, peekGlobalSingleton } = await import(
+        '@workflow/utils'
+      );
+      const worker = peekGlobalSingleton<InProcessWorkerState>(
+        IN_PROCESS_WORKER_STATE.name,
+        IN_PROCESS_WORKER_STATE.shapeVersion
+      );
       if (!worker?.registered) return;
       try {
         // Give the dev server's watcher a moment to see the rewritten files,

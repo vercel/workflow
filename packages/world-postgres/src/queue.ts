@@ -232,10 +232,17 @@ type DeliveryHandler = (
  * Rejects when `signal` aborts, with the error a transport abort produces
  * (`AbortError`), so a delivery aborted by a shutdown or a deadline fails its
  * Graphile job and is redelivered, as an aborted HTTP delivery is. The
- * handler itself keeps running; the job is released, not the work.
+ * handler itself keeps running; the job is released, not the work. `cancel`
+ * removes the listener once the delivery settled on its own: the signal may
+ * be Graphile's, shared by every job of the runner, and must not keep one
+ * listener per delivery.
  */
-function untilAborted(signal: AbortSignal): Promise<never> {
-  return new Promise((_, reject) => {
+function untilAborted(signal: AbortSignal): {
+  promise: Promise<never>;
+  cancel: () => void;
+} {
+  let cancel = () => {};
+  const promise = new Promise<never>((_, reject) => {
     const fail = () => {
       const reason = signal.reason;
       if (reason instanceof Error && reason.name === 'AbortError') {
@@ -248,9 +255,16 @@ function untilAborted(signal: AbortSignal): Promise<never> {
       error.name = 'AbortError';
       reject(error);
     };
-    if (signal.aborted) fail();
-    else signal.addEventListener('abort', fail, { once: true });
+    if (signal.aborted) {
+      fail();
+      return;
+    }
+    signal.addEventListener('abort', fail, { once: true });
+    cancel = () => signal.removeEventListener('abort', fail);
   });
+  // The race may settle without it; nothing listens for a late rejection.
+  promise.catch(() => {});
+  return { promise, cancel };
 }
 
 /** `signal` with the deadline (ms, `0` for none), aborted when either is. */
@@ -642,7 +656,7 @@ export function createQueue(
     deliveryCount: number,
     remainingAttempts = Math.max(1, MAX_GRAPHILE_JOB_ATTEMPTS - attempt + 1)
   ) {
-    await start();
+    await ensureStarted();
     await addGraphileJob({
       queueId: message.id,
       prefix: message.prefix,
@@ -748,8 +762,15 @@ export function createQueue(
       abortSignal,
       deliveryTimeouts.headersTimeoutMs
     );
-    const raceAbort = <T>(promise: Promise<T>): Promise<T> =>
-      signal ? Promise.race([promise, untilAborted(signal)]) : promise;
+    const raceAbort = async <T>(promise: Promise<T>): Promise<T> => {
+      if (!signal) return promise;
+      const aborted = untilAborted(signal);
+      try {
+        return await Promise.race([promise, aborted.promise]);
+      } finally {
+        aborted.cancel();
+      }
+    };
 
     const entry = directHandler?.[IN_PROCESS_QUEUE_HANDLER];
     if (entry) {
@@ -764,25 +785,28 @@ export function createQueue(
         ...(createdAt ? { createdAt: new Date(createdAt) } : {}),
       };
       const orchestratorRunId = singleOrchestratorRunIdOf(message);
-      const releaseRun =
-        orchestratorRunId === undefined
-          ? undefined
-          : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
-      try {
-        const deliver: DeliveryHandler = (m, md) =>
-          entry({ message: m, meta: md });
-        const result = await raceAbort(
-          prefix === ownPrefix()
-            ? runExecutorLane(message, meta, deliver, {
+      const deliver: DeliveryHandler = (m, md) =>
+        entry({ message: m, meta: md });
+      // The gate is held until the handler settles, not until the job is
+      // released: a delivery that outlives its deadline keeps running, and a
+      // redelivery of the same run in this process must wait for it.
+      const gated = async () => {
+        const releaseRun =
+          orchestratorRunId === undefined
+            ? undefined
+            : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
+        try {
+          return prefix === ownPrefix()
+            ? await runExecutorLane(message, meta, deliver, {
                 marked: executorDelivery !== undefined,
                 delivery: executorDelivery,
               })
-            : deliver(message, meta)
-        );
-        return deliveryResultOf(result);
-      } finally {
-        releaseRun?.();
-      }
+            : await deliver(message, meta);
+        } finally {
+          releaseRun?.();
+        }
+      };
+      return deliveryResultOf(await raceAbort(gated()));
     }
 
     const headers = new Headers(extraHeaders);
@@ -932,7 +956,12 @@ export function createQueue(
     return runnerStarting;
   }
 
-  async function start(): Promise<void> {
+  /**
+   * `start()` for the World's own use (a publish, an invoke, a transfer):
+   * the schema and the worker utils, and the runner where the flow handler
+   * is registered. Without the note `start()` leaves for a caller.
+   */
+  async function ensureStarted(): Promise<void> {
     if (closing) {
       return;
     }
@@ -954,6 +983,21 @@ export function createQueue(
     }
     await startPromise;
     await ensureRunner();
+  }
+
+  let enqueueOnlyNoted = false;
+  async function start(): Promise<void> {
+    await ensureStarted();
+    // A process that starts the World without having registered the app's
+    // flow route runs no worker: it only enqueues. Expected of the CLI, the
+    // web UI or a script; said once, so an app whose startup hook still only
+    // calls `start()` learns why its runs stay pending.
+    if (!closing && !enqueueOnlyNoted && !directHandlers.has(ownPrefix())) {
+      enqueueOnlyNoted = true;
+      console.warn(
+        '[world-postgres] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call); see the Postgres World docs, "Run the worker when your server starts".'
+      );
+    }
   }
 
   /**
@@ -984,7 +1028,7 @@ export function createQueue(
       : 'preserve_run_at';
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
-    await start();
+    await ensureStarted();
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
@@ -1024,7 +1068,7 @@ export function createQueue(
     options
   ) => {
     if (!invocations) throw new Error('Postgres invoke is not enabled');
-    await start();
+    await ensureStarted();
     return invocations.invoke(
       runId,
       payload,
@@ -1271,16 +1315,11 @@ export function createQueue(
   return {
     // The Workflow SDK's messages are delivered in process, to the flow
     // handler the app registered (`registerHandler`), never over HTTP, so the
-    // flow route takes no HTTP at all. The database credentials control who
-    // can enqueue.
+    // flow route takes no HTTP at all, in every process: a process that was
+    // never handed the route still serves it, and an HTTP request to it
+    // could run a forged delivery there. The database credentials control
+    // who can enqueue.
     queueAuthMode: 'deny',
-    // In effect only where the flow handler is registered (a worker); a
-    // process that was never handed the route (an app on an integration
-    // that does not register it, a custom server) keeps the route open as
-    // `'skip'` rather than refuse deliveries nothing in it can run.
-    queueAuthModeFor(prefix) {
-      return directHandlers.has(prefix) ? 'deny' : 'skip';
-    },
     createQueueHandler,
     getDeploymentId,
     queue,

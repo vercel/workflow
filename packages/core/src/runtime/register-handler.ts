@@ -1,4 +1,8 @@
-import { globalSingleton } from '@workflow/utils';
+import {
+  globalSingleton,
+  IN_PROCESS_WORKER_STATE,
+  type InProcessWorkerState,
+} from '@workflow/utils';
 import {
   getQueueTopicPrefix,
   type QueueRouteHandler,
@@ -63,11 +67,15 @@ export async function registerWorkflowHandler(
  * of its own, apart from `instrumentation.ts`).
  */
 const workerState = () =>
-  globalSingleton('@workflow/core//inProcessWorker', 1, () => ({
-    registered: false,
-    /** The registered handler reloads the route itself; see `reloads`. */
-    reloads: false,
-  }));
+  globalSingleton<InProcessWorkerState>(
+    IN_PROCESS_WORKER_STATE.name,
+    IN_PROCESS_WORKER_STATE.shapeVersion,
+    () => ({
+      registered: false,
+      /** The registered handler reloads the route itself; see `reloads`. */
+      reloads: false,
+    })
+  );
 
 /**
  * Called by the generated flow route each time its module is evaluated. In a

@@ -1,4 +1,5 @@
-import { IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
+import { createRefreshOptionsCode } from './constants.js';
+import { IN_PROCESS_QUEUE_HANDLER_CODE } from './request-converter.js';
 
 /**
  * The module an app imports from its startup hook to run the process as a
@@ -17,18 +18,32 @@ import { IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
  *   for a bundler whose `import()` keeps returning the first module
  *   (Turbopack): there, import the route once, and the rebuilt route
  *   re-registers itself when the module is evaluated again.
+ * - `namespace`: the queue namespace the route was built with
+ *   (`WORKFLOW_QUEUE_NAMESPACE` at build time when unset), baked in like the
+ *   route's own, so the registration names the prefix the route serves even
+ *   when the variable is absent at runtime.
  */
 export function createWorkflowWorkerModuleCode({
   routeSpecifier,
   wrapped = false,
   reloads = false,
+  namespace,
 }: {
   routeSpecifier: string;
   wrapped?: boolean;
   reloads?: boolean;
+  namespace?: string;
 }): string {
   const specifier = JSON.stringify(routeSpecifier);
-  const entry = `Symbol.for(${JSON.stringify(IN_PROCESS_QUEUE_HANDLER.description)})`;
+  const entry = IN_PROCESS_QUEUE_HANDLER_CODE;
+  const resolvedNamespace = createRefreshOptionsCode({ namespace })
+    .replace(/^, \{ namespace: /, '')
+    .replace(/ \}$/, '');
+  const options = [
+    ...(resolvedNamespace ? [`namespace: ${resolvedNamespace}`] : []),
+    ...(reloads ? ['reloads: true'] : []),
+  ];
+  const optionsCode = options.length ? `, { ${options.join(', ')} }` : '';
   const call = wrapped ? '({ request })' : '(request)';
   const route = reloads
     ? `// Loaded on every delivery, so a route the development server rebuilt is
@@ -53,7 +68,7 @@ ${route}
  * over HTTP.
  */
 export async function registerWorkflowWorker() {
-  return registerWorkflowHandler(route${reloads ? ', { reloads: true }' : ''});
+  return registerWorkflowHandler(route${optionsCode});
 }
 
 /**

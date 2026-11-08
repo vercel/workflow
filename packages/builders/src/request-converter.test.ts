@@ -45,7 +45,20 @@ function workflowEntrypoint(code, options) {
   return route;
 }
 const workflowCode = 'code';
-${createWrappedWorkflowRouteCode('workflowEntrypoint(workflowCode, { namespace: "ns" })', trailer)}
+${
+  // As the SvelteKit and Astro builders do: the generated route's POST line is
+  // replaced, and its refreshWorkflowHandler(POST) line stays.
+  `export const POST = workflowEntrypoint(workflowCode, { namespace: "ns" });
+refreshWorkflowHandler(POST);
+export const GET = POST;`.replace(
+    /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
+    (_match, options = '') =>
+      createWrappedWorkflowRouteCode(
+        `workflowEntrypoint(workflowCode${options})`,
+        trailer
+      )
+  )
+}
 `
     );
     return import(pathToFileURL(file).href);
@@ -73,9 +86,10 @@ ${createWrappedWorkflowRouteCode('workflowEntrypoint(workflowCode, { namespace: 
     expect(mod.POST[IN_PROCESS_QUEUE_HANDLER]).toBe('in-process entry');
   });
 
-  it('hands POST to the World again on evaluation, as every generated route does', async () => {
+  it('hands POST to the World again on evaluation, once', async () => {
     const mod = await load();
     expect(mod.refreshed).toEqual([{ route: mod.POST, options: undefined }]);
+    expect(mod.GET).toBe(mod.POST);
   });
 
   it('appends the trailer', async () => {

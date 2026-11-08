@@ -1,7 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
+import {
+  IN_PROCESS_QUEUE_HANDLER_CODE,
+  WORKFLOW_QUEUE_TRIGGER,
+} from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -576,7 +579,7 @@ function addWorkerPlugin(nitro: Nitro) {
   const stepsImportPath = JSON.stringify(
     join(nitro.options.buildDir, 'workflow/steps.mjs')
   );
-  const entry = `Symbol.for('@workflow/world//inProcessQueueHandler')`;
+  const entry = IN_PROCESS_QUEUE_HANDLER_CODE;
   const register = (routeCode: string, options: string) => /* js */ `
       export default () => {
         import('workflow/runtime')

@@ -1,8 +1,13 @@
 export { debugLog, isWorkflowDebugEnabled } from './debug-log.js';
 export {
   globalSingleton,
+  peekGlobalSingleton,
   resetGlobalSingletonForTest,
 } from './global-singleton.js';
+export {
+  IN_PROCESS_WORKER_STATE,
+  type InProcessWorkerState,
+} from './in-process-worker.js';
 export {
   formatStepName,
   formatWorkflowName,

@@ -1,5 +1,4 @@
 import { IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
-import { createRefreshOptionsCode } from './constants.js';
 
 const NORMALIZE_REQUEST_CODE = `
 async function normalizeRequest(request) {
@@ -25,19 +24,23 @@ async function normalizeRequest(request) {
  */
 export function createWrappedWorkflowRouteCode(
   workflowEntrypointCall: string,
-  trailer = '',
-  refreshOptions?: { namespace?: string }
+  trailer = ''
 ): string {
-  const entry = `Symbol.for(${JSON.stringify(IN_PROCESS_QUEUE_HANDLER.description)})`;
   return `${NORMALIZE_REQUEST_CODE}
 const workflowRoute = ${workflowEntrypointCall};
 export const POST = Object.assign(
   async ({ request }) => workflowRoute(await normalizeRequest(request)),
   // The in-process entry a World's queue delivers to (IN_PROCESS_QUEUE_HANDLER
   // in @workflow/world).
-  { [${entry}]: workflowRoute[${entry}] }
-);
-refreshWorkflowHandler(POST${createRefreshOptionsCode(refreshOptions)});${trailer}`;
+  { [${IN_PROCESS_QUEUE_HANDLER_CODE}]: workflowRoute[${IN_PROCESS_QUEUE_HANDLER_CODE}] }
+);${trailer}`;
 }
+
+/**
+ * The expression generated code uses for the flow route's in-process entry
+ * key, `IN_PROCESS_QUEUE_HANDLER` from `@workflow/world`, so a generated
+ * module needs no import for it.
+ */
+export const IN_PROCESS_QUEUE_HANDLER_CODE = `Symbol.for(${JSON.stringify(IN_PROCESS_QUEUE_HANDLER.description)})`;
 
 export { NORMALIZE_REQUEST_CODE };

@@ -118,11 +118,11 @@ describe.skipIf(process.platform === 'win32')(
       await container?.stop();
     });
 
-    it('declares deny, in effect where the handler is registered', () => {
+    it('declares deny for every process, registered or not', () => {
       expect(world.queueAuthMode).toBe('deny');
-      expect(world.queueAuthModeFor?.('__wkf_workflow_')).toBe('deny');
-      // A prefix this process holds no handler for stays open.
-      expect(world.queueAuthModeFor?.('__other_wkf_workflow_')).toBe('skip');
+      // Not per prefix or per process: a process that never registered the
+      // handler still serves the route, and the route must refuse there too.
+      expect(world.queueAuthModeFor).toBeUndefined();
     });
 
     it('refuses a forged delivery before touching any run', async () => {

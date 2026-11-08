@@ -46,6 +46,7 @@ export {
 } from './pseudo-package-esbuild-plugin.js';
 export {
   createWrappedWorkflowRouteCode,
+  IN_PROCESS_QUEUE_HANDLER_CODE,
   NORMALIZE_REQUEST_CODE,
 } from './request-converter.js';
 export {

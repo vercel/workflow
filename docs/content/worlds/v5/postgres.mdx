@@ -278,7 +278,7 @@ The Postgres World is not compatible with Vercel deployments. On Vercel, workflo
 
 The Postgres World delivers workflow messages inside your app's process, so its flow route, `POST /.well-known/workflow/v1/flow`, has no legitimate caller over HTTP. The World declares `queueAuthMode: 'deny'`, and the runtime refuses every HTTP request to that route with a `403` and `"code": "QUEUE_ROUTE_DENIED"`, before it reads the body or touches any run. A request from outside the app cannot start a run, fail a running one, re-trigger a step or replay a delivery. Who can enqueue is decided by who holds the database credentials.
 
-The refusal takes effect in a process that has registered the route with the World (a worker, see [Run the worker when your server starts](#run-the-worker-when-your-server-starts)); a process that has not keeps the route open, as `'skip'`, since nothing in it could run the delivery anyway. Each refusal is counted on the OpenTelemetry counter `workflow.queue.delivery.refused` with `workflow.queue.refusal_reason: denied`, and logged at most once a minute per process.
+The refusal applies in every process that serves the route, whether or not that process registered the route with the World: a web-only copy of the app refuses too, since the route itself could run a forged delivery. Each refusal is counted on the OpenTelemetry counter `workflow.queue.delivery.refused` with `workflow.queue.refusal_reason: denied`, and logged at most once a minute per process.
 
 Unlike the [Local World](/worlds/local)'s `401`, which tells a sender it had the wrong key and to reload it and retry, the `403` is final: no key makes this route accept a request, and a sender must not retry it. The `?__health` probe on the same route keeps answering, so `workflow health` and the CLI's port detection work as before.
 
@@ -445,6 +445,10 @@ connection string, or with `ALTER DATABASE ... SET workflow.legacy_timezone =
 at most 10 seconds for its locks; if a long transaction holds them,
 `bootstrap` fails and can be run again.
 </Callout>
+
+### Startup hooks that only start the World
+
+A worker runs only in a process that handed the World its flow route (see [Run the worker when your server starts](#run-the-worker-when-your-server-starts)). An app whose startup hook still only calls `world.start()`, as earlier versions of this page asked, runs no worker after the upgrade: runs are created and stay `pending`, and `start()` logs a warning once in that process saying so. Replace the hook with the one for your framework before deploying the upgrade.
 
 ### Rolling upgrades
 

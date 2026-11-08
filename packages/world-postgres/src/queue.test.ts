@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { setWorkflowBasePath } from '@workflow/utils';
@@ -1471,6 +1472,91 @@ describe('postgres queue http execution', () => {
         { job: { attempts: 1 } }
       )
     ).resolves.toBeUndefined();
+  });
+
+  it('leaves no abort listener on the shared signal once a delivery settles', async () => {
+    // With no deadline the delivery races Graphile's own signal, shared by
+    // every job of the runner: a listener left behind per delivery would
+    // accumulate for the life of the process.
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    queue.registerHandler(
+      '__wkf_workflow_',
+      Object.assign(async () => Response.json({ ok: true }), {
+        [IN_PROCESS_QUEUE_HANDLER]: async () => undefined,
+      })
+    );
+    await queue.start();
+    const controller = new AbortController();
+    for (let i = 0; i < 15; i++) {
+      await getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId: `run_${i}` }),
+        { abortSignal: controller.signal, job: { attempts: 1 } }
+      );
+    }
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0);
+  });
+
+  it('holds the run gate until a timed-out in-process handler settles', async () => {
+    process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '100';
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const first = Promise.withResolvers<void>();
+    const entry = vi.fn(async () => {
+      // The first delivery outlives its deadline; the handler keeps running.
+      if (entry.mock.calls.length === 1) await first.promise;
+      return undefined;
+    });
+    queue.registerHandler(
+      '__wkf_workflow_',
+      Object.assign(async () => Response.json({ ok: true }), {
+        [IN_PROCESS_QUEUE_HANDLER]: entry,
+      })
+    );
+    await queue.start();
+    const message = () =>
+      buildMessageData('__wkf_workflow_test', {
+        runId: 'run_01ABC',
+        runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+      });
+    await expect(
+      getTaskHandler('workflow_flows')(message(), { job: { attempts: 1 } })
+    ).rejects.toMatchObject({ name: 'AbortError' });
+
+    // The redelivery waits at the gate while the first handler still runs,
+    // rather than replaying the run next to it.
+    const second = getTaskHandler('workflow_flows')(message(), {
+      job: { attempts: 2 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(entry).toHaveBeenCalledTimes(1);
+    first.resolve();
+    await expect(second).resolves.toBeUndefined();
+    expect(entry).toHaveBeenCalledTimes(2);
+  });
+
+  it('notes once that a process without the flow handler only enqueues', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const notes = () =>
+      warn.mock.calls.filter((call) =>
+        String(call[0]).includes('only enqueues')
+      );
+    try {
+      const enqueuer = buildQueue(
+        { connectionString: 'postgres://test' },
+        pool
+      );
+      await enqueuer.start();
+      await enqueuer.start();
+      expect(notes()).toHaveLength(1);
+
+      const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
+      worker.registerHandler('__wkf_workflow_', async () =>
+        Response.json({ ok: true })
+      );
+      await worker.start();
+      expect(notes()).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('leaves job attempts for redeliveries past core max deliveries', async () => {

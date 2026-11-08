@@ -85,6 +85,19 @@ export function globalSingleton<T extends object>(
 }
 
 /**
+ * The process-wide state for `name`, if some copy already created it; never
+ * creates it. For a reader outside the package that owns the state (a
+ * build tool asking whether the app process registered a worker).
+ */
+export function peekGlobalSingleton<T extends object>(
+  name: string,
+  shapeVersion: number
+): T | undefined {
+  const key = Symbol.for(`${name}/v${shapeVersion}`);
+  return (globalThis as typeof globalThis & Record<symbol, T | undefined>)[key];
+}
+
+/**
  * Drop the process-wide state for `name`, so the next {@link globalSingleton}
  * call rebuilds it.
  *

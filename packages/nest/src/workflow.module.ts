@@ -45,6 +45,7 @@ export type {
 const REQUIRED_BUNDLES = ['steps.mjs', 'workflows.mjs', 'webhook.mjs'] as const;
 
 type WorldLifecycle = {
+  queueAuthMode?: string;
   start?: () => Promise<void>;
   close?: () => Promise<void>;
 };
@@ -462,13 +463,17 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    */
   async #registerFlowHandler(): Promise<void> {
     try {
-      const [{ registerWorkflowHandler }, bundle] = await Promise.all([
-        loadRuntime(this.options.workingDir, 'The flow route is registered'),
-        import(pathToFileURL(join(this.options.outDir, 'workflows.mjs')).href),
-      ]);
-      await registerWorkflowHandler(
-        (bundle as { POST: (req: Request) => Promise<Response> }).POST
+      const { getWorld, registerWorkflowHandler } = await loadRuntime(
+        this.options.workingDir,
+        'The flow route is registered'
       );
+      // Only a World that delivers in process takes the route; on any other
+      // World the bundle is not loaded here (`preloadBundles` may, later).
+      if ((await getWorld()).queueAuthMode !== 'deny') return;
+      const bundle = (await import(
+        pathToFileURL(join(this.options.outDir, 'workflows.mjs')).href
+      )) as { POST: (req: Request) => Promise<Response> };
+      await registerWorkflowHandler(bundle.POST);
     } catch (error) {
       console.error(
         '[@workflow/nest] Could not register the flow route with the World; ' +
