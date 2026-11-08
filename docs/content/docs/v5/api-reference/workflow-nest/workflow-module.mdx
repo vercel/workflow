@@ -127,7 +127,7 @@ The older `WORKFLOW_OPTIONS` token resolves to the same value and is kept for co
 
 | Hook | Behaviour |
 | --- | --- |
-| `onModuleInit` | Takes the application's body parsers off the workflow routes (unless `bypassBodyParser` is `false`), reconciles the base path against `app.setGlobalPrefix()`, builds the bundles (or verifies they exist when `skipBuild` is set), optionally starts the World, and preloads the bundles. |
+| `onModuleInit` | Takes the application's body parsers off the workflow routes (unless `bypassBodyParser` is `false`), reconciles the base path against `app.setGlobalPrefix()`, builds the bundles (or verifies they exist when `skipBuild` is set), hands the built flow route to the World (for a World that delivers in process, such as the Postgres World; not on Vercel), optionally starts the World, and preloads the bundles. |
 | `onApplicationShutdown` | Closes the World when `manageWorldLifecycle` is set. Call `app.enableShutdownHooks()` so this runs on a signal. |
 
 <Callout type="warn">

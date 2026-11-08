@@ -38,6 +38,7 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | Span name | Kind | Emitted when |
 | --- | --- | --- |
 | `workflow.start <name>` | internal | `start()` is called in your application code |
+| `workflow.route.flow` | server (HTTP) / internal (in process) | a queue delivery reaches the flow route: as an HTTP request to `/.well-known/workflow/v1/flow`, or in process from a World that delivers that way (the Postgres World), with `workflow.route.transport` saying which; the `workflow.execute` span sits under it |
 | `workflow.execute <name>` | consumer (root) | a queue delivery invokes the workflow; replay, orchestration, and inline steps run under it |
 | `step.execute <name>` | internal (inline) / consumer + root (queue-delivered) | a step function executes |
 | `workflow.lifecycle.onRunCompleted` / `workflow.lifecycle.onRunFailed` | internal | registered lifecycle handlers observe a persisted terminal transition; includes parameter hydration, handler execution, and the failure-cause stream drain |
@@ -64,6 +65,7 @@ Stream spans are emitted by the SDK's world backend on the client that writes or
 | `workflow.trace.mode` | The active trace mode (`linked` or `continuous`). |
 | `workflow.trace.propagated` | Whether the invocation received trace context from the queue message. |
 | `workflow.queue.overhead_ms` | Time between the message being enqueued and the handler starting: queue dwell plus any cold start. |
+| `workflow.route.transport` | On `workflow.route.flow`: `http` for a request to the route, `in-process` for a delivery a World ran in the app's process. An in-process span carries `messaging.destination.name`, `messaging.message.id`, `workflow.delivery.attempt` and `workflow.delivery.count` where an HTTP span carries `http.request.method` and `http.response.status_code`. |
 | `workflow.stream.name` | The stream name, on stream write/read spans. |
 | `workflow.stream.operation` | The stream operation: `write`, `write_multi`, `close`, `read`, or `flush`. |
 | `workflow.stream.write.chunk_rtt` | Time between emission of a chunk to the wire, and receiving the `ack` message for that chunk. Also stamped on `workflow.stream.flush` (the batch's write RPC duration, network included). |

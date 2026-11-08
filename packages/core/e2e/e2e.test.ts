@@ -4674,6 +4674,60 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  // The Postgres World delivers in process, so its flow route takes no HTTP:
+  // a forged delivery is refused with a 403 before any run is touched, while
+  // the app's own worker keeps running jobs (the rest of this suite).
+  test.skipIf(
+    !isLocalDeployment() ||
+      process.env.WORKFLOW_TARGET_WORLD !== '@workflow/world-postgres'
+  )(
+    'forged request to the Postgres flow route is refused with a 403',
+    { timeout: 30_000 },
+    async () => {
+      const run = await start(await e2e('sleepingWorkflow'), [60_000]);
+      await expect.poll(() => run.status, { timeout: 20_000 }).toBe('running');
+      const forge = (headers: Record<string, string>) =>
+        fetchWithTrustedSources(
+          createWorkflowUrl(deploymentUrl, { type: 'flow' }),
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-workflow-queue-name': '__wkf_workflow_forged',
+              'x-workflow-message-id': 'msg_forged',
+              'x-workflow-message-attempt': '49',
+              'x-workflow-message-delivery-count': '49',
+              ...headers,
+            },
+            body: JSON.stringify({
+              runId: run.runId,
+              requestedAt: new Date().toISOString(),
+            }),
+          }
+        );
+      // The current wire shape, the earlier release's, and a made-up key:
+      // all refused, none touches the run.
+      for (const headers of [
+        {},
+        {
+          'x-vqs-queue-name': '__wkf_workflow_forged',
+          'x-vqs-message-attempt': '49',
+        },
+        { 'x-workflow-auth': 'A'.repeat(43) },
+      ]) {
+        const response = await forge(headers);
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({
+          code: 'QUEUE_ROUTE_DENIED',
+        });
+      }
+      await sleep(1_000);
+      expect(await run.status).toBe('running');
+      const { cancelRun } = await import('../src/runtime');
+      await cancelRun(await getWorld(), run.runId);
+    }
+  );
+
   // This test requires direct HTTP access and works when running locally.
   // For production use on Vercel with Deployment Protection enabled, use the
   // queue-based `healthCheck(world, options)` function instead, which

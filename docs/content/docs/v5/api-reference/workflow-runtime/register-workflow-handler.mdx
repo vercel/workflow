@@ -1,0 +1,55 @@
+---
+title: registerWorkflowHandler
+description: Async function that hands the app's flow route to a World that delivers workflow messages in the app's process.
+type: reference
+summary: Hand the app's flow route to a World that delivers in process, so this process runs its jobs.
+prerequisites:
+  - /docs/deploying
+related:
+  - /worlds/postgres
+  - /worlds/building-a-world
+---
+
+Hands the app's flow route (the `POST` export of the generated workflow route, built by [`workflowEntrypoint()`](/docs/api-reference/workflow-runtime/workflow-entrypoint)) to the World, for a World whose queue delivers the Workflow SDK's messages inside the app's own process, such as the [Postgres World](/worlds/postgres). From then on the World runs its worker in this process and delivers each message to the route's in-process entry, never over HTTP. On any other World the call does nothing and resolves to `false`.
+
+The framework integrations call it for you when the app starts: Nitro (and the frameworks built on it) and Nest do it themselves, and the Next.js, SvelteKit and Astro builds generate a worker module whose `startWorkflowWorker()` calls it and then starts the World. Reach for it directly only in a custom server.
+
+```typescript lineNumbers
+import { getWorld, registerWorkflowHandler } from "workflow/runtime";
+import { POST } from "./app/.well-known/workflow/v1/flow/route";
+
+const world = await getWorld();
+await registerWorkflowHandler(POST); // [!code highlight]
+await world.start?.();
+```
+
+Call it before `world.start()`, so that a copy of the app that serves no web traffic still runs jobs from the moment it starts. A registration after `start()` works too: the World starts its worker then.
+
+## API signature
+
+### Parameters
+
+<TSDoc
+definition={`
+import type { RegisterWorkflowHandlerOptions } from "@workflow/core/runtime";
+import type { QueueRouteHandler } from "@workflow/world";
+declare function registerWorkflowHandler(
+  route: QueueRouteHandler,
+  options?: RegisterWorkflowHandlerOptions
+): Promise<boolean>;
+export default registerWorkflowHandler;`}
+showSections={["parameters"]}
+/>
+
+- `route`: the generated flow route's `POST` export. It carries the in-process entry the World delivers to.
+- `options.namespace`: the queue namespace the route was built with (`WORKFLOW_QUEUE_NAMESPACE` when unset), which names the prefix the World delivers to the route.
+- `options.reloads`: `true` when `route` loads the current flow route on every delivery, as the generated worker modules do on a development server that rebuilds the route when a workflow file changes. A rebuilt route module then does not replace the registered handler when it is evaluated.
+
+### Returns
+
+A `Promise<boolean>`: `true` when the route was registered with the World, `false` when the World does not deliver in process.
+
+## Related functions
+
+- [`getWorld()`](/docs/api-reference/workflow-runtime/get-world) - Resolve the World instance, whose `start()` runs the worker once the route is registered.
+- [`workflowEntrypoint()`](/docs/api-reference/workflow-runtime/workflow-entrypoint) - Build the flow route this function registers.

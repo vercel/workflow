@@ -616,9 +616,9 @@ export class AuthGuard implements CanActivate {
 }
 ```
 
-The workflow routes authenticate their own callers — queue deliveries are signed
-and webhook tokens are single-use secrets — so letting them past an application
-guard exposes nothing.
+The workflow routes authenticate their own callers — queue deliveries carry the
+World's key or are refused outright, and webhook tokens are single-use secrets —
+so letting them past an application guard exposes nothing.
 
 Interceptors and exception filters are safe to leave in place. The handlers
 write through `@Res()`, so the exact status and body the workflow runtime
