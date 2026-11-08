@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
 import { getQueueTopicPrefix } from '@workflow/world';
 import { Pool } from 'pg';
 import { createQueue } from '../../dist/queue.js';
@@ -16,17 +15,6 @@ import { createQueue } from '../../dist/queue.js';
 assert(process.env.WORKFLOW_POSTGRES_URL, 'WORKFLOW_POSTGRES_URL is required');
 const connectionString = process.env.WORKFLOW_POSTGRES_URL;
 const pool = new Pool({ connectionString, max: 4 });
-const server = createServer(async (request) => {
-  await request.toArray();
-  process.stdout.write(`claimed ${request.headers['x-vqs-message-id']}\n`);
-});
-await new Promise((resolve, reject) => {
-  server.once('error', reject);
-  server.listen(0, '127.0.0.1', resolve);
-});
-const address = server.address();
-assert(address && typeof address !== 'string', 'Expected a TCP server');
-process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
 const staleSeconds = process.env.CRASHING_QUEUE_STALE_SECONDS;
 const runSpecVersion = process.env.CRASHING_QUEUE_RUN_SPEC_VERSION;
 const queue = createQueue(
@@ -38,6 +26,14 @@ const queue = createQueue(
   },
   pool
 );
+// The app's flow handler, as registered when the app starts: this process
+// is a worker. The delivery never finishes.
+queue.registerHandler(getQueueTopicPrefix('workflow'), async (request) => {
+  await request.text();
+  process.stdout.write(`claimed ${request.headers.get('x-vqs-message-id')}\n`);
+  await new Promise(() => {});
+  return new Response();
+});
 await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
   runId: process.env.CRASHING_QUEUE_RUN_ID ?? `run_${randomUUID()}`,
   ...(runSpecVersion ? { runSpecVersion: Number(runSpecVersion) } : {}),

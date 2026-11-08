@@ -1,6 +1,4 @@
-import { connect } from 'node:net';
 import * as Stream from 'node:stream';
-import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
@@ -207,8 +205,6 @@ type HttpExecutionResult =
       headers: Record<string, string>;
     };
 
-type RunnerStart = { controller: AbortController; promise: Promise<void> };
-
 /**
  * Rejects when `signal` aborts, with the error a transport abort produces
  * (`AbortError`), so a delivery aborted by a shutdown or a deadline fails its
@@ -246,7 +242,6 @@ function deliverySignal(
   if (signals.length === 0) return undefined;
   return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
 }
-type LoopbackTarget = { hosts: string[]; port: number };
 
 function executorInput(message: unknown) {
   if (HealthCheckPayloadSchema.safeParse(message).success) return undefined;
@@ -258,6 +253,14 @@ function executorInput(message: unknown) {
  * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
 export type PostgresQueue = Queue & {
+  /**
+   * Makes the queue ready to enqueue, and starts this World's Graphile
+   * runner when this process is a worker: one that registered the Workflow
+   * SDK's flow handler for this World's prefix (`registerHandler`). Every
+   * other process (the CLI, the web UI, a script) only enqueues, and never
+   * claims a job. A handler registered after `start()` starts the runner
+   * then.
+   */
   start(): Promise<void>;
   close(): Promise<void>;
   /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
@@ -490,7 +493,8 @@ export function createQueue(
   const inflightMessages = new Map<string, Promise<void>>();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
-  let runnerStart: RunnerStart | null = null;
+  /** The runner start in flight, if any (see `ensureRunner`). */
+  let runnerStarting: Promise<void> | null = null;
   let closing = false;
   let startPromise: Promise<void> | null = null;
 
@@ -613,6 +617,11 @@ export function createQueue(
     });
   }
 
+  /**
+   * The app's base URL, for the HTTP delivery of a queue consumer's own
+   * route (`registerRoute`). The Workflow SDK's own messages never go over
+   * HTTP: they are delivered in process, to the registered flow handler.
+   */
   async function getExecutionBaseUrl(): Promise<string | undefined> {
     if (process.env.WORKFLOW_LOCAL_BASE_URL) {
       return process.env.WORKFLOW_LOCAL_BASE_URL;
@@ -636,107 +645,12 @@ export function createQueue(
     return undefined;
   }
 
-  function getLoopbackHosts(hostname: string): string[] {
-    if (hostname === 'localhost') {
-      return ['127.0.0.1', '::1'];
-    }
-    if (hostname === '[::1]') {
-      return ['::1'];
-    }
-    return hostname === '127.0.0.1' || hostname === '::1' ? [hostname] : [];
-  }
-
-  function getLoopbackTarget(baseUrl: string | undefined) {
-    if (!baseUrl) {
-      return undefined;
-    }
-
-    const url = new URL(baseUrl);
-    const hosts = getLoopbackHosts(url.hostname);
-    if (hosts.length === 0) {
-      return undefined;
-    }
-
-    return {
-      hosts,
-      port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)),
-    };
-  }
-
-  async function canConnectToLoopbackTarget(
-    target: LoopbackTarget
-  ): Promise<boolean> {
-    for (const host of target.hosts) {
-      const reachable = await new Promise<boolean>((resolve) => {
-        const socket = connect({ host, port: target.port });
-        socket.unref();
-        const finish = (isReachable: boolean) => {
-          socket.destroy();
-          resolve(isReachable);
-        };
-
-        socket.setTimeout(200, () => finish(false));
-        socket.once('connect', () => finish(true));
-        socket.once('error', () => finish(false));
-      });
-
-      if (reachable) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  async function startRunnerUnlessAborted(controller: AbortController) {
-    if (controller.signal.aborted) {
-      return;
-    }
-
-    await setupListeners();
-  }
-
-  async function waitForLoopbackAndStartRunner(
-    controller: AbortController,
-    target: LoopbackTarget
-  ) {
-    while (
-      !controller.signal.aborted &&
-      !(await canConnectToLoopbackTarget(target))
-    ) {
-      await sleep(50, undefined, {
-        ref: false,
-      });
-    }
-
-    await startRunnerUnlessAborted(controller);
-  }
-
-  function deferRunnerStart(
-    controller: AbortController,
-    target: LoopbackTarget
-  ) {
-    const promise = waitForLoopbackAndStartRunner(controller, target)
-      .catch((err) => {
-        if (!controller.signal.aborted) {
-          console.warn(
-            '[world-postgres] Failed to start Graphile Worker after local workflow executor became reachable:',
-            err
-          );
-        }
-      })
-      .finally(() => {
-        if (runnerStart?.promise === promise) {
-          runnerStart = null;
-        }
-      });
-    runnerStart = { controller, promise };
-  }
-
   /**
    * One delivery of a job: to the in-process handler registered for its
-   * prefix, else over HTTP to the prefix's route (this worker's registration,
-   * then the producer's), else to the Workflow SDK's flow route.
+   * prefix (always, for the Workflow SDK's own prefix: a runner runs only
+   * where that handler is registered), else over HTTP to the prefix's route
+   * (this worker's registration, then the producer's), else to the flow
+   * route, which refuses it unless something registered a handler for it.
    */
   async function deliverMessage({
     queueName,
@@ -784,6 +698,14 @@ export function createQueue(
     }
     const directHandler = directHandlers.get(prefix);
     const deliveryRoute = routes.get(prefix) ?? route;
+    if (!directHandler && prefix === ownPrefix()) {
+      // Unreachable while `ensureRunner` holds: this process claims jobs only
+      // once the flow handler is registered. Never fall back to HTTP for the
+      // Workflow SDK's messages.
+      throw new Error(
+        `[postgres world] No flow handler is registered in this process for queue prefix "${prefix}"; a worker runs only where the app registered it.`
+      );
+    }
     let response: Response;
     if (directHandler) {
       // In process: the request a route serving
@@ -906,36 +828,22 @@ export function createQueue(
     }
   }
 
-  async function startRunnerWhenExecutorIsReady(): Promise<void> {
-    if (closing || runner || runnerStart) {
-      return;
+  /**
+   * Starts the Graphile runner once this process is a worker: the queue is
+   * started (`workerUtils` is ready), it is not closing, and the Workflow
+   * SDK's flow handler is registered for this World's prefix. Called from
+   * `start()` and from `registerHandler()`, whichever comes second. At most
+   * one runner: a start in flight is shared, not repeated.
+   */
+  function ensureRunner(): Promise<void> {
+    if (runnerStarting) return runnerStarting;
+    if (closing || runner || !workerUtils || !directHandlers.has(ownPrefix())) {
+      return Promise.resolve();
     }
-
-    const controller = new AbortController();
-    const promise = (async () => {
-      const target = getLoopbackTarget(await getExecutionBaseUrl());
-      if (!target) {
-        await startRunnerUnlessAborted(controller);
-        return;
-      }
-
-      if (await canConnectToLoopbackTarget(target)) {
-        await startRunnerUnlessAborted(controller);
-        return;
-      }
-
-      if (controller.signal.aborted) {
-        return;
-      }
-
-      deferRunnerStart(controller, target);
-    })().finally(() => {
-      if (runnerStart?.promise === promise) {
-        runnerStart = null;
-      }
+    runnerStarting = setupListeners().finally(() => {
+      runnerStarting = null;
     });
-    runnerStart = { controller, promise };
-    await promise;
+    return runnerStarting;
   }
 
   async function start(): Promise<void> {
@@ -952,7 +860,6 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;
           throw err;
@@ -960,9 +867,7 @@ export function createQueue(
       })();
     }
     await startPromise;
-    if (!closing && !runner && !runnerStart) {
-      await startRunnerWhenExecutorIsReady();
-    }
+    await ensureRunner();
   }
 
   /**
@@ -1277,18 +1182,25 @@ export function createQueue(
   }
 
   return {
-    // The runtime does not check the flow route until messages are delivered
-    // in-process and the route is denied
-    // (https://github.com/vercel/workflow/issues/5258). Meanwhile the database
-    // credentials control who can enqueue, and the route has to be protected
-    // at the network edge (see "Protect the queue route" in the docs).
-    queueAuthMode: 'skip',
+    // The Workflow SDK's messages are delivered in process, to the flow
+    // handler the app registered (`registerHandler`), never over HTTP, so the
+    // flow route takes no HTTP at all. The database credentials control who
+    // can enqueue.
+    queueAuthMode: 'deny',
     createQueueHandler,
     getDeploymentId,
     queue,
     ...(invocations ? { invoke } : {}),
     registerHandler(prefix, handler) {
       directHandlers.set(QueuePrefix.parse(prefix), handler);
+      // Registered after `start()`: this process is a worker from now on.
+      // Before it, `start()` starts the runner itself.
+      ensureRunner().catch((error) => {
+        console.error(
+          '[world-postgres] Failed to start Graphile Worker after the flow handler was registered:',
+          error
+        );
+      });
     },
     registerRoute(prefix, path) {
       routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
@@ -1297,12 +1209,8 @@ export function createQueue(
     async close() {
       closing = true;
       await invocations?.close();
-      if (runnerStart) {
-        runnerStart.controller.abort();
-        await runnerStart.promise;
-        runnerStart = null;
-      }
       await startPromise?.catch(() => {});
+      await runnerStarting?.catch(() => {});
       const activeRunner = runner;
       if (activeRunner) {
         try {

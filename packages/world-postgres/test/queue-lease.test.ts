@@ -1,6 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer, type Server, type ServerResponse } from 'node:http';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
@@ -23,14 +22,12 @@ describe.skipIf(process.platform === 'win32')(
   'Postgres queue job lock renewal (real database and Graphile)',
   () => {
     const STALE_SECONDS = 2;
-    const originalBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
     let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
     let connectionString: string;
     let pool: Pool;
-    let server: Server;
     let deliveries: Array<{ attempt: string; executorJob?: string }> = [];
-    let respond: (response: ServerResponse) => void = (response) =>
-      response.end('{}');
+    /** The flow handler's answer to a delivery. */
+    let respond: () => Promise<Response> = async () => Response.json({});
     let releaseHeldResponses = () => {};
     const queues: PostgresQueue[] = [];
     const children: ChildProcess[] = [];
@@ -45,6 +42,22 @@ describe.skipIf(process.platform === 'win32')(
           ...config,
         } as Parameters<typeof createQueue>[0],
         pool
+      );
+      // The app's flow handler, as registered when the app starts: this
+      // queue is a worker, delivering in process.
+      queue.registerHandler(
+        getQueueTopicPrefix('workflow'),
+        async (request) => {
+          await request.text();
+          const executorJob = request.headers.get(
+            'x-workflow-postgres-executor-job'
+          );
+          deliveries.push({
+            attempt: String(request.headers.get('x-vqs-message-attempt')),
+            ...(executorJob !== null ? { executorJob } : {}),
+          });
+          return respond();
+        }
       );
       queues.push(queue);
       return queue;
@@ -71,23 +84,6 @@ describe.skipIf(process.platform === 'win32')(
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
-      server = createServer(async (request, response) => {
-        await request.toArray();
-        const executorJob = request.headers['x-workflow-postgres-executor-job'];
-        deliveries.push({
-          attempt: String(request.headers['x-vqs-message-attempt']),
-          ...(typeof executorJob === 'string' ? { executorJob } : {}),
-        });
-        respond(response);
-      });
-      await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', resolve);
-      });
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('Expected a TCP server');
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
     }, 120_000);
 
     afterEach(async () => {
@@ -98,20 +94,11 @@ describe.skipIf(process.platform === 'win32')(
         'TRUNCATE graphile_worker._private_jobs, graphile_worker._private_job_queues'
       );
       deliveries = [];
-      respond = (response) => response.end('{}');
+      respond = async () => Response.json({});
       releaseHeldResponses = () => {};
     });
 
     afterAll(async () => {
-      if (originalBaseUrl === undefined) {
-        delete process.env.WORKFLOW_LOCAL_BASE_URL;
-      } else {
-        process.env.WORKFLOW_LOCAL_BASE_URL = originalBaseUrl;
-      }
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-        server.closeAllConnections();
-      });
       await pool.end();
       await container.stop();
     });
@@ -165,9 +152,7 @@ describe.skipIf(process.platform === 'win32')(
     test('a delivery that outlives the stale window keeps its lock and is delivered once', async () => {
       const release = Promise.withResolvers<void>();
       releaseHeldResponses = release.resolve;
-      respond = (response) => {
-        release.promise.then(() => response.end('{}'));
-      };
+      respond = () => release.promise.then(() => Response.json({}));
       const first = startQueue({});
       // A second host whose sweeps would release the job if its lock went stale.
       const second = startQueue({});
@@ -204,9 +189,7 @@ describe.skipIf(process.platform === 'win32')(
     test("a delivery that lost its lock leaves the successor's job alone when it finishes", async () => {
       const release = Promise.withResolvers<void>();
       releaseHeldResponses = release.resolve;
-      respond = (response) => {
-        release.promise.then(() => response.end('{}'));
-      };
+      respond = () => release.promise.then(() => Response.json({}));
       const queue = startQueue({});
       await queue.start();
       await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {

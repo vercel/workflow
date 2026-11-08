@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
@@ -10,7 +9,11 @@ import {
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  IN_PROCESS_QUEUE_HANDLER,
+  SPEC_VERSION_CURRENT,
+  type World,
+} from '@workflow/world';
 import { encode } from 'cbor-x';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
@@ -87,13 +90,10 @@ describe.skipIf(process.platform === 'win32')(
     let pool: Pool;
     let world: World & { start(): Promise<void> };
     let secondWorker: World;
-    let server: Server;
     let transport: ReturnType<typeof createInvocations>;
     const active = new Map<string, number>();
     const maximum = new Map<string, number>();
     const overrides = new Map<string, (req: Request) => Promise<Response>>();
-    const oldPort = process.env.PORT;
-    const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
 
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -111,12 +111,14 @@ describe.skipIf(process.platform === 'win32')(
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
-      const handler = workflowEntrypoint(code);
-      server = createServer(async (req, res) => {
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(Buffer.from(chunk));
-        const body = Buffer.concat(chunks);
-        const payload = JSON.parse(body.toString());
+      const route = workflowEntrypoint(code);
+      const entry = route[IN_PROCESS_QUEUE_HANDLER];
+      if (!entry) throw new Error('the flow route has no in-process entry');
+      // The app's flow route as each worker registers it, counting the
+      // deliveries of a run that are in flight at once, with a test's
+      // override for a run taking the delivery instead.
+      const handler = async (req: Request) => {
+        const payload = JSON.parse(await req.clone().text());
         const runId = payload.stepId ? undefined : payload.runId;
         if (runId) {
           const count = (active.get(runId) ?? 0) + 1;
@@ -124,41 +126,20 @@ describe.skipIf(process.platform === 'win32')(
           maximum.set(runId, Math.max(count, maximum.get(runId) ?? 0));
         }
         try {
-          const headers = new Headers();
-          for (const [key, value] of Object.entries(req.headers)) {
-            if (value !== undefined)
-              headers.set(key, Array.isArray(value) ? value.join(',') : value);
-          }
-          const response = await (overrides.get(payload.runId) ?? handler)(
-            new Request(`http://localhost${req.url}`, {
-              method: 'POST',
-              headers,
-              body,
-            })
-          );
-          res.writeHead(response.status, Object.fromEntries(response.headers));
-          res.end(Buffer.from(await response.arrayBuffer()));
+          return await (overrides.get(payload.runId) ?? entry)(req);
         } catch (error) {
-          res.writeHead(500);
-          res.end(String(error));
+          return new Response(String(error), { status: 500 });
         } finally {
           if (runId) active.set(runId, (active.get(runId) ?? 1) - 1);
         }
-      });
-      await new Promise<void>((resolve) =>
-        server.listen(0, '127.0.0.1', resolve)
-      );
-      const address = server.address();
-      if (!address || typeof address === 'string')
-        throw new Error('No test server address');
-      process.env.PORT = String(address.port);
-      process.env.WORKFLOW_LOCAL_BASE_URL = `http://127.0.0.1:${address.port}`;
+      };
       world = createWorld({
         pool,
         enableInvoke: true,
         queueConcurrency: 4,
         applicationManagedShutdown: true,
       });
+      world.registerHandler('__wkf_workflow_', handler);
       setWorld(world);
       await world.start();
       // Two real Graphile runner instances compete for the same task/queue.
@@ -168,6 +149,7 @@ describe.skipIf(process.platform === 'win32')(
         queueConcurrency: 4,
         applicationManagedShutdown: true,
       });
+      secondWorker.registerHandler?.('__wkf_workflow_', handler);
       await secondWorker.start?.();
       transport = createInvocations(pool);
       registerStepFunction('invokeSendHook', async (token: string) => {
@@ -180,17 +162,7 @@ describe.skipIf(process.platform === 'win32')(
       await transport?.close();
       await secondWorker?.close?.();
       await world?.close?.();
-      if (server) {
-        await new Promise<void>((resolve) => {
-          server.close(() => resolve());
-          server.closeAllConnections();
-        });
-      }
       setWorld(undefined);
-      if (oldPort === undefined) delete process.env.PORT;
-      else process.env.PORT = oldPort;
-      if (oldBaseUrl === undefined) delete process.env.WORKFLOW_LOCAL_BASE_URL;
-      else process.env.WORKFLOW_LOCAL_BASE_URL = oldBaseUrl;
       await pool?.end();
       await container?.stop();
     });

@@ -97,6 +97,7 @@ export {
   type HealthCheckResult,
   healthCheck,
 } from './runtime/helpers.js';
+export { registerWorkflowHandler } from './runtime/register-handler.js';
 export {
   getHookByToken,
   type Hook,

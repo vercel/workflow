@@ -9,12 +9,18 @@ import {
   type EventResult,
   type EventsResolveData,
   getEventDataPayloadField,
+  IN_PROCESS_QUEUE_HANDLER,
+  type QueueRouteHandler,
   SPEC_VERSION_CURRENT,
 } from '@workflow/world';
 import { Hono } from 'hono';
 import { ulid } from 'ulid';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { getWorld, healthCheck } from 'workflow/runtime';
+import {
+  getWorld,
+  healthCheck,
+  registerWorkflowHandler,
+} from 'workflow/runtime';
 import * as z from 'zod';
 import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
@@ -185,40 +191,63 @@ function payloadDigest(event: {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/**
+ * Records a delivery to the flow route for the `_flow-invocations` and
+ * `_first-delivery` endpoints, from a clone of the request so the body stays
+ * unread. Counted *before* the handler runs: otherwise the workflow may
+ * complete (and the test observe it) before the counter is bumped, a flaky
+ * `expected 0 to be 1` when the test queries `/_flow-invocations` right after
+ * seeing the run completed.
+ */
+async function trackFlowDelivery(request: Request): Promise<void> {
+  try {
+    const text = await request.clone().text();
+    const body = JSON.parse(text) as Record<string, unknown>;
+    const runId =
+      typeof body?.runId === 'string'
+        ? body.runId
+        : typeof (body.payload as Record<string, unknown> | undefined)
+              ?.runId === 'string'
+          ? ((body.payload as Record<string, unknown>).runId as string)
+          : undefined;
+    if (runId && !firstDeliveries.has(runId)) {
+      const headers = Object.fromEntries(request.headers);
+      // `QUEUE_AUTH_HEADER` in @workflow/utils.
+      delete headers['x-workflow-auth'];
+      firstDeliveries.set(runId, { headers, body: text });
+    }
+    if (runId) {
+      flowInvocationCounts.set(
+        runId,
+        (flowInvocationCounts.get(runId) ?? 0) + 1
+      );
+    }
+  } catch {
+    // Health check or non-JSON messages — ignore
+  }
+}
+
+/**
+ * The flow route as handed to a World that delivers in process: the same
+ * `POST`, with deliveries through its in-process entry tracked like HTTP
+ * ones.
+ */
+const flowRoute = flowPOST as unknown as QueueRouteHandler;
+const trackedFlowRoute: QueueRouteHandler = Object.assign(
+  async (request: Request) => flowRoute(request),
+  {
+    [IN_PROCESS_QUEUE_HANDLER]: async (request: Request) => {
+      await trackFlowDelivery(request);
+      const entry = flowRoute[IN_PROCESS_QUEUE_HANDLER];
+      if (!entry) throw new Error('the flow route has no in-process entry');
+      return entry(request);
+    },
+  }
+);
+
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
-    // Clone the request to read the body for tracking without consuming it.
-    // We must increment the invocation counter *before* awaiting flowPOST,
-    // otherwise the workflow may complete (and the test may observe the
-    // completed status) before the counter is bumped, producing a flaky
-    // `expected 0 to be 1` failure when the test immediately queries
-    // /_flow-invocations after seeing the run as completed.
-    const cloned = ctx.req.raw.clone();
-    try {
-      const text = await cloned.text();
-      const body = JSON.parse(text) as Record<string, unknown>;
-      const runId =
-        typeof body?.runId === 'string'
-          ? body.runId
-          : typeof (body.payload as Record<string, unknown> | undefined)
-                ?.runId === 'string'
-            ? ((body.payload as Record<string, unknown>).runId as string)
-            : undefined;
-      if (runId && !firstDeliveries.has(runId)) {
-        const headers = Object.fromEntries(ctx.req.raw.headers);
-        // `QUEUE_AUTH_HEADER` in @workflow/utils.
-        delete headers['x-workflow-auth'];
-        firstDeliveries.set(runId, { headers, body: text });
-      }
-      if (runId) {
-        flowInvocationCounts.set(
-          runId,
-          (flowInvocationCounts.get(runId) ?? 0) + 1
-        );
-      }
-    } catch {
-      // Health check or non-JSON messages — ignore
-    }
+    await trackFlowDelivery(ctx.req.raw);
     return flowPOST(ctx.req.raw);
   })
   .get('/_flow-invocations/:runId', (ctx) => {
@@ -411,6 +440,12 @@ serve(
     }
 
     const world = await getWorld();
+    // A World that delivers in process (world-postgres) is handed the flow
+    // route first, as the framework integrations do, so its worker runs in
+    // this process; any other World ignores this.
+    if (await registerWorkflowHandler(trackedFlowRoute)) {
+      console.log('registered the flow route for in-process delivery');
+    }
     if (world.start) {
       console.log(`starting background tasks...`);
       await world.start().then(

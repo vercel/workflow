@@ -995,11 +995,24 @@ export interface InvokeOptions {
  *   any request from localhost. Temporary: it goes away once the Local
  *   World's queue no longer delivers back to the app over its own routes.
  * - `'skip'`: the runtime does not check. Only for a World whose platform
- *   guarantees that only its queue reaches the route, as Vercel's does;
- *   world-postgres declares it until its messages are delivered in-process
- *   (https://github.com/vercel/workflow/issues/5258).
+ *   guarantees that only its queue reaches the route, as Vercel's does.
+ * - `'deny'`: the route takes no HTTP at all. The World's queue delivers the
+ *   Workflow SDK's messages inside the app's own process: the app hands the
+ *   World its flow route with {@link Queue.registerHandler} when it starts
+ *   (the framework integrations do, through `registerWorkflowHandler()` from
+ *   `workflow/runtime`), the World runs a worker only in a process that did,
+ *   and delivers to the route's in-process entry
+ *   ({@link IN_PROCESS_QUEUE_HANDLER}). A request that reaches the route over
+ *   HTTP is refused with a 403 whose body carries `code: "QUEUE_ROUTE_DENIED"`,
+ *   before any run is touched. Unlike the 401 of `'loopback'` (a missing or
+ *   wrong key, which a sender retries once it reloaded the key), the 403 is
+ *   final: the route never accepts HTTP, and a sender must not retry it.
+ *   world-postgres declares it. `WORKFLOW_QUEUE_AUTH=off` makes the route
+ *   accept HTTP again, as an emergency override only (a rolling upgrade whose
+ *   old workers still deliver over HTTP); it is refused while dynamic
+ *   workflows are enabled.
  */
-export type QueueAuthMode = 'loopback' | 'skip';
+export type QueueAuthMode = 'loopback' | 'skip' | 'deny';
 
 /**
  * The property under which the Workflow SDK's flow route handler (the
@@ -1040,7 +1053,8 @@ export interface Queue {
    * checked. The mode becomes required in SDK v6.
    *
    * `WORKFLOW_QUEUE_AUTH=off` turns the check off for `'loopback'` Worlds (a
-   * trusted network), except while dynamic workflows are enabled.
+   * trusted network) and makes a `'deny'` World's route accept HTTP (an
+   * emergency override), except while dynamic workflows are enabled.
    */
   queueAuthMode?: QueueAuthMode;
 
