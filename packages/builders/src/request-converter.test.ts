@@ -30,7 +30,11 @@ describe('createWrappedWorkflowRouteCode', () => {
       file,
       `export const calls = [];
 export const served = [];
+export const refreshed = [];
 const entry = Symbol.for(${JSON.stringify(IN_PROCESS_QUEUE_HANDLER.description)});
+function refreshWorkflowHandler(route, options) {
+  refreshed.push({ route, options });
+}
 function workflowEntrypoint(code, options) {
   calls.push({ code, options });
   const route = async (req) => {
@@ -67,6 +71,11 @@ ${createWrappedWorkflowRouteCode('workflowEntrypoint(workflowCode, { namespace: 
   it("exposes the entrypoint's in-process entry on POST", async () => {
     const mod = await load();
     expect(mod.POST[IN_PROCESS_QUEUE_HANDLER]).toBe('in-process entry');
+  });
+
+  it('hands POST to the World again on evaluation, as every generated route does', async () => {
+    const mod = await load();
+    expect(mod.refreshed).toEqual([{ route: mod.POST, options: undefined }]);
   });
 
   it('appends the trailer', async () => {

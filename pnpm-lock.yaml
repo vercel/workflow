@@ -801,6 +801,9 @@ importers:
       '@workflow/builders':
         specifier: workspace:*
         version: link:../builders
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../utils
       '@workflow/core':
         specifier: workspace:*
         version: link:../core

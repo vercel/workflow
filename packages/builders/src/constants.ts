@@ -84,10 +84,30 @@ export function createWorkflowEntrypointOptionsCode(options?: {
   return `, { ${fields.join(', ')} }`;
 }
 
+/**
+ * The `namespace` field of {@link createWorkflowEntrypointOptionsCode}'s
+ * output, as the options for `refreshWorkflowHandler`: the prefix a World
+ * delivers to this route.
+ */
+export function createRefreshOptionsCode(options?: { namespace?: string }) {
+  const namespace = resolveQueueNamespace(options?.namespace);
+  return namespace ? `, { namespace: ${JSON.stringify(namespace)} }` : '';
+}
+
+/**
+ * The route exports of a generated flow route. The module imports
+ * `workflowEntrypoint` and `refreshWorkflowHandler` from `workflow/runtime`:
+ * in a process that runs as a worker for a World that delivers in process
+ * (see `registerWorkflowHandler`), each evaluation of the module hands the
+ * World this evaluation's route, so a route rebuilt in development replaces
+ * the one registered at startup. Elsewhere the call does nothing.
+ */
 export function createWorkflowRouteHandlersCode(
-  workflowEntrypointCall: string
+  workflowEntrypointCall: string,
+  refreshOptions?: { namespace?: string }
 ) {
   return `export const POST = ${workflowEntrypointCall};
+refreshWorkflowHandler(POST${createRefreshOptionsCode(refreshOptions)});
 export const GET = POST;
 export const HEAD = POST;
 export const OPTIONS = POST;`;

@@ -1,4 +1,5 @@
 import { IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
+import { createRefreshOptionsCode } from './constants.js';
 
 const NORMALIZE_REQUEST_CODE = `
 async function normalizeRequest(request) {
@@ -24,7 +25,8 @@ async function normalizeRequest(request) {
  */
 export function createWrappedWorkflowRouteCode(
   workflowEntrypointCall: string,
-  trailer = ''
+  trailer = '',
+  refreshOptions?: { namespace?: string }
 ): string {
   const entry = `Symbol.for(${JSON.stringify(IN_PROCESS_QUEUE_HANDLER.description)})`;
   return `${NORMALIZE_REQUEST_CODE}
@@ -34,7 +36,8 @@ export const POST = Object.assign(
   // The in-process entry a World's queue delivers to (IN_PROCESS_QUEUE_HANDLER
   // in @workflow/world).
   { [${entry}]: workflowRoute[${entry}] }
-);${trailer}`;
+);
+refreshWorkflowHandler(POST${createRefreshOptionsCode(refreshOptions)});${trailer}`;
 }
 
 export { NORMALIZE_REQUEST_CODE };

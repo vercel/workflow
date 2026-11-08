@@ -1560,7 +1560,7 @@ export const __steps_registered = true;
 
         const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
-import { workflowEntrypoint } from 'workflow/runtime';
+import { refreshWorkflowHandler, workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
@@ -1772,7 +1772,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     const combinedFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
-import { workflowEntrypoint } from 'workflow/runtime';
+import { refreshWorkflowHandler, workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 
@@ -1852,7 +1852,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
-import { workflowEntrypoint } from 'workflow/runtime';
+import { refreshWorkflowHandler, workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 

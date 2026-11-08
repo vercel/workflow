@@ -10,6 +10,14 @@ export async function register() {
     // resolve `fs` (breaks this workbench's webpack build).
     const { registerE2eLifecycleHooks } = await import('./lifecycle-hooks-e2e');
     registerE2eLifecycleHooks();
+    // The Postgres World delivers in process: this process is a worker. The
+    // generated module hands the flow route to the World and starts it.
+    if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+      const { startWorkflowWorker } = await import(
+        './app/.well-known/workflow/v1/flow/worker'
+      );
+      await startWorkflowWorker();
+    }
   }
   registerOTel({
     serviceName: 'nextjs-webpack',

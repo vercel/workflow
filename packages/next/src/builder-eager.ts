@@ -193,6 +193,7 @@ export async function getNextBuilderEager(
       // V2: Build combined route (replaces separate step + flow routes)
       const combinedResult = await this.buildCombinedFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
+      await this.writeWorkerModule(workflowGeneratedDir);
 
       const writeManifest = async (
         sourceManifest: WorkflowManifest | undefined
@@ -476,6 +477,7 @@ export async function getNextBuilderEager(
 
           await workflowsCtx.bundleFinal(workflowOutput);
           await writeManifest(mergeCombinedManifest(stepsManifest));
+          await this.refreshWorkerRoute();
         };
 
         // The pin helper owns the capture-before-build / restore-after-
@@ -518,6 +520,7 @@ export async function getNextBuilderEager(
 
               await writeManifest(newCombined.manifest);
               await refreshSourceSnapshots();
+              await this.refreshWorkerRoute();
             },
           });
 
@@ -979,6 +982,83 @@ export async function getNextBuilderEager(
         sourceStepRegistrationImports: true,
         tsconfigPath,
       });
+    }
+
+    /**
+     * After a rebuild in development, when this process runs as a worker
+     * (`startWorkflowWorker` in `flow/worker.js`; `next dev` runs the app
+     * and this builder in one process): the registered flow handler still
+     * holds the code of the build it was registered from, and Next.js
+     * evaluates the rebuilt route module only on a request to it. Request
+     * its health endpoint, so the module is evaluated and hands the World the
+     * rebuilt route (`refreshWorkflowHandler`). Best effort: a failure here
+     * leaves the previous build serving until the next request to the route.
+     */
+    private async refreshWorkerRoute(): Promise<void> {
+      // The worker state `registerWorkflowHandler` keeps in @workflow/core,
+      // under `globalSingleton`'s key for that name and shape version.
+      const worker = (
+        globalThis as typeof globalThis & {
+          [key: symbol]: { registered?: boolean } | undefined;
+        }
+      )[Symbol.for('@workflow/core//inProcessWorker/v1')];
+      if (!worker?.registered) return;
+      try {
+        // Give the dev server's watcher a moment to see the rewritten files,
+        // so the request compiles the new module rather than the old one.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const { getWorkflowPort } = await import('@workflow/utils/get-port');
+        // `basePath` already includes the workflow route prefix.
+        const endpoint = `${this.config.basePath ?? ''}/.well-known/workflow/v1/flow?__health`;
+        const port = await getWorkflowPort({ endpoint });
+        if (port === undefined) return;
+        await fetch(`http://localhost:${port}${endpoint}`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(10_000),
+        });
+      } catch (error) {
+        if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+          console.log('[workflow] Could not refresh the worker route:', error);
+        }
+      }
+    }
+
+    /**
+     * Writes `flow/worker.js`, the module an app imports from
+     * `instrumentation.ts` to run the process as a worker for a World that
+     * delivers in process (the Postgres World). It hands the flow route to
+     * the World (`registerWorkflowHandler`) and starts the World, before the
+     * first request. Next.js routes only `route.js`, so the file is plain
+     * colocated code; it sits next to the route so the import is relative
+     * and compiles with it.
+     */
+    private async writeWorkerModule(
+      workflowGeneratedDir: string
+    ): Promise<void> {
+      const content = `// biome-ignore-all lint: generated file
+/* eslint-disable */
+import { getWorld, registerWorkflowHandler } from 'workflow/runtime';
+import { POST } from './route.js';
+
+/**
+ * Runs this process as a Workflow worker: hands the flow route to the World,
+ * for a World that delivers in process (the Postgres World), and starts the
+ * World. Call it from \`register()\` in \`instrumentation.ts\`, in the Node.js
+ * runtime, when the app uses such a World. Every delivery then runs in this
+ * process, through the route's in-process entry, never over HTTP, so a copy
+ * of the app that serves no web traffic still runs jobs. In development a
+ * rebuilt route re-registers itself, so edits to workflow files take effect.
+ */
+export async function startWorkflowWorker() {
+  await registerWorkflowHandler(POST);
+  const world = await getWorld();
+  await world.start?.();
+}
+`;
+      await writeFileIfChanged(
+        join(workflowGeneratedDir, 'flow/worker.js'),
+        content
+      );
     }
 
     private async buildWebhookRoute({
