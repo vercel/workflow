@@ -1,7 +1,13 @@
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { createWorkflowUrl } from '@workflow/utils';
-import { getQueueTopicPrefix, type World } from '@workflow/world';
+import {
+  getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  MessageId,
+  type QueueRouteHandler,
+  type World,
+} from '@workflow/world';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
@@ -74,7 +80,7 @@ describe.skipIf(process.platform === 'win32')(
     let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
     let pool: TestPool;
     let world: World & { start(): Promise<void> };
-    let handler: (req: Request) => Promise<Response>;
+    let handler: QueueRouteHandler;
 
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -161,17 +167,22 @@ describe.skipIf(process.platform === 'win32')(
       // The HTTP one is refused at once, without waiting on the run's gate
       // (the refusal precedes the body), and the in-process one finishes.
       const runId = `wrun_${ulid()}`;
-      const entry = (
-        handler as unknown as Record<
-          symbol,
-          (req: Request) => Promise<Response>
-        >
-      )[Symbol.for('@workflow/world//inProcessQueueHandler')];
-      const inFlight = entry(forge({ runId }));
+      const entry = handler[IN_PROCESS_QUEUE_HANDLER];
+      if (!entry) throw new Error('the flow route has no in-process entry');
+      const inFlight = entry({
+        message: { runId },
+        meta: {
+          queueName: `${getQueueTopicPrefix('workflow')}noop`,
+          messageId: MessageId.parse(`msg_${ulid()}`),
+          attempt: 1,
+          deliveryCount: 1,
+        },
+      });
       await expectDenied(await handler(forge({ runId })));
-      // The in-process delivery reached the handler (the run does not exist,
-      // so it fails there, which is the handler's answer, not a refusal).
-      expect((await inFlight).status).not.toBe(403);
+      // The in-process delivery reached the runtime's handler: the run does
+      // not exist, so that handler rejects, which is its answer, not a
+      // refusal.
+      await expect(inFlight).rejects.toThrow();
     });
 
     it('WORKFLOW_QUEUE_AUTH=off makes the route accept HTTP again, as before deliveries went in process', async () => {

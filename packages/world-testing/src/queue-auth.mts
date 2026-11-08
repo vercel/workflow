@@ -33,11 +33,11 @@ function forge(
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-vqs-queue-name': '__wkf_workflow_forged',
-      'x-vqs-message-id': `msg_${ulid()}`,
-      'x-vqs-message-attempt': '1',
-      'x-vqs-message-delivery-count': '1',
-      'x-vqs-message-created-at': new Date().toISOString(),
+      'x-workflow-queue-name': '__wkf_workflow_forged',
+      'x-workflow-message-id': `msg_${ulid()}`,
+      'x-workflow-message-attempt': '1',
+      'x-workflow-message-delivery-count': '1',
+      'x-workflow-message-created-at': new Date().toISOString(),
       ...headers,
     },
     body: typeof body === 'string' ? body : JSON.stringify(body),
@@ -334,7 +334,7 @@ export function queueAuth(world: string) {
               specVersion: 8,
             },
           },
-          { 'x-vqs-queue-name': queueName }
+          { 'x-workflow-queue-name': queueName }
         )
       );
       await expectDenied(
@@ -342,9 +342,9 @@ export function queueAuth(world: string) {
           server,
           { runId, requestedAt: new Date().toISOString() },
           {
-            'x-vqs-queue-name': queueName,
-            'x-vqs-message-attempt': '49',
-            'x-vqs-message-delivery-count': '49',
+            'x-workflow-queue-name': queueName,
+            'x-workflow-message-attempt': '49',
+            'x-workflow-message-delivery-count': '49',
             'x-workflow-auth': 'A'.repeat(43),
           }
         )
@@ -416,9 +416,9 @@ export function queueAuth(world: string) {
             server,
             { runId, requestedAt: new Date().toISOString() },
             {
-              'x-vqs-queue-name': queueName,
-              'x-vqs-message-attempt': '49',
-              'x-vqs-message-delivery-count': '49',
+              'x-workflow-queue-name': queueName,
+              'x-workflow-message-attempt': '49',
+              'x-workflow-message-delivery-count': '49',
             }
           );
           statuses.push(pastCap.status);
@@ -453,9 +453,9 @@ export function queueAuth(world: string) {
           server,
           { runId, requestedAt: new Date().toISOString() },
           {
-            'x-vqs-queue-name': queueName,
-            'x-vqs-message-attempt': '49',
-            'x-vqs-message-delivery-count': '49',
+            'x-workflow-queue-name': queueName,
+            'x-workflow-message-attempt': '49',
+            'x-workflow-message-delivery-count': '49',
           }
         )
       );
@@ -512,7 +512,7 @@ export function queueAuth(world: string) {
             specVersion: 8,
           },
         },
-        { 'x-vqs-queue-name': queueName }
+        { 'x-workflow-queue-name': queueName }
       );
       await expectAuthRefusal(newRun);
 
@@ -521,9 +521,9 @@ export function queueAuth(world: string) {
         server,
         { runId, requestedAt: new Date().toISOString() },
         {
-          'x-vqs-queue-name': queueName,
-          'x-vqs-message-attempt': '49',
-          'x-vqs-message-delivery-count': '49',
+          'x-workflow-queue-name': queueName,
+          'x-workflow-message-attempt': '49',
+          'x-workflow-message-delivery-count': '49',
         }
       );
       await expectAuthRefusal(pastCap);
@@ -534,10 +534,10 @@ export function queueAuth(world: string) {
         server,
         { runId: realRunId, stepId, requestedAt: new Date().toISOString() },
         {
-          'x-vqs-queue-name': queueName,
-          'x-vqs-message-attempt': '2',
-          'x-vqs-message-delivery-count': '7',
-          'x-vqs-message-created-at': '2020-01-01T00:00:00.000Z',
+          'x-workflow-queue-name': queueName,
+          'x-workflow-message-attempt': '2',
+          'x-workflow-message-delivery-count': '7',
+          'x-workflow-message-created-at': '2020-01-01T00:00:00.000Z',
         }
       );
       await expectAuthRefusal(retrigger);
@@ -547,8 +547,8 @@ export function queueAuth(world: string) {
         server,
         { runId, requestedAt: new Date().toISOString() },
         {
-          'x-vqs-queue-name': queueName,
-          'x-vqs-message-attempt': '49',
+          'x-workflow-queue-name': queueName,
+          'x-workflow-message-attempt': '49',
           'x-workflow-auth': 'A'.repeat(43),
         }
       );
@@ -1031,9 +1031,9 @@ export function queueAuth(world: string) {
             server,
             { runId, requestedAt: new Date().toISOString() },
             {
-              'x-vqs-queue-name': queueName,
-              'x-vqs-message-attempt': '49',
-              'x-vqs-message-delivery-count': '49',
+              'x-workflow-queue-name': queueName,
+              'x-workflow-message-attempt': '49',
+              'x-workflow-message-delivery-count': '49',
             }
           );
           statuses.push(pastCap.status);
@@ -1068,9 +1068,9 @@ export function queueAuth(world: string) {
         server,
         { runId, requestedAt: new Date().toISOString() },
         {
-          'x-vqs-queue-name': queueName,
-          'x-vqs-message-attempt': '49',
-          'x-vqs-message-delivery-count': '49',
+          'x-workflow-queue-name': queueName,
+          'x-workflow-message-attempt': '49',
+          'x-workflow-message-delivery-count': '49',
         }
       );
       await expectAuthRefusal(pastCap);

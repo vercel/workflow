@@ -30,7 +30,9 @@ const queue = createQueue(
 // is a worker. The delivery never finishes.
 queue.registerHandler(getQueueTopicPrefix('workflow'), async (request) => {
   await request.text();
-  process.stdout.write(`claimed ${request.headers.get('x-vqs-message-id')}\n`);
+  process.stdout.write(
+    `claimed ${request.headers.get('x-workflow-message-id')}\n`
+  );
   await new Promise(() => {});
   return new Response();
 });

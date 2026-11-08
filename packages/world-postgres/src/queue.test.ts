@@ -4,12 +4,14 @@ import { setWorkflowBasePath } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
   MessageId,
   parseQueueName,
   type Queue,
   type QueuePayload,
   type QueuePrefix,
   type QueueRouteHandler,
+  queueDeliveryHeaders,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type ValidQueueName,
 } from '@workflow/world';
@@ -186,10 +188,10 @@ describe('postgres queue http execution', () => {
     expect(requests).toEqual([]);
     expect(deliveries).toEqual([
       expect.objectContaining({
-        method: 'POST',
+        method: 'in-process',
         url: '/.well-known/workflow/v1/flow',
         headers: expect.objectContaining({
-          'x-vqs-queue-name': '__wkf_workflow_test-step',
+          'x-workflow-queue-name': '__wkf_workflow_test-step',
         }),
       }),
     ]);
@@ -393,9 +395,9 @@ describe('postgres queue http execution', () => {
       expect(requests).toEqual([
         expect.objectContaining({
           url: '/.well-known/workflow/v1/flow',
-          method: 'POST',
+          method: 'in-process',
           headers: expect.objectContaining({
-            'x-vqs-queue-name': '__wkf_workflow_health_check',
+            'x-workflow-queue-name': '__wkf_workflow_health_check',
           }),
         }),
       ]);
@@ -404,12 +406,21 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('uses basePath for the request an in-process delivery carries', async () => {
+  it('uses basePath for the request a handler without an in-process entry gets', async () => {
     const requests: RecordedDelivery[] = [];
     setWorkflowBasePath('/v2');
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    registerFlowHandler(queue, requests);
+    // A handler that takes the request shape (no in-process entry).
+    queue.registerHandler('__wkf_workflow_', async (req) => {
+      requests.push({
+        method: req.method,
+        url: new URL(req.url).pathname,
+        headers: Object.fromEntries(req.headers),
+        body: await req.text(),
+      });
+      return Response.json({ ok: true });
+    });
     try {
       await queue.start();
 
@@ -619,9 +630,9 @@ describe('postgres queue http execution', () => {
     );
 
     expect(requests[0]?.headers).toMatchObject({
-      'x-vqs-message-id': messageId,
-      'x-vqs-message-attempt': '2',
-      'x-vqs-message-created-at': createdAt,
+      'x-workflow-message-id': messageId,
+      'x-workflow-message-attempt': '2',
+      'x-workflow-message-created-at': createdAt,
     });
     expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
       'workflow_flows',
@@ -781,13 +792,24 @@ describe('postgres queue http execution', () => {
     ).rejects.toThrow('transfer failed');
   });
 
-  it('only forwards executor provenance for a job on the expected named queue', async () => {
+  it('admits an executor delivery against the jobs view only for a job on the expected named queue', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
     );
     const deliveries: RecordedDelivery[] = [];
     registerFlowHandler(queue, deliveries);
+    // An admitted orchestrator delivery drives the run with its mailbox's
+    // pending inputs: none here.
+    invocationTransport.feed.mockReturnValue({
+      return: vi.fn().mockResolvedValue({ done: true }),
+      async next() {
+        return { done: true, value: undefined };
+      },
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    });
     await queue.start();
     const payload = buildMessageData(
       '__wkf_workflow_example',
@@ -821,18 +843,23 @@ describe('postgres queue http execution', () => {
       );
       helpers.getQueueName.mockResolvedValue('workflow_flows:run_a:executor');
       await execute(payload, helpers);
-      const headers = new Headers(
-        deliveries[0]?.headers as Record<string, string>
+      // Delivered in process once admitted: the job's own provenance, never
+      // the forged headers on the message, is what is checked.
+      expect(deliveries).toHaveLength(1);
+      expect(pool.query).toHaveBeenCalledWith(
+        expect.stringContaining('graphile_worker.jobs'),
+        [
+          '42',
+          'workflow_flows_executor',
+          'workflow_flows:run_a:executor',
+          'worker-real',
+          2,
+        ]
       );
-      expect(headers.get('x-workflow-postgres-executor-job')).toBe('42');
-      expect(headers.get('x-workflow-postgres-executor-worker')).toBe(
-        'worker-real'
-      );
-      expect(headers.get('x-workflow-postgres-executor-attempt')).toBe('2');
     }
   });
 
-  it('strips executor provenance from step deliveries', async () => {
+  it('delivers a step message in process without an executor admission, whatever headers it carries', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
@@ -840,28 +867,28 @@ describe('postgres queue http execution', () => {
     const deliveries: RecordedDelivery[] = [];
     registerFlowHandler(queue, deliveries);
     await queue.start();
-    {
-      await getTaskHandler('workflow_flows')(
-        buildMessageData(
-          '__wkf_workflow_example',
-          { runId: 'run_a', stepId: 'step_a', stepName: 'step' },
-          {
-            headers: {
-              'X-Workflow-Postgres-Executor-Job': '42',
-              'x-workflow-postgres-executor-worker': 'forged',
-              'X-Workflow-Postgres-Executor-Attempt': '2',
-            },
-          }
-        ),
-        { job: { attempts: 1 } }
-      );
-      const headers = new Headers(
-        deliveries[0]?.headers as Record<string, string>
-      );
-      expect(headers.has('x-workflow-postgres-executor-job')).toBe(false);
-      expect(headers.has('x-workflow-postgres-executor-worker')).toBe(false);
-      expect(headers.has('x-workflow-postgres-executor-attempt')).toBe(false);
-    }
+    await getTaskHandler('workflow_flows')(
+      buildMessageData(
+        '__wkf_workflow_example',
+        { runId: 'run_a', stepId: 'step_a', stepName: 'step' },
+        {
+          headers: {
+            'X-Workflow-Postgres-Executor-Job': '42',
+            'x-workflow-postgres-executor-worker': 'forged',
+            'X-Workflow-Postgres-Executor-Attempt': '2',
+          },
+        }
+      ),
+      { job: { attempts: 1 } }
+    );
+    expect(deliveries).toHaveLength(1);
+    expect(deliveries[0]?.headers).not.toHaveProperty(
+      'x-workflow-postgres-executor-job'
+    );
+    expect(pool.query).not.toHaveBeenCalledWith(
+      expect.stringContaining('graphile_worker.jobs'),
+      expect.anything()
+    );
   });
 
   function receiver() {
@@ -1192,6 +1219,10 @@ describe('postgres queue http execution', () => {
     expect(requests).toEqual([
       expect.objectContaining({ method: 'POST', url: '/api/agent/queue' }),
     ]);
+    expect(requests[0]?.headers['x-workflow-queue-name']).toBe(
+      '__agent_wkf_workflow_session'
+    );
+    // And the earlier release's names, for a route on that release.
     expect(requests[0]?.headers['x-vqs-queue-name']).toBe(
       '__agent_wkf_workflow_session'
     );
@@ -1250,7 +1281,7 @@ describe('postgres queue http execution', () => {
       '/.well-known/workflow/v1/flow',
     ]);
     // The queue name it was sent to, not rebuilt with the worker's prefix.
-    expect(requests[0]?.headers['x-vqs-queue-name']).toBe(
+    expect(requests[0]?.headers['x-workflow-queue-name']).toBe(
       '__agent_wkf_workflow_session'
     );
   });
@@ -1273,7 +1304,7 @@ describe('postgres queue http execution', () => {
       { job: { attempts: 1 } }
     );
 
-    expect(requests[0]?.headers['x-vqs-queue-name']).toBe(
+    expect(requests[0]?.headers['x-workflow-queue-name']).toBe(
       '__custom_wkf_workflow_myWorkflow'
     );
   });
@@ -1294,7 +1325,7 @@ describe('postgres queue http execution', () => {
     queue.registerHandler('__agent_wkf_workflow_', async (req) => {
       seen.push({
         url: new URL(req.url).pathname,
-        queueName: req.headers.get('x-vqs-queue-name'),
+        queueName: req.headers.get('x-workflow-queue-name'),
         body: await req.json(),
       });
       return Response.json({ timeoutSeconds: 30 });
@@ -1341,10 +1372,16 @@ describe('postgres queue http execution', () => {
   it("delivers to a registered handler's in-process entry when it has one", async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     const viaRoute = vi.fn(async () => Response.json({ ok: true }));
-    const viaEntry = vi.fn(async (req: Request) => {
-      expect(req.headers.get('x-vqs-queue-name')).toBe('__wkf_workflow_test');
-      expect(await req.json()).toEqual({ runId: 'run_01ABC' });
-      return Response.json({ ok: true });
+    const viaEntry = vi.fn(async ({ message, meta }: InProcessDelivery) => {
+      // The message and its metadata, no request.
+      expect(meta).toMatchObject({
+        queueName: '__wkf_workflow_test',
+        messageId: 'msg_01ABC',
+        attempt: 1,
+        deliveryCount: 1,
+      });
+      expect(message).toEqual({ runId: 'run_01ABC' });
+      return undefined;
     });
     const handler: QueueRouteHandler = Object.assign(viaRoute, {
       [IN_PROCESS_QUEUE_HANDLER]: viaEntry,
@@ -1514,9 +1551,16 @@ function registerFlowHandler(
   } = {}
 ) {
   const requestReceived = Promise.withResolvers<void>();
-  queue.registerHandler(
-    (options.prefix ?? '__wkf_workflow_') as QueuePrefix,
-    async (req) => {
+  const settle = async () => {
+    requestReceived.resolve();
+    if (options.hang) await new Promise<never>(() => {});
+    if (options.beforeResponse) await options.beforeResponse();
+  };
+  // The flow route: the Postgres World delivers to its in-process entry,
+  // with the message and its metadata; the request shape is kept for a
+  // handler without one.
+  const handler: QueueRouteHandler = Object.assign(
+    async (req: Request) => {
       const body = await req.text();
       deliveries.push({
         method: req.method,
@@ -1524,15 +1568,35 @@ function registerFlowHandler(
         headers: Object.fromEntries(req.headers),
         body,
       });
-      requestReceived.resolve();
-      if (options.hang) {
-        await new Promise<void>((resolve) =>
-          req.signal.addEventListener('abort', () => resolve(), { once: true })
-        );
-      }
-      if (options.beforeResponse) await options.beforeResponse();
+      await settle();
       return Response.json(options.responseBody ?? { ok: true });
+    },
+    {
+      [IN_PROCESS_QUEUE_HANDLER]: async ({
+        message,
+        meta,
+      }: InProcessDelivery) => {
+        // Recorded as the wire form would read, so assertions share a shape.
+        deliveries.push({
+          method: 'in-process',
+          url: '/.well-known/workflow/v1/flow',
+          headers: queueDeliveryHeaders({
+            queueName: meta.queueName,
+            messageId: meta.messageId,
+            attempt: meta.attempt,
+            deliveryCount: meta.deliveryCount,
+            createdAt: meta.createdAt?.toISOString(),
+          }),
+          body: JSON.stringify(message),
+        });
+        await settle();
+        return options.responseBody;
+      },
     }
+  );
+  queue.registerHandler(
+    (options.prefix ?? '__wkf_workflow_') as QueuePrefix,
+    handler
   );
   return { requestReceived: requestReceived.promise };
 }

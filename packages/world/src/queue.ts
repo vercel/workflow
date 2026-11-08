@@ -1015,26 +1015,138 @@ export interface InvokeOptions {
 export type QueueAuthMode = 'loopback' | 'skip' | 'deny';
 
 /**
+ * What a World tells the handler about a delivery: see
+ * {@link Queue.createQueueHandler} for each field.
+ */
+export interface QueueDeliveryMeta {
+  attempt: number;
+  deliveryCount?: number;
+  createdAt?: Date;
+  queueName: ValidQueueName;
+  messageId: MessageId;
+  requestId?: string;
+  invocationStartedAt?: number;
+}
+
+/**
+ * One delivery handed to a flow route's in-process entry
+ * ({@link IN_PROCESS_QUEUE_HANDLER}): the decoded message and its metadata,
+ * as the World would otherwise have put on the wire.
+ */
+export interface InProcessDelivery {
+  message: unknown;
+  meta: QueueDeliveryMeta;
+}
+
+/**
  * The property under which the Workflow SDK's flow route handler (the
  * `POST` export of the generated flow route, built by `workflowEntrypoint()`
- * in `@workflow/core`) exposes its in-process entry: the same handler,
- * without the checks that only a request from the network needs (the queue
- * auth check of {@link QueueAuthMode}). Nothing on the wire can name it: a
- * World reaches it only through a handler the app registered with
- * {@link Queue.registerHandler}, in the app's own process.
+ * in `@workflow/core`) exposes its in-process entry: the runtime's handler
+ * itself, taking the message and its metadata directly, without the HTTP
+ * request shape or the checks that only a request from the network needs
+ * (the queue auth check of {@link QueueAuthMode}). Nothing on the wire can
+ * name it: a World reaches it only through a handler the app registered
+ * with {@link Queue.registerHandler}, in the app's own process.
  *
  * A World whose queue runs in the app's process delivers to
- * `handler[IN_PROCESS_QUEUE_HANDLER]` when it is set, and to `handler` itself
- * otherwise (a queue consumer's own handler, or a flow route built by an
- * earlier SDK). It aborts the delivery when the request's `signal` aborts: a
- * shutdown, or a deadline the World set.
+ * `handler[IN_PROCESS_QUEUE_HANDLER]` when it is set, and resolves to what
+ * the runtime's handler returned (`undefined`, `{ timeoutSeconds }` for a
+ * redelivery request, the result of an invoke message), or rejects with what
+ * it threw. A handler without the entry (a queue consumer's own, or a flow
+ * route built by an earlier SDK) is called with the request a route serving
+ * `createQueueHandler` would get.
  */
 export const IN_PROCESS_QUEUE_HANDLER: unique symbol = Symbol.for(
   '@workflow/world//inProcessQueueHandler'
 );
 
 /** See {@link IN_PROCESS_QUEUE_HANDLER}. */
-export type InProcessQueueHandler = (req: Request) => Promise<Response>;
+export type InProcessQueueHandler = (
+  delivery: InProcessDelivery
+) => Promise<unknown>;
+
+/**
+ * The headers a self-hosted World's queue puts on a delivery it sends over
+ * HTTP (the Local World's loopback to the app's flow route, a Postgres
+ * World's delivery to a consumer's own route), read back by the World's
+ * `createQueueHandler`. A private wire shape between a World's sender and
+ * its receiver; the runtime reads only the handler's `meta`.
+ */
+export const QUEUE_DELIVERY_HEADERS = {
+  queueName: 'x-workflow-queue-name',
+  messageId: 'x-workflow-message-id',
+  attempt: 'x-workflow-message-attempt',
+  deliveryCount: 'x-workflow-message-delivery-count',
+  createdAt: 'x-workflow-message-created-at',
+} as const;
+
+/**
+ * The names an earlier release used for {@link QUEUE_DELIVERY_HEADERS},
+ * copied from Vercel Queues. A receiver reads them for one release, so a
+ * sender on the earlier release (an old CLI next to a new app, an old worker
+ * during a rolling upgrade) is still understood, and a sender sends both
+ * sets for one release, so an old receiver still understands it.
+ */
+export const LEGACY_QUEUE_DELIVERY_HEADERS = {
+  queueName: 'x-vqs-queue-name',
+  messageId: 'x-vqs-message-id',
+  attempt: 'x-vqs-message-attempt',
+  deliveryCount: 'x-vqs-message-delivery-count',
+  createdAt: 'x-vqs-message-created-at',
+} as const;
+
+type QueueDeliveryHeaderField = keyof typeof QUEUE_DELIVERY_HEADERS;
+
+/**
+ * The delivery headers for `meta`, under both the current and the legacy
+ * names (see {@link LEGACY_QUEUE_DELIVERY_HEADERS}).
+ */
+export function queueDeliveryHeaders(meta: {
+  queueName: string;
+  messageId: string;
+  attempt: number | string;
+  deliveryCount?: number | string;
+  createdAt?: string;
+}): Record<string, string> {
+  const values: Partial<Record<QueueDeliveryHeaderField, string>> = {
+    queueName: meta.queueName,
+    messageId: meta.messageId,
+    attempt: String(meta.attempt),
+    ...(meta.deliveryCount !== undefined
+      ? { deliveryCount: String(meta.deliveryCount) }
+      : {}),
+    ...(meta.createdAt !== undefined ? { createdAt: meta.createdAt } : {}),
+  };
+  const headers: Record<string, string> = {};
+  for (const [field, value] of Object.entries(values) as [
+    QueueDeliveryHeaderField,
+    string,
+  ][]) {
+    headers[QUEUE_DELIVERY_HEADERS[field]] = value;
+    headers[LEGACY_QUEUE_DELIVERY_HEADERS[field]] = value;
+  }
+  return headers;
+}
+
+/**
+ * The delivery headers of a request, by field: the current name when
+ * present, else the legacy one. Values are the raw header strings; the
+ * receiver validates them.
+ */
+export function readQueueDeliveryHeaders(
+  headers: Pick<Headers, 'get'>
+): Partial<Record<QueueDeliveryHeaderField, string>> {
+  const read: Partial<Record<QueueDeliveryHeaderField, string>> = {};
+  for (const field of Object.keys(
+    QUEUE_DELIVERY_HEADERS
+  ) as QueueDeliveryHeaderField[]) {
+    const value =
+      headers.get(QUEUE_DELIVERY_HEADERS[field]) ??
+      headers.get(LEGACY_QUEUE_DELIVERY_HEADERS[field]);
+    if (value !== null) read[field] = value;
+  }
+  return read;
+}
 
 /**
  * A request handler a World's queue delivers to ({@link Queue.registerHandler}),
@@ -1245,18 +1357,7 @@ export interface Queue {
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (
-      message: unknown,
-      meta: {
-        attempt: number;
-        deliveryCount?: number;
-        createdAt?: Date;
-        queueName: ValidQueueName;
-        messageId: MessageId;
-        requestId?: string;
-        invocationStartedAt?: number;
-      }
-    ) => Promise<unknown>
+    handler: (message: unknown, meta: QueueDeliveryMeta) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
 
   /**
@@ -1273,7 +1374,8 @@ export interface Queue {
    * uses a prefix of its own, `__{namespace}_wkf_workflow_`.
    *
    * A handler that carries an in-process entry ({@link IN_PROCESS_QUEUE_HANDLER},
-   * as the Workflow SDK's flow route does) is delivered to through that entry.
+   * as the Workflow SDK's flow route does) is delivered to through that entry,
+   * with the message and its metadata rather than a request.
    */
   registerHandler?(prefix: QueuePrefix, handler: QueueRouteHandler): void;
 

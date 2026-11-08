@@ -2,6 +2,7 @@ import {
   MessageId,
   type Queue,
   type QueuePrefix,
+  readQueueDeliveryHeaders,
   singleOrchestratorRunIdOf,
   ValidQueueName,
 } from '@workflow/world';
@@ -43,15 +44,19 @@ export function createRunGate() {
 
 export type RunGate = ReturnType<typeof createRunGate>;
 
-/** The delivery metadata a delivery request carries in its headers. */
+/**
+ * The delivery metadata a delivery request carries in its headers, under
+ * the current names or the earlier release's (`readQueueDeliveryHeaders`):
+ * a worker on the earlier release delivers over HTTP with the old names.
+ */
 const DeliveryHeaders = z.object({
-  'x-vqs-queue-name': ValidQueueName,
-  'x-vqs-message-id': MessageId,
-  'x-vqs-message-attempt': z.coerce.number(),
+  queueName: ValidQueueName,
+  messageId: MessageId,
+  attempt: z.coerce.number(),
   // `attempt` restarts on a reschedule; this keeps counting.
-  'x-vqs-message-delivery-count': z.coerce.number().int().positive().optional(),
+  deliveryCount: z.coerce.number().int().positive().optional(),
   // Absent on a delivery from a sender that predates it.
-  'x-vqs-message-created-at': z.iso.datetime().optional(),
+  createdAt: z.iso.datetime().optional(),
 });
 
 /**
@@ -74,7 +79,9 @@ export function createDeliveryHandler(
   }
 ): (req: Request) => Promise<Response> {
   return async (req) => {
-    const headers = DeliveryHeaders.safeParse(Object.fromEntries(req.headers));
+    const headers = DeliveryHeaders.safeParse(
+      readQueueDeliveryHeaders(req.headers)
+    );
 
     if (!headers.success || !req.body) {
       return Response.json(
@@ -87,11 +94,9 @@ export function createDeliveryHandler(
       );
     }
 
-    const queueName = headers.data['x-vqs-queue-name'];
-    const messageId = headers.data['x-vqs-message-id'];
-    const attempt = headers.data['x-vqs-message-attempt'];
-    const deliveryCountHeader = headers.data['x-vqs-message-delivery-count'];
-    const createdAtHeader = headers.data['x-vqs-message-created-at'];
+    const { queueName, messageId, attempt } = headers.data;
+    const deliveryCountHeader = headers.data.deliveryCount;
+    const createdAtHeader = headers.data.createdAt;
 
     if (!queueName.startsWith(prefix)) {
       return Response.json(

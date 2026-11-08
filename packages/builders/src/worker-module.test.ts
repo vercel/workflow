@@ -29,7 +29,7 @@ describe('createWorkflowWorkerModuleCode', () => {
         `const entry = Symbol.for(${JSON.stringify(IN_PROCESS_QUEUE_HANDLER.description)});
 export const POST = Object.assign(
   async (arg) => new Response('http ' + ${version} + ' ' + (arg instanceof Request ? 'request' : 'event')),
-  { [entry]: async (request) => new Response('in-process ' + ${version}) }
+  { [entry]: async (delivery) => 'in-process ' + ${version} + ' ' + delivery.meta.messageId }
 );
 `
       );
@@ -71,10 +71,11 @@ export async function getWorld() { return { async start() { started.push('start'
       'http 1 request'
     );
     expect(
-      await (
-        await route[IN_PROCESS_QUEUE_HANDLER](new Request('http://x/'))
-      ).text()
-    ).toBe('in-process 1');
+      await route[IN_PROCESS_QUEUE_HANDLER]({
+        message: {},
+        meta: { messageId: 'msg_1' },
+      })
+    ).toBe('in-process 1 msg_1');
   });
 
   it('with reloads, registers a handler that loads the route on every delivery', async () => {
@@ -84,10 +85,11 @@ export async function getWorld() { return { async start() { started.push('start'
     const [{ route, options }] = runtime.registered;
     expect(options).toEqual({ reloads: true });
     expect(
-      await (
-        await route[IN_PROCESS_QUEUE_HANDLER](new Request('http://x/'))
-      ).text()
-    ).toBe('in-process 1');
+      await route[IN_PROCESS_QUEUE_HANDLER]({
+        message: {},
+        meta: { messageId: 'msg_2' },
+      })
+    ).toBe('in-process 1 msg_2');
     // A wrapped route takes the framework's `{ request }` event.
     expect(await (await route(new Request('http://x/'))).text()).toBe(
       'http 1 event'

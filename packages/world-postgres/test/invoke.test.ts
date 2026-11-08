@@ -11,6 +11,8 @@ import {
 } from '@workflow/errors';
 import {
   IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  type QueueRouteHandler,
   SPEC_VERSION_CURRENT,
   type World,
 } from '@workflow/world';
@@ -93,7 +95,11 @@ describe.skipIf(process.platform === 'win32')(
     let transport: ReturnType<typeof createInvocations>;
     const active = new Map<string, number>();
     const maximum = new Map<string, number>();
-    const overrides = new Map<string, (req: Request) => Promise<Response>>();
+    /** A test's own handler for a run's deliveries, in place of the runtime's. */
+    const overrides = new Map<
+      string,
+      (delivery: InProcessDelivery) => Promise<unknown>
+    >();
 
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
@@ -117,22 +123,33 @@ describe.skipIf(process.platform === 'win32')(
       // The app's flow route as each worker registers it, counting the
       // deliveries of a run that are in flight at once, with a test's
       // override for a run taking the delivery instead.
-      const handler = async (req: Request) => {
-        const payload = JSON.parse(await req.clone().text());
-        const runId = payload.stepId ? undefined : payload.runId;
-        if (runId) {
-          const count = (active.get(runId) ?? 0) + 1;
-          active.set(runId, count);
-          maximum.set(runId, Math.max(count, maximum.get(runId) ?? 0));
+      const handler: QueueRouteHandler = Object.assign(
+        (req: Request) => route(req),
+        {
+          [IN_PROCESS_QUEUE_HANDLER]: async (delivery: InProcessDelivery) => {
+            const payload = delivery.message as {
+              runId: string;
+              stepId?: string;
+              invoke?: boolean;
+            };
+            // Counts the run's orchestrator deliveries in flight at once: a
+            // job's delivery. An invoke input is fed to the run inside its
+            // delivery (`executeWithInputs`), and a step runs on its own.
+            const runId =
+              payload.stepId || payload.invoke ? undefined : payload.runId;
+            if (runId) {
+              const count = (active.get(runId) ?? 0) + 1;
+              active.set(runId, count);
+              maximum.set(runId, Math.max(count, maximum.get(runId) ?? 0));
+            }
+            try {
+              return await (overrides.get(payload.runId) ?? entry)(delivery);
+            } finally {
+              if (runId) active.set(runId, (active.get(runId) ?? 1) - 1);
+            }
+          },
         }
-        try {
-          return await (overrides.get(payload.runId) ?? entry)(req);
-        } catch (error) {
-          return new Response(String(error), { status: 500 });
-        } finally {
-          if (runId) active.set(runId, (active.get(runId) ?? 1) - 1);
-        }
-      };
+      );
       world = createWorld({
         pool,
         enableInvoke: true,
@@ -187,6 +204,30 @@ describe.skipIf(process.platform === 'win32')(
       return runId;
     }
 
+    /**
+     * Waits until no delivery of the run is in flight and its executor job
+     * is gone. The in-process entry returns when the runtime's handler does,
+     * while the queue's executor lane may still be draining the run's input
+     * feed before it completes the job; an input injected in that window
+     * would be fed to the run rather than wait for the test.
+     */
+    async function quiescent(runId: string) {
+      await until(
+        async () => active.get(runId) ?? 0,
+        (count) => count === 0
+      );
+      await until(
+        async () =>
+          (
+            await pool.query<{ n: number }>(
+              'SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE queue_name = $1',
+              [`workflow_flows:${runId}:executor`]
+            )
+          ).rows[0].n,
+        (n) => n === 0
+      );
+    }
+
     async function hook(token: string) {
       return until(
         () => world.hooks.getByToken(token).catch(() => null),
@@ -230,10 +271,7 @@ describe.skipIf(process.platform === 'win32')(
       const token = randomUUID();
       const runId = await start('oneHook', [token]);
       await hook(token);
-      await until(
-        async () => active.get(runId) ?? 0,
-        (count) => count === 0
-      );
+      await quiescent(runId);
       const original = world.events.create;
       const write = vi
         .spyOn(world.events, 'create')
@@ -275,15 +313,12 @@ describe.skipIf(process.platform === 'win32')(
       await seedTransportRun(runId);
       const requestId = randomUUID();
       let deliveries = 0;
-      overrides.set(
-        runId,
-        world.createQueueHandler('__wkf_workflow_', async (message) => {
-          if ((message as { invoke?: boolean }).invoke) {
-            deliveries++;
-            throw error;
-          }
-        })
-      );
+      overrides.set(runId, async ({ message }) => {
+        if ((message as { invoke?: boolean }).invoke) {
+          deliveries++;
+          throw error;
+        }
+      });
       try {
         for (let attempt = 0; attempt < 2; attempt++) {
           const restored = await world.invoke!(
@@ -331,15 +366,12 @@ describe.skipIf(process.platform === 'win32')(
       const runId = `wrun_${ulid()}`;
       await seedTransportRun(runId);
       let deliveries = 0;
-      overrides.set(
-        runId,
-        world.createQueueHandler('__wkf_workflow_', async (message) => {
-          if ((message as { invoke?: boolean }).invoke) {
-            if (++deliveries === 1) throw failure;
-            return { status: 'accepted' };
-          }
-        })
-      );
+      overrides.set(runId, async ({ message }) => {
+        if ((message as { invoke?: boolean }).invoke) {
+          if (++deliveries === 1) throw failure;
+          return { status: 'accepted' };
+        }
+      });
       try {
         if (!world.invoke) throw new Error('Invocation unavailable');
         const result = world.invoke(
@@ -582,23 +614,20 @@ describe.skipIf(process.platform === 'win32')(
       const release = Promise.withResolvers<void>();
       let calls = 0;
       let lateWrite = false;
-      overrides.set(
-        runId,
-        world.createQueueHandler('__wkf_workflow_', async () => {
-          calls++;
-          if (calls !== 1) return;
-          entered.resolve();
-          await release.promise;
-          // This write is intentionally NOT fenced by the earlier HTTP admission
-          // check. The test records the limitation, rather than claiming safety.
-          await world.events.create(runId, {
-            eventType: 'hook_received',
-            correlationId: hookId,
-            eventData: { token, payload: new Uint8Array([1]) },
-          });
-          lateWrite = true;
-        })
-      );
+      overrides.set(runId, async () => {
+        calls++;
+        if (calls !== 1) return;
+        entered.resolve();
+        await release.promise;
+        // This write is intentionally NOT fenced by the earlier HTTP admission
+        // check. The test records the limitation, rather than claiming safety.
+        await world.events.create(runId, {
+          eventType: 'hook_received',
+          correlationId: hookId,
+          eventData: { token, payload: new Uint8Array([1]) },
+        });
+        lateWrite = true;
+      });
       const utils = await makeWorkerUtils({ pgPool: pool });
       try {
         await world.queue('__wkf_workflow_oneHook', { runId });
@@ -645,10 +674,7 @@ describe.skipIf(process.platform === 'win32')(
       const runId = await start('oneHook', [token]);
       const target = await hook(token);
       if (!target) throw new Error('Missing hook');
-      await until(
-        async () => active.get(runId) ?? 0,
-        (count) => count === 0
-      );
+      await quiescent(runId);
       const payload = await dehydrateStepReturnValue(
         'once',
         runId,
@@ -996,10 +1022,7 @@ describe.skipIf(process.platform === 'win32')(
       const runId = await start('oneHook', [token]);
       const target = await hook(token);
       if (!target) throw new Error('Missing hook');
-      await until(
-        async () => active.get(runId) ?? 0,
-        (count) => count === 0
-      );
+      await quiescent(runId);
       const payload = await dehydrateStepReturnValue(
         'recovered',
         runId,

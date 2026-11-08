@@ -10,7 +10,9 @@ import {
   type EventsResolveData,
   getEventDataPayloadField,
   IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
   type QueueRouteHandler,
+  queueDeliveryHeaders,
   SPEC_VERSION_CURRENT,
 } from '@workflow/world';
 import { Hono } from 'hono';
@@ -228,6 +230,32 @@ async function trackFlowDelivery(request: Request): Promise<void> {
 }
 
 /**
+ * Records an in-process delivery (message and metadata, no request) for the
+ * same endpoints: the first delivery is kept as the request a sender on the
+ * wire would have made, so a test can replay it at the route.
+ */
+function trackInProcessDelivery({ message, meta }: InProcessDelivery): void {
+  const runId = (message as { runId?: unknown })?.runId;
+  if (typeof runId !== 'string') return;
+  if (!firstDeliveries.has(runId)) {
+    firstDeliveries.set(runId, {
+      headers: {
+        'content-type': 'application/json',
+        ...queueDeliveryHeaders({
+          queueName: meta.queueName,
+          messageId: meta.messageId,
+          attempt: meta.attempt,
+          deliveryCount: meta.deliveryCount,
+          createdAt: meta.createdAt?.toISOString(),
+        }),
+      },
+      body: JSON.stringify(message),
+    });
+  }
+  flowInvocationCounts.set(runId, (flowInvocationCounts.get(runId) ?? 0) + 1);
+}
+
+/**
  * The flow route as handed to a World that delivers in process: the same
  * `POST`, with deliveries through its in-process entry tracked like HTTP
  * ones.
@@ -236,11 +264,11 @@ const flowRoute = flowPOST as unknown as QueueRouteHandler;
 const trackedFlowRoute: QueueRouteHandler = Object.assign(
   async (request: Request) => flowRoute(request),
   {
-    [IN_PROCESS_QUEUE_HANDLER]: async (request: Request) => {
-      await trackFlowDelivery(request);
+    [IN_PROCESS_QUEUE_HANDLER]: async (delivery: InProcessDelivery) => {
+      trackInProcessDelivery(delivery);
       const entry = flowRoute[IN_PROCESS_QUEUE_HANDLER];
       if (!entry) throw new Error('the flow route has no in-process entry');
-      return entry(request);
+      return entry(delivery);
     },
   }
 );

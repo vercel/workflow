@@ -392,6 +392,8 @@ describe('workflowEntrypoint queue auth', () => {
       events: { create: writes, list: writes },
       runs: { get: writes },
       queue: writes,
+      // A health check message answers on a stream.
+      streams: { write: vi.fn(async () => {}), close: vi.fn(async () => {}) },
     } as any);
     const route = workflowEntrypoint(
       'globalThis.__private_workflows = new Map();'
@@ -595,11 +597,22 @@ describe('workflowEntrypoint queue auth', () => {
     );
   });
 
-  it("lets the in-process entry of a 'deny' World's route through", async () => {
-    const { routed, route } = installWorld('deny');
+  it("lets the in-process entry of a 'deny' World's route through, without a request", async () => {
+    const { routed, writes, route } = installWorld('deny');
     const entry = route[IN_PROCESS_QUEUE_HANDLER];
-    expect((await entry!(delivery())).status).toBe(200);
-    expect(routed).toHaveLength(1);
+    // A health check message: handled by the runtime, no run touched.
+    await expect(
+      entry!({
+        message: { __healthCheck: true, correlationId: 'probe' },
+        meta: {
+          queueName: '__wkf_workflow_probe',
+          messageId: 'msg_probe' as never,
+          attempt: 1,
+        },
+      })
+    ).resolves.toBeUndefined();
+    expect(routed).toHaveLength(0);
+    expect(writes).not.toHaveBeenCalled();
   });
 
   it("asks a 'deny' World for the mode in effect for the SDK prefix", async () => {

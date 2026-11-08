@@ -13,6 +13,8 @@ import {
   type Event,
   getQueueTopicPrefix,
   IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  type QueueDeliveryMeta,
   type QueueRouteHandler,
   type RunInput,
   resolveQueueNamespace,
@@ -315,10 +317,14 @@ export function workflowEntrypoint(
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
 
-  const handler = (worldHandlers: World) =>
-    worldHandlers.createQueueHandler(
-      workflowPrefix,
-      withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
+  /**
+   * The runtime's handler of one delivery: what the World's route handler
+   * (`createQueueHandler`) calls once it has parsed the request, and what an
+   * in-process delivery reaches directly.
+   */
+  const deliveryHandler = (worldHandlers: World) =>
+    withRunInputs(worldHandlers)(
+      async (message_, metadata: QueueDeliveryMeta, activity) => {
         // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
         // the instant this consumer began, before message parsing. Only used
         // when the message turns out to carry resume timing; taking it
@@ -658,7 +664,7 @@ export function workflowEntrypoint(
             }
           );
         });
-      })
+      }
     );
 
   // The handler, with the World it was built for (which declares how its
@@ -666,7 +672,13 @@ export function workflowEntrypoint(
   // `createQueueAuthRefusalLogger`).
   let cachedRoute:
     | {
+        /** The World's route handler around `deliver`: the HTTP shape. */
         handler: (req: Request) => Promise<Response>;
+        /** The runtime's handler, as an in-process delivery reaches it. */
+        deliver: (
+          message: unknown,
+          meta: QueueDeliveryMeta
+        ) => Promise<unknown>;
         world: World;
         logQueueAuthRefusal: (reason?: QueueAuthRefusalReason) => void;
       }
@@ -678,88 +690,90 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  /**
-   * One delivery, over either transport. An HTTP request is checked against
-   * the World's queue auth mode before anything else; an in-process delivery
-   * comes from a World the app handed this route to, in the app's own
-   * process, and is not.
-   */
-  const serve = async (req: Request, transport: 'http' | 'in-process') => {
-    invocationCount += 1;
-    const handlerCached = cachedRoute !== undefined;
-    // A server span for a request; an in-process delivery is not one.
-    const spanKind = await getSpanKind(
-      transport === 'http' ? 'SERVER' : 'INTERNAL'
-    );
+  /** The handler and the World, built on the first delivery and kept. */
+  const initRoute = async () => {
+    if (cachedRoute) return cachedRoute;
+    cachedRoute = await trace('workflow.route.init', async () => {
+      // The full runtime World, not `getWorldHandlers()`. That accessor
+      // owns a second, build-time-safe cache, so calling it here built a
+      // second World in the same process: duplicate connection pools and
+      // queue workers for a stateful World, plus a second copy of that
+      // world package's modules once it is bundled, which is what
+      // silently demoted the events WebSocket transport to HTTP. #3665.
+      //
+      // The span keeps its original name. It is a distinct span from the
+      // per-request `workflow.route.get_world` at the top of the flow
+      // route, and renaming it would collide with that one.
+      const worldHandlers = await trace(
+        'workflow.route.get_world_handlers',
+        async () => getWorld()
+      );
+      logQueueAuthSetting(worldHandlers);
+      const deliver = deliveryHandler(worldHandlers);
+      return {
+        handler: worldHandlers.createQueueHandler(workflowPrefix, deliver),
+        deliver,
+        world: worldHandlers,
+        logQueueAuthRefusal: createQueueAuthRefusalLogger(),
+      };
+    });
+    return cachedRoute;
+  };
 
+  /** The attributes every `workflow.route.flow` span carries. */
+  const routeAttributes = (transport: 'http' | 'in-process') => {
+    invocationCount += 1;
+    return {
+      ...Attribute.WorkflowRouteType('flow'),
+      ...Attribute.WorkflowRouteTransport(transport),
+      ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
+      ...Attribute.WorkflowRouteHandlerCached(cachedRoute !== undefined),
+      ...Attribute.WorkflowRouteInvocationCount(invocationCount),
+      ...Attribute.WorkflowRouteEntrypointAgeMs(
+        Date.now() - entrypointCreatedAt
+      ),
+      ...(routeModuleBodyInitMs === undefined
+        ? {}
+        : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
+      ...Attribute.HttpRoute(WORKFLOW_FLOW_ROUTE),
+    };
+  };
+
+  /**
+   * One delivery over HTTP: a request to the route. Checked against the
+   * World's queue auth mode before anything else.
+   */
+  const serve = async (req: Request) => {
+    const attributes = routeAttributes('http');
     return trace(
       'workflow.route.flow',
       {
-        kind: spanKind,
+        kind: await getSpanKind('SERVER'),
         attributes: {
-          ...Attribute.WorkflowRouteType('flow'),
-          ...Attribute.WorkflowRouteTransport(transport),
-          ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
-          ...Attribute.WorkflowRouteHandlerCached(handlerCached),
-          ...Attribute.WorkflowRouteInvocationCount(invocationCount),
-          ...Attribute.WorkflowRouteEntrypointAgeMs(
-            Date.now() - entrypointCreatedAt
-          ),
-          ...(routeModuleBodyInitMs === undefined
-            ? {}
-            : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
-          ...(transport === 'http'
-            ? Attribute.HttpRequestMethod(req.method)
-            : {}),
-          ...Attribute.HttpRoute(WORKFLOW_FLOW_ROUTE),
+          ...attributes,
+          ...Attribute.HttpRequestMethod(req.method),
         },
       },
       async (span) => {
-        if (!cachedRoute) {
-          cachedRoute = await trace('workflow.route.init', async () => {
-            // The full runtime World, not `getWorldHandlers()`. That accessor
-            // owns a second, build-time-safe cache, so calling it here built a
-            // second World in the same process: duplicate connection pools and
-            // queue workers for a stateful World, plus a second copy of that
-            // world package's modules once it is bundled, which is what
-            // silently demoted the events WebSocket transport to HTTP. #3665.
-            //
-            // The span keeps its original name. It is a distinct span from the
-            // per-request `workflow.route.get_world` at the top of the flow
-            // route, and renaming it would collide with that one.
-            const worldHandlers = await trace(
-              'workflow.route.get_world_handlers',
-              async () => getWorld()
-            );
-            logQueueAuthSetting(worldHandlers);
-            return {
-              handler: handler(worldHandlers),
-              world: worldHandlers,
-              logQueueAuthRefusal: createQueueAuthRefusalLogger(),
-            };
-          });
-        }
+        const route = await initRoute();
 
         // Before the handler reads the body or touches any run: a request
-        // that does not carry the app's queue key is refused and dropped
-        // (see `authorizeQueueDelivery`). Covers every delivery
-        // to this route, health checks and invocations included. An
-        // in-process delivery is not a request: it came through
-        // `registerHandler`, from the World in this process.
-        const refusal =
-          transport === 'http'
-            ? await authorizeQueueDelivery(
-                cachedRoute.world,
-                req,
-                workflowPrefix
-              )
-            : undefined;
+        // that does not carry the app's queue key, or any request when the
+        // route takes no HTTP, is refused and dropped (see
+        // `authorizeQueueDelivery`). Covers every delivery to this route,
+        // health checks and invocations included.
+        const refusal = await authorizeQueueDelivery(
+          route.world,
+          req,
+          workflowPrefix
+        );
         if (refusal) {
-          cachedRoute.logQueueAuthRefusal(refusal.reason);
-          // Counted, not awaited: the 401 does not wait on a meter. The route
-          // label is the route template, never the request's path: routers
-          // send `/flow/`, `/flow//` and the like to this same handler, so the
-          // path would let a forgery flood mint unbounded series.
+          route.logQueueAuthRefusal(refusal.reason);
+          // Counted, not awaited: the refusal does not wait on a meter. The
+          // route label is the route template, never the request's path:
+          // routers send `/flow/`, `/flow//` and the like to this same
+          // handler, so the path would let a forgery flood mint unbounded
+          // series.
           void recordQueueDeliveryRefused({
             world: resolveWorkflowTargetWorld(),
             route: WORKFLOW_FLOW_ROUTE,
@@ -771,7 +785,7 @@ export function workflowEntrypoint(
           return refusal.response;
         }
 
-        const response = await cachedRoute.handler(req);
+        const response = await route.handler(req);
         if (response instanceof Response) {
           span?.setAttributes(
             Attribute.HttpResponseStatusCode(response.status)
@@ -782,11 +796,38 @@ export function workflowEntrypoint(
     );
   };
 
-  const route: QueueRouteHandler = withHealthCheck((req) => serve(req, 'http'));
+  /**
+   * One delivery in process: from a World the app handed this route to
+   * (`registerHandler`), in the app's own process, with the message and its
+   * metadata and no request. Not a request from the network, so it is not
+   * checked as one, and its span is `INTERNAL` with the delivery's identity
+   * where an HTTP delivery's has the request's.
+   */
+  const deliverInProcess = async ({ message, meta }: InProcessDelivery) => {
+    const attributes = routeAttributes('in-process');
+    return trace(
+      'workflow.route.flow',
+      {
+        kind: await getSpanKind('INTERNAL'),
+        attributes: {
+          ...attributes,
+          ...Attribute.MessagingDestinationName(meta.queueName),
+          ...Attribute.MessagingMessageId(meta.messageId),
+          ...Attribute.WorkflowDeliveryAttempt(meta.attempt),
+          ...(meta.deliveryCount !== undefined
+            ? Attribute.WorkflowDeliveryCount(meta.deliveryCount)
+            : {}),
+        },
+      },
+      async () => (await initRoute()).deliver(message, meta)
+    );
+  };
+
+  const route: QueueRouteHandler = withHealthCheck(serve);
   // Not enumerable: a copy of the route made by spreading it keeps serving
   // HTTP, and only a World handed the route itself finds the entry.
   Object.defineProperty(route, IN_PROCESS_QUEUE_HANDLER, {
-    value: (req: Request) => serve(req, 'in-process'),
+    value: deliverInProcess,
     enumerable: false,
   });
   return route;
