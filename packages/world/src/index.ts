@@ -110,6 +110,7 @@ export {
   getQueueTopicPrefix,
   getRunQueueNamespace,
   HealthCheckPayloadSchema,
+  IN_PROCESS_QUEUE_HANDLER,
   isIntermediateWaitHop,
   isSingleOrchestratorMessage,
   MessageId,

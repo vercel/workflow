@@ -4,7 +4,7 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
-  NORMALIZE_REQUEST_CODE,
+  createWrappedWorkflowRouteCode,
   resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
   writeFileIfChanged,
@@ -92,13 +92,11 @@ export class LocalBuilder extends BaseBuilder {
     // Normalize request, needed for preserving request through astro
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
-      (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
-  const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
-}
-
-export const prerender = false;`
+      (_match, options = '') =>
+        createWrappedWorkflowRouteCode(
+          `workflowEntrypoint(workflowCode${options})`,
+          '\n\nexport const prerender = false;'
+        )
     );
     // These files are generated into the Astro pages directory, which Vite
     // watches in dev, so an identical rewrite would still invalidate the

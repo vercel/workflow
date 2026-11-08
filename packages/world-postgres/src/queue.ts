@@ -17,6 +17,7 @@ import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  IN_PROCESS_QUEUE_HANDLER,
   isSingleOrchestratorMessage,
   MessageId,
   parseQueueName,
@@ -24,6 +25,7 @@ import {
   type Queue,
   QueuePayloadSchema,
   QueuePrefix,
+  type QueueRouteHandler,
   resolveQueueNamespace,
   singleOrchestratorRunIdOf,
   type ValidQueueName,
@@ -136,10 +138,11 @@ function envTimeoutMs(name: string, fallback: number): number {
 }
 
 /**
- * Per-request deadlines for the loopback delivery request. `0` disables the
- * deadline. An operator who prefers a hung handler to be redelivered rather
- * than hold its worker slot until restart sets these to a value above the
- * longest inline step they expect.
+ * Per-delivery deadlines. `0` disables the deadline. An operator who prefers
+ * a hung handler to be redelivered rather than hold its worker slot until
+ * restart sets these to a value above the longest inline step they expect.
+ * Over HTTP they are the request's headers and body deadlines; an in-process
+ * delivery has the headers deadline to respond, and no body deadline.
  */
 export function getDeliveryTimeouts() {
   return {
@@ -205,6 +208,44 @@ type HttpExecutionResult =
     };
 
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
+
+/**
+ * Rejects when `signal` aborts, with the error a transport abort produces
+ * (`AbortError`), so a delivery aborted by a shutdown or a deadline fails its
+ * Graphile job and is redelivered, as an aborted HTTP delivery is. The
+ * handler itself keeps running; the job is released, not the work.
+ */
+function untilAborted(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const fail = () => {
+      const reason = signal.reason;
+      if (reason instanceof Error && reason.name === 'AbortError') {
+        reject(reason);
+        return;
+      }
+      const error = new Error(
+        reason instanceof Error ? reason.message : 'Delivery aborted'
+      );
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) fail();
+    else signal.addEventListener('abort', fail, { once: true });
+  });
+}
+
+/** `signal` with the deadline (ms, `0` for none), aborted when either is. */
+function deliverySignal(
+  signal: AbortSignal | undefined,
+  deadlineMs: number
+): AbortSignal | undefined {
+  const signals = [
+    ...(signal ? [signal] : []),
+    ...(deadlineMs > 0 ? [AbortSignal.timeout(deadlineMs)] : []),
+  ];
+  if (signals.length === 0) return undefined;
+  return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
+}
 type LoopbackTarget = { hosts: string[]; port: number };
 
 function executorInput(message: unknown) {
@@ -220,10 +261,7 @@ export type PostgresQueue = Queue & {
   start(): Promise<void>;
   close(): Promise<void>;
   /** Deliver a queue prefix's messages to `handler` in this process (see `Queue.registerHandler`). */
-  registerHandler(
-    prefix: QueuePrefix,
-    handler: (req: Request) => Promise<Response>
-  ): void;
+  registerHandler(prefix: QueuePrefix, handler: QueueRouteHandler): void;
   /** Deliver a queue prefix's messages over HTTP to `path` on the app (see `Queue.registerRoute`). */
   registerRoute(prefix: QueuePrefix, path: string): void;
 };
@@ -316,7 +354,7 @@ export function createQueue(
   const ownPrefix = () =>
     getQueueTopicPrefix('workflow', resolveQueueNamespace(config.namespace));
   /** In-process handlers by queue prefix (`registerHandler`). */
-  const directHandlers = new Map<string, (req: Request) => Promise<Response>>();
+  const directHandlers = new Map<string, QueueRouteHandler>();
   /** HTTP delivery routes by queue prefix (`registerRoute`). */
   const routes = new Map<string, string>();
   /**
@@ -748,19 +786,30 @@ export function createQueue(
     const deliveryRoute = routes.get(prefix) ?? route;
     let response: Response;
     if (directHandler) {
-      // In process, like world-local's `registerHandler`: the request a
-      // route serving `createQueueHandler(prefix, ...)` would get.
+      // In process: the request a route serving
+      // `createQueueHandler(prefix, ...)` would get, through the handler's
+      // in-process entry when it has one (the Workflow SDK's flow route,
+      // which is not checked as an HTTP request is), else the handler
+      // itself. Queue shutdown aborts the delivery through Graphile's
+      // signal, and the headers deadline is the operator's (see
+      // `getDeliveryTimeouts`); either rejects the delivery so the job is
+      // redelivered, while the handler finishes on its own.
       const url = (baseUrl: string) =>
         deliveryRoute
           ? createAppRouteUrl(baseUrl, deliveryRoute)
           : createWorkflowUrl(baseUrl, { type: 'flow' });
-      response = await directHandler(
-        new Request(url(createWorkflowBaseUrl('http://localhost')), {
-          method: 'POST',
-          headers,
-          body,
-        })
+      const signal = deliverySignal(
+        abortSignal,
+        deliveryTimeouts.headersTimeoutMs
       );
+      const request = new Request(
+        url(createWorkflowBaseUrl('http://localhost')),
+        { method: 'POST', headers, body, ...(signal ? { signal } : {}) }
+      );
+      const entry = directHandler[IN_PROCESS_QUEUE_HANDLER] ?? directHandler;
+      response = signal
+        ? await Promise.race([entry(request), untilAborted(signal)])
+        : await entry(request);
     } else {
       const baseUrl = await getExecutionBaseUrl();
       if (!baseUrl) {

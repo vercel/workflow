@@ -44,7 +44,10 @@ export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
 } from './pseudo-package-esbuild-plugin.js';
-export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
+export {
+  createWrappedWorkflowRouteCode,
+  NORMALIZE_REQUEST_CODE,
+} from './request-converter.js';
 export {
   analyzeSerdeCompliance,
   extractClassEntries,

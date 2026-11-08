@@ -44,6 +44,7 @@
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
+    "@workflow/world": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "acorn": "8.16.0",
     "builtin-modules": "5.0.0",

@@ -12,6 +12,8 @@ import { workflowDisplayName } from '@workflow/utils/parse-name';
 import {
   type Event,
   getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  type QueueRouteHandler,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -285,6 +287,12 @@ async function warnOnDeploymentPinningMismatch({
  * The handler loops: replay workflow → execute step inline → replay → ...
  * until the workflow completes, times out, or encounters non-step suspensions.
  *
+ * The returned route also carries its in-process entry under
+ * `IN_PROCESS_QUEUE_HANDLER` (from `@workflow/world`): the same handler, not
+ * checked as an HTTP request is, for a World whose queue runs in the app's
+ * process and was handed this route with `registerHandler`. Only such a
+ * World can reach it; no request can.
+ *
  * @param workflowCode - The workflow bundle code containing all workflow functions
  * @returns A function that can be used as a Vercel API route
  */
@@ -295,7 +303,7 @@ export function workflowEntrypoint(
     routeModuleBodyStartedAt?: number;
     basePath?: string;
   }
-): (req: Request) => Promise<Response> {
+): QueueRouteHandler {
   setWorkflowBasePath(options?.basePath);
 
   const namespace = resolveQueueNamespace(options?.namespace);
@@ -664,10 +672,19 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  return withHealthCheck(async (req) => {
+  /**
+   * One delivery, over either transport. An HTTP request is checked against
+   * the World's queue auth mode before anything else; an in-process delivery
+   * comes from a World the app handed this route to, in the app's own
+   * process, and is not.
+   */
+  const serve = async (req: Request, transport: 'http' | 'in-process') => {
     invocationCount += 1;
     const handlerCached = cachedRoute !== undefined;
-    const spanKind = await getSpanKind('SERVER');
+    // A server span for a request; an in-process delivery is not one.
+    const spanKind = await getSpanKind(
+      transport === 'http' ? 'SERVER' : 'INTERNAL'
+    );
 
     return trace(
       'workflow.route.flow',
@@ -675,6 +692,7 @@ export function workflowEntrypoint(
         kind: spanKind,
         attributes: {
           ...Attribute.WorkflowRouteType('flow'),
+          ...Attribute.WorkflowRouteTransport(transport),
           ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
           ...Attribute.WorkflowRouteHandlerCached(handlerCached),
           ...Attribute.WorkflowRouteInvocationCount(invocationCount),
@@ -684,7 +702,9 @@ export function workflowEntrypoint(
           ...(routeModuleBodyInitMs === undefined
             ? {}
             : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
-          ...Attribute.HttpRequestMethod(req.method),
+          ...(transport === 'http'
+            ? Attribute.HttpRequestMethod(req.method)
+            : {}),
           ...Attribute.HttpRoute(WORKFLOW_FLOW_ROUTE),
         },
       },
@@ -717,8 +737,13 @@ export function workflowEntrypoint(
         // Before the handler reads the body or touches any run: a request
         // that does not carry the app's queue key is refused and dropped
         // (see `authorizeQueueDelivery`). Covers every delivery
-        // to this route, health checks and invocations included.
-        const refusal = await authorizeQueueDelivery(cachedRoute.world, req);
+        // to this route, health checks and invocations included. An
+        // in-process delivery is not a request: it came through
+        // `registerHandler`, from the World in this process.
+        const refusal =
+          transport === 'http'
+            ? await authorizeQueueDelivery(cachedRoute.world, req)
+            : undefined;
         if (refusal) {
           cachedRoute.logQueueAuthRefusal();
           // Counted, not awaited: the 401 does not wait on a meter. The route
@@ -745,5 +770,14 @@ export function workflowEntrypoint(
         return response;
       }
     );
+  };
+
+  const route: QueueRouteHandler = withHealthCheck((req) => serve(req, 'http'));
+  // Not enumerable: a copy of the route made by spreading it keeps serving
+  // HTTP, and only a World handed the route itself finds the entry.
+  Object.defineProperty(route, IN_PROCESS_QUEUE_HANDLER, {
+    value: (req: Request) => serve(req, 'in-process'),
+    enumerable: false,
   });
+  return route;
 }

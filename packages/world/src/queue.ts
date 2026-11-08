@@ -1001,6 +1001,36 @@ export interface InvokeOptions {
  */
 export type QueueAuthMode = 'loopback' | 'skip';
 
+/**
+ * The property under which the Workflow SDK's flow route handler (the
+ * `POST` export of the generated flow route, built by `workflowEntrypoint()`
+ * in `@workflow/core`) exposes its in-process entry: the same handler,
+ * without the checks that only a request from the network needs (the queue
+ * auth check of {@link QueueAuthMode}). Nothing on the wire can name it: a
+ * World reaches it only through a handler the app registered with
+ * {@link Queue.registerHandler}, in the app's own process.
+ *
+ * A World whose queue runs in the app's process delivers to
+ * `handler[IN_PROCESS_QUEUE_HANDLER]` when it is set, and to `handler` itself
+ * otherwise (a queue consumer's own handler, or a flow route built by an
+ * earlier SDK). It aborts the delivery when the request's `signal` aborts: a
+ * shutdown, or a deadline the World set.
+ */
+export const IN_PROCESS_QUEUE_HANDLER: unique symbol = Symbol.for(
+  '@workflow/world//inProcessQueueHandler'
+);
+
+/** See {@link IN_PROCESS_QUEUE_HANDLER}. */
+export type InProcessQueueHandler = (req: Request) => Promise<Response>;
+
+/**
+ * A request handler a World's queue delivers to ({@link Queue.registerHandler}),
+ * optionally carrying its in-process entry ({@link IN_PROCESS_QUEUE_HANDLER}).
+ */
+export type QueueRouteHandler = ((req: Request) => Promise<Response>) & {
+  [IN_PROCESS_QUEUE_HANDLER]?: InProcessQueueHandler;
+};
+
 export interface Queue {
   getDeploymentId(): Promise<string>;
 
@@ -1215,11 +1245,11 @@ export interface Queue {
    * Keyed by the exact prefix: registering `__wkf_workflow_` also takes the
    * Workflow SDK's own messages. A queue consumer other than the Workflow SDK
    * uses a prefix of its own, `__{namespace}_wkf_workflow_`.
+   *
+   * A handler that carries an in-process entry ({@link IN_PROCESS_QUEUE_HANDLER},
+   * as the Workflow SDK's flow route does) is delivered to through that entry.
    */
-  registerHandler?(
-    prefix: QueuePrefix,
-    handler: (req: Request) => Promise<Response>
-  ): void;
+  registerHandler?(prefix: QueuePrefix, handler: QueueRouteHandler): void;
 
   /**
    * Optional. The route (a path on the app's base URL, such as

@@ -4,10 +4,12 @@ import { JsonTransport } from '@vercel/queue';
 import { setWorkflowBasePath } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
+  IN_PROCESS_QUEUE_HANDLER,
   MessageId,
   parseQueueName,
   type Queue,
   type QueuePayload,
+  type QueueRouteHandler,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   type ValidQueueName,
 } from '@workflow/world';
@@ -1428,6 +1430,101 @@ describe('postgres queue http execution', () => {
     expect(() =>
       queue.registerHandler('agent' as never, async () => Response.json({}))
     ).toThrow();
+  });
+
+  it("delivers to a registered handler's in-process entry when it has one", async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const viaRoute = vi.fn(async () => Response.json({ ok: true }));
+    const viaEntry = vi.fn(async (req: Request) => {
+      expect(req.headers.get('x-vqs-queue-name')).toBe('__wkf_workflow_test');
+      expect(await req.json()).toEqual({ runId: 'run_01ABC' });
+      return Response.json({ ok: true });
+    });
+    const handler: QueueRouteHandler = Object.assign(viaRoute, {
+      [IN_PROCESS_QUEUE_HANDLER]: viaEntry,
+    });
+    queue.registerHandler('__wkf_workflow_', handler);
+    await queue.start();
+
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(viaEntry).toHaveBeenCalledOnce();
+    expect(viaRoute).not.toHaveBeenCalled();
+  });
+
+  it('calls a registered handler without an entry as the request handler', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const handler = vi.fn(async () => Response.json({ ok: true }));
+    queue.registerHandler('__wkf_workflow_', handler);
+    await queue.start();
+
+    await getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { job: { attempts: 1 } }
+    );
+
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it('fails an in-process delivery when the job is aborted, and the handler sees it', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    let signal: AbortSignal | null = null;
+    const entered = Promise.withResolvers<void>();
+    queue.registerHandler('__wkf_workflow_', async (req) => {
+      signal = req.signal;
+      entered.resolve();
+      // Hangs, as a handler running a long inline step does.
+      await new Promise(() => {});
+      return Response.json({ ok: true });
+    });
+    await queue.start();
+
+    const controller = new AbortController();
+    const execution = getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { abortSignal: controller.signal, job: { attempts: 1 } }
+    );
+    await entered.promise;
+    expect(signal!.aborted).toBe(false);
+    controller.abort();
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    expect(signal!.aborted).toBe(true);
+  });
+
+  it('fails an in-process delivery that does not respond within the headers deadline', async () => {
+    process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    queue.registerHandler('__wkf_workflow_', async () => {
+      await new Promise(() => {});
+      return Response.json({ ok: true });
+    });
+    await queue.start();
+
+    await expect(
+      getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+        { job: { attempts: 1 } }
+      )
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it('places no deadline on an in-process delivery unless the operator sets one', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    queue.registerHandler('__wkf_workflow_', async (req) => {
+      // No deadline, no shutdown: nothing can abort the request.
+      expect(req.signal.aborted).toBe(false);
+      return Response.json({ ok: true });
+    });
+    await queue.start();
+    await expect(
+      getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+        { job: { attempts: 1 } }
+      )
+    ).resolves.toBeUndefined();
   });
 
   it('leaves job attempts for redeliveries past core max deliveries', async () => {

@@ -408,6 +408,9 @@ importers:
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../world
       acorn:
         specifier: 8.16.0
         version: 8.16.0
