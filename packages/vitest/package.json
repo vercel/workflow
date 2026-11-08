@@ -27,7 +27,7 @@
     "build": "tsc",
     "clean": "tsc --build --clean && rm -rf dist ||:",
     "dev": "tsc --watch",
-    "test": "vitest run src"
+    "test": "vitest run --config=../../vitest.config.ts src"
   },
   "dependencies": {
     "@workflow/builders": "workspace:*",
