@@ -343,6 +343,11 @@ export default {
         '/.well-known/workflow/v1/flow',
         'workflow/workflows.mjs'
       );
+      // Not on Vercel: the Vercel World delivers through its queue, and the
+      // plugin would put the workflow bundle on every function's cold start.
+      if (!isVercelDeploy) {
+        addWorkerPlugin(nitro);
+      }
 
       // Nitro v3+ Vercel deploy: configure function rules for the combined
       // flow handler so it gets the queue triggers + max duration that the
@@ -508,6 +513,106 @@ function addDashboardHandler(nitro: Nitro, basename: string) {
 
 type VirtualHandlerPath = 'workflow/webhook.mjs' | 'workflow/workflows.mjs';
 
+/**
+ * The code of a development-mode loader for a generated bundle: imports the
+ * file from the build directory at call time, cache-busted by its mtime so
+ * each successful rebuild loads fresh code, and keeps `.nitro/workflow/*.mjs`
+ * out of Nitro's own bundle graph (which avoids rebuild loops and stale
+ * dependency graphs during HMR). `preload` runs before a new version is
+ * imported.
+ */
+function devLoaderCode(
+  nitro: Nitro,
+  buildPath: VirtualHandlerPath,
+  preload: string
+) {
+  const handlerImportPath = JSON.stringify(
+    join(nitro.options.buildDir, buildPath)
+  );
+  return /* js */ `
+      import { statSync } from "node:fs";
+      import { pathToFileURL } from "node:url";
+
+      const handlerPath = ${handlerImportPath};
+      let currentVersion = "";
+      let currentImportPath = "";
+
+      async function loadPOST() {
+        const version = String(statSync(handlerPath).mtimeMs);
+        if (version !== currentVersion) {
+          currentVersion = version;
+          currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
+          ${preload}
+        }
+        return (await import(currentImportPath)).POST;
+      }
+  `;
+}
+
+const WORKER_PLUGIN_VIRTUAL_ID = '#workflow/worker-plugin';
+
+/**
+ * Register a Nitro server plugin that hands the flow route to the World when
+ * the server boots, for a World that delivers in process (the Postgres
+ * World; `registerWorkflowHandler` does nothing on any other). Starting the
+ * World stays with the app (a plugin calling `world.start()`): the World
+ * starts its worker on `start()` once the route is registered, in either
+ * order.
+ *
+ * In development the registered handler loads the generated bundle by its
+ * mtime on every delivery, like the dev flow handler, so an edit to a
+ * workflow file takes effect on the next delivery. In a production build the
+ * bundle is imported once.
+ *
+ * A virtual module, so every Nitro framework bundles it into the server
+ * output. `workflow/runtime` is a bare import the bundler resolves, so the
+ * plugin shares the runtime copy the flow handler uses.
+ */
+function addWorkerPlugin(nitro: Nitro) {
+  const buildPath: VirtualHandlerPath = 'workflow/workflows.mjs';
+  const handlerImportPath = JSON.stringify(
+    join(nitro.options.buildDir, buildPath)
+  );
+  const stepsImportPath = JSON.stringify(
+    join(nitro.options.buildDir, 'workflow/steps.mjs')
+  );
+  const entry = `Symbol.for('@workflow/world//inProcessQueueHandler')`;
+  const register = (routeCode: string, options: string) => /* js */ `
+      export default () => {
+        import('workflow/runtime')
+          .then(({ registerWorkflowHandler }) =>
+            registerWorkflowHandler(${routeCode}${options})
+          )
+          .catch((error) => {
+            console.error('[workflow] Failed to register the flow route with the World:', error);
+          });
+      };
+  `;
+  nitro.options.virtual ||= {};
+  nitro.options.virtual[WORKER_PLUGIN_VIRTUAL_ID] = nitro.options.dev
+    ? /* js */ `
+      ${devLoaderCode(
+        nitro,
+        buildPath,
+        `await import(/* @vite-ignore */ pathToFileURL(${stepsImportPath}).href + "?t=" + version);`
+      )}
+      const route = Object.assign(
+        async (request) => (await loadPOST())(request),
+        { [${entry}]: async (request) => (await loadPOST())[${entry}](request) }
+      );
+      ${register('route', ', { reloads: true }')}
+    `
+    : /* js */ `
+      import ${handlerImportPath};
+      import { POST } from ${handlerImportPath};
+      ${register('POST', '')}
+    `;
+  nitro.options.plugins ||= [];
+  if (!nitro.options.plugins.includes(WORKER_PLUGIN_VIRTUAL_ID)) {
+    nitro.options.plugins.push(WORKER_PLUGIN_VIRTUAL_ID);
+  }
+}
+
 function addVirtualHandler(
   nitro: Nitro,
   route: string,
@@ -536,22 +641,7 @@ function addVirtualHandler(
     if (isNitroV2(nitro)) {
       nitro.options.virtual[`#${buildPath}`] = /* js */ `
       import { fromWebHandler } from "h3";
-      import { statSync } from "node:fs";
-      import { pathToFileURL } from "node:url";
-
-      const handlerPath = ${handlerImportPath};
-      let currentVersion = "";
-      let currentImportPath = "";
-
-      async function loadPOST() {
-        const version = String(statSync(handlerPath).mtimeMs);
-        if (version !== currentVersion) {
-          currentVersion = version;
-          currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
-          ${preloadSteps[buildPath]}
-        }
-        return (await import(currentImportPath)).POST;
-      }
+      ${devLoaderCode(nitro, buildPath, preloadSteps[buildPath])}
 
       export default fromWebHandler(async (request, context) => {
         const POST = await loadPOST();
@@ -560,22 +650,7 @@ function addVirtualHandler(
     `;
     } else {
       nitro.options.virtual[`#${buildPath}`] = /* js */ `
-      import { statSync } from "node:fs";
-      import { pathToFileURL } from "node:url";
-
-      const handlerPath = ${handlerImportPath};
-      let currentVersion = "";
-      let currentImportPath = "";
-
-      async function loadPOST() {
-        const version = String(statSync(handlerPath).mtimeMs);
-        if (version !== currentVersion) {
-          currentVersion = version;
-          currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
-          ${preloadSteps[buildPath]}
-        }
-        return (await import(currentImportPath)).POST;
-      }
+      ${devLoaderCode(nitro, buildPath, preloadSteps[buildPath])}
 
       export default async ({ req }) => {
         try {

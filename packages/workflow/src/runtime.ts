@@ -9,6 +9,7 @@ export {
   type HealthCheckOptions,
   type HealthCheckResult,
   healthCheck,
+  type RegisterWorkflowHandlerOptions,
   refreshWorkflowHandler,
   registerWorkflowHandler,
   setWorld,

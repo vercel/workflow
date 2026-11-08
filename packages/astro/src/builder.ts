@@ -4,6 +4,7 @@ import {
   type AstroConfig,
   BaseBuilder,
   createBaseBuilderConfig,
+  createWorkflowWorkerModuleCode,
   createWrappedWorkflowRouteCode,
   resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
@@ -26,6 +27,8 @@ const WORKFLOW_ROUTES = [
  * an underscore. Without it, Astro 5 warns about the manifest on every scan.
  */
 const ASTRO_MANIFEST_FILE_NAME = '_manifest.json';
+/** The worker module, in the pages directory; see `LocalBuilder.build`. */
+export const ASTRO_WORKER_FILE_NAME = '_worker.js';
 
 export class LocalBuilder extends BaseBuilder {
   #pagesDir: string;
@@ -102,6 +105,21 @@ export class LocalBuilder extends BaseBuilder {
     // watches in dev, so an identical rewrite would still invalidate the
     // module and force a redundant recompile.
     await writeFileIfChanged(workflowsRouteFile, workflowsRouteContent);
+
+    // `_worker.js`: runs the process as a worker for a World that delivers
+    // in process. Prefixed with an underscore so Astro's router skips it. The
+    // integration loads it at dev-server start and emits it as the
+    // `workflow-worker.mjs` server entry of a production build. Vite's
+    // dynamic `import()` returns the rebuilt route in development, so the
+    // handler loads it on every delivery.
+    await writeFileIfChanged(
+      join(workflowGeneratedDir, ASTRO_WORKER_FILE_NAME),
+      createWorkflowWorkerModuleCode({
+        routeSpecifier: './flow.js',
+        wrapped: true,
+        reloads: true,
+      })
+    );
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
 

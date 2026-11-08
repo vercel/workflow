@@ -98,6 +98,7 @@ export {
   healthCheck,
 } from './runtime/helpers.js';
 export {
+  type RegisterWorkflowHandlerOptions,
   refreshWorkflowHandler,
   registerWorkflowHandler,
 } from './runtime/register-handler.js';

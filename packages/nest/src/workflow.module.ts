@@ -49,6 +49,13 @@ type WorldLifecycle = {
   close?: () => Promise<void>;
 };
 
+type WorkflowRuntime = {
+  getWorld: () => Promise<WorldLifecycle>;
+  registerWorkflowHandler: (
+    route: (req: Request) => Promise<Response>
+  ) => Promise<boolean>;
+};
+
 /**
  * Load the target World from the host application's `workflow` install.
  *
@@ -62,7 +69,10 @@ type WorldLifecycle = {
  * Resolving from the application's root is therefore required, not an
  * optimisation. This mirrors `getRuntimeRequire()` in `@workflow/core`.
  */
-async function loadWorld(workingDir: string): Promise<WorldLifecycle> {
+async function loadRuntime(
+  workingDir: string,
+  purpose: string
+): Promise<WorkflowRuntime> {
   const specifier = 'workflow/runtime';
   let resolved: string;
   try {
@@ -71,15 +81,20 @@ async function loadWorld(workingDir: string): Promise<WorldLifecycle> {
     ).href;
   } catch (error) {
     throw new Error(
-      `[@workflow/nest] manageWorldLifecycle is enabled but "${specifier}" ` +
+      `[@workflow/nest] ${purpose}, but "${specifier}" ` +
         `could not be resolved from ${workingDir}. Install the \`workflow\` ` +
         `package in your application, or set \`workingDir\` to the directory ` +
         `that has it. (${error instanceof Error ? error.message : error})`
     );
   }
-  const { getWorld } = (await import(resolved)) as {
-    getWorld: () => Promise<WorldLifecycle>;
-  };
+  return (await import(resolved)) as WorkflowRuntime;
+}
+
+async function loadWorld(workingDir: string): Promise<WorldLifecycle> {
+  const { getWorld } = await loadRuntime(
+    workingDir,
+    'manageWorldLifecycle is enabled'
+  );
   return await getWorld();
 }
 
@@ -202,6 +217,14 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
       this.#assertBundlesExist();
     } else {
       await this.#build(basePath);
+    }
+
+    // Before the World starts: a World that delivers in process (the
+    // Postgres World) runs its worker only in a process that registered the
+    // flow route. Build Output deployments keep the bundles in dedicated
+    // functions, and the Vercel World delivers through its queue.
+    if (!process.env.VERCEL) {
+      await this.#registerFlowHandler();
     }
 
     if (this.options.manageWorldLifecycle) {
@@ -429,6 +452,31 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
   async #startWorld(): Promise<void> {
     const world = await loadWorld(this.options.workingDir);
     await world.start?.();
+  }
+
+  /**
+   * Hands the built flow route to the World (`registerWorkflowHandler`,
+   * which does nothing on a World that delivers over HTTP or by
+   * subscription). The controller serves the same bundle, so a Nest
+   * restart in development (the usual watch mode) picks up a rebuilt route.
+   */
+  async #registerFlowHandler(): Promise<void> {
+    try {
+      const [{ registerWorkflowHandler }, bundle] = await Promise.all([
+        loadRuntime(this.options.workingDir, 'The flow route is registered'),
+        import(pathToFileURL(join(this.options.outDir, 'workflows.mjs')).href),
+      ]);
+      await registerWorkflowHandler(
+        (bundle as { POST: (req: Request) => Promise<Response> }).POST
+      );
+    } catch (error) {
+      console.error(
+        '[@workflow/nest] Could not register the flow route with the World; ' +
+          'a World that delivers in process (the Postgres World) runs no ' +
+          'worker in this process until it is registered.',
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   async #preloadBundles(): Promise<void> {

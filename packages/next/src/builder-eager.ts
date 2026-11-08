@@ -12,6 +12,7 @@ import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   assertFlowBundleIsSandboxSafe,
   type NextConfig as BuilderNextConfig,
+  createWorkflowWorkerModuleCode,
   type WorkflowManifest,
 } from '@workflow/builders';
 import type { NextConfig as ProjectNextConfig } from 'next';
@@ -1035,29 +1036,12 @@ export async function getNextBuilderEager(
     private async writeWorkerModule(
       workflowGeneratedDir: string
     ): Promise<void> {
-      const content = `// biome-ignore-all lint: generated file
-/* eslint-disable */
-import { getWorld, registerWorkflowHandler } from 'workflow/runtime';
-import { POST } from './route.js';
-
-/**
- * Runs this process as a Workflow worker: hands the flow route to the World,
- * for a World that delivers in process (the Postgres World), and starts the
- * World. Call it from \`register()\` in \`instrumentation.ts\`, in the Node.js
- * runtime, when the app uses such a World. Every delivery then runs in this
- * process, through the route's in-process entry, never over HTTP, so a copy
- * of the app that serves no web traffic still runs jobs. In development a
- * rebuilt route re-registers itself, so edits to workflow files take effect.
- */
-export async function startWorkflowWorker() {
-  await registerWorkflowHandler(POST);
-  const world = await getWorld();
-  await world.start?.();
-}
-`;
+      // Imported once: Turbopack's `import()` keeps returning the first module,
+      // so a rebuilt route re-registers itself when it is evaluated instead
+      // (see `refreshWorkerRoute`).
       await writeFileIfChanged(
         join(workflowGeneratedDir, 'flow/worker.js'),
-        content
+        createWorkflowWorkerModuleCode({ routeSpecifier: './route.js' })
       );
     }
 

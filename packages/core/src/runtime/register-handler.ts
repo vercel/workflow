@@ -6,6 +6,22 @@ import {
 } from '@workflow/world';
 import { getWorld } from './world.js';
 
+export interface RegisterWorkflowHandlerOptions {
+  /**
+   * The queue namespace the route was built with (`WORKFLOW_QUEUE_NAMESPACE`
+   * when unset), which names the prefix the World delivers to the route.
+   */
+  namespace?: string;
+  /**
+   * `true` when `route` loads the current flow route on every delivery (a
+   * development server rebuilds the route when a workflow file changes, and
+   * the handler imports the rebuilt module), so a route module evaluated
+   * later must not replace it: {@link refreshWorkflowHandler} does nothing
+   * for the rest of the process.
+   */
+  reloads?: boolean;
+}
+
 /**
  * Hands the app's flow route (the `POST` export of the generated flow route,
  * built by `workflowEntrypoint()`) to the World, for a World whose queue
@@ -18,14 +34,10 @@ import { getWorld } from './world.js';
  * copy of the app that serves no web traffic still runs jobs; the framework
  * integrations do. A registration after `start()` works too: the World
  * starts its worker then. Returns whether the route was registered.
- *
- * `namespace` is the queue namespace the route was built with
- * (`WORKFLOW_QUEUE_NAMESPACE` when unset), which names the prefix the World
- * delivers to the route.
  */
 export async function registerWorkflowHandler(
   route: QueueRouteHandler,
-  options?: { namespace?: string }
+  options?: RegisterWorkflowHandlerOptions
 ): Promise<boolean> {
   const world = await getWorld();
   if (
@@ -38,7 +50,9 @@ export async function registerWorkflowHandler(
     getQueueTopicPrefix('workflow', resolveQueueNamespace(options?.namespace)),
     route
   );
-  workerState().registered = true;
+  const state = workerState();
+  state.registered = true;
+  if (options?.reloads) state.reloads = true;
   return true;
 }
 
@@ -51,6 +65,8 @@ export async function registerWorkflowHandler(
 const workerState = () =>
   globalSingleton('@workflow/core//inProcessWorker', 1, () => ({
     registered: false,
+    /** The registered handler reloads the route itself; see `reloads`. */
+    reloads: false,
   }));
 
 /**
@@ -60,13 +76,15 @@ const workerState = () =>
  * rebuilt when a workflow file changes, and the handler registered at startup
  * would otherwise keep running the code it was built from. Anywhere else (a
  * process that is not a worker, a build) it does nothing, so evaluating the
- * route has no side effect. Never rejects: a failure is logged.
+ * route has no side effect, and neither does it when the registered handler
+ * reloads the route itself (`reloads`). Never rejects: a failure is logged.
  */
 export function refreshWorkflowHandler(
   route: QueueRouteHandler,
-  options?: { namespace?: string }
+  options?: Pick<RegisterWorkflowHandlerOptions, 'namespace'>
 ): void {
-  if (!workerState().registered) return;
+  const state = workerState();
+  if (!state.registered || state.reloads) return;
   registerWorkflowHandler(route, options).catch((error) => {
     console.error(
       '[workflow] Failed to re-register the flow route with the World:',

@@ -4,7 +4,50 @@ import { type AstroConfig, createBuildQueue } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
-import { LocalBuilder, VercelBuilder } from './builder.js';
+import {
+  ASTRO_WORKER_FILE_NAME,
+  LocalBuilder,
+  VercelBuilder,
+} from './builder.js';
+
+/** The worker module's path in the pages directory; see `LocalBuilder`. */
+function workerModulePath(srcDir: string): string {
+  return join(srcDir, 'pages/.well-known/workflow/v1', ASTRO_WORKER_FILE_NAME);
+}
+
+/**
+ * The production worker entry: `dist/server/workflow-worker.mjs`, a second
+ * entry of the server build whose `startWorkflowWorker()` a start script
+ * calls before the server entry, to run the process as a worker for a World
+ * that delivers in process (the Postgres World). Astro has no production
+ * startup hook (the Node adapter loads even middleware on the first
+ * request), so the entry is how a copy of the app that serves no web traffic
+ * runs jobs. Emitted as a chunk of the SSR build so it shares the route's
+ * modules with the server entry.
+ */
+function workerEntryPlugin(workerPath: string) {
+  let ssr = false;
+  return {
+    name: 'workflow:astro-worker-entry',
+    configResolved(config: { build?: { ssr?: boolean | string } }) {
+      ssr = Boolean(config.build?.ssr);
+    },
+    buildStart(this: {
+      emitFile: (file: {
+        type: 'chunk';
+        id: string;
+        fileName: string;
+      }) => string;
+    }) {
+      if (!ssr) return;
+      this.emitFile({
+        type: 'chunk',
+        id: workerPath,
+        fileName: 'workflow-worker.mjs',
+      });
+    },
+  };
+}
 
 export interface WorkflowPluginOptions {
   /**
@@ -22,6 +65,7 @@ export function workflowPlugin(
   let builderOptions: Partial<AstroConfig> = {
     sourcemap: options.sourcemap,
   };
+  let workerPath: string | undefined;
   const enqueue = createBuildQueue();
 
   return {
@@ -32,6 +76,7 @@ export function workflowPlugin(
         updateConfig,
       }: HookParameters<'astro:config:setup'>) => {
         const srcDir = fileURLToPath(config.srcDir);
+        workerPath = workerModulePath(srcDir);
         builderOptions = {
           workingDir: fileURLToPath(config.root),
           dirs: [join(srcDir, 'pages'), join(srcDir, 'workflows')],
@@ -55,7 +100,8 @@ export function workflowPlugin(
             workflowHotUpdatePlugin({
               builder,
               enqueue,
-            }) as any
+            }) as any,
+            workerEntryPlugin(workerPath) as any
           );
         }
         updateConfig({
@@ -63,6 +109,33 @@ export function workflowPlugin(
             plugins: vitePlugins,
           },
         });
+      },
+      // The development server: run it as a worker when the World delivers
+      // in process, as the production worker entry does, since Astro has no
+      // startup hook of its own for an app to do so. Registering decides:
+      // it succeeds only on such a World, and only then is the World started
+      // here. The handler loads the route on every delivery, so edits take
+      // effect without a restart.
+      'astro:server:setup': async ({
+        server,
+      }: HookParameters<'astro:server:setup'>) => {
+        if (process.env.VERCEL_DEPLOYMENT_ID || !workerPath) return;
+        try {
+          const worker = (await server.ssrLoadModule(workerPath)) as {
+            registerWorkflowWorker: () => Promise<boolean>;
+            startWorkflowWorker: () => Promise<void>;
+          };
+          if (await worker.registerWorkflowWorker()) {
+            await worker.startWorkflowWorker();
+          }
+        } catch (error) {
+          console.error(
+            '[workflow] Could not register the flow route with the World; a ' +
+              'World that delivers in process (the Postgres World) runs no ' +
+              'worker in this process until it is registered.',
+            error instanceof Error ? error.message : error
+          );
+        }
       },
       'astro:build:done': async () => {
         if (process.env.VERCEL_DEPLOYMENT_ID) {
