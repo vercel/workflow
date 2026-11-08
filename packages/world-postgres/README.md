@@ -27,9 +27,7 @@ in place before an app using this World is reachable by untrusted clients.
 `POST /.well-known/workflow/v1/flow` is where the worker delivers workflow
 orchestration and queued step invocations. It is mounted in your application
 like any other route, so it is publicly reachable by default, and the queue
-handler, inherited from
-[`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local),
-accepts any request whose `x-vqs-*` headers and queue-name prefix are
+handler accepts any request whose `x-vqs-*` headers and queue-name prefix are
 well-formed, leaving the payload itself to be validated later by the runtime
 that consumes the message. There is no signature, shared secret, or caller check,
 so anyone who can reach the route can forge or replay a workflow or step

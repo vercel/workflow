@@ -1,0 +1,291 @@
+{
+  "recordedFrom": "@workflow/world-local createQueueHandler, before the Postgres World's own handler",
+  "results": {
+    "an orchestrator delivery (spec 8)": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"ok\":true}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_a"
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a delivery without a delivery count or a creation time": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"ok\":true}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_b",
+            "runSpecVersion": 9
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 2,
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a step message whose body carries a Uint8Array": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"ok\":true}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_c",
+            "stepId": "step_parity_c",
+            "stepName": "parityStep",
+            "input": {
+              "__type": "Uint8Array",
+              "data": "AQID+g=="
+            }
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a health check message": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"ok\":true}",
+      "calls": [
+        {
+          "message": {
+            "__healthCheck": true,
+            "correlationId": "parity-probe"
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "an invoke message, whose result is the response": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"result\":{\"answer\":42,\"nested\":{\"ok\":true}}}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_d",
+            "invoke": true,
+            "requestId": "req_parity"
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a handler that asks for a redelivery": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"timeoutSeconds\":30}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_e"
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a handler that hands off (timeoutSeconds 0)": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"timeoutSeconds\":0}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_f",
+            "runSpecVersion": 9
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a handler whose timeoutSeconds is not a number": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"ok\":true}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_g"
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a handler that returns an unrelated object": {
+      "status": 200,
+      "contentType": "application/json",
+      "body": "{\"ok\":true}",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_h"
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a handler that throws": {
+      "status": 500,
+      "contentType": "application/json",
+      "body": "\"Error: parity failure\"",
+      "calls": [
+        {
+          "message": {
+            "runId": "wrun_parity_i"
+          },
+          "meta": {
+            "attempt": 2,
+            "deliveryCount": 5,
+            "createdAt": "2026-11-01T12:00:00.000Z",
+            "queueName": "__wkf_workflow_parity",
+            "messageId": "msg_01PARITY00000000000000000A"
+          }
+        }
+      ]
+    },
+    "a request without delivery headers": {
+      "status": 400,
+      "contentType": "application/json",
+      "body": "{\"error\":\"Missing required headers\"}",
+      "calls": []
+    },
+    "a request whose attempt is not a number": {
+      "status": 400,
+      "contentType": "application/json",
+      "body": "{\"error\":\"Missing required headers\"}",
+      "calls": []
+    },
+    "a request whose delivery count is zero": {
+      "status": 400,
+      "contentType": "application/json",
+      "body": "{\"error\":\"Missing required headers\"}",
+      "calls": []
+    },
+    "a request whose creation time is not a date": {
+      "status": 400,
+      "contentType": "application/json",
+      "body": "{\"error\":\"Missing required headers\"}",
+      "calls": []
+    },
+    "a request for another prefix's queue": {
+      "status": 400,
+      "contentType": "application/json",
+      "body": "{\"error\":\"Unhandled queue\",\"detail\":\"This route handles queue prefix \\\"__wkf_workflow_\\\", not \\\"__other_wkf_workflow_parity\\\".\"}",
+      "calls": []
+    },
+    "a request without a body": {
+      "status": 400,
+      "contentType": "application/json",
+      "body": "{\"error\":\"Missing request body\"}",
+      "calls": []
+    },
+    "a request without a body or delivery headers": {
+      "status": 400,
+      "contentType": "application/json",
+      "body": "{\"error\":\"Missing request body\"}",
+      "calls": []
+    },
+    "two orchestrator deliveries of one single-orchestrator run": {
+      "events": [
+        "start:0",
+        "release:0",
+        "end:0",
+        "start:1",
+        "release:1",
+        "end:1"
+      ],
+      "statuses": [200, 200]
+    },
+    "two deliveries of one spec 8 run": {
+      "events": [
+        "start:0",
+        "start:1",
+        "release:0",
+        "end:0",
+        "release:1",
+        "end:1"
+      ],
+      "statuses": [200, 200]
+    },
+    "an orchestrator delivery and a step message of one single-orchestrator run": {
+      "events": [
+        "start:1",
+        "start:0",
+        "release:0",
+        "end:0",
+        "release:1",
+        "end:1"
+      ],
+      "statuses": [200, 200]
+    },
+    "orchestrator deliveries of two single-orchestrator runs": {
+      "events": [
+        "start:0",
+        "start:1",
+        "release:0",
+        "end:0",
+        "release:1",
+        "end:1"
+      ],
+      "statuses": [200, 200]
+    }
+  }
+}

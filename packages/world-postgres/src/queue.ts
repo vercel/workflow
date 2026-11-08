@@ -34,7 +34,6 @@ import {
   destroyNodeHttpAgents,
   nodeHttpFetch,
 } from '@workflow/world/node-http.js';
-import { createWorld } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
@@ -54,6 +53,7 @@ import {
   resolveJobLeasePolicy,
 } from './job-lease.js';
 import { MessageData } from './message.js';
+import { createDeliveryHandler, createRunGate } from './queue-handler.js';
 
 /**
  * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
@@ -238,14 +238,6 @@ export function createQueue(
   }
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
-  // Only for its queue handler. 'read' so a Postgres app never creates a
-  // queue auth key file or a `.workflow-data` directory: this World declares
-  // queueAuthMode 'skip', and the key is read only if something sends.
-  const localWorld = createWorld({
-    dataDir: undefined,
-    port,
-    queueAuthKey: 'read',
-  });
   // Deliveries go over Node's core HTTP client rather than the global `fetch`:
   // undici's default 300s headers/body deadlines cannot be lifted without a
   // custom dispatcher, and a queue-owned pool keeps these sockets out of the
@@ -291,6 +283,16 @@ export function createQueue(
     },
   };
   const generateMessageId = monotonicFactory();
+  // The receiving side of the single-orchestrator gate: one run's orchestrator
+  // deliveries run one at a time in this process (Graphile's named queue
+  // serializes them across processes). Held by the delivery handler around
+  // the runtime's handler; see `createDeliveryHandler`.
+  const handlerRunGate = createRunGate();
+  const deliveryHandler: Queue['createQueueHandler'] = (prefix, handler) =>
+    createDeliveryHandler(prefix, handler, {
+      runGate: handlerRunGate,
+      deserialize: transport.deserialize,
+    });
 
   function getJobQueueName(): string {
     return `${resolveJobPrefix(config)}flows`;
@@ -339,7 +341,7 @@ export function createQueue(
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     if (!invocations || prefix !== ownPrefix())
-      return localWorld.createQueueHandler(prefix, handler);
+      return deliveryHandler(prefix, handler);
     return async (req) => {
       // Keep transport provenance request-scoped; it is not a World API field.
       const delivery = ExecutorDelivery.safeParse({
@@ -352,100 +354,93 @@ export function createQueue(
         EXECUTOR_WORKER_HEADER,
         EXECUTOR_ATTEMPT_HEADER,
       ].some((header) => req.headers.has(header));
-      return localWorld.createQueueHandler(
-        prefix,
-        async (message, metadata) => {
-          const input = executorInput(message);
-          if (!input) {
-            return handler(message, metadata);
-          }
-          if (!hasDelivery) {
-            // Old workers can still POST ordinary orchestrator deliveries. Move
-            // those to the serialized lane before acknowledging, never run them here.
-            await transferToExecutor(
-              {
-                id: parseQueueName(metadata.queueName).id,
-                data: transport.serialize(message) as Buffer,
-                messageId: metadata.messageId,
-                attempt: metadata.attempt,
-              },
-              input.runId,
-              metadata.attempt,
-              metadata.deliveryCount ?? metadata.attempt
-            );
-            return;
-          }
-          if (!delivery.success)
-            throw new WorkflowWorldError('Invalid executor delivery metadata', {
-              status: 400,
-            });
-          const proof = delivery.data;
-          // Use Graphile's public jobs view, not private tables. This verifies the
-          // actual active task/queue/attempt rather than trusting a boolean header.
-          // It is an admission check, NOT a fence on later journal writes.
-          const { rows } = await pool.query(
-            `SELECT id FROM graphile_worker.jobs
+      return deliveryHandler(prefix, async (message, metadata) => {
+        const input = executorInput(message);
+        if (!input) {
+          return handler(message, metadata);
+        }
+        if (!hasDelivery) {
+          // Old workers can still POST ordinary orchestrator deliveries. Move
+          // those to the serialized lane before acknowledging, never run them here.
+          await transferToExecutor(
+            {
+              id: parseQueueName(metadata.queueName).id,
+              data: transport.serialize(message) as Buffer,
+              messageId: metadata.messageId,
+              attempt: metadata.attempt,
+            },
+            input.runId,
+            metadata.attempt,
+            metadata.deliveryCount ?? metadata.attempt
+          );
+          return;
+        }
+        if (!delivery.success)
+          throw new WorkflowWorldError('Invalid executor delivery metadata', {
+            status: 400,
+          });
+        const proof = delivery.data;
+        // Use Graphile's public jobs view, not private tables. This verifies the
+        // actual active task/queue/attempt rather than trusting a boolean header.
+        // It is an admission check, NOT a fence on later journal writes.
+        const { rows } = await pool.query(
+          `SELECT id FROM graphile_worker.jobs
          WHERE id = $1 AND task_identifier = $2 AND queue_name = $3
            AND locked_by = $4 AND attempts = $5 AND locked_at IS NOT NULL`,
-            [
-              proof.id,
-              executorTask(),
-              executorQueueName(input.runId),
-              proof.worker,
-              proof.attempt,
-            ]
+          [
+            proof.id,
+            executorTask(),
+            executorQueueName(input.runId),
+            proof.worker,
+            proof.attempt,
+          ]
+        );
+        if (rows.length === 0)
+          throw new WorkflowWorldError(
+            'Executor delivery is not active on the run queue',
+            { status: 409 }
           );
-          if (rows.length === 0)
-            throw new WorkflowWorldError(
-              'Executor delivery is not active on the run queue',
-              { status: 409 }
-            );
-          if (input.invoke) {
-            if (!input.requestId)
-              throw new WorkflowWorldError('Invocation requestId is required', {
-                status: 400,
-              });
+        if (input.invoke) {
+          if (!input.requestId)
+            throw new WorkflowWorldError('Invocation requestId is required', {
+              status: 400,
+            });
+          const outcome = await captureInvocationOutcome(
+            () => handler(message, metadata),
+            isTerminalInvocationError
+          );
+          await invocations.respondOutcome(
+            input.runId,
+            input.requestId,
+            outcome
+          );
+          return;
+        }
+        const initial = await invocations.pending(input.runId);
+        // A responded input may have committed just before the previous executor
+        // died. Always drive the run; an empty mailbox alone is not a no-op proof.
+        const feed = invocations.feed(input.runId, initial);
+        return executeWithInputs(
+          feed,
+          () => handler(message, metadata),
+          async (pending) => {
             const outcome = await captureInvocationOutcome(
-              () => handler(message, metadata),
+              () =>
+                handler(
+                  {
+                    runId: input.runId,
+                    invoke: true,
+                    requestId: pending.id,
+                    input: pending.payload,
+                  },
+                  metadata
+                ),
               isTerminalInvocationError
             );
-            await invocations.respondOutcome(
-              input.runId,
-              input.requestId,
-              outcome
-            );
-            return;
+            await invocations.respondOutcome(input.runId, pending.id, outcome);
           }
-          const initial = await invocations.pending(input.runId);
-          // A responded input may have committed just before the previous executor
-          // died. Always drive the run; an empty mailbox alone is not a no-op proof.
-          const feed = invocations.feed(input.runId, initial);
-          return executeWithInputs(
-            feed,
-            () => handler(message, metadata),
-            async (pending) => {
-              const outcome = await captureInvocationOutcome(
-                () =>
-                  handler(
-                    {
-                      runId: input.runId,
-                      invoke: true,
-                      requestId: pending.id,
-                      input: pending.payload,
-                    },
-                    metadata
-                  ),
-                isTerminalInvocationError
-              );
-              await invocations.respondOutcome(
-                input.runId,
-                pending.id,
-                outcome
-              );
-            }
-          );
-        }
-      )(req);
+        );
+      })(req);
     };
   };
 
@@ -1283,7 +1278,6 @@ export function createQueue(
       }
       startPromise = null;
       destroyNodeHttpAgents(httpAgents);
-      await localWorld.close?.();
     },
   };
 }

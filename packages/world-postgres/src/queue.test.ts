@@ -9,10 +9,9 @@ import {
   type Queue,
   type QueuePayload,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
-  ValidQueueName,
+  type ValidQueueName,
 } from '@workflow/world';
 import * as nodeHttp from '@workflow/world/node-http';
-import { createWorld } from '@workflow/world-local';
 import {
   makeWorkerUtils,
   type Runner,
@@ -54,15 +53,6 @@ vi.mock('@workflow/utils/get-port', () => ({
   getWorkflowPort: vi.fn(),
 }));
 
-vi.mock('@workflow/world-local', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@workflow/world-local')>();
-
-  return {
-    ...actual,
-    createWorld: vi.fn(actual.createWorld),
-  };
-});
-
 describe('postgres queue http execution', () => {
   const workerUtilsMock = {
     addJob: vi.fn(),
@@ -73,11 +63,6 @@ describe('postgres queue http execution', () => {
     stop: vi.fn(),
     promise: Promise.resolve(),
   };
-  const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
-  const localWorldClose = vi.fn();
-  const createQueueHandler = vi.fn<Queue['createQueueHandler']>(
-    () => wrappedHandler
-  );
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
   } as any;
@@ -87,16 +72,11 @@ describe('postgres queue http execution', () => {
     invocationTransport.pending.mockResolvedValue([]);
     invocationTransport.close.mockResolvedValue(undefined);
     invocationTransport.respondOutcome.mockResolvedValue(undefined);
-    createQueueHandler.mockImplementation(() => wrappedHandler);
     pool.query.mockResolvedValue({ rows: [{ exists: false }] });
 
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue(runnerMock as unknown as Runner);
-    vi.mocked(createWorld).mockReturnValue({
-      createQueueHandler,
-      close: localWorldClose,
-    } as any);
   });
 
   afterEach(async () => {
@@ -980,18 +960,7 @@ describe('postgres queue http execution', () => {
   });
 
   function receiver() {
-    // Exercise the Postgres wrapper with a minimal local HTTP adapter. The
-    // real database suite uses the actual world-local HTTP handler as well.
-    createQueueHandler.mockImplementation(
-      (_prefix, callback) => async (req) => {
-        await callback(await req.json(), {
-          attempt: Number(req.headers.get('x-vqs-message-attempt')),
-          messageId: MessageId.parse(req.headers.get('x-vqs-message-id')),
-          queueName: ValidQueueName.parse(req.headers.get('x-vqs-queue-name')),
-        });
-        return Response.json({ ok: true });
-      }
-    );
+    // The Postgres delivery handler, as a flow route serves it.
     const queue = buildQueue(
       { connectionString: 'postgres://test', enableInvoke: true },
       pool
@@ -1046,9 +1015,11 @@ describe('postgres queue http execution', () => {
   it('refuses inactive/wrong-queue executor evidence before supplying a feed', async () => {
     const { handler, receive } = receiver();
     pool.query.mockResolvedValue({ rows: [] });
-    await expect(receive(request(proof))).rejects.toThrow(
-      'not active on the run queue'
-    );
+    // The handler answers a thrown refusal as a 500, which fails the
+    // Graphile job so the queue retries it.
+    const refused = await receive(request(proof));
+    expect(refused.status).toBe(500);
+    expect(await refused.json()).toContain('not active on the run queue');
     expect(pool.query).toHaveBeenCalledWith(
       expect.stringContaining('graphile_worker.jobs'),
       [
