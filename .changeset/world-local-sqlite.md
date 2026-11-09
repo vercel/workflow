@@ -1,5 +1,6 @@
 ---
 "@workflow/world-local": minor
+"workflow": minor
 ---
 
 Store the Local World in one SQLite database (`<dataDir>/world.db`, opened with the built-in `node:sqlite` or `bun:sqlite`) instead of one JSON file per entity:
