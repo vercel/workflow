@@ -56,6 +56,20 @@ Something went wrong during the build process that caused the workflow function 
 - The workflow file is missing a valid `"use workflow"` directive
 - The workflow function is not exported from the workflow file
 - An esbuild or SWC plugin error silently excluded the workflow
+- Discovery could not follow an import on the way to the workflow, so the file was never scanned
+
+Discovery walks the import graph from your app's entrypoints and only follows literal string specifiers. When it cannot resolve one written by a file that declares workflow code, a production build says so:
+
+```text
+⚠ Warning: Workflow could not resolve 1 import written by 1 file that declares workflow code:
+    workflows/order.ts → "./charge"
+  Those modules were not scanned, so any "use workflow" or "use step" function they define is not registered in this build
+  and starting it fails at runtime with WorkflowNotRegisteredError or StepNotRegisteredError.
+```
+
+Check the specifier against what is on disk. Imports that resolve to something discovery does not follow are not reported: an existing asset, a type-only import backed by a `.d.ts`, a package that is not installed, or import-looking text inside a template literal.
+
+TypeScript's NodeNext spelling is supported, so `./x.js` finds a sibling that exists only as `./x.ts` (and `.jsx`/`.mjs`/`.cjs` find `.tsx`/`.mts`/`.cts`), for relative paths and deep package imports alike.
 
 ## How to resolve
 

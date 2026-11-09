@@ -96,6 +96,7 @@ export function createBaseBuilderConfig(options: {
   projectRoot?: string;
   dirs?: string[];
   watch?: boolean;
+  development?: boolean;
   externalPackages?: string[];
   runtime?: string;
   sourcemap?: SourcemapMode;
@@ -105,6 +106,7 @@ export function createBaseBuilderConfig(options: {
     projectRoot: options.projectRoot,
     workingDir: options.workingDir,
     watch: options.watch,
+    development: options.development,
     stepsBundlePath: '', // Not used by base builder methods
     workflowsBundlePath: '', // Not used by base builder methods
     webhookBundlePath: '', // Not used by base builder methods

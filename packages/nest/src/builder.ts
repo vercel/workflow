@@ -29,6 +29,13 @@ export interface NestBuilderOptions {
    */
   watch?: boolean;
   /**
+   * Treat the build as a development build. `WorkflowModule` sets it for the
+   * rebuild it runs at application startup, which happens on every
+   * `nest start --watch` restart; `workflow-nest build` leaves it off, because
+   * that one runs ahead of a deploy.
+   */
+  development?: boolean;
+  /**
    * SWC module compilation type.
    * Set to 'commonjs' if your NestJS project compiles to CJS via SWC.
    * When 'commonjs', the builder rewrites externalized imports in the
@@ -74,6 +81,7 @@ export class NestLocalBuilder extends BaseBuilder {
         workingDir,
         // Pinned off: see the `watch` option's deprecation note.
         watch: false,
+        development: options.development,
         dirs,
         sourcemap: options.sourcemap,
       }),

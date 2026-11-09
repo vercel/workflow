@@ -40,6 +40,9 @@ class VitestBuilder extends BaseBuilder {
       // 'next' target produces ESM bundles with Node.js-compatible output,
       // which is what we need for in-process vitest execution.
       buildTarget: 'next',
+      // A test run is an edit loop, not a build ahead of a deploy: `NODE_ENV`
+      // is `test` here, which would otherwise read as production.
+      development: true,
       suppressCreateWorkflowsBundleLogs: true,
       suppressCreateWebhookBundleLogs: true,
       suppressCreateManifestLogs: true,
