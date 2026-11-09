@@ -129,6 +129,14 @@ export interface APIConfig {
     projectName?: string;
     teamId?: string;
     environment?: string;
+    /**
+     * Git branch whose newest READY deployment `resolveLatestDeploymentId()`
+     * resolves to outside a deployment, when `environment` is `preview`.
+     * Preview deployments are per branch, so this is required there; other
+     * environments ignore it. Inside a deployment the deployment's own branch
+     * is used instead.
+     */
+    gitBranch?: string;
   };
   /**
    * The spec version this World declared when it was created. Set by
