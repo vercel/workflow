@@ -278,6 +278,28 @@ export function isFrozenState(value: unknown, depth = 0): boolean {
   return true;
 }
 
+/**
+ * The values a value holds: object properties, array items, and a `Map`'s
+ * keys and values or a `Set`'s members, from any realm.
+ */
+function childrenOf(value: object): unknown[] {
+  const out: unknown[] = [];
+  try {
+    Map.prototype.forEach.call(value, (v: unknown, k: unknown) => {
+      out.push(k, v);
+    });
+    return out;
+  } catch {}
+  try {
+    Set.prototype.forEach.call(value, (v: unknown) => {
+      out.push(v);
+    });
+    return out;
+  } catch {}
+  for (const key of Object.keys(value)) out.push((value as Dict)[key]);
+  return out;
+}
+
 function newId(): string {
   return globalThis.crypto.randomUUID();
 }
@@ -774,8 +796,8 @@ export class StateContext {
     if (typeof value === 'string') return this.placeholders.has(value);
     if (depth > 256 || value === null || typeof value !== 'object')
       return false;
-    for (const key of Object.keys(value))
-      if (this.holdsPlaceholder((value as Dict)[key], depth + 1)) return true;
+    for (const child of childrenOf(value))
+      if (this.holdsPlaceholder(child, depth + 1)) return true;
     return false;
   }
 
