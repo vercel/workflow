@@ -52,16 +52,16 @@
   },
   "peerDependenciesMeta": {
     "@nestjs/common": {
-      "optional": false
+      "optional": true
     },
     "@nestjs/core": {
-      "optional": false
+      "optional": true
     },
     "@swc/cli": {
-      "optional": false
+      "optional": true
     },
     "@swc/core": {
-      "optional": false
+      "optional": true
     }
   },
   "devDependencies": {

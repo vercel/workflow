@@ -7,14 +7,14 @@ settings:
 catalogs:
   ai-sdk-v7:
     '@ai-sdk/react':
-      specifier: 4.0.88
-      version: 4.0.88
+      specifier: 4.0.167
+      version: 4.0.167
     '@ai-sdk/workflow':
-      specifier: 2.0.15
-      version: 2.0.15
+      specifier: 2.0.95
+      version: 2.0.95
     ai:
-      specifier: 7.0.85
-      version: 7.0.85
+      specifier: 7.0.163
+      version: 7.0.163
   default:
     '@biomejs/biome':
       specifier: ^2.4.4
@@ -645,6 +645,12 @@ importers:
 
   packages/docs-typecheck:
     dependencies:
+      '@ai-sdk/react':
+        specifier: catalog:ai-sdk-v7
+        version: 4.0.167(react@19.2.0)(zod@4.5.4)
+      '@ai-sdk/workflow':
+        specifier: catalog:ai-sdk-v7
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@workflow/ai':
         specifier: workspace:*
         version: link:../ai
@@ -658,8 +664,8 @@ importers:
         specifier: workspace:*
         version: link:../next
       ai:
-        specifier: 'catalog:'
-        version: 6.0.116(zod@4.5.4)
+        specifier: catalog:ai-sdk-v7
+        version: 7.0.163(zod@4.5.4)
       workflow:
         specifier: workspace:*
         version: link:../workflow
@@ -1336,8 +1342,8 @@ importers:
         specifier: workspace:*
         version: link:../tsconfig
       ai:
-        specifier: 'catalog:'
-        version: 6.0.116(zod@4.5.4)
+        specifier: catalog:ai-sdk-v7
+        version: 7.0.163(zod@4.6.5)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1798,7 +1804,7 @@ importers:
     dependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@astrojs/node':
         specifier: 11.1.5
         version: 11.1.5(astro@7.2.10(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@netlify/blobs@9.1.2)(@types/node@24.6.2)(@vercel/blob@2.0.0)(@vercel/functions@3.9.11(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.22.1))(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(supports-color@10.2.2)
@@ -1810,7 +1816,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       astro:
         specifier: ^7.2.10
         version: 7.2.10(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.3)(@netlify/blobs@9.1.2)(@types/node@24.6.2)(@vercel/blob@2.0.0)(@vercel/functions@3.9.11(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.22.1))(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.11.1(supports-color@10.2.2))(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
@@ -1831,7 +1837,7 @@ importers:
     dependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@opentelemetry/api':
         specifier: 1.9.1
         version: 1.9.1
@@ -1843,7 +1849,7 @@ importers:
         version: 1.13.0(@opentelemetry/api-logs@0.57.2)(@opentelemetry/api@1.9.1)(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.9.1)(supports-color@10.2.2))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-logs@0.57.2(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-metrics@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.1))
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1887,7 +1893,7 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
@@ -1896,7 +1902,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1921,7 +1927,7 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
@@ -1930,7 +1936,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1951,13 +1957,13 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       hono:
         specifier: ^4.12.27
         version: 4.12.28
@@ -1981,7 +1987,7 @@ importers:
     dependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@nestjs/common':
         specifier: ^11.1.27
         version: 11.1.27(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2)
@@ -1999,7 +2005,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       express:
         specifier: ^5.2.1
         version: 5.2.1(supports-color@10.2.2)
@@ -2045,10 +2051,10 @@ importers:
     dependencies:
       '@ai-sdk/react':
         specifier: catalog:ai-sdk-v7
-        version: 4.0.88(react@19.2.7)(zod@4.5.4)
+        version: 4.0.167(react@19.2.7)(zod@4.5.4)
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@node-rs/xxhash':
         specifier: 1.7.6
         version: 1.7.6
@@ -2078,7 +2084,7 @@ importers:
         version: 1.13.0(@opentelemetry/api-logs@0.57.2)(@opentelemetry/api@1.9.1)(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.9.1)(supports-color@10.2.2))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-logs@0.57.2(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-metrics@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.1))
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2169,10 +2175,10 @@ importers:
     dependencies:
       '@ai-sdk/react':
         specifier: catalog:ai-sdk-v7
-        version: 4.0.88(react@19.2.7)(zod@4.5.4)
+        version: 4.0.167(react@19.2.7)(zod@4.5.4)
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@node-rs/xxhash':
         specifier: 1.7.6
         version: 1.7.6
@@ -2202,7 +2208,7 @@ importers:
         version: 1.13.0(@opentelemetry/api-logs@0.57.2)(@opentelemetry/api@1.9.1)(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.9.1)(supports-color@10.2.2))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-logs@0.57.2(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-metrics@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.1))
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2293,7 +2299,7 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
@@ -2302,7 +2308,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       h3:
         specifier: ^1.15.5
         version: 1.15.11
@@ -2330,13 +2336,13 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -2364,7 +2370,7 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
@@ -2373,7 +2379,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       h3:
         specifier: ^1.15.5
         version: 1.15.11
@@ -2424,7 +2430,7 @@ importers:
     dependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@node-rs/xxhash':
         specifier: 1.7.6
         version: 1.7.6
@@ -2445,7 +2451,7 @@ importers:
         version: 1.13.0(@opentelemetry/api-logs@0.57.2)(@opentelemetry/api@1.9.1)(@opentelemetry/instrumentation@0.57.2(@opentelemetry/api@1.9.1)(supports-color@10.2.2))(@opentelemetry/resources@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-logs@0.57.2(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-metrics@1.30.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@1.30.1(@opentelemetry/api@1.9.1))
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       exsolve:
         specifier: ^1.0.7
         version: 1.0.7
@@ -2592,7 +2598,7 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@types/react':
         specifier: 19.1.13
         version: 19.1.13
@@ -2607,7 +2613,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -2635,13 +2641,13 @@ importers:
     devDependencies:
       '@ai-sdk/workflow':
         specifier: catalog:ai-sdk-v7
-        version: 2.0.15(workflow@packages+workflow)(zod@4.5.4)
+        version: 2.0.95(workflow@packages+workflow)(zod@4.5.4)
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
       ai:
         specifier: catalog:ai-sdk-v7
-        version: 7.0.85(zod@4.5.4)
+        version: 7.0.163(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -2702,8 +2708,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/gateway@4.0.69':
-    resolution: {integrity: sha512-W5MMdyqsaziQy/A4kxlK74iEQ+NuO6OaszH32cEQpUgBW0o15S2fAdP0aYSH2/5lrVZSMXLQLCzuMkRGHBua3A==}
+  '@ai-sdk/gateway@4.0.136':
+    resolution: {integrity: sha512-P851NL80P85Ee6MhblRuuCzNlQdOYU5rKmdt/Wuo5dMtkzvIHhyVZY9wtfKG3wBJUUoxHxWKsI2aR6O75o8diA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -2714,8 +2720,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/mcp@2.0.41':
-    resolution: {integrity: sha512-1u3HJYmgehXl1cz7ipi3NO8HrT6SdozZ7DNEh9MXdQE7knAnq70yhD8DIqfRdk/iZ3Net7QRmECUC+R5ISG0SQ==}
+  '@ai-sdk/mcp@2.0.91':
+    resolution: {integrity: sha512-N6+vu+RoKklEjuGiExe3ePpgGSsErzylScFEVcL6PblzALuVlzlGTNU7VFhZrn2UJ173+rL6Zm2bJ0zSmvjO9Q==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -2744,8 +2750,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.34':
-    resolution: {integrity: sha512-tRBdgRcys/4d8wyQdOdyYScq1AxfMdMd0hIlwolxJKVIbBwXUgClZuQT0VIsz4e7pylY8FE6utYCCZ494UAMJQ==}
+  '@ai-sdk/provider-utils@5.0.75':
+    resolution: {integrity: sha512-k4yAsFliGZwoTpyTpm3ptxwIeaPvRh5vGh/UWoqDiLLXKoyz4zuBGS7p3ygf8to5Bh4fAOHynotLBsWLIYdu2A==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -2758,8 +2764,8 @@ packages:
     resolution: {integrity: sha512-oGMAgGoQdBXbZqNG0Ze56CHjDZ1IDYOwGYxYjO5KLSlz5HiNQ9udIXsPZ61VWaHGZ5XW/jyjmr6t2xz2jGVwbQ==}
     engines: {node: '>=18'}
 
-  '@ai-sdk/provider@4.0.9':
-    resolution: {integrity: sha512-XnGXPWiBIfqjsVEud5pOaVneRByJQOu2sYNwlSVJTPCvakdCDkVuYKKfNuStkIpMUYl7JIkBZGBx+B5YfNeVjA==}
+  '@ai-sdk/provider@4.0.36':
+    resolution: {integrity: sha512-GqvWZSZdBelCGughlBdOoupT258rgM3YMbaLAS9WSZJ0vlt8c9vm3My+ZT31mYhiReMCMCF2qF2axnGbILpk1A==}
     engines: {node: '>=22'}
 
   '@ai-sdk/react@3.0.221':
@@ -2768,17 +2774,17 @@ packages:
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@ai-sdk/react@4.0.88':
-    resolution: {integrity: sha512-lDE1hHAVWiOSLsZRzyMicKR2DziET0dQJfROS/By39w5yQXU9EPYN7+HIbx24gaDTPSFzkw8ax3O4/cVIc++cA==}
+  '@ai-sdk/react@4.0.167':
+    resolution: {integrity: sha512-MHS+hPVR4HOKBgO9aKZ3znQW7WpOvoCJ4vK7QCFkL8prJQgHzwWPkOMGd0MLawcDvqC0r6eMMuZfVoLWh/sMFA==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
 
-  '@ai-sdk/workflow@2.0.15':
-    resolution: {integrity: sha512-Ge/BASKp1UxdX7c7aqLbRRutT25mtHTddhvBiiEn7vWYdxnrX0z1fDJDl2r8Np6Ub3G+RqlBcAGhUpeNX24aig==}
+  '@ai-sdk/workflow@2.0.95':
+    resolution: {integrity: sha512-NvFZD0+skmvW+E7rzXXYTzlBu9vaP0YIVRwQimKzUQB97GI2q0enwsPKK0FtjR69oNYM/iJeq7KKEMMEkV/JnQ==}
     engines: {node: '>=22'}
     peerDependencies:
-      workflow: ^5.0.0-beta.42
+      workflow: ^5.1.0
       zod: ^3.25.76 || ^4.1.8
 
   '@ai-sdk/xai@3.0.67':
@@ -10437,8 +10443,8 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  ai@7.0.85:
-    resolution: {integrity: sha512-HVtPz0qLbTUad+QBnWWReIUmwk+U4PcRENMx+9PsHGVoinoc5CLDiVjNR+VBXTKOSaNgce8kSU/Rtbb4kjZsSw==}
+  ai@7.0.163:
+    resolution: {integrity: sha512-nm8+qn36NQXO4Hjfj7SlbcNRhUyNXKtdoS9xhXr/z92lvdGFuPkzHmA2tFzhaUQy13IitNYrcw2QSNpEJC/iSA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -17948,12 +17954,19 @@ snapshots:
       '@vercel/oidc': 3.1.0
       zod: 4.5.4
 
-  '@ai-sdk/gateway@4.0.69(zod@4.5.4)':
+  '@ai-sdk/gateway@4.0.136(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/provider': 4.0.9
-      '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.5.4)
       '@vercel/oidc': 3.2.0
       zod: 4.5.4
+
+  '@ai-sdk/gateway@4.0.136(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.6.5)
+      '@vercel/oidc': 3.2.0
+      zod: 4.6.5
 
   '@ai-sdk/google@3.0.43(zod@4.5.4)':
     dependencies:
@@ -17962,10 +17975,10 @@ snapshots:
       zod: 4.5.4
     optional: true
 
-  '@ai-sdk/mcp@2.0.41(zod@4.5.4)':
+  '@ai-sdk/mcp@2.0.91(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/provider': 4.0.9
-      '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.5.4)
       cross-spawn: 7.0.6
       pkce-challenge: 5.0.1
       zod: 4.5.4
@@ -17998,14 +18011,23 @@ snapshots:
       eventsource-parser: 3.1.0
       zod: 4.6.5
 
-  '@ai-sdk/provider-utils@5.0.34(zod@4.5.4)':
+  '@ai-sdk/provider-utils@5.0.75(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/provider': 4.0.9
+      '@ai-sdk/provider': 4.0.36
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
       undici: 7.30.0
       zod: 4.5.4
+
+  '@ai-sdk/provider-utils@5.0.75(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.36
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      undici: 7.30.0
+      zod: 4.6.5
 
   '@ai-sdk/provider@3.0.13':
     dependencies:
@@ -18015,7 +18037,7 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/provider@4.0.9':
+  '@ai-sdk/provider@4.0.36':
     dependencies:
       json-schema: 0.4.0
 
@@ -18029,23 +18051,35 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@ai-sdk/react@4.0.88(react@19.2.7)(zod@4.5.4)':
+  '@ai-sdk/react@4.0.167(react@19.2.0)(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/mcp': 2.0.41(zod@4.5.4)
-      '@ai-sdk/provider': 4.0.9
-      '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
-      ai: 7.0.85(zod@4.5.4)
+      '@ai-sdk/mcp': 2.0.91(zod@4.5.4)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.5.4)
+      ai: 7.0.163(zod@4.5.4)
+      react: 19.2.0
+      swr: 2.5.1(react@19.2.0)
+      throttleit: 2.1.0
+    transitivePeerDependencies:
+      - zod
+
+  '@ai-sdk/react@4.0.167(react@19.2.7)(zod@4.5.4)':
+    dependencies:
+      '@ai-sdk/mcp': 2.0.91(zod@4.5.4)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.5.4)
+      ai: 7.0.163(zod@4.5.4)
       react: 19.2.7
       swr: 2.5.1(react@19.2.7)
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
 
-  '@ai-sdk/workflow@2.0.15(workflow@packages+workflow)(zod@4.5.4)':
+  '@ai-sdk/workflow@2.0.95(workflow@packages+workflow)(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/provider': 4.0.9
-      '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
-      ai: 7.0.85(zod@4.5.4)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.5.4)
+      ai: 7.0.163(zod@4.5.4)
       ajv: 8.20.0
       workflow: link:packages/workflow
       zod: 4.5.4
@@ -29193,12 +29227,19 @@ snapshots:
       '@opentelemetry/api': 1.9.1
       zod: 4.6.5
 
-  ai@7.0.85(zod@4.5.4):
+  ai@7.0.163(zod@4.5.4):
     dependencies:
-      '@ai-sdk/gateway': 4.0.69(zod@4.5.4)
-      '@ai-sdk/provider': 4.0.9
-      '@ai-sdk/provider-utils': 5.0.34(zod@4.5.4)
+      '@ai-sdk/gateway': 4.0.136(zod@4.5.4)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.5.4)
       zod: 4.5.4
+
+  ai@7.0.163(zod@4.6.5):
+    dependencies:
+      '@ai-sdk/gateway': 4.0.136(zod@4.6.5)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.6.5)
+      zod: 4.6.5
 
   ajv-formats@2.1.1(ajv@8.20.0):
     optionalDependencies:
@@ -38055,6 +38096,12 @@ snapshots:
       react: 19.1.0
       use-sync-external-store: 1.6.0(react@19.1.0)
 
+  swr@2.5.1(react@19.2.0):
+    dependencies:
+      dequal: 2.0.3
+      react: 19.2.0
+      use-sync-external-store: 1.6.0(react@19.2.0)
+
   swr@2.5.1(react@19.2.4):
     dependencies:
       dequal: 2.0.3
@@ -39260,6 +39307,10 @@ snapshots:
   use-sync-external-store@1.6.0(react@19.1.0):
     dependencies:
       react: 19.1.0
+
+  use-sync-external-store@1.6.0(react@19.2.0):
+    dependencies:
+      react: 19.2.0
 
   use-sync-external-store@1.6.0(react@19.2.4):
     dependencies:

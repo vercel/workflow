@@ -1141,6 +1141,9 @@ describe.concurrent('e2e', () => {
     // Attempt should be atleast 1
     expect(returnValue.stepMetadata.attempt).toBeGreaterThanOrEqual(1);
 
+    // maxAttempts is the step's maxRetries (default 3) plus one
+    expect(returnValue.stepMetadata.maxAttempts).toBe(4);
+
     // stepStartedAt should be a Date or date string
     expect(returnValue.stepMetadata.stepStartedAt).toBeDefined();
   });

@@ -31,6 +31,8 @@ export const setupCliWorld = async (
     authToken: string;
     project: string;
     team: string;
+    /** Git branch for resolving the latest preview deployment. */
+    branch?: string;
   },
   version: string,
   ignoreLocalWorldConfigError = false
@@ -129,6 +131,7 @@ export const setupCliWorld = async (
         projectId: vercelEnvVars.projectId,
         projectName: vercelEnvVars.projectName,
         teamId: vercelEnvVars.teamId,
+        gitBranch: flags.branch,
       },
     });
   } else if (

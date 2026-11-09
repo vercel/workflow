@@ -933,6 +933,11 @@ export interface World extends Queue, Streamer, Storage {
    * "production" target or same git branch for "preview" deployments) as the
    * current deployment.
    *
+   * The CLI's `workflow start` uses it too, so a process that is not itself a
+   * deployment resolves "latest" the same way `start()` does. Such a process
+   * has no current deployment, so an implementation that supports it resolves
+   * relative to the environment it was configured for.
+   *
    * Not all World implementations support this: it is only implemented by
    * world-vercel where deployment routing is meaningful.
    */
