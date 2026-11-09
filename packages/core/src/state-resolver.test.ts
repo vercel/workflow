@@ -1,5 +1,6 @@
 import { produce } from 'immer';
 import { describe, expect, it } from 'vitest';
+import { getCommonRevivers } from './serialization/reducers/common.js';
 import { StateContext, stateSourceId } from './serialization/state-refs.js';
 import * as workflow from './serialization/workflow.js';
 import { hydrateData, observabilityRevivers } from './serialization-format.js';
@@ -140,5 +141,41 @@ describe('createStateResolver', () => {
     expect(hydrateData(input2, all)).toEqual({
       outer: { inner: { n: 1 }, label: 'b' },
     });
+  });
+
+  it('rebuilds a value holding a reference inside a Map once the reference is added', () => {
+    const body = new StateContext();
+    const output1 = workflow.serialize(
+      {
+        inner: produce({ n: 0 }, (d) => {
+          d.n = 1;
+        }),
+      },
+      { stateContext: body }
+    );
+    const inner = (
+      workflow.deserialize(output1, { stateContext: body }) as {
+        inner: { n: number };
+      }
+    ).inner;
+    const outer = Object.freeze({ byId: new Map([['a', inner]]), label: 'b' });
+    const input2 = workflow.serialize({ outer }, { stateContext: body });
+
+    // As an inspector hydrates: display revivers plus Workflow's own types.
+    const base = {
+      ...observabilityRevivers,
+      ...(getCommonRevivers(globalThis) as Record<string, (v: any) => any>),
+    };
+    const resolver = createStateResolver(base);
+    const all = { ...base, ...resolver.revivers };
+    const before = hydrateData(input2, all) as {
+      outer: { byId: Map<string, unknown> };
+    };
+    expect(before.outer.byId.get('a')).toMatch(/^<state /);
+    resolver.add(output1);
+    const after = hydrateData(input2, all) as {
+      outer: { byId: Map<string, unknown> };
+    };
+    expect(after.outer.byId.get('a')).toEqual({ n: 1 });
   });
 });
