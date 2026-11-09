@@ -129,6 +129,9 @@ const graphileLogger = createGraphileLogger();
  */
 export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
 export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
+/** Backoff for a runner start that failed after the handler was registered. */
+const RUNNER_RETRY_BASE_MS = 1_000;
+const RUNNER_RETRY_MAX_MS = 30_000;
 
 function envTimeoutMs(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -796,6 +799,13 @@ export function createQueue(
           orchestratorRunId === undefined
             ? undefined
             : await handlerRunGate.acquire(`${prefix}${orchestratorRunId}`);
+        // Abandoned while it waited (shutdown, or its deadline): the job is
+        // Graphile's again, and a retry may already run elsewhere. Let the
+        // next delivery of this run through instead of running a stale one.
+        if (signal?.aborted) {
+          releaseRun?.();
+          return undefined;
+        }
         try {
           return prefix === ownPrefix()
             ? await runExecutorLane(message, meta, deliver, {
@@ -807,7 +817,11 @@ export function createQueue(
           releaseRun?.();
         }
       };
-      return deliveryResultOf(await raceAbort(gated()));
+      const pending = gated();
+      // The race may have settled on the abort; a later rejection of the
+      // handler is then nobody's to observe.
+      pending.catch(() => {});
+      return deliveryResultOf(await raceAbort(pending));
     }
 
     const headers = new Headers(extraHeaders);
@@ -957,6 +971,39 @@ export function createQueue(
     return runnerStarting;
   }
 
+  let runnerRetry: ReturnType<typeof setTimeout> | null = null;
+  let runnerRetryAttempt = 0;
+  /**
+   * Starts the runner for a handler registered after `start()`, and keeps
+   * trying with a capped backoff when the start fails: a worker-only process
+   * never publishes, so nothing else would start its runner. `close()`
+   * cancels a pending retry.
+   */
+  function startRunnerForRegistration(): void {
+    ensureRunner().then(
+      () => {
+        runnerRetryAttempt = 0;
+      },
+      (error) => {
+        if (closing) return;
+        runnerRetryAttempt += 1;
+        const delayMs = Math.min(
+          RUNNER_RETRY_BASE_MS * 2 ** (runnerRetryAttempt - 1),
+          RUNNER_RETRY_MAX_MS
+        );
+        console.error(
+          `[postgres world] Failed to start Graphile Worker after the flow handler was registered; retrying in ${delayMs} ms (attempt ${runnerRetryAttempt}). Until it starts, this process runs no jobs.`,
+          error
+        );
+        runnerRetry = setTimeout(() => {
+          runnerRetry = null;
+          if (!closing) startRunnerForRegistration();
+        }, delayMs);
+        runnerRetry.unref?.();
+      }
+    );
+  }
+
   /**
    * `start()` for the World's own use (a publish, an invoke, a transfer):
    * the schema and the worker utils, and the runner where the flow handler
@@ -999,7 +1046,7 @@ export function createQueue(
     if (!closing && !enqueueOnlyNoted && !directHandlers.has(ownPrefix())) {
       enqueueOnlyNoted = true;
       console.warn(
-        '[postgres world] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call); see the Postgres World docs, "Run the worker when your server starts".'
+        '[postgres world] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), and follow the Postgres World docs, "Run the worker when your server starts".'
       );
     }
   }
@@ -1345,12 +1392,7 @@ export function createQueue(
       directHandlers.set(parsed, handler);
       // Registered after `start()`: this process is a worker from now on.
       // Before it, `start()` starts the runner itself.
-      ensureRunner().catch((error) => {
-        console.error(
-          '[postgres world] Failed to start Graphile Worker after the flow handler was registered:',
-          error
-        );
-      });
+      startRunnerForRegistration();
     },
     registerRoute(prefix, path) {
       routes.set(QueuePrefix.parse(prefix), parseQueueRoute(path));
@@ -1358,6 +1400,10 @@ export function createQueue(
     start,
     async close() {
       closing = true;
+      if (runnerRetry) {
+        clearTimeout(runnerRetry);
+        runnerRetry = null;
+      }
       await invocations?.close();
       await startPromise?.catch(() => {});
       await runnerStarting?.catch(() => {});

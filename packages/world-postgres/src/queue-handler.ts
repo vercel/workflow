@@ -114,6 +114,16 @@ export function createDeliveryHandler(
       orchestratorRunId === undefined
         ? undefined
         : await options.runGate.acquire(`${prefix}${orchestratorRunId}`);
+    // The sender gave the delivery up while it waited (its request was
+    // aborted): the message is the queue's again, so running it now would
+    // run a stale attempt, possibly next to its retry.
+    if (req.signal.aborted) {
+      releaseRun?.();
+      return Response.json(
+        { error: 'Delivery aborted while it waited for the run' },
+        { status: 503 }
+      );
+    }
     try {
       const result = await handler(body, {
         attempt,

@@ -8,7 +8,6 @@ import {
   type InProcessDelivery,
   MessageId,
   parseQueueName,
-  type Queue,
   type QueuePayload,
   type QueuePrefix,
   type QueueRouteHandler,
@@ -46,9 +45,7 @@ vi.mock('./invocations.js', () => ({
 }));
 
 vi.mock('graphile-worker', () => ({
-  Logger: class Logger {
-    constructor(_: unknown) {}
-  },
+  Logger: class Logger {},
   makeWorkerUtils: vi.fn(),
   run: vi.fn(),
 }));
@@ -182,6 +179,65 @@ describe('postgres queue http execution', () => {
     registerFlowHandler(queue);
     await new Promise((resolve) => setImmediate(resolve));
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it('retries a runner start that failed after the handler was registered, with a backoff', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.mocked(run).mockRejectedValueOnce(new Error('pool exhausted'));
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+      registerFlowHandler(queue);
+      // Settle the failed start without touching the (fake) clock.
+      const flush = async () => {
+        for (let i = 0; i < 10; i++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      };
+      await flush();
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalled();
+      // Nothing until the backoff elapses; then one more attempt, which
+      // succeeds and leaves a runner behind.
+      await vi.advanceTimersByTimeAsync(999);
+      await flush();
+      expect(run).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await flush();
+      expect(run).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flush();
+      expect(run).toHaveBeenCalledTimes(2);
+      await queue.close();
+      expect(runnerMock.stop).toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels the runner start retry on close()', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      vi.mocked(run).mockRejectedValue(new Error('pool exhausted'));
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await queue.start();
+      registerFlowHandler(queue);
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(run).toHaveBeenCalledTimes(1);
+      await queue.close();
+      await vi.advanceTimersByTimeAsync(120_000);
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("delivers the Workflow SDK's messages in process only, never over HTTP", async () => {
@@ -1511,6 +1567,49 @@ describe('postgres queue http execution', () => {
     await timedOut.promise;
   });
 
+  it('does not run a delivery whose job was released while it waited for the run gate', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const holdA = Promise.withResolvers<void>();
+    const ran: string[] = [];
+    queue.registerHandler(
+      '__wkf_workflow_',
+      withEntry(async ({ meta }) => {
+        ran.push(String(meta.messageId));
+        if (ran.length === 1) await holdA.promise;
+      })
+    );
+    await queue.start();
+    const message = (id: string) =>
+      buildMessageData(
+        '__wkf_workflow_test',
+        {
+          runId: 'run_01ABC',
+          runSpecVersion: SPEC_VERSION_SINGLE_ORCHESTRATOR,
+        },
+        { messageId: MessageId.parse(id) }
+      );
+    const task = getTaskHandler('workflow_flows');
+    // A holds the run gate while its handler runs.
+    const a = task(message('msg_01A'), { job: { attempts: 1 } });
+    await vi.waitFor(() => expect(ran).toEqual(['msg_01A']));
+    // B waits at the gate; its job is abandoned (shutdown, or a deadline)
+    // before A lets go, so Graphile redelivers it elsewhere.
+    const abortB = new AbortController();
+    const b = task(message('msg_01B'), {
+      abortSignal: abortB.signal,
+      job: { attempts: 1 },
+    });
+    abortB.abort();
+    await expect(b).rejects.toMatchObject({ name: 'AbortError' });
+    holdA.resolve();
+    await expect(a).resolves.toBeUndefined();
+    // B must not run now, with its job gone; the gate is free for C.
+    await expect(
+      task(message('msg_01C'), { job: { attempts: 1 } })
+    ).resolves.toBeUndefined();
+    expect(ran).toEqual(['msg_01A', 'msg_01C']);
+  });
+
   it('fails an in-process delivery that does not respond within the headers deadline', async () => {
     process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
@@ -1623,6 +1722,13 @@ describe('postgres queue http execution', () => {
       await enqueuer.start();
       await enqueuer.start();
       expect(notes()).toHaveLength(1);
+      // Says what to check: the SDK release, and the startup hook docs.
+      expect(String(notes()[0][0])).toMatch(
+        /same release as @workflow\/world-postgres/
+      );
+      expect(String(notes()[0][0])).toMatch(
+        /Run the worker when your server starts/
+      );
 
       const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
       worker.registerHandler(
