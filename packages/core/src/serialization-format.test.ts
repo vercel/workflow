@@ -1,5 +1,6 @@
 import { stringify } from 'devalue';
 import { describe, expect, it } from 'vitest';
+import { STATE_REFS_FIELD } from './serialization/state-refs.js';
 import {
   ClassInstanceRef,
   decodeFormatPrefix,
@@ -119,6 +120,18 @@ describe('hydrateData', () => {
 
     const result = hydrateData(encoded, testRevivers);
     expect(result).toEqual(original);
+  });
+
+  it("leaves out a step input's internal state-records mark", () => {
+    expect(STATE_REFS_FIELD).toBe('stateRefs');
+    const marked = makeDevlPayload({ args: [1], [STATE_REFS_FIELD]: 1 });
+    expect(hydrateData(marked, testRevivers)).toEqual({ args: [1] });
+    // Only on a step-input envelope.
+    const data = makeDevlPayload({ stateRefs: 1, other: true });
+    expect(hydrateData(data, testRevivers)).toEqual({
+      stateRefs: 1,
+      other: true,
+    });
   });
 
   it('should unflatten a legacy array (specVersion 1)', () => {
