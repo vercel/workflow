@@ -179,7 +179,7 @@ const next = Object.freeze([
 - **Only deeply frozen plain data counts.** A value that isn't frozen, is only frozen at the top, or holds a class instance or another custom type is stored in full.
 - **A new value is linked by the objects it shares.** A value whose objects are all new, for example one made only of numbers and strings, is stored in full each time. That's fine for small values.
 - **Some payloads are always stored in full:** run inputs, including values passed to another run through `start()`, workflow return values (so `run.returnValue` reads them as usual), and hook payloads.
-- **A long change history is written whole again** once its changes outgrow the value, which bounds how much a replay has to apply.
+- **A value is written whole again from time to time:** once its changes since the last whole copy pass half its size (for growing state, each time it doubles), or after 1,000 changes. That bounds how much a replay has to apply to about the value's own size.
 - With `WORKFLOW_VM=quickjs`, values are stored in full, because that VM can't read references yet.
 
 <Callout type="warn">
