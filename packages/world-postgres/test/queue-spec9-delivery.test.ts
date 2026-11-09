@@ -1,0 +1,520 @@
+import { fileURLToPath } from 'node:url';
+import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import {
+  type AnyEventRequest,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  SPEC_VERSION_SINGLE_ORCHESTRATOR,
+} from '@workflow/world';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { makeWorkerUtils } from 'graphile-worker';
+import { ulid } from 'ulid';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'vitest';
+import { createClient } from '../src/drizzle/index.js';
+import { createQueue, type PostgresQueue } from '../src/queue.js';
+import { createEventsStorage } from '../src/storage.js';
+import { TestPool } from './pool.js';
+
+async function until<T>(
+  read: () => T | Promise<T>,
+  ready: (value: T) => boolean,
+  timeoutMs = 15_000
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await read();
+    if (ready(value)) return value;
+    if (Date.now() > deadline)
+      throw new Error('Timed out waiting for queue state');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+const SPEC = SPEC_VERSION_SINGLE_ORCHESTRATOR;
+const QUEUE = '__wkf_workflow_spec9-delivery';
+
+interface Delivery {
+  messageId: string;
+  attempt: number;
+  deliveryCount: number;
+  invocationStartedAt?: string;
+  body: Record<string, unknown>;
+}
+
+/**
+ * How world-postgres delivers a spec 9 run's orchestrator messages, against a
+ * real Postgres and Graphile Worker: coalescing into the running delivery,
+ * handoffs ahead of waiting messages, counted fence-refusal redeliveries,
+ * and unstamped messages gated by the run's own spec version.
+ */
+describe.skipIf(process.platform === 'win32')(
+  'Postgres queue delivery of spec 9 orchestrator messages (real database and Graphile)',
+  () => {
+    let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
+    let pool: TestPool;
+    let queue: PostgresQueue;
+    let deliveries: Delivery[] = [];
+    /**
+     * Decides what the flow handler returns for a delivery (what the
+     * runtime's handler would: nothing to acknowledge, `{ timeoutSeconds }`
+     * to reschedule); default: acknowledge.
+     */
+    let respond: (delivery: Delivery) => unknown | Promise<unknown> = () =>
+      undefined;
+
+    beforeAll(async () => {
+      container = await new PostgreSqlContainer('postgres:15-alpine').start();
+      pool = new TestPool({
+        connectionString: container.getConnectionUri(),
+        max: 20,
+      });
+      await migrate(drizzle(pool), {
+        migrationsFolder: fileURLToPath(
+          new URL('../src/drizzle/migrations', import.meta.url)
+        ),
+        migrationsTable: 'workflow_migrations',
+        migrationsSchema: 'workflow_drizzle',
+      });
+      const utils = await makeWorkerUtils({ pgPool: pool });
+      await utils.migrate();
+      await utils.release();
+    }, 120_000);
+
+    afterAll(async () => {
+      await pool?.end();
+      await container?.stop();
+    });
+
+    beforeEach(async () => {
+      deliveries = [];
+      respond = () => undefined;
+      queue = createQueue(
+        {
+          connectionString: container.getConnectionUri(),
+          queueConcurrency: 4,
+          pollInterval: 50,
+          applicationManagedShutdown: true,
+        },
+        pool
+      );
+      // The app's flow handler, as registered when the app starts: this
+      // queue is a worker, delivering in process. Records each delivery as
+      // the handler sees it and answers as `respond` says.
+      queue.registerHandler(
+        '__wkf_workflow_',
+        Object.assign(async () => Response.json({}), {
+          [IN_PROCESS_QUEUE_HANDLER]: async ({
+            message,
+            meta,
+          }: InProcessDelivery) => {
+            const delivery: Delivery = {
+              messageId: String(meta.messageId),
+              attempt: meta.attempt,
+              deliveryCount: meta.deliveryCount ?? meta.attempt,
+              ...(meta.invocationStartedAt !== undefined
+                ? { invocationStartedAt: String(meta.invocationStartedAt) }
+                : {}),
+              body: message as Record<string, unknown>,
+            };
+            deliveries.push(delivery);
+            return respond(delivery);
+          },
+        })
+      );
+      await queue.start();
+    });
+
+    afterEach(async () => {
+      await queue.close();
+      await pool.query('DELETE FROM graphile_worker._private_jobs');
+    });
+
+    /** A response the test releases, for a delivery that should hold its run. */
+    function held() {
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { release, released };
+    }
+
+    const wake = (runId: string, extra: Record<string, unknown> = {}) =>
+      queue.queue(QUEUE, { runId, runSpecVersion: SPEC, ...extra });
+
+    const runDeliveries = (runId: string) =>
+      deliveries.filter((delivery) => delivery.body.runId === runId);
+
+    /** The jobs waiting on the run's named queue, by payload. */
+    const jobsOnRunQueue = async (runId: string) =>
+      (
+        await pool.query<{ payload: { data: string } }>(
+          `SELECT jobs.payload FROM graphile_worker._private_jobs AS jobs
+             JOIN graphile_worker._private_job_queues AS job_queues
+               ON job_queues.id = jobs.job_queue_id
+            WHERE job_queues.queue_name LIKE $1 AND jobs.locked_at IS NULL`,
+          [`%:${runId}:executor`]
+        )
+      ).rows.map((row) =>
+        JSON.parse(Buffer.from(row.payload.data, 'base64').toString())
+      );
+
+    it('covers the orchestrator messages queued behind a delivery with one re-run', async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        return;
+      };
+      const { messageId } = await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      // Three background completions' wakes while the delivery runs.
+      await wake(runId);
+      await wake(runId);
+      await wake(runId);
+      // A wake for another run is not this run's to cover.
+      const otherRunId = `wrun_${ulid()}`;
+      await wake(otherRunId);
+      await until(
+        () => runDeliveries(otherRunId).length,
+        (n) => n === 1
+      );
+      expect(runDeliveries(runId)).toHaveLength(1);
+      gate.release();
+
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 2
+      );
+      await until(
+        () => jobsOnRunQueue(runId),
+        (jobs) => jobs.length === 0
+      );
+      // Settle: nothing else is delivered for the run.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const [first, rerun] = runDeliveries(runId);
+      expect(runDeliveries(runId)).toHaveLength(2);
+      // The re-run is the same message: the next delivery count, the same
+      // attempt and the same invocation start.
+      expect(rerun!.messageId).toBe(messageId);
+      expect(rerun!.messageId).toBe(first!.messageId);
+      expect(first).toMatchObject({ attempt: 1, deliveryCount: 1 });
+      expect(rerun).toMatchObject({ attempt: 1, deliveryCount: 2 });
+      expect(first!.invocationStartedAt).toBeDefined();
+      expect(rerun!.invocationStartedAt).toBe(first!.invocationStartedAt);
+    });
+
+    it("delivers an absorbed hook wake's resume timing on the re-run, and never re-sends the first run's own", async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        return;
+      };
+      const ownTiming = {
+        resumeRequestedAtMs: 1,
+        queuePublishRequestedAtMs: 2,
+        strategy: 'sequential',
+      };
+      await wake(runId, { hookResumeTiming: ownTiming });
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      // A plain wake, then a resume's wake with its timing, queue behind it.
+      await wake(runId);
+      const absorbedTiming = {
+        resumeRequestedAtMs: 10,
+        queuePublishRequestedAtMs: 20,
+        strategy: 'sequential',
+      };
+      const traceCarrier = { traceparent: '00-abc-def-01' };
+      await wake(runId, { hookResumeTiming: absorbedTiming, traceCarrier });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 2
+      );
+      await until(
+        () => jobsOnRunQueue(runId),
+        (jobs) => jobs.length === 0
+      );
+      const [first, rerun] = runDeliveries(runId);
+      expect(first!.body.hookResumeTiming).toEqual(ownTiming);
+      expect(rerun!.body).toMatchObject({
+        runId,
+        runSpecVersion: SPEC,
+        hookResumeTiming: absorbedTiming,
+        traceCarrier,
+      });
+      expect(rerun).toMatchObject({ attempt: 1, deliveryCount: 2 });
+
+      // A re-run that absorbs no timed wake carries no timing at all.
+      const secondRunId = `wrun_${ulid()}`;
+      const secondGate = held();
+      respond = async (delivery) => {
+        if (runDeliveries(secondRunId).length === 1) await secondGate.released;
+        return;
+      };
+      await wake(secondRunId, { hookResumeTiming: ownTiming });
+      await until(
+        () => runDeliveries(secondRunId).length,
+        (n) => n === 1
+      );
+      await wake(secondRunId);
+      secondGate.release();
+      await until(
+        () => runDeliveries(secondRunId).length,
+        (n) => n === 2
+      );
+      expect(runDeliveries(secondRunId)[1]!.body).not.toHaveProperty(
+        'hookResumeTiming'
+      );
+    });
+
+    it("passes an absorbed hook wake's resume timing on when the re-run hands off", async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery) => {
+        const n = runDeliveries(runId).length;
+        if (n === 1) await gate.released;
+        // The re-run reaches its invocation deadline and hands off.
+        if (n === 2) {
+          return { timeoutSeconds: 0 };
+        }
+        return;
+      };
+      const { messageId } = await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      const absorbedTiming = {
+        resumeRequestedAtMs: 10,
+        queuePublishRequestedAtMs: 20,
+        strategy: 'sequential',
+      };
+      await wake(runId, { hookResumeTiming: absorbedTiming });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 3
+      );
+      const [, rerun, continuation] = runDeliveries(runId);
+      expect(rerun!.body.hookResumeTiming).toEqual(absorbedTiming);
+      expect(continuation).toMatchObject({
+        messageId,
+        attempt: 1,
+        deliveryCount: 3,
+      });
+      expect(continuation!.body.hookResumeTiming).toEqual(absorbedTiming);
+    });
+
+    it('leaves a legacy hook resume (hookInput) queued behind a delivery to its own delivery', async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        return;
+      };
+      await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      await wake(runId, {
+        hookInput: {
+          token: 'tok',
+          resumeId: 'res_1',
+          hookId: 'hook_1',
+          payload: 'x',
+          payloadDigest: 'digest',
+        },
+      });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 2
+      );
+      expect(runDeliveries(runId)[1]!.body.hookInput).toBeDefined();
+      expect(runDeliveries(runId)[1]!.deliveryCount).toBe(1);
+    });
+
+    it('leaves a start message queued behind a delivery to its own delivery', async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      respond = async (delivery) => {
+        if (runDeliveries(runId).length === 1) await gate.released;
+        return;
+      };
+      await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      await queue.queue(QUEUE, {
+        runId,
+        runInput: {
+          specVersion: SPEC,
+          input: [],
+          deploymentId: 'postgres',
+          workflowName: 'start',
+        },
+      });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 2
+      );
+      expect(runDeliveries(runId)[1]!.body.runInput).toBeDefined();
+      expect(runDeliveries(runId)[1]!.deliveryCount).toBe(1);
+    });
+
+    it('delivers a handoff before the messages queued behind it', async () => {
+      const runId = `wrun_${ulid()}`;
+      const gate = held();
+      let handedOff = false;
+      respond = async (delivery) => {
+        if (!handedOff) {
+          handedOff = true;
+          await gate.released;
+          return { timeoutSeconds: 0 };
+        }
+        return;
+      };
+      const { messageId } = await wake(runId);
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n === 1
+      );
+      const queued = await wake(runId, { marker: 'queued' });
+      gate.release();
+      await until(
+        () => runDeliveries(runId).length,
+        (n) => n >= 2
+      );
+      // The continuation, not the wake that queued first.
+      expect(runDeliveries(runId)[1]!.messageId).toBe(messageId);
+      expect(runDeliveries(runId)[1]).toMatchObject({
+        attempt: 1,
+        deliveryCount: 2,
+      });
+      // The queued wake is covered by the continuation's re-run.
+      await until(
+        () => jobsOnRunQueue(runId),
+        (jobs) => jobs.length === 0
+      );
+      expect(
+        runDeliveries(runId).some((d) => d.messageId === queued.messageId)
+      ).toBe(false);
+    });
+
+    it("counts a spec 9 orchestrator's fence-refusal redelivery as an attempt, and not a step's in-place retry", async () => {
+      const runId = `wrun_${ulid()}`;
+      respond = () => ({ timeoutSeconds: 1 });
+      await wake(runId);
+      await queue.queue(QUEUE, {
+        runId,
+        stepId: 'step_01',
+        stepName: 'retrying',
+        runSpecVersion: SPEC,
+      });
+      await until(
+        () => deliveries.filter((d) => d.body.runId === runId).length,
+        (n) => n >= 6
+      );
+      const orchestrator = runDeliveries(runId).filter((d) => !d.body.stepId);
+      const step = runDeliveries(runId).filter((d) => d.body.stepId);
+      expect(orchestrator.slice(0, 3).map((d) => d.attempt)).toEqual([1, 2, 3]);
+      expect(orchestrator.slice(0, 3).map((d) => d.deliveryCount)).toEqual([
+        1, 2, 3,
+      ]);
+      expect(step.slice(0, 2).map((d) => d.attempt)).toEqual([1, 1]);
+      expect(step.slice(0, 2).map((d) => d.deliveryCount)).toEqual([1, 2]);
+    }, 20_000);
+
+    describe('an unstamped orchestrator message', () => {
+      const events = () => createEventsStorage(createClient(pool));
+
+      async function createRun(specVersion: number) {
+        const runId = `wrun_${ulid()}`;
+        await events().create(runId, {
+          eventType: 'run_created',
+          specVersion,
+          eventData: {
+            deploymentId: 'postgres',
+            workflowName: 'unstamped',
+            input: new Uint8Array([1]),
+          },
+        } as AnyEventRequest);
+        return runId;
+      }
+
+      it("waits behind a spec 9 run's live delivery, stamped with the run's version", async () => {
+        const runId = await createRun(SPEC);
+        const gate = held();
+        respond = async (delivery) => {
+          if (runDeliveries(runId).length === 1) await gate.released;
+          return;
+        };
+        await wake(runId);
+        await until(
+          () => runDeliveries(runId).length,
+          (n) => n === 1
+        );
+        // What an older SDK's `resumeHook()` sends: no stamp.
+        await queue.queue(QUEUE, { runId });
+        const moved = await until(
+          () => jobsOnRunQueue(runId),
+          (jobs) => jobs.length === 1
+        );
+        expect(moved[0]).toMatchObject({ runId, runSpecVersion: SPEC });
+        expect(runDeliveries(runId)).toHaveLength(1);
+        gate.release();
+        // Covered by the holder's re-run.
+        await until(
+          () => runDeliveries(runId).length,
+          (n) => n === 2
+        );
+        await until(
+          () => jobsOnRunQueue(runId),
+          (jobs) => jobs.length === 0
+        );
+        expect(runDeliveries(runId)[1]).toMatchObject({
+          attempt: 1,
+          deliveryCount: 2,
+        });
+      });
+
+      it('is delivered as it is for a spec 8 run, or a run that is not found', async () => {
+        const spec8RunId = await createRun(8);
+        const missingRunId = `wrun_${ulid()}`;
+        await queue.queue(QUEUE, { runId: spec8RunId });
+        await queue.queue(QUEUE, { runId: missingRunId });
+        await until(
+          () =>
+            runDeliveries(spec8RunId).length +
+            runDeliveries(missingRunId).length,
+          (n) => n === 2
+        );
+        expect(runDeliveries(spec8RunId)[0]!.body).toEqual({
+          runId: spec8RunId,
+        });
+        expect(runDeliveries(missingRunId)[0]!.body).toEqual({
+          runId: missingRunId,
+        });
+      });
+    });
+  }
+);

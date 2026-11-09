@@ -41,7 +41,7 @@
     "build": "tsc && chmod +x bin/setup.js bin/setup-deprecated.js",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run",
+    "test": "vitest run --config=../../vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "db:push": "node dist/cli.js"
   },

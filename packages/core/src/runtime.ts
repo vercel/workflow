@@ -314,6 +314,10 @@ export function workflowEntrypoint(
   }
 ): QueueRouteHandler {
   setWorkflowBasePath(options?.basePath);
+  // The route this handler is mounted at, base path included (Next.js'
+  // `basePath`, `workflows.experimentalRoutePrefix`, NestJS' global prefix).
+  // It is fixed for the deployment, so it stays a bounded route template.
+  const flowRoute = `${options?.basePath ?? ''}${WORKFLOW_FLOW_ROUTE}`;
 
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
@@ -709,7 +713,7 @@ export function workflowEntrypoint(
         'workflow.route.get_world_handlers',
         async () => getWorld()
       );
-      logQueueAuthSetting(worldHandlers);
+      logQueueAuthSetting(worldHandlers, flowRoute);
       const deliver = deliveryHandler(worldHandlers);
       return {
         handler: worldHandlers.createQueueHandler(workflowPrefix, deliver),
@@ -736,7 +740,9 @@ export function workflowEntrypoint(
       ...(routeModuleBodyInitMs === undefined
         ? {}
         : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
-      ...Attribute.HttpRoute(WORKFLOW_FLOW_ROUTE),
+      // The route this handler is mounted at, base path included: the same
+      // for a request and for an in-process delivery of the same route.
+      ...Attribute.HttpRoute(flowRoute),
     };
   };
 

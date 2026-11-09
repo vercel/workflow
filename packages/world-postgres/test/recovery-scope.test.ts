@@ -1,13 +1,14 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { ulid } from 'ulid';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import { createWorld } from '../src/index.js';
 import { MessageData } from '../src/message.js';
 import { createEventsStorage } from '../src/storage.js';
+import { TestPool } from './pool.js';
 
 /**
  * Apps that share one database keep their jobs apart with `jobPrefix`: each
@@ -37,7 +38,7 @@ describe('startup recovery scope', () => {
       env: process.env,
     });
 
-    pool = new Pool({ connectionString: dbUrl });
+    pool = new TestPool({ connectionString: dbUrl });
     // No flow handler is registered in this process, so no World here starts
     // a runner and every recovered job stays queued where the test can read
     // it.

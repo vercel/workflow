@@ -33,6 +33,9 @@ import {
 } from './queue-auth.js';
 import { setWorld } from './world.js';
 
+// Keep the initialization history because the runtime memoizes its counters.
+vi.setConfig({ clearMocks: false });
+
 // Registered before the runtime first reaches for its meter, which it
 // memoizes. Records what the refusal counter is given.
 const counterAdds = vi.fn();

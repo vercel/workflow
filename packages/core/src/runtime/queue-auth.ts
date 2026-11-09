@@ -7,7 +7,7 @@ import {
   QUEUE_ROUTE_DENIED_CODE,
   verifyQueueAuthKey,
 } from '@workflow/utils';
-import type { World } from '@workflow/world';
+import { WORKFLOW_FLOW_ROUTE, type World } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 
@@ -102,12 +102,12 @@ const undeclaredModeWarning = () =>
  * Opt-in leaves such a World unchecked; say so where an operator will see
  * it, with what to do about it.
  */
-function warnUndeclaredQueueAuthMode(): void {
+function warnUndeclaredQueueAuthMode(flowRoute: string): void {
   undeclaredModeWarning().limit((routesSinceLastLog) => {
     runtimeLogger.warn(
       'This World declares no queueAuthMode, so the runtime does not ' +
-        'authenticate deliveries to the flow route (POST ' +
-        '/.well-known/workflow/v1/flow): a request from outside the app can ' +
+        `authenticate deliveries to the flow route (POST ${flowRoute}): ` +
+        'a request from outside the app can ' +
         'start runs, fail a running one, or re-trigger its steps. Protect that ' +
         'route at the network edge. Declaring a queueAuthMode becomes required ' +
         'in Workflow SDK v6.',
@@ -123,9 +123,13 @@ function warnUndeclaredQueueAuthMode(): void {
  * that declares no mode gets a warning instead, since its flow route is not
  * checked: once, then at most once a minute when routes restart.
  */
-export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
+export function logQueueAuthSetting(
+  world: Pick<World, 'queueAuthMode'>,
+  /** The flow route as mounted, base path included. */
+  flowRoute: string = WORKFLOW_FLOW_ROUTE
+): void {
   if (world.queueAuthMode === undefined) {
-    warnUndeclaredQueueAuthMode();
+    warnUndeclaredQueueAuthMode(flowRoute);
     return;
   }
   const denies = world.queueAuthMode === 'deny';
@@ -150,8 +154,8 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
       log.denyOff((routesSinceLastLog) =>
         runtimeLogger.warn(
           `THE FLOW ROUTE ACCEPTS HTTP REQUESTS (${QUEUE_AUTH_ENV}=off). This World ` +
-            'delivers in process and its flow route would otherwise refuse every HTTP ' +
-            'request; with the override, anyone who can reach this server can start ' +
+            `delivers in process and its flow route (POST ${flowRoute}) would ` +
+            'otherwise refuse every HTTP request; with the override, anyone who can reach this server can start ' +
             'runs, fail a running one, or re-trigger its steps. This is an emergency ' +
             'override for a rolling upgrade, while processes that deliver over HTTP ' +
             'run next to this one: remove it once they are gone.',

@@ -13,10 +13,11 @@ import {
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
-import { Pool } from 'pg';
+import type { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { MessageData } from '../src/message.js';
 import { createQueue, type PostgresQueue } from '../src/queue.js';
+import { TestPool } from './pool.js';
 
 /**
  * graphile-worker 0.16 sets a job's `locked_at` once, at claim, and only
@@ -82,7 +83,7 @@ describe.skipIf(process.platform === 'win32')(
     beforeAll(async () => {
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       connectionString = container.getConnectionUri();
-      pool = new Pool({ connectionString, max: 10 });
+      pool = new TestPool({ connectionString, max: 10 });
       // The World's own tables too: in invoke mode the executor lane reads
       // the invocations table before it hands a delivery to the handler.
       await migrate(drizzle(pool), {

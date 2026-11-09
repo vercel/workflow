@@ -29,6 +29,28 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 - ULID-based ordering ensures correct sequence
 - One long-lived dedicated `LISTEN` client, with an in-process EventEmitter for distributing events to multiple subscribers
 
+## Spec 9 runs
+
+### Live event feed
+
+`events.subscribe` (`src/run-events.ts`) is the live feed a spec 9 orchestrator listens on while it runs inline steps or lingers:
+
+- After a spec 9 event write commits, the writer sends `pg_notify('workflow_run_events', runId)` for every spec 9 run it committed an event to, outside the write's transaction and without awaiting it, like the run-terminal `NOTIFY`. A `NOTIFY` inside the transaction could fail the write itself. A forced `hook_created` also announces the run it took the token from, whose log got `hook_disposed{forceClaimedBy}` in the same transaction.
+- A subscription listens on one shared `LISTEN` connection per process. For each announcement of its run it reads the log after the last slot it delivered (`events.list` with `resolveData: 'all'`) and delivers what continues the slot sequence, each slot once. It stops at a hole (a position not committed yet) until a later announcement fills it. The notification is a signal only, so a duplicated or merged `NOTIFY` changes nothing.
+- A dropped `LISTEN` connection ends every live subscription through `onError`, and so does a failed read; the runtime falls back to its log-tail poll. The connection reconnects for later subscriptions.
+- A subscription ends (`onError`) at a hook resume another writer made with `resumeHook()` (a `hook_received` with a `resumeId`) instead of delivering it. The resume's wake carries its producer's timing (`hookResumeTiming`), where the runtime starts its hook-resume latency measurement; a delivery that picked the resume up from the feed would consume it without that timing. With the feed ended, a delivery that is only waiting stops lingering and acknowledges, and the wake (delivered, or coalesced into that delivery's re-run) consumes the resume and measures it. The workflow's own `hook_received` (an `AbortController` abort) carries no `resumeId` and is delivered.
+- A subscription past half of the process's `queueConcurrency` (rounded down, so none at `queueConcurrency: 1`) is refused through `onError`. While its feed is live, an orchestrator with nothing left to run lingers on it, holding its worker slot, so the cap keeps lingering deliveries from taking every slot while their own background steps wait for one.
+
+### Coalescing a run's orchestrator messages
+
+A spec 9 run's orchestrator messages share its Graphile named queue, which runs one job at a time. When a delivery on it acknowledges, the worker selects the jobs waiting behind it on that queue (unlocked, due, an orchestrator message of the same run, and neither a start message carrying `runInput` nor a legacy resume carrying `hookInput`, whose payload the orchestrator still has to write), deletes them with Graphile's `complete_jobs`, and calls the handler again with the next `deliveryCount`, the same `attempt` and the same `invocationStartedAt` (`takeCoalescedJobs`, `src/queue.ts`). It repeats while it finds any, up to `MAX_COALESCED_RERUNS` (32); past that, the remaining jobs are delivered as usual. This is safe because every producer commits what an orchestrator message is for before it sends it, and a re-run reads the log. A re-run's body is the delivery's own message with the `hookResumeTiming` (and trace context) of the earliest hook wake it absorbed, and never its own timing again, so a coalesced resume's latency is measured once, by the re-run that consumes it (`rerunBody`). A re-run that fails is retried as the original job, counted above 1.
+
+A handoff's job gets priority `-1` (Graphile takes the lowest priority first, then the earliest `run_at`), so it runs before the run's messages that queued behind it, and before other due jobs of priority 0. Coalescing is not used on invoke mode's executor lane, whose deliveries also drive the run's invocation mailbox.
+
+### Unstamped orchestrator messages
+
+An orchestrator message without a spec stamp (`runInput.specVersion`, `runContext.specVersion` or `runSpecVersion`) is published outside any named queue. When a worker takes one, it reads the run's `spec_version`; for a spec 9 run it re-adds the message stamped with that version on the run's named queue, carrying its attempt and delivery counts, and completes the original job without delivering it.
+
 ## Setup
 
 `world.start()` makes the World ready to enqueue, and starts a graphile-worker runner when the process is a worker: one that registered the Workflow SDK's flow route with `world.registerHandler(prefix, route)`. The framework integrations do that when the app starts (`registerWorkflowHandler()` from `workflow/runtime`, see the Postgres World docs), in either order with `start()`: a registration after `start()` starts the runner then. Every other process (the CLI, the web UI, a script) only enqueues and never claims a job.
