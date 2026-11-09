@@ -348,3 +348,29 @@ export async function stateRefsClassInMap() {
   chat = await withPointInMap(chat);
   return Promise.all([0, 1, 2, 3, 4, 5].map((i) => readPointInMap(chat, i)));
 }
+
+/**
+ * Object-rooted state changed in workflow code (objects with the VM's
+ * prototype), passed to a fan-out and to sequential steps.
+ */
+export async function stateRefsWorkflowEdits() {
+  'use workflow';
+  let chat: Immutable<Chat> = await reply({ history: [], turns: 0 }, 'seed');
+  const edited = produce(chat, (d) => {
+    d.history.push({ role: 'user', content: 'from the workflow' });
+  });
+  const fan = await Promise.all(
+    [0, 1, 2, 3, 4].map((i) => summarize(edited, i))
+  );
+  for (let i = 0; i < 3; i++) {
+    chat = Object.freeze({
+      ...chat,
+      history: Object.freeze([
+        ...chat.history,
+        Object.freeze({ role: 'user' as const, content: `w${i}` }),
+      ]),
+    });
+    chat = await reply(chat, `s${i}`);
+  }
+  return { fan, turns: chat.turns, length: chat.history.length };
+}

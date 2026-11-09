@@ -17,6 +17,7 @@ import {
   stateRefsRichValues,
   stateRefsShapes,
   stateRefsSiblings,
+  stateRefsWorkflowEdits,
 } from '../workflows/state-refs.js';
 
 /**
@@ -27,7 +28,7 @@ import {
  */
 const refs = process.env.WORKFLOW_VM !== 'quickjs';
 
-type Stored = { type: string; bytes: number; text: string };
+type Stored = { type: string; step: string; bytes: number; text: string };
 
 /** The payload's text after its format prefix, decompressed (the local World stores it unencrypted). */
 function decode(bytes: Uint8Array): string {
@@ -56,6 +57,7 @@ async function stored(runId: string): Promise<Stored[]> {
       const bytes = data instanceof Uint8Array ? data : undefined;
       out.push({
         type: e.eventType,
+        step: String(e.eventData?.stepName ?? ''),
         bytes: bytes?.byteLength ?? 0,
         text: bytes ? decode(bytes) : '',
       });
@@ -275,5 +277,30 @@ describe(`frozen state stored by reference (${refs ? 'node' : 'quickjs: stored w
     await expect(run.returnValue).resolves.toEqual(
       [0, 1, 2, 3, 4, 5].map((i) => `${i}:true:1`)
     );
+  }, 60_000);
+
+  // Objects made in workflow code have the VM's prototype; changes to them
+  // must still be stored as changes, for a fan-out and for sequential steps.
+  it('object-rooted state changed in workflow code is stored as a change', async () => {
+    const run = await start(stateRefsWorkflowEdits, []);
+    const result = await run.returnValue;
+    expect(result).toEqual({
+      fan: [0, 1, 2, 3, 4].map((i) => `${i}:1:3:from the`),
+      turns: 4,
+      length: 11,
+    });
+    if (!refs) return;
+    const log = await stored(run.runId);
+    const fanInputs = inputs(log).filter((e) => e.step.endsWith('summarize'));
+    expect(fanInputs).toHaveLength(5);
+    for (const e of fanInputs) expect(kinds(e)).toEqual(['patch']);
+    const replies = log.filter(
+      (e) => e.step.endsWith('//reply') && e.bytes > 0
+    );
+    // After the first reply (its input and output): each input is a change
+    // made in workflow code, and each output a change from that input.
+    const later = replies.slice(2);
+    expect(later.length).toBeGreaterThan(0);
+    for (const e of later) expect(kinds(e)).toEqual(['patch']);
   }, 60_000);
 });

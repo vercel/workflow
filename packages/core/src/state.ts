@@ -41,6 +41,18 @@ export function isPlainObject(value: unknown): value is Dict {
 }
 
 /**
+ * Whether two plain objects are the same kind: both null-prototype
+ * dictionaries, or both ordinary objects. Not the prototypes themselves: an
+ * object made in workflow code has the workflow VM's `Object.prototype`, one
+ * revived from a step output the host's.
+ */
+function sameKind(a: object, b: object): boolean {
+  return (
+    (Object.getPrototypeOf(a) === null) === (Object.getPrototypeOf(b) === null)
+  );
+}
+
+/**
  * @internal
  * Whether two state values hold the same data: identical, or equal plain
  * objects, arrays, dates and byte arrays. Lets a recipe return rebuilt copies
@@ -64,7 +76,7 @@ export function sameState(a: unknown, b: unknown): boolean {
     const otherKeys = Object.keys(b);
     // Same keys in the same order: code may iterate objects in insertion order.
     return (
-      Object.getPrototypeOf(a) === Object.getPrototypeOf(b) &&
+      sameKind(a, b) &&
       keys.length === otherKeys.length &&
       keys.every((k, i) => otherKeys[i] === k && sameState(a[k], b[k]))
     );
@@ -105,11 +117,7 @@ export function diffState(
     }
     return out;
   }
-  if (
-    isPlainObject(base) &&
-    isPlainObject(next) &&
-    Object.getPrototypeOf(base) === Object.getPrototypeOf(next)
-  ) {
+  if (isPlainObject(base) && isPlainObject(next) && sameKind(base, next)) {
     const baseKeys = Object.keys(base);
     const nextKeys = Object.keys(next);
     for (const key of baseKeys)

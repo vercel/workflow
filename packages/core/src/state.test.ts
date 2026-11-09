@@ -1,6 +1,7 @@
+import { runInNewContext } from 'node:vm';
 import { produce } from 'immer';
 import { describe, expect, it } from 'vitest';
-import { applyStateOps, diffState } from './state.js';
+import { applyStateOps, diffState, sameState } from './state.js';
 
 describe('recorded changes', () => {
   it('records growth at the end of an array as one append and other changes per path', () => {
@@ -195,6 +196,30 @@ describe('key order', () => {
     });
     expect(diffState(base, next)).toEqual([
       { op: 'set', path: ['b'], value: 2 },
+    ]);
+  });
+
+  it('diffs objects from another realm, such as the workflow VM', () => {
+    const base = Object.freeze({
+      history: Object.freeze([Object.freeze({ c: 0 })]),
+    });
+    // Made in workflow code: the objects carry the VM's Object.prototype.
+    const next = runInNewContext(
+      'Object.freeze({ history: Object.freeze([...base.history, Object.freeze({ c: 1 })]) })',
+      { base }
+    );
+    expect(Object.getPrototypeOf(next)).not.toBe(Object.prototype);
+    expect(diffState(base, next)).toEqual([
+      { op: 'append', path: ['history'], items: [{ c: 1 }] },
+    ]);
+    expect(sameState(base, runInNewContext('({ history: [{ c: 0 }] })'))).toBe(
+      true
+    );
+    // A null-prototype dictionary still differs from an ordinary object.
+    const dict = Object.assign(Object.create(null), { a: 1 });
+    expect(sameState({ a: 1 }, dict)).toBe(false);
+    expect(diffState({ a: 1 }, dict)).toEqual([
+      { op: 'set', path: [], value: dict },
     ]);
   });
 });
