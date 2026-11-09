@@ -741,6 +741,8 @@ Run-ahead starts work before the writes it depends on commit: it hands an inline
 
 `WORKFLOW_RUN_AHEAD_DEPTH` is 10 by default, clamped to 0..16, and 0 turns it off (`RUN_AHEAD_DEPTH` in `packages/core/src/runtime/constants.ts`). It caps how many step outcomes are unconfirmed at once. Both engines run ahead; see [QuickJS run-ahead](#quickjs-run-ahead) for where the QuickJS engine differs.
 
+Run-ahead's per-step cost stays flat however many inline steps a delivery runs, because each hazard check reads only the boundaries whose speculative writes are still in flight, at most the depth's worth. The `workflow.execute` span records the most such boundaries held at once as `workflow.run_ahead.contexts_max`.
+
 #### When a boundary may run ahead
 
 At each suspension that schedules inline steps, the delivery classifies who else could append an event that changes what the workflow does next (`observeOutOfBandWriters`, `packages/core/src/runtime/out-of-band-observation.ts`; called at `packages/core/src/runtime/spec9/delivery.ts`).
@@ -909,7 +911,7 @@ sequenceDiagram
     Note over O: a suspension with a hook or a wait ends optimistic starts for the delivery
 ```
 
-The optimistic start applies only while every step of the boundary is inline and the boundary has no wait and no step that failed to serialize (`spec9/delivery.ts`). A boundary with a background step commits its creations first.
+The optimistic start applies while the boundary has no wait and no step that failed to serialize, and each of its inline steps allows retries (`spec9/delivery.ts`). A boundary of only inline steps starts its bodies while their creation commits. A fan-out, with background steps beside the inline ones, does the same for its inline bodies: they start while the creation batches commit, and each inline start is the creation-bearing `step_started` those batches carry, in one batch or more when inputs pass the batch byte budget. Each background step's message still goes out only once its own creation committed, so nothing runs elsewhere before it is durable. On QuickJS a fan-out commits its creations first.
 
 #### Why turbo is safe on spec 9 runs (and where it stops)
 
@@ -919,7 +921,7 @@ The first message is the only one that carries the queued **run input**. Turbo e
 
 ##### One orchestrator, one writer
 
-Starting a body before its start commits is unsafe in general: if the in-band fence then refuses the start because another orchestrator invocation of the run holds it, the body ran without a durable record and runs again. On the first delivery of the first message there is no other orchestrator yet: the run was created moments ago by `start()`, and this one message is the only one in flight. The body therefore runs once.
+Starting a body before its start commits is unsafe in general: if the in-band fence then refuses the start because another orchestrator invocation of the run holds it, the body ran without a durable record and runs again. On the first delivery of the first message there is no other orchestrator yet: the run was created moments ago by `start()`, and this one message is the only orchestrator message in flight. The body therefore runs once. A fan-out puts its background steps' messages in flight too, but only once every inline start committed, and each sends a completion wake that is coalesced into this invocation or delivered after it, as a delivery that is not the first.
 
 ##### Turbo stops on the first hook or wait
 
@@ -1332,7 +1334,11 @@ The runtime refuses to create or drive a spec 9 run on a World that does not dec
 
 **Inline steps are created by their first `step_started` (spec 9).** A step the orchestrator runs inline has no `step_created`: its first `step_started` (`attempt: 1`) carries what a `step_created` carries, `stepName`, `workflowName`, `input` and `inline: true` (but no `creatorMessageId`, which only a background step's creation needs), and is the step's creation. Store it as one event, keep its `input` (as for a `step_created`), and write no `step_created` beside it. A background step keeps `step_created` followed by its invocation's own `step_started`. Only a step's first start carries an input; later starts are ordinary starts. The runtime still reads logs with a `step_created` for an inline step, so a World does not rewrite older runs.
 
+**A resilient start may store its `run_started` as the run's creation (spec 9).** When `run_created` never landed and a `run_started` carrying the creation data creates the run, a World may store that `run_started` alone at the run's first slot, with the data a `run_created` carries (`input`, `deploymentId`, `workflowName`, `executionContext`, `attributes`, `encryptionPublicKey`, `startHook`), and write no `run_created`. The runtime reads either shape. Keep the in-band count a log with a `run_created` would have: the creation holds the first in-band position and the start the next, so that `run_started` write reports `allocated: 1`.
+
 Persist the fields the runtime adds to `eventData` and return them from `events.list()`: `inline` and `creatorMessageId` on `step_created`, `inline` on an inline step's first `step_started`, `creatorMessageId` on `wait_created`, `attempt` on `step_started`, `attempt` on `step_retrying` and `step_failed`, and `stepName` on every step event.
+
+A `hook_received` that `resumeHook()` or `resumeWebhook()` writes on a spec 9 run also carries the run's `workflowName` in `eventData`, as a creating `step_started` does, so a World that keys stored data by workflow name doesn't need to read the run first. Older runtimes omit it, so treat it as optional.
 
 **In-band and out-of-band writes.** Every write says whether the run's orchestrator made it (`params.inBand`). In-band writes also carry `params.expectedSeqInBand` and `params.eventCount`, and your World must fence them: see [Single-writer guarantee and the in-band fence](#single-writer-guarantee-and-the-in-band-fence).
 
@@ -2035,7 +2041,7 @@ export async function resizeAll(urls: string[]) {
 
 #### How the creations are split
 
-The suspension's events are the inline steps' creation-bearing `step_started` events first, then the background steps' `step_created` (`packages/core/src/runtime/spec9/step-wait-creation.ts`). They go out in batches of up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and 512 KiB, in order, so the inline starts share the first batch with background creations (`batchChunks`). The inline bodies start once that first batch commits. This is the node engine's path (`spec9/delivery.ts`); the QuickJS engine writes a suspension's creations through its own code in `spec9/quickjs-entrypoint.ts`, which these numbers were not checked against.
+The suspension's events are the inline steps' creation-bearing `step_started` events first, then the background steps' `step_created` (`packages/core/src/runtime/spec9/step-wait-creation.ts`). They go out in batches of up to `MAX_IN_BAND_CREATION_BATCH_EVENTS` (64) events and 512 KiB, in order, so the inline starts share the first batch with background creations (`batchChunks`). The inline bodies start once that first batch commits, except on a turbo first delivery, where they start while it commits (see [Turbo](#turbo)). This is the node engine's path (`spec9/delivery.ts`); the QuickJS engine writes a suspension's creations through its own code in `spec9/quickjs-entrypoint.ts`, which these numbers were not checked against.
 
 | `WORKFLOW_MAX_INLINE_STEPS` | Events | Batches | First batch | Later batches | Step-message sends |
 |---|---|---|---|---|---|
@@ -2088,7 +2094,7 @@ sequenceDiagram
 
 #### Timeline with the default numbers
 
-Times below are positions in the delivery, not measurements. Measurements on record are under [Benchmarks](#benchmarks).
+Times below are positions in the delivery, not measurements. Measurements on record are under [Benchmarks](#benchmarks). This is a fan-out on a delivery after the run's first. On the first delivery, [turbo](#turbo) starts the 3 inline bodies at step 1, while batch 1 commits.
 
 | Order | What happens | Count |
 |---|---|---|
@@ -2900,7 +2906,8 @@ world-postgres implements `events.subscribe` over `LISTEN`/`NOTIFY` (`packages/w
 - After an event write whose `specVersion` is 9 or above commits, the writer sends `pg_notify('workflow_run_events', runId)`, outside the write's transaction and without awaiting it, like the run-terminal `NOTIFY`. A `NOTIFY` inside the transaction could fail the write itself.
 - One `LISTEN` connection per process, opened on the first subscription, serves every subscription. A subscription reads once the connection listens, then on each announcement of its run: `events.list` after the last slot it delivered, `resolveData: 'all'`, in pages of 200. It delivers what continues the slot sequence, each slot once, and stops at a hole until a later announcement fills it. The notification is a signal only, so a duplicated or merged `NOTIFY` changes nothing.
 - A dropped `LISTEN` connection ends every live subscription through `onError` (`onDisconnect` on `listenChannel`), and a failed read ends its subscription. The connection reconnects for later subscriptions; a first `LISTEN` that fails refuses new subscriptions for 5 seconds.
-- At most `max(1, floor(queueConcurrency / 2))` subscriptions are live per process. Past that a subscription is refused through `onError`, so its delivery polls instead of lingering. A lingering delivery holds a Graphile worker slot, and the cap keeps lingering deliveries from taking every slot while their own background steps wait for one.
+- A subscription ends (`onError`) at a hook resume another writer made with `resumeHook()` or a webhook (a `hook_received` with a `resumeId`), instead of delivering it. The resume's wake carries its producer's timing (`hookResumeTiming`), which is where the runtime starts the hook-resume latency measurement (`workflow.resume.total_ms`). A delivery that picked the resume up from the feed would consume it with no timing, and the wake would then find nothing to run. With the feed ended, a delivery that is only waiting stops lingering and acknowledges, and the wake, delivered or coalesced into that delivery's re-run with its timing, consumes the resume and measures it. A delivery running an inline body falls back to its log poll, as before the feed existed. The workflow's own `hook_received` (an `AbortController` abort) carries no `resumeId` and is delivered.
+- At most `floor(queueConcurrency / 2)` subscriptions are live per process, and none at `queueConcurrency: 1`. Past that a subscription is refused through `onError`, so its delivery polls instead of lingering. A lingering delivery holds a Graphile worker slot, and the cap keeps lingering deliveries from taking every slot while their own background steps wait for one.
 
 There is no backend timed read as on world-vercel. A lost announcement (the writer died between its commit and its `NOTIFY`) is found by the next announcement of the run, or by the client poll at 10 to 20 s.
 
@@ -3132,7 +3139,7 @@ sequenceDiagram
     Note over M,W: now
     M->>Q: w1's timer, key wait:w1:R:R
     M->>W: wait_created w1
-    Note over M: dies; the timer is already out
+    Note over M: dies, the timer is already out
 ```
 
 **Outcome.** Fixed (`e3018c00c3`): a pass sends the timer of its chain's earliest new wait before the `wait_created` commits, on both engines. If the commit then fails, the stray timer finds no wait or re-arms the one the redelivery created. Tests: `spec9/wait-chains.runtime.test.ts`, both engines, for a failed timer send and a lost creation response. Mechanism: [Timers and waits](#who-arms-a-timer).
@@ -3985,7 +3992,7 @@ Before: on a World without `events.subscribe` (world-local, world-postgres), and
 
 ### 4. `events.subscribe` for world-postgres via LISTEN/NOTIFY
 
-**Done** (#5275). After an event write whose `specVersion` is 9 or above commits, the writer sends `pg_notify('workflow_run_events', runId)` outside the write's transaction, without awaiting it. One `LISTEN` connection per process serves every subscription. On each announcement of its run a subscription reads the log after the last slot it delivered and delivers what continues the slot sequence, each slot once, stopping at a hole until a later announcement fills it. A dropped `LISTEN` connection, or a failed read, ends the subscriptions it affects through `onError`. At most half of a process's `queueConcurrency` subscriptions are live at once, since a delivery lingering on its feed holds a Graphile worker slot; a subscription past that is refused, and its delivery polls instead of lingering. Spec 9 deliveries on world-postgres now linger (30 seconds on a background step, 5 seconds on hooks alone). See [world-postgres over LISTEN/NOTIFY](#world-postgres-over-listennotify). Tests: `world-postgres/test/run-events-feed.test.ts` and `spec9-run-feed.test.ts`, against Docker Postgres.
+**Done** (#5275). After an event write whose `specVersion` is 9 or above commits, the writer sends `pg_notify('workflow_run_events', runId)` outside the write's transaction, without awaiting it. One `LISTEN` connection per process serves every subscription. On each announcement of its run a subscription reads the log after the last slot it delivered and delivers what continues the slot sequence, each slot once, stopping at a hole until a later announcement fills it. A dropped `LISTEN` connection, or a failed read, ends the subscriptions it affects through `onError`. At most half of a process's `queueConcurrency` subscriptions are live at once, since a delivery lingering on its feed holds a Graphile worker slot; a subscription past that is refused, and its delivery polls instead of lingering. Spec 9 deliveries on world-postgres now linger (30 seconds on a background step, 5 seconds on hooks alone). The feed ends at a `resumeHook()` resume rather than delivering it, so the resume's wake consumes it with its timing and hook-resume latency is still measured. See [world-postgres over LISTEN/NOTIFY](#world-postgres-over-listennotify). Tests: `world-postgres/test/run-events-feed.test.ts` and `spec9-run-feed.test.ts`, against Docker Postgres.
 
 Before: world-postgres had no live event feed, so a spec 9 delivery there never lingers and picks up other writers' events only through the tail poll. Implementing `events.subscribe` with Postgres LISTEN/NOTIFY (notify per appended event, slot order, `onError` on a dropped connection) gives it warm handling of bursts and removes most polling. Before default-on. [4365355575](https://github.com/vercel/workflow/pull/4661#discussion_r4365355575).
 
@@ -4137,7 +4144,7 @@ What the numbers show:
 - **TTLS** is below `main` at every width, by about 6x at 256 branches and 8x at 1024. The 64-branch regression is gone.
 - **First branch** is 200 to 600 ms behind `main` from 64 branches up. Two causes, from the run timelines:
   - The inline bodies waited for the dispatch, about 85 to 135 ms of it, which `670ea7bdfe` removes. Estimated first branch after it: about 590 ms at 64 branches. Not re-measured.
-  - The rest is the single 64-event first creation batch. world-vercel's commit time grows with the batch size, about 5 to 6 ms per event: 60 to 100 ms for 16 events and 300 to 420 ms for 64. The inline starts ride that batch, so the inline bodies wait for the whole fan-out's creations. `main` commits about 13 events per chunk in parallel and starts its inline steps after the first.
+  - The rest is the single 64-event first creation batch. world-vercel's commit time grows with the batch size, about 5 to 6 ms per event: 60 to 100 ms for 16 events and 300 to 420 ms for 64. The inline starts ride that batch, so the inline bodies wait for the whole fan-out's creations. `main` commits about 13 events per chunk in parallel and starts its inline steps after the first. Since then, a fan-out on a run's first delivery starts its inline bodies while the batch commits ([Turbo](#turbo)), so its first branch no longer waits for it; later deliveries still do.
 - **Join at 1024 branches** regressed: p50 84.5 s against 2.8 s. In half of the runs every branch started within 13 s and the join took 80 to 105 s; in the others, late branch starts took the same time out of the join instead, so E2E is close to `main` (p50 113 s against 96 s).
   - **Cause.** In a clean run, every outcome had committed 18 s after the start, and the orchestrator held every event 25 s in, through the live feed and tail polls. It stayed in its one invocation, CPU-bound, until it continued past the join 100 s in: polls scheduled every 2 s fired every 5 to 6 s, and a lease renewal took 5.8 s on the client. Every step still pending when the event walk reaches the end of the log signals a suspension, and each signal started its own idle poll (`scheduleWhenIdle`), which polled until the run went idle. Spec 9 resumes its retained session once per batch of incoming outcomes, a new suspension generation each time, so polls piled up as generations times pending steps, and those of past generations kept polling. Spec 8 replays once per wake and never stacks generations. The code is the same on both.
   - **Measured locally** on the in-memory World, node engine, all steps in the background: timers set per run grew with about the cube of the width (1.1 k at 32 branches, 8.5 k at 64, 104 k at 128, 1.1 M at 256, 92 M at 1024), and the join after the last outcome took 14 to 25 s at 1024.
@@ -4150,7 +4157,7 @@ Cold world-vercel backend instances behind the step invocations' events WebSocke
 
 Not done yet, in order of expected gain:
 
-- **A small first creation batch.** The inline starts and about 16 creations first, so the inline bodies and the first background steps start after a 60 to 100 ms commit instead of a 300 to 420 ms one. Estimated 200 to 320 ms off the first branch from 64 branches up. Partly reverts `5b53481478`; the reason not to do it before, that a 64-wide fan-out would gain nothing at one 64-event batch, does not hold once the commit cost is per event. Each later batch's steps already go out as it commits (`8a79811aa6`), so the early branches' out-of-band writes already land while later creation batches commit. They do not move the in-band fence, and the orchestrator wakes they send are the same count as before, earlier; their cost on world-vercel's per-run sequence item is not measured.
+- **A small first creation batch.** The inline starts and about 16 creations first, so the inline bodies and the first background steps start after a 60 to 100 ms commit instead of a 300 to 420 ms one. Estimated 200 to 320 ms off the first branch from 64 branches up. Partly reverts `5b53481478`; the reason not to do it before, that a 64-wide fan-out would gain nothing at one 64-event batch, does not hold once the commit cost is per event. Each later batch's steps already go out as it commits (`8a79811aa6`), so the early branches' out-of-band writes already land while later creation batches commit. They do not move the in-band fence, and the orchestrator wakes they send are the same count as before, earlier; their cost on world-vercel's per-run sequence item is not measured. A run's first delivery no longer waits on this batch for its inline bodies (see [Turbo](#turbo)); a smaller batch would still start the first background steps sooner.
 - **A lower per-event commit cost in world-vercel**, which would help every width.
 
 ### Handoffs verified on Vercel

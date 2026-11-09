@@ -74,6 +74,19 @@ export function getOrchestratorFeedPollIntervalMs(
  */
 export const ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR = 2;
 
+/**
+ * How far the log-tail poll's interval backs off while no live push covers
+ * the run, in milliseconds. Each poll that finds nothing doubles the interval
+ * from `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS` up to this (never below that
+ * interval). A poll that delivers an event, a failed poll, feed trouble or a
+ * write by the delivery itself ({@link LiveLogFeed.noteActivity}) puts it
+ * back at once. On a World without `events.subscribe` a 10-minute inline
+ * body then costs about 65 reads instead of 300, and an outcome another writer
+ * commits during a quiet stretch reaches the delivery up to this much later.
+ * No event is lost.
+ */
+export const ORCHESTRATOR_POLL_MAX_INTERVAL_MS = 10_000;
+
 /** Default of {@link getOrchestratorLingerMs}, in milliseconds. */
 export const DEFAULT_ORCHESTRATOR_LINGER_MS = 30_000;
 
@@ -159,7 +172,12 @@ export function getOrchestratorLingerMsFor(
  * push is dropped and the poll fills in. Correctness never depends on the
  * push.
  *
- * The poll is the safety net for a push that never arrives, so it runs at the
+ * Without a live push, the poll backs off too: each poll that finds nothing
+ * doubles the interval, up to {@link ORCHESTRATOR_POLL_MAX_INTERVAL_MS}, and
+ * a poll that delivers an event, a failed poll or a write by the delivery
+ * itself ({@link noteActivity}) puts it back at the interval without a push.
+ *
+ * With a push, the poll is the safety net for a push that never arrives, so it runs at the
  * live-push interval only while the push is demonstrably keeping up: the
  * subscription is live and the previous poll found nothing the push had not
  * already delivered. It starts there when the subscription opens, and each
@@ -261,7 +279,7 @@ export class LiveLogFeed {
             onError: (error) => {
               const wasLive = this.feedLive;
               this.feedLive = false;
-              this.feedTrouble();
+              this.resetInterval();
               runtimeLogger.debug('Live event feed stopped; polling only', {
                 workflowRunId: this.runId,
                 error: error instanceof Error ? error.message : String(error),
@@ -310,6 +328,8 @@ export class LiveLogFeed {
     if (this.polling || this.stopped) return;
     this.polling = true;
     let clean = this.feedLive;
+    let failed = false;
+    let delivered = 0;
     try {
       let hasMore = true;
       while (hasMore && !this.stopped) {
@@ -333,10 +353,13 @@ export class LiveLogFeed {
         this.cursor = page.cursor ?? this.cursor;
         hasMore = page.hasMore;
         // An event only the poll delivered is one the push missed.
-        if (this.offer(page.data, 'poll') > 0) clean = false;
+        const offered = this.offer(page.data, 'poll');
+        delivered += offered;
+        if (offered > 0) clean = false;
       }
     } catch (error) {
       clean = false;
+      failed = true;
       runtimeLogger.debug('Live event feed poll failed', {
         workflowRunId: this.runId,
         error: error instanceof Error ? error.message : String(error),
@@ -348,6 +371,17 @@ export class LiveLogFeed {
       this.currentIntervalMs = Math.min(
         this.currentIntervalMs * 2,
         this.feedPollIntervalMs * ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR
+      );
+    } else if (
+      !this.feedLive &&
+      !failed &&
+      delivered === 0 &&
+      this.pending.size === 0
+    ) {
+      // Nothing new and no push: back off, up to the no-push cap.
+      this.currentIntervalMs = Math.min(
+        Math.max(this.currentIntervalMs, this.pollIntervalMs) * 2,
+        Math.max(this.pollIntervalMs, ORCHESTRATOR_POLL_MAX_INTERVAL_MS)
       );
     } else {
       this.currentIntervalMs = this.pollIntervalMs;
@@ -368,11 +402,23 @@ export class LiveLogFeed {
   }
 
   /**
-   * Back to the interval without a push: the push may be missing events. A poll
+   * The delivery wrote to the log itself. Without a live push, the poll's
+   * backoff starts over: what the write started (a background step, a timer
+   * due soon) is what makes another writer's event likely. With a push, the
+   * push covers it and nothing changes.
+   */
+  noteActivity(): void {
+    if (this.stopped || this.feedLive) return;
+    this.resetInterval();
+  }
+
+  /**
+   * Back to the interval without a push: the push may be missing events, or
+   * the delivery's own write makes another writer's event likely soon. A poll
    * scheduled later than one interval from now is moved up to it; one in
    * flight schedules the next at the configured interval when it ends.
    */
-  private feedTrouble(): void {
+  private resetInterval(): void {
     this.currentIntervalMs = this.pollIntervalMs;
     if (
       this.timer === undefined ||
@@ -402,7 +448,7 @@ export class LiveLogFeed {
       next = this.pending.get(this.nextSlot);
     }
     // A pushed event above a gap: the push skipped a slot.
-    if (source === 'push' && this.pending.size > 0) this.feedTrouble();
+    if (source === 'push' && this.pending.size > 0) this.resetInterval();
     if (ready.length > 0) this.onEvents(ready);
     return ready.length;
   }

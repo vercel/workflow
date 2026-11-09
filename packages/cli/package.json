@@ -27,7 +27,7 @@
     "dev": "rm -f oclif.manifest.json && tsc --watch",
     "prepack": "node scripts/generate-oclif-manifest.mjs",
     "postpack": "rm -f oclif.manifest.json",
-    "test": "vitest run src",
+    "test": "vitest run --config=../../vitest.config.ts src",
     "typecheck": "tsc --noEmit"
   },
   "oclif": {

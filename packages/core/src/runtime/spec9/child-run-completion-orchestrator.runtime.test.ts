@@ -25,8 +25,13 @@ let incStarted = 0;
 /** Children `cra_readFinished` reports as finished. */
 let finished: string[] = [];
 
+/** Resolves once every `cra_inc` body of the run has started. */
+let allIncStarted: () => void = () => {};
+let allIncStartedPromise: Promise<void> = Promise.resolve();
+
 registerStepFunction('cra_inc', async (n: number) => {
   incStarted++;
+  if (incStarted >= STEPS) allIncStarted();
   const world = currentWorld;
   if (world) {
     const committed = eventsOf(world, 'step_completed').filter(
@@ -81,10 +86,34 @@ const STEPS = 6;
 const RAN_AHEAD = [0, 1, 2, 3, 4, 5];
 const DRAINED = [0, 0, 0, 0, 0, 0];
 
+/**
+ * Longest a `cra_inc` outcome write is held when the bodies do not all start
+ * (the workflow drains, and each body waits for the outcome before it).
+ */
+const OUTCOME_HOLD_MS = 200;
+
+/**
+ * Holds each `cra_inc` outcome write until every `cra_inc` body has started,
+ * or {@link OUTCOME_HOLD_MS}, whichever is first. While the workflow runs
+ * ahead, the bodies start without waiting for these writes, so body `k`
+ * finds exactly `k` outcomes unconfirmed (`RAN_AHEAD`) however slow the
+ * machine. A fixed delay let a slow runner commit an outcome before the last
+ * body started. While it drains, each body waits for the previous outcome,
+ * which commits once the hold times out (`DRAINED`).
+ */
 const slowOutcomes = {
-  async beforeCreate(data: { eventType: string }) {
-    if (data.eventType === 'step_completed') {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+  async beforeCreate(data: {
+    eventType: string;
+    eventData?: { stepName?: string };
+  }) {
+    if (
+      data.eventType === 'step_completed' &&
+      data.eventData?.stepName === 'cra_inc'
+    ) {
+      await Promise.race([
+        allIncStartedPromise,
+        new Promise((resolve) => setTimeout(resolve, OUTCOME_HOLD_MS)),
+      ]);
     }
   },
 };
@@ -108,6 +137,9 @@ async function run(body: string, { untilSteps = false } = {}) {
 beforeEach(() => {
   unconfirmed = [];
   incStarted = 0;
+  allIncStartedPromise = new Promise<void>((resolve) => {
+    allIncStarted = resolve;
+  });
   finished = [];
   vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
   vi.stubEnv('VERCEL_URL', 'run-ahead.example.test');

@@ -1973,6 +1973,8 @@ async function runDelivery(
     const pendingAbsorbs: Array<Parameters<typeof absorbWrite>[0]> = [];
     const pendingFeedEvents: Event[] = [];
     let liveFeed: LiveLogFeed | undefined;
+    /** Removes the live feed's listener on the writer's commits. */
+    let stopFeedActivity: (() => void) | undefined;
     // Set when an inline step finished with stream writes
     // still flushing; the delivery hands off once no body runs.
     let pendingStreamOps = false;
@@ -2066,6 +2068,10 @@ async function runDelivery(
         onFeedDown: notifyProgress,
       });
       liveFeed.start();
+      // Without a push, the poll's backoff starts over on each write of
+      // this delivery (see `LiveLogFeed.noteActivity`).
+      const feed = liveFeed;
+      stopFeedActivity = writer.addCommitListener(() => feed.noteActivity());
     };
     /** Lets every running inline body settle; stops the feed. */
     const drainInline = async (): Promise<void> => {
@@ -2080,6 +2086,8 @@ async function runDelivery(
       // Speculative outcome writes settle before the delivery
       // ends, whichever way it ends.
       await settleRunAhead();
+      stopFeedActivity?.();
+      stopFeedActivity = undefined;
       liveFeed?.stop();
       liveFeed = undefined;
       if (trailingCreationFailure !== undefined) {
@@ -3479,12 +3487,15 @@ async function runDelivery(
       // Turbo: a suspension of only new inline steps starts
       // their bodies while their `step_created` commits.
       // Each body's `step_started` follows that commit, and
-      // its outcome follows the start. Anything with a
-      // background step, a wait or a step that failed to
+      // its outcome follows the start. A fan-out, with
+      // background steps beside the inline ones, does the same
+      // for its inline bodies (`optimisticFanOut` below).
+      // Anything with a wait or a step that failed to
       // serialize commits first, as without turbo.
       // A step that allows no retries starts only on a
       // durable `step_started` (see `mayRunBeforeItsStart`),
-      // so a boundary that creates one commits first.
+      // so a boundary that runs one inline commits first; a
+      // background one starts from its own message either way.
       const startsAhead = plan.steps.every((step) =>
         mayRunBeforeItsStart(step.stepName)
       );
@@ -3496,6 +3507,41 @@ async function runDelivery(
         plan.failedCount === 0 &&
         plan.waitCount === 0 &&
         plan.steps.every((step) => step.inline);
+      // Turbo: a fan-out boundary (inline steps beside background
+      // steps) starts its inline bodies while the creations commit
+      // too. The single-orchestrator guarantee that makes
+      // `optimisticCreation` safe holds whatever else the boundary
+      // creates, and each background step's message still goes out
+      // only once its own creation committed.
+      const inlinePlanned = plan.steps.filter((step) => step.inline);
+      const optimisticFanOut =
+        !optimisticCreation &&
+        turboOptimistic &&
+        mayInline &&
+        plan.failedCount === 0 &&
+        plan.waitCount === 0 &&
+        inlinePlanned.length > 0 &&
+        inlinePlanned.length < plan.steps.length &&
+        inlinePlanned.every((step) => mayRunBeforeItsStart(step.stepName));
+      /** The messages of the background steps a batch created. */
+      const backgroundMessagesOf = (
+        batch: Awaited<ReturnType<typeof plan.commit>>
+      ): StepMessageSpec[] =>
+        batch.createdSteps.flatMap((step) =>
+          step.inline
+            ? []
+            : [
+                {
+                  correlationId: step.correlationId,
+                  stepName: step.stepName,
+                  stepCreatedEventId: step.event?.eventId,
+                  ...(step.event
+                    ? { stepCreatedAt: new Date(step.event.createdAt) }
+                    : {}),
+                  input: step.input,
+                },
+              ]
+        );
       let created: Awaited<ReturnType<typeof plan.commit>>;
       let newInline: Array<
         Omit<CreatedStep, 'event'> & {
@@ -3579,6 +3625,56 @@ async function runDelivery(
           serializationBlockers: plan.serializationBlockers,
         };
         newInline = plan.steps;
+      } else if (optimisticFanOut) {
+        deferAbsorbs = true;
+        // The batches go out as on the awaited path below, and each
+        // later batch's background steps are enqueued once it
+        // committed; the ones `first` reports once it resolved.
+        const chunks = plan.commitInChunks((batch) =>
+          trackInFlightCreation(
+            enqueueStepMessages(run, backgroundMessagesOf(batch))
+          )
+        );
+        creationBatchesQueuing.add(chunks.queued);
+        void chunks.queued.then(() =>
+          creationBatchesQueuing.delete(chunks.queued)
+        );
+        trackInFlightCreation(
+          chunks.first.then((first) =>
+            enqueueStepMessages(run, backgroundMessagesOf(first))
+          )
+        );
+        trackInFlightCreation(chunks.rest);
+        // `first` resolves once every inline creation-bearing start
+        // committed, in one batch or more (inline steps come first in
+        // the plan's events, and inputs past the batch byte budget
+        // split them).
+        creationGate = chunks.first.then((first) => {
+          const inline = new Map(
+            first.createdSteps.flatMap((step) =>
+              step.inline ? [[step.correlationId, step] as const] : []
+            )
+          );
+          if (inlinePlanned.some((step) => !inline.has(step.correlationId))) {
+            // A batch item was refused after its body started.
+            // Redeliver; the next delivery loads the log and decides
+            // from it.
+            throw new WorkflowWorldError(
+              'A step_started of an inline step started ahead of its commit was not committed',
+              { status: 503 }
+            );
+          }
+          return inline;
+        });
+        creationGate.catch(() => {});
+        created = {
+          createdSteps: [],
+          failedStepCorrelationIds: new Set(),
+          createdWaits: [],
+          serializationBlockerCount: plan.serializationBlockerCount,
+          serializationBlockers: plan.serializationBlockers,
+        };
+        newInline = inlinePlanned;
       } else if (
         writer.supportsBatch &&
         plan.events.length > MAX_BATCH_EVENTS &&
@@ -3599,24 +3695,7 @@ async function runDelivery(
         // `creationsInFlight`).
         const chunks = plan.commitInChunks((batch) =>
           trackInFlightCreation(
-            enqueueStepMessages(
-              run,
-              batch.createdSteps.flatMap((step) =>
-                step.inline
-                  ? []
-                  : [
-                      {
-                        correlationId: step.correlationId,
-                        stepName: step.stepName,
-                        stepCreatedEventId: step.event?.eventId,
-                        ...(step.event
-                          ? { stepCreatedAt: new Date(step.event.createdAt) }
-                          : {}),
-                        input: step.input,
-                      },
-                    ]
-              )
-            )
+            enqueueStepMessages(run, backgroundMessagesOf(batch))
           )
         );
         creationBatchesQueuing.add(chunks.queued);
