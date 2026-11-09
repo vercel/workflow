@@ -8,6 +8,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_DEFAULT_MINTED,
+  SPEC_VERSION_DEFAULT_MINTED_FENCED,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -81,15 +82,52 @@ describe('spec version constants', () => {
     expect(SPEC_VERSION_SINGLE_ORCHESTRATOR).toBe(9);
     expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
     expect(SPEC_VERSION_DEFAULT_MINTED).toBe(SPEC_VERSION_CURRENT);
-    // Spec 9 is opt-in: the default stays below the readable ceiling.
+    expect(SPEC_VERSION_DEFAULT_MINTED_FENCED).toBe(
+      SPEC_VERSION_SINGLE_ORCHESTRATOR
+    );
+    // Spec 9 is structural, so the version assumed for a run that reports
+    // none stays below it; only a fenced World mints it.
     expect(SPEC_VERSION_CURRENT).toBeLessThan(SPEC_VERSION_SINGLE_ORCHESTRATOR);
   });
 
   describe('mintedSpecVersion', () => {
-    it('stamps the current version by default', () => {
+    it('stamps the current version by default for a World without the fence', () => {
       expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
+      expect(mintedSpecVersion({}, { inBandFence: false })).toBe(
+        SPEC_VERSION_CURRENT
+      );
       expect(mintedSpecVersion({})).toBeGreaterThanOrEqual(
         SPEC_VERSION_SUPPORTS_SEALED_LOG
+      );
+    });
+
+    it('stamps the single-orchestrator version by default for a fenced World', () => {
+      const fenced = { inBandFence: true };
+      expect(mintedSpecVersion({}, fenced)).toBe(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      );
+      for (const raw of ['', '1', 'true']) {
+        expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: raw }, fenced)).toBe(
+          SPEC_VERSION_SINGLE_ORCHESTRATOR
+        );
+      }
+      expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: '' }, fenced)).toBe(
+        SPEC_VERSION_SINGLE_ORCHESTRATOR
+      );
+      // Spec 8 stays one setting away.
+      expect(
+        mintedSpecVersion(
+          {
+            WORKFLOW_SPEC_VERSION: String(
+              SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+            ),
+          },
+          fenced
+        )
+      ).toBe(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM);
+      // The deprecated sealed-log opt-out still wins over the default.
+      expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: '0' }, fenced)).toBe(
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
       );
     });
 
@@ -212,8 +250,8 @@ describe('spec version constants', () => {
       }
     });
 
-    it('never stamps the single-orchestrator version unless asked to', () => {
-      expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThan(
+    it('never stamps the single-orchestrator version for a World without the fence', () => {
+      expect(mintedSpecVersion({})).toBeLessThan(
         SPEC_VERSION_SINGLE_ORCHESTRATOR
       );
       expect(mintedSpecVersion({ WORKFLOW_SEALED_LOG: '1' })).toBeLessThan(
@@ -223,6 +261,9 @@ describe('spec version constants', () => {
 
     it('never stamps a version this build cannot read back', () => {
       expect(mintedSpecVersion({})).toBeLessThanOrEqual(
+        SPEC_VERSION_MAX_SUPPORTED
+      );
+      expect(mintedSpecVersion({}, { inBandFence: true })).toBeLessThanOrEqual(
         SPEC_VERSION_MAX_SUPPORTED
       );
     });

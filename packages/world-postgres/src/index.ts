@@ -106,8 +106,8 @@ export function createWorld(
     inBandFence: true,
   } satisfies WorldCapabilities;
   return {
-    // Spec 9 runs only on request (`WORKFLOW_SPEC_VERSION=9`), which needs
-    // the in-band fence declared above; spec 8 otherwise.
+    // Spec 9 runs by default, which needs the in-band fence declared above;
+    // `WORKFLOW_SPEC_VERSION=8` keeps new runs on spec 8.
     specVersion: mintedSpecVersion(process.env, {
       inBandFence: capabilities.inBandFence,
     }),

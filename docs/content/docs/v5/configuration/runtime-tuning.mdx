@@ -455,13 +455,13 @@ These variables are primarily for tests, debugging, or unusual deployments.
 
 ## Spec 9 (experimental)
 
-Everything above describes spec 8 runs, the default. The experimental spec 9 runtime is opt-in with `WORKFLOW_SPEC_VERSION=9`, reads some of the settings above differently, and adds the settings below. See [Settings and behaviour on spec 9 runs](/docs/changelog/spec-9#settings-and-behaviour-on-spec-9-runs) for each one in full.
+Everything above describes spec 8 runs. New runs are spec 9 by default on the Vercel, Local and Postgres Worlds, and `WORKFLOW_SPEC_VERSION=8` keeps them on spec 8. The spec 9 runtime reads some of the settings above differently, and adds the settings below. See [Settings and behaviour on spec 9 runs](/docs/changelog/spec-9#settings-and-behaviour-on-spec-9-runs) for each one in full.
 
 ### `WORKFLOW_SPEC_VERSION`
 
-- Default: unset. New runs use spec version 8, or 6 with [`WORKFLOW_SEALED_LOG=0`](#workflow_sealed_log), which this setting takes precedence over.
-- `9` creates spec 9 runs on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do). `6` to `8` select that version. A run keeps the version it was created with.
-- Upgrade every deployment and process that shares the World before setting it, and do not roll back below this release once spec 9 runs exist. See [Opting in](/docs/changelog/spec-9#opting-in).
+- Default: unset. New runs use spec version 9 on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do) and 8 on one that does not, or 6 with [`WORKFLOW_SEALED_LOG=0`](#workflow_sealed_log), which this setting takes precedence over.
+- `8` keeps new runs on spec 8. `6` to `9` select that version; `9` on a World without the fence creates spec 8 runs. A run keeps the version it was created with.
+- Upgrade every deployment and process that shares the World together, setting `8` on the upgraded ones until all of them run this release, and do not roll back below this release once spec 9 runs exist. See [Upgrading to spec 9](/docs/changelog/spec-9#upgrading-to-spec-9).
 
 ### `WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS`
 
