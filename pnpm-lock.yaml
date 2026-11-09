@@ -1524,6 +1524,9 @@ importers:
       ulid:
         specifier: 'catalog:'
         version: 3.0.1
+      workflow:
+        specifier: workspace:^
+        version: link:../workflow
       zod:
         specifier: 'catalog:'
         version: 4.5.4
