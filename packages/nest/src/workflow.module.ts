@@ -222,8 +222,7 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
 
     // Before the World starts: a World that delivers in process (the
     // Postgres World) runs its worker only in a process that registered the
-    // flow route. On any other World the registration does nothing, so this
-    // runs on every deployment, Vercel included.
+    // flow route. Vercel deployments included: the World decides.
     await this.#registerFlowHandler();
 
     if (this.options.manageWorldLifecycle) {
@@ -454,34 +453,27 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
   }
 
   /**
-   * Hands the built flow route to the World (`registerWorkflowHandler`,
-   * which does nothing on a World that delivers over HTTP or by
-   * subscription). The controller serves the same bundle, so a Nest
-   * restart in development (the usual watch mode) picks up a rebuilt route.
+   * Hands the built flow route to the World (`registerWorkflowHandler`),
+   * for a World that delivers in process (the Postgres World): such a World
+   * runs no worker in this process until the route is registered, so a
+   * failure is fatal, or the app would start, create runs, and never run
+   * them. The controller serves the same bundle, so a Nest restart in
+   * development (the usual watch mode) picks up a rebuilt route.
    *
-   * A World that delivers in process runs no worker in this process until
-   * the route is registered, so once the World is known to be one, a
-   * failure is fatal: the app would start, create runs, and never run them.
-   * When `workflow/runtime` cannot be resolved the World cannot be asked;
-   * the failure is fatal when the configuration points at such a World
+   * Runs only when the configuration points at such a World
    * (`WORKFLOW_TARGET_WORLD` names the Postgres World, or the module manages
-   * the World's lifecycle, which only a self-hosted World needs), and quiet
-   * otherwise: a Vercel or Local World app loses nothing.
+   * the World's lifecycle, which only a self-hosted World needs). Otherwise
+   * nothing here touches the World: an app on the Local or Vercel World
+   * builds its World on the first request, as before.
    */
   async #registerFlowHandler(): Promise<void> {
-    let runtime: WorkflowRuntime;
-    try {
-      runtime = await loadRuntime(
-        this.options.workingDir,
-        'The flow route is registered'
-      );
-    } catch (error) {
-      if (this.#expectsInProcessWorld()) throw error;
-      return;
-    }
-    const { getWorld, registerWorkflowHandler } = runtime;
-    // Only a World that delivers in process takes the route; on any other
-    // World the bundle is not loaded here (`preloadBundles` may, later).
+    if (!this.#expectsInProcessWorld()) return;
+    const { getWorld, registerWorkflowHandler } = await loadRuntime(
+      this.options.workingDir,
+      'The flow route is registered'
+    );
+    // A managed World that delivers over HTTP or by subscription takes no
+    // route; its bundle is not loaded here (`preloadBundles` may, later).
     if ((await getWorld()).queueAuthMode !== 'deny') return;
     const bundle = (await import(
       pathToFileURL(join(this.options.outDir, 'workflows.mjs')).href
@@ -496,7 +488,7 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
   #expectsInProcessWorld(): boolean {
     return (
       this.options.manageWorldLifecycle ||
-      (process.env.WORKFLOW_TARGET_WORLD ?? '').includes('postgres')
+      process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
     );
   }
 
