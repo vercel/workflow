@@ -198,30 +198,6 @@ const next = produce(state, (draft) => {
 ```
 </Callout>
 
-### Inspecting stored values
-
-A step input that holds a reference, and a step output that holds a change, can only be rebuilt from the run's earlier records. Workflow does that during replay, so your code always receives whole values.
-
-To show the actual values in an inspection tool, create a resolver for the run with `createStateResolver()` from `workflow/observability`. Feed it the run's persisted payloads once, in event-log order, and merge its revivers over the ones you hydrate with:
-
-```typescript lineNumbers
-import { createStateResolver, hydrateData, observabilityRevivers, stateSourceId } from "workflow/observability";
-declare const runInput: unknown; // @setup
-declare const events: { eventId: string; eventType: string; eventData?: { payload?: unknown; result?: unknown } }[]; // @setup
-declare const stepInput: unknown; // @setup
-
-const resolver = createStateResolver(observabilityRevivers);
-resolver.add(runInput, stateSourceId("run-input"));
-for (const event of events) {
-  if (event.eventType === "hook_received") resolver.add(event.eventData?.payload, stateSourceId(event));
-  if (event.eventType === "step_completed") resolver.add(event.eventData?.result);
-}
-
-const input = hydrateData(stepInput, { ...observabilityRevivers, ...resolver.revivers });
-```
-
-Pass decrypted payloads. Keep one resolver per run and reuse it across inspections. A web inspector built on `@workflow/web-shared` can use `createRunStateHydrator()` instead: it reads the run's history through loaders you give it, only the first time a value needs it, and handles encrypted and compressed payloads. The Workflow web UI uses it for its span details, and `workflow inspect` shows rebuilt values the same way.
-
 ## Streaming
 
 `ReadableStream` and `WritableStream` are supported as serializable types with special handling. These streams can be passed between workflow and step functions while maintaining their streaming capabilities.
