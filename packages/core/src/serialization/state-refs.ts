@@ -163,26 +163,34 @@ function checkedId(id: unknown, what: string): string {
  * `Set` against changes and never drafts a `Date`.
  */
 function isTrustedLeaf(value: object): boolean {
-  // Brand checks, not `instanceof`: values the workflow VM revives are made
-  // with its own `Date`, `Map` and `Set`, which `instanceof` doesn't match.
-  return (
-    ArrayBuffer.isView(value) ||
-    hasBrand(value, () => Date.prototype.getTime.call(value)) ||
-    hasBrand(value, () => Map.prototype.has.call(value, undefined)) ||
-    hasBrand(value, () => Set.prototype.has.call(value, undefined)) ||
-    hasBrand(value, () =>
-      Reflect.apply(
-        Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')
-          ?.get as () => number,
-        value,
-        []
-      )
-    )
-  );
+  if (ArrayBuffer.isView(value)) return true;
+  // Not `instanceof`: values the workflow VM revives are made with its own
+  // `Date`, `Map` and `Set`. The built-in tag reads their internal slots from
+  // any realm without throwing; a brand check confirms one that claims to be
+  // such a type, since a plain object can spoof the tag.
+  switch (Object.prototype.toString.call(value)) {
+    case '[object Date]':
+      return hasBrand(() => Date.prototype.getTime.call(value));
+    case '[object Map]':
+      return hasBrand(() => Map.prototype.has.call(value, undefined));
+    case '[object Set]':
+      return hasBrand(() => Set.prototype.has.call(value, undefined));
+    case '[object ArrayBuffer]':
+      return hasBrand(() =>
+        Reflect.apply(
+          Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')
+            ?.get as () => number,
+          value,
+          []
+        )
+      );
+    default:
+      return false;
+  }
 }
 
-/** Whether a built-in method accepts `value`, which only its own type does, from any realm. */
-function hasBrand(_value: object, check: () => unknown): boolean {
+/** Whether a built-in method accepts a value, which only its own type does, from any realm. */
+function hasBrand(check: () => unknown): boolean {
   try {
     check();
     return true;
@@ -222,6 +230,8 @@ export function isFrozenState(value: unknown, depth = 0): boolean {
         return false;
       continue;
     }
+    // Checked first: the children of a growing value are mostly known.
+    if (frozenState.has(child)) continue;
     if (isTrustedLeaf(child)) continue;
     if (!isFrozenState(child, depth + 1)) return false;
   }

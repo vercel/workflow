@@ -292,6 +292,23 @@ describe('frozen values stored by reference', () => {
     expect(read(output, cold(output1))).toStrictEqual({ session: local });
   });
 
+  it('writes and reads a long history in bounded time', () => {
+    // Every write checks the whole value is frozen state; that check must stay
+    // cheap per message (it once threw per child, which took ~80 s here).
+    const writer = new StateContext();
+    let history: readonly unknown[] = Object.freeze([]);
+    const started = performance.now();
+    for (let i = 0; i < 2_000; i++) {
+      const next = Object.freeze([
+        ...history,
+        Object.freeze({ role: 'user', content: `message ${i}` }),
+      ]);
+      history = read(write({ history: next }, writer), writer).history;
+    }
+    expect(history).toHaveLength(2_000);
+    expect(performance.now() - started).toBeLessThan(10_000);
+  });
+
   it('measures a growing value only now and then to apply the snapshot rule', () => {
     const replay = new StateContext();
     let state = read(
