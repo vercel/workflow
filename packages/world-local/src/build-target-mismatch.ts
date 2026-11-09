@@ -94,8 +94,9 @@ export function warnIfRunningInVercelDeployment(dataDir: string): void {
     return;
   }
   const resolvedDataDir = path.resolve(dataDir);
-  // Keep `tmpdir()` inline: bound to a variable, @vercel/nft evaluates it at
-  // build time and copies the whole temp directory into the function (#5265).
+  // Keep `tmpdir()` inline and out of `path.*` calls: bound to a variable or
+  // wrapped in `path.resolve()`, @vercel/nft evaluates it at build time and
+  // copies the whole temp directory into the function (#5265).
   if (isSameOrInsideDir(resolvedDataDir, tmpdir())) {
     return;
   }
