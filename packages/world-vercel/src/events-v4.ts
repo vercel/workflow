@@ -1131,8 +1131,11 @@ async function postWorkflowRunEventV4(
   /** Why the write tried the socket first and did not take it. */
   fallback?: EventsTransportFallback
 ) {
-  const { baseUrl, headers: baseHeaders, usingProxy } =
-    await getHttpConfig(config);
+  const {
+    baseUrl,
+    headers: baseHeaders,
+    usingProxy,
+  } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
   if (responseType === 'event-stream') {
@@ -1504,8 +1507,11 @@ export async function createWorkflowRunEventsBatchV4(
   config?: APIConfig
 ): Promise<CreateEventBatchV4Result> {
   assert(input.events.length > 0, 'v4 createEventBatch: empty batch');
-  const { baseUrl, headers: baseHeaders, usingProxy } =
-    await getHttpConfig(config);
+  const {
+    baseUrl,
+    headers: baseHeaders,
+    usingProxy,
+  } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   // Match the single-event POST content type: the batch route runs on the
   // same authed + v4 middleware chain and the frame bytes are identical.

@@ -467,7 +467,7 @@ Tracing is unaffected by the choice. Each event write emits an `http POST` clien
 | Attribute | HTTP | WebSocket |
 | --- | --- | --- |
 | `workflow.events.transport` | `http` | `ws` |
-| `workflow.events.transport_fallback` | why a write that tried the socket went over HTTP: `no_channel` (no socket for the run) or `connecting` (a `run_started` during the handshake). Absent when the write never tried the socket. | — |
+| `workflow.events.transport_fallback` | why a write that tried the socket went over HTTP: `no_channel` (no socket for the run) or `connecting` (a `run_started` during the handshake). Absent when the write never tried the socket, and through a `projectConfig` World. | — |
 | `workflow.event.type` | the event type, e.g. `step_started` | same |
 | `network.protocol.name` | — | `websocket` |
 | `workflow.events.ws.url` | — | the socket the frame went over |

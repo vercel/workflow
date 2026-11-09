@@ -792,6 +792,71 @@ describe('transport fallback on the HTTP span', () => {
     expect(span.attributes[FALLBACK]).toBeUndefined();
   });
 
+  it('is absent through a projectConfig World, which is HTTP-only', async () => {
+    // The proxy cannot carry a socket, so no write through it is a fallback,
+    // whatever WORKFLOW_EVENTS_TRANSPORT says.
+    const proxy = new MockAgent();
+    proxy.disableNetConnect();
+    proxy
+      .get('https://api.vercel.com')
+      .intercept({
+        path: '/v1/workflow/v4/runs/wrun_1/events/step_completed',
+        method: 'POST',
+      })
+      .reply(200, materializedBody(), {
+        headers: { 'x-wf-event-id': 'evnt_1' },
+      });
+
+    await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      projectConfig: { projectId: 'prj_test', teamId: 'team_test' },
+      dispatcher: proxy,
+    });
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes[FALLBACK]).toBeUndefined();
+    proxy.assertNoPendingInterceptors();
+  });
+
+  it('is absent on a spec 9 batch through a projectConfig World', async () => {
+    const proxy = new MockAgent();
+    proxy.disableNetConnect();
+    proxy
+      .get('https://api.vercel.com')
+      .intercept({
+        path: '/v1/workflow/v5/runs/wrun_1/events/batch',
+        method: 'POST',
+      })
+      .reply(400, new TextEncoder().encode('{"message":"refused"}'));
+
+    // Only the span is under test: the World refuses the batch.
+    await expect(
+      createWorkflowRunEventsBatchV4(
+        {
+          runId: 'wrun_1',
+          events: [
+            {
+              ...runStarted,
+              eventType: 'step_created',
+              correlationId: 'step_1',
+            },
+          ],
+        },
+        {
+          token: 'test-token',
+          projectConfig: { projectId: 'prj_test', teamId: 'team_test' },
+          dispatcher: proxy,
+        }
+      )
+    ).rejects.toThrow();
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes[FALLBACK]).toBeUndefined();
+    proxy.assertNoPendingInterceptors();
+  });
+
   it('is no_channel for a spec 9 batch with no socket for its run', async () => {
     // Only the span is under test: the World refuses the batch, and the
     // span is recorded either way.
