@@ -6,7 +6,14 @@
  */
 
 import { inspect } from 'node:util';
-import { getCommonRevivers, maybeDecrypt } from '@workflow/core/serialization';
+import {
+  createStateResolver,
+  getCommonRevivers,
+  maybeDecrypt,
+  prepareReplayPayload,
+  type StateResolver,
+  stateSourceId,
+} from '@workflow/core/serialization';
 import {
   ClassInstanceRef,
   extractClassName,
@@ -19,7 +26,7 @@ import {
   serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
 import { parseClassName } from '@workflow/utils/parse-name';
-import { getEventDataRefFields } from '@workflow/world';
+import { getEventDataRefFields, type World } from '@workflow/world';
 import chalk from 'chalk';
 
 /**
@@ -452,7 +459,128 @@ export async function hydrateResourceIO<T>(
     resource as any,
     keyResolver ?? null
   );
-  const hydrated = hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
-  // Post-process: swap encrypted Uint8Arrays and expired stubs for CLI-styled objects
+  const runId = (resource as { runId?: unknown } | null)?.runId;
+  const state =
+    stateWorld && typeof runId === 'string' ? runStateFor(runId) : undefined;
+  if (state === undefined) {
+    const hydrated = hydrateResourceIOGeneric(
+      preprocessed,
+      getRevivers()
+    ) as T;
+    // Post-process: swap encrypted Uint8Arrays and expired stubs for CLI-styled objects
+    return replaceEncryptedAndExpiredWithRef(hydrated);
+  }
+  // Values stored by reference rebuild from the run's history, read the first
+  // time one is unresolved and reused for every later resource of the run.
+  const revivers = { ...getRevivers(), ...state.resolver.revivers };
+  const missed = state.resolver.unresolved;
+  let hydrated = hydrateResourceIOGeneric(preprocessed, revivers) as T;
+  if (state.resolver.unresolved > missed) {
+    state.reading ??= readRunHistory(
+      runId as string,
+      state,
+      keyResolver ?? null
+    ).finally(() => {
+      state.reading = undefined;
+    });
+    try {
+      await state.reading;
+      hydrated = hydrateResourceIOGeneric(preprocessed, revivers) as T;
+    } catch {
+      // The history couldn't be read: show the placeholders.
+    }
+  }
   return replaceEncryptedAndExpiredWithRef(hydrated);
+}
+
+// ---------------------------------------------------------------------------
+// State stored by reference
+// ---------------------------------------------------------------------------
+
+const MAX_HISTORY_PAGES = 1000;
+
+interface RunState {
+  resolver: StateResolver;
+  startedInput: boolean;
+  cursor?: string;
+  seen: Set<string>;
+  reading?: Promise<void>;
+}
+
+/** The World inspected resources come from, set once per command. */
+let stateWorld: World | undefined;
+/** One resolver per run: a run's history is read once per command. */
+const runStates = new Map<string, RunState>();
+
+/**
+ * Lets `hydrateResourceIO` rebuild values a run stored by reference, by
+ * reading that run's history from `world` when a value needs it.
+ */
+export function resolveStateFrom(world: World | undefined): void {
+  stateWorld = world;
+  runStates.clear();
+}
+
+function runStateFor(runId: string): RunState {
+  let state = runStates.get(runId);
+  if (!state) {
+    state = {
+      resolver: createStateResolver(getRevivers()),
+      startedInput: false,
+      seen: new Set(),
+    };
+    runStates.set(runId, state);
+  }
+  return state;
+}
+
+/** Reads the run input and the events after the last read, in log order. */
+async function readRunHistory(
+  runId: string,
+  state: RunState,
+  keyResolver: EncryptionKeyResolver
+): Promise<void> {
+  const world = stateWorld;
+  if (!world) return;
+  const rawKey = keyResolver ? await keyResolver(runId) : undefined;
+  const { deriveRunPayloadKeys } = await import(
+    '@workflow/core/serialization'
+  );
+  const key = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
+  const add = async (value: unknown, source?: string) => {
+    if (value === undefined || value === null) return;
+    try {
+      state.resolver.add((await prepareReplayPayload(value, key)).data, source);
+    } catch {
+      // An unreadable payload (still encrypted, say) leaves its values as
+      // placeholders.
+    }
+  };
+  if (!state.startedInput) {
+    const run = await world.runs.get(runId, { resolveData: 'all' });
+    await add(run.input, stateSourceId('run-input'));
+    state.startedInput = true;
+  }
+  const cursors = new Set<string>();
+  for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
+    const events = await world.events.list({
+      runId,
+      resolveData: 'skip-step-inputs',
+      pagination: { cursor: state.cursor, sortOrder: 'asc', limit: 1000 },
+    });
+    for (const event of events.data) {
+      if (state.seen.has(event.eventId)) continue;
+      state.seen.add(event.eventId);
+      const data = event.eventData as
+        | { payload?: unknown; result?: unknown }
+        | undefined;
+      if (event.eventType === 'hook_received')
+        await add(data?.payload, stateSourceId(event));
+      else if (event.eventType === 'step_completed') await add(data?.result);
+    }
+    if (events.cursor) state.cursor = events.cursor;
+    if (!events.hasMore || !events.cursor || cursors.has(events.cursor))
+      return;
+    cursors.add(events.cursor);
+  }
 }
