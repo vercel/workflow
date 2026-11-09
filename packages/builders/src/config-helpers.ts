@@ -18,6 +18,8 @@ export interface DecoratorOptions {
 export interface DecoratorOptionsWithConfigPath {
   options: DecoratorOptions;
   configPath: string | undefined;
+  /** Every config file read to derive `options`: `configPath` and its `extends` bases. */
+  configPaths: string[];
 }
 
 /**
@@ -28,7 +30,8 @@ export interface DecoratorOptionsWithConfigPath {
  * @returns DecoratorOptions with settings based on tsconfig compilerOptions
  */
 export async function getDecoratorOptionsFromTsConfig(
-  tsconfigPath: string | undefined
+  tsconfigPath: string | undefined,
+  configPaths = new Set<string>()
 ): Promise<DecoratorOptions> {
   const defaultOptions: DecoratorOptions = {
     decorators: false,
@@ -43,7 +46,8 @@ export async function getDecoratorOptionsFromTsConfig(
   try {
     const compilerOptions = await readEffectiveCompilerOptions(
       resolve(tsconfigPath),
-      new Set()
+      new Set(),
+      configPaths
     );
 
     // Match Next.js behavior: enable decorators only when experimentalDecorators is true
@@ -69,12 +73,14 @@ export async function getDecoratorOptionsFromTsConfig(
  */
 async function readEffectiveCompilerOptions(
   tsconfigPath: string,
-  ancestors: Set<string>
+  ancestors: Set<string>,
+  configPaths: Set<string>
 ): Promise<Record<string, unknown>> {
   if (ancestors.has(tsconfigPath)) {
     return {};
   }
 
+  configPaths.add(tsconfigPath);
   const content = await readFile(tsconfigPath, 'utf-8');
   const tsconfig: {
     extends?: unknown;
@@ -95,7 +101,11 @@ async function readEffectiveCompilerOptions(
       try {
         Object.assign(
           merged,
-          await readEffectiveCompilerOptions(resolve(basePath), ancestors)
+          await readEffectiveCompilerOptions(
+            resolve(basePath),
+            ancestors,
+            configPaths
+          )
         );
       } catch {
         // An unreadable base contributes nothing.
@@ -131,8 +141,12 @@ export async function getDecoratorOptionsForDirectoryWithConfigPath(
   const configPath = await findUp(['tsconfig.json', 'jsconfig.json'], {
     cwd,
   });
-  const options = await getDecoratorOptionsFromTsConfig(configPath);
-  return { options, configPath };
+  const configPaths = new Set<string>();
+  const options = await getDecoratorOptionsFromTsConfig(
+    configPath,
+    configPaths
+  );
+  return { options, configPath, configPaths: [...configPaths] };
 }
 
 /**

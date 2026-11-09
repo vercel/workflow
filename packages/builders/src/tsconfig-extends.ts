@@ -1,6 +1,6 @@
 import { access } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 const require = createRequire(import.meta.url);
 
@@ -27,30 +27,34 @@ export async function resolveTsconfigExtendsPath(
     return findExistingTsconfigPath(resolved);
   }
 
-  try {
-    return require.resolve(extendsValue, { paths: [configDir] });
-  } catch {}
-
-  try {
-    return require.resolve(`${extendsValue}/tsconfig.json`, {
-      paths: [configDir],
-    });
-  } catch {
-    return undefined;
+  // Only a JSON file can be a tsconfig, so skip a package's JS `main`.
+  const candidates = extendsValue.endsWith('.json')
+    ? [extendsValue]
+    : [extendsValue, `${extendsValue}.json`, `${extendsValue}/tsconfig.json`];
+  for (const candidate of candidates) {
+    try {
+      const resolved = require.resolve(candidate, { paths: [configDir] });
+      if (resolved.endsWith('.json')) {
+        return resolved;
+      }
+    } catch {}
   }
+
+  return undefined;
 }
 
 async function findExistingTsconfigPath(
   candidatePath: string
 ): Promise<string | undefined> {
-  const candidates =
-    extname(candidatePath) === ''
-      ? [
-          `${candidatePath}.json`,
-          join(candidatePath, 'tsconfig.json'),
-          candidatePath,
-        ]
-      : [candidatePath];
+  // TypeScript appends `.json` to any path that does not end in it, so
+  // `./tsconfig.base` means `./tsconfig.base.json`.
+  const candidates = !candidatePath.endsWith('.json')
+    ? [
+        `${candidatePath}.json`,
+        join(candidatePath, 'tsconfig.json'),
+        candidatePath,
+      ]
+    : [candidatePath];
 
   for (const candidate of candidates) {
     try {

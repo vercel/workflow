@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
+  getDecoratorOptionsForDirectoryWithConfigPath,
   getDecoratorOptionsFromTsConfig,
   resolveProjectRoot,
 } from './config-helpers.js';
@@ -65,6 +66,16 @@ describe('getDecoratorOptionsFromTsConfig', () => {
     const dir = makeProject({
       'tsconfig.base.json': { compilerOptions: decoratorOptions },
       'tsconfig.json': { extends: './tsconfig.base.json' },
+    });
+    await expect(
+      getDecoratorOptionsFromTsConfig(join(dir, 'tsconfig.json'))
+    ).resolves.toEqual(enabled);
+  });
+
+  it('appends .json to a relative extends that does not end in it', async () => {
+    const dir = makeProject({
+      'tsconfig.base.json': { compilerOptions: decoratorOptions },
+      'tsconfig.json': { extends: './tsconfig.base' },
     });
     await expect(
       getDecoratorOptionsFromTsConfig(join(dir, 'tsconfig.json'))
@@ -135,6 +146,24 @@ describe('getDecoratorOptionsFromTsConfig', () => {
     ).resolves.toEqual(enabled);
   });
 
+  it('resolves a package to its tsconfig.json when its main is JavaScript', async () => {
+    const dir = makeProject({
+      'node_modules/tsconfig-pkg/package.json': {
+        name: 'tsconfig-pkg',
+        version: '0.0.0',
+        main: 'index.js',
+      },
+      'node_modules/tsconfig-pkg/index.js': 'module.exports = {};',
+      'node_modules/tsconfig-pkg/tsconfig.json': {
+        compilerOptions: decoratorOptions,
+      },
+      'tsconfig.json': { extends: 'tsconfig-pkg' },
+    });
+    await expect(
+      getDecoratorOptionsFromTsConfig(join(dir, 'tsconfig.json'))
+    ).resolves.toEqual(enabled);
+  });
+
   it('stops on a circular extends instead of looping', async () => {
     const dir = makeProject({
       'a.json': { extends: './b.json', compilerOptions: decoratorOptions },
@@ -144,5 +173,29 @@ describe('getDecoratorOptionsFromTsConfig', () => {
     await expect(
       getDecoratorOptionsFromTsConfig(join(dir, 'tsconfig.json'))
     ).resolves.toEqual(enabled);
+  });
+});
+
+describe('getDecoratorOptionsForDirectoryWithConfigPath', () => {
+  it('lists the found config and every base it extends', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'workflow-decorators-'));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    mkdirSync(join(dir, 'configs'));
+    writeFileSync(
+      join(dir, 'configs', 'root.json'),
+      JSON.stringify({ compilerOptions: { experimentalDecorators: true } })
+    );
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({ extends: './configs/root.json' })
+    );
+
+    const result = await getDecoratorOptionsForDirectoryWithConfigPath(dir);
+    expect(result.configPath).toBe(join(dir, 'tsconfig.json'));
+    expect(result.configPaths).toEqual([
+      join(dir, 'tsconfig.json'),
+      join(dir, 'configs', 'root.json'),
+    ]);
+    expect(result.options.decorators).toBe(true);
   });
 });
