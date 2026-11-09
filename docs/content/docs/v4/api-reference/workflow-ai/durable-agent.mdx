@@ -23,7 +23,7 @@ For current examples and implementation guidance, see AI SDK's [`WorkflowAgent`]
 
 <TSDoc
 definition={`
-import { DurableAgent } from "@workflow/ai/agent";
+import { DurableAgent } from "@workflow/ai-durable-agent/agent";
 export default DurableAgent;`}
 />
 
@@ -31,7 +31,7 @@ export default DurableAgent;`}
 
 <TSDoc
 definition={`
-import type { DurableAgentOptions } from "@workflow/ai/agent";
+import type { DurableAgentOptions } from "@workflow/ai-durable-agent/agent";
 export default DurableAgentOptions;`}
 />
 
@@ -39,7 +39,7 @@ export default DurableAgentOptions;`}
 
 <TSDoc
 definition={`
-import type { DurableAgentStreamOptions } from "@workflow/ai/agent";
+import type { DurableAgentStreamOptions } from "@workflow/ai-durable-agent/agent";
 export default DurableAgentStreamOptions;`}
 />
 
@@ -49,7 +49,7 @@ The result returned from the `stream()` method:
 
 <TSDoc
 definition={`
-import type { DurableAgentStreamResult } from "@workflow/ai/agent";
+import type { DurableAgentStreamResult } from "@workflow/ai-durable-agent/agent";
 export default DurableAgentStreamResult;`}
 />
 
@@ -59,7 +59,7 @@ Settings that control model generation behavior. These can be set on the constru
 
 <TSDoc
 definition={`
-import type { GenerationSettings } from "@workflow/ai/agent";
+import type { GenerationSettings } from "@workflow/ai-durable-agent/agent";
 export default GenerationSettings;`}
 />
 
@@ -69,7 +69,7 @@ Information passed to the `prepareStep` callback:
 
 <TSDoc
 definition={`
-import type { PrepareStepInfo } from "@workflow/ai/agent";
+import type { PrepareStepInfo } from "@workflow/ai-durable-agent/agent";
 export default PrepareStepInfo;`}
 />
 
@@ -79,7 +79,7 @@ Return type from the `prepareStep` callback:
 
 <TSDoc
 definition={`
-import type { PrepareStepResult } from "@workflow/ai/agent";
+import type { PrepareStepResult } from "@workflow/ai-durable-agent/agent";
 export default PrepareStepResult;`}
 />
 
@@ -89,7 +89,7 @@ Configuration for observability and telemetry:
 
 <TSDoc
 definition={`
-import type { TelemetrySettings } from "@workflow/ai/agent";
+import type { TelemetrySettings } from "@workflow/ai-durable-agent/agent";
 export default TelemetrySettings;`}
 />
 
@@ -101,7 +101,7 @@ Called when streaming completes:
 
 <TSDoc
 definition={`
-import type { StreamTextOnFinishCallback } from "@workflow/ai/agent";
+import type { StreamTextOnFinishCallback } from "@workflow/ai-durable-agent/agent";
 export default StreamTextOnFinishCallback;`}
 />
 
@@ -111,7 +111,7 @@ Called when an error occurs:
 
 <TSDoc
 definition={`
-import type { StreamTextOnErrorCallback } from "@workflow/ai/agent";
+import type { StreamTextOnErrorCallback } from "@workflow/ai-durable-agent/agent";
 export default StreamTextOnErrorCallback;`}
 />
 
@@ -121,7 +121,7 @@ Called when the operation is aborted:
 
 <TSDoc
 definition={`
-import type { StreamTextOnAbortCallback } from "@workflow/ai/agent";
+import type { StreamTextOnAbortCallback } from "@workflow/ai-durable-agent/agent";
 export default StreamTextOnAbortCallback;`}
 />
 
@@ -133,7 +133,7 @@ Function to repair malformed tool calls:
 
 <TSDoc
 definition={`
-import type { ToolCallRepairFunction } from "@workflow/ai/agent";
+import type { ToolCallRepairFunction } from "@workflow/ai-durable-agent/agent";
 export default ToolCallRepairFunction;`}
 />
 
@@ -143,7 +143,7 @@ Transform applied to the stream:
 
 <TSDoc
 definition={`
-import type { StreamTextTransform } from "@workflow/ai/agent";
+import type { StreamTextTransform } from "@workflow/ai-durable-agent/agent";
 export default StreamTextTransform;`}
 />
 
@@ -153,7 +153,7 @@ Specification for structured output parsing:
 
 <TSDoc
 definition={`
-import type { OutputSpecification } from "@workflow/ai/agent";
+import type { OutputSpecification } from "@workflow/ai-durable-agent/agent";
 export default OutputSpecification;`}
 />
 

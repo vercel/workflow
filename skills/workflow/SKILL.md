@@ -33,7 +33,7 @@ Documentation structure in `node_modules/workflow/docs/`:
 Related packages also include bundled docs:
 
 - `@ai-sdk/workflow`: `node_modules/ai/docs/` - WorkflowAgent and AI SDK integration
-- `@workflow/ai`: `node_modules/@workflow/ai/docs/` - deprecated DurableAgent APIs for existing applications
+- `@workflow/ai`: `node_modules/@workflow/ai/docs/` - deprecated `WorkflowChatTransport` (`@workflow/ai` 5 and earlier also contain the deprecated `DurableAgent`)
 - `@workflow/core`: `node_modules/@workflow/core/docs/` - Core runtime (foundations, how-it-works)
 - `@workflow/next`: `node_modules/@workflow/next/docs/` - Next.js integration
 

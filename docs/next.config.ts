@@ -168,6 +168,14 @@ const config: NextConfig = {
       // equivalents are intentionally omitted: those URLs carried noindex,
       // and the /v5 prefix collapses into the unprefixed space when v5
       // becomes the default docs version.
+      // `DurableAgent` is not in `@workflow/ai` 6, so its v5 reference page
+      // is gone; send old links to AI SDK's DurableAgent migration guide.
+      {
+        source: '/docs/api-reference/workflow-ai/durable-agent',
+        destination:
+          'https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent',
+        permanent: true,
+      },
       {
         source: '/docs/migration-guides',
         destination: '/docs/comparisons',
