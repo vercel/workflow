@@ -1038,9 +1038,11 @@ export interface InProcessDelivery {
   meta: QueueDeliveryMeta;
   /**
    * Aborted when the World stops waiting for this delivery (its shutdown,
-   * or the deadline it gives a delivery), as the request's signal is for a
-   * delivery over HTTP. The World releases the job then; the handler may
-   * keep running, and may use the signal to stop early.
+   * or the deadline it gives a delivery), as a request's signal is for a
+   * delivery over HTTP. The World releases the job then. The Workflow SDK's
+   * flow route does not act on it, as it does not on a request's signal: a
+   * delivery it accepted runs to completion. A handler of the World's own
+   * (a queue consumer's) may watch it to stop early.
    */
   signal?: AbortSignal;
 }
