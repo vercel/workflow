@@ -99,7 +99,7 @@ The command is idempotent, so you can run it on every deploy.
 
 The Postgres World runs its jobs inside your app's process: a background worker pulls them from graphile-worker and runs them through the app's workflow route, in process, without HTTP. The worker runs only in a process that has registered that route with the World, so your app does two things once when the server boots: register the route, and start the World. Every framework integration generates a module that does both, or does it for you.
 
-<TabsWithChildren tabs={["Next.js","SvelteKit","Nitro","Nest","Astro"]}>
+<TabsWithChildren tabs={["Next.js","SvelteKit","Nitro","Nest","Astro","Custom server"]}>
 
 <TabContent order={1}>
 
@@ -107,7 +107,10 @@ The Workflow build writes `worker.js` next to the generated workflow route. Impo
 
 ```ts title="instrumentation.ts" lineNumbers
 export async function register() {
-  if (process.env.NEXT_RUNTIME === "nodejs") {
+  if (
+    process.env.NEXT_RUNTIME === "nodejs" &&
+    process.env.WORKFLOW_TARGET_WORLD === "@workflow/world-postgres"
+  ) {
     const { startWorkflowWorker } = await import(
       "./app/.well-known/workflow/v1/flow/worker"
     );
@@ -116,7 +119,7 @@ export async function register() {
 }
 ```
 
-`startWorkflowWorker()` hands the route to the World and starts it. In `next dev`, an edit to a workflow file takes effect on the next delivery without a restart.
+`startWorkflowWorker()` hands the route to the World and starts it. The `WORKFLOW_TARGET_WORLD` check keeps the import, and with it the whole workflow bundle, off the cold-start path of a deployment that uses another World. In `next dev`, an edit to a workflow file takes effect on the next delivery without a restart.
 
 <Callout type="info">
 Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
@@ -214,6 +217,23 @@ await import("../dist/server/entry.mjs");
 
 </TabContent>
 
+<TabContent order={6}>
+
+On a framework without an integration, or a server you wrote yourself, do the two things the generated modules do: hand the built flow route to the World with [`registerWorkflowHandler()`](/docs/api-reference/workflow-runtime/register-workflow-handler), then start the World. Run both once when the server boots, before it accepts traffic:
+
+```ts title="server.ts" lineNumbers
+import { getWorld, registerWorkflowHandler } from "workflow/runtime";
+import { POST as flowRoute } from "./.well-known/workflow/v1/flow/route.js";
+
+await registerWorkflowHandler(flowRoute);
+const world = await getWorld();
+await world.start?.();
+```
+
+The route module is the one your build generated for the flow route; import the `POST` export. A process that only calls `start()` runs no worker.
+
+</TabContent>
+
 </TabsWithChildren>
 
 <Callout type="info">
@@ -280,11 +300,11 @@ The Postgres World delivers workflow messages inside your app's process, so its 
 
 The refusal applies in every process that serves the route, whether or not that process registered the route with the World: a web-only copy of the app refuses too, since the route itself could run a forged delivery. Each refusal is counted on the OpenTelemetry counter `workflow.queue.delivery.refused` with `workflow.queue.refusal_reason: denied`, and logged at most once a minute per process.
 
-Unlike the [Local World](/worlds/local)'s `401`, which tells a sender it had the wrong key and to reload it and retry, the `403` is final: no key makes this route accept a request, and a sender must not retry it. The `?__health` probe on the same route keeps answering, so `workflow health` and the CLI's port detection work as before.
+Unlike the [Local World](/worlds/local)'s `401`, which tells a sender it had the wrong key and to reload it and retry, the `403` is final: no key makes this route accept a request, and a sender must not retry it. The `?__health` probe on the same route answers, so `workflow health` and the CLI's port detection work.
 
 ### The emergency override
 
-`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP requests again, as it did when the World delivered over a loopback request, and the route logs it loudly when it starts. It exists for one situation: a [rolling upgrade](#rolling-upgrades) whose processes on the previous release still deliver over HTTP, when draining them first is not an option. With it set, anyone who can reach the server can drive your workflows, so remove it as soon as the old processes are gone. It is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`), because a forged delivery could then execute stored code; both variables are read on every delivery. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP requests, and the route logs it loudly when it starts. It exists for one situation: a [rolling upgrade](#rolling-upgrades) whose processes on the previous release still deliver over HTTP, when draining them first is not an option. With it set, anyone who can reach the server can drive your workflows, so remove it as soon as the old processes are gone. It is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`), because a forged delivery could then execute stored code; both variables are read on every delivery. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
 
 ### The other routes
 
@@ -448,13 +468,13 @@ at most 10 seconds for its locks; if a long transaction holds them,
 
 ### Startup hooks that only start the World
 
-A worker runs only in a process that handed the World its flow route (see [Run the worker when your server starts](#run-the-worker-when-your-server-starts)). An app whose startup hook still only calls `world.start()`, as earlier versions of this page asked, runs no worker after the upgrade: runs are created and stay `pending`, and `start()` logs a warning once in that process saying so. Replace the hook with the one for your framework before deploying the upgrade.
+A worker runs only in a process that handed the World its flow route (see [Run the worker when your server starts](#run-the-worker-when-your-server-starts)). An app whose startup hook only calls `world.start()` runs no worker: runs are created and stay `pending`, and `start()` logs a warning once in that process saying so. Use the hook for your framework.
 
 ### Rolling upgrades
 
-Drain the processes on the previous release before the upgraded ones start: stop sending them traffic, let their running jobs finish, then stop them. A rolling deployment that keeps both releases alive for a while works, as long as the old processes stop once the new ones are up.
+Drain every process on the previous release before the upgraded ones start: stop sending them traffic, let their running jobs finish, then stop them. That includes processes that are not your app but run a worker on that release: a `workflow web` UI, a CLI left running a long command, a script. Only then start the upgraded processes.
 
-The reason is how deliveries moved. A process on a release before this one delivers jobs over HTTP to the flow route; the upgraded route [refuses every HTTP request](#security). While old and new processes share the database, an old process keeps claiming jobs, and each of its deliveries is refused, fails, and is retried by graphile-worker with its backoff, counting toward the job's attempt limit. The runs still complete, because the new processes also claim jobs and run them in process, but a run whose message an old process keeps picking up is slowed down, and a message that is refused often enough reaches the attempt limit and fails. If you cannot drain first, set [`WORKFLOW_QUEUE_AUTH=off`](#the-emergency-override) on the upgraded processes for the duration of the overlap, and remove it afterwards.
+The reason: a process on a release that delivers over HTTP posts each job it claims to the flow route, and the upgraded route [refuses every HTTP request](#security). While old and new processes share the database, an old process keeps claiming jobs, each of its deliveries is refused and retried by graphile-worker with its backoff, and every retry counts toward the job's attempt limit. The runs still complete, because the new processes also claim jobs and run them in process, but a run whose message an old process keeps picking up is slowed down, and a message that is refused often enough reaches the attempt limit and fails. A rolling deployment in which both releases run side by side therefore needs [`WORKFLOW_QUEUE_AUTH=off`](#the-emergency-override) on the upgraded processes for the duration of the overlap, removed once the old processes are gone; without it, drain first.
 
 ### Start Hooks
 
