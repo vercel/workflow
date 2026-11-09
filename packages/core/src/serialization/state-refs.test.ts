@@ -306,7 +306,9 @@ describe('frozen values stored by reference', () => {
       history = read(write({ history: next }, writer), writer).history;
     }
     expect(history).toHaveLength(2_000);
-    expect(performance.now() - started).toBeLessThan(10_000);
+    // ~0.6 s on a laptop; CI runners can be 20 times slower. The bug this
+    // guards against took ~80 s.
+    expect(performance.now() - started).toBeLessThan(30_000);
   });
 
   it('measures a growing value only now and then to apply the snapshot rule', () => {
