@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 // The SDK's own writers, so the fixtures are exactly what a run stores.
-import { StateContext } from '../../../../core/src/serialization/state-refs';
-import * as workflow from '../../../../core/src/serialization/workflow';
+import { StateContext } from '../../../../core/src/serialization/state-refs.js';
+import * as workflow from '../../../../core/src/serialization/workflow.js';
 import { hydrateResourceIO, resolveStateFrom } from './hydration.js';
 
 type Message = { role: string; content: string };

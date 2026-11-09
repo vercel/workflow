@@ -463,10 +463,7 @@ export async function hydrateResourceIO<T>(
   const state =
     stateWorld && typeof runId === 'string' ? runStateFor(runId) : undefined;
   if (state === undefined) {
-    const hydrated = hydrateResourceIOGeneric(
-      preprocessed,
-      getRevivers()
-    ) as T;
+    const hydrated = hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
     // Post-process: swap encrypted Uint8Arrays and expired stubs for CLI-styled objects
     return replaceEncryptedAndExpiredWithRef(hydrated);
   }
@@ -543,9 +540,7 @@ async function readRunHistory(
   const world = stateWorld;
   if (!world) return;
   const rawKey = keyResolver ? await keyResolver(runId) : undefined;
-  const { deriveRunPayloadKeys } = await import(
-    '@workflow/core/serialization'
-  );
+  const { deriveRunPayloadKeys } = await import('@workflow/core/serialization');
   const key = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
   const add = async (value: unknown, source?: string) => {
     if (value === undefined || value === null) return;
@@ -579,8 +574,7 @@ async function readRunHistory(
       else if (event.eventType === 'step_completed') await add(data?.result);
     }
     if (events.cursor) state.cursor = events.cursor;
-    if (!events.hasMore || !events.cursor || cursors.has(events.cursor))
-      return;
+    if (!events.hasMore || !events.cursor || cursors.has(events.cursor)) return;
     cursors.add(events.cursor);
   }
 }
