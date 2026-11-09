@@ -15,11 +15,25 @@ function storedRun(steps: number) {
     // Frozen, reusing the unchanged messages.
     const next = Object.freeze([
       ...history,
-      Object.freeze({ role: i % 2 ? 'assistant' : 'user', content: `message ${i}` }),
+      Object.freeze({
+        role: i % 2 ? 'assistant' : 'user',
+        content: `message ${i}`,
+      }),
     ]);
-    const result = workflow.serialize({ history: next }, { stateContext: writer });
-    history = (workflow.deserialize(result, { stateContext: writer }) as { history: Message[] }).history;
-    events.push({ eventId: `e${i}`, eventType: 'step_completed', eventData: { result } });
+    const result = workflow.serialize(
+      { history: next },
+      { stateContext: writer }
+    );
+    history = (
+      workflow.deserialize(result, { stateContext: writer }) as {
+        history: Message[];
+      }
+    ).history;
+    events.push({
+      eventId: `e${i}`,
+      eventType: 'step_completed',
+      eventData: { result },
+    });
   }
   const input = workflow.serialize({ history }, { stateContext: writer });
   let lists = 0;
@@ -44,7 +58,10 @@ describe('CLI inspection of state stored by reference', () => {
     const step = { runId: 'wrun_cli', stepId: 's', input: run.input };
     const shown = (await hydrateResourceIO(step)) as any;
     expect(shown.input.history).toHaveLength(5);
-    expect(shown.input.history[4]).toEqual({ role: 'user', content: 'message 4' });
+    expect(shown.input.history[4]).toEqual({
+      role: 'user',
+      content: 'message 4',
+    });
     await hydrateResourceIO(step);
     expect(run.lists()).toBe(1);
   });
@@ -60,8 +77,8 @@ describe('CLI inspection of state stored by reference', () => {
     await hydrateResourceIO(step);
     const cached = performance.now() - again;
     expect(shown.input.history).toHaveLength(2_000);
-    // Recorded for the PR: first inspection reads and rebuilds the chain once.
-    console.info(`[perf] 2000-step chain: first inspection ${first.toFixed(0)} ms, cached ${cached.toFixed(1)} ms`);
-    expect(first).toBeLessThan(10_000);
+    // ~135 ms on a laptop: the history is read and rebuilt once.
+    expect(first).toBeLessThan(5_000);
+    expect(cached).toBeLessThan(first);
   });
 });

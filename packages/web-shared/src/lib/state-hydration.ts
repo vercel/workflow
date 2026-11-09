@@ -117,8 +117,16 @@ export function createRunStateHydrator(
     }
   };
 
-  /** Reads the events added since the last read, in log order. */
-  const readHistory = async (current: NonNullable<typeof state>) => {
+  /**
+   * Reads the events added since the last read, in log order, a page at a
+   * time, until `resolved` says the value being inspected no longer needs
+   * more. Inspecting an early step reads only the start of a long run, and
+   * the next inspection continues from there.
+   */
+  const readHistory = async (
+    current: NonNullable<typeof state>,
+    resolved: () => Promise<boolean>
+  ) => {
     const key = current.key
       ? await deriveRunPayloadKeys(current.key)
       : undefined;
@@ -149,6 +157,9 @@ export function createRunStateHydrator(
       if (page.cursor) current.cursor = page.cursor;
       if (!page.hasMore || !page.cursor || cursors.has(page.cursor)) return;
       cursors.add(page.cursor);
+      if (await resolved()) return;
+      // Let the page paint and respond between pages of a long run.
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   };
 
@@ -162,15 +173,26 @@ export function createRunStateHydrator(
         current.resolver.revivers
       );
       if (current.resolver.unresolved === missed) return hydrated;
-      // Concurrent inspections share one read.
-      if (!current.reading)
-        current.reading = readHistory(current).finally(() => {
-          current.reading = undefined;
-        });
-      try {
-        await current.reading;
-      } catch {
-        return hydrated;
+      // Whether what has been read so far rebuilds this resource.
+      const resolved = async () => {
+        const before = current.resolver.unresolved;
+        await hydrateResourceIOAsync(resource, key, current.resolver.revivers);
+        return current.resolver.unresolved === before;
+      };
+      // Concurrent inspections share one read. One started by another
+      // inspection may stop before this resource's records, so read on once.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const shared = current.reading !== undefined;
+        if (!current.reading)
+          current.reading = readHistory(current, resolved).finally(() => {
+            current.reading = undefined;
+          });
+        try {
+          await current.reading;
+        } catch {
+          return hydrated;
+        }
+        if (!shared || (await resolved())) break;
       }
       return hydrateResourceIOAsync(resource, key, current.resolver.revivers);
     },

@@ -179,4 +179,67 @@ describe('createRunStateHydrator', () => {
     const shown = (await hydrator.hydrate({ input })) as any;
     expect(shown.input.history).toEqual([{ role: 'user', content: message }]);
   });
+
+  it('reads only as much of a long run as the inspected step needs', async () => {
+    const writer = new StateContext();
+    let history: readonly unknown[] = Object.freeze([]);
+    const events: { eventId: string; eventType: string; eventData: unknown }[] =
+      [];
+    const inputs: Uint8Array[] = [];
+    for (let i = 0; i < 2_000; i++) {
+      inputs.push(
+        workflow.serialize(
+          { history },
+          { stateContext: writer, stateInput: true }
+        )
+      );
+      const next = Object.freeze([
+        ...history,
+        Object.freeze({ role: 'user', content: `message ${i}` }),
+      ]);
+      const result = workflow.serialize(
+        { history: next },
+        { stateContext: writer }
+      );
+      history = (workflow.deserialize(result, { stateContext: writer }) as any)
+        .history;
+      events.push({
+        eventId: `e${i}`,
+        eventType: 'step_completed',
+        eventData: { result },
+      });
+    }
+    const PAGE = 100;
+    let pages = 0;
+    const hydrator = createRunStateHydrator({
+      loadRunInput: async () => undefined,
+      loadEvents: async (cursor) => {
+        pages++;
+        const from = cursor ? Number(cursor) : 0;
+        const to = from + PAGE;
+        return {
+          data: events.slice(from, to),
+          cursor: String(to),
+          hasMore: to < events.length,
+        };
+      },
+    });
+
+    // Step 51's input refers to step 50's output: the first page has it.
+    let started = performance.now();
+    const early = (await hydrator.hydrate({ input: inputs[51] })) as any;
+    const earlyMs = performance.now() - started;
+    expect(early.input.history).toHaveLength(51);
+    expect(pages).toBe(1);
+
+    // The last step needs the whole run: read on from where the first stopped.
+    started = performance.now();
+    const late = (await hydrator.hydrate({ input: inputs[1_999] })) as any;
+    const lateMs = performance.now() - started;
+    expect(late.input.history).toHaveLength(1_999);
+    expect(pages).toBe(20);
+    // ~10 ms and ~250 ms on a laptop.
+    expect(earlyMs).toBeLessThan(lateMs);
+    expect(lateMs).toBeLessThan(10_000);
+  });
 });
