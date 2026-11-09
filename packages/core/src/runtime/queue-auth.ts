@@ -150,11 +150,11 @@ export function logQueueAuthSetting(world: Pick<World, 'queueAuthMode'>): void {
       log.denyOff((routesSinceLastLog) =>
         runtimeLogger.warn(
           `THE FLOW ROUTE ACCEPTS HTTP REQUESTS (${QUEUE_AUTH_ENV}=off). This World ` +
-            'delivers in process and its route (POST /.well-known/workflow/v1/flow) ' +
-            'would otherwise refuse every HTTP request; with the override, anyone who ' +
-            'can reach this server can start runs, fail a running one, or re-trigger ' +
-            'its steps. This is an emergency override, for a rolling upgrade whose ' +
-            'old workers still deliver over HTTP: remove it once they are drained.',
+            'delivers in process and its flow route would otherwise refuse every HTTP ' +
+            'request; with the override, anyone who can reach this server can start ' +
+            'runs, fail a running one, or re-trigger its steps. This is an emergency ' +
+            'override for a rolling upgrade, while processes that deliver over HTTP ' +
+            'run next to this one: remove it once they are gone.',
           { routesSinceLastLog }
         )
       );

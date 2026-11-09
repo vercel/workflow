@@ -296,7 +296,7 @@ describe('logQueueAuthSetting', () => {
     );
     const [message] = warn.mock.calls[0] as [string];
     expect(message).toContain('emergency override');
-    expect(message).toContain('old workers');
+    expect(message).toContain('processes that deliver over HTTP');
   });
 
   it("logs an error when off is refused under dynamic workflows on a 'deny' World", () => {

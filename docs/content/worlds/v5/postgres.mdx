@@ -109,7 +109,7 @@ The Workflow build writes `worker.js` next to the generated workflow route. Impo
 export async function register() {
   if (
     process.env.NEXT_RUNTIME === "nodejs" &&
-    process.env.WORKFLOW_TARGET_WORLD === "@workflow/world-postgres"
+    process.env.WORKFLOW_IN_PROCESS_WORKER === "1"
   ) {
     const { startWorkflowWorker } = await import(
       "./app/.well-known/workflow/v1/flow/worker"
@@ -119,7 +119,7 @@ export async function register() {
 }
 ```
 
-`startWorkflowWorker()` hands the route to the World and starts it. The `WORKFLOW_TARGET_WORLD` check keeps the import, and with it the whole workflow bundle, off the cold-start path of a deployment that uses another World. In `next dev`, an edit to a workflow file takes effect on the next delivery without a restart.
+`startWorkflowWorker()` hands the route to the World and starts it. `WORKFLOW_IN_PROCESS_WORKER` is a build-time constant: `withWorkflow` sets it to `"1"` when the build runs with `WORKFLOW_TARGET_WORLD=@workflow/world-postgres` (or when you set it to `"1"` yourself, for a World of your own that delivers in process), and to `""` otherwise. Because the bundler inlines it, a build for another World drops the import and the whole workflow bundle with it; with webpack, a runtime check would instead compile the bundle into instrumentation and recompile it on every workflow edit in development. Build with the same World you deploy with. In `next dev`, an edit to a workflow file takes effect on the next delivery without a restart.
 
 <Callout type="info">
 Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/instrumentation).
@@ -150,7 +150,7 @@ Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
 
 <TabContent order={3}>
 
-The `workflow/nitro` module registers the route with the World when the server boots, in development and in a production build, when `WORKFLOW_TARGET_WORLD` is `@workflow/world-postgres` (not on Vercel deploys, and not on another World, which it does not build at boot). A failure to register is logged. Start the World from a plugin:
+The `workflow/nitro` module registers the route with the World when the server boots, in development and in a production build, when the configured World delivers in process: `WORKFLOW_TARGET_WORLD` names the Postgres World, or a module of your own whose World declares `queueAuthMode: 'deny'`. The Local and Vercel Worlds are not built at boot, and the module is not added on Vercel deploys. A failure to register is logged. Start the World from a plugin:
 
 ```ts title="plugins/start-pg-world.ts" lineNumbers
 import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
@@ -183,7 +183,7 @@ Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 
 <TabContent order={4}>
 
-`WorkflowModule` registers the route with the World in `onModuleInit` when `WORKFLOW_TARGET_WORLD` is `@workflow/world-postgres` or `manageWorldLifecycle` is set, and fails startup if the route cannot be registered on a World that delivers in process. Set `manageWorldLifecycle: true` so it also starts the World with the app and closes it on shutdown (see [`WorkflowModule`](/docs/api-reference/workflow-nest/workflow-module)):
+`WorkflowModule` registers the route with the World in `onModuleInit` when the configured World delivers in process (`WORKFLOW_TARGET_WORLD` names the Postgres World, or a module of your own whose World declares `queueAuthMode: 'deny'`) or when `manageWorldLifecycle` is set, and fails startup if the route cannot be registered on such a World. The Local and Vercel Worlds are not built at boot. Set `manageWorldLifecycle: true` so it also starts the World with the app and closes it on shutdown (see [`WorkflowModule`](/docs/api-reference/workflow-nest/workflow-module)):
 
 ```ts title="src/app.module.ts" lineNumbers
 import { Module } from "@nestjs/common";
@@ -304,7 +304,7 @@ Unlike the [Local World](/worlds/local)'s `401`, which tells a sender it had the
 
 ### The emergency override
 
-`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP requests, and the route logs it loudly when it starts. It exists for one situation: a [rolling upgrade](#rolling-upgrades) in which processes that deliver over HTTP and processes that deliver in process share the database, when draining the former first is not an option. With it set, anyone who can reach the server can drive your workflows, so keep it only while both kinds of process run. It is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`), because a forged delivery could then execute stored code; both variables are read on every delivery. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP requests, and the route logs it loudly when it first handles a request or a delivery. It exists for one situation: a [rolling upgrade](#rolling-upgrades) in which processes that deliver over HTTP and processes that deliver in process share the database, when draining the former first is not an option. With it set, anyone who can reach the server can drive your workflows, so keep it only while both kinds of process run. It is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`), because a forged delivery could then execute stored code; both variables are read on every delivery. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
 
 ### The other routes
 
@@ -355,8 +355,8 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_POSTGRES_MAX_POOL_SIZE`](#workflow_postgres_max_pool_size) | `10` | Connection pool size |
 | [`WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`](#workflow_postgres_application_managed_shutdown) | off | Who coordinates shutdown |
 | [`WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS`](#workflow_postgres_run_status_poll_interval_ms) | `1000` ms | Backstop for `await run.returnValue` |
-| [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](#workflow_postgres_headers_timeout_ms) | `0` ms (no deadline) | Hung delivery detection |
-| [`WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`](#workflow_postgres_body_timeout_ms) | `0` ms (no deadline) | Stalled response detection |
+| [`WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`](#workflow_postgres_headers_timeout_ms) | `0` ms (no deadline) | Deadline for a delivery to settle |
+| [`WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`](#workflow_postgres_body_timeout_ms) | `0` ms (no deadline) | Stalled response of a consumer's HTTP route |
 | [`WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`](#workflow_postgres_job_lock_stale_seconds) | unset: 300 s for spec 9 named queues only | Redelivery after a process dies |
 | [`WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`](#workflow_postgres_hook_retention_limit_days) | `30` days | Maximum hook retention |
 | [`WORKFLOW_QUEUE_NAMESPACE`](#workflow_queue_namespace) | unset | Queue topic namespace |
@@ -408,13 +408,13 @@ How often a wait for a terminal run status re-reads the run, in milliseconds. De
 
 ### `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`
 
-Maximum time in milliseconds a queue delivery waits for the workflow handler to begin responding before the delivery is failed and Graphile Worker redelivers the message. Default: `0` (no deadline).
+The deadline, in milliseconds, for a delivery to settle: an in-process delivery to the app's flow handler must finish, and an HTTP delivery to a [consumer's own route](#queue-consumers-other-than-the-workflow-sdk) must start responding, before the delivery is failed and Graphile Worker redelivers the message. A handler that misses it keeps running; the job is released, not the work. Default: `0` (no deadline).
 
 A delivery executes the workflow body inline, so the handler responds only once that work is done. A deadline shorter than your longest inline step declares a healthy delivery crashed and redelivers it while the original is still running, executing the same steps twice. Set this only if you would rather a hung handler be redelivered than hold its worker slot until the process restarts, and set it above the longest inline work you expect.
 
 ### `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`
 
-Maximum gap in milliseconds between response body chunks from the workflow handler before the delivery is failed and redelivered. Default: `0` (no deadline). The same caution as `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` applies.
+Maximum gap in milliseconds between response body chunks of an HTTP delivery to a [consumer's own route](#queue-consumers-other-than-the-workflow-sdk) before the delivery is failed and redelivered. It does not apply to the Workflow SDK's own deliveries, which run in process. Default: `0` (no deadline).
 
 ### `WORKFLOW_POSTGRES_JOB_LOCK_STALE_SECONDS`
 
@@ -488,7 +488,7 @@ Most apps don't need anything in this section. It covers building your own World
 
 ### Programmatic configuration
 
-The framework integrations register the flow route (and Nest starts the World) when `WORKFLOW_TARGET_WORLD` is `@workflow/world-postgres`. An app that installs the World in code with `setWorld()` and leaves that variable unset registers the route itself, as the [custom server](#run-the-worker-when-your-server-starts) does.
+The framework integrations register the flow route when `WORKFLOW_TARGET_WORLD` names the Postgres World or a module of your own whose World declares `queueAuthMode: 'deny'`. An app that installs the World in code with `setWorld()` and leaves that variable unset registers the route itself, as the [custom server](#run-the-worker-when-your-server-starts) does.
 
 {/*@skip-typecheck: incomplete code sample*/}
 
@@ -533,7 +533,7 @@ A pool the World creates from `connectionString` already has these listeners.
 
 ### Queue consumers other than the Workflow SDK
 
-The worker delivers the Workflow SDK's own messages in process. A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix (`__{namespace}_wkf_workflow_`) and registers where those go: `world.registerRoute(prefix, "/api/agent/queue")` to deliver them over HTTP to its own route on the app, or `world.registerHandler(prefix, handler)` to deliver them inside the process that took the job, without HTTP. A job keeps the prefix it was enqueued under and the route its producer had registered, so a worker in another process delivers it to the same place. Register before calling `start()`, which re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`). A route registered this way is reached over HTTP and is not checked by the runtime: protect it yourself.
+The worker delivers the Workflow SDK's own messages in process. A library that consumes messages of its own on the same World, such as a durable agent harness, uses its own queue prefix (`__{namespace}_wkf_workflow_`) and registers where those go: `world.registerRoute(prefix, "/api/agent/queue")` to deliver them over HTTP to its own route on the app, or `world.registerHandler(prefix, handler)` to deliver them inside the process that took the job, without HTTP. A job keeps the prefix it was enqueued under and the route its producer had registered, so a worker in another process delivers it to the same place. Register before calling `start()`, which re-enqueues each active run to the queue namespace it recorded at creation (`executionContext.queueNamespace`). A route registered this way is reached over HTTP and is not checked by the runtime: protect it yourself. A consumer's jobs are pulled by the same worker as the Workflow SDK's, so they run only in a process that registered the SDK's flow handler.
 
 ### Application-managed shutdown
 
