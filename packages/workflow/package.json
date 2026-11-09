@@ -30,6 +30,10 @@
       "types": "./dist/index.d.ts",
       "workflow": "./dist/workflow.js",
       "node": "./dist/index.js",
+      "edge-light": "./dist/index.js",
+      "workerd": "./dist/index.js",
+      "worker": "./dist/index.js",
+      "browser": "./dist/browser.js",
       "require": "./dist/typescript-plugin.cjs",
       "default": "./dist/index.js"
     },
@@ -85,6 +89,7 @@
     "@types/ms": "2.1.0",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "esbuild": "catalog:",
     "typescript": "catalog:"
   },
   "peerDependencies": {
