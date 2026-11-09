@@ -2,7 +2,9 @@ import {
   context,
   trace as otelTrace,
   propagation,
+  type Span,
   SpanKind,
+  SpanStatusCode,
 } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
@@ -209,6 +211,47 @@ describe('the flow route in-process entry', () => {
       'workflow.route.transport',
       'workflow.route.type',
     ]);
+  });
+
+  it('starts a new trace for each delivery, whatever span is active in the process', async () => {
+    const { entry } = installWorld('deny');
+    // The runner may have been started from inside a user request; its
+    // deliveries must not become children of that request's trace.
+    const tracer = otelTrace.getTracer('test');
+    let outer!: Span;
+    await tracer.startActiveSpan('user request', async (span) => {
+      outer = span;
+      try {
+        await entry(inProcess());
+      } finally {
+        span.end();
+      }
+    });
+    const [route] = routeSpans();
+    expect(route.parentSpanId).toBeUndefined();
+    expect(route.spanContext().traceId).not.toBe(outer.spanContext().traceId);
+  });
+
+  it('marks the span as failed when the handler rejects', async () => {
+    const { entry } = installWorld('deny');
+    await expect(
+      entry({ message: { not: 'a message' }, meta: inProcess().meta })
+    ).rejects.toThrow();
+    const [route] = routeSpans();
+    expect(route.status.code).toBe(SpanStatusCode.ERROR);
+  });
+
+  it('delivers regardless of an aborted signal, as the HTTP route does for an aborted request', async () => {
+    // The runtime does not act on a delivery's signal on either transport:
+    // the message is run to completion once accepted. A World's own handler
+    // for a consumer prefix may watch it.
+    const { entry, routed } = installWorld('deny');
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      entry({ ...inProcess(), signal: controller.signal })
+    ).resolves.toBeUndefined();
+    expect(routed).toHaveLength(0);
   });
 
   it("returns what the runtime's handler returned, and rejects with what it threw", async () => {

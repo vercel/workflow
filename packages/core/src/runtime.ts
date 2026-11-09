@@ -63,6 +63,7 @@ import {
   isUsableTraceCarrier,
   recordQueueDeliveryRefused,
   trace,
+  withOtel,
   withTraceContext,
   withWorkflowBaggage,
 } from './telemetry.js';
@@ -801,22 +802,30 @@ export function workflowEntrypoint(
    */
   const deliverInProcess = async ({ message, meta }: InProcessDelivery) => {
     const attributes = routeAttributes('in-process');
-    return trace(
-      'workflow.route.flow',
-      {
-        kind: await getSpanKind('INTERNAL'),
-        attributes: {
-          ...attributes,
-          ...Attribute.MessagingDestinationName(meta.queueName),
-          ...Attribute.MessagingMessageId(meta.messageId),
-          ...Attribute.WorkflowDeliveryAttempt(meta.attempt),
-          ...(meta.deliveryCount !== undefined
-            ? Attribute.WorkflowDeliveryCount(meta.deliveryCount)
-            : {}),
+    const deliver = async () =>
+      trace(
+        'workflow.route.flow',
+        {
+          kind: await getSpanKind('INTERNAL'),
+          attributes: {
+            ...attributes,
+            ...Attribute.MessagingDestinationName(meta.queueName),
+            ...Attribute.MessagingMessageId(meta.messageId),
+            ...Attribute.WorkflowDeliveryAttempt(meta.attempt),
+            ...(meta.deliveryCount !== undefined
+              ? Attribute.WorkflowDeliveryCount(meta.deliveryCount)
+              : {}),
+          },
         },
-      },
-      async () => (await initRoute()).deliver(message, meta)
-    );
+        async () => (await initRoute()).deliver(message, meta)
+      );
+    // Each delivery starts its own trace, as an HTTP request does: the
+    // World's worker may have been started from inside a user request (the
+    // first publish starts it), and its deliveries must not be children of
+    // that request's span. The message's own trace context (links or
+    // parent, by trace mode) is read by the runtime's handler as usual.
+    const otel = await withOtel((api) => api);
+    return otel ? otel.context.with(otel.ROOT_CONTEXT, deliver) : deliver();
   };
 
   const route: QueueRouteHandler = withHealthCheck(serve);
