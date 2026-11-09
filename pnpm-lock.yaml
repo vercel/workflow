@@ -1348,8 +1348,8 @@ importers:
         specifier: workspace:*
         version: link:../tsconfig
       ai:
-        specifier: 'catalog:'
-        version: 6.0.116(zod@4.5.4)
+        specifier: catalog:ai-sdk-v7
+        version: 7.0.163(zod@4.6.5)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -18097,6 +18097,13 @@ snapshots:
       '@vercel/oidc': 3.2.0
       zod: 4.5.4
 
+  '@ai-sdk/gateway@4.0.136(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.6.5)
+      '@vercel/oidc': 3.2.0
+      zod: 4.6.5
+
   '@ai-sdk/google@3.0.43(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
@@ -18148,6 +18155,15 @@ snapshots:
       eventsource-parser: 3.1.0
       undici: 7.30.0
       zod: 4.5.4
+
+  '@ai-sdk/provider-utils@5.0.75(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.36
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      undici: 7.30.0
+      zod: 4.6.5
 
   '@ai-sdk/provider@3.0.13':
     dependencies:
@@ -29407,6 +29423,13 @@ snapshots:
       '@ai-sdk/provider': 4.0.36
       '@ai-sdk/provider-utils': 5.0.75(zod@4.5.4)
       zod: 4.5.4
+
+  ai@7.0.163(zod@4.6.5):
+    dependencies:
+      '@ai-sdk/gateway': 4.0.136(zod@4.6.5)
+      '@ai-sdk/provider': 4.0.36
+      '@ai-sdk/provider-utils': 5.0.75(zod@4.6.5)
+      zod: 4.6.5
 
   ajv-formats@2.1.1(ajv@8.20.0):
     optionalDependencies:

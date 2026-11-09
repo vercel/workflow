@@ -75,7 +75,7 @@
     "@types/react-dom": "19",
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
-    "ai": "catalog:",
+    "ai": "catalog:ai-sdk-v7",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
