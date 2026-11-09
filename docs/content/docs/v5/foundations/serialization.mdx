@@ -183,7 +183,7 @@ const next = Object.freeze([
 - With `WORKFLOW_VM=quickjs`, values are stored in full, because that VM can't read references yet.
 
 <Callout type="warn">
-Changing a `Date`, `Map`, `Set` or byte array in place inside a frozen value, for example with `date.setTime()`, `map.set()` or `bytes[0] = 1`, isn't recorded. A step that runs in the same invocation may still see the change, but a retried or queued step, and every replay, rebuilds the value from the stored records and sees the original. Make the change inside `produce` instead. Immer drafts a `Map` or `Set` once you call its `enableMapSet()`, and copies it when you change it. It doesn't draft a `Date` or a byte array, so replace those with new ones:
+`Object.freeze` doesn't stop a `Map`, `Set` or `Date` from changing through its own methods (`map.set()`, `set.add()`, `date.setTime()`), and byte arrays can't be frozen at all. immer's `produce` makes the Maps and Sets it returns throw on those methods, but `Object.freeze` doesn't. Changing a `Date`, `Map`, `Set` or byte array in place inside a frozen value, for example with `date.setTime()`, `map.set()` or `bytes[0] = 1`, isn't recorded. A step that runs in the same invocation may still see the change, but a retried or queued step, and every replay, rebuilds the value from the stored records and sees the original. Make the change inside `produce` instead. Immer drafts a `Map` or `Set` once you call its `enableMapSet()`, and copies it when you change it. It doesn't draft a `Date` or a byte array, so replace those with new ones:
 
 ```typescript
 import { enableMapSet, produce } from "immer";
