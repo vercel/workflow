@@ -82,7 +82,14 @@ export class EditSet {
   }
 
   apply(): string {
-    return this.render(0, this.text.length);
+    const end = this.text.length;
+    // render() leaves inserts at the end of its range to the text after it;
+    // at the end of the file there is none, so they are appended here.
+    const trailing = this.edits
+      .filter((e) => e.start === end && e.end === end)
+      .map((e) => e.render())
+      .join('');
+    return this.render(0, end) + trailing;
   }
 }
 

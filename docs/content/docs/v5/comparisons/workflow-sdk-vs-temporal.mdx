@@ -72,6 +72,7 @@ The model maps closely. Keep your orchestration logic; drop the workers, task qu
 | Cancellation scopes / `handle.cancel()` | `AbortController` passed into steps; `run.cancel({ cancelReason })` | An abort reaches a step that is already running. See [Cancellation](/docs/foundations/cancellation). |
 | Activity retry policy | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. See [Errors & Retrying](/docs/foundations/errors-and-retries). |
 | Search attributes / visibility queries | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) / `attributes` option on `start()` | Filter runs by `key=value`. See [Attributes](/docs/observability/attributes). |
+| Memo | Workflow arguments, the return value, or a [stream](/docs/foundations/streaming) | Attributes are searchable plaintext strings (up to 256 bytes each, 64 per run), not a place for arbitrary data. Promote only the small labels you filter by. |
 | Event History | Workflow event log / run timeline | Same durable replay; built-in observability UI. |
 
 A minimal translation, where the orchestrator loses `proxyActivities` and becomes plain TypeScript:

@@ -24,10 +24,10 @@ When you cannot run it (the prompt only contains code), apply the same rules by 
 | `inngest.createFunction(config, trigger, handler)` / `createFunction({ triggers }, handler)` | exported `"use workflow"` function taking the event: `export async function name(event) { 'use workflow'; ... }`, started with `start(name, [event])` |
 | `step.run(id, closure, ...inputs)` | module-level `"use step"` function; captured variables become parameters (before the `inputs`) |
 | `step.sleep(id, duration)` / `step.sleepUntil(id, date)` | `sleep(duration)` / `sleep(new Date(date))` |
-| `step.waitForEvent(id, { event, timeout, match: 'data.x' })` | `Promise.race([createHook({ token: \`${event}:${triggerEvent.data.x}\` }), sleep(timeout).then(() => null)])`; the sender calls `resumeHook(\`${event}:${sent.data.x}\`, sent)` |
+| `step.waitForEvent(id, { event, timeout, match: 'data.x' })` | a hook with token \`${event}:${workflowName}:${triggerEvent.data.x}\` raced against `sleep(timeout)`, disposed when the wait ends (the codemod's `waitForHook()` helper does both); the sender calls `resumeHook(\`${event}:${workflowName}:${sent.data.x}\`, sent)` once per waiting workflow. See `## One owner per token` below |
 | `step.waitForEvent` with `if: 'async.data.a == event.data.b'` or `` if: `async.data.a == "${v}"` `` | same, token built from `event.data.b` or `v` |
 | `step.waitForEvent` with another `if`, or no `match` | pick a deterministic business token yourself; see `references/resume-routing.md` |
-| `step.waitForSignal(id, { signal, timeout, onConflict })` | `createHook({ token: signal })` (plus `experimental_force: true` for `onConflict: 'replace'`) raced against `sleep()`; `inngest.sendSignal({ signal, data })` -> `resumeHook(signal, { signal, data })` |
+| `step.waitForSignal(id, { signal, timeout, onConflict })` | `createHook({ token: signal })` raced against `sleep()`, disposed when the wait ends; `inngest.sendSignal({ signal, data })` -> `resumeHook(signal, { signal, data })` (keep the envelope). For `onConflict: 'replace'`, add `experimental_force: true` and catch `HookForceClaimedError` in the replaced run: Inngest left that wait pending until its timeout and returned `null`, so await the timeout and return `null` |
 | `step.invoke(id, { function, data })` | `start(childWorkflow, [{ data }])` called directly in the workflow, then `await run.returnValue` |
 | `inngest.send()` / event triggers | app-boundary `start(workflow, [event])` |
 | `step.sendEvent()` | `start()` called directly in the workflow per target workflow; `resumeHook()` inside a `"use step"` function for a waiting run |
@@ -37,12 +37,27 @@ When you cannot run it (the prompt only contains code), apply the same rules by 
 | `step.realtime.publish()` / `inngest.realtime.publish()` | `getWritable()` in the workflow; write inside a `"use step"` function |
 | `retries: n` | `stepFn.maxRetries = n` on each step |
 | `NonRetriableError(msg)` / `RetryAfterError(msg, after)` | `FatalError(msg)` / `RetryableError(msg, { retryAfter: after })` |
-| `idempotency: 'event.data.id'` / `singleton` | `start(wf, [event], { experimental_hook: { token, experimental_minRetention: '24h' } })`; see `references/shared-patterns.md` -> `## Idempotent start (one run per business key)` |
+| `idempotency: 'event.data.id'` | `start(wf, [event], { experimental_hook: { token, experimental_minRetention: '24h' } })`: duplicates are refused for 24 hours from the first start, like Inngest's window; see `references/shared-patterns.md` -> `## Idempotent start (one run per business key)` |
+| `singleton: { key, mode: 'skip' }` | `start(wf, [event], { experimental_hook: { token } })` with **no** retention, and skip on `HookConflictError`: only overlapping runs are refused, and the next start after the run ends is admitted |
+| `singleton: { key, mode: 'cancel' }` | on `HookConflictError`, `await getRun(error.conflictingRunId).cancel()` and start again; no retention, because a retained token stays refused after a cancel |
 | `cancelOn` | `getRun(runId).cancel()` where the cancel event was sent, or an `AbortController` whose signal is passed into steps; see `references/shared-patterns.md` -> `## Cancellation` |
 | `runId` / `attempt` / `logger` | `getWorkflowMetadata().workflowRunId` / `getStepMetadata().attempt - 1` (Workflow counts from 1) / `console` |
 | `onFailure` | `try`/`catch` around the workflow body, a cleanup step in `catch`, then rethrow |
 | concurrency, throttle, rateLimit, debounce, batchEvents, priority | no function-level equivalent; enforce at the caller of `start()` or inside steps, and say so in `## Open Questions` |
 | cron trigger | a scheduled job (Vercel Cron, system cron) calling `start()` |
+
+## One owner per token
+
+Inngest delivers an event to every run waiting for it; a hook token has one owner at a time, and a second `createHook()` with a held token rejects with `HookConflictError`.
+
+- Two workflows waiting for the same event: put the workflow name in the token (the codemod does) and resume each from the sender.
+- The same run waiting again: dispose the hook when the wait ends (`hook.dispose()` in `finally`, or `using`), then create it again.
+- Two runs of the same workflow waiting for the same key at once: add something unique to the token (run ID, record ID) and resume each run. Put this in `## Open Questions` when the prompt does not say whether it can happen.
+
+## Verify and cut over
+
+- Run the same events through the Inngest app (on `npx inngest-cli dev`) and the migrated app (Local World), and compare each run's output and final status, covering success, fatal errors, retries, a resumed wait and a timed-out wait.
+- Runs started on Inngest finish on Inngest. Keep the `serve()` route deployed until they drain; senders resume both paths meanwhile.
 
 ## Remove
 

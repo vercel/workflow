@@ -47,6 +47,8 @@ function eventIndex(reports: FileReport[]) {
         triggers.set(trigger.value, list);
       }
       for (const hook of fn.hooks) {
+        // Signals are resumed by name, not through an event.
+        if (hook.source !== 'step.waitForEvent') continue;
         const list = waits.get(hook.name) ?? [];
         list.push({
           fn,
@@ -138,6 +140,30 @@ export function renderMarkdown(
         out.push(`- line ${note.line}: ${note.message}`);
       if (fn.notes.length) out.push('');
     }
+  }
+
+  // Every event the migrated code reacts to, so a generic event forwarder
+  // (`inngest.send({ name: req.body.name, ... })`) can be rewritten too.
+  const eventNames = [...new Set([...triggers.keys(), ...waits.keys()])].sort();
+  if (eventNames.length) {
+    out.push('## Event routing', '');
+    out.push(
+      'Where your app sent each event, call what its row lists instead. `event` is the object you passed to `inngest.send()`. Resume every token in the row: Inngest delivered one event to every function waiting for it.',
+      ''
+    );
+    out.push('| Event | Start | Resume |', '| --- | --- | --- |');
+    for (const name of eventNames) {
+      const starts = (triggers.get(name) ?? []).map(
+        (ref) => `\`start(${ref.fn.workflowName}, [event])\` (\`${ref.file}\`)`
+      );
+      const resumes = (waits.get(name) ?? []).map(
+        (ref) => `\`resumeHook(token, event)\` with ${code(ref.token)}`
+      );
+      out.push(
+        `| \`${escapeCell(name)}\` | ${escapeCell(starts.join('<br>') || 'none')} | ${escapeCell(resumes.join('<br>') || 'none')} |`
+      );
+    }
+    out.push('');
   }
 
   const boundary = reports.flatMap((r) =>

@@ -13,7 +13,7 @@
 | Retry / Catch | step retries + `try` / `catch`, `RetryableError`, `FatalError`, `maxRetries` |
 | `.waitForTaskToken` | `createHook()` or `createWebhook()` |
 | `StartExecution` (child state machine) | `start()` called directly in the workflow; `.sync` → `await run.returnValue`, fire-and-forget → do not await |
-| Execution `name` (unique per state machine) | `start(wf, args, { experimental_hook: { token } })`; a duplicate throws `HookConflictError` naming the owner |
+| Execution `name` (unique per state machine, Standard workflows) | `start(wf, args, { experimental_hook: { token, experimental_minRetention } })` with a retention of the run's maximum duration plus 90 days; a duplicate throws `HookConflictError` naming the owner (return `error.conflictingRunId` where Step Functions returned the running execution) |
 | `StopExecution` | `getRun(runId).cancel({ cancelReason })` |
 
 ## Remove
@@ -40,7 +40,7 @@
 - Idempotency keys on external writes via `getStepMetadata().stepId`
 - `getWritable()` for progress streaming (Step Functions has no built-in equivalent)
 - `start()` called directly in the workflow for child workflows (replaces `StartExecution`); see `references/shared-patterns.md` -> `## Child workflow via start() in the workflow`
-- `start({ experimental_hook: { token } })` at the app boundary when the source relied on unique execution names to dedupe starts; see `references/shared-patterns.md` -> `## Idempotent start (one run per business key)`
+- `start({ experimental_hook: { token, experimental_minRetention } })` at the app boundary when the source relied on unique execution names to dedupe starts (Standard workflows). Step Functions refuses a name for 90 days after the execution closes, while the retention counts from `start()`: use the run's maximum duration plus 90 days. For a repeated identical request, Step Functions returned the running execution: catch `HookConflictError` and return `error.conflictingRunId`. Express workflows do not dedupe by name. See `references/shared-patterns.md` -> `## Idempotent start (one run per business key)`
 
 ## `.waitForTaskToken` fast paths
 

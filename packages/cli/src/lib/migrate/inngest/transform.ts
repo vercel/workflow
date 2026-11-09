@@ -90,7 +90,7 @@ interface HandlerInfo {
   /** Symbol bound to the event, when the event is a plain identifier. */
   eventSymbol?: TS.Symbol;
   /** Binding -> replacement expression (runId, logger, attempt). */
-  replacements: Map<TS.Symbol, { text: string; stepOnly?: boolean }>;
+  replacements: Map<TS.Symbol, { text: () => string; stepOnly?: boolean }>;
   /** Handler-context properties with no equivalent, by binding symbol. */
   unsupported: Map<TS.Symbol, string>;
 }
@@ -133,7 +133,7 @@ const CONFIG_GUIDANCE: Record<string, string> = {
   middleware:
     'Inngest middleware does not run in the Workflow SDK. Move what it did into steps.',
   singleton:
-    'Inngest `singleton` maps to an idempotent start: start(workflow, [event], { experimental_hook: { token } }) admits one run per token and throws HookConflictError for the rest.',
+    'Inngest `singleton` maps to start(workflow, [event], { experimental_hook: { token } }) with no retention: one run per token at a time, HookConflictError for an overlapping start. For mode "skip", catch it; for mode "cancel", cancel getRun(error.conflictingRunId) and start again.',
   idempotency:
     'Inngest `idempotency` maps to an idempotent start: start(workflow, [event], { experimental_hook: { token, experimental_minRetention: "24h" } }).',
 };
@@ -183,6 +183,96 @@ export function transformInngestFile(
 
   const workflowImports = new Set<string>();
   const apiImports = new Set<string>();
+  const errorsImports = new Set<string>();
+
+  // Names bound anywhere in the file. A Workflow API imported under one of
+  // them would collide with (or be shadowed by) the existing binding, so it
+  // is imported under an alias instead. A binding that already imports the
+  // same API from `workflow` is reused.
+  const declaredNames = new Map<string, string | undefined>();
+  const collectDeclared = (node: TS.Node): void => {
+    if (ts.isIdentifier(node) && isDeclarationName(ts, node)) {
+      let from: string | undefined;
+      const specifier = node.parent;
+      if (ts.isImportSpecifier(specifier)) {
+        const decl = specifier.parent.parent.parent;
+        if (
+          ts.isImportDeclaration(decl) &&
+          ts.isStringLiteral(decl.moduleSpecifier)
+        ) {
+          from = `${decl.moduleSpecifier.text}:${(specifier.propertyName ?? specifier.name).text}`;
+        }
+      }
+      declaredNames.set(
+        node.text,
+        declaredNames.has(node.text) ? undefined : from
+      );
+    }
+    ts.forEachChild(node, collectDeclared);
+  };
+  collectDeclared(sf);
+  const aliases = new Map<string, string>();
+  /** Local name for `name` imported from `module`; registers the import. */
+  const use = (
+    module: 'workflow' | 'workflow/api' | 'workflow/errors',
+    name: string
+  ): string => {
+    const key = `${module}:${name}`;
+    const known = aliases.get(key);
+    if (known) return known;
+    const preferred = name === 'fetch' ? 'workflowFetch' : name;
+    let local = preferred;
+    const taken = (candidate: string) =>
+      declaredNames.has(candidate) && declaredNames.get(candidate) !== key;
+    if (taken(local) || (local !== name && allIdentifiers.has(local))) {
+      const base =
+        name === 'fetch'
+          ? 'workflowFetch'
+          : `workflow${name[0].toUpperCase()}${name.slice(1)}`;
+      local = base;
+      for (
+        let n = 2;
+        declaredNames.has(local) || allIdentifiers.has(local);
+        n++
+      )
+        local = `${base}${n}`;
+    }
+    names.reserve(local);
+    aliases.set(key, local);
+    (module === 'workflow'
+      ? workflowImports
+      : module === 'workflow/api'
+        ? apiImports
+        : errorsImports
+    ).add(local === name ? name : `${name} as ${local}`);
+    return local;
+  };
+  const wf = (name: string) => use('workflow', name);
+  /** Same as `use`, for a type-only import (TypeScript files only). */
+  const typeImport = (name: string): string => {
+    const key = `workflow:type:${name}`;
+    const known = aliases.get(key);
+    if (known) return known;
+    let local = name;
+    for (
+      let n = 2;
+      declaredNames.has(local) &&
+      declaredNames.get(local) !== `workflow:${name}`;
+      n++
+    )
+      local = `Workflow${name}${n}`;
+    names.reserve(local);
+    aliases.set(key, local);
+    workflowImports.add(
+      local === name ? `type ${name}` : `type ${name} as ${local}`
+    );
+    return local;
+  };
+  /** Module-level helpers the generated code calls, appended to the file. */
+  const helpers: Array<() => string> = [];
+  let waitHelperName: string | undefined;
+  /** Local name of HookForceClaimedError, once a wait takes over its token. */
+  let forceClaimedError: string | undefined;
 
   // Ranges whose original references are dropped from the output, and the
   // sub-ranges re-rendered inside them. Used to tell whether an import is
@@ -310,11 +400,16 @@ export function transformInngestFile(
   ): MigratedFunction | undefined {
     const handler = call.arguments[call.arguments.length - 1] as FunctionLike;
     const configArg = call.arguments[0];
+    // The config may be a const declared elsewhere in the file.
+    const resolvedConfig = configArg && resolveConst(configArg);
     const config =
-      configArg && ts.isObjectLiteralExpression(configArg)
-        ? configArg
+      resolvedConfig && ts.isObjectLiteralExpression(resolvedConfig)
+        ? resolvedConfig
         : undefined;
-    const inngestId = config ? stringProperty(ts, config, 'id') : undefined;
+    const idNode = config && getProperty(ts, config, 'id');
+    const inngestId = idNode
+      ? literalText(ts, resolveConst(idNode))
+      : undefined;
 
     const fnNotes: MigrationNote[] = [];
     const fn: MigratedFunction = {
@@ -364,7 +459,7 @@ export function transformInngestFile(
     const triggerNodes: TS.Expression[] = [];
     if (call.arguments.length >= 3) triggerNodes.push(call.arguments[1]);
     const v4Triggers = config && getProperty(ts, config, 'triggers');
-    if (v4Triggers) triggerNodes.push(v4Triggers);
+    if (v4Triggers) triggerNodes.push(resolveConst(v4Triggers));
     for (const node of triggerNodes) {
       fn.triggers.push(...readTriggers(node));
     }
@@ -378,10 +473,33 @@ export function transformInngestFile(
     if (shape.name) names.reserve(shape.name);
     fn.workflowName = workflowName;
 
-    const retries = config ? numberProperty(ts, config, 'retries') : undefined;
+    const retriesNode = config && getProperty(ts, config, 'retries');
+    const retriesValue = retriesNode && resolveConst(retriesNode);
+    const retries =
+      retriesValue && ts.isNumericLiteral(retriesValue)
+        ? Number(retriesValue.text)
+        : undefined;
 
     // Function-level config without an equivalent.
     const configTodos: string[] = [];
+    // Config the codemod cannot read is a blocker, not a silent default:
+    // the retry count, triggers and flow control would otherwise be lost.
+    if (configArg && !config) {
+      const message = `The function options (\`${singleLine(configArg.getText(sf), 80)}\`) are not an object literal the codemod can read, so its retries, triggers and flow-control options were not migrated. Set \`maxRetries\` on each step and move the rest by hand.`;
+      configTodos.push(message);
+      fnNotes.push({ severity: 'todo', line: line(configArg), message });
+    }
+    if (config?.properties.some((p) => ts.isSpreadAssignment(p))) {
+      const message =
+        'The function options spread another object, which the codemod does not read. Check it for retries, triggers and flow-control options and migrate them by hand.';
+      configTodos.push(message);
+      fnNotes.push({ severity: 'todo', line: line(config), message });
+    }
+    if (retriesNode && retries === undefined) {
+      const message = `\`retries: ${singleLine(retriesNode.getText(sf), 80)}\` is not a number the codemod can read. Set \`stepFunction.maxRetries\` on each step by hand (the Workflow SDK default is 3).`;
+      configTodos.push(message);
+      fnNotes.push({ severity: 'todo', line: line(retriesNode), message });
+    }
     // An `onFailure` handler is code, not config: keep it, under a name.
     let onFailure:
       | { name: string; node: TS.Expression; message: string }
@@ -452,7 +570,7 @@ export function transformInngestFile(
       }
       ts.forEachChild(node, visit);
     };
-    ts.forEachChild(handler.body, visit);
+    visit(handler.body);
 
     // A step tool used other than as a direct call (passed to a helper,
     // destructured, stored) cannot be rewritten here.
@@ -675,17 +793,18 @@ export function transformInngestFile(
           case 'runId':
             if (symbol) {
               info.replacements.set(symbol, {
-                text: 'getWorkflowMetadata().workflowRunId',
+                text: () => `${wf('getWorkflowMetadata')}().workflowRunId`,
               });
             }
             break;
           case 'logger':
-            if (symbol) info.replacements.set(symbol, { text: 'console' });
+            if (symbol)
+              info.replacements.set(symbol, { text: () => 'console' });
             break;
           case 'attempt':
             if (symbol) {
               info.replacements.set(symbol, {
-                text: '(getStepMetadata().attempt - 1)',
+                text: () => `(${wf('getStepMetadata')}().attempt - 1)`,
                 stepOnly: true,
               });
             }
@@ -828,13 +947,13 @@ export function transformInngestFile(
         return;
       case 'sleep': {
         if (args.length < 2) break;
-        workflowImports.add('sleep');
-        replaceCall(call, () => `sleep(${renderNode(args[1])})`, [args[1]]);
+        const sleep = wf('sleep');
+        replaceCall(call, () => `${sleep}(${renderNode(args[1])})`, [args[1]]);
         return;
       }
       case 'sleepUntil': {
         if (args.length < 2) break;
-        workflowImports.add('sleep');
+        const sleep = wf('sleep');
         const time = args[1];
         const isDate =
           ts.isNewExpression(time) &&
@@ -844,8 +963,8 @@ export function transformInngestFile(
           call,
           () =>
             isDate
-              ? `sleep(${renderNode(time)})`
-              : `sleep(new Date(${renderNode(time)}))`,
+              ? `${sleep}(${renderNode(time)})`
+              : `${sleep}(new Date(${renderNode(time)}))`,
           [time]
         );
         return;
@@ -860,10 +979,10 @@ export function transformInngestFile(
         migrateInvoke(call, fn);
         return;
       case 'fetch': {
-        workflowImports.add('fetch as workflowFetch');
+        const workflowFetch = wf('fetch');
         replaceCall(
           call,
-          () => `workflowFetch(${args.map(renderNode).join(', ')})`,
+          () => `${workflowFetch}(${args.map(renderNode).join(', ')})`,
           [...args]
         );
         return;
@@ -1186,8 +1305,12 @@ export function transformInngestFile(
     }
     lifted.push(() => {
       const callText = `${refText}(${inputs.map(renderNode).join(', ')})`;
+      // Read the fields off a result local rather than destructuring them,
+      // so a field named like a captured parameter cannot redeclare it.
+      let result = 'result';
+      for (let n = 2; allIdentifiers.has(result); n++) result = `result${n}`;
       const body = picked
-        ? `${indentUnit}const { ${picked.join(', ')} } = await ${callText}${semi}\n${indentUnit}return { ${picked.join(', ')} }${semi}`
+        ? `${indentUnit}const ${result} = await ${callText}${semi}\n${indentUnit}return { ${picked.map((k) => `${k}: ${result}.${k}`).join(', ')} }${semi}`
         : `${indentUnit}return ${callText}${semi}`;
       const params = captured
         .map((c) => (typed ? `${c.name}${INFER_MARK}` : c.name))
@@ -1399,9 +1522,9 @@ export function transformInngestFile(
 
     roots.forEach(visit);
     if (!isExpressionList(target)) {
-      for (const param of target.parameters) {
-        if (param.initializer) visit(param.initializer);
-      }
+      // Whole parameters: defaults and computed keys inside destructuring
+      // patterns (`({ [field]: v, w = fallback }) => ...`) read the handler too.
+      for (const param of target.parameters) visit(param);
     }
     // Deduplicate blockers.
     result.blockers = [...new Set(result.blockers)];
@@ -1466,7 +1589,7 @@ export function transformInngestFile(
       }
       ts.forEachChild(node, visit);
     };
-    ts.forEachChild(handler.body, visit);
+    visit(handler.body);
     if (extraEventFields.size) {
       fn.notes.push({
         severity: 'info',
@@ -1604,10 +1727,12 @@ export function transformInngestFile(
       );
       return;
     }
+    // The workflow name is part of the token, so two workflows waiting for
+    // the same event do not compete for one token; the sender resumes each.
     const tokenValue = waitValue;
-    const tokenText = () =>
-      `\`${escapeTemplate(eventName)}:\${${tokenValue()}}\``;
-    const resumeToken = `\`${escapeTemplate(eventName)}:\${event.${senderPath}}\``;
+    const prefix = escapeTemplate(`${eventName}:${fn.workflowName}`);
+    const tokenText = () => `\`${prefix}:\${${tokenValue()}}\``;
+    const resumeToken = `\`${prefix}:\${event.${senderPath}}\``;
     let typeArg = '';
     if (typed) {
       const typeText = printType(
@@ -1616,7 +1741,9 @@ export function transformInngestFile(
       );
       if (typeText) typeArg = `<${TYPE_START}${typeText}${TYPE_END}>`;
     }
-    workflowImports.add('createHook');
+    const createHook = wf('createHook');
+    const wait = waitHelper();
+    const sleep = timeout ? wf('sleep') : '';
     const tokenInfo: MigratedHook = {
       line: line(call),
       source: 'step.waitForEvent',
@@ -1625,26 +1752,60 @@ export function transformInngestFile(
       resumeToken,
     };
     fn.hooks.push(tokenInfo);
-    if (timeout) {
-      workflowImports.add('sleep');
-      replaceCall(
-        call,
-        () =>
-          `Promise.race([createHook${typeArg}({ token: ${tokenText()} }), sleep(${renderNode(timeout)}).then(() => null)])`,
-        [timeout, ...keptForToken]
-      );
-    } else {
-      replaceCall(
-        call,
-        () => `createHook${typeArg}({ token: ${tokenText()} })`,
-        keptForToken
-      );
-    }
+    replaceCall(
+      call,
+      () =>
+        `${wait}(${createHook}${typeArg}({ token: ${tokenText()} })${timeout ? `, ${sleep}(${renderNode(timeout)})` : ''})`,
+      timeout ? [timeout, ...keptForToken] : keptForToken
+    );
+    // Inngest resumed every run waiting for the event; a token has one owner.
+    addTodo(
+      call,
+      `Only one run at a time can own this hook token. Inngest resumed every run waiting for a matching "${eventName}"; if two ${fn.workflowName} runs can wait for the same key at once, add something unique to the token (for example the run ID) and resume each run where the event is sent. Otherwise, delete this comment.`,
+      notes
+    );
     notes.push({
       severity: 'info',
       line: line(call),
       message: `Resume this hook where "${eventName}" is sent: replace inngest.send(event) with resumeHook(${resumeToken}, event) from workflow/api.`,
     });
+  }
+
+  /**
+   * One helper per file for the migrated waits: race the hook against the
+   * timeout, and dispose it either way, so a later wait in the same run can
+   * create a hook with the same token (Inngest allows waiting again).
+   */
+  function waitHelper(): string {
+    if (waitHelperName) return waitHelperName;
+    const name = names.allocate('waitForHook', 'OrTimeout');
+    waitHelperName = name;
+    const hookType = typed ? typeImport('Hook') : '';
+    helpers.push(() => {
+      const t = (text: string) => (typed ? text : '');
+      const I = indentUnit;
+      // With `onConflict: 'replace'`, Inngest left the replaced wait pending
+      // until its timeout, which then returned null; a taken-over hook
+      // rejects instead, so wait out the timeout here.
+      const takenOver = forceClaimedError
+        ? `${I}} catch (error) {\n` +
+          `${I}${I}if (!timeout || !${forceClaimedError}.is(error)) throw error${semi}\n` +
+          `${I}${I}await timeout${semi}\n` +
+          `${I}${I}return null${semi}\n`
+        : '';
+      return (
+        `/** Resolves with the hook's payload, or with null once \`timeout\` resolves. */\n` +
+        `async function ${name}${t('<T>')}(hook${t(`: ${hookType}<T>`)}, timeout?${t(': Promise<void>')})${t(': Promise<T | null>')} {\n` +
+        `${I}try {\n` +
+        `${I}${I}return await (timeout ? Promise.race([hook, timeout.then(() => null)]) : hook)${semi}\n` +
+        takenOver +
+        `${I}} finally {\n` +
+        `${I}${I}hook.dispose()${semi}\n` +
+        `${I}}\n` +
+        '}'
+      );
+    });
+    return name;
   }
 
   function migrateWaitForSignal(
@@ -1678,6 +1839,9 @@ export function transformInngestFile(
       return;
     }
     const force = conflict === 'replace' ? ', experimental_force: true' : '';
+    if (force) {
+      forceClaimedError = use('workflow/errors', 'HookForceClaimedError');
+    }
     let typeArg = '';
     if (typed) {
       const typeText = printType(
@@ -1686,7 +1850,9 @@ export function transformInngestFile(
       );
       if (typeText) typeArg = `<${TYPE_START}${typeText}${TYPE_END}>`;
     }
-    workflowImports.add('createHook');
+    const createHook = wf('createHook');
+    const wait = waitHelper();
+    const sleep = timeout ? wf('sleep') : '';
     const signalText = signal.getText(sf);
     fn.hooks.push({
       line: line(call),
@@ -1694,19 +1860,12 @@ export function transformInngestFile(
       name: literalText(ts, signal) ?? signalText,
       token: signalText,
     });
-    const hookExpr = () =>
-      `createHook${typeArg}({ token: ${renderNode(signal)}${force} })`;
-    if (timeout) {
-      workflowImports.add('sleep');
-      replaceCall(
-        call,
-        () =>
-          `Promise.race([${hookExpr()}, sleep(${renderNode(timeout)}).then(() => null)])`,
-        [signal, timeout]
-      );
-    } else {
-      replaceCall(call, hookExpr, [signal]);
-    }
+    replaceCall(
+      call,
+      () =>
+        `${wait}(${createHook}${typeArg}({ token: ${renderNode(signal)}${force} })${timeout ? `, ${sleep}(${renderNode(timeout)})` : ''})`,
+      timeout ? [signal, timeout] : [signal]
+    );
     notes.push({
       severity: 'info',
       line: line(call),
@@ -1749,7 +1908,8 @@ export function transformInngestFile(
         message: `\`step.invoke()\` options ${extra.map((k) => `\`${k}\``).join(', ')} were dropped.`,
       });
     }
-    apiImports.add('start');
+    const start = use('workflow/api', 'start');
+    const sleep = timeout ? wf('sleep') : '';
     const kept = [
       target,
       ...(data ? [data] : []),
@@ -1759,14 +1919,12 @@ export function transformInngestFile(
       call,
       () => {
         const event = data ? `{ data: ${renderNode(data)} }` : '{ data: {} }';
-        const run = `start(${renderNode(target)}, [${event}]).then((run) => run.returnValue)`;
+        const run = `${start}(${renderNode(target)}, [${event}]).then((run) => run.returnValue)`;
         if (!timeout) return run;
-        workflowImports.add('sleep');
-        return `Promise.race([${run}, sleep(${renderNode(timeout)}).then(() => { throw new Error('step.invoke() timed out') })])`;
+        return `Promise.race([${run}, ${sleep}(${renderNode(timeout)}).then(() => { throw new Error('step.invoke() timed out') })])`;
       },
       kept
     );
-    if (timeout) workflowImports.add('sleep');
     notes.push({
       severity: 'info',
       line: line(call),
@@ -1813,17 +1971,19 @@ export function transformInngestFile(
               fn.notes
             );
           } else {
-            if (replacement.text.startsWith('getWorkflowMetadata'))
-              workflowImports.add('getWorkflowMetadata');
-            if (replacement.text.includes('getStepMetadata'))
-              workflowImports.add('getStepMetadata');
+            let replacementText = replacement.text();
+            // `(a - 1)` needs its parentheses only where the context binds
+            // tighter than subtraction.
+            if (replacementText.startsWith('(') && !needsParens(ts, node)) {
+              replacementText = replacementText.slice(1, -1);
+            }
             const start = node.getStart(sf);
             droppedRanges.push([start, node.end]);
             report.changed = true;
             edits.add(
               start,
               node.end,
-              shorthand ? `${node.text}: ${replacement.text}` : replacement.text
+              shorthand ? `${node.text}: ${replacementText}` : replacementText
             );
           }
         }
@@ -1846,8 +2006,11 @@ export function transformInngestFile(
           return;
         }
         if (key === 'runId') {
-          workflowImports.add('getWorkflowMetadata');
-          edits.add(start, node.end, 'getWorkflowMetadata().workflowRunId');
+          edits.add(
+            start,
+            node.end,
+            `${wf('getWorkflowMetadata')}().workflowRunId`
+          );
           droppedRanges.push([start, node.end]);
           return;
         }
@@ -1881,7 +2044,7 @@ export function transformInngestFile(
       }
       ts.forEachChild(node, visit);
     };
-    ts.forEachChild(handler.body, visit);
+    visit(handler.body);
   }
 
   function eventAnnotation(info: HandlerInfo): string | undefined {
@@ -1897,7 +2060,10 @@ export function transformInngestFile(
           data,
           info.eventTypeNode
         );
-        const printed = printType(dataType, info.eventTypeNode);
+        // Untyped events (Inngest v3 without schemas) have `data: any`.
+        const nonNull = checker.getNonNullableType(dataType);
+        if (nonNull.flags & ts.TypeFlags.Any) return '{ data: any }';
+        const printed = printType(nonNull, info.eventTypeNode);
         if (printed) return `{ data: ${printed} }`;
       }
     }
@@ -1926,7 +2092,7 @@ export function transformInngestFile(
       }
       ts.forEachChild(node, visit);
     };
-    ts.forEachChild((scope as FunctionLike).body, visit);
+    visit((scope as FunctionLike).body);
     return ok;
   }
 
@@ -2041,6 +2207,36 @@ export function transformInngestFile(
     return out;
   }
 
+  /**
+   * Follow an identifier to the initializer of the `const` in this file that
+   * declares it (through `as const` and parentheses), so config written as
+   * `retries: MAX_RETRIES` or `createFunction(config, ...)` is still read.
+   */
+  function resolveConst(expr: TS.Expression, depth = 0): TS.Expression {
+    let node = skipParens(ts, expr);
+    while (
+      ts.isAsExpression(node) ||
+      ts.isSatisfiesExpression?.(node) ||
+      ts.isTypeAssertionExpression(node)
+    ) {
+      node = skipParens(ts, node.expression);
+    }
+    if (!ts.isIdentifier(node) || depth > 5) return node;
+    const symbol = symbolOf(node);
+    const declaration = symbol && firstDeclaration(symbol);
+    if (
+      declaration &&
+      declaration.getSourceFile() === sf &&
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer &&
+      ts.isVariableDeclarationList(declaration.parent) &&
+      declaration.parent.flags & ts.NodeFlags.Const
+    ) {
+      return resolveConst(declaration.initializer, depth + 1);
+    }
+    return node;
+  }
+
   /** `eventType('name', ...)`, directly or through a const in this file. */
   function eventTypeNameOf(expr: TS.Expression): string | undefined {
     let node = skipParens(ts, expr);
@@ -2087,12 +2283,12 @@ export function transformInngestFile(
             [message.getStart(sf), message.end],
             [retryAfter.getStart(sf), retryAfter.end]
           );
-          workflowImports.add('RetryableError');
+          const retryable = wf('RetryableError');
           edits.add(
             start,
             node.end,
             () =>
-              `new RetryableError(${renderNode(message)}, { retryAfter: ${renderNode(retryAfter)} })`
+              `new ${retryable}(${renderNode(message)}, { retryAfter: ${renderNode(retryAfter)} })`
           );
           report.changed = true;
           node.arguments.forEach(visit);
@@ -2108,11 +2304,11 @@ export function transformInngestFile(
           const start = node.getStart(sf);
           droppedRanges.push([start, node.end]);
           keptRanges.push([message.getStart(sf), message.end]);
-          workflowImports.add('FatalError');
+          const fatal = wf('FatalError');
           edits.add(
             start,
             node.end,
-            () => `new FatalError(${renderNode(message)})`
+            () => `new ${fatal}(${renderNode(message)})`
           );
           report.changed = true;
           visit(message);
@@ -2129,8 +2325,7 @@ export function transformInngestFile(
         if (target) {
           const start = node.getStart(sf);
           droppedRanges.push([start, node.end]);
-          workflowImports.add(target);
-          edits.add(start, node.end, target);
+          edits.add(start, node.end, wf(target));
           report.changed = true;
         }
       }
@@ -2267,6 +2462,14 @@ export function transformInngestFile(
 
   // --- Imports ------------------------------------------------------------
 
+  if (helpers.length) {
+    const tail = text.endsWith('\n') ? '' : '\n';
+    edits.insert(
+      text.length,
+      () => `${tail}\n${helpers.map((h) => h()).join('\n\n')}\n`
+    );
+  }
+
   const isDropped = (pos: number, end: number): boolean => {
     let innermost: { kind: 'drop' | 'keep'; size: number } | undefined;
     for (const [s, e] of droppedRanges) {
@@ -2310,6 +2513,45 @@ export function transformInngestFile(
     return count;
   };
 
+  if (report.functions.length) {
+    // A module-level `const` holding a plain literal (`const NO_RETRIES = 0`)
+    // that only function options used goes with them. Anything else stays:
+    // its initializer could have side effects, or other code could want it.
+    for (const statement of sf.statements) {
+      if (
+        !ts.isVariableStatement(statement) ||
+        statement.modifiers?.some(
+          (m) => m.kind === ts.SyntaxKind.ExportKeyword
+        ) ||
+        !(statement.declarationList.flags & ts.NodeFlags.Const) ||
+        statement.declarationList.declarations.length !== 1
+      ) {
+        continue;
+      }
+      const declaration = statement.declarationList.declarations[0];
+      const init =
+        declaration.initializer && skipParens(ts, declaration.initializer);
+      const literal =
+        !!init &&
+        (ts.isNumericLiteral(init) ||
+          ts.isStringLiteral(init) ||
+          ts.isNoSubstitutionTemplateLiteral(init) ||
+          init.kind === ts.SyntaxKind.TrueKeyword ||
+          init.kind === ts.SyntaxKind.FalseKeyword);
+      if (!literal || !ts.isIdentifier(declaration.name)) continue;
+      const symbol = symbolOf(declaration.name);
+      if (!symbol) continue;
+      const { total, live } = references(symbol, declaration.name);
+      if (total > 0 && live === 0) {
+        const start = statement.getStart(sf);
+        let end = statement.end;
+        if (text[end] === '\n') end++;
+        if (text[end] === '\n') end++;
+        edits.add(start, end, '');
+      }
+    }
+  }
+
   const removedImports = new Set<TS.ImportDeclaration>();
   if (report.functions.length || report.changed) {
     // Drop import specifiers whose every use was in code the codemod
@@ -2351,7 +2593,7 @@ export function transformInngestFile(
     }
   }
 
-  if (workflowImports.size || apiImports.size) {
+  if (workflowImports.size || apiImports.size || errorsImports.size) {
     report.changed = true;
     const lines: string[] = [];
     const existing = (module: string) =>
@@ -2383,6 +2625,7 @@ export function transformInngestFile(
     };
     addImport('workflow', workflowImports);
     addImport('workflow/api', apiImports);
+    addImport('workflow/errors', errorsImports);
     if (lines.length) {
       const imports = sf.statements.filter(ts.isImportDeclaration);
       const kept = imports.filter((i) => !removedImports.has(i));
@@ -2516,25 +2759,6 @@ function literalText(ts: typeof TS, node: TS.Expression): string | undefined {
   return undefined;
 }
 
-function stringProperty(
-  ts: typeof TS,
-  object: TS.ObjectLiteralExpression,
-  key: string
-): string | undefined {
-  const value = getProperty(ts, object, key);
-  return value ? literalText(ts, value) : undefined;
-}
-
-function numberProperty(
-  ts: typeof TS,
-  object: TS.ObjectLiteralExpression,
-  key: string
-): number | undefined {
-  const value = getProperty(ts, object, key);
-  if (value && ts.isNumericLiteral(value)) return Number(value.text);
-  return undefined;
-}
-
 function firstDeclaration(symbol: TS.Symbol): TS.Declaration | undefined {
   return symbol.valueDeclaration ?? symbol.declarations?.[0];
 }
@@ -2595,6 +2819,75 @@ function inTypePosition(ts: typeof TS, node: TS.Node): boolean {
     if (ts.isExpression(current) || ts.isStatement(current)) return false;
     current = current.parent;
   }
+  return false;
+}
+
+/** Whether an `a - 1` expression replacing `node` needs parentheses. */
+function needsParens(ts: typeof TS, node: TS.Node): boolean {
+  const parent = node.parent;
+  if (!parent) return true;
+  // Contexts that take any expression (below the comma operator).
+  if (
+    (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+    parent.arguments?.includes(node as TS.Expression)
+  ) {
+    return false;
+  }
+  if (ts.isArrayLiteralExpression(parent) || ts.isTemplateSpan(parent))
+    return false;
+  if (
+    (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent)) &&
+    parent.initializer === node
+  ) {
+    return false;
+  }
+  if (ts.isReturnStatement(parent) || ts.isExpressionStatement(parent))
+    return false;
+  if (ts.isConditionalExpression(parent) && parent.condition !== node)
+    return false;
+  // Operators that bind looser than `-`.
+  if (ts.isBinaryExpression(parent)) {
+    const loose = [
+      ts.SyntaxKind.EqualsEqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsEqualsToken,
+      ts.SyntaxKind.EqualsEqualsToken,
+      ts.SyntaxKind.ExclamationEqualsToken,
+      ts.SyntaxKind.LessThanToken,
+      ts.SyntaxKind.GreaterThanToken,
+      ts.SyntaxKind.LessThanEqualsToken,
+      ts.SyntaxKind.GreaterThanEqualsToken,
+      ts.SyntaxKind.AmpersandAmpersandToken,
+      ts.SyntaxKind.BarBarToken,
+      ts.SyntaxKind.QuestionQuestionToken,
+    ];
+    return !loose.includes(parent.operatorToken.kind);
+  }
+  return true;
+}
+
+/** Identifiers that introduce a binding (variable, function, class, import, parameter). */
+function isDeclarationName(ts: typeof TS, node: TS.Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) return false;
+  if (
+    (ts.isVariableDeclaration(parent) ||
+      ts.isFunctionDeclaration(parent) ||
+      ts.isFunctionExpression(parent) ||
+      ts.isClassDeclaration(parent) ||
+      ts.isClassExpression(parent) ||
+      ts.isParameter(parent) ||
+      ts.isEnumDeclaration(parent) ||
+      ts.isTypeAliasDeclaration(parent) ||
+      ts.isInterfaceDeclaration(parent) ||
+      ts.isImportClause(parent) ||
+      ts.isNamespaceImport(parent) ||
+      ts.isImportEqualsDeclaration(parent)) &&
+    parent.name === node
+  ) {
+    return true;
+  }
+  if (ts.isBindingElement(parent) && parent.name === node) return true;
+  if (ts.isImportSpecifier(parent) && parent.name === node) return true;
   return false;
 }
 

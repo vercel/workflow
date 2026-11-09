@@ -297,7 +297,7 @@ export async function parentWorkflow(inputs: string[]) {
 
 ## Idempotent start (one run per business key)
 
-Use this for Temporal workflow IDs with a reuse policy, Trigger.dev `idempotencyKey`, Inngest `idempotency`, Cloudflare instance `id`, or Step Functions execution `name` uniqueness.
+Use this for Temporal workflow IDs with a reuse policy, Trigger.dev `idempotencyKey`, Inngest `idempotency` and `singleton`, Cloudflare instance `id`, or Step Functions execution `name` uniqueness. Pick the retention from the source's window: none for "no overlapping runs" (Inngest `singleton`), `'24h'` for Inngest `idempotency`, and the run's maximum duration plus 90 days for a Standard Step Functions execution name (its window counts from when the execution closes, the retention from `start()`).
 
 ```ts
 import { start } from 'workflow/api';

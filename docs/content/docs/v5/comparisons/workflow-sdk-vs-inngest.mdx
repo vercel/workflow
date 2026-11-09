@@ -99,7 +99,7 @@ export const onboardUser = inngest.createFunction(
 ```
 
 ```typescript title="inngest/functions.ts (after, formatted)"
-import { createHook, sleep } from 'workflow';
+import { createHook, type Hook, sleep } from 'workflow';
 declare const db: { users: { create(user: { id: string; email: string }): Promise<{ id: string; email: string }> } }; // @setup
 declare const email: { send(to: string, template: string): Promise<void> }; // @setup
 
@@ -111,10 +111,11 @@ export async function onboardUser(event: {
 
   await sleep('1d');
 
-  const activity = await Promise.race([
-    createHook({ token: `app/user.active:${event.data.userId}` }), // [!code highlight]
-    sleep('7d').then(() => null),
-  ]);
+  // TODO(workflow-migrate): Only one run at a time can own this hook token. Inngest resumed every run waiting for a matching "app/user.active"; if two onboardUser runs can wait for the same key at once, add something unique to the token (for example the run ID) and resume each run where the event is sent. Otherwise, delete this comment.
+  const activity = await waitForHook(
+    createHook({ token: `app/user.active:onboardUser:${event.data.userId}` }), // [!code highlight]
+    sleep('7d')
+  );
 
   await sendFollowUp(user, activity); // [!code highlight]
 }
@@ -125,11 +126,28 @@ async function createUser(event: { data: { userId: string; email: string } }) {
 }
 createUser.maxRetries = 5;
 
-async function sendFollowUp(user: { id: string; email: string }, activity: any) {
+async function sendFollowUp(
+  user: { id: string; email: string },
+  activity: any
+) {
   'use step';
   return email.send(user.email, activity ? 'tips' : 'nudge');
 }
 sendFollowUp.maxRetries = 5;
+
+/** Resolves with the hook's payload, or with null once `timeout` resolves. */
+async function waitForHook<T>(
+  hook: Hook<T>,
+  timeout?: Promise<void>
+): Promise<T | null> {
+  try {
+    return await (timeout
+      ? Promise.race([hook, timeout.then(() => null)])
+      : hook);
+  } finally {
+    hook.dispose();
+  }
+}
 ```
 
 The run above prints each step it lifted with the variables it captured:
@@ -139,18 +157,34 @@ inngest/functions.ts
   onboardUser (was onboard-user)
     step create-user -> createUser() captures event
     step send-follow-up -> sendFollowUp() captures user, activity
-    hook app/user.active -> token `app/user.active:${event.data.userId}`
+    hook app/user.active -> token `app/user.active:onboardUser:${event.data.userId}`
 ```
 
 Beyond `step.run()`, the codemod:
 
 - Turns each `createFunction()` into an exported `"use workflow"` function that takes the triggering event as its argument, so `event.data` keeps working. With typed events, it types the parameter, and it types each captured parameter from its call site.
 - Rewrites `step.sleep()`, `step.sleepUntil()`, `step.fetch()`, `step.invoke()` and `step.ai.wrap()`. A `step.ai.wrap()` step evaluates its inputs itself, so the model object is never passed as an argument, and returns only the fields you destructure from the result.
-- Turns `step.waitForEvent()` and `step.waitForSignal()` into a hook raced against `sleep()`. The token comes from `match`, or from an `if` expression that compares one field, so the code that sent the event can call `resumeHook()` with the same token.
-- Turns `retries` into `maxRetries` on every step, `NonRetriableError` into `FatalError`, `RetryAfterError` into `RetryableError`, `runId` into `getWorkflowMetadata().workflowRunId`, `attempt` into `getStepMetadata().attempt`, and `logger` into `console`.
-- Removes imports that nothing uses any more, such as the Inngest client and the error classes.
+- Turns `step.waitForEvent()` and `step.waitForSignal()` into a hook raced against `sleep()`, through a small `waitForHook()` helper it adds to the file. The helper disposes the hook when the wait ends, so a later wait in the same run can use the same token, as Inngest allowed. A `waitForEvent()` token is built from the event name, the workflow name, and the value `match` compared (or an `if` expression that compares one field), so the code that sent the event can build the same token for `resumeHook()`.
+- Turns `retries` into `maxRetries` on every step, `NonRetriableError` into `FatalError`, `RetryAfterError` into `RetryableError`, `runId` into `getWorkflowMetadata().workflowRunId`, `attempt` into `getStepMetadata().attempt - 1`, and `logger` into `console`. It follows `const` references, so `retries: MAX_RETRIES` and a config object declared elsewhere in the file are read too.
+- Imports the Workflow APIs it uses under an alias when the file already has a binding with that name, and removes imports that nothing uses any more, such as the Inngest client and the error classes.
 
-It never guesses. Code it cannot migrate without changing behavior is left in place under a `// TODO(workflow-migrate): ...` comment that says what to do: a closure that assigns to a variable outside it (the write would be lost once the value is passed by value), a closure that calls a function declared in the handler, `step.sendEvent()`, flow-control options, cron triggers, and global `fetch()` calls outside a step. The report also lists every `inngest.send()` and `serve()` call in the project with its replacement: `start()` for an event that triggered a function, and `resumeHook()` for one a run was waiting for.
+It never guesses. Code it cannot migrate without changing behavior is left in place under a `// TODO(workflow-migrate): ...` comment that says what to do. That covers a closure that assigns to a variable outside it (the write would be lost once the value is passed by value), a closure that calls a function declared in the handler, `step.sendEvent()`, flow-control options, cron triggers, function options it cannot read, and global `fetch()` calls outside a step. Every migrated `waitForEvent()` also gets one, because of [one owner per token](#one-owner-per-token).
+
+The report lists every `inngest.send()` and `serve()` call in the project with its replacement, and has an **Event routing** table: for each event name, the workflows it starts and the hook tokens it resumes. That table is what you need to rewrite an app that forwards events generically, such as `inngest.send({ name: req.body.name, data: req.body.data })`.
+
+### What the codemod converts
+
+| Inngest | Converted automatically | Left as a TODO |
+| --- | --- | --- |
+| `createFunction()` | Module-level function, assigned to a `const` or `export default` | Created inside another function, or not assigned |
+| Function options | `id`, `triggers`, `retries`, also through `const` references | `concurrency`, `throttle`, `rateLimit`, `debounce`, `batchEvents`, `priority`, `timeouts`, `cancelOn`, `idempotency`, `singleton`, `middleware`, cron triggers; options it cannot read; `onFailure` (kept as a named function) |
+| `step.run()` | Closures and function references, with captured variables, inputs, and parameter defaults or computed keys | Closures that assign to a captured variable, call a function declared in the handler, use `this`, or call another step |
+| `step.sleep()` / `step.sleepUntil()` / `step.fetch()` / `step.invoke()` | Yes | `step.invoke()` given a function by reference |
+| `step.waitForEvent()` | `match`, or an `if` that compares one field | Any other `if`, a wait with neither, and the [one owner per token](#one-owner-per-token) check |
+| `step.waitForSignal()` | Yes, keeping the `{ signal, data }` result, and a replaced wait timing out with `null` | None |
+| `step.ai.wrap()` | Yes | Inputs that `await` |
+| `step.sendEvent()`, `step.sendSignal()`, `step.ai.infer()`, `step.realtime.publish()` | None | All |
+| Handler context | `event`, `runId`, `attempt`, `logger` | `events` (batches), middleware context |
 
 <Callout type="info">
 For what the codemod leaves to you, install the migration skill and ask your agent to finish the migration:
@@ -167,16 +201,18 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 | `inngest.createFunction()` | `"use workflow"` function started with `start()` | No factory or event binding. |
 | `step.run()` | `"use step"` function | Named async function with Node.js access. Variables the closure captured become arguments. |
 | `step.sleep()` / `step.sleepUntil()` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
-| `step.waitForEvent()` | `createHook()` raced against `sleep()` | The token encodes what `match` compared; `resumeHook(token, event)` replaces sending the event. Use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) when the sender needs a URL to call. |
-| `step.waitForSignal()` / `inngest.sendSignal()` | `createHook({ token: signal })` / `resumeHook(signal, data)` | `onConflict: 'replace'` maps to [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). |
+| `step.waitForEvent()` | `createHook()` raced against `sleep()`, disposed when the wait ends | The token encodes what `match` compared; `resumeHook(token, event)` replaces sending the event, once for each workflow waiting for it. One run owns a token at a time: see [One owner per token](#one-owner-per-token). Use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) when the sender needs a URL to call. |
+| `step.waitForSignal()` / `inngest.sendSignal()` | `createHook({ token: signal })` / `resumeHook(signal, { signal, data })` | Resume with the `{ signal, data }` envelope, so code that reads `result.data` keeps working. `onConflict: 'replace'` maps to [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The replaced run's `await hook` rejects with `HookForceClaimedError`; where Inngest left that wait pending until its timeout and then returned `null`, the codemod's helper catches the error and does the same. |
 | `step.invoke()` | [`start()`](/docs/foundations/starting-workflows) called in the workflow, then `await run.returnValue` | Spawns a child run; the parent waits without polling. |
 | `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
-| `idempotency` / `singleton` | [`start(workflow, args, { experimental_hook: { token } })`](/docs/foundations/idempotency#start-a-run-once-per-key) | A duplicate start throws `HookConflictError` naming the run that owns the token. Set `experimental_minRetention: '24h'` to match Inngest's idempotency window. |
+| `idempotency` | [`start(workflow, args, { experimental_hook: { token, experimental_minRetention: '24h' } })`](/docs/foundations/idempotency#start-a-run-once-per-key) | A duplicate start throws `HookConflictError` naming the run that owns the token, for 24 hours from the first start, as Inngest's idempotency window does. |
+| `singleton: { mode: 'skip' }` | `start(workflow, args, { experimental_hook: { token } })` without a retention | Only overlapping runs are refused: the token is released when the run ends, so the next start is admitted. Catch `HookConflictError` to skip. |
+| `singleton: { mode: 'cancel' }` | On `HookConflictError`, `await getRun(error.conflictingRunId).cancel()`, then start again | The newest run replaces the running one. Don't set a retention: a retained token stays refused after the cancel. |
 | `cancelOn` / cancel from the dashboard | [`run.cancel()`](/docs/foundations/cancellation), or an `AbortController` whose signal is passed into steps | `run.cancel({ cancelReason })` records why. `workflow cancel --status running --workflowName <id>` cancels in bulk. |
 | `retries` / `RetryAfterError` / `NonRetriableError` | `stepFn.maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. For custom backoff via `retryAfter`, see [Errors & Retrying](/docs/foundations/errors-and-retries#customize-retry-behavior). |
 | `step.fetch()` | [`fetch`](/docs/api-reference/workflow/fetch) from `workflow` | A step that makes the request. |
 | `step.ai.wrap()` | A `"use step"` function that calls the model | Or [`WorkflowAgent`](/docs/ai) for an agent loop. |
-| `runId` / `attempt` | `getWorkflowMetadata().workflowRunId` / `getStepMetadata().attempt` | `attempt` counts from 1, where Inngest counted from 0. |
+| `runId` / `attempt` | `getWorkflowMetadata().workflowRunId` / `getStepMetadata().attempt - 1` | `getStepMetadata().attempt` counts from 1, where Inngest counted from 0, and it is only available inside a step. |
 | `step.realtime.publish()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
 | Event payload search | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) or `start({ attributes })` | Filter runs by `key=value` in the CLI, the web UI, and Vercel Observability. |
 
@@ -186,6 +222,34 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 - **Code outside steps runs in a sandbox.** An Inngest handler could call `fetch()` or a database outside `step.run()`, and the call ran again on every request. A workflow function runs deterministically, without Node.js APIs or I/O, so move that code into a step.
 - **Step arguments are copies.** A step that changed a captured object in Inngest only changed it in the invocation that ran the step, and a memoized step does not run again. The same change is invisible to the workflow here, so return the new value instead.
 - **The event shape is yours.** The workflow receives what you pass to `start()`. Fields Inngest filled in, such as `event.id` and `event.ts`, are only there if you pass them; use `getWorkflowMetadata()` for the run ID and start time.
+
+### One owner per token
+
+Inngest delivers an event to every run waiting for it. A hook token has one owner at a time: while a run holds it, another `createHook()` with the same token rejects with [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error). Three cases follow:
+
+- **Two workflows waiting for the same event.** The codemod puts the workflow name in the token (`app/user.active:onboardUser:${userId}`), so each has its own. Where the event is sent, resume each of them; the report's Event routing table lists the tokens.
+- **The same run waiting again.** The generated `waitForHook()` helper disposes the hook when the wait ends, so the next wait can create it again.
+- **Two runs of the same workflow waiting for the same key at once.** This one needs a decision. Add something unique to the token, such as the run ID or the ID of the record the run handles, and resume each run from the sender. If only one run can wait per key, delete the TODO.
+
+### Verify the migration
+
+Before you switch traffic, run the same inputs through both versions and compare what each run returns:
+
+1. Keep a copy of the Inngest app and run it against the Inngest dev server (`npx inngest-cli dev`).
+2. Build the migrated app and run it locally against the [Local World](/worlds/local).
+3. Give both apps the same entry points: one that sends an event, one that sends a signal, and one that reads a run's result. On the Inngest side, these call `inngest.send()`, `inngest.sendSignal()` and the dev server's API. On the Workflow side, they call `start()` and `resumeHook()` as the Event routing table says, and `getRun()`.
+4. For every function, send the events that drive each path (success, the fatal error, retries, a wait that is resumed, a wait that times out) and compare the outputs and final statuses.
+
+Also typecheck and build the migrated app: the codemod's annotations are checked against your project, but your own types only meet the new code once you build.
+
+### Cut over
+
+Runs started on Inngest keep running on Inngest. Move new work to the Workflow SDK, and keep the Inngest app deployed until its in-flight runs, sleeps and waits have drained:
+
+1. Deploy the migrated app next to the Inngest one, with the Inngest `serve()` route still in place.
+2. Point new events at `start()`. Senders that resume waits need both paths for a while: send the Inngest event for runs that started there, and call `resumeHook()` for runs that started on the Workflow SDK.
+3. Keep business-level idempotency across both: a duplicate request should not start a Workflow run for work an Inngest run already does. `start({ experimental_hook: { token } })` with the same business key you used for Inngest `idempotency` covers the Workflow side.
+4. Once no Inngest runs are left, delete the `serve()` route, the client and the `inngest` dependency. Keep protecting the endpoints that start or resume runs the way you protected the ones that sent events, and point dashboards and alerts at the Workflow SDK's [observability](/docs/observability).
 
 ### Inngest features without a direct Workflow SDK equivalent
 

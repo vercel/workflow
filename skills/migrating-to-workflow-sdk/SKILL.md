@@ -113,6 +113,9 @@ Fail the draft if any of these are true:
 - [ ] Child workflows wrap `start()` in a step or poll for the result, instead of calling `start()` in the workflow and awaiting `run.returnValue`
 - [ ] `getRun()` is called in workflow context
 - [ ] A lifted step closure reads a variable from the enclosing function that is not passed as an argument
+- [ ] A workflow waits on the same hook token twice without disposing the first hook (the second `createHook()` rejects with `HookConflictError`)
+- [ ] Two waiters share one hook token where the source delivered one event to both (give each its own token and resume each)
+- [ ] A migrated Inngest signal is resumed with bare `data` instead of `{ signal, data }`
 - [ ] External writes omit idempotency keys
 - [ ] Hooks/webhooks are missing where the source used signals, waitForEvent, or task tokens
 - [ ] A callback-URL flow uses `createHook()` + `resumeHook()` instead of `createWebhook()`

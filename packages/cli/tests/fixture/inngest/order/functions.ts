@@ -66,3 +66,57 @@ export const fulfillOrder = inngest.createFunction(
     };
   }
 );
+
+const NO_RETRIES = 0;
+
+// Waits twice for the same event key in one run, and reads the vote through
+// a computed key captured from the handler.
+export const collectVotes = inngest.createFunction(
+  { id: 'collect-votes', retries: NO_RETRIES },
+  { event: 'poll/opened' },
+  async ({ event, step }) => {
+    const field: string = event.data.field;
+    const votes: string[] = [];
+    for (let round = 0; round < 2; round++) {
+      const vote = await step.waitForEvent(`vote-${round}`, {
+        event: 'poll/vote',
+        timeout: '1h',
+        match: 'data.pollId',
+      });
+      if (!vote) break;
+      const choice = await step.run(
+        `read-vote-${round}`,
+        ({ [field]: value }: Record<string, string>) => value,
+        vote.data
+      );
+      votes.push(choice);
+    }
+    return { pollId: event.data.pollId, votes };
+  }
+);
+
+// A second function waiting for the same event and key.
+export const auditVotes = inngest.createFunction(
+  { id: 'audit-votes' },
+  { event: 'poll/opened' },
+  async ({ event, step }) => {
+    const vote = await step.waitForEvent('first-vote', {
+      event: 'poll/vote',
+      timeout: '1h',
+      match: 'data.pollId',
+    });
+    return { firstVoter: vote ? vote.data.voter : null };
+  }
+);
+
+// Fails on its first attempt; with `retries: 0` that fails the run.
+export const failFast = inngest.createFunction(
+  { id: 'fail-fast', retries: NO_RETRIES },
+  { event: 'job/run' },
+  async ({ step, attempt }) => {
+    return step.run('flaky', () => {
+      if (attempt === 0) throw new Error('first attempt fails');
+      return 'retried';
+    });
+  }
+);

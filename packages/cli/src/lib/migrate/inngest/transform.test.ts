@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
   mkdtempSync,
@@ -241,10 +242,10 @@ export const parent = inngest.createFunction({ id: 'parent' }, { event: 'app/par
       'await sleep(new Date(event.data.at));\n  await sleep(new Date(event.data.at));'
     );
     expect(code).toContain(
-      "const approved = await Promise.race([createHook({ token: `app/approved:${event.data.orderId}` }), sleep('2d').then(() => null)]);"
+      "const approved = await waitForHook(createHook({ token: `app/approved:parent:${event.data.orderId}` }), sleep('2d'));"
     );
     expect(code).toContain(
-      "const shipped = await Promise.race([createHook({ token: `ship:${event.data.orderId}`, experimental_force: true }), sleep('1h').then(() => null)]);"
+      "const shipped = await waitForHook(createHook({ token: `ship:${event.data.orderId}`, experimental_force: true }), sleep('1h'));"
     );
     expect(code).toContain(
       'const result = await start(child, [{ data: { n: 21 } }]).then((run) => run.returnValue);'
@@ -253,13 +254,20 @@ export const parent = inngest.createFunction({ id: 'parent' }, { event: 'app/par
       "const res = await workflowFetch('https://example.com');"
     );
     expect(code).toContain(
-      "import { createHook, fetch as workflowFetch, sleep } from 'workflow';"
+      "import { createHook, fetch as workflowFetch, type Hook, sleep } from 'workflow';"
     );
     expect(code).toContain("import { start } from 'workflow/api';");
+    // `onConflict: 'replace'`: a replaced wait times out instead of failing.
+    expect(code).toContain(
+      "import { HookForceClaimedError } from 'workflow/errors';"
+    );
+    expect(code).toContain(
+      'if (!timeout || !HookForceClaimedError.is(error)) throw error;'
+    );
     expect(
       m.report('functions.ts').functions[1].hooks.map((h) => h.token)
     ).toEqual([
-      '`app/approved:${event.data.orderId}`',
+      '`app/approved:parent:${event.data.orderId}`',
       '`ship:${event.data.orderId}`',
     ]);
     await expect(compiledSteps(code)).resolves.toMatchObject({
@@ -278,17 +286,17 @@ export const parent = inngest.createFunction({ id: 'parent' }, { event: 'app/par
     });
     const code = m.out('functions.ts');
     expect(code).toContain(
-      "const a = await Promise.race([createHook({ token: `app/a:${event.data.id}` }), sleep('1h').then(() => null)]);"
+      "const a = await waitForHook(createHook({ token: `app/a:myFn:${event.data.id}` }), sleep('1h'));"
     );
     expect(code).toContain(
-      "const b = await Promise.race([createHook({ token: `app/b:${uuid}` }), sleep('1h').then(() => null)]);"
+      "const b = await waitForHook(createHook({ token: `app/b:myFn:${uuid}` }), sleep('1h'));"
     );
     // The sender builds the token from the field of the event it sends.
     expect(
       m.report('functions.ts').functions[0].hooks.map((h) => h.resumeToken)
     ).toEqual([
-      '`app/a:${event.data.invoiceId}`',
-      '`app/b:${event.data.uuid}`',
+      '`app/a:myFn:${event.data.invoiceId}`',
+      '`app/b:myFn:${event.data.uuid}`',
     ]);
   });
 
@@ -332,6 +340,7 @@ export const summarize = inngest.createFunction({ id: 'summarize' }, { event: 'd
     prompt: \`Summarize: \${doc.body}\`,
   });
   const whole = await step.ai.wrap('again', generateText, { model: openai('gpt-4o'), prompt: text });
+  const { text: response } = await step.ai.wrap('alias', generateText, { model: openai('gpt-4o'), prompt: text });
   return { text, tokens, whole: whole.text };
 });
 `,
@@ -345,15 +354,21 @@ export const summarize = inngest.createFunction({ id: 'summarize' }, { event: 'd
       code
     ).toContain(`async function summarizeStep(doc: { body: string }) {
   'use step';
-  const { text, usage } = await generateText({
+  const result = await generateText({
     model: openai('gpt-4o'),
     prompt: \`Summarize: \${doc.body}\`,
   });
-  return { text, usage };
+  return { text: result.text, usage: result.usage };
 }`);
     expect(code).toContain('const whole = await again(text);');
     // Copied into the step, so its import stays.
     expect(code).toContain("import { generateText } from 'ai';");
+    // A field named like a captured parameter is read off the result.
+    expect(code).toContain(`async function alias(text: any) {
+  'use step';
+  const result = await generateText({ model: openai('gpt-4o'), prompt: text });
+  return { text: result.text };
+}`);
     const notes = m
       .report('functions.ts')
       .functions[0].notes.map((n) => n.message);
@@ -426,6 +441,87 @@ export const fn1 = inngest.createFunction(
     expect(code).toContain('async function count(items: Item[]) {');
   });
 
+  it('captures what parameter defaults and computed keys read', async () => {
+    const m = await migrate({
+      'client.ts': client,
+      'functions.ts': fn(`    const field = event.data.field;
+    const fallback = 7;
+    const a = await step.run('read', ({ [field]: value }: Record<string, number>) => value, { [field]: 42 });
+    const b = await step.run('fallback', ({ value = fallback }: { value?: number }) => value, {});
+    return a + b;`),
+    });
+    const code = m.out('functions.ts');
+    expect(code).toContain('const a = await read(field, { [field]: 42 });');
+    expect(code).toContain(
+      'async function read(field: any, { [field]: value }: Record<string, number>) {'
+    );
+    expect(code).toContain('const b = await fallbackStep(fallback, {});');
+    expect(
+      m
+        .report('functions.ts')
+        .functions[0].steps.map((s) => s.captured.map((c) => c.name))
+    ).toEqual([['field'], ['fallback']]);
+  });
+
+  it('reads config through consts and refuses config it cannot read', async () => {
+    const m = await migrate({
+      'client.ts': client,
+      'functions.ts': `import { inngest } from './client';
+
+const NO_RETRIES = 0;
+const config = { id: 'by-const', retries: NO_RETRIES, concurrency: { limit: 1 }, triggers: [{ event: 'a/b' }] } as const;
+export const byConst = inngest.createFunction(config, async ({ step }) => step.run('flaky', () => 1));
+
+declare const shared: { id: string; retries: 0 };
+export const opaque = inngest.createFunction(shared, async ({ step }) => step.run('opaque-step', () => 1));
+
+export const spread = inngest.createFunction({ ...shared, id: 'spread', retries: Number('2') }, async ({ step }) => step.run('spread-step', () => 1));
+`,
+    });
+    const code = m.out('functions.ts');
+    const [byConst, opaque, spread] = m.report('functions.ts').functions;
+    expect(code).toContain('flaky.maxRetries = 0;');
+    expect(byConst.triggers).toEqual([{ kind: 'event', value: 'a/b' }]);
+    expect(byConst.inngestId).toBe('by-const');
+    expect(byConst.config).toEqual({ concurrency: '{ limit: 1 }' });
+    expect(opaque.notes.map((n) => n.message)).toEqual([
+      expect.stringContaining('are not an object literal the codemod can read'),
+    ]);
+    expect(spread.notes.map((n) => n.message)).toEqual([
+      expect.stringContaining('spread another object'),
+      expect.stringContaining('is not a number the codemod can read'),
+    ]);
+  });
+
+  it('imports Workflow APIs under an alias when the file already binds the name', async () => {
+    const m = await migrate({
+      'client.js': client,
+      'functions.js': `import { inngest } from './client.js';
+
+function sleep(value) {
+  return value * 2;
+}
+
+export const doubler = inngest.createFunction({ id: 'doubler' }, { event: 'a/b' }, async ({ event, step }) => {
+  await step.sleep('pause', '1s');
+  return step.run('double', () => sleep(event.data.n));
+});
+`,
+    });
+    const code = m.out('functions.js');
+    expect(code).toContain(
+      "import { sleep as workflowSleep } from 'workflow';"
+    );
+    expect(code).toContain("await workflowSleep('1s');");
+    expect(code).toContain('return sleep(event.data.n);');
+    const file = join(m.dir, 'check.mjs');
+    writeFileSync(file, code);
+    // Parses as a module: no duplicate declaration of `sleep`.
+    expect(() =>
+      execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' })
+    ).not.toThrow();
+  });
+
   it('turns function config into maxRetries and TODOs', async () => {
     const m = await migrate({
       'client.ts': client,
@@ -479,7 +575,7 @@ export const fn1 = inngest.createFunction({ id: 'fn1', triggers: [{ event: 'a/b'
       "console.info('start', { runId: getWorkflowMetadata().workflowRunId });"
     );
     expect(code).toContain(
-      "if ((getStepMetadata().attempt - 1) > 1) throw new RetryableError('later', { retryAfter: '30s' });"
+      "if (getStepMetadata().attempt - 1 > 1) throw new RetryableError('later', { retryAfter: '30s' });"
     );
     expect(code).toContain("throw new FatalError('bad');");
     expect(code).toContain('return getWorkflowMetadata().workflowRunId;');
@@ -674,7 +770,7 @@ export async function POST() {
       "call `start(myFn, [{ name: 'app/thing', data }])` from `workflow/api`, importing `myFn` from `functions.ts`, and pass `{ experimental_hook: { token } }`"
     );
     expect(markdown).toContain(
-      '`app/approved` resumed a waiting `myFn` run: call `resumeHook(token, event)` from `workflow/api`, where `event` is the object you sent and the token is `` `app/approved:${event.data.id}` ``.'
+      '`app/approved` resumed a waiting `myFn` run: call `resumeHook(token, event)` from `workflow/api`, where `event` is the object you sent and the token is `` `app/approved:myFn:${event.data.id}` ``.'
     );
     expect(markdown).toContain('No migrated function listens for `app/nobody`');
     expect(markdown).toContain('Delete this route');
@@ -693,7 +789,14 @@ export async function POST() {
       'functions.ts': readFileSync(join(fixtureDir, 'functions.ts'), 'utf8'),
     });
     expect(m.failed).toEqual([]);
-    expect(summarize(m.reports).todos).toBe(0);
+    // The only TODOs are the one-owner caveat of each waitForEvent() token.
+    const todos = m.reports
+      .flatMap((r) => r.functions.flatMap((f) => f.notes))
+      .filter((n) => n.severity === 'todo')
+      .map((n) => n.message);
+    expect(todos).toHaveLength(3);
+    for (const todo of todos)
+      expect(todo).toContain('Only one run at a time can own this hook token');
     const committedPath = join(
       repoRoot,
       'workbench',

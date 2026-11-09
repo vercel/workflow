@@ -16,7 +16,8 @@ Userland imports come from `workflow` and `workflow/api`. Never import from `@wo
 | Update | `createHook()` + `resumeHook()` (one-way; no return-value parity, so stream the result via `getWritable()` or keep a separate HTTP read route) |
 | Child Workflow (`executeChild` / `startChild`) | `start()` called directly in the workflow; `await run.returnValue` to collect |
 | Workflow ID + `WorkflowIdReusePolicy` / `WorkflowIdConflictPolicy` | `start(wf, args, { experimental_hook: { token } })`; duplicates throw `HookConflictError`. Add `experimental_minRetention` to keep refusing after the run ends |
-| Search attributes / Memo | `setAttributes()` in workflow or step; seed with `start(wf, args, { attributes })` |
+| Search attributes | `setAttributes()` in workflow or step; seed with `start(wf, args, { attributes })`. Values are plaintext strings (up to 256 bytes, 64 per run): convert numbers, dates and keywords to strings |
+| Memo | not attributes: Memo holds arbitrary, non-indexed data. Pass it as a workflow argument, keep it in the run's return value or a `getWritable()` status stream, or store it in your database. Promote only small string labels you filter by to `setAttributes()` |
 | Cancellation scopes (`CancellationScope`, `isCancellation`) | `AbortController` in the workflow, `AbortSignal` passed into the step; cancel a run with `run.cancel({ cancelReason })` |
 | `continueAsNew()` | `start()` the same workflow from inside the workflow with the carried state (add `deploymentId: 'latest'` on Vercel to move onto new code), then return |
 | Activity timeouts (`startToCloseTimeout`, `scheduleToCloseTimeout`, `heartbeatTimeout`) | enforce inside steps with `AbortSignal.timeout()`, or `Promise.race(step(), sleep(...))` from the workflow |
