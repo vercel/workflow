@@ -119,6 +119,28 @@ describe('@workflow/nitro virtual handlers', () => {
   });
 });
 
+describe('@workflow/nitro worker plugin', () => {
+  it('registers the flow route only when the configuration names the Postgres World, and reports a failure', async () => {
+    const nitro = createNitroStub({ routing: false });
+    await nitroModule.setup(nitro);
+    const source = nitro.options.virtual['#workflow/worker-plugin'];
+    expect(nitro.options.plugins).toContain('#workflow/worker-plugin');
+    expect(source).toContain(
+      "process.env.WORKFLOW_TARGET_WORLD !== '@workflow/world-postgres'"
+    );
+    expect(source).toContain('registerWorkflowHandler(POST)');
+    expect(source).toContain('this process runs no jobs');
+  });
+
+  it('adds no worker plugin to a Vercel deploy', async () => {
+    const nitro = createNitroStub({ routing: false, preset: 'vercel' });
+    await nitroModule.setup(nitro);
+    expect(nitro.options.plugins ?? []).not.toContain(
+      '#workflow/worker-plugin'
+    );
+  });
+});
+
 describe('@workflow/nitro builder lifecycle', () => {
   it('closes a development Nitro instance with its Vite plugin container', async () => {
     const nitro = createNitroStub({ routing: true, dev: true });

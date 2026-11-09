@@ -580,14 +580,24 @@ function addWorkerPlugin(nitro: Nitro) {
     join(nitro.options.buildDir, 'workflow/steps.mjs')
   );
   const entry = IN_PROCESS_QUEUE_HANDLER_CODE;
+  // Only when the configuration names a World that delivers in process:
+  // another World is not built at boot. Nitro does not await a plugin, so a
+  // failure is reported, not fatal; the World's start() also warns once
+  // when no handler is registered.
   const register = (routeCode: string, options: string) => /* js */ `
       export default () => {
+        if (process.env.WORKFLOW_TARGET_WORLD !== '@workflow/world-postgres') return;
         import('workflow/runtime')
           .then(({ registerWorkflowHandler }) =>
             registerWorkflowHandler(${routeCode}${options})
           )
+          .then((registered) => {
+            if (!registered) {
+              console.error('[workflow] The World delivers in process but did not take the flow route; this process runs no jobs.');
+            }
+          })
           .catch((error) => {
-            console.error('[workflow] Failed to register the flow route with the World:', error);
+            console.error('[workflow] Failed to register the flow route with the World; this process runs no jobs:', error);
           });
       };
   `;
