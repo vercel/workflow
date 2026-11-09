@@ -29,6 +29,7 @@ import {
   isEncryptedRef,
   isExpiredRef,
 } from './hydration.js';
+import { stringifyJSON } from './json.js';
 
 /**
  * Create an EncryptionKeyResolver from a World instance.
@@ -335,7 +336,7 @@ const formatTableValue = (
   }
 
   if (prop === 'eventData') {
-    return truncateString(JSON.stringify(value));
+    return truncateString(stringifyJSON(value));
   }
 
   if (prop === 'hasResponse') {
@@ -428,7 +429,7 @@ const showTable = (
 };
 
 const showJson = (data: unknown) => {
-  const json = JSON.stringify(data, null, 2);
+  const json = stringifyJSON(data, 2);
   process.stdout.write(`${json}\n`);
 };
 
@@ -538,9 +539,9 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
     if (io instanceof Date) {
       value = io.toISOString();
     } else {
-      value = truncateString(JSON.stringify(io));
+      value = truncateString(stringifyJSON(io));
     }
-  } else if (['string', 'number', 'boolean'].includes(type)) {
+  } else if (['string', 'number', 'boolean', 'bigint'].includes(type)) {
     if (isStreamId(io as string)) {
       value = io.toString();
     } else if (type === 'string' && (io as string).includes('strm_')) {
