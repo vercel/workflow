@@ -321,18 +321,22 @@ export function isFrozenState(value: unknown, depth = 0): boolean {
  */
 function childrenOf(value: object): unknown[] {
   const out: unknown[] = [];
-  try {
-    Map.prototype.forEach.call(value, (v: unknown, k: unknown) => {
-      out.push(k, v);
-    });
-    return out;
-  } catch {}
-  try {
-    Set.prototype.forEach.call(value, (v: unknown) => {
-      out.push(v);
-    });
-    return out;
-  } catch {}
+  const tag = Object.prototype.toString.call(value);
+  if (tag === '[object Map]' || tag === '[object Set]') {
+    try {
+      if (tag === '[object Map]')
+        Map.prototype.forEach.call(value, (v: unknown, k: unknown) => {
+          out.push(k, v);
+        });
+      else
+        Set.prototype.forEach.call(value, (v: unknown) => {
+          out.push(v);
+        });
+      return out;
+    } catch {
+      // A plain object claiming the tag: read its properties.
+    }
+  }
   for (const key of Object.keys(value)) out.push((value as Dict)[key]);
   return out;
 }
@@ -741,10 +745,12 @@ export class StateContext {
     }
     if (known !== undefined) return known.value;
     let value: unknown;
+    let fresh: unknown;
     let bytesSinceFull = 0;
     let recordsSinceFull = 0;
     if (d.kind === 'full') {
       value = d.value;
+      fresh = value;
       this.assertKnownTypes(value);
     } else {
       const base =
@@ -759,13 +765,15 @@ export class StateContext {
       // The base was checked when it was registered; only the change is new.
       // Checking the whole value would walk the history on every revive.
       this.assertKnownTypes(ops);
+      fresh = ops;
       value = applyStateOps(base.value, ops);
       bytesSinceFull = base.bytesSinceFull + opsBytes(ops);
       recordsSinceFull = base.recordsSinceFull + 1;
     }
     // A value built around a placeholder (inspection only) is not the stored
-    // value: keep it out of the context so a later read can rebuild it.
-    if (this.placeholders.size > 0 && this.holdsPlaceholder(value))
+    // value: keep it out of the context so a later read can rebuild it. Only
+    // the new data can hold one: a registered base never does.
+    if (this.placeholders.size > 0 && this.holdsPlaceholder(fresh))
       return value;
     deepFreeze(value);
     if (register)
