@@ -42,3 +42,9 @@ export {
   type StartOptions,
   start,
 } from '@workflow/core/runtime/start';
+export {
+  type ScheduledRun,
+  type ScheduleJsonValue,
+  scheduleTarget,
+  scheduleTopic,
+} from '@workflow/core/runtime/schedule';

@@ -26,6 +26,10 @@ export {
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
 export type { Serializable } from './schemas.js';
+export type {
+  ScheduledRun,
+  ScheduleJsonValue,
+} from './runtime/schedule.js';
 export {
   type SetAttributesOptions,
   setAttributes,

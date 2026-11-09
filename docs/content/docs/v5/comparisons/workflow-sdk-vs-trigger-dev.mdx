@@ -97,7 +97,7 @@ Each row is a trigger.dev capability the Workflow SDK does not replicate one-to-
 | trigger.dev feature | How to cover it with the Workflow SDK |
 | --- | --- |
 | Concurrency keys / queue concurrency limits | Enforce limits inside steps or debounce at the publisher |
-| `schedules.task()` / cron | Trigger from Vercel Cron or a system cron calling `start()` |
+| `schedules.task()` / cron | Point a [Vercel Schedule](/docs/cookbook/integrations/vercel-schedules) at the workflow, or call `start()` from any other cron |
 | `machine` presets / custom images | Function resources are per-deployment (configured via your hosting platform) |
 
 ---
