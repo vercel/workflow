@@ -293,4 +293,40 @@ describe('createRunStateHydrator', () => {
       51, 151, 251, 351,
     ]);
   });
+
+  it("rebuilds the value when the run input can't be loaded", async () => {
+    const writer = new StateContext();
+    let history: readonly unknown[] = Object.freeze([]);
+    const events: { eventId: string; eventType: string; eventData: unknown }[] =
+      [];
+    for (let i = 0; i < 3; i++) {
+      const next = Object.freeze([
+        ...history,
+        Object.freeze({ role: 'user', content: `message ${i}` }),
+      ]);
+      const result = workflow.serialize(
+        { history: next },
+        { stateContext: writer }
+      );
+      history = (workflow.deserialize(result, { stateContext: writer }) as any)
+        .history;
+      events.push({
+        eventId: `e${i}`,
+        eventType: 'step_completed',
+        eventData: { result },
+      });
+    }
+    const input = workflow.serialize(
+      { history },
+      { stateContext: writer, stateInput: true }
+    );
+    const hydrator = createRunStateHydrator({
+      loadRunInput: async () => {
+        throw new Error('run not found');
+      },
+      loadEvents: async () => ({ data: events, hasMore: false }),
+    });
+    const shown = (await hydrator.hydrate({ input })) as any;
+    expect(shown.input.history).toHaveLength(3);
+  });
 });

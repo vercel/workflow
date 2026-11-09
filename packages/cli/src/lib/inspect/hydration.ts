@@ -552,8 +552,12 @@ async function readRunHistory(
     }
   };
   if (!state.startedInput) {
-    const run = await world.runs.get(runId, { resolveData: 'all' });
-    await add(run.input, stateSourceId('run-input'));
+    // The run input only supplies strings later state may refer to; a run
+    // whose input can't be read still rebuilds everything else.
+    const run = await world.runs
+      .get(runId, { resolveData: 'all' })
+      .catch(() => undefined);
+    await add(run?.input, stateSourceId('run-input'));
     state.startedInput = true;
   }
   const cursors = new Set<string>();

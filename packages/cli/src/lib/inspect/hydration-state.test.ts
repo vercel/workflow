@@ -66,6 +66,18 @@ describe('CLI inspection of state stored by reference', () => {
     expect(run.lists()).toBe(1);
   });
 
+  it("rebuilds the value when the run's own record can't be read", async () => {
+    // The vitest workbench stores runs under a tag `runs.get` doesn't find.
+    const run = storedRun(3);
+    run.world.runs.get = async () => {
+      throw new Error('Workflow run "wrun_cli_tagged" not found');
+    };
+    resolveStateFrom(run.world as never);
+    const step = { runId: 'wrun_cli_tagged', stepId: 's', input: run.input };
+    const shown = (await hydrateResourceIO(step)) as any;
+    expect(shown.input.history).toHaveLength(3);
+  });
+
   it('rebuilds a long run in bounded time', async () => {
     const run = storedRun(2_000);
     resolveStateFrom(run.world as never);
