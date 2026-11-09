@@ -3138,7 +3138,7 @@ sequenceDiagram
     Note over M,W: now
     M->>Q: w1's timer, key wait:w1:R:R
     M->>W: wait_created w1
-    Note over M: dies; the timer is already out
+    Note over M: dies, the timer is already out
 ```
 
 **Outcome.** Fixed (`e3018c00c3`): a pass sends the timer of its chain's earliest new wait before the `wait_created` commits, on both engines. If the commit then fails, the stray timer finds no wait or re-arms the one the redelivery created. Tests: `spec9/wait-chains.runtime.test.ts`, both engines, for a failed timer send and a lost creation response. Mechanism: [Timers and waits](#who-arms-a-timer).
