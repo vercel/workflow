@@ -224,6 +224,14 @@ per flag.
 - Local server port for health checks.
 - The flag writes `WORKFLOW_LOCAL_BASE_URL`.
 
+### `--base-path`
+
+- Command: `workflow health`
+- Environment variable: none
+- Default: unset, so the check targets `/.well-known/workflow/v1/flow` at the server root
+- Path the workflow routes are served under on the local server: Next.js' `basePath` followed by [`workflows.experimentalRoutePrefix`](/docs/api-reference/workflow-next/with-workflow#workflow-route-prefix). For example, `--base-path /v2/dashboard` checks `/v2/dashboard/.well-known/workflow/v1/flow`.
+- Appended to the URL from `--port`, `WORKFLOW_LOCAL_BASE_URL` or `PORT`.
+
 ## Verbose logging and updates
 
 ### `--verbose` / `-v`
@@ -251,3 +259,4 @@ per flag.
 - CLI flag: none
 - Default: inferred
 - Explicit path to the workflow manifest for the web UI.
+- Inferred from `app/`, `src/app/` and `.well-known/` at the project root first, then from a manifest generated below a [route prefix](/docs/api-reference/workflow-next/with-workflow#workflow-route-prefix), such as `app/dashboard/.well-known/workflow/v1/manifest.json`. Set it when more than one prefixed manifest exists.

@@ -62,6 +62,7 @@ The Local World is the default outside Vercel and is intended for development.
 - Environment variable: `WORKFLOW_LOCAL_DATA_DIR`
 - Default: `.workflow-data`
 - Directory where runs, steps, events, hooks, streams, and the local manifest are written.
+- Also holds the app's queue key (`queue-auth-key`), which the CLI and web UI read to send deliveries, so point them at the same directory. See [`WORKFLOW_QUEUE_AUTH`](/worlds/local#workflow_queue_auth).
 
 ### `baseUrl`
 

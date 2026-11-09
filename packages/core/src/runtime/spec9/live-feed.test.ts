@@ -8,6 +8,7 @@ import {
   getOrchestratorPollIntervalMs,
   LiveLogFeed,
   ORCHESTRATOR_POLL_MAX_BACKOFF_FACTOR,
+  ORCHESTRATOR_POLL_MAX_INTERVAL_MS,
 } from './live-feed.js';
 
 const RUN = 'wrun_feed';
@@ -338,13 +339,100 @@ describe('LiveLogFeed poll backoff', () => {
     live.stop();
   });
 
-  it('never backs off without a live feed', async () => {
+  /** Runs empty polls without a push until the interval reaches its cap. */
+  async function backOffWithoutPush(live: LiveLogFeed) {
+    while (live.nextPollIntervalMs < ORCHESTRATOR_POLL_MAX_INTERVAL_MS) {
+      await vi.advanceTimersByTimeAsync(live.nextPollIntervalMs);
+    }
+    expect(live.nextPollIntervalMs).toBe(ORCHESTRATOR_POLL_MAX_INTERVAL_MS);
+  }
+
+  it('doubles the interval per empty poll without a live feed, up to a cap', async () => {
     vi.useFakeTimers();
     const world = seeded({});
     const { live } = start(world.asWorld());
-    await vi.advanceTimersByTimeAsync(BASE * 5);
     expect(live.nextPollIntervalMs).toBe(BASE);
-    expect(world.listCalls.length).toBeGreaterThanOrEqual(5);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(world.listCalls).toHaveLength(1);
+    expect(live.nextPollIntervalMs).toBe(BASE * 2);
+    await vi.advanceTimersByTimeAsync(BASE * 2);
+    expect(world.listCalls).toHaveLength(2);
+    expect(live.nextPollIntervalMs).toBe(BASE * 4);
+    await backOffWithoutPush(live);
+    const calls = world.listCalls.length;
+    await vi.advanceTimersByTimeAsync(ORCHESTRATOR_POLL_MAX_INTERVAL_MS * 3);
+    expect(world.listCalls).toHaveLength(calls + 3);
+    expect(live.nextPollIntervalMs).toBe(ORCHESTRATOR_POLL_MAX_INTERVAL_MS);
+    live.stop();
+  });
+
+  it('resets without a live feed after a poll that delivers an event', async () => {
+    vi.useFakeTimers();
+    const world = seeded({});
+    const { live, received } = start(world.asWorld());
+    await backOffWithoutPush(live);
+    world.appendOutOfBand(hookReceived('hook_a'));
+    await vi.advanceTimersByTimeAsync(ORCHESTRATOR_POLL_MAX_INTERVAL_MS);
+    expect(received).toEqual([slotToEventId(2)]);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    live.stop();
+  });
+
+  it('resets without a live feed after a failed poll', async () => {
+    vi.useFakeTimers();
+    const { controlledWorld, feed } = controlled();
+    const noPush = {
+      ...controlledWorld,
+      events: { ...controlledWorld.events, subscribe: undefined },
+    } as typeof controlledWorld;
+    const { live } = start(noPush);
+    await backOffWithoutPush(live);
+    feed.failList = true;
+    await vi.advanceTimersByTimeAsync(ORCHESTRATOR_POLL_MAX_INTERVAL_MS);
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    live.stop();
+  });
+
+  it("starts the backoff over and moves the next poll up on the delivery's own write", async () => {
+    vi.useFakeTimers();
+    const world = seeded({});
+    const { live, received } = start(world.asWorld());
+    await backOffWithoutPush(live);
+    const calls = world.listCalls.length;
+    // Another writer's event lands right after the delivery's own write.
+    live.noteActivity();
+    world.appendOutOfBand(hookReceived('hook_a'));
+    expect(live.nextPollIntervalMs).toBe(BASE);
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(world.listCalls).toHaveLength(calls + 1);
+    expect(received).toEqual([slotToEventId(2)]);
+    live.stop();
+  });
+
+  it('ignores its own writes while the push is live', async () => {
+    vi.useFakeTimers();
+    const world = seeded({ subscribe: true });
+    const { live } = start(world.asWorld());
+    await backOffFully(live);
+    live.noteActivity();
+    expect(live.nextPollIntervalMs).toBe(MAX);
+    live.stop();
+  });
+
+  it('never backs off below the configured interval without a push', async () => {
+    vi.useFakeTimers();
+    const world = seeded({});
+    const slow = ORCHESTRATOR_POLL_MAX_INTERVAL_MS * 2;
+    const live = new LiveLogFeed(world.asWorld(), RUN, {
+      afterSlot: 1,
+      cursor: slotToEventId(1),
+      pollIntervalMs: slow,
+      onEvents: () => {},
+    });
+    live.start();
+    await vi.advanceTimersByTimeAsync(slow);
+    expect(world.listCalls).toHaveLength(1);
+    expect(live.nextPollIntervalMs).toBe(slow);
     live.stop();
   });
 
@@ -359,9 +447,9 @@ describe('LiveLogFeed poll backoff', () => {
     expect(live.nextPollIntervalMs).toBe(BASE);
     await vi.advanceTimersByTimeAsync(BASE);
     expect(received).toEqual([slotToEventId(2)]);
-    // And stays there: the feed is gone.
-    await vi.advanceTimersByTimeAsync(BASE * 4);
-    expect(live.nextPollIntervalMs).toBe(BASE);
+    // The feed is gone: from here the poll backs off as one without a push.
+    await vi.advanceTimersByTimeAsync(BASE);
+    expect(live.nextPollIntervalMs).toBe(BASE * 2);
     live.stop();
   });
 
