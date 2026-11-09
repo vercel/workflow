@@ -46,6 +46,8 @@ const SOURCE_STRING_MIN = 128;
 const MAX_ID = 256;
 const MAX_PATH = 64;
 const MAX_DEPTH = 256;
+/** Bound inspection work, including repeated edges and primitive children. */
+const MAX_PLACEHOLDER_VISITS = 10_000;
 /** How many recent step-input versions a new value is compared with by value. */
 const MAX_RECENT_INPUTS = 4;
 
@@ -282,26 +284,27 @@ export function isFrozenState(value: unknown, depth = 0): boolean {
  * The values a value holds: object properties, array items, and a `Map`'s
  * keys and values or a `Set`'s members, from any realm.
  */
-function childrenOf(value: object): unknown[] {
-  const out: unknown[] = [];
+function* childrenOf(value: object): Generator<unknown> {
   const tag = Object.prototype.toString.call(value);
   if (tag === '[object Map]' || tag === '[object Set]') {
     try {
-      if (tag === '[object Map]')
-        Map.prototype.forEach.call(value, (v: unknown, k: unknown) => {
-          out.push(k, v);
-        });
-      else
-        Set.prototype.forEach.call(value, (v: unknown) => {
-          out.push(v);
-        });
-      return out;
+      if (tag === '[object Map]') {
+        for (const [key, child] of Map.prototype.entries.call(value)) {
+          yield key;
+          yield child;
+        }
+      } else {
+        yield* Set.prototype.values.call(value);
+      }
+      return;
     } catch {
       // A plain object claiming the tag: read its properties.
     }
   }
-  for (const key of Object.keys(value)) out.push((value as Dict)[key]);
-  return out;
+  // Read children lazily so a wide collection cannot bypass the scan budget.
+  for (const key in value) {
+    if (Object.hasOwn(value, key)) yield (value as Dict)[key];
+  }
 }
 
 function newId(): string {
@@ -800,13 +803,23 @@ export class StateContext {
     return text;
   }
 
-  private holdsPlaceholder(value: unknown, depth = 0): boolean {
-    if (typeof value === 'string') return this.placeholders.has(value);
-    if (depth > 256 || value === null || typeof value !== 'object')
+  private holdsPlaceholder(value: unknown): boolean {
+    const visited = new WeakSet<object>();
+    let remaining = MAX_PLACEHOLDER_VISITS;
+    const walk = (value: unknown, depth: number): boolean => {
+      // An incomplete scan is inconclusive: don't cache a value that might
+      // still hold a placeholder, so later history can rebuild it.
+      if (--remaining < 0) return true;
+      if (typeof value === 'string') return this.placeholders.has(value);
+      if (value === null || typeof value !== 'object') return false;
+      if (visited.has(value)) return false;
+      if (depth > MAX_DEPTH) return true;
+      visited.add(value);
+      for (const child of childrenOf(value))
+        if (walk(child, depth + 1)) return true;
       return false;
-    for (const child of childrenOf(value))
-      if (this.holdsPlaceholder(child, depth + 1)) return true;
-    return false;
+    };
+    return walk(value, 0);
   }
 
   private assertKnownTypes(value: unknown, depth = 0): void {

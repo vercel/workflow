@@ -76,6 +76,36 @@ describe('createStateResolver', () => {
     ).toHaveLength(2);
   });
 
+  it('ingests a compact shared Map graph after an inspection miss', () => {
+    let graph: unknown = 'leaf';
+    for (let i = 0; i < 40; i++) {
+      graph = new Map([
+        ['left', graph],
+        ['right', graph],
+      ]);
+    }
+    const body = new StateContext();
+    const output = workflow.serialize(
+      { state: Object.freeze({ graph }) },
+      { stateContext: body }
+    );
+    const state = (workflow.deserialize(output, { stateContext: body }) as any)
+      .state;
+    const input = workflow.serialize({ state }, { stateContext: body });
+    const resolver = createStateResolver();
+    const all = { ...observabilityRevivers, ...resolver.revivers };
+    expect((hydrateData(input, all) as any).state).toMatch(/^<state /);
+    resolver.add(output);
+    const shown = (hydrateData(input, all) as any).state;
+    let node = shown.graph;
+    for (let i = 0; i < 40; i++) {
+      expect(node).toBeInstanceOf(Map);
+      expect(node.get('left')).toBe(node.get('right'));
+      node = node.get('left');
+    }
+    expect(node).toBe('leaf');
+  });
+
   it('ignores payloads it cannot read', () => {
     const resolver = createStateResolver();
     resolver.add('not a payload');
@@ -177,5 +207,112 @@ describe('createStateResolver', () => {
       outer: { byId: Map<string, unknown> };
     };
     expect(after.outer.byId.get('a')).toEqual({ n: 1 });
+  });
+});
+
+describe('inspection placeholder scans', () => {
+  const inspection = () => {
+    const context = new StateContext();
+    context.allowPlaceholders = true;
+    context.placeholderFor({ kind: 'ref', version: 'missing' });
+    return context;
+  };
+  const full = (value: unknown) => ({
+    kind: 'full',
+    logId: 'log',
+    version: 'outer',
+    value,
+  });
+  const ref = { kind: 'ref', logId: 'log', version: 'outer' };
+
+  it.each([
+    'Map',
+    'Set',
+    'object/array',
+  ])('visits shared descendants only once through %s', (container) => {
+    let reads = 0;
+    let graph: unknown = Object.freeze({
+      get leaf() {
+        reads++;
+        return 'not a placeholder';
+      },
+    });
+    for (let i = 0; i < 14; i++) {
+      graph =
+        container === 'Map'
+          ? new Map([
+              ['left', graph],
+              ['right', graph],
+            ])
+          : container === 'Set'
+            ? new Set([graph, { child: graph }])
+            : { children: [graph, graph] };
+    }
+    // Map contents are not walked by deepFreeze: count just the scan.
+    const value = { graph: new Map([['root', graph]]) };
+    const context = inspection();
+    expect(context.revive(full(value))).toBe(value);
+    expect(reads).toBe(1);
+    expect(context.revive(ref)).toBe(value);
+  });
+
+  it('handles cycles in Map and Set contents without exhausting the scan', () => {
+    const map = new Map<unknown, unknown>();
+    let reads = 0;
+    map.set('guard', {
+      get value() {
+        // Fail promptly rather than hanging the test if cycle detection regresses.
+        if (++reads > 4) throw new Error('Repeated cycle traversal');
+        return 'plain';
+      },
+    });
+    const set = new Set<unknown>([map]);
+    map.set(set, map);
+    const value = { map };
+    const context = inspection();
+    expect(context.revive(full(value))).toBe(value);
+    expect(reads).toBe(1);
+    expect(context.revive(ref)).toBe(value);
+  });
+
+  it.each([
+    new Map([['<state missing>', 'value']]),
+    new Map([['key', '<state missing>']]),
+    new Set(['<state missing>']),
+  ])('does not cache placeholders in collection keys or values: %s', (graph) => {
+    const context = inspection();
+    const value = { graph };
+    expect(context.revive(full(value))).toBe(value);
+    expect(() => context.revive(ref)).toThrow(/Missing workflow state version/);
+  });
+
+  it('bounds wide scans and leaves an inconclusive value uncached', () => {
+    let reads = 0;
+    const leaf = Object.freeze({
+      get value() {
+        reads++;
+        return 'plain';
+      },
+    });
+    const map = new Map<unknown, unknown>();
+    for (let i = 0; i < 20_000; i++) map.set(i, leaf);
+    const context = inspection();
+    const value = { map };
+    expect(context.revive(full(value))).toBe(value);
+    expect(reads).toBe(1);
+    expect(() => context.revive(ref)).toThrow(/Missing workflow state version/);
+    // An incomplete scan must not poison later recovery of the version.
+    const recovered = { actual: true };
+    expect(context.revive(full(recovered))).toBe(recovered);
+    expect(context.revive(ref)).toBe(recovered);
+  });
+
+  it('does not cache a value when the depth limit hides a placeholder', () => {
+    let graph: unknown = '<state missing>';
+    for (let i = 0; i < 260; i++) graph = new Map([['next', graph]]);
+    const context = inspection();
+    const value = { graph };
+    expect(context.revive(full(value))).toBe(value);
+    expect(() => context.revive(ref)).toThrow(/Missing workflow state version/);
   });
 });

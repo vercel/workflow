@@ -2,6 +2,11 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+State inspection searches each shared object once for unresolved placeholders,
+including Map keys and values and Set members. Each search is limited to 10,000
+visits and 256 levels of object nesting. Values whose search hits a limit remain
+uncached so later history can rebuild them.
+
 Pass the Hook returned by `getHookByToken()` to `resumeHook()` to reuse its
 immutable resume context without another token lookup. JSON, object spreads,
 and structured cloning preserve this behavior. Cached capabilities are ignored;
