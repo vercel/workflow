@@ -176,9 +176,11 @@ const next = Object.freeze([
 
 - **Frozen values come back frozen.** Changing one in place throws a `TypeError`. Make the next version with `produce` (or a new frozen copy) instead.
 - **`Date`, `Map`, `Set` and byte arrays are trusted.** Inside a frozen value they are treated as unchanging, even though JavaScript lets you change a `Date` or a `Map` after freezing. Change them only inside `produce` (see the note below).
-- **Only deeply frozen plain data counts.** A value that isn't frozen, is only frozen at the top, or holds a class instance or another custom type is stored in full.
+- **Only deeply frozen plain data counts.** A value that isn't frozen, is only frozen at the top, or holds a class instance or another custom type, including inside a `Map` or `Set`, is stored in full.
+- **Keep immer's auto-freeze on.** immer freezes what `produce` returns by default. With `setAutoFreeze(false)` its results aren't frozen, so they're stored in full every time: still correct, but the savings are gone. Turning it off is also how to opt a codebase out of storing values by reference.
 - **A new value is linked by the objects it shares.** A value whose objects are all new, for example one made only of numbers and strings, is stored in full each time. That's fine for small values.
 - **Some payloads are always stored in full:** run inputs, including values passed to another run through `start()`, workflow return values (so `run.returnValue` reads them as usual), and hook payloads.
+- **Fan out values that a step returned.** Passing a step's output to several parallel steps writes one small reference per step. A value made or changed in workflow code and passed to several parallel steps is written once per step (its change, or the whole value if it's new), because one step's input can't refer to another's.
 - **A value is written whole again from time to time:** once its changes since the last whole copy pass half its size (for growing state, each time it doubles), or after 1,000 changes. That bounds how much a replay has to apply to about the value's own size.
 - With `WORKFLOW_VM=quickjs`, values are stored in full, because that VM can't read references yet.
 
