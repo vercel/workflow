@@ -33,8 +33,15 @@ import { getCommonRevivers } from './reducers/common.js';
 export const STATE_REF_REDUCER = 'StateRefV1';
 export const STATE_SOURCE_REDUCER = 'StateSrcV1';
 
-/** Above this many change bytes since the last whole value, and twice the value's size, write it whole. */
+/**
+ * A value is written whole again once its changes since the last whole copy
+ * pass this many bytes and half the value's size (for a growing value: each
+ * time it doubles), or after {@link SNAPSHOT_MAX_RECORDS} changes. That bounds
+ * how much of the log a rebuild applies to about twice the value's size, and
+ * adds whole copies totalling about twice its final size.
+ */
 const SNAPSHOT_MIN_BYTES = 64 * 1024;
+const SNAPSHOT_MAX_RECORDS = 1_000;
 /** Shorter strings are not worth a reference. */
 const SOURCE_STRING_MIN = 128;
 const MAX_ID = 256;
@@ -48,6 +55,8 @@ interface Version {
   readonly logId: string;
   readonly value: unknown;
   readonly bytesSinceFull: number;
+  /** Changes since the last whole value. */
+  readonly recordsSinceFull: number;
   /** The value's measured size, and `bytesSinceFull` when it was measured. */
   readonly measured?: Measured;
 }
@@ -497,11 +506,11 @@ export class StateContext {
         return { kind: 'ref', logId: base.logId, version: baseVersion };
       }
       const bytesSinceFull = base.bytesSinceFull + opsBytes(ops);
-      const { snapshot, measured } = this.snapshotRule(
-        value,
-        bytesSinceFull,
-        base.measured
-      );
+      const recordsSinceFull = base.recordsSinceFull + 1;
+      const rule = this.snapshotRule(value, bytesSinceFull, base.measured);
+      const { measured } = rule;
+      const snapshot =
+        rule.snapshot || recordsSinceFull >= SNAPSHOT_MAX_RECORDS;
       // A change that replaces the whole value is stored as that value: its
       // `set` would otherwise hold the value itself, which devalue would
       // encode as a reference back to this record.
@@ -515,6 +524,7 @@ export class StateContext {
             logId: base.logId,
             value,
             bytesSinceFull,
+            recordsSinceFull,
             measured,
           });
         this.stats.patches++;
@@ -544,6 +554,7 @@ export class StateContext {
         logId,
         value,
         bytesSinceFull: 0,
+        recordsSinceFull: 0,
         measured: measured && { bytes: measured.bytes, at: 0 },
       });
     this.stats.full++;
@@ -553,9 +564,9 @@ export class StateContext {
 
   /**
    * Whether to write the value whole: its changes since the last whole value
-   * exceed {@link SNAPSHOT_MIN_BYTES} and twice its size. Measuring the size
+   * exceed {@link SNAPSHOT_MIN_BYTES} and half its size. Measuring the size
    * serializes the whole value, so a measurement is reused while the changes
-   * since it cannot have shrunk the value enough for the rule to fire.
+   * since it cannot have grown enough for the rule to fire.
    */
   private snapshotRule(
     value: unknown,
@@ -568,11 +579,11 @@ export class StateContext {
       // Each change moves the size by about its own bytes, so the value is
       // at least this big; while the rule can't fire against that, skip it.
       const atLeast = measured.bytes - (bytesSinceFull - measured.at);
-      if (bytesSinceFull <= 2 * atLeast) return { snapshot: false, measured };
+      if (2 * bytesSinceFull <= atLeast) return { snapshot: false, measured };
     }
     const bytes = jsonBytes(value);
     return {
-      snapshot: bytesSinceFull > 2 * bytes,
+      snapshot: 2 * bytesSinceFull > bytes,
       measured: { bytes, at: bytesSinceFull },
     };
   }
@@ -597,6 +608,7 @@ export class StateContext {
     if (known !== undefined) return known.value;
     let value: unknown;
     let bytesSinceFull = 0;
+    let recordsSinceFull = 0;
     if (d.kind === 'full') {
       value = d.value;
       this.assertKnownTypes(value);
@@ -615,9 +627,16 @@ export class StateContext {
       this.assertKnownTypes(ops);
       value = applyStateOps(base.value, ops);
       bytesSinceFull = base.bytesSinceFull + opsBytes(ops);
+      recordsSinceFull = base.recordsSinceFull + 1;
     }
     deepFreeze(value);
-    if (register) this.register(version, { logId, value, bytesSinceFull });
+    if (register)
+      this.register(version, {
+        logId,
+        value,
+        bytesSinceFull,
+        recordsSinceFull,
+      });
     return value;
   }
 

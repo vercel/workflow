@@ -334,9 +334,56 @@ describe('frozen values stored by reference', () => {
     } finally {
       spy.mockRestore();
     }
-    // An append-only value never meets the rule; it is not re-measured on
-    // every write once its changes pass the threshold.
+    // A growing value is not re-measured on every write once its changes
+    // pass the threshold.
     expect(measured.length).toBeLessThan(20);
+  });
+
+  it('writes a growing value whole each time it doubles', () => {
+    const replay = new StateContext();
+    let state = produce({ log: [] as { t: string }[] }, () => {});
+    const fullAt: number[] = [];
+    const outputs: Uint8Array[] = [];
+    for (let i = 0; i < 1_000; i++) {
+      state = produce(state, (d) => {
+        d.log.push({ t: 'x'.repeat(1024) });
+      });
+      const out = write({ s: state }, replay);
+      if (text(out).includes('"full"')) fullAt.push(i);
+      outputs.push(out);
+      state = read(out, replay).s as typeof state;
+    }
+    // ~1 MB of appends: whole once the changes pass 64 KiB, then each time
+    // the value doubles, so a rebuild applies at most about the value's own
+    // size of changes.
+    // Measured: whole at writes 0, 61, 122, 236, 456 and 879.
+    expect(fullAt.length).toBeGreaterThanOrEqual(4);
+    expect(fullAt.length).toBeLessThanOrEqual(7);
+    for (let k = 2; k < fullAt.length; k++) {
+      const ratio = (fullAt[k]! + 1) / (fullAt[k - 1]! + 1);
+      expect(ratio).toBeGreaterThan(1.6);
+      expect(ratio).toBeLessThan(2.4);
+    }
+    // A cold read rebuilds the same value from the log.
+    const last = outputs.pop() as Uint8Array;
+    expect(read(last, cold(...outputs)).s).toStrictEqual(state);
+  });
+
+  it('writes a value whole after 1000 small changes', () => {
+    const replay = new StateContext();
+    // `meta` is shared between versions, which links each to the previous.
+    let state = produce({ n: 0, meta: { kind: 'counter' } }, () => {});
+    let fulls = 0;
+    for (let i = 0; i < 2_500; i++) {
+      state = produce(state, (d) => {
+        d.n++;
+      });
+      const out = write({ s: state }, replay);
+      if (text(out).includes('"full"')) fulls++;
+      state = read(out, replay).s as typeof state;
+    }
+    // The first write, then one every 1000 changes.
+    expect(fulls).toBe(3);
   });
 
   it('needs recovery only for records a fresh context lacks', () => {
