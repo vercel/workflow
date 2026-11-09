@@ -4,6 +4,7 @@ import {
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
 } from '@workflow/world';
 import { createTestSuite } from '@workflow/world-testing';
 import { afterAll, beforeAll, expect, test } from 'vitest';
@@ -13,8 +14,16 @@ if (process.platform === 'win32') {
   test.skip('skipped on Windows since it relies on a docker container', () => {});
 } else {
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
+  // The shared suite pinned to spec 8 for backwards compatibility, whatever
+  // the environment asks for; `spec9.test.ts` runs it at spec 9, the default.
+  // The servers the suite starts read the version when they create their
+  // World.
+  const previousSpecVersion = process.env.WORKFLOW_SPEC_VERSION;
 
   beforeAll(async () => {
+    process.env.WORKFLOW_SPEC_VERSION = String(
+      SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+    );
     container = await new PostgreSqlContainer('postgres:15-alpine').start();
     const dbUrl = container.getConnectionUri();
     process.env.WORKFLOW_POSTGRES_URL = dbUrl;
@@ -28,6 +37,9 @@ if (process.platform === 'win32') {
   }, 120_000);
 
   afterAll(async () => {
+    if (previousSpecVersion === undefined)
+      delete process.env.WORKFLOW_SPEC_VERSION;
+    else process.env.WORKFLOW_SPEC_VERSION = previousSpecVersion;
     if (container) {
       await container.stop();
     }

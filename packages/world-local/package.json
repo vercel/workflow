@@ -26,7 +26,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run src",
+    "test": "vitest run --config=../../vitest.config.ts src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

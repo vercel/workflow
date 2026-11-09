@@ -28,9 +28,9 @@ import {
   describe,
   expect,
   type TestContext,
+  TestRunner,
   type test as vitestTest,
 } from 'vitest';
-import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
@@ -216,19 +216,19 @@ const wrapE2EHandler =
 /**
  * Drop-in `test` that wraps every handler with {@link wrapE2EHandler} and
  * then hands the call to the enclosing suite's own collector — exactly what
- * vitest's top-level `test` does (`getCurrentSuite().test.fn.call(this, …)`).
+ * vitest’s top-level `test` does (`TestRunner.getCurrentSuite().test.fn.call(this, …)`).
  *
- * Delegating rather than calling `getCurrentSuite().task()` directly is
- * load-bearing: the suite collector is where suite options are merged into
+ * Delegating rather than calling `TestRunner.getCurrentSuite().task()` directly
+ * is load-bearing: the suite collector is where suite options are merged into
  * each test (`Object.assign({}, suiteOptions, options)`), which is how
  * `describe.concurrent` reaches its tests. Calling `task()` directly skips
  * that merge, and the suite silently runs sequentially — caught in CI as
  * lanes matching the serial baseline minute-for-minute.
  *
- * Built on `createTaskCollector`, so the whole chainable surface (`.skip`,
+ * Built on `TestRunner.createTaskCollector`, so the whole chainable surface (`.skip`,
  * `.only`, `.each`, `.runIf`, `.sequential`, …) keeps working.
  */
-const test = createTaskCollector(function (
+const test = TestRunner.createTaskCollector(function (
   this: Record<string, unknown>,
   name: string,
   optionsOrFn?: unknown,
@@ -249,7 +249,12 @@ const test = createTaskCollector(function (
     handler = optionsOrFn as typeof handler;
   }
 
-  getCurrentSuite().test.fn.call(this, name, options, wrapE2EHandler(handler));
+  TestRunner.getCurrentSuite().test.fn.call(
+    this,
+    name,
+    options,
+    wrapE2EHandler(handler)
+  );
 }) as typeof vitestTest;
 
 const testJsOnly = isJsApp() ? test : test.skip;
