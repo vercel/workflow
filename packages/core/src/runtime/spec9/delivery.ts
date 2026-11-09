@@ -3487,12 +3487,15 @@ async function runDelivery(
       // Turbo: a suspension of only new inline steps starts
       // their bodies while their `step_created` commits.
       // Each body's `step_started` follows that commit, and
-      // its outcome follows the start. Anything with a
-      // background step, a wait or a step that failed to
+      // its outcome follows the start. A fan-out, with
+      // background steps beside the inline ones, does the same
+      // for its inline bodies (`optimisticFanOut` below).
+      // Anything with a wait or a step that failed to
       // serialize commits first, as without turbo.
       // A step that allows no retries starts only on a
       // durable `step_started` (see `mayRunBeforeItsStart`),
-      // so a boundary that creates one commits first.
+      // so a boundary that runs one inline commits first; a
+      // background one starts from its own message either way.
       const startsAhead = plan.steps.every((step) =>
         mayRunBeforeItsStart(step.stepName)
       );

@@ -607,6 +607,40 @@ describe('turbo fan-out on the node engine', () => {
     expect(order.filter((t) => t === 'step_completed')).toHaveLength(BRANCHES);
   });
 
+  it('commits a fan-out first when one of its inline steps allows no retries', async () => {
+    // The first branch takes an inline slot and must not run before its
+    // start is durable.
+    const mixed = `const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_once");
+      const branch = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_branch");
+      async function workflow(n) {
+        const out = await Promise.all([
+          once(0),
+          ...Array.from({ length: n }, (_, i) => branch(i)),
+        ]);
+        return out.reduce((a, b) => a + b, 0);
+      }${transform('workflow')}`;
+    // Hold the creation batch a while: an inline body that started ahead
+    // of it would run in the meantime.
+    let bodiesWhileHeld: number | undefined;
+    const { world, start } = await setup(mixed, [BRANCHES], {
+      fence: true,
+      async beforeCreate(data, _params, source) {
+        if (!source?.batch || data.eventType !== 'step_created') return;
+        if (bodiesWhileHeld !== undefined) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        bodiesWhileHeld = bodies.length;
+      },
+    });
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(1 + SUM);
+    expect(bodies).toHaveLength(BRANCHES + 1);
+    // No body ran before the boundary's creations were durable.
+    expect(bodiesWhileHeld).toBe(0);
+  });
+
   it('commits a fan-out first under WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
     process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
     const { world, start } = await setup(fanOut, [BRANCHES]);
