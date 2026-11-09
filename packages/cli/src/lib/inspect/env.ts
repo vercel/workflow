@@ -1,4 +1,5 @@
-import { access } from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { access, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
@@ -57,17 +58,79 @@ const possibleManifestPaths = [
   '.well-known/workflow/v1/manifest.json',
 ];
 
-async function findManifestPath(cwd: string) {
+// App directories a route-prefixed manifest can sit below, as
+// `<appDir>/<prefix>/.well-known/workflow/v1/manifest.json` (Next.js'
+// `workflows.experimentalRoutePrefix`).
+const prefixedManifestAppDirs = ['app', 'src/app'];
+
+const fileExists = (path: string) =>
+  access(path)
+    .then(() => true)
+    .catch(() => false);
+
+/**
+ * Every `.well-known/workflow/v1/manifest.json` below `appDir`, sorted.
+ *
+ * Mirrors the Next.js builder's stale-route sweep: it skips `node_modules`
+ * and dot directories, and stops at the first `.well-known`. The builder
+ * rejects route prefixes with `.`-prefixed segments, so a prefixed manifest
+ * is never hidden below one.
+ */
+export async function findPrefixedManifestPaths(
+  appDir: string
+): Promise<string[]> {
+  const found: string[] = [];
+  const visit = async (dir: string): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(
+      entries.map(async (entry) => {
+        if (!entry.isDirectory()) {
+          return;
+        }
+        if (entry.name === '.well-known') {
+          const manifest = join(dir, entry.name, 'workflow/v1/manifest.json');
+          if (await fileExists(manifest)) {
+            found.push(resolve(manifest));
+          }
+          return;
+        }
+        if (entry.name === 'node_modules' || entry.name.startsWith('.')) {
+          return;
+        }
+        await visit(join(dir, entry.name));
+      })
+    );
+  };
+  await visit(appDir);
+  return found.sort();
+}
+
+export async function findManifestPath(cwd: string) {
   for (const path of possibleManifestPaths) {
     const fullPath = join(cwd, path);
-    if (
-      await access(fullPath)
-        .then(() => true)
-        .catch(() => false)
-    ) {
+    if (await fileExists(fullPath)) {
       const absolutePath = resolve(fullPath);
       logger.debug('Found workflow manifest:', absolutePath);
       return absolutePath;
+    }
+  }
+
+  // No manifest at the app root: look for one generated below a route prefix.
+  for (const appDir of prefixedManifestAppDirs) {
+    const [first, ...rest] = await findPrefixedManifestPaths(join(cwd, appDir));
+    if (first) {
+      if (rest.length > 0) {
+        logger.debug(
+          `Found ${rest.length + 1} prefixed workflow manifests, using ${first}. Set WORKFLOW_MANIFEST_PATH to choose another.`
+        );
+      }
+      logger.debug('Found workflow manifest:', first);
+      return first;
     }
   }
 }

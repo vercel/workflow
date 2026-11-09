@@ -16,6 +16,12 @@ export type MockResponseDescriptor =
       toolName: string;
       input: string;
       result: Exclude<JsonValue, null>;
+      /**
+       * Text the model streams after the provider-executed result, in the same
+       * step. A step whose only tool calls are provider-executed ends the agent
+       * loop (as in AI SDK's `streamText`), so the final answer belongs here.
+       */
+      text?: string;
     };
 
 type MockStreamOptions = Parameters<MockLanguageModelV4['doStream']>[0];
@@ -104,9 +110,23 @@ class SerializableMockLanguageModel extends MockLanguageModelV4 {
                     toolName: response.toolName,
                     result: response.result,
                   },
+                  ...(response.text === undefined
+                    ? []
+                    : ([
+                        { type: 'text-start', id: `text-${responseIndex}` },
+                        {
+                          type: 'text-delta',
+                          id: `text-${responseIndex}`,
+                          delta: response.text,
+                        },
+                        { type: 'text-end', id: `text-${responseIndex}` },
+                      ] satisfies MockStreamPart[])),
                   {
                     type: 'finish',
-                    finishReason: { unified: 'tool-calls', raw: undefined },
+                    finishReason:
+                      response.text === undefined
+                        ? { unified: 'tool-calls', raw: undefined }
+                        : { unified: 'stop', raw: 'stop' },
                     usage,
                   },
                 ]

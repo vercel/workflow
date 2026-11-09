@@ -292,6 +292,33 @@ describe('request/reply', () => {
   });
 });
 
+describe('isConnected', () => {
+  // `run_started` takes HTTP while this is false (events-v4.ts), so it must
+  // not report a socket that is still connecting, or one that closed.
+  it('is false until the handshake completes, and false again once closed', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    expect(transport.isConnected()).toBe(false);
+
+    const { promise, socket } = await connectAndSend(transport);
+    expect(transport.isConnected()).toBe(true);
+    socket.deliver(ackFrame(1, 201));
+    await tick();
+    await promise;
+
+    socket.close();
+    await tick();
+    expect(transport.isConnected()).toBe(false);
+  });
+
+  it('is false while the socket is still connecting', async () => {
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const pending = transport.request(eventFrame);
+    void pending.catch(() => {});
+    await nextSocket();
+    expect(transport.isConnected()).toBe(false);
+  });
+});
+
 describe('large frames', () => {
   /** Byte equality without a deep diff, which is slow on multi-MiB arrays. */
   const sameBytes = (a: Uint8Array | undefined, b: Uint8Array) =>
