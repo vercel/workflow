@@ -1,9 +1,5 @@
 ---
 "@workflow/vitest": patch
----
-
----
-"@workflow/vitest": patch
 "@workflow/world-testing": patch
 ---
 
