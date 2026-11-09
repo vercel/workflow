@@ -171,7 +171,7 @@ To look at the data directly, open it with any SQLite client:
 sqlite3 .workflow-data/world.db "select seq, event_type, correlation_id from events where run_id = 'wrun_…' order by seq"
 ```
 
-Earlier releases stored one JSON file per entity (`runs/`, `events/`, `steps/`, `hooks/`, `.locks/` and so on). That data is not migrated, and it is not deleted either: the World leaves those directories where they are, does not read them, and starts with an empty database next to them. Delete them by hand once you no longer need them. Older releases do not read `world.db`, so runs created with this release are not visible after a downgrade, and a `world.db` written by a newer release is refused rather than read.
+Earlier releases stored one JSON file per entity (`runs/`, `events/`, `steps/`, `hooks/`, `.locks/` and so on). That data is not migrated, and it is not deleted either: the World leaves those directories where they are, does not read them, and starts with an empty database next to them. When `world.db` is created in a data directory that still holds them, the World says so once in the log, naming the directories. Delete them by hand once you no longer need them. Older releases do not read `world.db`, so runs created with this release are not visible after a downgrade, and a `world.db` written by a newer release is refused rather than read.
 
 The database needs a filesystem that supports SQLite's shared-memory file. A data directory on a network filesystem (NFS, SMB), or shared between a host and a container through a VM-backed mount, is not supported when more than one machine or VM writes to it.
 

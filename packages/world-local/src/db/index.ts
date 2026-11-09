@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { debugLog, globalSingleton } from '@workflow/utils';
+import { noticeLegacyData } from '../legacy-data.js';
 import { openRawDatabase, type RawDatabase, type Statement } from './driver.js';
 import { migrate } from './schema.js';
 
@@ -132,6 +133,7 @@ function retryWhileBusy<T>(fn: () => T): T {
 
 function open(file: string): Connection {
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  const created = !fs.existsSync(file);
   const raw = openRawDatabase(file);
   try {
     raw.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
@@ -157,6 +159,7 @@ function open(file: string): Connection {
     raw.close();
     throw error;
   }
+  if (created) noticeLegacyData(path.dirname(file));
   const connection: Connection = {
     file,
     raw,

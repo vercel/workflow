@@ -10,4 +10,4 @@ Store the Local World in one SQLite database (`<dataDir>/world.db`, opened with 
 - Reading a data directory that has no database yet (the CLI or web UI pointed at an app that has not run) reads it as empty, and creates nothing: the first write creates the directory and `world.db`.
 - Stream chunks are numbered in the transaction that writes them, so readers always get them in order.
 
-Requires Node.js 22.13 or later, or Bun. Local run data written by earlier releases is not migrated: it is left in place in the data directory, unread, and new runs start in an empty database. The first start after the upgrade says so once, naming the directories that can be deleted.
+Requires Node.js 22.13 or later, or Bun. Local run data written by earlier releases is not migrated: it is left in place in the data directory, unread, and new runs start in an empty database. The first write after the upgrade, which creates `world.db`, says so once, naming the directories that can be deleted.

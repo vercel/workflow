@@ -4,13 +4,13 @@ import {
   constants,
   mkdir,
   readFile,
-  stat,
   unlink,
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { debugLog, globalSingleton } from '@workflow/utils';
+import { legacyEntriesIn } from './legacy-data.js';
 
 /** Package name - hardcoded since it doesn't change */
 const PACKAGE_NAME = '@workflow/world-local';
@@ -322,37 +322,6 @@ async function writeVersionFile(
 }
 
 /**
- * What earlier releases stored as JSON files, one per entity. This release
- * stores everything in `world.db` and neither reads nor deletes them.
- */
-const LEGACY_ENTRIES = [
-  'runs',
-  'events',
-  'steps',
-  'hooks',
-  'waits',
-  'streams',
-  'snapshots',
-  '.locks',
-];
-
-async function legacyEntriesIn(dataDir: string): Promise<string[]> {
-  const found: string[] = [];
-  for (const entry of LEGACY_ENTRIES) {
-    try {
-      if ((await stat(path.join(dataDir, entry))).isDirectory()) {
-        found.push(entry);
-      }
-    } catch (error: unknown) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') continue;
-      throw error;
-    }
-  }
-  return found;
-}
-
-/**
  * @deprecated No longer thrown: `initDataDir` leaves the JSON data of
  * earlier releases in place and never refuses a data directory for it. Kept
  * so imports of it keep compiling.
@@ -403,23 +372,14 @@ export async function initDataDir(dataDir: string): Promise<void> {
   // Run data written by earlier releases (one JSON file per entity) is not
   // migrated, and not deleted either: it stays where it is, unread, for the
   // user to keep or remove. This release only uses `world.db`.
-  const legacy = await legacyEntriesIn(dataDir);
+  // (The upgrade notice is printed where world.db is created, see
+  // legacy-data.ts.)
+  const legacy = legacyEntriesIn(dataDir);
   if (legacy.length > 0) {
     debugLog(
       `[world-local] ${path.resolve(dataDir)} holds run data of an earlier release (${legacy.join(', ')}); it is left in place and not read`
     );
   }
-  // Said once, when the data directory moves to this version (the version
-  // file is rewritten then), so an upgrade explains why earlier runs are
-  // gone from the CLI and the web UI.
-  const noticeLegacy = () => {
-    if (legacy.length === 0) return;
-    console.info(
-      `[world-local] Runs recorded by an earlier version of @workflow/world-local are no longer read (this version keeps its data in ${path.join(path.resolve(dataDir), 'world.db')}), so the CLI and the web UI do not list them. ` +
-        `Their files are still in ${legacy.map((entry) => path.join(path.resolve(dataDir), entry)).join(', ')}, and can be deleted.`
-    );
-  };
-
   const packageInfo = await getPackageInfo();
   const currentVersion = parseVersion(packageInfo.version);
 
@@ -429,7 +389,6 @@ export async function initDataDir(dataDir: string): Promise<void> {
   if (existingVersionInfo === null) {
     // New data directory - write the current version
     await writeVersionFile(dataDir, currentVersion);
-    noticeLegacy();
     return;
   }
 
@@ -445,7 +404,6 @@ export async function initDataDir(dataDir: string): Promise<void> {
     upgradeVersion(oldVersion, currentVersion);
     // Upgrade succeeded - write the new version
     await writeVersionFile(dataDir, currentVersion);
-    noticeLegacy();
   } catch (error: unknown) {
     const suggestedVersion =
       error instanceof DataDirVersionError ? error.suggestedVersion : undefined;
