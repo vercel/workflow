@@ -263,16 +263,19 @@ describe('sim queue: receiving a delivery over HTTP', () => {
       [names.current.queueName]: TOPIC,
       [names.current.messageId]: 'msg_01HZ0000000000000000000000',
       [names.current.attempt]: '2',
-      [names.legacy.queueName]: TOPIC,
-      [names.legacy.messageId]: 'msg_01HZ0000000000000000000000',
-      [names.legacy.attempt]: '2',
+      [names.current.deliveryCount]: '4',
+      // The earlier names carry different values: none of them may win.
+      [names.legacy.queueName]: '__wkf_workflow_other',
+      [names.legacy.messageId]: 'msg_01HZ1111111111111111111111',
+      [names.legacy.attempt]: '7',
+      [names.legacy.deliveryCount]: '9',
     });
     expect(meta).toEqual([
       {
         queueName: TOPIC,
         messageId: 'msg_01HZ0000000000000000000000',
         attempt: 2,
-        deliveryCount: 2,
+        deliveryCount: 4,
       },
     ]);
   });
