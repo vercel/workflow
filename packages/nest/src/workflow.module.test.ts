@@ -373,7 +373,7 @@ describe('WorkflowModule world lifecycle', () => {
    * its own directory: `workflow` depends on `@workflow/nest`, so under a
    * strict node_modules layout a bare import from the package fails outright.
    */
-  function writeHostApp(): string {
+  function writeHostApp(queueAuthMode?: string): string {
     const dir = mkdtempSync(join(tmpdir(), 'wf-nest-app-'));
     const pkgDir = join(dir, 'node_modules', 'workflow');
     mkdirSync(pkgDir, { recursive: true });
@@ -395,12 +395,25 @@ describe('WorkflowModule world lifecycle', () => {
       `import { appendFileSync } from 'node:fs';
        const log = ${JSON.stringify(join(dir, 'calls.log'))};
        const world = {
+         queueAuthMode: ${JSON.stringify(queueAuthMode)},
          async start() { appendFileSync(log, 'start\\n'); },
          async close() { appendFileSync(log, 'close\\n'); },
        };
-       export async function getWorld() { return world; }`
+       export async function getWorld() { return world; }
+       export async function registerWorkflowHandler(route) {
+         appendFileSync(log, 'register ' + typeof route + '\\n');
+         return world.queueAuthMode === 'deny';
+       }`
     );
     return dir;
+  }
+  /** The built flow route, as `nest build` leaves it in the out dir. */
+  function writeFlowBundle(dir: string): void {
+    writeBundles(dir, ['steps.mjs', 'webhook.mjs']);
+    writeFileSync(
+      join(dir, 'workflows.mjs'),
+      'export const POST = async () => new Response(null);'
+    );
   }
 
   function calls(dir: string): string[] {
@@ -418,6 +431,8 @@ describe('WorkflowModule world lifecycle', () => {
 
   afterEach(() => {
     rmSync(appDir, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 
   function managed(): ResolvedWorkflowModuleOptions {
@@ -446,6 +461,102 @@ describe('WorkflowModule world lifecycle', () => {
     await module.onModuleInit();
     await module.onApplicationShutdown();
     expect(calls(appDir)).toEqual(['start', 'close']);
+  });
+
+  it('hands the flow route to a World that delivers in process, before starting it', async () => {
+    rmSync(appDir, { recursive: true, force: true });
+    appDir = writeHostApp('deny');
+    writeFlowBundle(appDir);
+    await moduleWith(managed()).onModuleInit();
+    expect(calls(appDir)).toEqual(['register function', 'start']);
+  });
+
+  it('registers on a Vercel deployment too; the World decides whether it takes the route', async () => {
+    vi.stubEnv('VERCEL', '1');
+    rmSync(appDir, { recursive: true, force: true });
+    appDir = writeHostApp('deny');
+    writeFlowBundle(appDir);
+    await moduleWith(managed()).onModuleInit();
+    expect(calls(appDir)).toEqual(['register function', 'start']);
+  });
+
+  it('does not load the bundle or register on a World that delivers over HTTP or by subscription', async () => {
+    for (const mode of ['loopback', 'skip', undefined]) {
+      rmSync(appDir, { recursive: true, force: true });
+      appDir = writeHostApp(mode);
+      writeFlowBundle(appDir);
+      await moduleWith(managed()).onModuleInit();
+      expect(calls(appDir)).toEqual(['start']);
+    }
+  });
+
+  it('fails startup when the World delivers in process and the route cannot be registered', async () => {
+    rmSync(appDir, { recursive: true, force: true });
+    appDir = writeHostApp('deny');
+    // No workflows.mjs: the bundle import fails.
+    writeBundles(appDir, ['steps.mjs', 'webhook.mjs']);
+    await expect(moduleWith(managed()).onModuleInit()).rejects.toThrow();
+    expect(calls(appDir)).toEqual([]);
+  });
+
+  /**
+   * An app whose `workflow` install has no `./runtime` entry: Node's own
+   * resolver refuses it, which is the one resolution failure that can be
+   * staged under the test runner (see the note below).
+   */
+  function writeAppWithoutRuntime(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wf-nest-noruntime-'));
+    const pkgDir = join(dir, 'node_modules', 'workflow');
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'host-app', version: '0.0.0' })
+    );
+    writeFileSync(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'workflow', version: '0.0.0', exports: {} })
+    );
+    writeFlowBundle(dir);
+    return dir;
+  }
+
+  it('fails startup when workflow/runtime cannot be resolved and the configuration names the Postgres World', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@workflow/world-postgres');
+    const dir = writeAppWithoutRuntime();
+    try {
+      const module = moduleWith({
+        ...resolveModuleOptions(
+          { workingDir: dir, outDir: dir, skipBuild: true },
+          {}
+        ),
+        preloadBundles: false,
+        manageWorldLifecycle: false,
+      });
+      await expect(module.onModuleInit()).rejects.toThrow(
+        /could not be resolved/
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stays quiet when workflow/runtime cannot be resolved and nothing points at an in-process World', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const dir = writeAppWithoutRuntime();
+    try {
+      const module = moduleWith({
+        ...resolveModuleOptions(
+          { workingDir: dir, outDir: dir, skipBuild: true },
+          {}
+        ),
+        preloadBundles: false,
+        manageWorldLifecycle: false,
+      });
+      await expect(module.onModuleInit()).resolves.toBeUndefined();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // The "workflow is not installed" branch is deliberately not covered here:

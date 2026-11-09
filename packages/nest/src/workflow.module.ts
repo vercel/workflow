@@ -222,11 +222,9 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
 
     // Before the World starts: a World that delivers in process (the
     // Postgres World) runs its worker only in a process that registered the
-    // flow route. Build Output deployments keep the bundles in dedicated
-    // functions, and the Vercel World delivers through its queue.
-    if (!process.env.VERCEL) {
-      await this.#registerFlowHandler();
-    }
+    // flow route. On any other World the registration does nothing, so this
+    // runs on every deployment, Vercel included.
+    await this.#registerFlowHandler();
 
     if (this.options.manageWorldLifecycle) {
       await this.#startWorld();
@@ -460,28 +458,46 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    * which does nothing on a World that delivers over HTTP or by
    * subscription). The controller serves the same bundle, so a Nest
    * restart in development (the usual watch mode) picks up a rebuilt route.
+   *
+   * A World that delivers in process runs no worker in this process until
+   * the route is registered, so once the World is known to be one, a
+   * failure is fatal: the app would start, create runs, and never run them.
+   * When `workflow/runtime` cannot be resolved the World cannot be asked;
+   * the failure is fatal when the configuration points at such a World
+   * (`WORKFLOW_TARGET_WORLD` names the Postgres World, or the module manages
+   * the World's lifecycle, which only a self-hosted World needs), and quiet
+   * otherwise: a Vercel or Local World app loses nothing.
    */
   async #registerFlowHandler(): Promise<void> {
+    let runtime: WorkflowRuntime;
     try {
-      const { getWorld, registerWorkflowHandler } = await loadRuntime(
+      runtime = await loadRuntime(
         this.options.workingDir,
         'The flow route is registered'
       );
-      // Only a World that delivers in process takes the route; on any other
-      // World the bundle is not loaded here (`preloadBundles` may, later).
-      if ((await getWorld()).queueAuthMode !== 'deny') return;
-      const bundle = (await import(
-        pathToFileURL(join(this.options.outDir, 'workflows.mjs')).href
-      )) as { POST: (req: Request) => Promise<Response> };
-      await registerWorkflowHandler(bundle.POST);
     } catch (error) {
-      console.error(
-        '[@workflow/nest] Could not register the flow route with the World; ' +
-          'a World that delivers in process (the Postgres World) runs no ' +
-          'worker in this process until it is registered.',
-        error instanceof Error ? error.message : error
+      if (this.#expectsInProcessWorld()) throw error;
+      return;
+    }
+    const { getWorld, registerWorkflowHandler } = runtime;
+    // Only a World that delivers in process takes the route; on any other
+    // World the bundle is not loaded here (`preloadBundles` may, later).
+    if ((await getWorld()).queueAuthMode !== 'deny') return;
+    const bundle = (await import(
+      pathToFileURL(join(this.options.outDir, 'workflows.mjs')).href
+    )) as { POST: (req: Request) => Promise<Response> };
+    if (!(await registerWorkflowHandler(bundle.POST))) {
+      throw new Error(
+        '[@workflow/nest] The World delivers in process but did not take the flow route; this process would run no jobs.'
       );
     }
+  }
+
+  #expectsInProcessWorld(): boolean {
+    return (
+      this.options.manageWorldLifecycle ||
+      (process.env.WORKFLOW_TARGET_WORLD ?? '').includes('postgres')
+    );
   }
 
   async #preloadBundles(): Promise<void> {
