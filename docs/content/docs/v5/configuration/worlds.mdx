@@ -62,6 +62,7 @@ The Local World is the default outside Vercel and is intended for development.
 - Environment variable: `WORKFLOW_LOCAL_DATA_DIR`
 - Default: `.workflow-data`
 - Directory where runs, steps, events, hooks, streams, and the local manifest are written.
+- Also holds the app's queue key (`queue-auth-key`), which the CLI and web UI read to send deliveries, so point them at the same directory. See [`WORKFLOW_QUEUE_AUTH`](/worlds/local#workflow_queue_auth).
 
 ### `baseUrl`
 
@@ -277,7 +278,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Factory option: none
 - CLI flag: none
 - Default: unset
-- Direct workflow-server URL override for testing or custom infrastructure. Normal deployments do not need it.
+- Direct Vercel World backend URL override for testing or custom infrastructure. Normal deployments do not need it.
 
 ### `VERCEL_QUEUE_MAX_DELAY_SECONDS`
 
@@ -295,7 +296,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: none
 - Default: `60000`
 - Clamp: `10000` to `120000` (values outside are clamped, with a warning)
-- Per-request timeout for Vercel World HTTP calls to workflow-server.
+- Per-request timeout for Vercel World HTTP calls to its backend.
 - At the `10000` floor the run-status long poll disables itself, because its budget is this value minus 10s of headroom.
 
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`

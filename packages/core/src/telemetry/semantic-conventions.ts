@@ -894,6 +894,15 @@ export const StepDeliveryReason = SemanticConvention<string>(
   'step.delivery.reason'
 );
 
+/**
+ * What a background step's delivery read to decide: `none` (a plain first
+ * delivery), `step_tail` (the step's latest event, which showed a retry not
+ * yet due) or `full_log` (the run's whole log).
+ */
+export const StepDeliveryLogRead = SemanticConvention<
+  'none' | 'step_tail' | 'full_log'
+>('step.delivery.log_read');
+
 /** The delay a `redeliver` delivery asked the queue for, in seconds. */
 export const StepDeliveryTimeoutSeconds = SemanticConvention<number>(
   'step.delivery.timeout_seconds'

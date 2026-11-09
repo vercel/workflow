@@ -587,6 +587,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       simQueue.getDeploymentId()
     ),
     queue: intercept('queue', simQueue.queue),
+    queueAuthMode: simQueue.queueAuthMode,
     createQueueHandler: simQueue.createQueueHandler,
     createRunId: () => ids.ulid(),
 

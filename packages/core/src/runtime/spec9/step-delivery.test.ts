@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   decideStepDelivery,
   firstDeliveryDecision,
+  mayBePendingRetry,
+  pendingRetryDecision,
   STEP_DELIVERY_STALL_WINDOW_MS,
   stepDeliveryNeedsLogRead,
   stepDeliveryStalled,
@@ -195,5 +197,72 @@ describe('stepDeliveryStalled', () => {
   it("ignores other steps' events", () => {
     const other = { ...at(WINDOW, 'step_started'), correlationId: 'step_b' };
     expect(stalled([at(0, 'step_created'), other], WINDOW + 1)).toBe(true);
+  });
+});
+
+describe('pendingRetryDecision', () => {
+  it('defers until a retryAfter still ahead, from the step retrying event alone', () => {
+    expect(
+      pendingRetryDecision(
+        ev('step_retrying', { retryAfter: new Date(NOW + 10_500) }),
+        NOW
+      )
+    ).toEqual({
+      action: 'redeliver',
+      timeoutSeconds: 11,
+      reason: 'retry-after',
+    });
+  });
+
+  it('accepts retryAfter as a string, as a lazily read event carries it', () => {
+    expect(
+      pendingRetryDecision(
+        ev('step_retrying', {
+          retryAfter: new Date(NOW + 2_000).toISOString(),
+        }),
+        NOW
+      )
+    ).toMatchObject({ action: 'redeliver', timeoutSeconds: 2 });
+  });
+
+  it('leaves every other case to the full log read', () => {
+    // Due, or past.
+    expect(
+      pendingRetryDecision(
+        ev('step_retrying', { retryAfter: new Date(NOW) }),
+        NOW
+      )
+    ).toBeUndefined();
+    // No retryAfter, or an unreadable one.
+    expect(pendingRetryDecision(ev('step_retrying'), NOW)).toBeUndefined();
+    expect(
+      pendingRetryDecision(ev('step_retrying', { retryAfter: 'soon' }), NOW)
+    ).toBeUndefined();
+    // Any other latest event: a start, an outcome, a creation, nothing.
+    for (const type of [
+      'step_started',
+      'step_completed',
+      'step_failed',
+      'step_created',
+    ]) {
+      expect(pendingRetryDecision(ev(type), NOW)).toBeUndefined();
+    }
+    expect(pendingRetryDecision(undefined, NOW)).toBeUndefined();
+  });
+});
+
+describe('mayBePendingRetry', () => {
+  it('tries the step read on a redelivery, an unknown count, or a retry moved to the background', () => {
+    expect(
+      mayBePendingRetry({ deliveryCount: 2, stepAttempt: undefined })
+    ).toBe(true);
+    expect(
+      mayBePendingRetry({ deliveryCount: undefined, stepAttempt: undefined })
+    ).toBe(true);
+    expect(mayBePendingRetry({ deliveryCount: 1, stepAttempt: 2 })).toBe(true);
+    // A re-sent message's first delivery: its step never started.
+    expect(
+      mayBePendingRetry({ deliveryCount: 1, stepAttempt: undefined })
+    ).toBe(false);
   });
 });

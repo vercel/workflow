@@ -29,6 +29,8 @@ import { stepCreationOf } from './log-state.js';
 import {
   decideStepDelivery,
   firstDeliveryDecision,
+  mayBePendingRetry,
+  pendingRetryDecision,
   type StepDeliveryDecision,
   stepDeliveryNeedsLogRead,
   stepDeliveryStalled,
@@ -139,7 +141,7 @@ export async function handleStepMessage(
   const maxRetries =
     getStepFunction(stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
-  const { log, decision, pastCap } = await readDeliveryDecision(
+  const { log, decision, pastCap, logRead } = await readDeliveryDecision(
     ctx,
     maxRetries
   );
@@ -159,6 +161,7 @@ export async function handleStepMessage(
     ...Attribute.StepId(stepId),
     ...Attribute.StepName(stepName),
     ...Attribute.StepDeliveryDecision(decision.action),
+    ...Attribute.StepDeliveryLogRead(logRead),
     ...('reason' in decision
       ? Attribute.StepDeliveryReason(decision.reason)
       : {}),
@@ -290,6 +293,7 @@ async function readDeliveryDecision(
   log: Event[] | undefined;
   decision: StepDeliveryDecision;
   pastCap?: { attempt: number; deliveries: number; maxDeliveries: number };
+  logRead: 'none' | 'step_tail' | 'full_log';
 }> {
   const { runId, payload, meta } = ctx;
   const { stepId, stepName } = payload;
@@ -317,7 +321,21 @@ async function readDeliveryDecision(
     return {
       log: undefined,
       decision: firstDeliveryDecision(payload.stepAttempt),
+      logRead: 'none',
     };
+  }
+  // A retry's early redelivery: the step's own latest event says the retry
+  // is not due yet, so it waits again without reading the whole log.
+  if (
+    mayBePendingRetry({
+      deliveryCount: meta.deliveryCount,
+      stepAttempt: payload.stepAttempt,
+    })
+  ) {
+    const deferred = await readPendingRetry(ctx);
+    if (deferred) {
+      return { log: undefined, decision: deferred, logRead: 'step_tail' };
+    }
   }
   const log = (
     await loadWorkflowRunEvents(runId, undefined, {
@@ -340,9 +358,37 @@ async function readDeliveryDecision(
       log,
       decision,
       pastCap: { attempt: decision.attempt, deliveries, maxDeliveries },
+      logRead: 'full_log',
     };
   }
-  return { log, decision };
+  return { log, decision, logRead: 'full_log' };
+}
+
+/**
+ * {@link pendingRetryDecision} from the step's latest event: one event,
+ * newest first, without payloads. `undefined` when the retry is not pending,
+ * or when the read fails: the caller reads the full log, as before.
+ */
+async function readPendingRetry(
+  ctx: StepMessageContext
+): Promise<StepDeliveryDecision | undefined> {
+  const { world, runId, payload } = ctx;
+  try {
+    const page = await world.events.listByCorrelationId({
+      correlationId: payload.stepId,
+      runId,
+      pagination: { sortOrder: 'desc', limit: 1 },
+      resolveData: 'none',
+    });
+    return pendingRetryDecision(page.data[0], Date.now());
+  } catch (error) {
+    runtimeLogger.debug('Pending-retry read failed; reading the full log', {
+      workflowRunId: runId,
+      stepId: payload.stepId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
 
 /**

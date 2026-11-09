@@ -41,40 +41,36 @@ import {
  * `errorCode` is a separate plaintext metadata field used for routing
  * and classification.
  */
-export const WorkflowRunWireBaseSchema = z.compile(
-  WorkflowRunBaseSchema.omit({
-    error: true,
-    errorCode: true,
-  }).extend({
-    error: z.union([SerializedDataSchema, z.any()]).optional(),
-    errorCode: z.string().optional(),
-    // Not part of the World interface, but passed through for direct consumers and debugging
-    blobStorageBytes: z.number().optional(),
-    streamStorageBytes: z.number().optional(),
-  })
-);
+export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
+  error: true,
+  errorCode: true,
+}).extend({
+  error: z.union([SerializedDataSchema, z.any()]).optional(),
+  errorCode: z.string().optional(),
+  // Not part of the World interface, but passed through for direct consumers and debugging
+  blobStorageBytes: z.number().optional(),
+  streamStorageBytes: z.number().optional(),
+});
 
 // Wire schema for resolved data (full input/output)
-const WorkflowRunWireSchema = z.compile(WorkflowRunWireBaseSchema);
+const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
 
 // Wire schema for lazy mode with refs instead of data
 // input/output can be Uint8Array (v2) or any JSON (legacy v1)
-const WorkflowRunWireWithRefsSchema = z.compile(
-  WorkflowRunWireBaseSchema.omit({
-    input: true,
-    output: true,
-  }).extend({
-    // We discard the results of the refs, so we don't care about the type here
-    inputRef: z.any().optional(),
-    outputRef: z.any().optional(),
-    // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
-    input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-    output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-    // Discarded by `filterRunData`: `resolveData: 'none'` never returns a
-    // dynamic run's code, whatever shape the backend sends it in.
-    dynamicWorkflowCode: z.any().optional(),
-  })
-);
+const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
+  input: true,
+  output: true,
+}).extend({
+  // We discard the results of the refs, so we don't care about the type here
+  inputRef: z.any().optional(),
+  outputRef: z.any().optional(),
+  // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
+  input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  // Discarded by `filterRunData`: `resolveData: 'none'` never returns a
+  // dynamic run's code, whatever shape the backend sends it in.
+  dynamicWorkflowCode: z.any().optional(),
+});
 
 // Overloaded function signatures for filterRunData
 function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
@@ -248,7 +244,7 @@ async function readRunOrNotFound(
 }
 
 /**
- * Issue one run read against workflow-server and normalize it into the World's
+ * Issue one run read against the backend and normalize it into the World's
  * `WorkflowRun` shape.
  *
  * `waitMs`, when set, targets the long-pollable `GET /v2/runs/:runId/status`
@@ -313,7 +309,7 @@ const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
 /**
  * Suppression deadline per base URL, because one process can hold worlds
  * pointed at different backends: the api.vercel.com proxy (with
- * `projectConfig`) and workflow-server directly resolve to different hosts,
+ * `projectConfig`) and the backend directly resolve to different hosts,
  * which can be on different versions. A miss against one must not disable the
  * fast path for the other. Bounded by construction: the key is the resolved
  * base URL, of which a process has a handful at most.
@@ -366,7 +362,7 @@ function isLongPollUnusable(error: WorkflowWorldError): boolean {
 }
 
 /**
- * Wait for a run to reach a terminal status, using workflow-server's
+ * Wait for a run to reach a terminal status, using the backend's
  * long-pollable `GET /v2/runs/:runId/status` route.
  *
  * Implements `Storage['runs'].waitForTerminalStatus`: resolves as soon as the
@@ -594,11 +590,9 @@ export async function cancelWorkflowRuns(
  * returns the post-merge attribute snapshot so callers don't need to
  * issue a follow-up read.
  */
-const ExperimentalSetAttributesResponseSchema = z.compile(
-  z.object({
-    attributes: z.record(z.string(), z.string()),
-  })
-);
+const ExperimentalSetAttributesResponseSchema = z.object({
+  attributes: z.record(z.string(), z.string()),
+});
 
 /**
  * Apply attribute changes to a workflow run. The body shape mirrors the

@@ -151,7 +151,7 @@ describe('pre-claimed inline pairs fit one batch chunk', () => {
   });
 
   it('stays inside the server batch transaction budget', () => {
-    // 100 DynamoDB transaction items per batch; a plain create costs 2
+    // 100 server transaction items per batch; a plain create costs 2
     // (entity + event row) and a pair 3, so a full chunk of plain creates is
     // the most expensive one.
     expect(2 * MAX_BATCH_FANOUT_EVENTS).toBeLessThanOrEqual(100);

@@ -62,6 +62,58 @@ export function firstDeliveryDecision(
 }
 
 /**
+ * The decision a delivery can take from the step's own latest event alone,
+ * before (and instead of) reading the run's full log: `redeliver` while that
+ * event is a `step_retrying` whose `retryAfter` is still ahead, else
+ * `undefined` (read the full log).
+ *
+ * A step that retries after a long `retryAfter` waits on one message that the
+ * queue redelivers early (world-vercel at least every 900 s), and each such
+ * delivery used to read the whole log to find the retry not yet due.
+ *
+ * The only decision it takes is to defer, and deferring stays safe on a stale
+ * or eventually consistent read:
+ * - A step's later `step_started`, outcome or retry is written only by a
+ *   delivery of this message that read the full log after `retryAfter`, so
+ *   while the latest `step_retrying` names a time still ahead nothing newer
+ *   can exist; and an older `step_retrying` always names a time already past
+ *   (its successor's start came after it), so it never defers.
+ * - A terminal run or step the read missed only delays the acknowledgement to
+ *   `retryAfter`, when the delivery reads the full log before anything else.
+ * - Past the delivery cap the full read would not fail the step either: a
+ *   pending `retryAfter` counts as activity (`stepDeliveryStalled`).
+ */
+export function pendingRetryDecision(
+  latestStepEvent: Event | undefined,
+  nowMs: number
+): StepDeliveryDecision | undefined {
+  if (latestStepEvent?.eventType !== 'step_retrying') return undefined;
+  const retryAfter = latestStepEvent.eventData?.retryAfter;
+  const retryAtMs = retryAfter ? new Date(retryAfter).getTime() : Number.NaN;
+  if (!Number.isFinite(retryAtMs) || retryAtMs <= nowMs) return undefined;
+  return {
+    action: 'redeliver',
+    timeoutSeconds: Math.max(1, Math.ceil((retryAtMs - nowMs) / 1000)),
+    reason: 'retry-after',
+  };
+}
+
+/**
+ * Whether a delivery that must read the log may first try
+ * {@link pendingRetryDecision}: one that may be a retry's early redelivery,
+ * a redelivery of the message (`deliveryCount` above 1, or unknown) or the
+ * first delivery of an inline step's retry moved to the background
+ * (`stepAttempt` above 1). A re-sent message's first delivery is for a step
+ * that never started, which has no retry to wait for.
+ */
+export function mayBePendingRetry(params: {
+  deliveryCount: number | undefined;
+  stepAttempt: number | undefined;
+}): boolean {
+  return params.deliveryCount !== 1 || (params.stepAttempt ?? 1) > 1;
+}
+
+/**
  * The decision for a delivery that read the run's full log. The rows of the
  * table, in order:
  *

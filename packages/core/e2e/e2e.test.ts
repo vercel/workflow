@@ -27,9 +27,9 @@ import {
   describe,
   expect,
   type TestContext,
+  TestRunner,
   type test as vitestTest,
 } from 'vitest';
-import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
@@ -215,19 +215,19 @@ const wrapE2EHandler =
 /**
  * Drop-in `test` that wraps every handler with {@link wrapE2EHandler} and
  * then hands the call to the enclosing suite's own collector — exactly what
- * vitest's top-level `test` does (`getCurrentSuite().test.fn.call(this, …)`).
+ * vitest’s top-level `test` does (`TestRunner.getCurrentSuite().test.fn.call(this, …)`).
  *
- * Delegating rather than calling `getCurrentSuite().task()` directly is
- * load-bearing: the suite collector is where suite options are merged into
+ * Delegating rather than calling `TestRunner.getCurrentSuite().task()` directly
+ * is load-bearing: the suite collector is where suite options are merged into
  * each test (`Object.assign({}, suiteOptions, options)`), which is how
  * `describe.concurrent` reaches its tests. Calling `task()` directly skips
  * that merge, and the suite silently runs sequentially — caught in CI as
  * lanes matching the serial baseline minute-for-minute.
  *
- * Built on `createTaskCollector`, so the whole chainable surface (`.skip`,
+ * Built on `TestRunner.createTaskCollector`, so the whole chainable surface (`.skip`,
  * `.only`, `.each`, `.runIf`, `.sequential`, …) keeps working.
  */
-const test = createTaskCollector(function (
+const test = TestRunner.createTaskCollector(function (
   this: Record<string, unknown>,
   name: string,
   optionsOrFn?: unknown,
@@ -248,7 +248,12 @@ const test = createTaskCollector(function (
     handler = optionsOrFn as typeof handler;
   }
 
-  getCurrentSuite().test.fn.call(this, name, options, wrapE2EHandler(handler));
+  TestRunner.getCurrentSuite().test.fn.call(
+    this,
+    name,
+    options,
+    wrapE2EHandler(handler)
+  );
 }) as typeof vitestTest;
 
 const testJsOnly = isJsApp() ? test : test.skip;
@@ -4062,8 +4067,8 @@ describe.concurrent('e2e', () => {
         // A finished victim gets no wake target from the local and postgres
         // Worlds (nothing for it to read; an invoke of a completed run only
         // races its own terminal write). Not asserted here: the deployed
-        // Vercel World gains the same behaviour with
-        // vercel/workflow-server#988, and until that is live it still hands
+        // Vercel World gains the same behaviour in a later backend release, and
+        // until that is live it still hands
         // the target back — harmlessly, as the server refuses a second
         // terminal write.
         await resumeHook(token, { message: 'after' });
@@ -4635,10 +4640,27 @@ describe.concurrent('e2e', () => {
     { timeout: 120_000 },
     async () => {
       const values = [1, 2, 3, 4];
+      const tokenPrefix = `fanout-${Math.random().toString(36).slice(2)}`;
       const run = await start(await e2e('awaitChildrenFanOutWorkflow'), [
         values,
+        tokenPrefix,
       ]);
       trackRun(run);
+
+      // The parent writes its safety-net sleep only once its completion hook
+      // is registered and its first status read of the children returned.
+      // The children are still gated then, so each one can only be answered
+      // by its resume of the hook. A child that finished earlier would resume
+      // a hook nobody registered yet (a no-op) and be answered by the read.
+      await waitForRunEvents(run.runId, (e) => e.eventType === 'wait_created', {
+        timeoutMs: 60_000,
+        description: "the parent's safety-net sleep",
+      });
+      for (const [i] of values.entries()) {
+        const token = `${tokenPrefix}:${i}`;
+        await resumeHook(await waitForHook(token), {});
+      }
+
       const returnValue = await run.returnValue;
       expect(returnValue.results).toEqual(values.map((v) => v * 2));
       for (const childRunId of returnValue.childRunIds) {
