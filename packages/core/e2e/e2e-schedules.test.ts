@@ -60,12 +60,14 @@ const runs =
   deploymentId;
 
 /**
- * The Schedules API query that selects this deployment's environment: none
- * for production, the custom environment, the Git branch of a Preview, or the
- * user (and branch) of a CLI deployment. See "Choose an environment" in the
- * Schedules HTTP API reference.
+ * The Schedules API queries that may select this deployment's environment,
+ * most specific first: none for production, the custom environment, the Git
+ * branch of a Preview, or the user (with and without the branch) of a CLI
+ * deployment. See "Choose an environment" in the Schedules HTTP API
+ * reference. A CLI deployment from a detached checkout reports `HEAD` as its
+ * branch, and its schedules live under the user alone.
  */
-async function scheduleScope(): Promise<Record<string, string>> {
+async function scheduleScopes(): Promise<Record<string, string>[]> {
   const res = await fetch(
     `https://api.vercel.com/v13/deployments/${deploymentId}?teamId=${teamId}`,
     { headers: { authorization: `Bearer ${token}` } }
@@ -78,7 +80,7 @@ async function scheduleScope(): Promise<Record<string, string>> {
   const deployment = (await res.json()) as {
     target?: string | null;
     source?: string;
-    customEnvironment?: { slug?: string; id?: string };
+    customEnvironment?: { slug?: string };
     meta?: {
       githubCommitRef?: string;
       gitlabCommitRef?: string;
@@ -86,20 +88,24 @@ async function scheduleScope(): Promise<Record<string, string>> {
     };
     creator?: { uid?: string };
   };
-  if (deployment.target === 'production') return {};
-  if (deployment.customEnvironment?.slug)
-    return { env: deployment.customEnvironment.slug };
+  if (deployment.target === 'production') return [{}];
+  if (deployment.customEnvironment?.slug) {
+    return [{ env: deployment.customEnvironment.slug }];
+  }
   const branch =
     deployment.meta?.githubCommitRef ??
     deployment.meta?.gitlabCommitRef ??
     deployment.meta?.bitbucketCommitRef;
-  if (deployment.source === 'git' && branch) return { branch };
+  if (deployment.source === 'git' && branch) return [{ branch }];
   const user = deployment.creator?.uid;
-  if (!user)
+  if (!user) {
     throw new Error(
       `Deployment ${deploymentId} has no creator to scope its schedules to`
     );
-  return branch ? { user, branch } : { user };
+  }
+  return branch && branch !== 'HEAD'
+    ? [{ user, branch }, { user }]
+    : [{ user }];
 }
 
 let scope: Record<string, string> = {};
@@ -131,7 +137,17 @@ describe.skipIf(!runs)('static schedules from experimental_schedule', () => {
 
   beforeAll(async () => {
     setupWorld(deploymentUrl);
-    scope = await scheduleScope();
+    // The first scope whose environment exists for the project.
+    const candidates = await scheduleScopes();
+    for (const candidate of candidates) {
+      scope = candidate;
+      try {
+        await schedulesApi('/v1/schedules', {});
+        break;
+      } catch (err) {
+        if (candidate === candidates.at(-1)) throw err;
+      }
+    }
   });
 
   test('the build emits the declaration as a static schedule on the workflow topic', async () => {
