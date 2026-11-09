@@ -9,6 +9,7 @@ import {
   type SvelteKitConfig,
   writeFileIfChanged,
 } from '@workflow/builders';
+import { setPendingSchedules } from './schedules-state.js';
 
 const SVELTEKIT_VIRTUAL_MODULES = [
   '$env/*', // All $env subpaths
@@ -105,6 +106,10 @@ export const POST = async ({request}) => {
     await writeFileIfChanged(workflowsRouteFile, workflowsRouteContent);
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
+
+    // Validated now so a bad declaration fails the build; written into the
+    // Vercel adapter's config.json when the process exits (index.ts).
+    setPendingSchedules(this.workflowSchedulesOf(manifest));
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow/+server.js');

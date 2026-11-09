@@ -29,6 +29,7 @@ export type { Serializable } from './schemas.js';
 export type {
   ScheduledRun,
   ScheduleJsonValue,
+  WorkflowSchedule,
 } from './runtime/schedule.js';
 export {
   type SetAttributesOptions,

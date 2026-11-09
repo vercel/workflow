@@ -1,11 +1,14 @@
 import { HookConflictError } from '@workflow/errors';
 import {
-  getQueueTopicPrefix,
-  resolveQueueNamespace,
   type ScheduleDeliveryPayload,
   ScheduleDeliveryPayloadSchema,
 } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
+import {
+  decodeScheduleTopicSuffix,
+  SCHEDULE_TOPIC_MARKER,
+  scheduleTopicForWorkflowName,
+} from '../schedule-topic.js';
 import { getMaxQueueDeliveries } from './constants.js';
 import {
   start,
@@ -28,94 +31,40 @@ import {
  * a redelivered message finds the run it already started.
  */
 
-/** What follows the queue prefix in every schedule topic. */
-const SCHEDULE_TOPIC_MARKER = 'schedule_';
-
-/** Every non-dynamic workflow name starts with it, so the topic leaves it out. */
-const WORKFLOW_NAME_PREFIX = 'workflow//';
-
 /** How long an occurrence's start token outlives its run: past any redelivery of its message. */
 const SCHEDULE_START_TOKEN_RETENTION = '7 days';
 
 /**
- * Characters a workflow name can hold that a schedule topic cannot. Topics
- * take letters, digits, `_` and `-`; `_` is the escape character, so it is
- * escaped too. `//` (between the module path and the export name) is the
- * common case and gets its own short form.
+ * A static schedule for a workflow, set at the top level of the workflow's
+ * file. The build reads it and emits a Vercel Schedule that starts the
+ * workflow, so the workflow needs no entry in `vercel.json`:
+ *
+ * ```ts
+ * export async function nightlyReport(run: ScheduledRun) {
+ *   'use workflow';
+ *   // ...
+ * }
+ * nightlyReport.experimental_schedule = {
+ *   cron: '0 2 * * *',
+ *   timezone: 'America/New_York',
+ * } satisfies WorkflowSchedule;
+ * ```
+ *
+ * Set an array for several schedules; each then needs a `name`. The value
+ * must be a literal: the build reads it without running the file.
  */
-const ESCAPES: ReadonlyArray<readonly [string, string]> = [
-  ['//', '__'],
-  ['_', '_u'],
-  ['/', '_s'],
-  ['.', '_d'],
-  ['@', '_a'],
-  ['(', '_o'],
-  [')', '_c'],
-  ['[', '_l'],
-  [']', '_r'],
-];
-const UNESCAPES = new Map(ESCAPES.map(([raw, escaped]) => [escaped[1], raw]));
-
-/**
- * The part of a schedule topic after `schedule_`: the workflow name without
- * its `workflow//` prefix and leading `./`, escaped to the characters a topic
- * allows. `workflow//./src/workflows/report//nightlyReport` becomes
- * `src_sworkflows_sreport__nightlyReport`. A name whose module path does not
- * start with `./` (a workflow from a package) is marked with a leading `_p`.
- * The mapping is reversible ({@link decodeScheduleTopicSuffix}).
- */
-export function encodeScheduleTopicSuffix(workflowName: string): string {
-  if (!workflowName.startsWith(WORKFLOW_NAME_PREFIX)) {
-    throw new Error(
-      `Workflow "${workflowName}" cannot be started from a schedule: only workflows compiled into the deployment have a schedule topic.`
-    );
-  }
-  let rest = workflowName.slice(WORKFLOW_NAME_PREFIX.length);
-  let marker = '';
-  if (rest.startsWith('./')) rest = rest.slice(2);
-  else marker = '_p';
-  let out = marker;
-  for (let i = 0; i < rest.length; ) {
-    const match = ESCAPES.find(([raw]) => rest.startsWith(raw, i));
-    if (match) {
-      out += match[1];
-      i += match[0].length;
-    } else if (/[A-Za-z0-9-]/.test(rest[i])) {
-      out += rest[i];
-      i++;
-    } else {
-      throw new Error(
-        `Workflow "${workflowName}" cannot be started from a schedule: its name holds "${rest[i]}", which a schedule topic cannot carry.`
-      );
-    }
-  }
-  return out;
-}
-
-/** The workflow name a schedule topic suffix encodes, or `undefined` when it encodes none. */
-export function decodeScheduleTopicSuffix(suffix: string): string | undefined {
-  let rest = suffix;
-  let modulePrefix = './';
-  if (rest.startsWith('_p')) {
-    rest = rest.slice(2);
-    modulePrefix = '';
-  }
-  let out = '';
-  for (let i = 0; i < rest.length; i++) {
-    const ch = rest[i];
-    if (ch === '_') {
-      const raw = UNESCAPES.get(rest[i + 1]);
-      if (raw === undefined) return undefined;
-      out += raw;
-      i++;
-    } else if (/[A-Za-z0-9-]/.test(ch)) {
-      out += ch;
-    } else {
-      return undefined;
-    }
-  }
-  if (!out) return undefined;
-  return `${WORKFLOW_NAME_PREFIX}${modulePrefix}${out}`;
+export interface WorkflowSchedule {
+  /** Five-field cron expression, evaluated in `timezone`. */
+  cron: string;
+  /** IANA timezone, such as `America/New_York`. Defaults to UTC. */
+  timezone?: string;
+  /** Jitter window in whole minutes, from 1 to 15. */
+  jitter?: number;
+  /**
+   * The schedule's name in the deployment. Defaults to the workflow's export
+   * name. Names identify a schedule across deployments, so keep them stable.
+   */
+  name?: string;
 }
 
 /**
@@ -192,11 +141,7 @@ export function scheduleTopic(
       `'scheduleTopic' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`
     );
   }
-  const prefix = getQueueTopicPrefix(
-    'workflow',
-    resolveQueueNamespace(options?.namespace)
-  );
-  return `${prefix}${SCHEDULE_TOPIC_MARKER}${encodeScheduleTopicSuffix(workflowName)}`;
+  return scheduleTopicForWorkflowName(workflowName, options?.namespace);
 }
 
 /**
@@ -318,3 +263,8 @@ export function scheduleStartToken(
 ): string {
   return `schedule:${delivery.scheduleId}:${delivery.executionId}`;
 }
+
+export {
+  decodeScheduleTopicSuffix,
+  encodeScheduleTopicSuffix,
+} from '../schedule-topic.js';

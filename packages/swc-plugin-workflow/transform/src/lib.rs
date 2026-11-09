@@ -43,6 +43,12 @@ enum WorkflowErrorKind {
         span: swc_core::common::Span,
         feature: &'static str,
     },
+    /// `fn.experimental_schedule = ...` that the build cannot read: not a
+    /// literal, or not on a workflow function of this file.
+    InvalidSchedule {
+        span: swc_core::common::Span,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -289,9 +295,102 @@ fn emit_error(error: WorkflowErrorKind) {
                 feature
             ),
         ),
+        WorkflowErrorKind::InvalidSchedule { span, reason } => (
+            span,
+            format!("`experimental_schedule` {}", reason),
+        ),
     };
 
     HANDLER.with(|handler| handler.struct_span_err(span, &msg).emit());
+}
+
+/// A JSON number, written as an integer when it is one (`5`, not `5.0`).
+fn json_number(value: f64) -> Option<serde_json::Value> {
+    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
+        return Some(serde_json::Value::Number((value as i64).into()));
+    }
+    serde_json::Number::from_f64(value).map(serde_json::Value::Number)
+}
+
+/// The property a workflow's static schedules are declared on.
+const SCHEDULE_PROPERTY: &str = "experimental_schedule";
+
+/// A literal `experimental_schedule` value as JSON, for the manifest. The
+/// build reads it without running the module, so only literals are accepted:
+/// strings (including template literals without substitutions), numbers,
+/// booleans, `null`, arrays and plain objects of them. TypeScript wrappers
+/// (`as const`, `satisfies T`, `as T`, `!`) and parentheses are looked through.
+fn schedule_literal_to_json(
+    expr: &Expr,
+) -> Result<serde_json::Value, (swc_core::common::Span, String)> {
+    use swc_core::common::Spanned;
+    let not_literal = |span: swc_core::common::Span| {
+        Err((
+            span,
+            "must be a literal (strings, numbers, booleans, arrays and objects), because the build reads it without running your code".to_string(),
+        ))
+    };
+    match expr {
+        Expr::Paren(e) => schedule_literal_to_json(&e.expr),
+        Expr::TsAs(e) => schedule_literal_to_json(&e.expr),
+        Expr::TsSatisfies(e) => schedule_literal_to_json(&e.expr),
+        Expr::TsConstAssertion(e) => schedule_literal_to_json(&e.expr),
+        Expr::TsNonNull(e) => schedule_literal_to_json(&e.expr),
+        Expr::TsTypeAssertion(e) => schedule_literal_to_json(&e.expr),
+        Expr::Lit(Lit::Str(s)) => Ok(serde_json::Value::String(
+            s.value.to_string_lossy().into_owned(),
+        )),
+        Expr::Lit(Lit::Num(n)) => json_number(n.value)
+            .ok_or_else(|| (n.span, "must not hold NaN or Infinity".to_string())),
+        Expr::Lit(Lit::Bool(b)) => Ok(serde_json::Value::Bool(b.value)),
+        Expr::Lit(Lit::Null(_)) => Ok(serde_json::Value::Null),
+        Expr::Unary(u) if u.op == UnaryOp::Minus => match &*u.arg {
+            Expr::Lit(Lit::Num(n)) => json_number(-n.value)
+                .ok_or_else(|| (n.span, "must not hold NaN or Infinity".to_string())),
+            _ => not_literal(u.span),
+        },
+        Expr::Tpl(t) if t.exprs.is_empty() && t.quasis.len() == 1 => {
+            let quasi = &t.quasis[0];
+            match &quasi.cooked {
+                Some(cooked) => Ok(serde_json::Value::String(
+                    cooked.to_string_lossy().into_owned(),
+                )),
+                None => not_literal(t.span),
+            }
+        }
+        Expr::Array(a) => {
+            let mut items = Vec::new();
+            for elem in &a.elems {
+                match elem {
+                    Some(ExprOrSpread { spread: None, expr }) => {
+                        items.push(schedule_literal_to_json(expr)?)
+                    }
+                    _ => return not_literal(a.span),
+                }
+            }
+            Ok(serde_json::Value::Array(items))
+        }
+        Expr::Object(o) => {
+            let mut map = serde_json::Map::new();
+            for prop in &o.props {
+                let PropOrSpread::Prop(prop) = prop else {
+                    return not_literal(o.span);
+                };
+                let Prop::KeyValue(kv) = &**prop else {
+                    return not_literal(prop.span());
+                };
+                let key = match &kv.key {
+                    PropName::Ident(i) => i.sym.to_string(),
+                    PropName::Str(s) => s.value.to_string_lossy().into_owned(),
+                    PropName::Num(n) => n.value.to_string(),
+                    _ => return not_literal(kv.key.span()),
+                };
+                map.insert(key, schedule_literal_to_json(&kv.value)?);
+            }
+            Ok(serde_json::Value::Object(map))
+        }
+        other => not_literal(other.span()),
+    }
 }
 
 // Helper function to detect similar strings (typos)
@@ -671,6 +770,9 @@ pub struct StepTransform {
     require_namespace_identifiers: HashSet<String>,
     // Track class names for the manifest (preserved copy before drain)
     classes_for_manifest: HashSet<String>,
+    // `fn.experimental_schedule = <literal>` at the top level of the module:
+    // the function's local name, the literal as JSON, and the assignment's span.
+    workflow_schedules: Vec<(String, serde_json::Value, swc_core::common::Span)>,
     // Spans of class expressions that were wrapped in a registration IIFE.
     // Dead-code elimination must keep any declaration whose initializer
     // contains one of these: the registration is a side effect of evaluating
@@ -2106,6 +2208,7 @@ impl StepTransform {
             serialization_symbol_identifiers: HashMap::new(),
             require_namespace_identifiers: HashSet::new(),
             classes_for_manifest: HashSet::new(),
+            workflow_schedules: Vec::new(),
             registered_class_expr_spans: HashSet::new(),
         }
     }
@@ -5166,6 +5269,96 @@ impl StepTransform {
     }
 
     // Generate metadata comment for the transformed file
+    /// The JSON of the `experimental_schedule` declared on a workflow's local
+    /// binding, for the manifest. Escaped so it cannot close the comment.
+    fn schedule_for(&self, binding: &str) -> Option<String> {
+        self.workflow_schedules
+            .iter()
+            .find(|(name, _, _)| name == binding)
+            .map(|(_, value, _)| value.to_string().replace("*/", "*\\u002f"))
+    }
+
+    /// Reads `fn.experimental_schedule = <literal>` statements at the top level
+    /// of the module. They stay in the output: assigning the property is
+    /// harmless at runtime, and the build reads the literal from the manifest.
+    fn collect_workflow_schedules(&mut self, module: &Module) {
+        for item in &module.body {
+            let ModuleItem::Stmt(Stmt::Expr(ExprStmt { expr, span })) = item else {
+                continue;
+            };
+            let Expr::Assign(assign) = &**expr else {
+                continue;
+            };
+            let AssignTarget::Simple(SimpleAssignTarget::Member(member)) = &assign.left else {
+                continue;
+            };
+            let MemberProp::Ident(prop) = &member.prop else {
+                continue;
+            };
+            if &*prop.sym != SCHEDULE_PROPERTY {
+                continue;
+            }
+            let Expr::Ident(target) = &*member.obj else {
+                emit_error(WorkflowErrorKind::InvalidSchedule {
+                    span: *span,
+                    reason: "must be set on a workflow function by name, like `myWorkflow.experimental_schedule = { cron: \"0 2 * * *\" }`".to_string(),
+                });
+                continue;
+            };
+            if assign.op != AssignOp::Assign {
+                emit_error(WorkflowErrorKind::InvalidSchedule {
+                    span: *span,
+                    reason: "must be set with `=`".to_string(),
+                });
+                continue;
+            }
+            let name = target.sym.to_string();
+            if self.workflow_schedules.iter().any(|(n, _, _)| *n == name) {
+                emit_error(WorkflowErrorKind::InvalidSchedule {
+                    span: *span,
+                    reason: format!(
+                        "is set more than once on `{}`. Set it once, to an array for several schedules",
+                        name
+                    ),
+                });
+                continue;
+            }
+            match schedule_literal_to_json(&assign.right) {
+                Ok(value) => self.workflow_schedules.push((name, value, *span)),
+                Err((span, reason)) => {
+                    emit_error(WorkflowErrorKind::InvalidSchedule { span, reason })
+                }
+            }
+        }
+    }
+
+    /// After the first pass: a schedule on a function that isn't one of this
+    /// file's workflows could never start anything, so it is an error.
+    fn check_workflow_schedules(&self) {
+        let workflow_bindings: HashSet<&str> = self
+            .workflow_function_names
+            .iter()
+            .map(|name| {
+                self.workflow_export_to_const_name
+                    .get(name)
+                    .map(|s| s.as_str())
+                    .unwrap_or(name.as_str())
+            })
+            .chain(self.workflow_function_names.iter().map(|s| s.as_str()))
+            .collect();
+        for (name, _, span) in &self.workflow_schedules {
+            if !workflow_bindings.contains(name.as_str()) {
+                emit_error(WorkflowErrorKind::InvalidSchedule {
+                    span: *span,
+                    reason: format!(
+                        "can only be set on an exported workflow function (\"use workflow\"), and `{}` is not one in this file",
+                        name
+                    ),
+                });
+            }
+        }
+    }
+
     fn generate_metadata_comment(&self) -> String {
         let mut metadata = std::collections::HashMap::new();
 
@@ -5239,7 +5432,17 @@ impl StepTransform {
                         actual_name
                     };
                     let workflow_id = self.create_id(Some(id_name), DUMMY_SP, true);
-                    format!("\"{}\":{{\"workflowId\":\"{}\"}}", fn_name_str, workflow_id)
+                    // A static schedule declared on the function's local binding.
+                    match self.schedule_for(actual_name) {
+                        Some(schedule) => format!(
+                            "\"{}\":{{\"workflowId\":\"{}\",\"schedule\":{}}}",
+                            fn_name_str, workflow_id, schedule
+                        ),
+                        None => format!(
+                            "\"{}\":{{\"workflowId\":\"{}\"}}",
+                            fn_name_str, workflow_id
+                        ),
+                    }
                 })
                 .collect();
 
@@ -6234,6 +6437,10 @@ impl StepTransform {
 
 impl VisitMut for StepTransform {
     fn visit_mut_program(&mut self, program: &mut Program) {
+        if let Program::Module(module) = &*program {
+            self.collect_workflow_schedules(module);
+        }
+
         if self.mode == TransformMode::Step && ExplicitTildeStepDetector::detect(program) {
             self.reserved_step_names = self.step_name_reservations(program);
         }
@@ -6262,6 +6469,7 @@ impl VisitMut for StepTransform {
 
         // First pass: collect step functions
         program.visit_mut_children_with(self);
+        self.check_workflow_schedules();
 
         if let Some(step_mode) = detect_step_mode {
             self.step_function_names = step_mode.step_function_names;

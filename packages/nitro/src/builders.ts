@@ -3,6 +3,7 @@ import {
   BaseBuilder,
   createBaseBuilderConfig,
   VercelBuildOutputAPIBuilder,
+  writeBuildOutputSchedules,
 } from '@workflow/builders';
 import type { Nitro } from 'nitro/types';
 import { join } from 'pathe';
@@ -59,11 +60,15 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
     const newConfig = JSON.parse(await readFile(configPath, 'utf-8'));
     originalConfig.routes.unshift(...newConfig.routes);
     await writeFile(configPath, JSON.stringify(originalConfig, null, 2));
+    // The workflows' `experimental_schedule` declarations, on nitro's config.
+    await writeBuildOutputSchedules(configPath, this.workflowSchedules);
   }
 }
 
 export class LocalBuilder extends BaseBuilder {
   #outDir: string;
+  /** The schedules of the last completed build, for the Vercel preset. */
+  schedules: Record<string, unknown> = {};
   constructor(nitro: Nitro) {
     const outDir = join(nitro.options.buildDir, 'workflow');
     super({
@@ -172,5 +177,6 @@ export class LocalBuilder extends BaseBuilder {
       manifestDir: this.#outDir,
       manifest,
     });
+    this.schedules = this.workflowSchedulesOf(manifest);
   }
 }

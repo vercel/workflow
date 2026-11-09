@@ -35,6 +35,8 @@ export type WorkflowManifest = {
     [relativeFileName: string]: {
       [functionName: string]: {
         workflowId: string;
+        /** The literal `experimental_schedule` set on the workflow, unvalidated (see schedules.ts). */
+        schedule?: unknown;
       };
     };
   };

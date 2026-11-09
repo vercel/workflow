@@ -45,6 +45,10 @@ import {
 } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
+import {
+  type BuildOutputSchedules,
+  collectWorkflowSchedules,
+} from './schedules.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
@@ -242,6 +246,23 @@ export abstract class BaseBuilder {
 
   protected get moduleSpecifierRoot(): string {
     return this.config.moduleSpecifierRoot || this.transformProjectRoot;
+  }
+
+  /**
+   * The Build Output schedules of the workflows' `experimental_schedule`
+   * declarations in `manifest` (see schedules.ts), with symlinked workflow
+   * files read once. Throws a `WorkflowScheduleError` for an invalid one.
+   */
+  protected workflowSchedulesOf(
+    manifest: WorkflowManifest | undefined
+  ): BuildOutputSchedules {
+    return collectWorkflowSchedules(manifest ?? {}, {
+      roots: [
+        this.moduleSpecifierRoot,
+        this.transformProjectRoot,
+        this.config.workingDir,
+      ],
+    });
   }
 
   protected logBaseBuilderInfo(...args: unknown[]): void {

@@ -233,7 +233,10 @@ export async function getNextBuilderEager(
 
       await writeManifest(combinedResult?.manifest);
 
-      await this.writeFunctionsConfig(workflowGeneratedDir);
+      await this.writeFunctionsConfig(
+        workflowGeneratedDir,
+        combinedResult?.manifest
+      );
 
       if (this.config.watch) {
         // TODO: implement watch mode for combined bundle
@@ -931,11 +934,19 @@ export async function getNextBuilderEager(
      * `flow/route.js`), which is where the Vercel Next.js builder reads the
      * `workflows` options from, including under a route prefix.
      */
-    private async writeFunctionsConfig(workflowGeneratedDir: string) {
+    private async writeFunctionsConfig(
+      workflowGeneratedDir: string,
+      manifest: WorkflowManifest | undefined
+    ) {
       // we don't run this in development mode as it's not needed
       if (process.env.NODE_ENV === 'development') {
         return;
       }
+
+      // The workflows' `experimental_schedule` declarations, as Build Output
+      // schedules. The Vercel Next.js builder returns them with the build
+      // result, next to the routes and functions it reads from here.
+      const schedules = this.workflowSchedulesOf(manifest);
 
       // V2 combined config: single trigger handles both workflow and step execution.
       // The step route no longer needs its own trigger since steps are executed
@@ -946,6 +957,7 @@ export async function getNextBuilderEager(
           maxDuration: 'max',
           experimentalTriggers: [getWorkflowQueueTrigger()],
         },
+        ...(Object.keys(schedules).length > 0 ? { schedules } : {}),
       };
 
       await writeFileIfChanged(

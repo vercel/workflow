@@ -94,6 +94,32 @@ function isRelativeImportInsideWorkflowPackage(
   );
 }
 
+/**
+ * Adds schedules to the vercel preset's `config`, which it merges into
+ * `.vercel/output/config.json`. A name the app's own `vercel.config` already
+ * uses is an error, as it would be across vercel.json and the build.
+ */
+function addVercelSchedules(
+  nitro: Nitro,
+  schedules: Record<string, unknown>
+): void {
+  if (Object.keys(schedules).length === 0) return;
+  nitro.options.vercel ??= {};
+  // The preset's config type has no `schedules` yet; it merges the object as is.
+  const vercel = nitro.options.vercel as { config?: Record<string, unknown> };
+  vercel.config ??= {};
+  const config = vercel.config;
+  const existing = (config.schedules ?? {}) as Record<string, unknown>;
+  for (const name of Object.keys(schedules)) {
+    if (name in existing) {
+      throw new Error(
+        `Invalid experimental_schedule: the schedule name "${name}" is also set in your nitro \`vercel.config.schedules\`. Set a different \`name\`.`
+      );
+    }
+  }
+  config.schedules = { ...existing, ...schedules };
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -280,6 +306,13 @@ export default {
 
       nitro.hooks.hook('build:before', async () => {
         await builder.build();
+
+        // Nitro v3+ Vercel deploy: the workflows' `experimental_schedule`
+        // declarations, as Build Output schedules. The vercel preset merges
+        // `vercel.config` into `.vercel/output/config.json`.
+        if (isVercelDeploy) {
+          addVercelSchedules(nitro, builder.schedules);
+        }
 
         // For prod: write the manifest handler file with inlined content
         // now that the builder has generated the manifest. Rollup will

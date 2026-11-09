@@ -20,7 +20,7 @@ scheduleTopic(nightlyReport); // [!code highlight]
 // "__wkf_workflow_schedule_workflows_snightly-report__nightlyReport"
 ```
 
-Use the topic as a static schedule's `topic` in `vercel.json`:
+For a static schedule, set [`experimental_schedule`](/docs/api-reference/workflow/experimental-schedule) on the workflow instead: the build emits the schedule with this topic, so you never write it. To declare the schedule in `vercel.json` yourself, use the topic as its `topic`:
 
 ```json title="vercel.json"
 {

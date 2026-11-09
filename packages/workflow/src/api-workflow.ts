@@ -28,6 +28,7 @@ export const scheduleTarget = () => workflowStub('scheduleTarget');
 export type {
   ScheduledRun,
   ScheduleJsonValue,
+  WorkflowSchedule,
 } from '@workflow/core/runtime/schedule';
 export const registerLifecycleHooks = () => {
   throw new Error(

@@ -45,6 +45,7 @@ export {
 export {
   type ScheduledRun,
   type ScheduleJsonValue,
+  type WorkflowSchedule,
   scheduleTarget,
   scheduleTopic,
 } from '@workflow/core/runtime/schedule';

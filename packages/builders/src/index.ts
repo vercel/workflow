@@ -51,6 +51,14 @@ export {
   type SerdeCheckResult,
   type SerdeClassCheckResult,
 } from './serde-checker.js';
+export {
+  type BuildOutputSchedule,
+  type BuildOutputSchedules,
+  collectWorkflowSchedules,
+  WorkflowScheduleError,
+  writeBuildOutputSchedules,
+  writeBuildOutputSchedulesSync,
+} from './schedules.js';
 export { StandaloneBuilder } from './standalone.js';
 export {
   createSwcPlugin,
