@@ -32,6 +32,8 @@ Load this file when the source pauses for Signals, `step.waitForEvent()`, or `.w
 - App boundary must call `resumeHook()`.
 - Use a deterministic business token.
 - Do not emit `createWebhook()` or `webhook.url`.
+- `resumeHook()` is not available in workflow context. When one workflow signals another (Temporal `signalExternalWorkflow`, Inngest `step.sendEvent()` to a waiting run), call `resumeHook()` inside a `"use step"` function.
+- If a newer run must take over a token an older run still holds (for example a restarted conversation), use `createHook({ token, experimental_force: true })`; the older run's `await hook` rejects with `HookForceClaimedError`.
 
 ### `resume/url/default`
 

@@ -1,9 +1,9 @@
 ---
 name: migrating-to-workflow-sdk
-description: Migrates Temporal, Inngest, Trigger.dev, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), Trigger.dev tasks / wait.forToken / triggerAndWait, ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
+description: Migrates Temporal, Inngest, Trigger.dev, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), Trigger.dev tasks / wait.forToken / triggerAndWait, ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows. For Inngest, runs the `workflow migrate inngest` codemod first and finishes what it leaves as TODOs.
 metadata:
   author: Vercel Inc.
-  version: '0.3.0'
+  version: '0.4.0'
 ---
 
 # Migrating to the Workflow SDK
@@ -14,7 +14,7 @@ Use this skill when converting an existing orchestration system to the Workflow 
 
 1. Identify the source system:
    - Temporal
-   - Inngest
+   - Inngest -> if you can run commands in the project, run `npx workflow migrate inngest --report inngest-migration.md` first (see `references/inngest.md` -> `## Start with the codemod`), then migrate only what it marked `TODO(workflow-migrate)` and the app-boundary calls its report lists
    - Trigger.dev
    - AWS Step Functions
 2. Identify the target runtime:
@@ -40,7 +40,9 @@ Use this skill when converting an existing orchestration system to the Workflow 
   - `resume/url/manual` -> `createWebhook({ respondWith: 'manual' })` only when the prompt explicitly requires a custom response body, status, or headers.
   - If a callback-URL prompt does not specify response semantics, default to `resume/url/default` and make the assumption explicit in `## Open Questions`.
 - Never pair `createWebhook()` with `resumeHook()`, and never pass `token:` to `createWebhook()`.
-- Wrap `start()` and `getRun()` inside `"use step"` functions for child runs.
+- Call `start()` directly in the workflow for child runs, keep the returned `Run`, and `await run.returnValue` for the result. Call `getRun()` only inside a `"use step"` function.
+- When `step.run()`-style closures become `"use step"` functions, pass every variable the closure read from the enclosing function as an argument. A closure that assigns to such a variable must return the new value instead.
+- For duplicate-start protection (Inngest `idempotency`, Trigger.dev `idempotencyKey`, Temporal workflow IDs), use `start(wf, args, { experimental_hook: { token } })`.
 - Use `getStepMetadata().stepId` as the idempotency key for external writes.
 - Use `getWritable()` in workflow context to obtain the stream, but interact with it (write, close) only inside `"use step"` functions.
 - Prefer rollback stacks for multi-step compensation.
@@ -78,7 +80,7 @@ Before drafting `## Migrated Code`, write the selected route keys in `## Migrati
 
 ## Shared references
 
-- `references/shared-patterns.md`: Reusable code templates for hooks, child workflows, idempotency, streaming, and rollback.
+- `references/shared-patterns.md`: Reusable code templates for hooks, child workflows, idempotent starts, attributes, cancellation, streaming, and rollback.
 - `references/runtime-targets.md`: Managed vs. custom `World` guidance.
 - `references/resume-routing.md`: Route-key selection, obligations, and exact `## Migration Plan` shape.
 - `references/retries.md`: Canonical retry mechanics, including `stepFn.maxRetries`, `RetryableError({ retryAfter })`, and `FatalError`.
@@ -108,7 +110,9 @@ Fail the draft if any of these are true:
 - [ ] Side effects remain in workflow context
 - [ ] `sleep()` appears inside a step
 - [ ] Stream interaction (`getWriter()`, `write()`, `close()`) appears inside a workflow function
-- [ ] Child workflows call `start()` / `getRun()` directly from workflow context
+- [ ] Child workflows wrap `start()` in a step or poll for the result, instead of calling `start()` in the workflow and awaiting `run.returnValue`
+- [ ] `getRun()` is called in workflow context
+- [ ] A lifted step closure reads a variable from the enclosing function that is not passed as an argument
 - [ ] External writes omit idempotency keys
 - [ ] Hooks/webhooks are missing where the source used signals, waitForEvent, or task tokens
 - [ ] A callback-URL flow uses `createHook()` + `resumeHook()` instead of `createWebhook()`

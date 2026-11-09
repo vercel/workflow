@@ -22,10 +22,12 @@ workbench/vitest/
 │   ├── simple.ts          # Basic workflow with arithmetic steps
 │   ├── sleeping.ts        # Workflows with sleep() calls
 │   ├── hooks.ts           # Workflow with createHook() for external data
+│   ├── inngest-migrated.ts # Output of `workflow migrate inngest` (generated)
 │   └── webhook.ts         # Workflow with createWebhook() for HTTP payloads
 ├── test/
 │   ├── workflow.test.ts      # Integration tests for all workflow types
 │   ├── workflow-refs.test.ts # Looking workflows up by name from the manifest
+│   ├── inngest-migrated.test.ts # Runs the Inngest codemod's output
 │   └── mock.test.ts          # What vi.mock() does and does not reach
 ├── vitest.config.ts       # Vitest config with workflow() plugin
 ├── MOCKING.md             # How vi.mock() behaves under the plugin, and why
@@ -40,4 +42,5 @@ workbench/vitest/
 - **Hook workflow**: `waitForHook()` → `resumeHook()` with approval/rejection
 - **Webhook workflow**: `waitForHook()` → `resumeWebhook()` with Request payload
 - **Workflow references**: `getWorkflowRef()` / `listWorkflowRefs()` read from the test build's manifest
+- **Inngest codemod output**: the workflow `workflow migrate inngest` generates from `packages/cli/tests/fixture/inngest/order` runs its lifted steps, resumes on the `waitForEvent()` token, times out, and fails on `NonRetriableError`
 - **Mocking**: `vi.mock()` reaching (and not reaching) step and workflow code, see [MOCKING.md](./MOCKING.md)

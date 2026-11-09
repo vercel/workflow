@@ -7,6 +7,7 @@ prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/foundations/hooks
+  - /docs/foundations/idempotency
   - /docs/foundations/streaming
   - /docs/ai
 ---
@@ -27,6 +28,8 @@ related:
 | **Where execution runs** | Orchestration + execution co-located on your platform | **Your code runs on your infrastructure**; Inngest invokes it per step over HTTP (Serve) or a persistent worker connection (Connect, in public beta) |
 | **Languages** | TypeScript / JavaScript (Python beta) | TypeScript; Python and Go (production, pre-1.0) |
 | **Versioning** | Runs pinned to immutable deployment | Tracked by step-ID hashes: hot-edit functions, but editing a step's logic under the **same ID** reuses the old memoized result for in-flight runs; rename the ID or route a new function by timestamp for rewrites |
+| **Duplicate starts** | `start(workflow, args, { experimental_hook: { token } })` admits one run per token, with an optional retention after the run ends | `idempotency` key (24-hour window) or `singleton` |
+| **Searching runs** | String [attributes](/docs/observability/attributes) set with `setAttributes()` or at `start()`, filterable by `key=value` | Search by event payload in the Inngest dashboard |
 | **AI & streaming** | `WorkflowAgent` in the AI SDK; native resumable streaming | Native AI SDK via `step.ai.wrap`; **AgentKit** multi-agent framework and durable **Realtime** (`step.realtime.publish`) + `useAgent` hook, both Developer Preview |
 | **Security** | Zero-config per-run end-to-end (E2E) encryption by default; platform security is per World (the Vercel World inherits Vercel's security posture) | Runs on your infrastructure; signed requests; first-party E2E encryption middleware (TypeScript and Python); SOC 2 Type II, HIPAA add-on |
 | **Portability** | Apache-2.0; World abstraction; **self-host supported** | Engine open source (Server Side Public License); self-host via single Go binary + Postgres, but **self-hosting is community/best-effort**: no support service-level agreement, and the `inngest start` binary is Beta (the hosted service is the default) |
@@ -39,7 +42,9 @@ related:
 
 Inngest's engine lives outside your code and calls your functions step-by-step over HTTP (or a Connect worker). That keeps your code on your own infrastructure for portability and data locality, but adds a network round trip per step. This overhead matters for workflows with many small sequential steps. The Workflow SDK co-locates orchestration and execution on one platform, so steps don't require a per-step HTTP request.
 
-Triggering also differs. Inngest is event-driven (publishers `send` events; functions subscribe), which supports loosely coupled fan-out. The Workflow SDK's `start()` imports the workflow function directly, providing tighter coupling and stronger type safety. For event-bus-style fan-out, wrap `start()` in a shared publisher.
+Since v5, one invocation also runs as many steps as it can in a single pass, several of them in parallel, and only hands back to the queue for a wait, a hook, or when the function nears its time limit. A chain of small steps therefore costs a few invocations rather than one per step. See [Performance](/docs/performance) for the benchmarks.
+
+Triggering also differs. Inngest is event-driven (publishers `send` events; functions subscribe), which supports loosely coupled fan-out. The Workflow SDK's `start()` imports the workflow function directly, providing tighter coupling and stronger type safety. For event-bus-style fan-out, wrap `start()` in a shared publisher. A run can also call `start()` itself to spawn a child run, without wrapping it in a step.
 
 ## Versioning
 
@@ -53,40 +58,134 @@ Inngest offers `step.ai.wrap()` (wrap Vercel AI SDK calls as durable steps), **A
 
 ## Migrating from Inngest
 
-| Inngest | Workflow SDK | Note |
-| --- | --- | --- |
-| `inngest.createFunction()` | `"use workflow"` function started with `start()` | No factory or event binding. |
-| `step.run()` | `"use step"` function | Named async function with Node.js access. |
-| `step.sleep()` / `step.sleepUntil()` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
-| `step.waitForEvent()` | `createHook()` / `createWebhook()` | Token encodes the routing; no event schema. |
-| `step.invoke()` | [`start()`](/docs/foundations/starting-workflows) called directly from the workflow | Spawn a child run. |
-| `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
-| Retry config (`retries`) / `RetryAfterError` | `maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. For custom backoff via `retryAfter`, see [Errors & Retrying](/docs/foundations/errors-and-retries#customize-retry-behavior). |
-| `step.realtime.publish()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
+### Run the codemod
 
-The `createFunction` factory collapses into a plain exported function:
+The `workflow` CLI includes a codemod that does the mechanical part of a migration. Run it from your project root, on a clean working tree so its changes are easy to review:
 
-```typescript title="workflows/order.ts"
-export async function processOrder(orderId: string) {
-  'use workflow'; // [!code highlight]
-  const order = await loadOrder(orderId);
-  return { orderId: order.id, status: 'completed' };
-}
-
-async function loadOrder(orderId: string) {
-  'use step'; // [!code highlight]
-  const res = await fetch(`https://example.com/api/orders/${orderId}`);
-  return res.json() as Promise<{ id: string }>;
-}
+```bash
+npx workflow migrate inngest
 ```
 
+It reads the project's `tsconfig.json` to find the files to migrate, and uses the project's own TypeScript. Pass paths to limit it (`npx workflow migrate inngest src/inngest`), `--dry-run` to see what would change without writing anything, and `--report <file>` to write a Markdown report. See [`workflow migrate`](/docs/configuration/cli-and-web-ui#migrate-from-inngest) for every flag.
+
+The main job is lifting each `step.run()` closure into a named `"use step"` function. A closure can read anything in scope, but a step function only gets its arguments, because they are recorded in the event log. So the codemod finds every variable the closure reads from the handler (the event, earlier step results, loop variables), makes each one a parameter of the new step function, and passes it at the call site. It lists the captured variables of every step it lifts, so you can check that each one is [serializable](/docs/foundations/serialization). Variables declared at module scope, such as imports and constants, stay visible to a module-level step and are not passed.
+
+{/* @skip-typecheck: Inngest code, the input of the codemod */}
+```typescript title="inngest/functions.ts (before)"
+import { inngest } from './client';
+import { userActive, userSignup } from './events';
+import { db, email } from './services';
+
+export const onboardUser = inngest.createFunction(
+  { id: 'onboard-user', retries: 5, triggers: [userSignup] },
+  async ({ event, step }) => {
+    const user = await step.run('create-user', () =>
+      db.users.create({ id: event.data.userId, email: event.data.email })
+    );
+
+    await step.sleep('wait-a-day', '1d');
+
+    const activity = await step.waitForEvent('wait-for-activity', {
+      event: userActive,
+      timeout: '7d',
+      match: 'data.userId',
+    });
+
+    await step.run('send-follow-up', () =>
+      email.send(user.email, activity ? 'tips' : 'nudge')
+    );
+  }
+);
+```
+
+```typescript title="inngest/functions.ts (after, formatted)"
+import { createHook, sleep } from 'workflow';
+declare const db: { users: { create(user: { id: string; email: string }): Promise<{ id: string; email: string }> } }; // @setup
+declare const email: { send(to: string, template: string): Promise<void> }; // @setup
+
+export async function onboardUser(event: {
+  data: { userId: string; email: string };
+}) {
+  'use workflow';
+  const user = await createUser(event); // [!code highlight]
+
+  await sleep('1d');
+
+  const activity = await Promise.race([
+    createHook({ token: `app/user.active:${event.data.userId}` }), // [!code highlight]
+    sleep('7d').then(() => null),
+  ]);
+
+  await sendFollowUp(user, activity); // [!code highlight]
+}
+
+async function createUser(event: { data: { userId: string; email: string } }) {
+  'use step';
+  return db.users.create({ id: event.data.userId, email: event.data.email });
+}
+createUser.maxRetries = 5;
+
+async function sendFollowUp(user: { id: string; email: string }, activity: any) {
+  'use step';
+  return email.send(user.email, activity ? 'tips' : 'nudge');
+}
+sendFollowUp.maxRetries = 5;
+```
+
+The run above prints each step it lifted with the variables it captured:
+
+```bash
+inngest/functions.ts
+  onboardUser (was onboard-user)
+    step create-user -> createUser() captures event
+    step send-follow-up -> sendFollowUp() captures user, activity
+    hook app/user.active -> token `app/user.active:${event.data.userId}`
+```
+
+Beyond `step.run()`, the codemod:
+
+- Turns each `createFunction()` into an exported `"use workflow"` function that takes the triggering event as its argument, so `event.data` keeps working. With typed events, it types the parameter, and it types each captured parameter from its call site.
+- Rewrites `step.sleep()`, `step.sleepUntil()`, `step.fetch()`, `step.invoke()` and `step.ai.wrap()`. A `step.ai.wrap()` step evaluates its inputs itself, so the model object is never passed as an argument, and returns only the fields you destructure from the result.
+- Turns `step.waitForEvent()` and `step.waitForSignal()` into a hook raced against `sleep()`. The token comes from `match`, or from an `if` expression that compares one field, so the code that sent the event can call `resumeHook()` with the same token.
+- Turns `retries` into `maxRetries` on every step, `NonRetriableError` into `FatalError`, `RetryAfterError` into `RetryableError`, `runId` into `getWorkflowMetadata().workflowRunId`, `attempt` into `getStepMetadata().attempt`, and `logger` into `console`.
+- Removes imports that nothing uses any more, such as the Inngest client and the error classes.
+
+It never guesses. Code it cannot migrate without changing behavior is left in place under a `// TODO(workflow-migrate): ...` comment that says what to do: a closure that assigns to a variable outside it (the write would be lost once the value is passed by value), a closure that calls a function declared in the handler, `step.sendEvent()`, flow-control options, cron triggers, and global `fetch()` calls outside a step. The report also lists every `inngest.send()` and `serve()` call in the project with its replacement: `start()` for an event that triggered a function, and `resumeHook()` for one a run was waiting for.
+
 <Callout type="info">
-Install the migration skill to translate an Inngest app automatically:
+For what the codemod leaves to you, install the migration skill and ask your agent to finish the migration:
 
 ```bash
 npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
 ```
 </Callout>
+
+### Concept mapping
+
+| Inngest | Workflow SDK | Note |
+| --- | --- | --- |
+| `inngest.createFunction()` | `"use workflow"` function started with `start()` | No factory or event binding. |
+| `step.run()` | `"use step"` function | Named async function with Node.js access. Variables the closure captured become arguments. |
+| `step.sleep()` / `step.sleepUntil()` | `sleep('5m')` / `sleep(date)` | Import from `workflow`. |
+| `step.waitForEvent()` | `createHook()` raced against `sleep()` | The token encodes what `match` compared; `resumeHook(token, event)` replaces sending the event. Use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) when the sender needs a URL to call. |
+| `step.waitForSignal()` / `inngest.sendSignal()` | `createHook({ token: signal })` / `resumeHook(signal, data)` | `onConflict: 'replace'` maps to [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). |
+| `step.invoke()` | [`start()`](/docs/foundations/starting-workflows) called in the workflow, then `await run.returnValue` | Spawns a child run; the parent waits without polling. |
+| `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
+| `idempotency` / `singleton` | [`start(workflow, args, { experimental_hook: { token } })`](/docs/foundations/idempotency#start-a-run-once-per-key) | A duplicate start throws `HookConflictError` naming the run that owns the token. Set `experimental_minRetention: '24h'` to match Inngest's idempotency window. |
+| `cancelOn` / cancel from the dashboard | [`run.cancel()`](/docs/foundations/cancellation), or an `AbortController` whose signal is passed into steps | `run.cancel({ cancelReason })` records why. `workflow cancel --status running --workflowName <id>` cancels in bulk. |
+| `retries` / `RetryAfterError` / `NonRetriableError` | `stepFn.maxRetries`, `RetryableError`, `FatalError` | Retries live at the step boundary. For custom backoff via `retryAfter`, see [Errors & Retrying](/docs/foundations/errors-and-retries#customize-retry-behavior). |
+| `step.fetch()` | [`fetch`](/docs/api-reference/workflow/fetch) from `workflow` | A step that makes the request. |
+| `step.ai.wrap()` | A `"use step"` function that calls the model | Or [`WorkflowAgent`](/docs/ai) for an agent loop. |
+| `runId` / `attempt` | `getWorkflowMetadata().workflowRunId` / `getStepMetadata().attempt` | `attempt` counts from 1, where Inngest counted from 0. |
+| `step.realtime.publish()` / Realtime | `getWritable()` / named streams | Clients read from the stream. |
+| Event payload search | [`setAttributes()`](/docs/api-reference/workflow/set-attributes) or `start({ attributes })` | Filter runs by `key=value` in the CLI, the web UI, and Vercel Observability. |
+
+### What behaves differently
+
+- **Step results keep their types.** Inngest serializes step results as JSON, so a `Date` came back as a string and a step that returned nothing came back as `null`. The Workflow SDK keeps `Date`, `Map`, `Set`, `URL`, typed arrays and the other [serializable types](/docs/foundations/serialization), and a step that returns nothing returns `undefined`. Code that parsed a string back into a `Date` keeps working; code that used the string directly needs a change.
+- **Code outside steps runs in a sandbox.** An Inngest handler could call `fetch()` or a database outside `step.run()`, and the call ran again on every request. A workflow function runs deterministically, without Node.js APIs or I/O, so move that code into a step.
+- **Step arguments are copies.** A step that changed a captured object in Inngest only changed it in the invocation that ran the step, and a memoized step does not run again. The same change is invisible to the workflow here, so return the new value instead.
+- **The event shape is yours.** The workflow receives what you pass to `start()`. Fields Inngest filled in, such as `event.id` and `event.ts`, are only there if you pass them; use `getWorkflowMetadata()` for the run ID and start time.
 
 ### Inngest features without a direct Workflow SDK equivalent
 
@@ -97,6 +196,7 @@ Each row is an Inngest capability the Workflow SDK does not replicate one-to-one
 | Flow control (concurrency, throttling, debounce, rate limiting, batching, priority) | No direct function-level analog; enforce limits inside steps or debounce at the publisher before `start()` |
 | Cron / scheduled functions | Trigger from Vercel Cron or a system cron calling `start()` |
 | Event-bus fan-out by name match | Replace with explicit `start()` calls per target workflow |
+| `onFailure` handler | Wrap the workflow body in `try`/`catch`, call a cleanup step in `catch`, then rethrow |
 
 ---
 *Compiled from public documentation. Inngest tier names and pricing vary across sources; verify against [inngest.com/pricing](https://www.inngest.com/pricing). Not based on head-to-head benchmarks.*

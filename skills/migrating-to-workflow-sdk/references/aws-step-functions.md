@@ -9,10 +9,12 @@
 | Choice | `if` / `else` / `switch` |
 | Wait | `sleep()` |
 | Parallel | `Promise.all()` |
-| Map | Inline sequential → `for` loop; bounded parallel (`MaxConcurrency: N`) → batched `Promise.all` or a concurrency limiter like `p-limit`; Distributed Map / large fan-out → step-wrapped `start()` per item, then step-wrapped `getRun()` to collect. |
+| Map | Inline sequential → `for` loop; bounded parallel (`MaxConcurrency: N`) → batched `Promise.all` or a concurrency limiter like `p-limit`; Distributed Map / large fan-out → `start()` per item directly in the workflow, then `await run.returnValue` on the returned `Run` handles to collect. |
 | Retry / Catch | step retries + `try` / `catch`, `RetryableError`, `FatalError`, `maxRetries` |
 | `.waitForTaskToken` | `createHook()` or `createWebhook()` |
-| `StartExecution` (child state machine) | step-wrapped `start()` / `getRun()` |
+| `StartExecution` (child state machine) | `start()` called directly in the workflow; `.sync` → `await run.returnValue`, fire-and-forget → do not await |
+| Execution `name` (unique per state machine) | `start(wf, args, { experimental_hook: { token } })`; a duplicate throws `HookConflictError` naming the owner |
+| `StopExecution` | `getRun(runId).cancel({ cancelReason })` |
 
 ## Remove
 
@@ -37,7 +39,8 @@
 - Rollback stack when the original graph used compensation chains (Catch → compensation states)
 - Idempotency keys on external writes via `getStepMetadata().stepId`
 - `getWritable()` for progress streaming (Step Functions has no built-in equivalent)
-- Step-wrapped `start()` / `getRun()` for child workflows (replaces `StartExecution`)
+- `start()` called directly in the workflow for child workflows (replaces `StartExecution`); see `references/shared-patterns.md` -> `## Child workflow via start() in the workflow`
+- `start({ experimental_hook: { token } })` at the app boundary when the source relied on unique execution names to dedupe starts; see `references/shared-patterns.md` -> `## Idempotent start (one run per business key)`
 
 ## `.waitForTaskToken` fast paths
 
@@ -211,7 +214,9 @@ interface World extends Queue, Streamer, Storage {
 import { getWorld } from 'workflow/runtime';
 
 export async function startWorkflowWorld(): Promise<void> {
-  await getWorld().start?.();
+  // getWorld() is async in v5: await it before calling start()
+  const world = await getWorld();
+  await world.start?.();
 }
 ```
 
@@ -233,7 +238,7 @@ app.post('/api/refunds/start', async (c) => {
 export default app;
 ```
 
-Required explanation: The workflow and step code can stay the same. Because this target is self-hosted, the app still needs a `World` implementation for storage, queueing, and streaming, plus a startup path that calls `await getWorld().start?.()` when the selected world runs background workers.
+Required explanation: The workflow and step code can stay the same. Because this target is self-hosted, the app still needs a `World` implementation for storage, queueing, and streaming, plus a startup path that awaits `getWorld()` and then calls `await world.start?.()` when the selected world runs background workers.
 
 Must not appear:
 
