@@ -3629,7 +3629,7 @@ async function runDelivery(
         deferAbsorbs = true;
         // The batches go out as on the awaited path below, and each
         // later batch's background steps are enqueued once it
-        // committed; the first batch's once it committed too.
+        // committed; the ones `first` reports once it resolved.
         const chunks = plan.commitInChunks((batch) =>
           trackInFlightCreation(
             enqueueStepMessages(run, backgroundMessagesOf(batch))
@@ -3645,8 +3645,10 @@ async function runDelivery(
           )
         );
         trackInFlightCreation(chunks.rest);
-        // Inline steps come first in the plan's events, so the first
-        // batch carries every inline creation-bearing start.
+        // `first` resolves once every inline creation-bearing start
+        // committed, in one batch or more (inline steps come first in
+        // the plan's events, and inputs past the batch byte budget
+        // split them).
         creationGate = chunks.first.then((first) => {
           const inline = new Map(
             first.createdSteps.flatMap((step) =>
