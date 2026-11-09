@@ -1503,7 +1503,10 @@ describe('attr_set eventData size limit', () => {
       );
 
     try {
-      expect(resolveWsTransport('wrun_1', config)?.transport).toBe(transport);
+      expect(resolveWsTransport('wrun_1', config)).toMatchObject({
+        kind: 'open',
+        transport,
+      });
       const result = createWorkflowRunEvent(
         'wrun_1',
         attributeEvent(8193),

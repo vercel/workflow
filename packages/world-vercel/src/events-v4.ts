@@ -101,7 +101,7 @@ import {
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
-import type { WsFrameReply } from './ws-transport.js';
+import type { WsFrameReply, WsTransportResolution } from './ws-transport.js';
 import {
   isWsEventsTransportEnabled,
   isWsEventsTransportPossible,
@@ -1131,11 +1131,7 @@ async function postWorkflowRunEventV4(
   /** Why the write tried the socket first and did not take it. */
   fallback?: EventsTransportFallback
 ) {
-  const {
-    baseUrl,
-    headers: baseHeaders,
-    usingProxy,
-  } = await getHttpConfig(config);
+  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
   if (responseType === 'event-stream') {
@@ -1157,9 +1153,7 @@ async function postWorkflowRunEventV4(
     'createEvent',
     {
       ...WorkflowEventsTransport('http'),
-      ...(fallback && !usingProxy
-        ? WorkflowEventsTransportFallback(fallback)
-        : {}),
+      ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
       ...inBandFenceAttributes(input),
@@ -1240,16 +1234,16 @@ export async function createWorkflowRunEventV4<T extends EventType>(
 ): Promise<EventResult<T> & { event: Event }> {
   let fallback: EventsTransportFallback | undefined;
   if (!input.requireHookResumeDedup && isWsEventsTransportPossible()) {
-    // A fallback means no socket was taken for this write, not that the write
-    // failed, so fall through to HTTP. Under a per-workflow override that is
-    // every run of a workflow that isn't listed.
+    // Anything but a reply means no socket was taken for this write, not that
+    // the write failed, so fall through to HTTP. Under a per-workflow override
+    // that is every run of a workflow that isn't listed.
     const overWs = await postEventFrameOverWs(input, config, {
       requireOpenSocket: input.eventType === 'run_started',
     });
-    if ('reply' in overWs) {
+    if (overWs.kind === 'reply') {
       return decodeCreateEventResponse(overWs.reply, input.eventType);
     }
-    fallback = overWs.fallback;
+    fallback = fallbackReasonOf(overWs);
     assertWsFallbackAllowed(input.eventType);
   }
 
@@ -1507,11 +1501,7 @@ export async function createWorkflowRunEventsBatchV4(
   config?: APIConfig
 ): Promise<CreateEventBatchV4Result> {
   assert(input.events.length > 0, 'v4 createEventBatch: empty batch');
-  const {
-    baseUrl,
-    headers: baseHeaders,
-    usingProxy,
-  } = await getHttpConfig(config);
+  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   // Match the single-event POST content type: the batch route runs on the
   // same authed + v4 middleware chain and the frame bytes are identical.
@@ -1545,8 +1535,8 @@ export async function createWorkflowRunEventsBatchV4(
     apiVersion === 'v5' && isWsEventsTransportPossible()
       ? await postEventBatchOverWs(input.runId, body, url, config)
       : undefined;
-  const wsReply = overWs && 'reply' in overWs ? overWs.reply : undefined;
-  const fallback = overWs && 'fallback' in overWs ? overWs.fallback : undefined;
+  const wsReply = overWs?.kind === 'reply' ? overWs.reply : undefined;
+  const fallback = overWs ? fallbackReasonOf(overWs) : undefined;
   // Batch identity attributes (size, per-type shape) live on the
   // world.events.createBatch span (see instrumentObject); this transport
   // span carries only wire-level facts. workflow.event.type is deliberately
@@ -1561,9 +1551,7 @@ export async function createWorkflowRunEventsBatchV4(
       'createEventBatch',
       {
         ...WorkflowEventsTransport('http'),
-        ...(fallback && !usingProxy
-          ? WorkflowEventsTransportFallback(fallback)
-          : {}),
+        ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
         'workflow.batch.bytes': body.byteLength,
         // Every frame of a batch carries the same fence.
         ...inBandFenceAttributes(input.events[0]),
@@ -1745,17 +1733,50 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * the batch decoder reads exactly as it reads the HTTP one. `undefined` when
  * no socket is resolvable for the run, so the caller sends it over HTTP.
  */
+/**
+ * What a write's attempt over the run's events socket came to:
+ *
+ * - `reply`: the socket carried it.
+ * - `http_by_config`: this World cannot hold a socket (a `projectConfig`
+ *   World); HTTP is its transport, not a fallback.
+ * - `fallback`: the socket was not taken, for `reason`, and the write goes
+ *   over HTTP instead.
+ */
+type WsWriteAttempt =
+  | { kind: 'reply'; reply: FrameResponseLike }
+  | { kind: 'http_by_config' }
+  | { kind: 'fallback'; reason: EventsTransportFallback };
+
+/** A write's attempt for a run whose socket {@link resolveWsTransport} did not find open. */
+function attemptWithoutSocket(
+  resolved: Exclude<WsTransportResolution, { kind: 'open' }>
+): WsWriteAttempt {
+  switch (resolved.kind) {
+    case 'proxy':
+      return { kind: 'http_by_config' };
+    case 'no_channel':
+      return { kind: 'fallback', reason: 'no_channel' };
+    default:
+      return resolved satisfies never;
+  }
+}
+
+/** The reason to put on the HTTP span, when the attempt fell back. */
+function fallbackReasonOf(
+  attempt: WsWriteAttempt
+): EventsTransportFallback | undefined {
+  return attempt.kind === 'fallback' ? attempt.reason : undefined;
+}
+
 async function postEventBatchOverWs(
   runId: string,
   body: Uint8Array,
   restUrl: string,
   config: APIConfig | undefined
-): Promise<
-  { reply: FrameResponseLike } | { fallback: EventsTransportFallback }
-> {
+): Promise<WsWriteAttempt> {
   const { resolveWsTransport } = await import('./ws-transport.js');
   const resolved = resolveWsTransport(runId, config);
-  if (!resolved) return { fallback: 'no_channel' };
+  if (resolved.kind !== 'open') return attemptWithoutSocket(resolved);
   const { transport, wsUrl } = resolved;
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events/batch`;
   const reply = await withHttpClientSpan(
@@ -1826,7 +1847,7 @@ async function postEventBatchOverWs(
       };
     }
   );
-  return { reply };
+  return { kind: 'reply', reply };
 }
 
 /**
@@ -1886,9 +1907,7 @@ async function postEventFrameOverWs(
      */
     requireOpenSocket?: boolean;
   } = {}
-): Promise<
-  { reply: FrameResponseLike } | { fallback: EventsTransportFallback }
-> {
+): Promise<WsWriteAttempt> {
   // Dynamic so `ws` initializes only on a deployment that opted in. The gate
   // at the call site lives in its own import-free module for exactly this
   // reason. The module is cached after the first write, and on the queue path
@@ -1896,16 +1915,16 @@ async function postEventFrameOverWs(
   const { resolveWsTransport } = await import('./ws-transport.js');
   const { runId } = input;
   const resolved = resolveWsTransport(runId, config);
-  // No span: resolving nothing means no write was attempted here at all. The
+  // No span: without an open channel no write was attempted here at all. The
   // caller falls through to HTTP, which opens its own and says why.
-  if (!resolved) return { fallback: 'no_channel' };
+  if (resolved.kind !== 'open') return attemptWithoutSocket(resolved);
   const { transport, wsUrl } = resolved;
   if (options.requireOpenSocket && !transport.isConnected()) {
-    return { fallback: 'connecting' };
+    return { kind: 'fallback', reason: 'connecting' };
   }
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
-  // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
-  // returned null for the proxy World, so this is always the direct
+  // Same helper the HTTP path builds its URL with. `resolveWsTransport` never
+  // finds a channel open for the proxy World, so this is always the direct
   // backend origin the socket itself points at.
   const restUrl = eventsV4Url(getHttpUrl(config).baseUrl, input);
 
@@ -2028,7 +2047,7 @@ async function postEventFrameOverWs(
       };
     }
   );
-  return { reply };
+  return { kind: 'reply', reply };
 }
 
 /**

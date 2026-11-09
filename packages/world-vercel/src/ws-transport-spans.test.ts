@@ -635,7 +635,7 @@ describe('transport parity', () => {
 
   it('emits the same span name and url.full on HTTP as on ws', async () => {
     // As above. This one is a write, so unset would now open the gate and the
-    // test would only still pass by falling through resolveWsTransport's null
+    // test would only still pass by falling through resolveWsTransport's no_channel
     // — passing for the wrong reason, which is the exact failure this file
     // exists to catch.
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
