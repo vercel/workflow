@@ -182,6 +182,15 @@ const next = Object.freeze([
 - **A long change history is written whole again** once its changes outgrow the value, which bounds how much a replay has to apply.
 - With `WORKFLOW_VM=quickjs`, values are stored in full, because that VM can't read references yet.
 
+<Callout type="warn">
+Changing a `Date`, `Map`, `Set` or byte array in place inside a frozen value, for example with `date.setTime()`, `map.set()` or `bytes[0] = 1`, isn't recorded. A step that runs in the same invocation may still see the change, but a retried or queued step, and every replay, rebuilds the value from the stored records and sees the original. Replace the object inside `produce` instead:
+
+```typescript
+draft.updatedAt = new Date(); // not draft.updatedAt.setTime(Date.now())
+draft.tags = new Set([...draft.tags, "urgent"]); // or draft.tags.add("urgent") with immer's enableMapSet()
+```
+</Callout>
+
 ### Inspecting stored values
 
 A step input that holds a reference, and a step output that holds a change, can only be rebuilt from the run's earlier records. Workflow does that during replay, so your code always receives whole values.
@@ -204,7 +213,7 @@ for (const event of events) {
 const input = hydrateData(stepInput, { ...observabilityRevivers, ...resolver.revivers });
 ```
 
-Pass decrypted payloads. Keep one resolver per run and reuse it across inspections. A web inspector built on `@workflow/web-shared` can use `createRunStateHydrator()` instead: it reads the run's history through loaders you give it, only the first time a value needs it, and handles encrypted and compressed payloads. The Workflow web UI uses it for its span details.
+Pass decrypted payloads. Keep one resolver per run and reuse it across inspections. A web inspector built on `@workflow/web-shared` can use `createRunStateHydrator()` instead: it reads the run's history through loaders you give it, only the first time a value needs it, and handles encrypted and compressed payloads. The Workflow web UI uses it for its span details, and `workflow inspect` shows rebuilt values the same way.
 
 ## Streaming
 
