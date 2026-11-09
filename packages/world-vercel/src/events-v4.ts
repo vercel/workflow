@@ -82,6 +82,7 @@ import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
+  type EventsTransportFallback,
   NetworkProtocolName,
   StepLatencyOptimizations,
   StepStsoMs,
@@ -89,6 +90,7 @@ import {
   WorkflowEventExpectedSeqInBand,
   WorkflowEventInBand,
   WorkflowEventsTransport,
+  WorkflowEventsTransportFallback,
   WorkflowEventType,
   WorkflowStepStartMode,
   WorkflowStepStartOwnerStamped,
@@ -99,7 +101,7 @@ import {
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
-import type { WsFrameReply } from './ws-transport.js';
+import type { WsFrameReply, WsTransportResolution } from './ws-transport.js';
 import {
   isWsEventsTransportEnabled,
   isWsEventsTransportPossible,
@@ -1125,7 +1127,9 @@ async function postWorkflowRunEventV4(
     skipPreload?: true;
   },
   responseType: 'materialized' | 'event-stream',
-  config?: APIConfig
+  config?: APIConfig,
+  /** Why the write tried the socket first and did not take it. */
+  fallback?: EventsTransportFallback
 ) {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
@@ -1149,6 +1153,7 @@ async function postWorkflowRunEventV4(
     'createEvent',
     {
       ...WorkflowEventsTransport('http'),
+      ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
       ...inBandFenceAttributes(input),
@@ -1227,18 +1232,27 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
+  let fallback: EventsTransportFallback | undefined;
   if (!input.requireHookResumeDedup && isWsEventsTransportPossible()) {
-    // Absent means no socket was resolvable for this run, not that the write
-    // failed, so fall through to HTTP. Under a per-workflow override that is
-    // every run of a workflow that isn't listed.
-    const reply = await postEventFrameOverWs(input, config, {
+    // Anything but a reply means no socket was taken for this write, not that
+    // the write failed, so fall through to HTTP. Under a per-workflow override
+    // that is every run of a workflow that isn't listed.
+    const overWs = await postEventFrameOverWs(input, config, {
       requireOpenSocket: input.eventType === 'run_started',
     });
-    if (reply) return decodeCreateEventResponse(reply, input.eventType);
+    if (overWs.kind === 'reply') {
+      return decodeCreateEventResponse(overWs.reply, input.eventType);
+    }
+    fallback = fallbackReasonOf(overWs);
     assertWsFallbackAllowed(input.eventType);
   }
 
-  const response = await postWorkflowRunEventV4(input, 'materialized', config);
+  const response = await postWorkflowRunEventV4(
+    input,
+    'materialized',
+    config,
+    fallback
+  );
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1521,13 +1535,15 @@ export async function createWorkflowRunEventsBatchV4(
     apiVersion === 'v5' && isWsEventsTransportPossible()
       ? await postEventBatchOverWs(input.runId, body, url, config)
       : undefined;
+  const wsReply = overWs?.kind === 'reply' ? overWs.reply : undefined;
+  const fallback = overWs ? fallbackReasonOf(overWs) : undefined;
   // Batch identity attributes (size, per-type shape) live on the
   // world.events.createBatch span (see instrumentObject); this transport
   // span carries only wire-level facts. workflow.event.type is deliberately
   // absent, since it names a single event write, and tagging a batch with its
   // first event's type misclassifies the traffic.
   const response: FrameResponseLike =
-    overWs ??
+    wsReply ??
     (await fetchV4(
       url,
       { method: 'POST', headers, body },
@@ -1535,6 +1551,7 @@ export async function createWorkflowRunEventsBatchV4(
       'createEventBatch',
       {
         ...WorkflowEventsTransport('http'),
+        ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
         'workflow.batch.bytes': body.byteLength,
         // Every frame of a batch carries the same fence.
         ...inBandFenceAttributes(input.events[0]),
@@ -1716,18 +1733,53 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * the batch decoder reads exactly as it reads the HTTP one. `undefined` when
  * no socket is resolvable for the run, so the caller sends it over HTTP.
  */
+/**
+ * What a write's attempt over the run's events socket came to:
+ *
+ * - `reply`: the socket carried it.
+ * - `http_by_config`: this World cannot hold a socket (a `projectConfig`
+ *   World); HTTP is its transport, not a fallback.
+ * - `fallback`: the socket was not taken, for `reason`, and the write goes
+ *   over HTTP instead.
+ */
+type WsWriteAttempt =
+  | { kind: 'reply'; reply: FrameResponseLike }
+  | { kind: 'http_by_config' }
+  | { kind: 'fallback'; reason: EventsTransportFallback };
+
+/** A write's attempt for a run whose socket {@link resolveWsTransport} did not find open. */
+function attemptWithoutSocket(
+  resolved: Exclude<WsTransportResolution, { kind: 'open' }>
+): WsWriteAttempt {
+  switch (resolved.kind) {
+    case 'proxy':
+      return { kind: 'http_by_config' };
+    case 'no_channel':
+      return { kind: 'fallback', reason: 'no_channel' };
+    default:
+      return resolved satisfies never;
+  }
+}
+
+/** The reason to put on the HTTP span, when the attempt fell back. */
+function fallbackReasonOf(
+  attempt: WsWriteAttempt
+): EventsTransportFallback | undefined {
+  return attempt.kind === 'fallback' ? attempt.reason : undefined;
+}
+
 async function postEventBatchOverWs(
   runId: string,
   body: Uint8Array,
   restUrl: string,
   config: APIConfig | undefined
-): Promise<FrameResponseLike | undefined> {
+): Promise<WsWriteAttempt> {
   const { resolveWsTransport } = await import('./ws-transport.js');
   const resolved = resolveWsTransport(runId, config);
-  if (!resolved) return undefined;
+  if (resolved.kind !== 'open') return attemptWithoutSocket(resolved);
   const { transport, wsUrl } = resolved;
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events/batch`;
-  return withHttpClientSpan(
+  const reply = await withHttpClientSpan(
     {
       method: 'POST',
       url: restUrl,
@@ -1795,6 +1847,7 @@ async function postEventBatchOverWs(
       };
     }
   );
+  return { kind: 'reply', reply };
 }
 
 /**
@@ -1854,7 +1907,7 @@ async function postEventFrameOverWs(
      */
     requireOpenSocket?: boolean;
   } = {}
-): Promise<FrameResponseLike | undefined> {
+): Promise<WsWriteAttempt> {
   // Dynamic so `ws` initializes only on a deployment that opted in. The gate
   // at the call site lives in its own import-free module for exactly this
   // reason. The module is cached after the first write, and on the queue path
@@ -1862,18 +1915,20 @@ async function postEventFrameOverWs(
   const { resolveWsTransport } = await import('./ws-transport.js');
   const { runId } = input;
   const resolved = resolveWsTransport(runId, config);
-  // No span: resolving nothing means no write was attempted here at all. The
-  // caller falls through to HTTP, which opens its own.
-  if (!resolved) return undefined;
+  // No span: without an open channel no write was attempted here at all. The
+  // caller falls through to HTTP, which opens its own and says why.
+  if (resolved.kind !== 'open') return attemptWithoutSocket(resolved);
   const { transport, wsUrl } = resolved;
-  if (options.requireOpenSocket && !transport.isConnected()) return undefined;
+  if (options.requireOpenSocket && !transport.isConnected()) {
+    return { kind: 'fallback', reason: 'connecting' };
+  }
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
-  // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
-  // returned null for the proxy World, so this is always the direct
+  // Same helper the HTTP path builds its URL with. `resolveWsTransport` never
+  // finds a channel open for the proxy World, so this is always the direct
   // backend origin the socket itself points at.
   const restUrl = eventsV4Url(getHttpUrl(config).baseUrl, input);
 
-  return withHttpClientSpan(
+  const reply = await withHttpClientSpan(
     {
       method: 'POST',
       url: restUrl,
@@ -1992,6 +2047,7 @@ async function postEventFrameOverWs(
       };
     }
   );
+  return { kind: 'reply', reply };
 }
 
 /**
