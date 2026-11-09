@@ -7,7 +7,7 @@ import {
   QUEUE_ROUTE_DENIED_CODE,
   verifyQueueAuthKey,
 } from '@workflow/utils';
-import type { QueueAuthMode, QueuePrefix, World } from '@workflow/world';
+import type { World } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 import { isDynamicWorkflowsEnabled } from './constants.js';
 
@@ -20,22 +20,7 @@ import { isDynamicWorkflowsEnabled } from './constants.js';
  */
 export const QUEUE_AUTH_ENV = 'WORKFLOW_QUEUE_AUTH';
 
-/** A World's mode, and the one in effect for a prefix in this process. */
-type QueueAuthWorld = Pick<World, 'queueAuthMode' | 'queueAuthModeFor'>;
-
-/**
- * The mode in effect for `prefix`: the World's per-prefix answer when it has
- * one (see `Queue.queueAuthModeFor`), else its declared mode.
- */
-export function effectiveQueueAuthMode(
-  world: QueueAuthWorld,
-  prefix?: QueuePrefix
-): QueueAuthMode | undefined {
-  if (prefix !== undefined && typeof world.queueAuthModeFor === 'function') {
-    return world.queueAuthModeFor(prefix);
-  }
-  return world.queueAuthMode;
-}
+type QueueAuthWorld = Pick<World, 'queueAuthMode'>;
 
 /**
  * Whether `world`'s flow route is checked at all. Opt-in: only a World that
@@ -61,15 +46,13 @@ function isQueueAuthOff(): boolean {
 }
 
 /**
- * Whether the flow route refuses every HTTP request for `prefix`: the mode
- * in effect is `'deny'` (the World delivers in process, and this process
- * holds the handler), and the emergency override is not in force.
+ * Whether the flow route refuses every HTTP request: the World declares
+ * `'deny'` (it delivers in process; the route has no caller over HTTP, in
+ * any process, whether or not this one registered the handler), and the
+ * emergency override is not in force.
  */
-export function isQueueRouteDenied(
-  world: QueueAuthWorld,
-  prefix?: QueuePrefix
-): boolean {
-  return effectiveQueueAuthMode(world, prefix) === 'deny' && !isQueueAuthOff();
+export function isQueueRouteDenied(world: QueueAuthWorld): boolean {
+  return world.queueAuthMode === 'deny' && !isQueueAuthOff();
 }
 
 /**
@@ -231,10 +214,9 @@ export interface QueueAuthRefusal {
  */
 export async function authorizeQueueDelivery(
   world: QueueAuthWorld,
-  req: Request,
-  prefix?: QueuePrefix
+  req: Request
 ): Promise<QueueAuthRefusal | undefined> {
-  if (isQueueRouteDenied(world, prefix)) {
+  if (isQueueRouteDenied(world)) {
     // Final, unlike the 401 below: no key would make the route accept the
     // request, so a sender must not retry it. Unmarked for the same reason:
     // the marker tells a `'loopback'` sender to reload its key and retry.

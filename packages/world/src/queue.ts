@@ -1044,9 +1044,10 @@ export interface InProcessDelivery {
  * in `@workflow/core`) exposes its in-process entry: the runtime's handler
  * itself, taking the message and its metadata directly, without the HTTP
  * request shape or the checks that only a request from the network needs
- * (the queue auth check of {@link QueueAuthMode}). Nothing on the wire can
- * name it: a World reaches it only through a handler the app registered
- * with {@link Queue.registerHandler}, in the app's own process.
+ * (the queue auth check of {@link QueueAuthMode}). No HTTP request can
+ * reach it: it is a property of the handler object, which a World gets only
+ * when the app registers the route with {@link Queue.registerHandler}, in
+ * the app's own process.
  *
  * A World whose queue runs in the app's process delivers to
  * `handler[IN_PROCESS_QUEUE_HANDLER]` when it is set, and resolves to what
@@ -1169,18 +1170,6 @@ export interface Queue {
    * emergency override), except while dynamic workflows are enabled.
    */
   queueAuthMode?: QueueAuthMode;
-
-  /**
-   * Optional. The mode in effect for `prefix` in this process, when it can
-   * differ from {@link Queue.queueAuthMode}. A World that declares `'deny'`
-   * returns `'deny'` for a prefix whose flow handler is registered in this
-   * process (the process is a worker, and the route needs no HTTP) and
-   * `'skip'` for one that is not, so a process that was never handed the
-   * route does not refuse what it cannot deliver itself. The runtime asks
-   * before each HTTP request to the flow route; when absent, the declared
-   * mode holds everywhere.
-   */
-  queueAuthModeFor?(prefix: QueuePrefix): QueueAuthMode;
 
   /**
    * Send an invocation to a run's executor. Must be enabled via capabilities.invoke.

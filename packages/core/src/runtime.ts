@@ -762,11 +762,7 @@ export function workflowEntrypoint(
         // route takes no HTTP, is refused and dropped (see
         // `authorizeQueueDelivery`). Covers every delivery to this route,
         // health checks and invocations included.
-        const refusal = await authorizeQueueDelivery(
-          route.world,
-          req,
-          workflowPrefix
-        );
+        const refusal = await authorizeQueueDelivery(route.world, req);
         if (refusal) {
           route.logQueueAuthRefusal(refusal.reason);
           // Counted, not awaited: the refusal does not wait on a meter. The

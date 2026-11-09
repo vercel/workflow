@@ -27,7 +27,6 @@ import { workflowEntrypoint } from '../runtime.js';
 import {
   authorizeQueueDelivery,
   createQueueAuthRefusalLogger,
-  effectiveQueueAuthMode,
   isQueueAuthEnforced,
   isQueueRouteDenied,
   logQueueAuthSetting,
@@ -127,20 +126,6 @@ describe('isQueueRouteDenied', () => {
     expect(isQueueRouteDenied({ queueAuthMode: mode })).toBe(denied);
   });
 
-  it('asks the World for the mode in effect for the prefix, when it can say', () => {
-    const world = {
-      queueAuthMode: 'deny' as const,
-      queueAuthModeFor: (prefix: string) =>
-        prefix === '__wkf_workflow_' ? ('deny' as const) : ('skip' as const),
-    };
-    expect(effectiveQueueAuthMode(world, '__wkf_workflow_')).toBe('deny');
-    expect(effectiveQueueAuthMode(world, '__other_wkf_workflow_')).toBe('skip');
-    // Without a prefix, the declared mode.
-    expect(effectiveQueueAuthMode(world)).toBe('deny');
-    expect(isQueueRouteDenied(world, '__wkf_workflow_')).toBe(true);
-    expect(isQueueRouteDenied(world, '__other_wkf_workflow_')).toBe(false);
-  });
-
   it('WORKFLOW_QUEUE_AUTH=off makes the route accept HTTP again, except under dynamic workflows', () => {
     const world = { queueAuthMode: 'deny' as const };
     vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
@@ -214,14 +199,15 @@ describe('authorizeQueueDelivery', () => {
     }
   });
 
-  it("lets a request through a 'deny' World for a prefix whose handler it does not hold", async () => {
-    const world = {
-      queueAuthMode: 'deny' as const,
-      queueAuthModeFor: () => 'skip' as const,
-    };
-    expect(
-      await authorizeQueueDelivery(world, delivery(), '__wkf_workflow_')
-    ).toBe(undefined);
+  it("refuses a request to a 'deny' World in a process that never registered the handler", async () => {
+    // 'deny' is not per process: the route itself could run a forgery, so a
+    // web-only copy of the app refuses too.
+    const refusal = await authorizeQueueDelivery(
+      { queueAuthMode: 'deny' },
+      delivery()
+    );
+    expect(refusal?.reason).toBe('denied');
+    expect(refusal?.response.status).toBe(403);
   });
 });
 
@@ -615,14 +601,11 @@ describe('workflowEntrypoint queue auth', () => {
     expect(writes).not.toHaveBeenCalled();
   });
 
-  it("asks a 'deny' World for the mode in effect for the SDK prefix", async () => {
-    const { routed, route } = installWorld('deny', {
-      queueAuthModeFor: (prefix: string) =>
-        prefix === '__wkf_workflow_' ? 'skip' : 'deny',
-    });
-    // Not registered in this process: the route stays open, as 'skip'.
-    expect((await route(delivery())).status).toBe(200);
-    expect(routed).toHaveLength(1);
+  it("refuses HTTP on a 'deny' World whether or not this process registered the handler", async () => {
+    const { routed, route } = installWorld('deny');
+    // Nothing registered in this process: still refused, before the handler.
+    expect((await route(delivery())).status).toBe(403);
+    expect(routed).toHaveLength(0);
   });
 
   it("WORKFLOW_QUEUE_AUTH=off makes a 'deny' route accept HTTP exactly as 'skip' does", async () => {

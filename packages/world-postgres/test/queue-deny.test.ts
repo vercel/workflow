@@ -119,10 +119,9 @@ describe.skipIf(process.platform === 'win32')(
     });
 
     it('declares deny for every process, registered or not', () => {
+      // Not per process: a process that never registered the handler still
+      // serves the route, and the route must refuse there too.
       expect(world.queueAuthMode).toBe('deny');
-      // Not per prefix or per process: a process that never registered the
-      // handler still serves the route, and the route must refuse there too.
-      expect(world.queueAuthModeFor).toBeUndefined();
     });
 
     it('refuses a forged delivery before touching any run', async () => {
