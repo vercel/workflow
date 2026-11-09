@@ -38,7 +38,11 @@ import {
   vi,
 } from 'vitest';
 import { withEventPostRetry } from './event-retry.js';
-import { createWorkflowRunEventV4, getEventV4 } from './events-v4.js';
+import {
+  createWorkflowRunEventsBatchV4,
+  createWorkflowRunEventV4,
+  getEventV4,
+} from './events-v4.js';
 import {
   type DecodedFrame,
   decodeFrames,
@@ -668,6 +672,154 @@ describe('transport parity', () => {
       'lazyStepStart',
     ]);
     expect(span.attributes['network.protocol.name']).toBeUndefined();
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+/**
+ * `workflow.events.transport_fallback` says why a write that tried the run's
+ * socket went over HTTP. It is absent on writes the socket carried and on
+ * writes that never tried it, so one query separates a fallback from a
+ * deployment that is on HTTP by configuration.
+ */
+describe('transport fallback on the HTTP span', () => {
+  const FALLBACK = 'workflow.events.transport_fallback';
+
+  const runStarted = {
+    runId: 'wrun_1',
+    eventType: 'run_started',
+    specVersion: 9,
+    inBand: true,
+    expectedSeqInBand: 1,
+  } as const;
+
+  const runStartedBody = () =>
+    new Uint8Array(
+      encode({
+        event: {
+          eventId: 'evnt_1',
+          runId: 'wrun_1',
+          createdAt: CREATED_AT,
+          eventType: 'run_started',
+          specVersion: 9,
+        },
+        run: {
+          runId: 'wrun_1',
+          status: 'running',
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          startedAt: CREATED_AT,
+          createdAt: CREATED_AT,
+          updatedAt: CREATED_AT,
+        },
+      })
+    );
+
+  const httpReply = (path: string, body: Uint8Array, status = 200) => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+    agent
+      .get(ORIGIN)
+      .intercept({ path, method: 'POST' })
+      .reply(status, body, { headers: { 'x-wf-event-id': 'evnt_1' } });
+    return agent;
+  };
+
+  it('is no_channel for a write with no socket for its run', async () => {
+    const agent = httpReply(
+      '/api/v4/runs/wrun_1/events/step_completed',
+      materializedBody()
+    );
+
+    await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes[FALLBACK]).toBe('no_channel');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('is connecting for a run_started written during the handshake', async () => {
+    // The flow route opens the channel unawaited; the socket has not opened.
+    const release = openWsChannel(runStarted.runId, { token: 'test-token' });
+    await vi.waitFor(() => expect(sockets.length).toBeGreaterThan(0));
+    const agent = httpReply(
+      '/api/v5/runs/wrun_1/events/run_started',
+      runStartedBody()
+    );
+
+    const result = await createWorkflowRunEventV4(runStarted, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+    release();
+
+    expect(result.event).toMatchObject({ eventType: 'run_started' });
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes[FALLBACK]).toBe('connecting');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('is absent on a write the socket carried', async () => {
+    const { release } = await withOpenChannel();
+
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+    release();
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('ws');
+    expect(span.attributes[FALLBACK]).toBeUndefined();
+  });
+
+  it('is absent with the WS transport off', async () => {
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
+    const agent = httpReply(
+      '/api/v4/runs/wrun_1/events/step_completed',
+      materializedBody()
+    );
+
+    await createWorkflowRunEventV4(input, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes[FALLBACK]).toBeUndefined();
+  });
+
+  it('is no_channel for a spec 9 batch with no socket for its run', async () => {
+    // Only the span is under test: the World refuses the batch, and the
+    // span is recorded either way.
+    const agent = httpReply(
+      '/api/v5/runs/wrun_1/events/batch',
+      new TextEncoder().encode('{"message":"refused"}'),
+      400
+    );
+
+    await expect(
+      createWorkflowRunEventsBatchV4(
+        {
+          runId: 'wrun_1',
+          events: [
+            {
+              ...runStarted,
+              eventType: 'step_created',
+              correlationId: 'step_1',
+            },
+          ],
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow();
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.events.transport']).toBe('http');
+    expect(span.attributes[FALLBACK]).toBe('no_channel');
     agent.assertNoPendingInterceptors();
   });
 });
