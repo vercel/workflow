@@ -27,6 +27,13 @@ const SLOW_MS = 2000;
  */
 const lockstepEngine = process.env.WORKFLOW_VM === 'quickjs';
 
+/**
+ * Runs pinned to spec 8. New runs are spec 9 by default, and the tests that
+ * cover spec 8 settings (`WORKFLOW_INLINE_EARLY_ADVANCE=0`, the precondition
+ * guard) start their runs at spec 8, which keeps them covered.
+ */
+const SPEC_8 = { specVersion: 8 };
+
 async function markerFile() {
   const dir = await mkdtemp(join(tmpdir(), 'wf-4457-'));
   return join(dir, 'marker.log');
@@ -128,13 +135,17 @@ describe('parallel branches advance independently (#4457)', () => {
   it('runs in lockstep with WORKFLOW_INLINE_EARLY_ADVANCE=0', async () => {
     process.env.WORKFLOW_INLINE_EARLY_ADVANCE = '0';
     const markerPath = await markerFile();
-    const run = await start(parallelChainsWorkflow, [
+    const run = await start(
+      parallelChainsWorkflow,
       [
-        { prefix: 'fast', ms: FAST_MS, length: 2 },
-        { prefix: 'slow', ms: SLOW_MS, length: 1 },
+        [
+          { prefix: 'fast', ms: FAST_MS, length: 2 },
+          { prefix: 'slow', ms: SLOW_MS, length: 1 },
+        ],
+        markerPath,
       ],
-      markerPath,
-    ]);
+      SPEC_8
+    );
     const [fast, slow] = await run.returnValue;
     expect(fast[1].start).toBeGreaterThanOrEqual(slow[0].end);
   }, 60_000);
@@ -196,11 +207,11 @@ describe('parallel branches advance independently (#4457)', () => {
       async () => {
         process.env.WORKFLOW_INLINE_EARLY_ADVANCE = earlyAdvance;
         const markerPath = await markerFile();
-        const run = await start(raceLoserRetriesWorkflow, [
-          FAST_MS,
-          FAST_MS * 4,
-          markerPath,
-        ]);
+        const run = await start(
+          raceLoserRetriesWorkflow,
+          [FAST_MS, FAST_MS * 4, markerPath],
+          SPEC_8
+        );
         await expect(run.returnValue).resolves.toBe('fast');
         // Past the loser's first attempt and its 100ms retryAfter.
         await new Promise((resolve) => setTimeout(resolve, FAST_MS * 10));
@@ -332,11 +343,11 @@ describe('parallel branches advance independently (#4457)', () => {
       }) as typeof originalCreate;
       try {
         const markerPath = await markerFile();
-        const run = await start(retryBesideSleepWorkflow, [
-          FAST_MS,
-          FAST_MS * 3,
-          markerPath,
-        ]);
+        const run = await start(
+          retryBesideSleepWorkflow,
+          [FAST_MS, FAST_MS * 3, markerPath],
+          SPEC_8
+        );
         await expect(run.returnValue).resolves.toEqual(['slept', 2]);
         expect(refused).toBe(1);
 
