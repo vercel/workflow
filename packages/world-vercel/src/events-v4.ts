@@ -1131,7 +1131,8 @@ async function postWorkflowRunEventV4(
   /** Why the write tried the socket first and did not take it. */
   fallback?: EventsTransportFallback
 ) {
-  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const { baseUrl, headers: baseHeaders, usingProxy } =
+    await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   headers.set('Content-Type', 'application/octet-stream');
   if (responseType === 'event-stream') {
@@ -1153,7 +1154,9 @@ async function postWorkflowRunEventV4(
     'createEvent',
     {
       ...WorkflowEventsTransport('http'),
-      ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
+      ...(fallback && !usingProxy
+        ? WorkflowEventsTransportFallback(fallback)
+        : {}),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
       ...inBandFenceAttributes(input),
@@ -1501,7 +1504,8 @@ export async function createWorkflowRunEventsBatchV4(
   config?: APIConfig
 ): Promise<CreateEventBatchV4Result> {
   assert(input.events.length > 0, 'v4 createEventBatch: empty batch');
-  const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
+  const { baseUrl, headers: baseHeaders, usingProxy } =
+    await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
   // Match the single-event POST content type: the batch route runs on the
   // same authed + v4 middleware chain and the frame bytes are identical.
@@ -1551,7 +1555,9 @@ export async function createWorkflowRunEventsBatchV4(
       'createEventBatch',
       {
         ...WorkflowEventsTransport('http'),
-        ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
+        ...(fallback && !usingProxy
+          ? WorkflowEventsTransportFallback(fallback)
+          : {}),
         'workflow.batch.bytes': body.byteLength,
         // Every frame of a batch carries the same fence.
         ...inBandFenceAttributes(input.events[0]),
