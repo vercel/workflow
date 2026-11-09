@@ -361,6 +361,7 @@ The defaults work for a single process on a local database, so most apps set onl
 | [`WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`](#workflow_postgres_hook_retention_limit_days) | `30` days | Maximum hook retention |
 | [`WORKFLOW_QUEUE_NAMESPACE`](#workflow_queue_namespace) | unset | Queue topic namespace |
 | [`WORKFLOW_STREAM_FLUSH_INTERVAL_MS`](#workflow_stream_flush_interval_ms) | `0` ms | Stream write batching |
+| [`WORKFLOW_IN_PROCESS_WORKER`](#workflow_in_process_worker) | `1` when the build has `WORKFLOW_TARGET_WORLD=@workflow/world-postgres`, else empty | Next.js only: compiles the worker import into `instrumentation.ts` (build time) |
 | [`WORKFLOW_POSTGRES_INVOKE`](#experimental-invocation-delivery) | off | Experimental: hook resumes only |
 
 ### `WORKFLOW_POSTGRES_URL`
@@ -444,6 +445,10 @@ For example, `custom` changes the queue topic prefix from `__wkf_workflow_` to `
 
 Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group, trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
 
+
+### `WORKFLOW_IN_PROCESS_WORKER`
+
+Next.js only, and read at build time. `withWorkflow` inlines it into the app as a constant: `"1"` when `next build` runs with `WORKFLOW_TARGET_WORLD=@workflow/world-postgres`, and an empty string otherwise. The `instrumentation.ts` snippet in [Run the worker when your server starts](#run-the-worker-when-your-server-starts) imports the generated worker module only when it is `"1"`, so a build for another World carries none of the workflow bundle in instrumentation (webpack would otherwise compile it there and recompile it on every workflow edit in development). A custom World that wraps the Postgres World sets `WORKFLOW_IN_PROCESS_WORKER=1` in the build environment, since its `WORKFLOW_TARGET_WORLD` names the wrapper, not this package. The value cannot be changed at runtime; a build without it runs no worker when started with the Postgres World, and the World's `start()` warns once.
 ## Upgrading
 
 Run `bootstrap` again whenever you upgrade `@workflow/world-postgres`: a release can add migrations that the upgraded World needs before it handles workflows. Upgrade `workflow` alongside it so both stay on the same release cycle.
