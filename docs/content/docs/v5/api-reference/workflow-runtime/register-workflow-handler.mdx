@@ -16,7 +16,8 @@ The framework integrations call it for you when the app starts: Nitro (and the f
 
 ```typescript lineNumbers
 import { getWorld, registerWorkflowHandler } from "workflow/runtime";
-import { POST } from "./app/.well-known/workflow/v1/flow/route";
+// The flow route `workflow build` wrote to the output directory.
+import { POST } from "./.well-known/workflow/v1/flow.mjs";
 
 const world = await getWorld();
 await registerWorkflowHandler(POST); // [!code highlight]

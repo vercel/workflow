@@ -150,7 +150,7 @@ Learn more about [SvelteKit Hooks](https://svelte.dev/docs/kit/hooks).
 
 <TabContent order={3}>
 
-The `workflow/nitro` module registers the route with the World when the server boots, in development and in a production build (not on Vercel deploys). Start the World from a plugin:
+The `workflow/nitro` module registers the route with the World when the server boots, in development and in a production build, when `WORKFLOW_TARGET_WORLD` is `@workflow/world-postgres` (not on Vercel deploys, and not on another World, which it does not build at boot). A failure to register is logged. Start the World from a plugin:
 
 ```ts title="plugins/start-pg-world.ts" lineNumbers
 import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
@@ -183,7 +183,7 @@ Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 
 <TabContent order={4}>
 
-`WorkflowModule` registers the route with the World in `onModuleInit`. Set `manageWorldLifecycle: true` so it also starts the World with the app and closes it on shutdown (see [`WorkflowModule`](/docs/api-reference/workflow-nest/workflow-module)):
+`WorkflowModule` registers the route with the World in `onModuleInit` when `WORKFLOW_TARGET_WORLD` is `@workflow/world-postgres` or `manageWorldLifecycle` is set, and fails startup if the route cannot be registered on a World that delivers in process. Set `manageWorldLifecycle: true` so it also starts the World with the app and closes it on shutdown (see [`WorkflowModule`](/docs/api-reference/workflow-nest/workflow-module)):
 
 ```ts title="src/app.module.ts" lineNumbers
 import { Module } from "@nestjs/common";
@@ -219,18 +219,18 @@ await import("../dist/server/entry.mjs");
 
 <TabContent order={6}>
 
-On a framework without an integration, or a server you wrote yourself, do the two things the generated modules do: hand the built flow route to the World with [`registerWorkflowHandler()`](/docs/api-reference/workflow-runtime/register-workflow-handler), then start the World. Run both once when the server boots, before it accepts traffic:
+On a framework without an integration, or a server you wrote yourself, build the workflow bundles with the CLI (`workflow build`, which writes the flow route to `.well-known/workflow/v1/flow.mjs` in your output directory), then do the two things the generated modules do: hand the built flow route to the World with [`registerWorkflowHandler()`](/docs/api-reference/workflow-runtime/register-workflow-handler), and start the World. Run both once when the server boots, before it accepts traffic:
 
 ```ts title="server.ts" lineNumbers
 import { getWorld, registerWorkflowHandler } from "workflow/runtime";
-import { POST as flowRoute } from "./.well-known/workflow/v1/flow/route.js";
+import { POST as flowRoute } from "./.well-known/workflow/v1/flow.mjs";
 
 await registerWorkflowHandler(flowRoute);
 const world = await getWorld();
 await world.start?.();
 ```
 
-The route module is the one your build generated for the flow route; import the `POST` export. A process that only calls `start()` runs no worker.
+Import the `POST` export of the built flow route. A process that only calls `start()` runs no worker.
 
 </TabContent>
 
@@ -304,7 +304,7 @@ Unlike the [Local World](/worlds/local)'s `401`, which tells a sender it had the
 
 ### The emergency override
 
-`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP requests, and the route logs it loudly when it starts. It exists for one situation: a [rolling upgrade](#rolling-upgrades) whose processes on the previous release still deliver over HTTP, when draining them first is not an option. With it set, anyone who can reach the server can drive your workflows, so remove it as soon as the old processes are gone. It is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`), because a forged delivery could then execute stored code; both variables are read on every delivery. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
+`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP requests, and the route logs it loudly when it starts. It exists for one situation: a [rolling upgrade](#rolling-upgrades) in which processes that deliver over HTTP and processes that deliver in process share the database, when draining the former first is not an option. With it set, anyone who can reach the server can drive your workflows, so keep it only while both kinds of process run. It is refused while [dynamic workflows](/docs/advanced/dynamic-workflows) are enabled (`WORKFLOW_EXPERIMENTAL_DYNAMIC_WORKFLOWS`), because a forged delivery could then execute stored code; both variables are read on every delivery. See [`WORKFLOW_QUEUE_AUTH`](/docs/configuration/runtime-tuning#workflow_queue_auth).
 
 ### The other routes
 
@@ -487,6 +487,8 @@ Stop workers running a previous version before your app passes `experimental_hoo
 Most apps don't need anything in this section. It covers building your own World module, sharing the queue with other consumers, coordinating shutdown yourself, and an experimental delivery mode.
 
 ### Programmatic configuration
+
+The framework integrations register the flow route (and Nest starts the World) when `WORKFLOW_TARGET_WORLD` is `@workflow/world-postgres`. An app that installs the World in code with `setWorld()` and leaves that variable unset registers the route itself, as the [custom server](#run-the-worker-when-your-server-starts) does.
 
 {/*@skip-typecheck: incomplete code sample*/}
 
