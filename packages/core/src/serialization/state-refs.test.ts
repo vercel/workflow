@@ -340,6 +340,27 @@ describe('frozen values stored by reference', () => {
     ).toBe(true);
   });
 
+  it('needs recovery when another failure comes before a missing record', () => {
+    // A whole value holding a type the scratch read can't revive, then a
+    // reference this context lacks.
+    const payload = new TextEncoder().encode(
+      JSON.stringify([
+        { a: 1, b: 7 },
+        ['StateRefV1', 2],
+        { kind: 3, logId: 4, version: 5, value: 6 },
+        'full',
+        'l',
+        'v1',
+        ['Mystery', 3],
+        ['StateRefV1', 8],
+        { kind: 9, logId: 4, version: 10 },
+        'ref',
+        'v2',
+      ])
+    );
+    expect(new StateContext().needsRecovery(payload)).toBe(true);
+  });
+
   it("writes no records for a step whose run can't read them", async () => {
     const frozen = produce({ list: [] as number[] }, (d) => {
       d.list.push(1);

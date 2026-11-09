@@ -758,8 +758,11 @@ export class StateContext {
     try {
       scratch.ingest(payload);
       return false;
-    } catch (error) {
-      return error instanceof WorkflowStateMissingError;
+    } catch {
+      // Any failure may hide a missing record behind it (a value the scratch
+      // read can't revive, say). Recovering costs a log read; skipping it when
+      // a record is missing fails the step.
+      return true;
     }
   }
 }
