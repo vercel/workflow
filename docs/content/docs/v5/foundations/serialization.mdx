@@ -175,7 +175,7 @@ const next = Object.freeze([
 ### Rules
 
 - **Frozen values come back frozen.** Changing one in place throws a `TypeError`. Make the next version with `produce` (or a new frozen copy) instead.
-- **`Date`, `Map`, `Set` and byte arrays are trusted.** Inside a frozen value they are treated as unchanging, even though JavaScript lets you change a `Date` or a `Map` after freezing. Change them only by replacing them inside `produce`. Immer already prevents changes to frozen `Map` and `Set` values.
+- **`Date`, `Map`, `Set` and byte arrays are trusted.** Inside a frozen value they are treated as unchanging, even though JavaScript lets you change a `Date` or a `Map` after freezing. Change them only inside `produce` (see the note below).
 - **Only deeply frozen plain data counts.** A value that isn't frozen, is only frozen at the top, or holds a class instance or another custom type is stored in full.
 - **A new value is linked by the objects it shares.** A value whose objects are all new, for example one made only of numbers and strings, is stored in full each time. That's fine for small values.
 - **Some payloads are always stored in full:** run inputs, including values passed to another run through `start()`, workflow return values (so `run.returnValue` reads them as usual), and hook payloads.
@@ -183,15 +183,17 @@ const next = Object.freeze([
 - With `WORKFLOW_VM=quickjs`, values are stored in full, because that VM can't read references yet.
 
 <Callout type="warn">
-Changing a `Date`, `Map`, `Set` or byte array in place inside a frozen value, for example with `date.setTime()`, `map.set()` or `bytes[0] = 1`, isn't recorded. A step that runs in the same invocation may still see the change, but a retried or queued step, and every replay, rebuilds the value from the stored records and sees the original. Replace the object inside `produce` instead:
+Changing a `Date`, `Map`, `Set` or byte array in place inside a frozen value, for example with `date.setTime()`, `map.set()` or `bytes[0] = 1`, isn't recorded. A step that runs in the same invocation may still see the change, but a retried or queued step, and every replay, rebuilds the value from the stored records and sees the original. Make the change inside `produce` instead. Immer drafts a `Map` or `Set` once you call its `enableMapSet()`, and copies it when you change it. It doesn't draft a `Date` or a byte array, so replace those with new ones:
 
 ```typescript
-import { produce } from "immer";
+import { enableMapSet, produce } from "immer";
 declare const state: { updatedAt: Date; tags: ReadonlySet<string> }; // @setup
+
+enableMapSet(); // once, before producing state that holds a Map or Set
 
 const next = produce(state, (draft) => {
   draft.updatedAt = new Date(); // not draft.updatedAt.setTime(Date.now())
-  draft.tags = new Set([...draft.tags, "urgent"]); // not draft.tags.add("urgent")
+  draft.tags.add("urgent"); // immer copies the Set
 });
 ```
 </Callout>
