@@ -61,11 +61,10 @@ const runs =
 
 /**
  * The Schedules API queries that may select this deployment's environment,
- * most specific first: none for production, the custom environment, the Git
- * branch of a Preview, or the user (with and without the branch) of a CLI
- * deployment. See "Choose an environment" in the Schedules HTTP API
- * reference. A CLI deployment from a detached checkout reports `HEAD` as its
- * branch, and its schedules live under the user alone.
+ * most specific first: none for production, the custom environment, or the
+ * Git branch of a Preview. See "Choose an environment" in the Schedules HTTP
+ * API reference. Empty for a CLI deployment, whose environment this lane
+ * does not own (below), so the suite skips it.
  */
 async function scheduleScopes(): Promise<Record<string, string>[]> {
   const res = await fetch(
@@ -97,18 +96,17 @@ async function scheduleScopes(): Promise<Record<string, string>[]> {
     deployment.meta?.gitlabCommitRef ??
     deployment.meta?.bitbucketCommitRef;
   if (deployment.source === 'git' && branch) return [{ branch }];
-  const user = deployment.creator?.uid;
-  if (!user) {
-    throw new Error(
-      `Deployment ${deploymentId} has no creator to scope its schedules to`
-    );
-  }
-  return branch && branch !== 'HEAD'
-    ? [{ user, branch }, { user }]
-    : [{ user }];
+  // A CLI deployment's schedules live in its user's environment, which every
+  // CLI deployment that user makes of the project shares: other pull
+  // requests' lanes deploy the same workbench projects with the same token,
+  // and whichever deployment became current last decides the schedules
+  // there. Nothing this lane could assert would be about its own deployment.
+  return [];
 }
 
 let scope: Record<string, string> = {};
+/** Set in beforeAll: a CLI deployment, whose schedules this lane can't check. */
+let cliDeployment = false;
 
 async function schedulesApi<T>(
   path: string,
@@ -139,6 +137,7 @@ describe.skipIf(!runs)('static schedules from experimental_schedule', () => {
     setupWorld(deploymentUrl);
     // The first scope whose environment exists for the project.
     const candidates = await scheduleScopes();
+    cliDeployment = candidates.length === 0;
     for (const candidate of candidates) {
       scope = candidate;
       try {
@@ -150,7 +149,8 @@ describe.skipIf(!runs)('static schedules from experimental_schedule', () => {
     }
   });
 
-  test('the build emits the declaration as a static schedule on the workflow topic', async () => {
+  test('the build emits the declaration as a static schedule on the workflow topic', async (ctx) => {
+    if (cliDeployment) ctx.skip();
     const schedule = await schedulesApi<{
       name: string;
       source: string;
@@ -185,7 +185,8 @@ describe.skipIf(!runs)('static schedules from experimental_schedule', () => {
   test(
     'running the schedule starts the workflow with the occurrence, once',
     { timeout: RUN_TIMEOUT_MS + 30_000 },
-    async () => {
+    async (ctx) => {
+      if (cliDeployment) ctx.skip();
       expect(
         workflowId,
         'the schedule test above found no workflow'
