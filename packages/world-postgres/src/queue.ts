@@ -1037,18 +1037,36 @@ export function createQueue(
   }
 
   let enqueueOnlyNoted = false;
+  /**
+   * Said once per process: no flow handler is registered here, so this
+   * process only enqueues and runs no jobs. Expected of the CLI, the web UI
+   * or a script; the message says what an app that should run jobs has to
+   * check (the SDK release, how it was built, the startup hook docs).
+   */
+  function noteEnqueueOnly(): void {
+    if (closing || enqueueOnlyNoted || directHandlers.has(ownPrefix())) return;
+    enqueueOnlyNoted = true;
+    console.warn(
+      '[postgres world] No flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), that the app was built for this World (a Next.js app inlines the worker import at build time: build with WORKFLOW_TARGET_WORLD set to this package), and follow the Postgres World docs, "Run the worker when your server starts".'
+    );
+  }
+
+  /**
+   * Whether this process is an application server rather than the CLI, the
+   * web UI or a script: the Next.js server sets NEXT_RUNTIME. Such a process
+   * is expected to have registered the flow route; when it publishes without
+   * one, runs would stay pending with nothing said, since the worker module
+   * that would have called `start()` was left out of its build.
+   */
+  function isApplicationServer(): boolean {
+    return process.env.NEXT_RUNTIME === 'nodejs';
+  }
+
   async function start(): Promise<void> {
     await ensureStarted();
-    // A process that starts the World without having registered the app's
-    // flow route runs no worker: it only enqueues. Expected of the CLI, the
-    // web UI or a script; said once, so an app whose startup hook still only
-    // calls `start()` learns why its runs stay pending.
-    if (!closing && !enqueueOnlyNoted && !directHandlers.has(ownPrefix())) {
-      enqueueOnlyNoted = true;
-      console.warn(
-        '[postgres world] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), that the app was built for this World (a Next.js app inlines the worker import at build time: build with WORKFLOW_TARGET_WORLD set to this package), and follow the Postgres World docs, "Run the worker when your server starts".'
-      );
-    }
+    // An app whose startup hook still only calls `start()` learns why its
+    // runs stay pending.
+    noteEnqueueOnly();
   }
 
   /**
@@ -1080,6 +1098,7 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await ensureStarted();
+    if (isApplicationServer()) noteEnqueueOnly();
     const { prefix, id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);

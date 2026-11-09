@@ -1708,6 +1708,43 @@ describe('postgres queue http execution', () => {
     expect(entry).toHaveBeenCalledTimes(2);
   });
 
+  it('warns once when the app process publishes without a registered flow handler, and not for the CLI or a script', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const notes = () =>
+      warn.mock.calls.filter((call) =>
+        String(call[0]).includes('only enqueues')
+      );
+    try {
+      // The CLI, the web UI or a plain script: enqueue-only is expected, and
+      // a publish says nothing.
+      const script = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await script.queue('__wkf_workflow_test', { runId: 'run_01A' });
+      expect(notes()).toHaveLength(0);
+
+      // The app's server process (a Next.js build made for another World
+      // dropped the worker module, so nothing registered the route or called
+      // start()): the first publish says why runs will stay pending, once.
+      vi.stubEnv('NEXT_RUNTIME', 'nodejs');
+      const app = buildQueue({ connectionString: 'postgres://test' }, pool);
+      await app.queue('__wkf_workflow_test', { runId: 'run_01B' });
+      await app.queue('__wkf_workflow_test', { runId: 'run_01C' });
+      expect(notes()).toHaveLength(1);
+      expect(String(notes()[0][0])).toMatch(/built for this World/);
+
+      // A worker process publishes quietly.
+      const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
+      worker.registerHandler(
+        '__wkf_workflow_',
+        withEntry(async () => undefined)
+      );
+      await worker.queue('__wkf_workflow_test', { runId: 'run_01D' });
+      expect(notes()).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+      warn.mockRestore();
+    }
+  });
+
   it('notes once that a process without the flow handler only enqueues', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const notes = () =>
