@@ -4221,10 +4221,13 @@ export async function hydrateStepArguments(
     compressionStats,
   };
   const result = await stepModule.deserialize(value, key, options);
-  // The step's output must be encoded against the same context (possibly just
-  // recovered) so a state change can refer to the version it builds on. A step
-  // whose input needed none still writes its output into the run's log.
-  const outputContext = options.stateContext ?? new StateContext();
+  // The step's output is encoded against the same context (possibly just
+  // recovered) so a state change can refer to the version it builds on, but
+  // through its own layer: an inline step shares the replay's context with the
+  // steps beside it, and none may build on another's uncommitted output (see
+  // `StateContext.forStep`). A step whose input needed none still writes its
+  // output into the run's log.
+  const outputContext = (options.stateContext ?? new StateContext()).forStep();
   // Only a workflow that reads state records gets them back: a QuickJS run's
   // inputs don't carry the field (see `STATE_REFS_FIELD`).
   if ((result as Record<string, unknown> | null)?.[STATE_REFS_FIELD] !== 1)

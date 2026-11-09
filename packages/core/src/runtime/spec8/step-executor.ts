@@ -1001,7 +1001,9 @@ export async function executeStep(
             optimisticStart ? params.runReadyBarrier : undefined,
             stateContext
           );
-          stateContext ??= stateContextForData(hydrated);
+          // The step writes its output through the layer the hydrated input
+          // is bound to, not the context shared with other inline steps.
+          stateContext = stateContextForData(hydrated) ?? stateContext;
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
             ...stateHydrateAttributes(stateContext),

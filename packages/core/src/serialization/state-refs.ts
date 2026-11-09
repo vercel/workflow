@@ -208,6 +208,40 @@ function hasBrand(check: () => unknown): boolean {
   }
 }
 
+/**
+ * Whether a trusted leaf holds only what tracked state may: a `Map` or `Set`
+ * whose keys and values are primitives, trusted leaves or frozen state. A
+ * class instance inside one couldn't be rebuilt without workflow code, so the
+ * value holding it is stored in full. Not cached: a `Map` or `Set` can change.
+ */
+function holdsOnlyState(leaf: object, depth: number): boolean {
+  const tag = Object.prototype.toString.call(leaf);
+  if (tag !== '[object Map]' && tag !== '[object Set]') return true;
+  if (depth > MAX_DEPTH) return false;
+  let ok = true;
+  const check = (entry: unknown) => {
+    if (!ok) return;
+    if (entry === null || typeof entry !== 'object') {
+      if (typeof entry === 'function' || typeof entry === 'symbol') ok = false;
+      return;
+    }
+    if (frozenState.has(entry)) return;
+    if (isTrustedLeaf(entry)) {
+      if (!holdsOnlyState(entry, depth + 1)) ok = false;
+      return;
+    }
+    if (!isFrozenState(entry, depth + 1)) ok = false;
+  };
+  // The built-in methods, not the value's own: it may come from another realm.
+  if (tag === '[object Map]')
+    Map.prototype.forEach.call(leaf, (value: unknown, key: unknown) => {
+      check(key);
+      check(value);
+    });
+  else Set.prototype.forEach.call(leaf, (value: unknown) => check(value));
+  return ok;
+}
+
 /** Plain objects and arrays already found deeply frozen; freezing can't be undone. */
 const frozenState = globalSingleton(
   '@workflow/core//frozen-state',
@@ -241,7 +275,10 @@ export function isFrozenState(value: unknown, depth = 0): boolean {
     }
     // Checked first: the children of a growing value are mostly known.
     if (frozenState.has(child)) continue;
-    if (isTrustedLeaf(child)) continue;
+    if (isTrustedLeaf(child)) {
+      if (!holdsOnlyState(child, depth + 1)) return false;
+      continue;
+    }
     if (!isFrozenState(child, depth + 1)) return false;
   }
   frozenState.add(value);
@@ -291,6 +328,41 @@ export class StateContext {
    */
   writesRecords = true;
 
+  /**
+   * A context for writing one step's output. It sees every version this
+   * context knows, but the versions the step writes stay its own: they join
+   * this context only when replay reads the step's committed `step_completed`.
+   * Steps running side by side therefore never build on each other's
+   * uncommitted output, which a reader of the log might not find.
+   */
+  forStep(): StateContext {
+    const child = new StateContext();
+    child.parent = this;
+    child.registrations = this.registrations;
+    child.sources = this.sources;
+    child.strings = this.strings;
+    child.recentInputs = [...this.recentInputs];
+    child.standalone = this.standalone;
+    child.writesSourceRefs = this.writesSourceRefs;
+    child.writesRecords = this.writesRecords;
+    // What reading the step's input cost, for its span.
+    Object.assign(child.stats, this.stats);
+    return child;
+  }
+
+  private version(id: string): Version | undefined {
+    return this.versions.get(id) ?? this.parent?.version(id);
+  }
+  private versionOfValue(value: object): string | undefined {
+    return this.versionOf.get(value) ?? this.parent?.versionOfValue(value);
+  }
+  private ownerOf(value: object): string | undefined {
+    return this.owners.get(value) ?? this.parent?.ownerOf(value);
+  }
+  private rank(version: string): number {
+    return this.order.get(version) ?? this.parent?.rank(version) ?? 0;
+  }
+
   /** A context for payloads read without the run's log: it writes no records. */
   static standalone(): StateContext {
     const context = new StateContext();
@@ -302,8 +374,19 @@ export class StateContext {
    * first seen. Code may edit a revived hook payload or run input later; state
    * changes must still resolve to the strings that were stored.
    */
-  private readonly sources = new Map<string, Map<string, string>>();
-  private readonly strings = new Map<string, SourceString>();
+  private sources = new Map<string, Map<string, string>>();
+  private strings = new Map<string, SourceString>();
+  /**
+   * The context a step's output is written against (see `forStep`): its
+   * versions can be bases and references; this context's own versions are
+   * the step's, until replay reads them back from the committed log.
+   */
+  private parent: StateContext | undefined;
+  /**
+   * Registration order, shared with the layers made from this context, so a
+   * step's versions rank after the ones it can see.
+   */
+  private registrations = { count: 0 };
   readonly stats = {
     refs: 0,
     patches: 0,
@@ -361,8 +444,8 @@ export class StateContext {
 
   /** A version this context can write a reference to. */
   private isKnown(value: object): boolean {
-    const version = this.versionOf.get(value);
-    return version !== undefined && this.versions.has(version);
+    const version = this.versionOfValue(value);
+    return version !== undefined && this.version(version) !== undefined;
   }
 
   /** Marks the values a change carries as part of the record being written. */
@@ -389,26 +472,25 @@ export class StateContext {
     while (stack.length > 0) {
       const node = stack.pop();
       if (node === null || typeof node !== 'object') continue;
-      if (node !== value && this.versionOf.has(node)) continue;
-      const owner = node === value ? undefined : this.owners.get(node);
+      if (node !== value && this.versionOfValue(node) !== undefined) continue;
+      const owner = node === value ? undefined : this.ownerOf(node);
       if (owner !== undefined) {
         counts.set(owner, (counts.get(owner) ?? 0) + 1);
         continue;
       }
       if (isTrustedLeaf(node)) continue;
-      if (Array.isArray(node)) stack.push(...node);
+      // A loop, not a spread: spreading a large array overflows the stack.
+      if (Array.isArray(node)) for (const child of node) stack.push(child);
       else for (const key of Object.keys(node)) stack.push((node as Dict)[key]);
     }
     if (counts.size === 0) return this.closestInput(value);
     let best: string | undefined;
     for (const [version, count] of counts) {
-      if (!this.versions.has(version)) continue;
+      if (this.version(version) === undefined) continue;
       const bestCount = best === undefined ? -1 : (counts.get(best) as number);
       if (
         count > bestCount ||
-        (count === bestCount &&
-          (this.order.get(version) ?? 0) >
-            (this.order.get(best as string) ?? 0))
+        (count === bestCount && this.rank(version) > this.rank(best as string))
       )
         best = version;
     }
@@ -423,7 +505,7 @@ export class StateContext {
     let best: string | undefined;
     let bestBytes = Number.POSITIVE_INFINITY;
     for (const version of this.recentInputs) {
-      const entry = this.versions.get(version);
+      const entry = this.version(version);
       if (entry === undefined) continue;
       const ops = diffState(entry.value, value);
       if (ops.some((op) => op.op === 'set' && op.path.length === 0)) continue;
@@ -439,7 +521,7 @@ export class StateContext {
   /** Remembers a version, its value, and which objects it holds. */
   private register(version: string, entry: Version): void {
     this.versions.set(version, entry);
-    this.order.set(version, this.order.size);
+    this.order.set(version, ++this.registrations.count);
     const { value } = entry;
     if (value === null || typeof value !== 'object') return;
     this.versionOf.set(value, version);
@@ -449,10 +531,11 @@ export class StateContext {
     while (stack.length > 0) {
       const node = stack.pop();
       if (node === null || typeof node !== 'object') continue;
-      const known = this.owners.has(node);
+      const known = this.ownerOf(node) !== undefined;
       this.owners.set(node, version);
       if (known || isTrustedLeaf(node)) continue;
-      if (Array.isArray(node)) stack.push(...node);
+      // A loop, not a spread: spreading a large array overflows the stack.
+      if (Array.isArray(node)) for (const child of node) stack.push(child);
       else for (const key of Object.keys(node)) stack.push((node as Dict)[key]);
     }
   }
@@ -487,16 +570,15 @@ export class StateContext {
   }
 
   private reduceTracked(value: object, register: boolean): unknown {
-    const known = this.versionOf.get(value);
-    const knownEntry =
-      known === undefined ? undefined : this.versions.get(known);
+    const known = this.versionOfValue(value);
+    const knownEntry = known === undefined ? undefined : this.version(known);
     if (known !== undefined && knownEntry !== undefined) {
       this.stats.refs++;
       return { kind: 'ref', logId: knownEntry.logId, version: known };
     }
     const baseVersion = this.findBase(value);
     const base =
-      baseVersion === undefined ? undefined : this.versions.get(baseVersion);
+      baseVersion === undefined ? undefined : this.version(baseVersion);
     if (baseVersion !== undefined && base !== undefined) {
       const ops = diffState(base.value, value);
       // The same data as a known version, in new objects: refer to it.
@@ -591,7 +673,7 @@ export class StateContext {
   private reviveTracked(d: Dict, register: boolean): unknown {
     const logId = checkedId(d.logId, 'workflow state log');
     const version = checkedId(d.version, 'workflow state version');
-    const known = this.versions.get(version);
+    const known = this.version(version);
     if (d.kind === 'ref') {
       if (known?.logId !== logId)
         throw new WorkflowStateMissingError(
@@ -614,7 +696,7 @@ export class StateContext {
       this.assertKnownTypes(value);
     } else {
       const base =
-        typeof d.base === 'string' ? this.versions.get(d.base) : undefined;
+        typeof d.base === 'string' ? this.version(d.base) : undefined;
       if (base?.logId !== logId)
         throw new WorkflowStateMissingError(
           `Missing workflow state base ${logId}:${String(d.base)}`
@@ -728,8 +810,20 @@ export class StateContext {
       throw new Error(
         'Workflow state holds a value that cannot be recovered without running workflow code'
       );
-    for (const key of Object.keys(value))
-      this.assertKnownTypes((value as Dict)[key], depth + 1);
+    // Placeholders can sit inside a Map or Set as well as an object.
+    const tag = Object.prototype.toString.call(value);
+    if (tag === '[object Map]')
+      Map.prototype.forEach.call(value, (entry: unknown, key: unknown) => {
+        this.assertKnownTypes(key, depth + 1);
+        this.assertKnownTypes(entry, depth + 1);
+      });
+    else if (tag === '[object Set]')
+      Set.prototype.forEach.call(value, (entry: unknown) =>
+        this.assertKnownTypes(entry, depth + 1)
+      );
+    else
+      for (const key of Object.keys(value))
+        this.assertKnownTypes((value as Dict)[key], depth + 1);
   }
 
   /**

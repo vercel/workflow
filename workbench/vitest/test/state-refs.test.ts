@@ -9,12 +9,14 @@ import {
   stateRefsAcrossRuns,
   stateRefsBodyProduce,
   stateRefsChat,
+  stateRefsClassInMap,
   stateRefsClassInState,
   stateRefsFanOut,
   stateRefsLongChain,
   stateRefsOverwrites,
   stateRefsRichValues,
   stateRefsShapes,
+  stateRefsSiblings,
 } from '../workflows/state-refs.js';
 
 /**
@@ -253,6 +255,23 @@ describe(`frozen state stored by reference (${refs ? 'node' : 'quickjs: stored w
   // failed when state was tracked by lineage: cold steps couldn't revive it).
   it('a custom-serde class inside state, read by queued steps', async () => {
     const run = await start(stateRefsClassInState, []);
+    await expect(run.returnValue).resolves.toEqual(
+      [0, 1, 2, 3, 4, 5].map((i) => `${i}:true:1`)
+    );
+  }, 60_000);
+
+  // Parallel steps share the replay's context. Neither may build on the
+  // other's output before it commits: here the second to serialize commits
+  // first, and the log must still read back.
+  it('parallel steps on the same state, committing in the other order', async () => {
+    const run = await start(stateRefsSiblings, []);
+    await expect(run.returnValue).resolves.toEqual(['seed,B', 'seed,A']);
+  }, 60_000);
+
+  // A Map holding a custom-serde class makes the value not plain data, so it
+  // is stored whole and queued steps get the class, not a placeholder.
+  it('a custom-serde class inside a Map in state, read by queued steps', async () => {
+    const run = await start(stateRefsClassInMap, []);
     await expect(run.returnValue).resolves.toEqual(
       [0, 1, 2, 3, 4, 5].map((i) => `${i}:true:1`)
     );

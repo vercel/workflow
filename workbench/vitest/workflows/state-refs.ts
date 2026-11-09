@@ -5,7 +5,7 @@
  */
 
 import { type Immutable, produce } from 'immer';
-import { createHook, getStepMetadata, sleep } from 'workflow';
+import { createHook, getStepMetadata, getWritable, sleep } from 'workflow';
 import { start } from 'workflow/api';
 
 export type Msg = { role: 'user' | 'assistant'; content: string };
@@ -284,4 +284,67 @@ export async function stateRefsClassInState() {
   chat = await reply(chat, 'a');
   chat = await withPoint(chat);
   return Promise.all([0, 1, 2, 3, 4, 5].map((i) => readPoint(chat, i)));
+}
+
+async function seedChat() {
+  'use step';
+  return produce({ history: [] as Msg[], turns: 0 } as Chat, (d) => {
+    d.history.push({ role: 'user', content: 'seed' });
+  });
+}
+
+async function slowCommit(chat: Immutable<Chat>) {
+  'use step';
+  // A stream write makes the executor wait before committing this output.
+  await getWritable<string>().getWriter().write('x');
+  return produce(chat, (d) => {
+    d.history.push({ role: 'assistant', content: 'B' });
+  });
+}
+
+async function fastLater(chat: Immutable<Chat>) {
+  'use step';
+  // Serializes after `slowCommit`, but commits first.
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  return produce(chat, (d) => {
+    d.history.push({ role: 'assistant', content: 'A' });
+  });
+}
+
+async function lastContent(chat: Immutable<Chat>) {
+  'use step';
+  return chat.history.map((m) => m.content).join(',');
+}
+
+/** Two parallel steps on the same state, committing in the other order. */
+export async function stateRefsSiblings() {
+  'use workflow';
+  const chat = await seedChat();
+  const [b, a] = await Promise.all([slowCommit(chat), fastLater(chat)]);
+  await sleep('1s'); // the next steps replay from the log
+  return [await lastContent(b), await lastContent(a)];
+}
+
+async function withPointInMap(chat: Immutable<Chat>) {
+  'use step';
+  return produce(chat, (d) => {
+    (d as unknown as { m: Map<string, Point> }).m = new Map([
+      ['p', new Point(1, 2)],
+    ]);
+  });
+}
+
+async function readPointInMap(chat: Immutable<Chat>, i: number) {
+  'use step';
+  const at = (chat as unknown as { m: Map<string, unknown> }).m.get('p');
+  return `${i}:${at instanceof Point}:${(at as Point).x}`;
+}
+
+/** A custom-serde class inside a Map in state, read by queued (cold) steps. */
+export async function stateRefsClassInMap() {
+  'use workflow';
+  let chat: Immutable<Chat> = { history: [], turns: 0 };
+  chat = await reply(chat, 'a');
+  chat = await withPointInMap(chat);
+  return Promise.all([0, 1, 2, 3, 4, 5].map((i) => readPointInMap(chat, i)));
 }

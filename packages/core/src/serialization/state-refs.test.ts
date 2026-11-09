@@ -425,6 +425,169 @@ describe('frozen values stored by reference', () => {
     expect(new StateContext().needsRecovery(payload)).toBe(true);
   });
 
+  it("never builds a step's output on a sibling step's uncommitted output", () => {
+    // Inline steps share the replay's context; each writes through its own layer.
+    const shared = new StateContext();
+    const out0 = write(
+      { s: produce({ history: [{ c: 0 }] }, () => {}) },
+      shared
+    );
+    const chat = read(out0, shared).s as { history: { c: unknown }[] };
+    const writeStep = (c: string) =>
+      write(
+        {
+          s: produce(chat, (d) => {
+            d.history.push({ c });
+          }),
+        },
+        shared.forStep()
+      );
+    // Two steps run side by side on the same input; B serializes first.
+    const outB = writeStep('B');
+    const outA = writeStep('A');
+    // Each builds on the committed input, so any commit order reads back,
+    // including one where B's commit never lands.
+    for (const log of [
+      [out0, outB, outA],
+      [out0, outA, outB],
+      [out0, outA],
+    ]) {
+      const reader = cold(...log.slice(0, -1));
+      const last = read(log.at(-1) as Uint8Array, reader).s;
+      expect(last.history.map((m: { c: unknown }) => m.c)).toEqual([
+        0,
+        log.at(-1) === outA ? 'A' : 'B',
+      ]);
+    }
+    // Once replay reads B's committed output, a later step builds on it.
+    const b = read(outB, shared).s as typeof chat;
+    const later = shared.forStep();
+    const outC = write(
+      {
+        s: produce(b, (d) => {
+          d.history.push({ c: 'C' });
+        }),
+      },
+      later
+    );
+    expect(text(outC)).toContain('"patch"');
+    expect(read(outC, cold(out0, outB)).s.history).toHaveLength(3);
+  });
+
+  it('keeps parallel steps apart through step hydration', async () => {
+    const shared = new StateContext();
+    const vm = Object.create(globalThis);
+    bindStateContext(vm, shared);
+    const out0 = write(
+      { s: produce({ history: [{ c: 0 }] }, () => {}) },
+      shared
+    );
+    const chat = read(out0, shared).s as { history: { c: unknown }[] };
+    const input = await dehydrateStepArguments(
+      { args: [chat], closureVars: undefined, thisVal: undefined },
+      'wrun_1',
+      undefined,
+      vm
+    );
+    // Both steps hydrate against the shared context, as inline steps do.
+    const runStep = async (c: string) => {
+      const hydrated = await hydrateStepArguments(
+        input,
+        'wrun_1',
+        undefined,
+        [],
+        globalThis,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        shared
+      );
+      return async () =>
+        (await dehydrateStepReturnValue(
+          produce(hydrated.args[0] as typeof chat, (d) => {
+            d.history.push({ c });
+          }),
+          'wrun_1',
+          undefined,
+          [],
+          globalThis,
+          false,
+          false,
+          false,
+          undefined,
+          [],
+          false,
+          stateContextForData(hydrated)
+        )) as Uint8Array;
+    };
+    const [finishB, finishA] = await Promise.all([runStep('B'), runStep('A')]);
+    const outB = await finishB();
+    const outA = await finishA();
+    // A's output builds on the input both read, not on B's.
+    expect(read(outA, cold(out0)).history).toEqual([{ c: 0 }, { c: 'A' }]);
+    expect(read(outB, cold(out0)).history).toEqual([{ c: 0 }, { c: 'B' }]);
+  });
+
+  it('stores a value whole when a Map or Set in it holds a class instance', () => {
+    class Point {
+      constructor(public x: number) {}
+    }
+    const freeze = <T extends object>(o: T): T => Object.freeze(o);
+    const withClass = freeze({ m: new Map([['p', new Point(1)]]) });
+    const inSet = freeze({ s: new Set([new Point(1)]) });
+    const nested = freeze({
+      m: new Map([['inner', new Map([['p', new Point(1)]])]]),
+    });
+    for (const value of [withClass, inSet, nested])
+      expect(isFrozenState(value)).toBe(false);
+    // Frozen plain data, dates and primitives inside are still tracked.
+    const plain = freeze({
+      m: new Map<unknown, unknown>([
+        ['a', freeze({ n: 1 })],
+        [1, new Date(0)],
+      ]),
+      s: new Set(['x', freeze([1, 2])]),
+    });
+    expect(isFrozenState(plain)).toBe(true);
+  });
+
+  it('refuses a placeholder inside a Map during cold recovery', () => {
+    // A whole value whose Map holds a type recovery can't revive.
+    const payload = new TextEncoder().encode(
+      JSON.stringify([
+        { s: 1 },
+        ['StateRefV1', 2],
+        { kind: 3, logId: 4, version: 5, value: 6 },
+        'full',
+        'l',
+        'v1',
+        { m: 7 },
+        ['Map', 8],
+        [9],
+        [10, 11],
+        'p',
+        ['Mystery', 12],
+        1,
+      ])
+    );
+    expect(() => new StateContext().ingest(payload)).toThrow(
+      /cannot be recovered without running workflow code/
+    );
+  });
+
+  it('serializes a large frozen array', () => {
+    const big = Object.freeze(Array.from({ length: 200_000 }, (_, i) => i));
+    const context = new StateContext();
+    const out = write({ a: big }, context);
+    expect(read(out, cold()).a).toHaveLength(200_000);
+    // And its next version, which walks the shared elements.
+    const next = Object.freeze([...big, 200_000]);
+    expect(read(write({ a: next }, context), cold(out)).a).toHaveLength(
+      200_001
+    );
+  });
+
   it("writes no records for a step whose run can't read them", async () => {
     const frozen = produce({ list: [] as number[] }, (d) => {
       d.list.push(1);
