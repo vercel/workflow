@@ -10,7 +10,6 @@
     "test:smoke": "node ./scripts/check-tarballs-smoke.mjs"
   },
   "dependencies": {
-    "@workflow/ai": "workspace:*",
     "@workflow/astro": "workspace:*",
     "@workflow/builders": "workspace:*",
     "@workflow/cli": "workspace:*",

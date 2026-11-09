@@ -33,7 +33,6 @@ Documentation structure in `node_modules/workflow/docs/`:
 Related packages also include bundled docs:
 
 - `@ai-sdk/workflow`: `node_modules/ai/docs/` - WorkflowAgent and AI SDK integration
-- `@workflow/ai`: `node_modules/@workflow/ai/docs/` - deprecated DurableAgent APIs for existing applications
 - `@workflow/core`: `node_modules/@workflow/core/docs/` - Core runtime (foundations, how-it-works)
 - `@workflow/next`: `node_modules/@workflow/next/docs/` - Next.js integration
 
@@ -145,7 +144,7 @@ For agents, use `WorkflowAgent` (below).
 
 ## WorkflowAgent: AI agents in Workflow 5
 
-Use AI SDK's `WorkflowAgent` for durable agents on Workflow 5. It replaces the deprecated `DurableAgent` API from `@workflow/ai` and checkpoints model calls and step-backed tools.
+Use AI SDK's `WorkflowAgent` for durable agents on Workflow 5. It replaces `DurableAgent` from the deprecated `@workflow/ai` package and checkpoints model calls and step-backed tools.
 
 ```typescript
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
