@@ -134,9 +134,11 @@ export function createRunStateHydrator(
       ? await deriveRunPayloadKeys(current.key)
       : undefined;
     if (!current.startedInput) {
+      // The run input only supplies strings later state may refer to; a run
+      // whose input can't be read still rebuilds everything else.
       await add(
         current.resolver,
-        await options.loadRunInput(),
+        await options.loadRunInput().catch(() => undefined),
         key,
         stateSourceId('run-input')
       );
