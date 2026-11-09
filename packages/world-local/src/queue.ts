@@ -33,6 +33,7 @@ import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './db/codec.js';
+import { databaseFor } from './db/index.js';
 import { getPackageInfo } from './init.js';
 import type { QueueAuthKey } from './queue-auth-key.js';
 
@@ -71,14 +72,30 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // Larger values cause "TimeoutOverflowWarning: X does not fit into a 32-bit signed integer"
 // When the clamped timeout fires, the handler will recalculate remaining time from
 // persistent state and return another timeoutSeconds if needed.
-const MAX_SAFE_TIMEOUT_MS = 2147483647;
+export const MAX_SAFE_TIMEOUT_MS = 2147483647;
 
 // How long close() waits for first delivery attempts already under way (see
-// `firstAttempts` in createQueue) before it aborts them. It only has to cover
-// getting the request to the app (the key, the base URL, a connect, a write):
-// the app's handler does not stop when the sender goes away, so a request the
-// app has read is not lost by aborting before its answer.
+// `firstAttempts` in createQueue) before it aborts them. The app's handler
+// does not stop when the sender goes away, so close() only has to wait until
+// the app has the request, not for its answer.
+//
+// A message for a run is waited for until the app has written to the run
+// (its `seq` moved past where it was when the message was sent), up to
+// CLOSE_RUN_MESSAGE_WAIT_MS: long enough for a dev server that compiles the
+// flow route on its first request. Any other message is waited for up to
+// CLOSE_FIRST_ATTEMPT_WAIT_MS, which covers getting it to a warm app.
 const CLOSE_FIRST_ATTEMPT_WAIT_MS = 1_000;
+const CLOSE_RUN_MESSAGE_WAIT_MS = 10_000;
+const CLOSE_POLL_MS = 50;
+
+/** A message's first delivery attempt, while close() may wait for it. */
+interface FirstAttempt {
+  /** Settles when the attempt has an answer, or has failed. */
+  done: Promise<void>;
+  runId?: string;
+  /** The run's `seq` when the message was sent; undefined for no run. */
+  seqAtSend?: number;
+}
 
 /**
  * The most deliveries world-local makes of one message (handoffs aside): a
@@ -323,14 +340,26 @@ export function createQueue(
   const closeSignal = closeController.signal;
   /**
    * The first delivery attempt of each message sent without a delay, until
-   * the attempt has an answer (or has failed). close() waits for them, up to
-   * CLOSE_FIRST_ATTEMPT_WAIT_MS, before it aborts: a short-lived sender (the
+   * the attempt has an answer (or has failed). close() waits for them (see
+   * CLOSE_RUN_MESSAGE_WAIT_MS) before it aborts: a short-lived sender (the
    * CLI's `wf start`, a script) closes its World right after `start()`
    * returns, and aborting a first attempt that has not reached the app yet
    * loses the message (the queue is in memory), leaving the new run pending.
    */
-  const firstAttempts = new Set<Promise<void>>();
+  const firstAttempts = new Set<FirstAttempt>();
   let closing: Promise<void> | undefined;
+  /** The run's `seq`, or undefined when it cannot be read (no run, no data directory). */
+  const runSeq = (runId: string): number | undefined => {
+    if (!config.dataDir) return undefined;
+    try {
+      return databaseFor(config.dataDir).get<{ seq: number }>(
+        'SELECT seq FROM runs WHERE run_id = ?',
+        runId
+      )?.seq;
+    } catch {
+      return undefined;
+    }
+  };
 
   /**
    * holds inflight messages by idempotency key to ensure
@@ -404,12 +433,16 @@ export function createQueue(
     let firstAttemptDone = () => {};
     if (!(opts?.delaySeconds && opts.delaySeconds > 0)) {
       let resolve = () => {};
-      const promise = new Promise<void>((done) => {
-        resolve = done;
-      });
-      firstAttempts.add(promise);
+      const attempt: FirstAttempt = {
+        done: new Promise<void>((done) => {
+          resolve = done;
+        }),
+        runId,
+        seqAtSend: runId === undefined ? undefined : runSeq(runId),
+      };
+      firstAttempts.add(attempt);
       firstAttemptDone = () => {
-        firstAttempts.delete(promise);
+        firstAttempts.delete(attempt);
         resolve();
       };
     }
@@ -851,15 +884,28 @@ export function createQueue(
       // Idempotent: shutdown paths (CLI signal handlers, test teardown)
       // may close the queue more than once.
       closing ??= (async () => {
-        if (firstAttempts.size > 0) {
+        const started = Date.now();
+        // Still to reach the app: unanswered, and (for a message for a run)
+        // the app has not written to its run since it was sent.
+        const unreached = () =>
+          [...firstAttempts].filter((attempt) => {
+            const elapsed = Date.now() - started;
+            if (
+              attempt.seqAtSend === undefined ||
+              attempt.runId === undefined
+            ) {
+              return elapsed < CLOSE_FIRST_ATTEMPT_WAIT_MS;
+            }
+            if (elapsed >= CLOSE_RUN_MESSAGE_WAIT_MS) return false;
+            const seq = runSeq(attempt.runId);
+            return seq === undefined || seq <= attempt.seqAtSend;
+          });
+        for (let open = unreached(); open.length > 0; open = unreached()) {
           let timer: ReturnType<typeof globalThis.setTimeout> | undefined;
           await Promise.race([
-            Promise.allSettled([...firstAttempts]),
+            Promise.allSettled(open.map((attempt) => attempt.done)),
             new Promise<void>((resolve) => {
-              timer = globalThis.setTimeout(
-                resolve,
-                CLOSE_FIRST_ATTEMPT_WAIT_MS
-              );
+              timer = globalThis.setTimeout(resolve, CLOSE_POLL_MS);
               timer.unref?.();
             }),
           ]);

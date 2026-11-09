@@ -572,6 +572,19 @@ describe('initDataDir legacy JSON layout', () => {
     );
   });
 
+  it('says once, on the upgrade, that the earlier runs are no longer read', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    await initDataDir(dataDir);
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info.mock.calls[0][0]).toContain('no longer read');
+    expect(info.mock.calls[0][0]).toContain(path.join(dataDir, 'runs'));
+
+    // The version file now names this version: the next start says nothing.
+    await initDataDir(dataDir);
+    expect(info).toHaveBeenCalledTimes(1);
+  });
+
   it('starts next to the JSON data, with or without a version file or database', async () => {
     rmSync(path.join(dataDir, 'version.txt'));
     writeFileSync(path.join(dataDir, 'world.db'), '');

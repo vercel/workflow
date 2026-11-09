@@ -175,6 +175,10 @@ function open(file: string): Connection {
  * file, or the directory (the CLI or web UI pointed at an app that has not
  * run yet must not write into its data directory); the first write does.
  * Never written to, so one serves every data directory.
+ *
+ * Once the file exists, a read opens it like a write does: a file another
+ * process has created but not yet set up (WAL mode, the schema) is set up by
+ * whichever connection opens it first, reader or writer.
  */
 function emptyDatabase(): Connection {
   if (!state.empty) {

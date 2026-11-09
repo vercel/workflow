@@ -18,6 +18,7 @@ import {
 } from './orphaned-steps.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { createQueueAuthKey } from './queue-auth-key.js';
+import { backstopWakeDelaySeconds } from './recovery-wake.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
@@ -157,12 +158,17 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // previous process are released. Recovery assumes this is the only
       // live process on this data directory and tag.
       //
-      // The recovery message carries a recovery marker, so a
-      // single-orchestrator (spec 9) delivery of it sends the run's step
-      // messages and wait timers again. On top of that every open wait of a
-      // recovered run gets a wake of its own, due when the wait is: a timer
-      // is the one thing nothing else re-sends, and a run whose sleep lost
-      // its timer would otherwise never wake.
+      // The recovery delivery is what re-arms a run's lost wait timers: a
+      // spec 8 replay suspends on the open wait again and re-arms it, and the
+      // recovery message carries a recovery marker, so a single-orchestrator
+      // (spec 9) delivery sends the run's step messages and wait timers again
+      // (chained in hops for a wait longer than one queue delay). So a spec 9
+      // wait gets two wakes; one is a no-op.
+      //
+      // On top of that, as a backstop, every open wait of a recovered run due
+      // within one queue timer gets a plain wake of its own, due when the
+      // wait is (see `backstopWakeDelaySeconds`): a wait whose timer is lost
+      // leaves a run asleep forever, so it is worth one more message.
       const releases = createReleasePipeline(storage);
       const recoveryRuns = {
         ...storage.runs,
@@ -196,6 +202,8 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           const resumeAt = wait.resumeAt
             ? new Date(wait.resumeAt).getTime()
             : now;
+          const delaySeconds = backstopWakeDelaySeconds(resumeAt, now);
+          if (delaySeconds === undefined) continue;
           try {
             await queue.queue(
               queueName,
@@ -205,7 +213,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
                 requestedAt: new Date(),
               },
               {
-                delaySeconds: Math.max(0, Math.ceil((resumeAt - now) / 1000)),
+                delaySeconds,
                 idempotencyKey: `recovery-wait:${runId}:${wait.waitId}:${resumeAt}`,
               }
             );

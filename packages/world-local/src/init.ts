@@ -409,6 +409,16 @@ export async function initDataDir(dataDir: string): Promise<void> {
       `[world-local] ${path.resolve(dataDir)} holds run data of an earlier release (${legacy.join(', ')}); it is left in place and not read`
     );
   }
+  // Said once, when the data directory moves to this version (the version
+  // file is rewritten then), so an upgrade explains why earlier runs are
+  // gone from the CLI and the web UI.
+  const noticeLegacy = () => {
+    if (legacy.length === 0) return;
+    console.info(
+      `[world-local] Runs recorded by an earlier version of @workflow/world-local are no longer read (this version keeps its data in ${path.join(path.resolve(dataDir), 'world.db')}), so the CLI and the web UI do not list them. ` +
+        `Their files are still in ${legacy.map((entry) => path.join(path.resolve(dataDir), entry)).join(', ')}, and can be deleted.`
+    );
+  };
 
   const packageInfo = await getPackageInfo();
   const currentVersion = parseVersion(packageInfo.version);
@@ -419,6 +429,7 @@ export async function initDataDir(dataDir: string): Promise<void> {
   if (existingVersionInfo === null) {
     // New data directory - write the current version
     await writeVersionFile(dataDir, currentVersion);
+    noticeLegacy();
     return;
   }
 
@@ -434,6 +445,7 @@ export async function initDataDir(dataDir: string): Promise<void> {
     upgradeVersion(oldVersion, currentVersion);
     // Upgrade succeeded - write the new version
     await writeVersionFile(dataDir, currentVersion);
+    noticeLegacy();
   } catch (error: unknown) {
     const suggestedVersion =
       error instanceof DataDirVersionError ? error.suggestedVersion : undefined;
