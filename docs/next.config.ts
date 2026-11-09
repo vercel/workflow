@@ -168,12 +168,24 @@ const config: NextConfig = {
       // equivalents are intentionally omitted: those URLs carried noindex,
       // and the /v5 prefix collapses into the unprefixed space when v5
       // becomes the default docs version.
-      // `DurableAgent` is not in `@workflow/ai` 6, so its v5 reference page
-      // is gone; send old links to AI SDK's DurableAgent migration guide.
+      // `@workflow/ai` (`DurableAgent`, `WorkflowChatTransport`) is not part of
+      // Workflow 6; its v5 reference pages are gone. AI SDK's `@ai-sdk/workflow`
+      // replaces both, so send old links to its docs.
+      {
+        source: '/docs/api-reference/workflow-ai',
+        destination: 'https://ai-sdk.dev/v7/docs/agents/workflow-agent',
+        permanent: true,
+      },
       {
         source: '/docs/api-reference/workflow-ai/durable-agent',
         destination:
           'https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent',
+        permanent: true,
+      },
+      {
+        source: '/docs/api-reference/workflow-ai/workflow-chat-transport',
+        destination:
+          'https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport',
         permanent: true,
       },
       {

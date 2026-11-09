@@ -91,9 +91,8 @@ const compilerOptions: ts.CompilerOptions = {
       path.join(repoRoot, 'packages/core/dist/serialization-format'),
     ],
     '@workflow/utils': [path.join(repoRoot, 'packages/utils/dist/index')],
-    '@workflow/ai': [path.join(repoRoot, 'packages/ai/dist/index')],
-    // `@workflow/ai/agent` (`DurableAgent`) is not in `@workflow/ai` 6. Only the
-    // v4 docs still import it, so it resolves as an unknown module there.
+    // `@workflow/ai` is not part of Workflow 6. Only the v4 docs still import
+    // it, so it resolves as an unknown module there.
     '@workflow/next': [path.join(repoRoot, 'packages/next/dist/index')],
     '@workflow/errors': [path.join(repoRoot, 'packages/errors/dist/index')],
     '@workflow/serde': [path.join(repoRoot, 'packages/serde/dist/index')],

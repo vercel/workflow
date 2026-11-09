@@ -15,7 +15,6 @@
     "workflow-nest",
     "workflow-errors",
     "workflow-serde",
-    "workflow-ai",
     "vitest"
   ]
 }

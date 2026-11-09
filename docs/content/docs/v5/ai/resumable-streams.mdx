@@ -8,19 +8,18 @@ prerequisites:
   - /docs/foundations/streaming
 related:
   - /docs/ai/chat-session-modeling
-  - /docs/api-reference/workflow-ai/workflow-chat-transport
   - /docs/api-reference/workflow-api/get-run
 ---
 
 <Callout type="warn">
-`WorkflowChatTransport` now ships in AI SDK as a 1:1 port, so import it from `@ai-sdk/workflow` (the `@workflow/ai` export is deprecated). See [Resumable Streaming with `WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for the full reference.
+`WorkflowChatTransport` ships in AI SDK; import it from `@ai-sdk/workflow`. See [Resumable Streaming with `WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for the full reference.
 </Callout>
 
 Network interruptions, page refreshes, or Vercel Functions timeouts can break a chat interface's connection to an in-progress agent.
 
 Workflow runs and their attached streams are durable, so users can resume a stream without resending a message or waiting for the entire response again. The client can optionally sync only the data missed since the last connection.
 
-Workflow SDK supports resumable streams, but the client must identify the stream and the position from which to reconnect. The [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) helper is a drop-in AI SDK transport that handles this client-side resumption logic.
+Workflow SDK supports resumable streams, but the client must identify the stream and the position from which to reconnect. The [`WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) helper is a drop-in AI SDK transport that handles this client-side resumption logic.
 
 <Callout type="info">
 When deploying a streaming route to Vercel, enable request cancellation so a browser disconnect terminates that route's abandoned stream reader instead of letting the function run until `FUNCTION_INVOCATION_TIMEOUT`. See [Avoiding Function Timeouts After Client Disconnects](/docs/foundations/streaming#avoiding-function-timeouts-after-client-disconnects).
@@ -109,9 +108,7 @@ When using a negative `startIndex`, your stream endpoint must return an `x-workf
 
 ### Use `WorkflowChatTransport` in the client
 
-Replace the default transport in AI SDK's `useChat` with [`WorkflowChatTransport`](
-  /docs/api-reference/workflow-ai/workflow-chat-transport
-), and update the callbacks to store and use the latest run ID. For now, we'll store the run ID in localStorage. For your own app, this would be stored wherever you store session information.
+Replace the default transport in AI SDK's `useChat` with [`WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport), and update the callbacks to store and use the latest run ID. For now, we'll store the run ID in localStorage. For your own app, this would be stored wherever you store session information.
 
 ```typescript title="app/page.tsx" lineNumbers
 "use client";
@@ -204,10 +201,10 @@ When using a negative `initialStartIndex`, the reconnection endpoint **must** re
 
 ### Mid-part resumes
 
-A workflow stream is a flat sequence of chunks, but the AI SDK's UI protocol groups chunks into logical parts (`text-*`, `reasoning-*`, `tool-input-*`) that must be opened with a `*-start` before any `*-delta` or `*-end`. A non-zero `startIndex` can land in the middle of an open part. See [`WorkflowChatTransport` → Mid-part resumes](/docs/api-reference/workflow-ai/workflow-chat-transport#mid-part-resumes) for how this is handled and an example of rewinding to a step boundary on the server.
+A workflow stream is a flat sequence of chunks, but the AI SDK's UI protocol groups chunks into logical parts (`text-*`, `reasoning-*`, `tool-input-*`) that must be opened with a `*-start` before any `*-delta` or `*-end`. A non-zero `startIndex` can land in the middle of an open part. See [`WorkflowChatTransport` → Mid-part resumes](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) for how this is handled and an example of rewinding to a step boundary on the server.
 
 ## Related documentation
 
-- [`WorkflowChatTransport` API reference](/docs/api-reference/workflow-ai/workflow-chat-transport): Full configuration options
+- [`WorkflowChatTransport` API reference](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport): Full configuration options
 - [Streaming](/docs/foundations/streaming): Understanding workflow streams
 - [`getRun()` API reference](/docs/api-reference/workflow-api/get-run): Retrieving existing runs
