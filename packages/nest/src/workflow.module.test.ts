@@ -526,14 +526,43 @@ describe('WorkflowModule world lifecycle', () => {
     };
   }
 
-  it('does not build the World at boot for an app on another World that does not manage its lifecycle', async () => {
-    // The pre-Postgres-worker behavior: the Local or Vercel World is built on
-    // the first request, not at startup.
+  it('does not build the World at boot for an app on the Local or Vercel World that does not manage its lifecycle', async () => {
+    // The Local or Vercel World is built on the first request, not at
+    // startup, whichever spelling selects it.
+    for (const target of [
+      undefined,
+      'local',
+      'vercel',
+      '@workflow/world-local',
+      '@workflow/world-vercel',
+    ]) {
+      if (target) vi.stubEnv('WORKFLOW_TARGET_WORLD', target);
+      rmSync(appDir, { recursive: true, force: true });
+      appDir = writeHostApp('loopback');
+      writeFlowBundle(appDir);
+      await moduleWith(unmanaged(appDir)).onModuleInit();
+      expect(worldBuilds(appDir)).toBe(0);
+      expect(calls(appDir)).toEqual([]);
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('registers on a custom World module that delivers in process, and leaves one that does not alone', async () => {
+    // A World of the app's own (WORKFLOW_TARGET_WORLD names a module, not a
+    // first-party package) is asked: only its mode says whether it takes
+    // the route.
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', './my-world.ts');
+    rmSync(appDir, { recursive: true, force: true });
+    appDir = writeHostApp('deny');
+    writeFlowBundle(appDir);
+    await moduleWith(unmanaged(appDir)).onModuleInit();
+    expect(calls(appDir)).toEqual(['register function']);
+
     rmSync(appDir, { recursive: true, force: true });
     appDir = writeHostApp('loopback');
     writeFlowBundle(appDir);
     await moduleWith(unmanaged(appDir)).onModuleInit();
-    expect(worldBuilds(appDir)).toBe(0);
+    expect(worldBuilds(appDir)).toBe(1);
     expect(calls(appDir)).toEqual([]);
   });
 

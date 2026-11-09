@@ -91,6 +91,24 @@ async function loadRuntime(
   return (await import(resolved)) as WorkflowRuntime;
 }
 
+const IN_PROCESS_WORLD_PACKAGE = '@workflow/world-postgres';
+
+/**
+ * Whether `WORKFLOW_TARGET_WORLD` selects a first-party World that delivers
+ * over HTTP or by subscription (the Local and Vercel Worlds, under any of
+ * their spellings), or none at all (the Local World by default). Such a
+ * World takes no flow route and is not built at boot.
+ */
+function isHttpDeliveringTarget(target: string | undefined): boolean {
+  return (
+    !target ||
+    target === 'local' ||
+    target === 'vercel' ||
+    target === '@workflow/world-local' ||
+    target === '@workflow/world-vercel'
+  );
+}
+
 async function loadWorld(workingDir: string): Promise<WorldLifecycle> {
   const { getWorld } = await loadRuntime(
     workingDir,
@@ -467,14 +485,37 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    * builds its World on the first request, as before.
    */
   async #registerFlowHandler(): Promise<void> {
-    if (!this.#expectsInProcessWorld()) return;
+    const target = process.env.WORKFLOW_TARGET_WORLD;
+    // The Local and Vercel Worlds never take the route and are not built at
+    // boot (they are on the first request). Anything else is asked, unless
+    // the module manages the lifecycle, in which case it builds the World
+    // anyway.
+    if (!this.options.manageWorldLifecycle && isHttpDeliveringTarget(target)) {
+      return;
+    }
     const { getWorld, registerWorkflowHandler } = await loadRuntime(
       this.options.workingDir,
       'The flow route is registered'
     );
-    // A managed World that delivers over HTTP or by subscription takes no
-    // route; its bundle is not loaded here (`preloadBundles` may, later).
-    if ((await getWorld()).queueAuthMode !== 'deny') return;
+    const expectsInProcess =
+      this.options.manageWorldLifecycle || target === IN_PROCESS_WORLD_PACKAGE;
+    let world: WorldLifecycle;
+    try {
+      world = await getWorld();
+    } catch (error) {
+      // A World of the app's own that cannot be built: not this module's
+      // failure to report as fatal, unless the configuration says it is
+      // the one that needs the route.
+      if (expectsInProcess) throw error;
+      console.error(
+        '[@workflow/nest] Could not build the World to ask whether it takes the flow route:',
+        error instanceof Error ? error.message : error
+      );
+      return;
+    }
+    // A World that delivers over HTTP or by subscription takes no route;
+    // its bundle is not loaded here (`preloadBundles` may, later).
+    if (world.queueAuthMode !== 'deny') return;
     const bundle = (await import(
       pathToFileURL(join(this.options.outDir, 'workflows.mjs')).href
     )) as { POST: (req: Request) => Promise<Response> };
@@ -483,13 +524,6 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
         '[@workflow/nest] The World delivers in process but did not take the flow route; this process would run no jobs.'
       );
     }
-  }
-
-  #expectsInProcessWorld(): boolean {
-    return (
-      this.options.manageWorldLifecycle ||
-      process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
-    );
   }
 
   async #preloadBundles(): Promise<void> {
