@@ -46,12 +46,6 @@ export {
 } from './pseudo-package-esbuild-plugin.js';
 export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
 export {
-  analyzeSerdeCompliance,
-  extractClassEntries,
-  type SerdeCheckResult,
-  type SerdeClassCheckResult,
-} from './serde-checker.js';
-export {
   type BuildOutputSchedule,
   type BuildOutputSchedules,
   collectWorkflowSchedules,
@@ -59,6 +53,12 @@ export {
   writeBuildOutputSchedules,
   writeBuildOutputSchedulesSync,
 } from './schedules.js';
+export {
+  analyzeSerdeCompliance,
+  extractClassEntries,
+  type SerdeCheckResult,
+  type SerdeClassCheckResult,
+} from './serde-checker.js';
 export { StandaloneBuilder } from './standalone.js';
 export {
   createSwcPlugin,
