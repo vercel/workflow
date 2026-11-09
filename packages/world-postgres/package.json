@@ -3,25 +3,11 @@
   "version": "5.1.1",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
-  "main": "dist/index.js",
   "bin": {
     "bootstrap": "./bin/setup.js",
     "workflow-postgres-setup": "./bin/setup-deprecated.js"
   },
-  "files": [
-    "dist",
-    "bin",
-    "src/drizzle/migrations"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
-  "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/vercel/workflow.git",
-    "directory": "packages/world-postgres"
-  },
+  "main": "dist/index.js",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,6 +22,14 @@
       "default": "./dist/cli.js"
     },
     "./migrations/*.sql": "./src/drizzle/migrations/*.sql"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "src/drizzle/migrations"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc && chmod +x bin/setup.js bin/setup-deprecated.js",
@@ -58,6 +52,9 @@
     "ulid": "catalog:",
     "zod": "catalog:"
   },
+  "peerDependencies": {
+    "workflow": "workspace:^"
+  },
   "devDependencies": {
     "@testcontainers/postgresql": "11.12.0",
     "@types/node": "catalog:",
@@ -72,5 +69,11 @@
   },
   "keywords": [],
   "author": "",
-  "packageManager": "pnpm@11.24.0"
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.24.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-postgres"
+  }
 }
