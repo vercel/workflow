@@ -373,6 +373,29 @@ export type Revivers = Record<string, (value: any) => any>;
  * renders an "Encrypted" card with a Decrypt button that triggers
  * client-side decryption on demand.
  */
+/**
+ * The field a step input from the Node VM workflow carries to say its
+ * workflow reads state records (`STATE_REFS_FIELD` in
+ * `serialization/state-refs.ts`). It's internal, so displays leave it out.
+ */
+const STATE_REFS_MARK = 'stateRefs';
+
+function withoutStateRefsMark(value: unknown): unknown {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    (value as Record<string, unknown>)[STATE_REFS_MARK] !== 1 ||
+    !('args' in value)
+  )
+    return value;
+  const { [STATE_REFS_MARK]: _mark, ...rest } = value as Record<
+    string,
+    unknown
+  >;
+  return rest;
+}
+
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
   if (value instanceof Uint8Array) {
     // Encrypted data passes through untouched: o11y layers detect it with
@@ -385,7 +408,7 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
     const { format, payload } = decodeFormatPrefix(value);
     if (format === SerializationFormat.DEVALUE_V1) {
       const str = new TextDecoder().decode(payload);
-      return parse(str, revivers);
+      return withoutStateRefsMark(parse(str, revivers));
     }
     if (
       format === SerializationFormat.GZIP ||
@@ -674,6 +697,24 @@ export const observabilityRevivers: Revivers = {
     `<workflow:${value.workflowId}>`,
   Instance: serializedInstanceToRef,
   Class: serializedClassToString,
+  // frozen state records. A whole value displays as itself, as does a
+  // `source` record (hook payloads and run inputs written by earlier previews
+  // of this feature; current ones are stored unwrapped). A reference or a
+  // change needs the run's log to rebuild, so it displays as what it points to.
+  StateRefV1: (record: {
+    kind: string;
+    value?: unknown;
+    version?: string;
+    base?: string;
+    ops?: unknown;
+  }) =>
+    record.kind === 'source' || record.kind === 'full'
+      ? record.value
+      : record.kind === 'patch'
+        ? { [`<state change from ${record.base}>`]: record.ops }
+        : `<state ${record.version}>`,
+  StateSrcV1: ([id, path]: [string, (string | number)[]]) =>
+    `<same as ${id}${path.length ? `.${path.join('.')}` : ''}>`,
 };
 
 // ---------------------------------------------------------------------------

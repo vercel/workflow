@@ -3863,6 +3863,7 @@ async function runDelivery(
             step.correlationId,
             () =>
               executeStep({
+                stateContext: replayPayloadCache?.stateContext,
                 world,
                 createEvent: async (data, params) => {
                   if (data.eventType === 'step_retrying') {
