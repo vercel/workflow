@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { getQueueTopicPrefix } from '@workflow/world';
+import {
+  getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+} from '@workflow/world';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { createQueue } from '../src/queue.js';
 import { TestPool } from './pool.js';
@@ -97,10 +101,14 @@ describe.skipIf(process.platform === 'win32')(
         expect(job.rows[0].locked_by).toBeNull();
 
         // The app: it registered the flow handler, so its runner takes the job.
-        worker.registerHandler(prefix, async (req) => {
-          delivered.push(String(req.headers.get('x-vqs-message-id')));
-          return Response.json({ ok: true });
-        });
+        worker.registerHandler(
+          prefix,
+          Object.assign(async () => Response.json({ ok: true }), {
+            [IN_PROCESS_QUEUE_HANDLER]: async ({ meta }: InProcessDelivery) => {
+              delivered.push(String(meta.messageId));
+            },
+          })
+        );
         await worker.start();
         await expect
           .poll(() => delivered, { timeout: 10_000 })

@@ -31,13 +31,13 @@ import { createWorld } from '../src/index.js';
 import { TestPool } from './pool.js';
 
 /**
- * The Postgres World delivers its messages in-process, so its flow route
- * (`POST /.well-known/workflow/v1/flow`) has no legitimate HTTP caller. In a
- * process that registered the flow handler (a worker), the runtime refuses
- * every request that reaches the route over HTTP with a 403, before reading
- * the body or touching any run; only the `?__health` probe keeps answering.
+ * The Postgres World delivers its messages in process, so its flow route
+ * (`POST /.well-known/workflow/v1/flow`) has no legitimate HTTP caller. The
+ * runtime refuses every request that reaches the route over HTTP with a 403,
+ * before reading the body or touching any run, in every process, whether or
+ * not it registered the flow handler; only the `?__health` probe answers.
  * `WORKFLOW_QUEUE_AUTH=off` is the emergency override that makes the route
- * accept HTTP again, as it did before deliveries went in process.
+ * accept HTTP, refused while dynamic workflows are enabled.
  */
 const code = `
 async function noop() { return 'ok'; }
@@ -184,7 +184,7 @@ describe.skipIf(process.platform === 'win32')(
       await expect(inFlight).rejects.toThrow();
     });
 
-    it('WORKFLOW_QUEUE_AUTH=off makes the route accept HTTP again, as before deliveries went in process', async () => {
+    it('WORKFLOW_QUEUE_AUTH=off makes the route accept HTTP', async () => {
       vi.stubEnv('WORKFLOW_QUEUE_AUTH', 'off');
       const response = await handler(forge({ runId: `wrun_${ulid()}` }));
       // Handled, not refused: the handler ran the delivery (the run does not

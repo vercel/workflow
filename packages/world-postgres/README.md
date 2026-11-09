@@ -27,10 +27,9 @@ refuses every HTTP request to it with a `403` and `code: "QUEUE_ROUTE_DENIED"`,
 before reading the body or touching any run. Who can enqueue is decided by the
 database credentials. The `?__health` probe keeps answering.
 
-`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP again, as it did when the
-World delivered over a loopback request. It is an emergency override for a
-rolling upgrade whose processes on the previous release still deliver over
-HTTP, is refused while dynamic workflows are enabled, and should be removed
+`WORKFLOW_QUEUE_AUTH=off` makes the route accept HTTP. It is an emergency
+override for a rolling upgrade whose processes on the previous release deliver
+over HTTP, is refused while dynamic workflows are enabled, and should be removed
 once those processes are gone. Drain them before upgrading instead where you
 can: their deliveries are refused, retried with backoff, and count toward the
 attempt limit until they stop.

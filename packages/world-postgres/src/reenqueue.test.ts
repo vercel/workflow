@@ -1,4 +1,5 @@
 import { getWorkflowPort } from '@workflow/utils/get-port';
+import { IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -165,8 +166,11 @@ describe('re-enqueue active runs on start', () => {
 
   /** The app's flow route, registered as the framework integrations do. */
   function asWorker<T extends { registerHandler: Function }>(world: T): T {
-    world.registerHandler('__wkf_workflow_', async () =>
-      Response.json({ ok: true })
+    world.registerHandler(
+      '__wkf_workflow_',
+      Object.assign(async () => Response.json({ ok: true }), {
+        [IN_PROCESS_QUEUE_HANDLER]: async () => undefined,
+      })
     );
     return world;
   }

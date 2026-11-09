@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { makeWorkerUtils } from 'graphile-worker';
@@ -32,7 +34,7 @@ describe.skipIf(process.platform === 'win32')(
     let pool: Pool;
     let deliveries: Array<{ attempt: string }> = [];
     /** The flow handler's answer to a delivery. */
-    let respond: () => Promise<Response> = async () => Response.json({});
+    let respond: () => Promise<unknown> = async () => undefined;
     let releaseHeldResponses = () => {};
     const queues: PostgresQueue[] = [];
     const children: ChildProcess[] = [];
@@ -52,13 +54,12 @@ describe.skipIf(process.platform === 'win32')(
       // queue is a worker, delivering in process.
       queue.registerHandler(
         getQueueTopicPrefix('workflow'),
-        async (request) => {
-          await request.text();
-          deliveries.push({
-            attempt: String(request.headers.get('x-vqs-message-attempt')),
-          });
-          return respond();
-        }
+        Object.assign(async () => Response.json({}), {
+          [IN_PROCESS_QUEUE_HANDLER]: async ({ meta }: InProcessDelivery) => {
+            deliveries.push({ attempt: String(meta.attempt) });
+            return respond();
+          },
+        })
       );
       queues.push(queue);
       return queue;
@@ -159,7 +160,7 @@ describe.skipIf(process.platform === 'win32')(
         'TRUNCATE graphile_worker._private_jobs, graphile_worker._private_job_queues, workflow.workflow_job_lock_holders'
       );
       deliveries = [];
-      respond = async () => Response.json({});
+      respond = async () => undefined;
       releaseHeldResponses = () => {};
     });
 
@@ -196,7 +197,7 @@ describe.skipIf(process.platform === 'win32')(
     test('a live slow spec 9 delivery that renews is not released', async () => {
       const release = Promise.withResolvers<void>();
       releaseHeldResponses = release.resolve;
-      respond = () => release.promise.then(() => Response.json({}));
+      respond = () => release.promise.then(() => undefined);
       const first = startQueue();
       // A second host whose sweeps would release the job if its lock went
       // stale.

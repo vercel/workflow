@@ -54,11 +54,8 @@ describe('Postgres queue error logs (integration)', () => {
     const metadata = JSON.parse(stderr.slice(metadataStart));
     expect(metadata.error).toMatchObject({
       name: 'Error',
-      message:
-        '[postgres world] Queue execution failed (503): test queue delivery failure',
-      stack: expect.stringContaining(
-        'Error: [postgres world] Queue execution failed (503): test queue delivery failure'
-      ),
+      message: 'test queue delivery failure',
+      stack: expect.stringContaining('Error: test queue delivery failure'),
     });
   });
 

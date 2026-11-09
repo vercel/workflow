@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { makeWorkerUtils } from 'graphile-worker';
@@ -57,13 +59,16 @@ describe.skipIf(process.platform === 'win32')(
           },
           pool
         );
-        worker.registerHandler(prefix, async (request) => {
-          const { runId } = JSON.parse(await request.text()) as {
-            runId: string;
-          };
-          delivered[i].push(runId);
-          return Response.json({ ok: true });
-        });
+        worker.registerHandler(
+          prefix,
+          Object.assign(async () => Response.json({ ok: true }), {
+            [IN_PROCESS_QUEUE_HANDLER]: async ({
+              message,
+            }: InProcessDelivery) => {
+              delivered[i].push((message as { runId: string }).runId);
+            },
+          })
+        );
         workers.push(worker);
       }
       // The producer registered nothing: a script or the CLI.

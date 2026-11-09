@@ -3,6 +3,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import {
   getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  type QueueRouteHandler,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
 } from '@workflow/world';
 import { Agent, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
@@ -42,57 +45,52 @@ describe('Postgres queue in-process delivery (integration)', () => {
   let serialStarts: string[] = [];
   let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
-  let aborted = Promise.withResolvers<void>();
   let attempts: string[] = [];
   let deliveryCounts: string[] = [];
 
-  /** The app's flow handler for this test's phase. */
-  async function flowHandler(request: Request): Promise<Response> {
-    const body = await request.text();
-    attempts.push(String(request.headers.get('x-vqs-message-attempt')));
-    deliveryCounts.push(
-      String(request.headers.get('x-vqs-message-delivery-count'))
-    );
+  /** The app's flow handler for this test's phase: its in-process entry. */
+  async function flowEntry({
+    message,
+    meta,
+  }: InProcessDelivery): Promise<unknown> {
+    attempts.push(String(meta.attempt));
+    deliveryCounts.push(String(meta.deliveryCount));
     accepted.resolve();
     if (phase === 'abort') {
-      // Holds the delivery until the queue abandons it, as a handler
-      // running a long inline step does on shutdown.
-      await new Promise<void>((resolve) =>
-        request.signal.addEventListener('abort', () => resolve(), {
-          once: true,
-        })
-      );
-      aborted.resolve();
-      return Response.json({});
+      // Holds the delivery for good, as a handler running a long inline
+      // step does: shutdown releases the job, not the handler.
+      await new Promise<never>(() => {});
     }
     if (phase === 'reschedule') {
       // Ask for the same message again twice, then acknowledge it.
-      return Response.json(attempts.length < 3 ? { timeoutSeconds: 0 } : {});
+      return attempts.length < 3 ? { timeoutSeconds: 0 } : undefined;
     }
     if (phase === 'reject-then-handoff') {
       // Reject the first delivery, hand the redelivery off, then
       // acknowledge.
-      if (attempts.length === 1) {
-        return new Response('rejected', { status: 500 });
-      }
-      return Response.json(attempts.length === 2 ? { timeoutSeconds: 0 } : {});
+      if (attempts.length === 1) throw new Error('rejected');
+      return attempts.length === 2 ? { timeoutSeconds: 0 } : undefined;
     }
     if (phase === 'hook') {
       if (attempts.length === 1) await releaseInlineStep.promise;
       else releaseInlineStep.resolve();
-      return Response.json({});
+      return undefined;
     }
     if (phase === 'serial') {
-      const { stepId } = JSON.parse(body) as { stepId?: string };
+      const { stepId } = message as { stepId?: string };
       serialStarts.push(stepId ?? 'orchestrator');
       // The first orchestrator delivery holds until the test releases it,
       // as one running an inline step would.
       if (serialStarts.length === 1) await releaseInlineStep.promise;
-      return Response.json({});
+      return undefined;
     }
     await sleep(1_500);
-    return Response.json({});
+    return undefined;
   }
+  const flowHandler: QueueRouteHandler = Object.assign(
+    async () => Response.json({}),
+    { [IN_PROCESS_QUEUE_HANDLER]: flowEntry }
+  );
 
   /** A worker: a queue with the flow handler registered. */
   function createWorker(config: Partial<Parameters<typeof createQueue>[0]>) {
@@ -283,13 +281,11 @@ describe('Postgres queue in-process delivery (integration)', () => {
   test('shutdown aborts a pending delivery and releases its job', async () => {
     phase = 'abort';
     accepted = Promise.withResolvers<void>();
-    aborted = Promise.withResolvers<void>();
     const queue = createWorker({});
     await queue.queue(topic, { runId: `run_${randomUUID()}` });
     await accepted.promise;
+    // Shutdown abandons the delivery while the handler still runs.
     await queue.close();
-    // The handler saw the abort through its request's signal.
-    await aborted.promise;
     const jobs = await pool.query(
       'SELECT attempts, locked_at FROM graphile_worker._private_jobs'
     );

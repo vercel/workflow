@@ -748,8 +748,9 @@ export function createQueue(
     const deliveryRoute = routes.get(prefix) ?? route;
     if (!directHandler && prefix === ownPrefix()) {
       // Unreachable while `ensureRunner` holds: this process claims jobs only
-      // once the flow handler is registered. Never fall back to HTTP for the
-      // Workflow SDK's messages.
+      // once the flow handler is registered, and `registerHandler` admits
+      // only a handler with the in-process entry for this prefix. Never fall
+      // back to HTTP for the Workflow SDK's messages.
       throw new Error(
         `[postgres world] No flow handler is registered in this process for queue prefix "${prefix}"; a worker runs only where the app registered it.`
       );
@@ -1325,7 +1326,20 @@ export function createQueue(
     queue,
     ...(invocations ? { invoke } : {}),
     registerHandler(prefix, handler) {
-      directHandlers.set(QueuePrefix.parse(prefix), handler);
+      const parsed = QueuePrefix.parse(prefix);
+      if (
+        parsed === ownPrefix() &&
+        typeof handler[IN_PROCESS_QUEUE_HANDLER] !== 'function'
+      ) {
+        // The SDK's messages go to the route's in-process entry only; a
+        // request built for a handler without one would be refused by the
+        // route itself (the flow route takes no HTTP). Refusing here, at
+        // startup, says so once instead of failing every delivery.
+        throw new Error(
+          "[world-postgres] The flow handler registered for the Workflow SDK's queue has no in-process entry (IN_PROCESS_QUEUE_HANDLER from @workflow/world), so the World cannot deliver to it: the flow route takes no HTTP. Hand the World the generated flow route through registerWorkflowHandler() from workflow/runtime, which the framework integrations call when the app starts."
+        );
+      }
+      directHandlers.set(parsed, handler);
       // Registered after `start()`: this process is a worker from now on.
       // Before it, `start()` starts the runner itself.
       ensureRunner().catch((error) => {

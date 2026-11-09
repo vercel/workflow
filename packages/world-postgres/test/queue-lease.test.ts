@@ -4,7 +4,14 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { JsonTransport } from '@vercel/queue';
-import { getQueueTopicPrefix, MessageId } from '@workflow/world';
+import {
+  getQueueTopicPrefix,
+  IN_PROCESS_QUEUE_HANDLER,
+  type InProcessDelivery,
+  MessageId,
+} from '@workflow/world';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
@@ -25,9 +32,9 @@ describe.skipIf(process.platform === 'win32')(
     let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
     let connectionString: string;
     let pool: Pool;
-    let deliveries: Array<{ attempt: string; executorJob?: string }> = [];
+    let deliveries: Array<{ attempt: string }> = [];
     /** The flow handler's answer to a delivery. */
-    let respond: () => Promise<Response> = async () => Response.json({});
+    let respond: () => Promise<unknown> = async () => undefined;
     let releaseHeldResponses = () => {};
     const queues: PostgresQueue[] = [];
     const children: ChildProcess[] = [];
@@ -47,17 +54,12 @@ describe.skipIf(process.platform === 'win32')(
       // queue is a worker, delivering in process.
       queue.registerHandler(
         getQueueTopicPrefix('workflow'),
-        async (request) => {
-          await request.text();
-          const executorJob = request.headers.get(
-            'x-workflow-postgres-executor-job'
-          );
-          deliveries.push({
-            attempt: String(request.headers.get('x-vqs-message-attempt')),
-            ...(executorJob !== null ? { executorJob } : {}),
-          });
-          return respond();
-        }
+        Object.assign(async () => Response.json({}), {
+          [IN_PROCESS_QUEUE_HANDLER]: async ({ meta }: InProcessDelivery) => {
+            deliveries.push({ attempt: String(meta.attempt) });
+            return respond();
+          },
+        })
       );
       queues.push(queue);
       return queue;
@@ -81,6 +83,13 @@ describe.skipIf(process.platform === 'win32')(
       container = await new PostgreSqlContainer('postgres:15-alpine').start();
       connectionString = container.getConnectionUri();
       pool = new Pool({ connectionString, max: 10 });
+      // The World's own tables too: in invoke mode the executor lane reads
+      // the invocations table before it hands a delivery to the handler.
+      await migrate(drizzle(pool), {
+        migrationsFolder: fileURLToPath(
+          new URL('../src/drizzle/migrations', import.meta.url)
+        ),
+      });
       const utils = await makeWorkerUtils({ pgPool: pool });
       await utils.migrate();
       await utils.release();
@@ -94,7 +103,7 @@ describe.skipIf(process.platform === 'win32')(
         'TRUNCATE graphile_worker._private_jobs, graphile_worker._private_job_queues'
       );
       deliveries = [];
-      respond = async () => Response.json({});
+      respond = async () => undefined;
       releaseHeldResponses = () => {};
     });
 
@@ -152,7 +161,7 @@ describe.skipIf(process.platform === 'win32')(
     test('a delivery that outlives the stale window keeps its lock and is delivered once', async () => {
       const release = Promise.withResolvers<void>();
       releaseHeldResponses = release.resolve;
-      respond = () => release.promise.then(() => Response.json({}));
+      respond = () => release.promise.then(() => undefined);
       const first = startQueue({});
       // A second host whose sweeps would release the job if its lock went stale.
       const second = startQueue({});
@@ -189,7 +198,7 @@ describe.skipIf(process.platform === 'win32')(
     test("a delivery that lost its lock leaves the successor's job alone when it finishes", async () => {
       const release = Promise.withResolvers<void>();
       releaseHeldResponses = release.resolve;
-      respond = () => release.promise.then(() => Response.json({}));
+      respond = () => release.promise.then(() => undefined);
       const queue = startQueue({});
       await queue.start();
       await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
@@ -260,7 +269,9 @@ describe.skipIf(process.platform === 'win32')(
 
       await expect
         .poll(() => deliveries, { timeout: 15_000, interval: 100 })
-        .toEqual([{ attempt: '2', executorJob: executorJob.id }]);
+        .toEqual([{ attempt: '2' }]);
+      // The executor lane's own job is what carried the redelivery.
+      expect(executorJob).toBeDefined();
       await expect
         .poll(
           async () =>

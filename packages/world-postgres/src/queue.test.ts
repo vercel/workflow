@@ -407,13 +407,16 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('uses basePath for the request a handler without an in-process entry gets', async () => {
+  it('uses basePath for the request a consumer handler without an in-process entry gets', async () => {
     const requests: RecordedDelivery[] = [];
     setWorkflowBasePath('/v2');
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    // A handler that takes the request shape (no in-process entry).
-    queue.registerHandler('__wkf_workflow_', async (req) => {
+    // The app's flow handler, so this process runs a worker, and a
+    // consumer's handler for its own prefix, taking the request shape (no
+    // in-process entry); only the SDK's prefix requires the entry.
+    registerFlowHandler(queue);
+    queue.registerHandler('__agent_wkf_workflow_', async (req) => {
       requests.push({
         method: req.method,
         url: new URL(req.url).pathname,
@@ -426,7 +429,7 @@ describe('postgres queue http execution', () => {
       await queue.start();
 
       const task = getTaskHandler('workflow_flows');
-      const payload = buildMessageData('__wkf_workflow_test-step', {
+      const payload = buildMessageData('__agent_wkf_workflow_test-step', {
         runId: 'run_01ABC',
         stepId: 'step_01ABC',
         stepName: 'test-step',
@@ -1399,31 +1402,33 @@ describe('postgres queue http execution', () => {
     expect(viaRoute).not.toHaveBeenCalled();
   });
 
-  it('calls a registered handler without an entry as the request handler', async () => {
+  it("refuses a flow handler without the in-process entry for the SDK's own prefix", async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    const handler = vi.fn(async () => Response.json({ ok: true }));
-    queue.registerHandler('__wkf_workflow_', handler);
-    await queue.start();
-
-    await getTaskHandler('workflow_flows')(
-      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
-      { job: { attempts: 1 } }
-    );
-
-    expect(handler).toHaveBeenCalledOnce();
+    expect(() =>
+      queue.registerHandler('__wkf_workflow_', async () =>
+        Response.json({ ok: true })
+      )
+    ).toThrow(/registerWorkflowHandler/);
+    // A consumer's handler for another prefix keeps the request shape.
+    expect(() =>
+      queue.registerHandler('__agent_wkf_workflow_', async () =>
+        Response.json({ ok: true })
+      )
+    ).not.toThrow();
   });
 
-  it('fails an in-process delivery when the job is aborted, and the handler sees it', async () => {
+  it('fails an in-process delivery when the job is aborted, and leaves the job to Graphile', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    let signal: AbortSignal | null = null;
     const entered = Promise.withResolvers<void>();
-    queue.registerHandler('__wkf_workflow_', async (req) => {
-      signal = req.signal;
-      entered.resolve();
-      // Hangs, as a handler running a long inline step does.
-      await new Promise(() => {});
-      return Response.json({ ok: true });
-    });
+    queue.registerHandler(
+      '__wkf_workflow_',
+      withEntry(async () => {
+        entered.resolve();
+        // Hangs, as a handler running a long inline step does; the abort
+        // releases the job, not the handler.
+        await new Promise(() => {});
+      })
+    );
     await queue.start();
 
     const controller = new AbortController();
@@ -1432,10 +1437,8 @@ describe('postgres queue http execution', () => {
       { abortSignal: controller.signal, job: { attempts: 1 } }
     );
     await entered.promise;
-    expect(signal!.aborted).toBe(false);
     controller.abort();
     await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
-    expect(signal!.aborted).toBe(true);
     // Rejecting hands the job back to Graphile for redelivery; the queue
     // must not schedule a replacement of its own.
     expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
@@ -1444,10 +1447,12 @@ describe('postgres queue http execution', () => {
   it('fails an in-process delivery that does not respond within the headers deadline', async () => {
     process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    queue.registerHandler('__wkf_workflow_', async () => {
-      await new Promise(() => {});
-      return Response.json({ ok: true });
-    });
+    queue.registerHandler(
+      '__wkf_workflow_',
+      withEntry(async () => {
+        await new Promise(() => {});
+      })
+    );
     await queue.start();
 
     await expect(
@@ -1460,11 +1465,11 @@ describe('postgres queue http execution', () => {
 
   it('places no deadline on an in-process delivery unless the operator sets one', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    queue.registerHandler('__wkf_workflow_', async (req) => {
-      // No deadline, no shutdown: nothing can abort the request.
-      expect(req.signal.aborted).toBe(false);
-      return Response.json({ ok: true });
-    });
+    // No deadline, no shutdown: the delivery settles when the handler does.
+    queue.registerHandler(
+      '__wkf_workflow_',
+      withEntry(async () => undefined)
+    );
     await queue.start();
     await expect(
       getTaskHandler('workflow_flows')(
@@ -1549,8 +1554,9 @@ describe('postgres queue http execution', () => {
       expect(notes()).toHaveLength(1);
 
       const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
-      worker.registerHandler('__wkf_workflow_', async () =>
-        Response.json({ ok: true })
+      worker.registerHandler(
+        '__wkf_workflow_',
+        withEntry(async () => undefined)
       );
       await worker.start();
       expect(notes()).toHaveLength(1);
@@ -1626,6 +1632,15 @@ type RecordedDelivery = {
  * records (method, path, headers, body). `hang` holds every delivery until
  * its request is aborted, like a handler running a long inline step.
  */
+/** A flow handler that only has the in-process entry a worker delivers to. */
+function withEntry(
+  entry: (delivery: InProcessDelivery) => Promise<unknown>
+): QueueRouteHandler {
+  return Object.assign(async () => Response.json({ ok: true }), {
+    [IN_PROCESS_QUEUE_HANDLER]: entry,
+  });
+}
+
 function registerFlowHandler(
   queue: ReturnType<typeof createQueue>,
   deliveries: RecordedDelivery[] = [],

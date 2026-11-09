@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { getQueueTopicPrefix } from '@workflow/world';
+import { getQueueTopicPrefix, IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
 import { Pool } from 'pg';
 import { createQueue } from '../../dist/queue.js';
 
@@ -28,14 +28,15 @@ const queue = createQueue(
 );
 // The app's flow handler, as registered when the app starts: this process
 // is a worker. The delivery never finishes.
-queue.registerHandler(getQueueTopicPrefix('workflow'), async (request) => {
-  await request.text();
-  process.stdout.write(
-    `claimed ${request.headers.get('x-workflow-message-id')}\n`
-  );
-  await new Promise(() => {});
-  return new Response();
-});
+queue.registerHandler(
+  getQueueTopicPrefix('workflow'),
+  Object.assign(async () => new Response(null), {
+    [IN_PROCESS_QUEUE_HANDLER]: async ({ meta }) => {
+      process.stdout.write(`claimed ${meta.messageId}\n`);
+      await new Promise(() => {});
+    },
+  })
+);
 await queue.queue(`${getQueueTopicPrefix('workflow')}test`, {
   runId: process.env.CRASHING_QUEUE_RUN_ID ?? `run_${randomUUID()}`,
   ...(runSpecVersion ? { runSpecVersion: Number(runSpecVersion) } : {}),

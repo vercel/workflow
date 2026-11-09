@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { getQueueTopicPrefix } from '@workflow/world';
+import { getQueueTopicPrefix, IN_PROCESS_QUEUE_HANDLER } from '@workflow/world';
 import { Pool } from 'pg';
 import { createQueue } from '../../dist/queue.js';
 
@@ -14,13 +14,14 @@ const queue = createQueue(
 );
 // The app's flow handler, as registered when the app starts; every delivery
 // to it fails.
-queue.registerHandler(getQueueTopicPrefix('workflow'), async (request) => {
-  await request.text();
-  return new Response('test queue delivery failure', {
-    status: 503,
-    headers: { 'content-type': 'text/plain' },
-  });
-});
+queue.registerHandler(
+  getQueueTopicPrefix('workflow'),
+  Object.assign(async () => new Response(null), {
+    [IN_PROCESS_QUEUE_HANDLER]: async () => {
+      throw new Error('test queue delivery failure');
+    },
+  })
+);
 try {
   const { messageId } = await queue.queue(
     `${getQueueTopicPrefix('workflow')}test`,
