@@ -1,4 +1,4 @@
-import { Args } from '@oclif/core';
+import { Args, Flags } from '@oclif/core';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import {
@@ -17,6 +17,7 @@ export default class Start extends BaseCommand {
   static examples = [
     '$ workflow start <workflow-name> <args>',
     '$ wf start <workflow-name> <args>',
+    '$ wf start <workflow-name> <args> --backend vercel --deployment dpl_xxx',
   ];
 
   async catch(error: any) {
@@ -32,7 +33,7 @@ export default class Start extends BaseCommand {
   static args = {
     workflowName: Args.string({
       description:
-        'Name of a workflow to start. Providing a run ID will create a new run on that workflow.',
+        'Name of a workflow to start. Providing a run ID will create a new run on that workflow, on the same deployment unless --deployment is given.',
       required: true,
     }),
     args: Args.string({
@@ -44,7 +45,23 @@ export default class Start extends BaseCommand {
     }),
   } as const;
 
-  static flags = cliFlags;
+  static flags = {
+    ...cliFlags,
+    deployment: Flags.string({
+      description: [
+        'Deployment to start the run on: a deployment ID, or `latest`.',
+        "`latest` resolves the same way `start()` resolves `deploymentId: 'latest'`:",
+        'the newest ready deployment of the project in the --env environment (for',
+        'preview, on the branch of the newest preview deployment). Worlds without',
+        'separate deployments, such as local, use their current deployment.',
+        "Defaults to `latest` for a workflow name and to the source run's deployment for a run ID.",
+      ].join('\n'),
+      required: false,
+      helpGroup: 'Target',
+      helpLabel: '--deployment',
+      helpValue: ['latest', 'DEPLOYMENT_ID'],
+    }),
+  };
 
   public async run(): Promise<void> {
     const { flags, args, argv } = await this.parse(Start);
