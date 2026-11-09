@@ -85,6 +85,8 @@ export function createRunStateHydrator(
         cursor: string | undefined;
         startedInput: boolean;
         seen: Set<string>;
+        /** Set once the whole history has been read. */
+        complete: boolean;
         reading: Promise<void> | undefined;
       }
     | undefined;
@@ -97,6 +99,7 @@ export function createRunStateHydrator(
         cursor: undefined,
         startedInput: false,
         seen: new Set(),
+        complete: false,
         reading: undefined,
       };
     return state;
@@ -155,6 +158,7 @@ export function createRunStateHydrator(
           await add(current.resolver, payload.value, key, payload.source);
       }
       if (page.cursor) current.cursor = page.cursor;
+      if (!page.hasMore) current.complete = true;
       if (!page.hasMore || !page.cursor || cursors.has(page.cursor)) return;
       cursors.add(page.cursor);
       if (await resolved()) return;
@@ -180,8 +184,10 @@ export function createRunStateHydrator(
         return current.resolver.unresolved === before;
       };
       // Concurrent inspections share one read. One started by another
-      // inspection may stop before this resource's records, so read on once.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // inspection may stop before this resource's records, so read on until
+      // this resource resolves or the history has been read to the end. Each
+      // pass reads at least one page, so this ends.
+      for (let pass = 0; pass < MAX_PAGES; pass++) {
         const shared = current.reading !== undefined;
         if (!current.reading)
           current.reading = readHistory(current, resolved).finally(() => {
@@ -192,7 +198,7 @@ export function createRunStateHydrator(
         } catch {
           return hydrated;
         }
-        if (!shared || (await resolved())) break;
+        if (!shared || current.complete || (await resolved())) break;
       }
       return hydrateResourceIOAsync(resource, key, current.resolver.revivers);
     },
