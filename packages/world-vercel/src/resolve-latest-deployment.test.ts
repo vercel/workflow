@@ -352,6 +352,8 @@ describe('createResolveLatestDeploymentId', () => {
       expect(listUrl.searchParams.get('projectId')).toBe('prj_123');
       expect(listUrl.searchParams.get('target')).toBe('production');
       expect(listUrl.searchParams.get('limit')).toBe('1');
+      // Only a READY deployment is a source the resolver can anchor on.
+      expect(listUrl.searchParams.get('state')).toBe('READY');
       expect(listUrl.searchParams.get('teamId')).toBe('team_abc');
       const listHeaders = mockFetch.mock.calls[0][1].headers as Headers;
       expect(listHeaders.get('Authorization')).toBe('Bearer test-token');
@@ -365,7 +367,7 @@ describe('createResolveLatestDeploymentId', () => {
       expect(resolveUrl.searchParams.get('teamId')).toBe('team_abc');
     });
 
-    it('uses the configured preview environment', async () => {
+    it('uses the configured preview environment and branch', async () => {
       mockFetch
         .mockResolvedValueOnce(listResponse(['dpl_preview']))
         .mockResolvedValueOnce(
@@ -376,13 +378,50 @@ describe('createResolveLatestDeploymentId', () => {
 
       const result = await createResolveLatestDeploymentId({
         token: 'test-token',
-        projectConfig: { projectId: 'prj_123', environment: 'preview' },
+        projectConfig: {
+          projectId: 'prj_123',
+          environment: 'preview',
+          gitBranch: 'feat/a',
+        },
       })();
 
       expect(result).toBe('dpl_latest_preview');
       const listUrl = new URL(mockFetch.mock.calls[0][0] as string);
       expect(listUrl.searchParams.get('target')).toBe('preview');
+      expect(listUrl.searchParams.get('branch')).toBe('feat/a');
+      expect(listUrl.searchParams.get('state')).toBe('READY');
       expect(listUrl.searchParams.has('teamId')).toBe(false);
+    });
+
+    it('refuses a preview environment without a branch', async () => {
+      // Without a branch the source would be whichever branch deployed last.
+      await expect(
+        createResolveLatestDeploymentId({
+          token: 'test-token',
+          projectConfig: { projectId: 'prj_123', environment: 'preview' },
+        })()
+      ).rejects.toThrow(/without a git branch/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('ignores the branch outside the preview environment', async () => {
+      mockFetch
+        .mockResolvedValueOnce(listResponse(['dpl_prod']))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 'dpl_latest' }), { status: 200 })
+        );
+
+      await createResolveLatestDeploymentId({
+        token: 'test-token',
+        projectConfig: {
+          projectId: 'prj_123',
+          environment: 'production',
+          gitBranch: 'feat/a',
+        },
+      })();
+
+      const listUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      expect(listUrl.searchParams.has('branch')).toBe(false);
     });
 
     it('defaults to production when no environment is configured', async () => {
@@ -401,15 +440,21 @@ describe('createResolveLatestDeploymentId', () => {
       expect(listUrl.searchParams.get('target')).toBe('production');
     });
 
-    it('fails when the project has no deployments in that environment', async () => {
+    it('fails when the project has no READY deployments in that environment', async () => {
       mockFetch.mockResolvedValueOnce(listResponse([]));
 
       await expect(
         createResolveLatestDeploymentId({
           token: 'test-token',
-          projectConfig: { projectId: 'prj_123', environment: 'preview' },
+          projectConfig: {
+            projectId: 'prj_123',
+            environment: 'preview',
+            gitBranch: 'feat/a',
+          },
         })()
-      ).rejects.toThrow('project prj_123 has no preview deployments');
+      ).rejects.toThrow(
+        'project prj_123 has no READY preview deployments on branch feat/a'
+      );
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 

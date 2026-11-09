@@ -65,11 +65,16 @@ async function resolveDeploymentIdentityToken(
  * Find a deployment of the configured project in the configured environment,
  * to stand in for the current deployment when this process is not one.
  *
- * Any deployment of that environment will do: the resolve-latest-deployment
- * API only reads its environment (its target, or for a preview its git
- * branch) and picks the newest READY deployment there itself. For a preview
- * environment this is the newest preview deployment, so "latest" means the
- * newest READY deployment on that deployment's branch.
+ * The resolve-latest-deployment API only reads the source's environment (its
+ * target, or for a preview its git branch) and picks the newest READY
+ * deployment there itself. The source is limited to READY deployments too:
+ * the newest deployment may still be building or have failed, and on a
+ * preview branch with no READY deployment yet it could not be resolved.
+ *
+ * Preview deployments are per branch, so a preview source is taken from the
+ * configured `gitBranch` and "latest" is the newest READY deployment on it.
+ * Without one there is no predictable branch to pick, so this throws rather
+ * than choosing whichever branch deployed last.
  */
 async function findSourceDeployment(
   projectId: string,
@@ -78,12 +83,23 @@ async function findSourceDeployment(
 ): Promise<string> {
   const environment = config?.projectConfig?.environment || 'production';
   const teamId = config?.projectConfig?.teamId;
+  const branch =
+    environment === 'preview' ? config?.projectConfig?.gitBranch : undefined;
+  if (environment === 'preview' && !branch) {
+    throw new Error(
+      'Cannot resolve the latest preview deployment outside a deployment without a git branch. ' +
+        'Set `projectConfig.gitBranch` (the CLI takes it from `--branch` or the current git branch), ' +
+        'or pass a concrete deployment ID.'
+    );
+  }
 
   const params = new URLSearchParams({
     projectId,
     target: environment,
     limit: '1',
+    state: 'READY',
   });
+  if (branch) params.set('branch', branch);
   if (teamId) params.set('teamId', teamId);
   const url = `https://api.vercel.com/v6/deployments?${params}`;
 
@@ -110,8 +126,9 @@ async function findSourceDeployment(
   }
   const source = result.data.deployments[0];
   if (!source) {
+    const where = branch ? ` on branch ${branch}` : '';
     throw new Error(
-      `Cannot resolve the latest deployment: project ${projectId} has no ${environment} deployments.`
+      `Cannot resolve the latest deployment: project ${projectId} has no READY ${environment} deployments${where}.`
     );
   }
   return source.uid;
