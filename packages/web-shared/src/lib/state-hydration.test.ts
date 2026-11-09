@@ -242,4 +242,55 @@ describe('createRunStateHydrator', () => {
     expect(earlyMs).toBeLessThan(lateMs);
     expect(lateMs).toBeLessThan(10_000);
   });
+
+  it('reads on for every concurrent inspection that needs a later page', async () => {
+    const writer = new StateContext();
+    let history: readonly unknown[] = Object.freeze([]);
+    const events: { eventId: string; eventType: string; eventData: unknown }[] =
+      [];
+    const inputs: Uint8Array[] = [];
+    for (let i = 0; i < 400; i++) {
+      inputs.push(
+        workflow.serialize(
+          { history },
+          { stateContext: writer, stateInput: true }
+        )
+      );
+      const next = Object.freeze([
+        ...history,
+        Object.freeze({ role: 'user', content: `message ${i}` }),
+      ]);
+      const result = workflow.serialize(
+        { history: next },
+        { stateContext: writer }
+      );
+      history = (workflow.deserialize(result, { stateContext: writer }) as any)
+        .history;
+      events.push({
+        eventId: `e${i}`,
+        eventType: 'step_completed',
+        eventData: { result },
+      });
+    }
+    const hydrator = createRunStateHydrator({
+      loadRunInput: async () => undefined,
+      loadEvents: async (cursor) => {
+        const from = cursor ? Number(cursor) : 0;
+        const to = from + 100;
+        return {
+          data: events.slice(from, to),
+          cursor: String(to),
+          hasMore: to < events.length,
+        };
+      },
+    });
+    // Each needs a later page than the one before it; started together, the
+    // later ones first wait on a read that stops early.
+    const results = (await Promise.all(
+      [51, 151, 251, 351].map((i) => hydrator.hydrate({ input: inputs[i] }))
+    )) as any[];
+    expect(results.map((r) => r.input.history.length)).toEqual([
+      51, 151, 251, 351,
+    ]);
+  });
 });
