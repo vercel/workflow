@@ -423,19 +423,22 @@ describe('nodeHttpFetch', () => {
   // request queued behind a busy pool must not spend the budget waiting for
   // one — that would be a redelivery the origin did nothing to earn.
   it('does not spend the header deadline waiting for a socket', async () => {
-    // Answers instantly, then holds the connection open for 300ms. Every
-    // request meets its own deadline comfortably; only the wait for a free
-    // socket exceeds it.
+    // Answers instantly; the first response then holds the connection open
+    // for 2s. Every request meets its own deadline comfortably; only the wait
+    // for a free socket exceeds it. The 1s deadline leaves room for a stalled
+    // event loop on a slow runner.
+    let held = false;
     const base = await listen((_request, response) => {
       response.writeHead(200);
       response.write('ok');
-      setTimeout(() => response.end(), 300);
+      setTimeout(() => response.end(), held ? 0 : 2000);
+      held = true;
     });
 
     agents = createNodeHttpAgents({ maxSockets: 1, keepAliveMs: 10_000 });
-    const first = await nodeHttpFetch(base, { agents, headersTimeoutMs: 100 });
-    // Queued behind `first`, whose body is still open, for well past 100ms.
-    const queued = nodeHttpFetch(base, { agents, headersTimeoutMs: 100 });
+    const first = await nodeHttpFetch(base, { agents, headersTimeoutMs: 1000 });
+    // Queued behind `first`, whose body is still open, for well past 1s.
+    const queued = nodeHttpFetch(base, { agents, headersTimeoutMs: 1000 });
 
     await expect(first.text()).resolves.toBe('ok');
     const second = await queued;

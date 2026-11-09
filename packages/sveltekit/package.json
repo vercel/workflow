@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run src",
+    "test": "vitest run --config=../../vitest.config.ts src",
     "clean": "tsc --build --clean && rm -rf dist"
   },
   "dependencies": {

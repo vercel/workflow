@@ -312,7 +312,7 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * Race a promise against a deadline. Rejects with a timeout error when the
  * deadline elapses first. Used to bound `world.streams.get()` inside the
  * health-check poll loop: some worlds hold that request open until the
- * stream has data (e.g. workflow-server holds unwritten streams open for
+ * stream has data (e.g. world-vercel holds unwritten streams open for
  * ~2 minutes), which would otherwise blow through the configured health
  * check timeout, since the `while` condition is only re-checked between
  * iterations.

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { serve } from '@hono/node-server';
 import {
   type AnyEventRequest,
@@ -13,7 +14,7 @@ import {
 import { Hono } from 'hono';
 import { ulid } from 'ulid';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { getWorld } from 'workflow/runtime';
+import { getWorld, healthCheck } from 'workflow/runtime';
 import * as z from 'zod';
 import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
@@ -103,11 +104,66 @@ async function fenceCountersOf(
   return null;
 }
 
+/**
+ * A meter provider that counts what the runtime adds to its counters, so a
+ * test can read `workflow.queue.delivery.refused` back over HTTP. Registered
+ * on the process-global OpenTelemetry API the runtime loads, before any
+ * request; `available` is false when that API cannot be loaded.
+ */
+const counters = await (async () => {
+  const sums = new Map<string, Map<string, number>>();
+  // Not a dependency of this package (the runtime's optional peer), so it is
+  // loaded by a non-literal specifier and typed by hand.
+  const specifier = '@opentelemetry/api';
+  type OtelApi = {
+    metrics: { setGlobalMeterProvider(provider: unknown): unknown };
+  };
+  let api: OtelApi | undefined;
+  try {
+    api = (await import(specifier)) as OtelApi;
+  } catch {
+    try {
+      // Resolved next to @workflow/core, which loads it the same way.
+      api = createRequire(import.meta.resolve('@workflow/core/runtime'))(
+        specifier
+      ) as OtelApi;
+    } catch {}
+  }
+  if (!api) return { available: false, sums };
+  const noop = () => ({ add() {}, record() {}, addCallback() {} });
+  const meter = new Proxy(
+    {
+      createCounter: (name: string) => ({
+        add(value: number, attributes: Record<string, unknown> = {}) {
+          const byAttributes = sums.get(name) ?? new Map<string, number>();
+          sums.set(name, byAttributes);
+          const key = JSON.stringify(
+            Object.fromEntries(Object.entries(attributes).sort())
+          );
+          byAttributes.set(key, (byAttributes.get(key) ?? 0) + value);
+        },
+      }),
+    } as Record<string, unknown>,
+    { get: (target, prop: string) => target[prop] ?? noop }
+  );
+  api.metrics.setGlobalMeterProvider({ getMeter: () => meter });
+  return { available: true, sums };
+})();
+
 // Track flow handler invocations per run for testing inline execution
 // per-copy-ok: this file is a standalone test server entry (it calls `serve()`
 // below), so it runs as its own process with one module instance. There is no
 // host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
+
+// The first delivery each run received, as an observer who does not hold the
+// queue auth key would see it: the body and every header but the key. Lets a
+// test replay a real delivery.
+// per-copy-ok: standalone test server process, as for the map above.
+const firstDeliveries = new Map<
+  string,
+  { headers: Record<string, string>; body: string }
+>();
 
 /**
  * A digest of an event's payload field (its `input`, `result`, `output`, …),
@@ -139,7 +195,8 @@ const app = new Hono()
     // /_flow-invocations after seeing the run as completed.
     const cloned = ctx.req.raw.clone();
     try {
-      const body = (await cloned.json()) as Record<string, unknown>;
+      const text = await cloned.text();
+      const body = JSON.parse(text) as Record<string, unknown>;
       const runId =
         typeof body?.runId === 'string'
           ? body.runId
@@ -147,6 +204,12 @@ const app = new Hono()
                 ?.runId === 'string'
             ? ((body.payload as Record<string, unknown>).runId as string)
             : undefined;
+      if (runId && !firstDeliveries.has(runId)) {
+        const headers = Object.fromEntries(ctx.req.raw.headers);
+        // `QUEUE_AUTH_HEADER` in @workflow/utils.
+        delete headers['x-workflow-auth'];
+        firstDeliveries.set(runId, { headers, body: text });
+      }
       if (runId) {
         flowInvocationCounts.set(
           runId,
@@ -161,6 +224,23 @@ const app = new Hono()
   .get('/_flow-invocations/:runId', (ctx) => {
     const count = flowInvocationCounts.get(ctx.req.param('runId')) ?? 0;
     return ctx.json({ count });
+  })
+  .get('/_first-delivery/:runId', (ctx) => {
+    const delivery = firstDeliveries.get(ctx.req.param('runId'));
+    return delivery ? ctx.json(delivery) : ctx.json(null, 404);
+  })
+  .post('/_health-check', async (ctx) => {
+    // A queue health check: a message through the World's own queue to the
+    // flow route above, answered on a stream.
+    const result = await healthCheck(await getWorld(), { timeout: 20_000 });
+    return ctx.json(result);
+  })
+  .get('/_counters/:name', (ctx) => {
+    // Each series of the counter: its attributes and its sum.
+    const series = [...(counters.sums.get(ctx.req.param('name')) ?? [])].map(
+      ([attributes, sum]) => ({ attributes: JSON.parse(attributes), sum })
+    );
+    return ctx.json({ available: counters.available, series });
   })
   .get('/_manifest', (ctx) => ctx.json(manifest))
   .post('/invoke', async (ctx) => {
@@ -236,6 +316,11 @@ const app = new Hono()
       if (!cursor) break;
     }
     return ctx.json({ events: allEvents, snapshot });
+  })
+  .get('/_queue-auth', async (ctx) => {
+    // The World's declared queue auth mode; only 'loopback' is checked.
+    const world = await getWorld();
+    return ctx.json({ queueAuthMode: world.queueAuthMode ?? null });
   })
   .get('/_capabilities', async (ctx) => {
     const world = await getWorld();

@@ -378,7 +378,7 @@ The Vercel World doesn't follow HTTP redirects on workflow API requests, so poin
 
 ### `VERCEL_WORKFLOW_SERVER_URL`
 
-Custom workflow-server URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
+Custom backend URL for direct runtime requests, or for the proxy to forward to via `WORKFLOW_VERCEL_BACKEND_URL`. Default: unset; normal deployments should not need this.
 
 ### `WORKFLOW_SEQUENTIAL_REPLAYS`
 
@@ -400,9 +400,11 @@ Vercel Queues can delay messages for up to 7 days, capped by the message TTL. Be
 
 ### `WORKFLOW_REQUEST_TIMEOUT_MS`
 
-Per-request timeout, in milliseconds, for Vercel World HTTP calls to workflow-server. Default: `60000`. Clamped to `10000`-`120000`; a value outside that range is pulled into it and warns once.
+Per-request timeout, in milliseconds, for Vercel World HTTP calls to its backend. Default: `60000`. Clamped to `10000`-`120000`; a value outside that range is pulled into it and warns once.
 
 Below the floor the deadline starts canceling requests that would have succeeded, since a cold route or a large event page can take seconds, and a canceled request is redriven through the queue rather than making progress. The ceiling matches the longest a backend route holds a response. Requests that legitimately outlast it (stream reads and writes, event batches) opt out of the deadline entirely rather than relying on this value.
+
+The same deadline bounds the [events WebSocket](#workflow_events_transport): opening the socket, including resolving the token it is opened with, and each event write over it.
 
 ### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
 
@@ -455,6 +457,8 @@ try {
 ```
 
 `openEventsChannel()` returns `undefined`, and writes stay on HTTP, when the transport is disabled or the World cannot hold a socket, such as a `projectConfig` World.
+
+If the first connect fails, or opening the socket or a write over it gets no answer within [`WORKFLOW_REQUEST_TIMEOUT_MS`](#workflow_request_timeout_ms), the channel closes. The write that failed is retried over HTTP where the event type allows a retry, and every later event write for that run goes over HTTP until a new channel is opened, which the next delivery does. The channel is shared by every concurrent invocation of the run in the same process, so one timed out write moves all of them to HTTP, and releasing it afterwards has nothing left to close.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
 
@@ -553,6 +557,8 @@ Practically, this means:
 - Unauthorized requests can never reach workflow or step execution
 - Only messages delivered through Vercel Queues can trigger execution
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
+
+These two layers, a route only Vercel Queues can trigger and a handler that takes a message ID and retrieves and leases the message through Vercel Queues, are why the Vercel World declares `queueAuthMode: 'skip'`: the runtime does not also check a [queue key](/worlds/building-a-world#authenticating-deliveries) on its deliveries. A custom World should declare `'skip'` only when its platform provides both layers.
 
 <Callout>
   The Workflow SDK build step manages this configuration. If you are writing a custom integration, see [Framework integrations: Security](/docs/how-it-works/framework-integrations#security) for more details.

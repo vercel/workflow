@@ -181,31 +181,27 @@ function createStreamRequestError(
 
 export { encodeMultiChunks } from './stream-chunks.js';
 
-const StreamInfoResponseSchema = z.compile(
-  z.object({
-    tailIndex: z.number(),
-    done: z.boolean(),
-  })
-);
+const StreamInfoResponseSchema = z.object({
+  tailIndex: z.number(),
+  done: z.boolean(),
+});
 
 /**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
  * native Uint8Array byte strings, so no base64 decoding is required.
  */
-const StreamChunksResponseSchema = z.compile(
-  z.object({
-    data: z.array(
-      z.object({
-        index: z.number(),
-        data: z.instanceof(Uint8Array),
-      })
-    ),
-    cursor: z.string().nullable(),
-    hasMore: z.boolean(),
-    done: z.boolean(),
-  })
-);
+const StreamChunksResponseSchema = z.object({
+  data: z.array(
+    z.object({
+      index: z.number(),
+      data: z.instanceof(Uint8Array),
+    })
+  ),
+  cursor: z.string().nullable(),
+  hasMore: z.boolean(),
+  done: z.boolean(),
+});
 
 export async function writeStreamSessionOverHttp(
   runId: string,
@@ -275,7 +271,7 @@ export async function closeStreamSessionOverHttp(
 }
 
 /**
- * Creates the streamer that talks to workflow-server. Stream writes upgrade to
+ * Creates the streamer that talks to the backend. Stream writes upgrade to
  * a WebSocket session unless `WORKFLOW_STREAMS_TRANSPORT=http`, or the World
  * routes through the `projectConfig` proxy (`api.vercel.com`), an HTTP-only
  * gateway that does not forward the upgrade. Without `createWriteSession`,

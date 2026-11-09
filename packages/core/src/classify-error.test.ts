@@ -77,7 +77,7 @@ describe('classifyRunError', () => {
 
   it('classifies a 5xx WorkflowWorldError as WORLD_CONTRACT_ERROR (backend fault, retryable)', () => {
     // A WorkflowWorldError only originates from the world adapter talking to
-    // workflow-server, so a 5xx is the backend's fault, not the user's. These
+    // its backend, so a 5xx is the backend's fault, not the user's. These
     // are normally redelivered (isRetryableWorldError); if one reaches terminal
     // classification it must be a world error, not USER_ERROR.
     expect(

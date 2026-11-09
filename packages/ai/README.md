@@ -2,43 +2,23 @@
 
 A helper library that makes [Workflow SDK](https://workflow-sdk.dev) compatible with the [AI SDK](https://ai-sdk.dev/).
 
-## Installation
-
-```bash
-npm install @workflow/ai
-```
+> [!WARNING]
+> `@workflow/ai` is deprecated. For new code, use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and `WorkflowChatTransport` from [`@ai-sdk/workflow`](https://www.npmjs.com/package/@ai-sdk/workflow), which require AI SDK 7. See the [migration guide](https://ai-sdk.dev/v7/docs/agents/workflow-agent#migrating-from-durableagent).
 
 ## AI SDK compatibility
 
-This package supports both **AI SDK v5** and **AI SDK v6**. The `ai` package is a peer dependency, so you control which version to use:
+This package supports **AI SDK 6** only. The `ai` package is a peer dependency (`ai@^6`), so install version 6 explicitly; a plain `npm install ai` installs AI SDK 7, which this package does not support:
 
 ```bash
-# For AI SDK v6 (recommended, latest)
-npm install ai
-
-# For AI SDK v5
-npm install ai@5
+npm install @workflow/ai ai@6
 ```
-
-### Version differences
-
-| Feature | AI SDK v5 | AI SDK v6 |
-|---------|-----------|-----------|
-| Model interface | `LanguageModelV2` | `LanguageModelV3` |
-| Provider package | `@ai-sdk/provider@2.x` | `@ai-sdk/provider@3.x` |
-
-Both versions work with `@workflow/ai`. The package handles their differences through an internal compatibility layer.
 
 ### Provider packages
 
-If you use the provider wrappers (e.g., `@workflow/ai/anthropic`, `@workflow/ai/openai`), install the corresponding provider packages:
+If you use the provider wrappers (for example `@workflow/ai/anthropic` or `@workflow/ai/openai`), install the AI SDK 6 provider packages (`@ai-sdk/*@3`):
 
 ```bash
-# Example: Using Anthropic with AI SDK v6
-npm install ai @ai-sdk/anthropic
-
-# Example: Using OpenAI with AI SDK v5
-npm install ai@5 @ai-sdk/openai@2
+npm install ai@6 @ai-sdk/anthropic@3
 ```
 
 ## Documentation
