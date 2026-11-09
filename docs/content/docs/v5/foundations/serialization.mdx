@@ -186,8 +186,13 @@ const next = Object.freeze([
 Changing a `Date`, `Map`, `Set` or byte array in place inside a frozen value, for example with `date.setTime()`, `map.set()` or `bytes[0] = 1`, isn't recorded. A step that runs in the same invocation may still see the change, but a retried or queued step, and every replay, rebuilds the value from the stored records and sees the original. Replace the object inside `produce` instead:
 
 ```typescript
-draft.updatedAt = new Date(); // not draft.updatedAt.setTime(Date.now())
-draft.tags = new Set([...draft.tags, "urgent"]); // or draft.tags.add("urgent") with immer's enableMapSet()
+import { produce } from "immer";
+declare const state: { updatedAt: Date; tags: ReadonlySet<string> }; // @setup
+
+const next = produce(state, (draft) => {
+  draft.updatedAt = new Date(); // not draft.updatedAt.setTime(Date.now())
+  draft.tags = new Set([...draft.tags, "urgent"]); // not draft.tags.add("urgent")
+});
 ```
 </Callout>
 
