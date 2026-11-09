@@ -3059,9 +3059,9 @@ async function runDelivery(
         // This duplicates what OTEL already captures on the
         // run/invocation span, but is collected as client
         // telemetry so the server can emit it as an
-        // UNSAMPLED, full-population metric: workflow-server's
-        // server spans are heavily sampled in production
-        // (~7%), and client spans can't be filtered by SDK
+        // UNSAMPLED, full-population metric: the backend's
+        // server spans are sampled in production, and
+        // client spans can't be filtered by SDK
         // version, so neither can serve as the dashboard's
         // exact TTFS decomposition. On a retained-VM
         // resume this measures the resume (typically ~0ms),
@@ -4775,7 +4775,7 @@ async function runDelivery(
         }
 
         // Transient infrastructure failures talking to the
-        // world (workflow-server), such as an exhausted
+        // world backend, such as an exhausted
         // RetryAgent (UND_ERR_REQ_RETRY from a sustained
         // 429/503 storm), a dropped socket, a connect/DNS
         // failure, or a client timeout, must NOT fail the

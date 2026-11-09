@@ -271,7 +271,7 @@ export async function closeStreamSessionOverHttp(
 }
 
 /**
- * Creates the streamer that talks to workflow-server. Stream writes upgrade to
+ * Creates the streamer that talks to the backend. Stream writes upgrade to
  * a WebSocket session unless `WORKFLOW_STREAMS_TRANSPORT=http`, or the World
  * routes through the `projectConfig` proxy (`api.vercel.com`), an HTTP-only
  * gateway that does not forward the upgrade. Without `createWriteSession`,

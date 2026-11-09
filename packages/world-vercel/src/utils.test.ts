@@ -34,7 +34,7 @@ describe('getHttpUrl', () => {
     process.env = originalEnv;
   });
 
-  it('uses default workflow-server URL when no config and no env override', () => {
+  it('uses default backend URL when no config and no env override', () => {
     expect(getHttpUrl()).toEqual({
       baseUrl: WORKFLOW_SERVER_URL_OVERRIDE
         ? `${WORKFLOW_SERVER_URL_OVERRIDE}/api`
@@ -136,7 +136,7 @@ describe('getHeaders', () => {
   });
 
   it('omits x-vercel-workflow-api-url when override is set but not using proxy', () => {
-    // Direct-to-workflow-server mode uses baseUrl, so the header is redundant.
+    // Direct-to-backend mode uses baseUrl, so the header is redundant.
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
     const headers = getHeaders(undefined, { usingProxy: false });
     expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
@@ -529,7 +529,7 @@ describe('makeRequest body-parse retry', () => {
     ).rejects.toThrow('x-vercel-id=sfo1::req-deny; x-vercel-mitigated=deny');
   });
 
-  it('maps workflow-server error fields onto WorkflowWorldError.code', async () => {
+  it('maps backend error fields onto WorkflowWorldError.code', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({

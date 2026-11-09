@@ -419,8 +419,8 @@ describe('workflowEntrypoint replay guards', () => {
       startedAt: new Date('2024-01-01T00:00:00.000Z'),
       deploymentId: 'test-deployment',
     };
-    // The firewall in front of workflow-server returned 429→503 during an
-    // attack; the RetryAgent exhausted its retries and surfaced
+    // The backend returned 429→503 under sustained load; the RetryAgent
+    // exhausted its retries and surfaced
     // UND_ERR_REQ_RETRY, which world-vercel maps to a TRANSPORT error.
     const transportError = new WorkflowWorldError(
       'GET /v3/runs/wrun_events_transport/events transport failure after 1234ms (UND_ERR_REQ_RETRY)',

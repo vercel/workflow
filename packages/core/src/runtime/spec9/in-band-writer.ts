@@ -203,6 +203,20 @@ export class InBandWriter {
    */
   onAccepted: ((event: Event) => void) | undefined;
 
+  private readonly commitListeners = new Set<() => void>();
+
+  /**
+   * Calls `listener` after each write of this writer that committed an event,
+   * beside {@link onAccepted}. Returns a function that removes it. The live
+   * feed uses it to start its poll backoff over on the delivery's own writes.
+   */
+  addCommitListener(listener: () => void): () => void {
+    this.commitListeners.add(listener);
+    return () => {
+      this.commitListeners.delete(listener);
+    };
+  }
+
   /** Throws for a World that does not declare the fence. */
   constructor(
     private readonly world: Pick<World, 'events' | 'capabilities'>,
@@ -212,7 +226,9 @@ export class InBandWriter {
   }
 
   private accepted(event: Event | undefined): void {
-    if (event) this.onAccepted?.(event);
+    if (!event) return;
+    this.onAccepted?.(event);
+    for (const listener of this.commitListeners) listener();
   }
 
   /**

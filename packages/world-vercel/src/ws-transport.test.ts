@@ -340,10 +340,12 @@ describe('large frames', () => {
     });
   });
 
-  it('offers the frame-parts flag on every upgrade', async () => {
+  it('offers the frame-parts and run-heartbeat flags on every upgrade', async () => {
     const transport = getWsEventsTransport(WS_URL, headers);
     const { socket } = await connectAndSend(transport);
-    expect(socket.headers['x-workflow-ws-flags']).toBe('frame-parts');
+    expect(socket.headers['x-workflow-ws-flags']).toBe(
+      'frame-parts, run-heartbeat'
+    );
   });
 
   it('fails the request when a later part cannot be sent', async () => {
@@ -1176,7 +1178,7 @@ describe('open', () => {
 });
 
 /**
- * workflow-server tags a `drain` with why it is closing. `max_duration` means
+ * The backend tags a `drain` with why it is closing. `max_duration` means
  * the socket aged out and a plain reconnect is right; `auth_expiry` means the
  * *bearer* ran out, and reconnecting with the same one just earns a 401.
  */

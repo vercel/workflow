@@ -195,7 +195,7 @@ export type SpecVersionSource =
  *   probe budget is generous; the miss is logged and recorded on the span.
  *
  * Once executors attest their version on `run_started` and the backend
- * raises a run to it (vercel/workflow#4366, vercel/workflow-server#1044), a
+ * raises a run to it (vercel/workflow#4366), a
  * v5 target heals an under-stamped run, and this miss floor may drop, but
  * only once the raise is enabled on the whole server fleet AND every v5
  * target a caller can reach attests its version (a published beta that does

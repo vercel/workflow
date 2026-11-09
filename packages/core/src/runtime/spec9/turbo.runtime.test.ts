@@ -333,6 +333,32 @@ describe.each([
     expect(bodies[0]?.listCalls).toBe(0);
   });
 
+  it('completes a resilient start whose run_started the World recorded as the creation, under turbo', async () => {
+    // The World writes the creating `run_started` at the first slot, where
+    // turbo holds a `run_created` it built without loading the log: the two
+    // replay alike, and the write's `allocated` keeps the fence count right.
+    const { world, start } = await setup(
+      twoSteps,
+      [1, 2],
+      { creationOnStart: true },
+      false
+    );
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(world.deliveries).toHaveLength(1);
+    expect(types(world.events)).toEqual([
+      'run_started',
+      'step_started',
+      'step_completed',
+      'step_started',
+      'step_completed',
+      'run_completed',
+    ]);
+    expect(bodies[0]?.listCalls).toBe(0);
+  });
+
   it('starts bodies only after their start commits once the run has a wait', async () => {
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
