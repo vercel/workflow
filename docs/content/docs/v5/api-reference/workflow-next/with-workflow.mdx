@@ -183,7 +183,7 @@ The integration already honors Next.js' [`basePath`](https://nextjs.org/docs/app
 `experimentalRoutePrefix` moves only the generated workflow routes and their function config into the app tree; the rest of your routes keep their paths. The two compose: with `basePath: "/v2"` and `experimentalRoutePrefix: "/dashboard"`, the flow route answers at `/v2/dashboard/.well-known/workflow/v1/flow`.
 
 <Callout type="info">
-The local CLI and web UI infer the manifest location from the unprefixed app paths, so the Workflows tab is empty for a prefixed app. Set [`WORKFLOW_MANIFEST_PATH`](/docs/configuration/cli-and-web-ui#workflow_manifest_path) to the prefixed manifest, for example `app/dashboard/.well-known/workflow/v1/manifest.json`.
+The local CLI and web UI find a prefixed manifest such as `app/dashboard/.well-known/workflow/v1/manifest.json` on their own; set [`WORKFLOW_MANIFEST_PATH`](/docs/configuration/cli-and-web-ui#workflow_manifest_path) to pick another. Pass the base path to [`workflow health`](/docs/configuration/cli-and-web-ui#--base-path), for example `workflow health --base-path /dashboard`.
 </Callout>
 
 ## Exporting a function

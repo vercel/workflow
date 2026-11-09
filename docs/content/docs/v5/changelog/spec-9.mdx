@@ -741,6 +741,8 @@ Run-ahead starts work before the writes it depends on commit: it hands an inline
 
 `WORKFLOW_RUN_AHEAD_DEPTH` is 10 by default, clamped to 0..16, and 0 turns it off (`RUN_AHEAD_DEPTH` in `packages/core/src/runtime/constants.ts`). It caps how many step outcomes are unconfirmed at once. Both engines run ahead; see [QuickJS run-ahead](#quickjs-run-ahead) for where the QuickJS engine differs.
 
+Run-ahead's per-step cost stays flat however many inline steps a delivery runs, because each hazard check reads only the boundaries whose speculative writes are still in flight, at most the depth's worth. The `workflow.execute` span records the most such boundaries held at once as `workflow.run_ahead.contexts_max`.
+
 #### When a boundary may run ahead
 
 At each suspension that schedules inline steps, the delivery classifies who else could append an event that changes what the workflow does next (`observeOutOfBandWriters`, `packages/core/src/runtime/out-of-band-observation.ts`; called at `packages/core/src/runtime/spec9/delivery.ts`).
@@ -1332,7 +1334,11 @@ The runtime refuses to create or drive a spec 9 run on a World that does not dec
 
 **Inline steps are created by their first `step_started` (spec 9).** A step the orchestrator runs inline has no `step_created`: its first `step_started` (`attempt: 1`) carries what a `step_created` carries, `stepName`, `workflowName`, `input` and `inline: true` (but no `creatorMessageId`, which only a background step's creation needs), and is the step's creation. Store it as one event, keep its `input` (as for a `step_created`), and write no `step_created` beside it. A background step keeps `step_created` followed by its invocation's own `step_started`. Only a step's first start carries an input; later starts are ordinary starts. The runtime still reads logs with a `step_created` for an inline step, so a World does not rewrite older runs.
 
+**A resilient start may store its `run_started` as the run's creation (spec 9).** When `run_created` never landed and a `run_started` carrying the creation data creates the run, a World may store that `run_started` alone at the run's first slot, with the data a `run_created` carries (`input`, `deploymentId`, `workflowName`, `executionContext`, `attributes`, `encryptionPublicKey`, `startHook`), and write no `run_created`. The runtime reads either shape. Keep the in-band count a log with a `run_created` would have: the creation holds the first in-band position and the start the next, so that `run_started` write reports `allocated: 1`.
+
 Persist the fields the runtime adds to `eventData` and return them from `events.list()`: `inline` and `creatorMessageId` on `step_created`, `inline` on an inline step's first `step_started`, `creatorMessageId` on `wait_created`, `attempt` on `step_started`, `attempt` on `step_retrying` and `step_failed`, and `stepName` on every step event.
+
+A `hook_received` that `resumeHook()` or `resumeWebhook()` writes on a spec 9 run also carries the run's `workflowName` in `eventData`, as a creating `step_started` does, so a World that keys stored data by workflow name doesn't need to read the run first. Older runtimes omit it, so treat it as optional.
 
 **In-band and out-of-band writes.** Every write says whether the run's orchestrator made it (`params.inBand`). In-band writes also carry `params.expectedSeqInBand` and `params.eventCount`, and your World must fence them: see [Single-writer guarantee and the in-band fence](#single-writer-guarantee-and-the-in-band-fence).
 
@@ -3133,7 +3139,7 @@ sequenceDiagram
     Note over M,W: now
     M->>Q: w1's timer, key wait:w1:R:R
     M->>W: wait_created w1
-    Note over M: dies; the timer is already out
+    Note over M: dies, the timer is already out
 ```
 
 **Outcome.** Fixed (`e3018c00c3`): a pass sends the timer of its chain's earliest new wait before the `wait_created` commits, on both engines. If the commit then fails, the stray timer finds no wait or re-arms the one the redelivery created. Tests: `spec9/wait-chains.runtime.test.ts`, both engines, for a failed timer send and a lost creation response. Mechanism: [Timers and waits](#who-arms-a-timer).

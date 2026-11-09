@@ -25,7 +25,9 @@
     "@workflow/ai": "workspace:*",
     "@workflow/errors": "workspace:*",
     "zod": "catalog:",
-    "ai": "catalog:"
+    "@ai-sdk/react": "catalog:ai-sdk-v7",
+    "@ai-sdk/workflow": "catalog:ai-sdk-v7",
+    "ai": "catalog:ai-sdk-v7"
   },
   "devDependencies": {
     "@types/node": "catalog:",
