@@ -43,7 +43,7 @@ jobs:
 
       - name: Run snapshot fuzz
         working-directory: packages/core
-        run: pnpm exec vitest run src/runtime/quickjs-snapshot-fuzz.test.ts
+        run: pnpm exec vitest run --config=../../vitest.config.ts src/runtime/quickjs-snapshot-fuzz.test.ts
         env:
           FUZZ_TRIALS: ${{ inputs.trials || '200' }}
           FUZZ_STEPS: ${{ inputs.steps || '300' }}

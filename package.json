@@ -12,7 +12,6 @@
     "@changesets/read": "^1.0.0",
     "@manypkg/get-packages": "^3.1.0",
     "@vitest/coverage-v8": "catalog:",
-    "@vitest/runner": "catalog:",
     "esbuild": "catalog:",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
