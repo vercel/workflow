@@ -787,7 +787,7 @@ export function createQueue(
       };
       const orchestratorRunId = singleOrchestratorRunIdOf(message);
       const deliver: DeliveryHandler = (m, md) =>
-        entry({ message: m, meta: md });
+        entry({ message: m, meta: md, ...(signal ? { signal } : {}) });
       // The gate is held until the handler settles, not until the job is
       // released: a delivery that outlives its deadline keeps running, and a
       // redelivery of the same run in this process must wait for it.
@@ -970,12 +970,15 @@ export function createQueue(
     if (!startPromise) {
       startPromise = (async () => {
         try {
-          workerUtils = await makeWorkerUtils({
+          const utils = await makeWorkerUtils({
             pgPool: pool,
             logger: graphileLogger,
           });
-          await workerUtils.migrate();
-          await migratePgBossJobs(workerUtils);
+          await utils.migrate();
+          await migratePgBossJobs(utils);
+          // Published only now: `ensureRunner` (from `registerHandler`) must
+          // not start a runner against a schema still being migrated.
+          workerUtils = utils;
         } catch (err) {
           startPromise = null;
           throw err;
@@ -996,7 +999,7 @@ export function createQueue(
     if (!closing && !enqueueOnlyNoted && !directHandlers.has(ownPrefix())) {
       enqueueOnlyNoted = true;
       console.warn(
-        '[world-postgres] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call); see the Postgres World docs, "Run the worker when your server starts".'
+        '[postgres world] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call); see the Postgres World docs, "Run the worker when your server starts".'
       );
     }
   }
@@ -1336,7 +1339,7 @@ export function createQueue(
         // route itself (the flow route takes no HTTP). Refusing here, at
         // startup, says so once instead of failing every delivery.
         throw new Error(
-          "[world-postgres] The flow handler registered for the Workflow SDK's queue has no in-process entry (IN_PROCESS_QUEUE_HANDLER from @workflow/world), so the World cannot deliver to it: the flow route takes no HTTP. Hand the World the generated flow route through registerWorkflowHandler() from workflow/runtime, which the framework integrations call when the app starts."
+          "[postgres world] The flow handler registered for the Workflow SDK's queue has no in-process entry (IN_PROCESS_QUEUE_HANDLER from @workflow/world), so the World cannot deliver to it: the flow route takes no HTTP. Hand the World the generated flow route through registerWorkflowHandler() from workflow/runtime, which the framework integrations call when the app starts."
         );
       }
       directHandlers.set(parsed, handler);
@@ -1344,7 +1347,7 @@ export function createQueue(
       // Before it, `start()` starts the runner itself.
       ensureRunner().catch((error) => {
         console.error(
-          '[world-postgres] Failed to start Graphile Worker after the flow handler was registered:',
+          '[postgres world] Failed to start Graphile Worker after the flow handler was registered:',
           error
         );
       });

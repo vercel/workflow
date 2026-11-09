@@ -151,6 +151,22 @@ describe('postgres queue http execution', () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it('starts no runner before the migrations finish, even for a handler registered meanwhile', async () => {
+    const migrated = Promise.withResolvers<void>();
+    vi.mocked(workerUtilsMock.migrate).mockReturnValueOnce(migrated.promise);
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const starting = queue.start();
+    await vi.waitFor(() => expect(workerUtilsMock.migrate).toHaveBeenCalled());
+    // Registered while the schema is still being migrated: the runner must
+    // not claim jobs against it yet.
+    registerFlowHandler(queue);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(run).not.toHaveBeenCalled();
+    migrated.resolve();
+    await starting;
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it('starts one runner for concurrent start() calls', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     registerFlowHandler(queue);
@@ -1444,6 +1460,57 @@ describe('postgres queue http execution', () => {
     expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
   });
 
+  it('hands the in-process handler the signal, aborted when the job is aborted', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const entered = Promise.withResolvers<void>();
+    let seen: AbortSignal | undefined;
+    queue.registerHandler(
+      '__wkf_workflow_',
+      withEntry(async ({ signal }) => {
+        seen = signal;
+        entered.resolve();
+        await new Promise(() => {});
+      })
+    );
+    await queue.start();
+
+    const controller = new AbortController();
+    const execution = getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+      { abortSignal: controller.signal, job: { attempts: 1 } }
+    );
+    await entered.promise;
+    expect(seen?.aborted).toBe(false);
+    controller.abort();
+    await expect(execution).rejects.toMatchObject({ name: 'AbortError' });
+    // The handler sees the abort through the delivery's signal.
+    expect(seen?.aborted).toBe(true);
+  });
+
+  it('hands the in-process handler a signal that fires at the headers deadline', async () => {
+    process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    const timedOut = Promise.withResolvers<void>();
+    queue.registerHandler(
+      '__wkf_workflow_',
+      withEntry(async ({ signal }) => {
+        signal?.addEventListener('abort', () => timedOut.resolve(), {
+          once: true,
+        });
+        await new Promise(() => {});
+      })
+    );
+    await queue.start();
+
+    await expect(
+      getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_test', { runId: 'run_01ABC' }),
+        { job: { attempts: 1 } }
+      )
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    await timedOut.promise;
+  });
+
   it('fails an in-process delivery that does not respond within the headers deadline', async () => {
     process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
@@ -1465,10 +1532,14 @@ describe('postgres queue http execution', () => {
 
   it('places no deadline on an in-process delivery unless the operator sets one', async () => {
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    // No deadline, no shutdown: the delivery settles when the handler does.
+    // No deadline, no shutdown: nothing can abort the delivery, and the
+    // handler gets no signal to watch.
     queue.registerHandler(
       '__wkf_workflow_',
-      withEntry(async () => undefined)
+      withEntry(async ({ signal }) => {
+        expect(signal).toBeUndefined();
+        return undefined;
+      })
     );
     await queue.start();
     await expect(

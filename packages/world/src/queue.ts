@@ -1036,6 +1036,13 @@ export interface QueueDeliveryMeta {
 export interface InProcessDelivery {
   message: unknown;
   meta: QueueDeliveryMeta;
+  /**
+   * Aborted when the World stops waiting for this delivery (its shutdown,
+   * or the deadline it gives a delivery), as the request's signal is for a
+   * delivery over HTTP. The World releases the job then; the handler may
+   * keep running, and may use the signal to stop early.
+   */
+  signal?: AbortSignal;
 }
 
 /**
