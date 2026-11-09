@@ -1729,6 +1729,7 @@ describe('postgres queue http execution', () => {
       expect(String(notes()[0][0])).toMatch(
         /Run the worker when your server starts/
       );
+      expect(String(notes()[0][0])).toMatch(/built for this World/);
 
       const worker = buildQueue({ connectionString: 'postgres://test' }, pool);
       worker.registerHandler(

@@ -1046,7 +1046,7 @@ export function createQueue(
     if (!closing && !enqueueOnlyNoted && !directHandlers.has(ownPrefix())) {
       enqueueOnlyNoted = true;
       console.warn(
-        '[postgres world] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), and follow the Postgres World docs, "Run the worker when your server starts".'
+        '[postgres world] start(): no flow handler is registered in this process, so it only enqueues and runs no jobs. Jobs run in a process that handed the World its flow route (registerWorkflowHandler() from workflow/runtime, which the framework startup hooks call when the app uses this World). If this process is the app and should run jobs, check that workflow and @workflow/core are on the same release as @workflow/world-postgres (earlier releases register no route), that the app was built for this World (a Next.js app inlines the worker import at build time: build with WORKFLOW_TARGET_WORLD set to this package), and follow the Postgres World docs, "Run the worker when your server starts".'
       );
     }
   }
