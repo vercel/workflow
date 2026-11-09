@@ -561,6 +561,20 @@ export function withWorkflow(
       experimentalRoutePrefix
     );
     setWorkflowBasePath(workflowBasePath);
+    // Inlined by the bundler (Next's `env`), so `instrumentation.ts` can
+    // gate its import of the generated worker module on a constant: webpack
+    // then drops the branch instead of compiling the whole flow bundle into
+    // instrumentation (and recompiling it on every workflow rebuild in
+    // development). Set from the World the app is built for; an explicit
+    // value in the build environment wins.
+    nextConfig.env = {
+      ...nextConfig.env,
+      WORKFLOW_IN_PROCESS_WORKER:
+        process.env.WORKFLOW_IN_PROCESS_WORKER ??
+        (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
+          ? '1'
+          : ''),
+    };
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),

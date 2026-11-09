@@ -66,6 +66,7 @@ describe('withWorkflow builder config', () => {
     WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
     WORKFLOW_NEXT_PRIVATE_BUILT: process.env.WORKFLOW_NEXT_PRIVATE_BUILT,
     WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
+    WORKFLOW_IN_PROCESS_WORKER: process.env.WORKFLOW_IN_PROCESS_WORKER,
   };
 
   beforeEach(() => {
@@ -82,6 +83,7 @@ describe('withWorkflow builder config', () => {
     delete process.env.WORKFLOW_LOCAL_DATA_DIR;
     delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
     delete process.env.WORKFLOW_TARGET_WORLD;
+    delete process.env.WORKFLOW_IN_PROCESS_WORKER;
     delete (globalThis as Record<symbol, unknown>)[
       Symbol.for('@workflow/next/workflowBuilds')
     ];
@@ -103,6 +105,28 @@ describe('withWorkflow builder config', () => {
         process.env[key] = value;
       }
     }
+  });
+
+  it('inlines WORKFLOW_IN_PROCESS_WORKER from the World the app is built for', async () => {
+    const resolve = (config: ReturnType<typeof withWorkflow>) =>
+      config('phase-production-build', { defaultConfig: {} });
+    process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres';
+    delete process.env.WORKFLOW_IN_PROCESS_WORKER;
+    const postgres = await resolve(withWorkflow({ env: { KEEP: 'me' } }));
+    expect(postgres.env).toEqual({
+      KEEP: 'me',
+      WORKFLOW_IN_PROCESS_WORKER: '1',
+    });
+
+    delete process.env.WORKFLOW_TARGET_WORLD;
+    const local = await resolve(withWorkflow({}));
+    expect(local.env?.WORKFLOW_IN_PROCESS_WORKER).toBe('');
+
+    // An explicit value in the build environment wins (a World of the
+    // app's own that delivers in process).
+    process.env.WORKFLOW_IN_PROCESS_WORKER = '1';
+    const explicit = await resolve(withWorkflow({}));
+    expect(explicit.env?.WORKFLOW_IN_PROCESS_WORKER).toBe('1');
   });
 
   it('uses outputFileTracingRoot for tracing without changing module specifier root', async () => {
