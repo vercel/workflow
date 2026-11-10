@@ -1,7 +1,6 @@
 'use client';
 
 import { Search } from 'lucide-react';
-import { DecryptButton } from '../ui/decrypt-button';
 import { Kbd } from '../ui/kbd';
 
 export interface DecryptControl {
@@ -10,20 +9,15 @@ export interface DecryptControl {
   isDecrypting: boolean;
   isDecryptDisabled: boolean;
   decryptDisabledReason?: string;
-  /** Whether the key is loaded. */
-  decrypted: boolean;
 }
 
-/** Search box, and the Decrypt button when the run has encrypted data. */
+/** The events search box. */
 export function EventListToolbar({
   query,
   onQueryChange,
-  decrypt,
 }: {
   query: string;
   onQueryChange: (query: string) => void;
-  /** Shown when set. */
-  decrypt?: DecryptControl;
 }) {
   return (
     <div className="flex h-10 min-h-10 shrink-0 items-center gap-1.5 border-b border-gray-alpha-400 bg-background-100 pl-[34px] pr-2">
@@ -55,15 +49,6 @@ export function EventListToolbar({
             Esc
           </Kbd>
         </button>
-      ) : null}
-      {decrypt ? (
-        <DecryptButton
-          decrypted={decrypt.decrypted}
-          loading={decrypt.isDecrypting}
-          disabled={decrypt.isDecryptDisabled}
-          disabledReason={decrypt.decryptDisabledReason}
-          onClick={decrypt.onDecrypt}
-        />
       ) : null}
     </div>
   );

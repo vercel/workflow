@@ -1,15 +1,11 @@
 'use client';
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
-import { ChartGantt } from 'lucide-react';
-import type { ReactNode } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChartGantt, Lock } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
 import {
   type EventListRow,
-  formatSinceStart,
-  formatTimestampParts,
-  getEffectiveEventDate,
   hasEncryptedValues,
   parseEventDate,
   type TimingSegment,
@@ -24,16 +20,17 @@ import { serializeForClipboard } from '../sidebar/copyable-data-block';
 import { CopyButton } from '../trace-viewer/components/copy-button';
 import { DetailPanelShell } from '../trace-viewer/components/detail-panel-shell';
 import type { DetailPanelWidth } from '../trace-viewer/components/use-detail-panel-width';
+import { Button } from '../ui/button';
 import { Collapsible } from '../ui/collapsible';
 import { DataInspector } from '../ui/data-inspector';
+import { DecryptButton } from '../ui/decrypt-button';
 import {
   ErrorStackBlock,
   isStructuredError,
   type StructuredErrorRecord,
 } from '../ui/error-stack-block';
-import { IconButton } from '../ui/icon-button';
 import { Skeleton } from '../ui/skeleton';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
+import type { DecryptControl } from './event-list-toolbar';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -105,30 +102,35 @@ const SEGMENT_COLOR: Record<TimingSegment['kind'], string> = {
   running: 'bg-blue-700',
 };
 
-function PanelMetric({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <span className="truncate text-label-13 text-gray-900">{label}</span>
-      <span className="truncate text-label-14 tabular-nums text-gray-1000">
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function formatShare(value: number, sum: number): string {
-  const percent = (value / sum) * 100;
-  return percent < 1 ? '<1%' : `${Math.round(percent)}%`;
-}
-
 function PayloadView({
   data,
   eventType,
+  decrypt,
 }: {
   data: unknown;
   eventType: string;
+  /** Set while the payload is still encrypted. */
+  decrypt?: DecryptControl;
 }) {
   const cleaned = useMemo(() => deepParseJson(data), [data]);
+  if (decrypt) {
+    return (
+      <Collapsible defaultOpen label="Payload">
+        <div className="flex items-center gap-2 rounded-md border border-gray-alpha-400 bg-gray-100 py-1.5 pl-3 pr-1.5">
+          <Lock className="h-4 w-4 shrink-0 text-gray-900" />
+          <span className="min-w-0 flex-1 text-copy-13 text-gray-900">
+            Encrypted with this run’s key.
+          </span>
+          <DecryptButton
+            loading={decrypt.isDecrypting}
+            disabled={decrypt.isDecryptDisabled}
+            disabledReason={decrypt.decryptDisabledReason}
+            onClick={decrypt.onDecrypt}
+          />
+        </div>
+      </Collapsible>
+    );
+  }
   return (
     <Collapsible
       defaultOpen
@@ -153,11 +155,8 @@ function PayloadView({
 }
 
 function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
-  const total = segments.reduce((sum, s) => sum + s.ms, 0);
-  if (segments.length === 0 || total <= 0) return null;
   return (
     <div className="flex flex-col gap-2">
-      <PanelMetric label="Time" value={formatDurationPrecise(total)} />
       <div
         aria-hidden
         className="flex h-2 gap-0.5 overflow-hidden rounded-full"
@@ -194,9 +193,6 @@ function TimingBreakdown({ segments }: { segments: TimingSegment[] }) {
             <span className="tabular-nums text-gray-1000">
               {formatDurationPrecise(segment.ms)}
             </span>
-            <span className="tabular-nums text-gray-700">
-              {formatShare(segment.ms, total)}
-            </span>
           </li>
         ))}
       </ul>
@@ -209,7 +205,8 @@ interface EventPayloadProps {
   cachedEventData: unknown | null;
   onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
-  onEncryptedDataDetected?: () => void;
+  /** Offered on a payload that is still encrypted. */
+  decrypt?: DecryptControl;
 }
 
 interface EventDetailsBodyProps extends EventPayloadProps {
@@ -229,7 +226,7 @@ function EventDetailsBody({
   cachedEventData,
   onCacheEventData,
   encryptionKey,
-  onEncryptedDataDetected,
+  decrypt,
 }: EventDetailsBodyProps) {
   const { event } = row;
   // Inline eventData is complete only when the event type has no ref fields
@@ -258,9 +255,6 @@ function EventDetailsBody({
         if (cancelled || loaded == null) return;
         setData(loaded);
         onCacheEventData(event.eventId, loaded);
-        if (!encryptionKey && hasEncryptedValues(loaded)) {
-          onEncryptedDataDetected?.();
-        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -276,37 +270,35 @@ function EventDetailsBody({
     };
   }, [event.eventId, encryptionKey]);
 
-  const ts = formatTimestampParts(getEffectiveEventDate(event));
+  const timingTotal = segments.reduce((sum, s) => sum + s.ms, 0);
   const occurredAt = parseEventDate(event.occurredAt);
   const createdAt = new Date(event.createdAt);
   const structuredError = extractStructuredError(data, event.eventType);
 
   return (
     <div className="@container px-4">
-      <Collapsible defaultOpen label="Metrics">
-        <div className="flex flex-col gap-4">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3 @sm:grid-cols-3">
-            <PanelMetric label="Start" value={`${ts.clock}${ts.ms}`} />
-            <PanelMetric
-              label="Duration"
-              value={
-                row.durationMs !== undefined
-                  ? formatDurationPrecise(row.durationMs)
-                  : '—'
-              }
-            />
-            <PanelMetric
-              label="Since start"
-              value={
-                row.sinceStartMs !== undefined
-                  ? formatSinceStart(row.sinceStartMs)
-                  : '—'
-              }
-            />
-          </div>
+      {/* Start and since-start are already in the selected row; Timing adds
+          the step's breakdown, or the duration for other events. */}
+      {timingTotal > 0 ? (
+        <Collapsible
+          defaultOpen
+          label="Timing"
+          actions={
+            <span className="text-label-13 tabular-nums text-gray-900">
+              {formatDurationPrecise(timingTotal)} total
+            </span>
+          }
+        >
           <TimingBreakdown segments={segments} />
-        </div>
-      </Collapsible>
+        </Collapsible>
+      ) : row.durationMs !== undefined ? (
+        <Collapsible defaultOpen label="Timing">
+          <DetailMonoKeyValueRow
+            label="Duration"
+            value={formatDurationPrecise(row.durationMs)}
+          />
+        </Collapsible>
+      ) : null}
 
       {structuredError ? (
         <Collapsible defaultOpen label="Error">
@@ -315,7 +307,13 @@ function EventDetailsBody({
       ) : null}
 
       {data != null ? (
-        <PayloadView data={data} eventType={event.eventType} />
+        <PayloadView
+          data={data}
+          eventType={event.eventType}
+          decrypt={
+            !encryptionKey && hasEncryptedValues(data) ? decrypt : undefined
+          }
+        />
       ) : loading || loadError ? (
         <Collapsible defaultOpen label="Payload">
           {loadError ? (
@@ -384,7 +382,7 @@ export function EventDetailsPanel({
   cachedEventData,
   onCacheEventData,
   encryptionKey,
-  onEncryptedDataDetected,
+  decrypt,
   width,
   onPrev,
   onNext,
@@ -392,65 +390,46 @@ export function EventDetailsPanel({
   onViewInTrace,
 }: EventDetailsPanelProps) {
   const { event } = row;
-  // The payload the body loaded, for the header's copy button. Tagged with
-  // its event so it never describes another one.
-  const [loaded, setLoaded] = useState<{
-    eventId: string;
-    data: unknown;
-  } | null>(null);
-  const cacheEventData = useCallback(
-    (eventId: string, data: unknown) => {
-      onCacheEventData(eventId, data);
-      setLoaded({ eventId, data });
-    },
-    [onCacheEventData]
-  );
-  const payload =
-    (loaded?.eventId === event.eventId ? loaded.data : null) ??
-    cachedEventData ??
-    event.eventData;
-  const rawEvent = useMemo(
-    () => serializeForClipboard({ ...event, eventData: payload }),
-    [event, payload]
-  );
-
   return (
     <DetailPanelShell
       id={EVENT_DETAIL_PANEL_ID}
       width={width}
       itemLabel="event"
-      title={<span className="truncate">{row.name || event.eventType}</span>}
-      headerActions={
-        <>
-          <CopyButton copyText={rawEvent} ariaLabel="Copy event as JSON" />
-          {onViewInTrace ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <IconButton
-                  aria-label="View in Trace"
-                  onClick={() => onViewInTrace(getEventSpanId(event))}
-                >
-                  <ChartGantt className="h-4 w-4" />
-                </IconButton>
-              </TooltipTrigger>
-              <TooltipContent>View in Trace</TooltipContent>
-            </Tooltip>
-          ) : null}
-        </>
+      title={
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate font-mono text-label-12 font-normal text-gray-900">
+            {event.eventType}
+          </span>
+          <span className="truncate text-label-16 font-semibold">
+            {row.name || event.eventType}
+          </span>
+        </span>
       }
       onPrev={onPrev}
       onNext={onNext}
       onClose={onClose}
     >
+      {onViewInTrace ? (
+        <div className="px-4 pb-2">
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => onViewInTrace(getEventSpanId(event))}
+          >
+            <ChartGantt />
+            View in Trace
+          </Button>
+        </div>
+      ) : null}
       <EventDetailsBody
         key={event.eventId}
         row={row}
         segments={segments}
         onLoadEventData={onLoadEventData}
         cachedEventData={cachedEventData}
-        onCacheEventData={cacheEventData}
+        onCacheEventData={onCacheEventData}
         encryptionKey={encryptionKey}
-        onEncryptedDataDetected={onEncryptedDataDetected}
+        decrypt={decrypt}
       />
     </DetailPanelShell>
   );

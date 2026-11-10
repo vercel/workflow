@@ -17,7 +17,6 @@ import {
   getFooterLabel,
   getStepSegments,
   getTextFilter,
-  hasEncryptedValues,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
@@ -64,7 +63,7 @@ interface EventsListProps {
   isDecryptDisabled?: boolean;
   /** Explains why decryption is unavailable. */
   decryptDisabledReason?: string;
-  /** Run-level hint: the run contains encrypted data (from probe). */
+  /** @deprecated Decrypt is offered on the encrypted payload itself; ignored. */
   hasEncryptedData?: boolean;
   /** Fetch events for an exact correlation or event ID. */
   onExactIdSearch?: (
@@ -92,7 +91,6 @@ function EventListViewInner({
   isDecrypting = false,
   isDecryptDisabled = false,
   decryptDisabledReason,
-  hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
   onViewInTrace,
@@ -175,20 +173,6 @@ function EventListViewInner({
       }),
     [visibleRows, isExactSearchActive, textFilter, lookups]
   );
-
-  // Detect encrypted fields across the displayed events (inline eventData).
-  const hasEncryptedInlineData = useMemo(
-    () => (displayedEvents ?? []).some((e) => hasEncryptedValues(e.eventData)),
-    [displayedEvents]
-  );
-  // Set by the details panel when a loaded payload contains encrypted markers.
-  const [foundEncryptedInLazyData, setFoundEncryptedInLazyData] =
-    useState(false);
-  const handleEncryptedDataDetected = useCallback(() => {
-    setFoundEncryptedInLazyData(true);
-  }, []);
-  const hasEncryptedData =
-    hasEncryptedDataProp || hasEncryptedInlineData || foundEncryptedInLazyData;
 
   const selectEvent = useCallback((event: Event | undefined) => {
     setSelectedEventId(event?.eventId);
@@ -277,23 +261,7 @@ function EventListViewInner({
 
   const panelWidth = useDetailPanelWidth(bodyRef, selectedRow !== undefined);
 
-  const toolbar = (
-    <EventListToolbar
-      query={query}
-      onQueryChange={setQuery}
-      decrypt={
-        (hasEncryptedData || encryptionKey) && onDecrypt
-          ? {
-              onDecrypt,
-              isDecrypting,
-              isDecryptDisabled,
-              decryptDisabledReason,
-              decrypted: !!encryptionKey,
-            }
-          : undefined
-      }
-    />
-  );
+  const toolbar = <EventListToolbar query={query} onQueryChange={setQuery} />;
 
   if (isInitialLoad) {
     return (
@@ -421,7 +389,16 @@ function EventListViewInner({
               }
               onCacheEventData={cacheEventData}
               encryptionKey={encryptionKey}
-              onEncryptedDataDetected={handleEncryptedDataDetected}
+              decrypt={
+                onDecrypt
+                  ? {
+                      onDecrypt,
+                      isDecrypting,
+                      isDecryptDisabled,
+                      decryptDisabledReason,
+                    }
+                  : undefined
+              }
               width={panelWidth}
               onPrev={selectedIndex > 0 ? () => moveSelection(-1) : undefined}
               onNext={
