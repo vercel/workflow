@@ -1312,16 +1312,23 @@ describe('purgeRuns', () => {
       events: { create: vi.fn() },
     } as unknown as World;
 
-    await expect(purgeRuns(world, ['a'])).rejects.toThrow(
+    const error = await purgeRuns(world, ['a']).catch((cause) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(
       'The configured World does not support purging run data.'
     );
+    // Fatal, so `Run.purge()` (a step) fails at once instead of retrying.
+    expect(FatalError.is(error)).toBe(true);
   });
 
   it('rejects an empty, duplicated, or oversized list before calling the World', async () => {
     const purgeMany = vi.fn();
     const world = { runs: { purgeMany } } as unknown as World;
 
-    await expect(purgeRuns(world, [])).rejects.toThrow('at least one run ID');
+    await expect(purgeRuns(world, [])).rejects.toSatisfy(
+      (error: unknown) =>
+        FatalError.is(error) && /at least one run ID/.test(error.message)
+    );
     await expect(purgeRuns(world, ['a', 'a'])).rejects.toThrow(
       'unique run IDs'
     );

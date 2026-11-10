@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import type {
   BulkPurgeWorkflowRunsRequest,
   BulkPurgeWorkflowRunsResult,
@@ -5,7 +6,9 @@ import type {
 } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createPromptConfirm,
   formatPurgeSummary,
+  PURGE_NO_TTY_MESSAGE,
   PURGE_UNSUPPORTED_MESSAGE,
   performPurge,
   purgeFailureLines,
@@ -96,7 +99,7 @@ describe('validatePurgeRunIds', () => {
 });
 
 describe('formatPurgeSummary', () => {
-  it('counts every outcome, with fenced start Hook candidates as purged', () => {
+  it('counts every outcome, with `not_created` runs as purged', () => {
     expect(
       formatPurgeSummary({
         summary: { ...mixedResult.summary, notCreated: 1 },
@@ -174,21 +177,37 @@ describe('performPurge', () => {
     expect(outcome.exitCode).toBe(0);
   });
 
-  it('purges nothing when the prompt is declined or unavailable', async () => {
+  it('purges nothing, and exits 0, when the user declines the prompt', async () => {
     const purgeMany = vi.fn();
+    const { logger, logs } = makeLogger();
 
-    for (const promptConfirm of [vi.fn().mockResolvedValue(false), undefined]) {
-      const { logger, logs } = makeLogger();
-      const outcome = await performPurge({
-        world: makeWorld(purgeMany),
-        runIds: ['wrun_a'],
-        confirm: false,
-        logger,
-        promptConfirm,
-      });
-      expect(outcome).toEqual({ exitCode: 0 });
-      expect(logs).toEqual(['Aborted.']);
-    }
+    const outcome = await performPurge({
+      world: makeWorld(purgeMany),
+      runIds: ['wrun_a'],
+      confirm: false,
+      logger,
+      promptConfirm: vi.fn().mockResolvedValue(false),
+    });
+
+    expect(outcome).toEqual({ exitCode: 0 });
+    expect(logs).toEqual(['Aborted.']);
+    expect(purgeMany).not.toHaveBeenCalled();
+  });
+
+  it('fails without -y when there is no terminal to confirm on', async () => {
+    const purgeMany = vi.fn();
+    const { logger, errors } = makeLogger();
+
+    const outcome = await performPurge({
+      world: makeWorld(purgeMany),
+      runIds: ['wrun_a'],
+      confirm: false,
+      logger,
+    });
+
+    // A script that forgets -y must not look like it purged.
+    expect(outcome).toEqual({ exitCode: 1 });
+    expect(errors).toEqual([PURGE_NO_TTY_MESSAGE]);
     expect(purgeMany).not.toHaveBeenCalled();
   });
 
@@ -250,5 +269,61 @@ describe('performPurge', () => {
     expect(outcome).toEqual({ exitCode: 1 });
     expect(errors).toEqual([PURGE_UNSUPPORTED_MESSAGE]);
     expect(promptConfirm).not.toHaveBeenCalled();
+  });
+});
+
+describe('createPromptConfirm', () => {
+  function ask(answer: string) {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    let written = '';
+    output.on('data', (chunk: Buffer) => {
+      written += chunk.toString();
+    });
+    const answered = createPromptConfirm(input, output)('Purge 1 run?');
+    input.write(`${answer}\n`);
+    return answered.then((confirmed) => ({ confirmed, written }));
+  }
+
+  it('confirms on y, writing the prompt to the given output only', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    try {
+      await expect(ask('y')).resolves.toEqual({
+        confirmed: true,
+        written: 'Purge 1 run? [y/N] ',
+      });
+      // The command passes stderr, so --json output on stdout stays parseable.
+      expect(stdout).not.toHaveBeenCalled();
+    } finally {
+      stdout.mockRestore();
+    }
+  });
+
+  it('declines on anything but y', async () => {
+    await expect(ask('n')).resolves.toMatchObject({ confirmed: false });
+    await expect(ask('')).resolves.toMatchObject({ confirmed: false });
+  });
+});
+
+describe('performPurge with --json and an answered prompt', () => {
+  it('writes only the JSON result to stdout', async () => {
+    const purgeMany = vi.fn().mockResolvedValue(mixedResult);
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+    const { logger } = makeLogger();
+    try {
+      await performPurge({
+        world: makeWorld(purgeMany),
+        runIds: ['wrun_a'],
+        confirm: false,
+        json: true,
+        logger,
+        promptConfirm: vi.fn().mockResolvedValue(true),
+      });
+      expect(stdout).toHaveBeenCalledTimes(1);
+      const written = String(stdout.mock.calls[0]?.[0]);
+      expect(JSON.parse(written)).toEqual(mixedResult);
+    } finally {
+      stdout.mockRestore();
+    }
   });
 });

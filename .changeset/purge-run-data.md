@@ -6,4 +6,4 @@
 "@workflow/cli": minor
 ---
 
-Add option `purgeMany` method to the World interface, allowing deletion of stored data of finished runs on demand. Exposed as `run.purge()` (`workflow/api`), `purgeRun()` and `purgeRuns()` (`@workflow/core/runtime`), and `workflow purge <run-id>...` in CLI.
+Add an optional `purgeMany` method to the World interface, allowing deletion of stored data of finished runs on demand. Exposed as `run.purge()` (`workflow/api`), `purgeRun()` and `purgeRuns()` (`@workflow/core/runtime`), and `workflow purge <run-id>...` in CLI.

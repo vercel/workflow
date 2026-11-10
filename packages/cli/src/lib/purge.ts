@@ -1,3 +1,4 @@
+import readline from 'node:readline';
 import { purgeRuns } from '@workflow/core/runtime';
 import {
   BULK_PURGE_MAX_RUN_IDS,
@@ -8,6 +9,32 @@ import {
 /** Printed when the configured World cannot purge run data. */
 export const PURGE_UNSUPPORTED_MESSAGE =
   'The configured World does not support purging run data. To purge runs on Vercel, pass `--backend vercel`.';
+
+/**
+ * Printed when a purge needs confirming and there is no terminal to ask on:
+ * a script that forgets `-y` must not look like it purged.
+ */
+export const PURGE_NO_TTY_MESSAGE =
+  'No terminal to confirm the purge on; pass -y/--confirm to purge non-interactively.';
+
+/**
+ * A `[y/N]` confirmation prompt over the given streams. The command passes
+ * stdin and **stderr**, so the prompt never lands in output redirected from
+ * stdout, such as `--json` results.
+ */
+export function createPromptConfirm(
+  input: NodeJS.ReadableStream,
+  output: NodeJS.WritableStream
+): (message: string) => Promise<boolean> {
+  return (message) =>
+    new Promise<boolean>((resolve) => {
+      const rl = readline.createInterface({ input, output });
+      rl.question(`${message} [y/N] `, (answer) => {
+        rl.close();
+        resolve(answer.trim().toLowerCase() === 'y');
+      });
+    });
+}
 
 export interface PurgeLogger {
   log(message: string): void;
@@ -87,14 +114,17 @@ export interface PurgeParams {
   json?: boolean;
   logger: PurgeLogger;
   /**
-   * Confirmation prompt. Omitted in non-interactive contexts (and tests), in
-   * which case an unconfirmed purge aborts.
+   * Confirmation prompt. Omitted when there is no terminal to ask on, in
+   * which case an unconfirmed purge fails with {@link PURGE_NO_TTY_MESSAGE}.
    */
   promptConfirm?: (message: string) => Promise<boolean>;
 }
 
 export interface PurgeOutcome {
-  /** Process exit code: 1 when the input was invalid or any run failed. */
+  /**
+   * Process exit code: 1 when the input was invalid, the purge could not be
+   * confirmed, or any run failed; 0 when the user declined the prompt.
+   */
   exitCode: number;
   /** The structured result, or undefined when aborted. */
   result?: BulkPurgeWorkflowRunsResult;
@@ -122,11 +152,13 @@ export async function performPurge(params: PurgeParams): Promise<PurgeOutcome> {
   }
 
   if (!confirm) {
-    const confirmed = promptConfirm
-      ? await promptConfirm(
-          `Permanently delete the data of ${runIds.length} run${runIds.length === 1 ? '' : 's'}? This cannot be undone.`
-        )
-      : false;
+    if (!promptConfirm) {
+      logger.error(PURGE_NO_TTY_MESSAGE);
+      return { exitCode: 1 };
+    }
+    const confirmed = await promptConfirm(
+      `Permanently delete the data of ${runIds.length} run${runIds.length === 1 ? '' : 's'}? This cannot be undone.`
+    );
     if (!confirmed) {
       logger.log('Aborted.');
       return { exitCode: 0 };

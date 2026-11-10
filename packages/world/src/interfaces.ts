@@ -339,10 +339,10 @@ export interface Storage {
 
     /**
      * Delete the stored data of many finished runs in a single operation,
-     * including inputs, outputs and errors, its steps and events' payloads
-     * its hook payloads, and its stream contents. The
-     * runs, steps and events themselves stay listed, with their payloads
-     * reading back as expired.
+     * including their inputs, outputs and errors, their steps' and events'
+     * payloads, their hook payloads, and their stream contents. The runs,
+     * steps and events themselves stay listed, with their payloads reading
+     * back as expired.
      *
      * Only finished runs are purged. A run that has not finished is answered
      * `skipped` and left untouched; the World must never cancel it. Returns a

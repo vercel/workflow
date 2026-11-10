@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  FatalError,
   START_HOOK_CANDIDATE_CANCELLED,
   StreamError,
   WorkflowRunNotFoundError,
@@ -427,18 +428,23 @@ export async function purgeRuns(
   runIds: string[]
 ): Promise<BulkPurgeWorkflowRunsResult> {
   if (runIds.length === 0) {
-    throw new Error('purgeRuns requires at least one run ID.');
+    throw new FatalError('purgeRuns requires at least one run ID.');
   }
   if (runIds.length > BULK_PURGE_MAX_RUN_IDS) {
-    throw new Error(
+    throw new FatalError(
       `purgeRuns accepts at most ${BULK_PURGE_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
     );
   }
   if (new Set(runIds).size !== runIds.length) {
-    throw new Error('purgeRuns requires unique run IDs (duplicates found).');
+    throw new FatalError(
+      'purgeRuns requires unique run IDs (duplicates found).'
+    );
   }
   if (!world.runs.purgeMany) {
-    throw new Error('The configured World does not support purging run data.');
+    // Fatal: `Run.purge()` is a step, and retrying cannot add the method.
+    throw new FatalError(
+      'The configured World does not support purging run data.'
+    );
   }
   return world.runs.purgeMany({ runIds });
 }

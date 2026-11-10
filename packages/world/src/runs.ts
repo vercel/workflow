@@ -373,6 +373,12 @@ export type BulkPurgeWorkflowRunsRequest = z.infer<
  * - `failed`: the purge did not complete; `code` is a machine-readable error
  *   code and `retryable` indicates whether retrying may succeed. Purging is
  *   idempotent, so a retry finishes what this one left.
+ *
+ * The union is closed, as bulk cancel's is: a client rejects the whole
+ * response when it meets an outcome it doesn't know. So adding an outcome is
+ * a breaking change for older clients, which would report an error for a
+ * purge the World had already carried out (safe to retry, but misleading).
+ * Add one only alongside a client that understands it.
  */
 export const BulkPurgeWorkflowRunResultSchema = z.discriminatedUnion(
   'outcome',

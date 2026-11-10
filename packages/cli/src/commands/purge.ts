@@ -1,4 +1,3 @@
-import readline from 'node:readline';
 import { Args, Flags } from '@oclif/core';
 import { BULK_PURGE_MAX_RUN_IDS } from '@workflow/world';
 import { BaseCommand } from '../base.js';
@@ -6,7 +5,7 @@ import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import { reportActionableApiError } from '../lib/inspect/errors.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
-import { performPurge } from '../lib/purge.js';
+import { createPromptConfirm, performPurge } from '../lib/purge.js';
 
 export default class Purge extends BaseCommand {
   static description =
@@ -69,31 +68,14 @@ export default class Purge extends BaseCommand {
       confirm: flags.confirm,
       json: flags.json,
       logger,
-      promptConfirm,
+      // Only a terminal can confirm; without one, `-y` is required.
+      promptConfirm: process.stdin.isTTY
+        ? createPromptConfirm(process.stdin, process.stderr)
+        : undefined,
     });
 
     if (exitCode !== 0) {
       process.exit(exitCode);
     }
   }
-}
-
-async function promptConfirm(message: string): Promise<boolean> {
-  // Non-TTY: abort since the user cannot confirm interactively (use
-  // -y/--confirm to skip the prompt).
-  if (!process.stdin.isTTY) {
-    return false;
-  }
-
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise<boolean>((resolve) => {
-    rl.question(`${message} [y/N] `, (answer) => {
-      rl.close();
-      resolve(answer.trim().toLowerCase() === 'y');
-    });
-  });
 }
