@@ -6,7 +6,9 @@
   "main": "dist/index.js",
   "files": [
     "dist",
-    "docs/**/*"
+    "docs/**/*",
+    "!dist/**/*.test.*",
+    "!dist/**/*.d.ts.map"
   ],
   "directories": {
     "doc": "./docs"
