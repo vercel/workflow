@@ -519,7 +519,7 @@ async function createWorkflowSessionInner(
   // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
   // delivery and a later server-backed replay, so use fixedTimestamp.
   // The draw counter is the progress metric for `quiesceEarlierCascades`
-  // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+  // (log-order draws): a quiet turn is one that drew nothing. It
   // counts EVERY draw from this sequence. This same function is installed as
   // the `STABLE_ULID` global below, which serialization draws stream ids
   // from during dehydration. This is deliberate because quiescence must also

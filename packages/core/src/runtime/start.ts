@@ -172,7 +172,7 @@ export type SpecVersionSource =
  * its event log, and for a cross-deployment start that is the target, not
  * this caller. The capability probe runs inside the target and reports the
  * version the target itself mints (which already honours the target's own
- * `WORKFLOW_SPEC_VERSION` and `WORKFLOW_SEALED_LOG` settings), so that is the
+ * `WORKFLOW_SPEC_VERSION` setting), so that is the
  * answer, capped at what this caller's World mints: the caller writes
  * `run_created` and the arguments, and must never stamp a version it could
  * not have written itself. A spec 9 run therefore needs
@@ -195,7 +195,7 @@ export type SpecVersionSource =
  *   probe budget is generous; the miss is logged and recorded on the span.
  *
  * Once executors attest their version on `run_started` and the backend
- * raises a run to it (vercel/workflow#4366, vercel/workflow-server#1044), a
+ * raises a run to it (vercel/workflow#4366), a
  * v5 target heals an under-stamped run, and this miss floor may drop, but
  * only once the raise is enabled on the whole server fleet AND every v5
  * target a caller can reach attests its version (a published beta that does

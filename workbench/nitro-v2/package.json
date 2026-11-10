@@ -19,8 +19,8 @@
     "ai": "catalog:ai-sdk-v7",
     "h3": "^1.15.5",
     "lodash.chunk": "^4.2.0",
-    "nitropack": "^2.13.4",
-    "openai": "^6.6.0",
+    "nitropack": "^2.13.6",
+    "openai": "^6.49.0",
     "workflow": "workspace:*",
     "zod": "catalog:"
   }

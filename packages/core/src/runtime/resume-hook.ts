@@ -1021,6 +1021,15 @@ async function resumeHookAttempt<T = any>(
     // hiding that behind "not found" would mask the bug.)
     const isHookGoneError = (err: unknown): boolean =>
       HookNotFoundError.is(err) || RunExpiredError.is(err);
+    // A spec 9 run's backend keys the payload ref by workflow name. Sending
+    // it lets the backend skip the run-stamp read it would otherwise make
+    // just for that name, one storage round trip on every resume; a backend
+    // that does not use it ignores it. Older runs keep their exact write.
+    const workflowNameForRefKey =
+      !v1Compat &&
+      (resumeContext.runSpecVersion ?? 0) >= SPEC_VERSION_SINGLE_ORCHESTRATOR
+        ? { workflowName: resumeContext.workflowName }
+        : {};
     const write = (claim: boolean, resolved: boolean) =>
       world.events.create(
         hook.runId,
@@ -1030,6 +1039,7 @@ async function resumeHookAttempt<T = any>(
           correlationId: hook.hookId,
           eventData: {
             ...(v1Compat ? {} : { token: hook.token }),
+            ...workflowNameForRefKey,
             payload: dehydratedPayload,
           },
         },

@@ -70,12 +70,6 @@ Maximum number of concurrent queue message handlers. Default: `1000`
 
 Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
 
-### `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS`
-
-How often a wait for a terminal run status re-reads the run file, in milliseconds. Default: `100`.
-
-`await run.returnValue` asks the World to wait for the run to finish. When the run and the caller share a process (the usual development server case), an in-process signal resolves the wait as soon as the run ends, and this interval never comes into play. The interval covers activity the signal cannot detect, primarily a second process awaiting a run over the same data directory, so it is set far below Workflow's own polling interval.
-
 ### `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`
 
 Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `0` (no deadline).

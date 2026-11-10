@@ -268,3 +268,57 @@ describe('workflow.execute span, QuickJS run-ahead', () => {
     expect(span?.status.code).not.toBe(2);
   });
 });
+
+describe('workflow.execute span, node run-ahead', () => {
+  // Long enough that a context kept per boundary would show: the old hazard
+  // check kept one for every boundary since the last drain, and a sequential
+  // run of inert boundaries never drains.
+  const STEPS = 60;
+  const loop = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("span_add");
+    async function workflow(steps) {
+      let n = 0;
+      for (let i = 0; i < steps; i++) n = await add(n, 1);
+      return n;
+    }${registerWorkflow()}`;
+
+  beforeEach(() => {
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_POLL_INTERVAL_MS', '0');
+    vi.stubEnv('VERCEL_URL', 'span.example.test');
+  });
+
+  it('holds the run-ahead contexts of the writes in flight only, however many steps ran ahead', async () => {
+    const { world, start } = await setupOrchestratorRun(
+      loop,
+      [STEPS],
+      {
+        // Each outcome takes a round trip, so speculative writes are in
+        // flight while the next steps run ahead, and the live feed's echoes
+        // and the write reports reach the hazard check.
+        subscribe: true,
+        async beforeCreate(data) {
+          if (data.eventType === 'step_completed') {
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+        },
+      },
+      'node'
+    );
+    await world.deliver(start);
+    expect(await runResult(world)).toBe(STEPS);
+
+    const [span] = executeSpans();
+    const depth = span?.attributes['workflow.run_ahead.depth'] as number;
+    expect(depth).toBe(10);
+    // Every boundary of the loop ran ahead and none drained.
+    expect(span?.attributes['workflow.run_ahead.boundaries']).toBe(STEPS);
+    expect(span?.attributes['workflow.run_ahead.drained_boundaries']).toBe(0);
+    expect(span?.attributes['workflow.run_ahead.hazard_stops']).toBe(0);
+    // At most one context per speculative write in flight: the creation and
+    // the outcomes within the depth, never one per step the loop ran.
+    const contextsMax = span?.attributes[
+      'workflow.run_ahead.contexts_max'
+    ] as number;
+    expect(contextsMax).toBeGreaterThan(0);
+    expect(contextsMax).toBeLessThanOrEqual(depth + 1);
+  });
+});

@@ -24,8 +24,8 @@ const WORLD_CONTRACT_ERROR_CODES = new Set([
 /**
  * `WorkflowWorldError.code` values that mark a transient transport failure
  * (set by world-vercel's HTTP client): `TRANSPORT` covers an exhausted
- * RetryAgent (`UND_ERR_REQ_RETRY`, e.g. the firewall in front of
- * workflow-server shedding load with 429/503), a dropped socket, or a
+ * RetryAgent (`UND_ERR_REQ_RETRY`, e.g. the backend
+ * shedding load with 429/503), a dropped socket, or a
  * connect/DNS failure; `TIMEOUT` covers a request that exceeded the client
  * timeout. Both are infrastructure failures a fresh invocation can recover
  * from. Kept distinct from `WORLD_CONTRACT_ERROR_CODES` so a transport blip is
@@ -90,7 +90,7 @@ export function isWorldContractError(err: unknown): err is WorkflowWorldError {
 }
 
 /**
- * True when an error from a world (workflow-server) call is a transient
+ * True when an error from a world (e.g. world-vercel) call is a transient
  * infrastructure failure that should be retried by redelivering the queue
  * message, rather than failing the run. A fresh invocation will likely
  * succeed once the backend (or the firewall in front of it) recovers.

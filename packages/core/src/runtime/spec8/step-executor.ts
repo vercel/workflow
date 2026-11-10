@@ -1128,6 +1128,7 @@ export async function executeStep(
                 stepId,
                 stepStartedAt: new Date(+stepStartedAt),
                 attempt,
+                maxAttempts: maxRetries + 1,
               },
               workflowMetadata: {
                 workflowName,

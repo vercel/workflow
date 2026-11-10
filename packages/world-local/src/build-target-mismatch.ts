@@ -66,6 +66,10 @@ export function resetVercelDeploymentWarning(): void {
   warnings.warnedAboutVercelDeployment = false;
 }
 
+function isSameOrInsideDir(child: string, dir: string): boolean {
+  return child === dir || child.startsWith(`${dir}${path.sep}`);
+}
+
 /**
  * Warn when the local world is created inside a Vercel deployment.
  *
@@ -90,11 +94,10 @@ export function warnIfRunningInVercelDeployment(dataDir: string): void {
     return;
   }
   const resolvedDataDir = path.resolve(dataDir);
-  const tmp = tmpdir();
-  if (
-    resolvedDataDir === tmp ||
-    resolvedDataDir.startsWith(`${tmp}${path.sep}`)
-  ) {
+  // Keep `tmpdir()` inline and out of `path.*` calls: bound to a variable or
+  // wrapped in `path.resolve()`, @vercel/nft evaluates it at build time and
+  // copies the whole temp directory into the function (#5265).
+  if (isSameOrInsideDir(resolvedDataDir, tmpdir())) {
     return;
   }
   warnings.warnedAboutVercelDeployment = true;

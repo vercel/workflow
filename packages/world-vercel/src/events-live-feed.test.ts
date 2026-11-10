@@ -207,14 +207,15 @@ describe('subscribeRunEvents', () => {
     expect(events.map((event) => event.eventId)).toEqual([slotToEventId(3)]);
     // No other holder, so the socket goes and the channel is de-registered.
     expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
-    expect(resolveWsTransport(RUN, CONFIG)).toBeNull();
+    expect(resolveWsTransport(RUN, CONFIG).kind).toBe('no_channel');
     expect(onError).not.toHaveBeenCalled();
   });
 
   it('keeps a socket another invocation still holds when it unsubscribes', async () => {
     const { unsubscribe, socket } = await subscribed(2);
     const resolved = resolveWsTransport(RUN, CONFIG);
-    resolved?.transport.open();
+    if (resolved.kind === 'open') resolved.transport.open();
+    expect(resolved.kind).toBe('open');
     unsubscribe();
     expect(socket.readyState).toBe(FakeWebSocket.OPEN);
   });

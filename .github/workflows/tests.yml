@@ -33,7 +33,7 @@ jobs:
       vercel-spec9-matrix: ${{ steps.vercel-matrix.outputs.vercel-spec9-matrix }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -99,7 +99,7 @@ jobs:
       - name: Get existing comment body
         if: steps.find-comment.outputs.comment-id != ''
         id: get-comment
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           STARTED_AT: ${{ github.run_started_at }}
         with:
@@ -201,7 +201,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -225,7 +225,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -251,12 +251,12 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: true
           require-lockfile: true
@@ -284,13 +284,14 @@ jobs:
           APP_NAME: "nextjs-turbopack"
 
   vitest-plugin:
-    name: Vitest Plugin Tests (${{ matrix.vm }})
+    name: Vitest Plugin Tests (v${{ matrix.vitest }}, ${{ matrix.vm }})
     runs-on: ubuntu-latest
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     strategy:
       fail-fast: false
       matrix:
+        vitest: [3, 4, 5]
         # Workflow VM engines: node:vm (default) and the opt-in QuickJS
         # WASM engine (WORKFLOW_VM=quickjs).
         vm: [node, quickjs]
@@ -299,7 +300,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -307,10 +308,17 @@ jobs:
           setup-rust: 'true'
           build-packages: 'false'
 
+      - name: Install supported Vitest version
+        # The plugin setup files and workbench must resolve the same Vitest instance.
+        run: pnpm --filter @workflow/vitest --filter @workflow/vitest-workbench add --save-dev vitest@${{ matrix.vitest }}
+
       - name: Build packages
         run: pnpm turbo run build --filter='!./workbench/*'
 
-      - name: Run Vitest Plugin Tests
+      - name: Test Vitest plugin
+        run: pnpm --filter @workflow/vitest test
+
+      - name: Test workflow execution
         run: pnpm test
         working-directory: workbench/vitest
         env:
@@ -327,7 +335,7 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -337,7 +345,7 @@ jobs:
           build-packages: 'true'
 
       - name: Upload package build artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-package-build-artifacts
           # Keep this list aligned with package build outputs in turbo.json.
@@ -395,7 +403,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -447,7 +455,7 @@ jobs:
           # suites keep a fresh token throughout the run instead of using
           # a single pre-minted token that would expire mid-suite.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
-          # Preview deployments are wired to the protected workflow-server
+          # Preview deployments are wired to the protected world-vercel backend
           # preview and production deployments to the public
           # vercel-workflow.com server; the harness has to read run state
           # from the same server the app writes it to.
@@ -498,7 +506,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ fromJSON(needs.ci-scope.outputs.vercel-projects)['nextjs-turbopack']['project-id'] }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -589,7 +597,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -684,7 +692,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -793,7 +801,7 @@ jobs:
       VERCEL_TEAM_ID: ${{ needs.ci-scope.outputs.vercel-team-id }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -862,7 +870,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -895,7 +903,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -916,7 +924,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -977,7 +985,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
@@ -1004,7 +1012,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1025,7 +1033,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1096,7 +1104,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
@@ -1126,7 +1134,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1206,7 +1214,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1227,7 +1235,7 @@ jobs:
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1316,7 +1324,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
@@ -1354,7 +1362,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1367,7 +1375,7 @@ jobs:
       # vitest suite imports `@workflow/core` and shells out to the `workflow`
       # CLI to inspect runs.
       - name: Download shared package builds
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: e2e-package-build-artifacts
           path: packages
@@ -1378,7 +1386,7 @@ jobs:
       # — that key would also bind the uv that `@vercel/python` bundles on the
       # build image, which we do not control.
       - name: Setup uv
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: '0.13.5'
           enable-cache: true
@@ -1428,7 +1436,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-results-conformance-python
           path: |
@@ -1458,18 +1466,18 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        uses: actions-rust-lang/setup-rust-toolchain@a188e68d0fd2bd36ad51dccb2b07ba6e75105f30 # v2.0.1
         with:
           toolchain: stable
           target: wasm32-unknown-unknown
 
       - name: Setup pnpm
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: true
           require-lockfile: true
@@ -1592,7 +1600,7 @@ jobs:
 
       - name: Upload E2E results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
           path: |
@@ -1604,7 +1612,7 @@ jobs:
 
       - name: Upload Next.js server logs
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nextjs-server-logs-windows-${{ matrix.vm }}
           path: nextjs-server.log
@@ -1624,7 +1632,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -1667,12 +1675,12 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: e2e-results-*
           path: e2e-results
@@ -1788,12 +1796,12 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: e2e-results-*
           path: e2e-results

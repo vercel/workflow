@@ -264,9 +264,9 @@ export default function workflowLoader(
     );
 
     // Get decorator options from tsconfig (cached per working directory)
-    const { options: decoratorOptions, configPath } =
+    const { options: decoratorOptions, configPaths } =
       await getDecoratorOptions(workingDir);
-    if (configPath) {
+    for (const configPath of configPaths) {
       registerFileDependency(this, configPath);
     }
 

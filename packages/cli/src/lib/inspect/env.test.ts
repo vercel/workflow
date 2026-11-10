@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { resolveProjectFromLink } from './env.js';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { findManifestPath, resolveProjectFromLink } from './env.js';
 
 const link = {
   projectId: 'prj_linked',
@@ -80,5 +83,58 @@ describe('resolveProjectFromLink', () => {
       link
     );
     expect(resolved.WORKFLOW_VERCEL_PROJECT_NAME).toBe('other-app');
+  });
+});
+
+describe('findManifestPath', () => {
+  const tmpDirs: string[] = [];
+  const makeProject = async (files: string[]) => {
+    const dir = await mkdtemp(join(tmpdir(), 'wf-cli-manifest-'));
+    tmpDirs.push(dir);
+    for (const file of files) {
+      await mkdir(join(dir, dirname(file)), { recursive: true });
+      await writeFile(join(dir, file), '{}');
+    }
+    return dir;
+  };
+
+  afterEach(async () => {
+    await Promise.all(
+      tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))
+    );
+  });
+
+  it('prefers the manifest at the app root', async () => {
+    const dir = await makeProject([
+      'app/.well-known/workflow/v1/manifest.json',
+      'app/dashboard/.well-known/workflow/v1/manifest.json',
+    ]);
+    expect(await findManifestPath(dir)).toBe(
+      resolve(dir, 'app/.well-known/workflow/v1/manifest.json')
+    );
+  });
+
+  it.each([
+    'app/dashboard/.well-known/workflow/v1/manifest.json',
+    'app/team/flows/.well-known/workflow/v1/manifest.json',
+    'src/app/dashboard/.well-known/workflow/v1/manifest.json',
+  ])('finds a manifest generated below a route prefix: %s', async (file) => {
+    const dir = await makeProject([file]);
+    expect(await findManifestPath(dir)).toBe(resolve(dir, file));
+  });
+
+  it('ignores node_modules and dot directories', async () => {
+    const dir = await makeProject([
+      'app/node_modules/pkg/.well-known/workflow/v1/manifest.json',
+      'app/.next/server/.well-known/workflow/v1/manifest.json',
+    ]);
+    expect(await findManifestPath(dir)).toBeUndefined();
+  });
+
+  it('does not descend below another .well-known directory', async () => {
+    const dir = await makeProject([
+      'app/.well-known/agent/.well-known/workflow/v1/manifest.json',
+    ]);
+    expect(await findManifestPath(dir)).toBeUndefined();
   });
 });

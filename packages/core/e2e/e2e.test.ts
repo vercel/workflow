@@ -27,9 +27,9 @@ import {
   describe,
   expect,
   type TestContext,
+  TestRunner,
   type test as vitestTest,
 } from 'vitest';
-import { createTaskCollector, getCurrentSuite } from 'vitest/suite';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
@@ -215,19 +215,19 @@ const wrapE2EHandler =
 /**
  * Drop-in `test` that wraps every handler with {@link wrapE2EHandler} and
  * then hands the call to the enclosing suite's own collector — exactly what
- * vitest's top-level `test` does (`getCurrentSuite().test.fn.call(this, …)`).
+ * vitest’s top-level `test` does (`TestRunner.getCurrentSuite().test.fn.call(this, …)`).
  *
- * Delegating rather than calling `getCurrentSuite().task()` directly is
- * load-bearing: the suite collector is where suite options are merged into
+ * Delegating rather than calling `TestRunner.getCurrentSuite().task()` directly
+ * is load-bearing: the suite collector is where suite options are merged into
  * each test (`Object.assign({}, suiteOptions, options)`), which is how
  * `describe.concurrent` reaches its tests. Calling `task()` directly skips
  * that merge, and the suite silently runs sequentially — caught in CI as
  * lanes matching the serial baseline minute-for-minute.
  *
- * Built on `createTaskCollector`, so the whole chainable surface (`.skip`,
+ * Built on `TestRunner.createTaskCollector`, so the whole chainable surface (`.skip`,
  * `.only`, `.each`, `.runIf`, `.sequential`, …) keeps working.
  */
-const test = createTaskCollector(function (
+const test = TestRunner.createTaskCollector(function (
   this: Record<string, unknown>,
   name: string,
   optionsOrFn?: unknown,
@@ -248,7 +248,12 @@ const test = createTaskCollector(function (
     handler = optionsOrFn as typeof handler;
   }
 
-  getCurrentSuite().test.fn.call(this, name, options, wrapE2EHandler(handler));
+  TestRunner.getCurrentSuite().test.fn.call(
+    this,
+    name,
+    options,
+    wrapE2EHandler(handler)
+  );
 }) as typeof vitestTest;
 
 const testJsOnly = isJsApp() ? test : test.skip;
@@ -1041,7 +1046,7 @@ describe.concurrent('e2e', () => {
   });
 
   // vercel/workflow#4457. Early advance is implemented by the Node.js VM
-  // engine's inline loop only (see WORKFLOW_INLINE_EARLY_ADVANCE), and needs
+  // engine's inline loop only, and needs
   // both steps inline in one invocation.
   test.skipIf(
     process.env.WORKFLOW_VM === 'quickjs' ||
@@ -1135,6 +1140,9 @@ describe.concurrent('e2e', () => {
 
     // Attempt should be atleast 1
     expect(returnValue.stepMetadata.attempt).toBeGreaterThanOrEqual(1);
+
+    // maxAttempts is the step's maxRetries (default 3) plus one
+    expect(returnValue.stepMetadata.maxAttempts).toBe(4);
 
     // stepStartedAt should be a Date or date string
     expect(returnValue.stepMetadata.stepStartedAt).toBeDefined();
@@ -4062,8 +4070,8 @@ describe.concurrent('e2e', () => {
         // A finished victim gets no wake target from the local and postgres
         // Worlds (nothing for it to read; an invoke of a completed run only
         // races its own terminal write). Not asserted here: the deployed
-        // Vercel World gains the same behaviour with
-        // vercel/workflow-server#988, and until that is live it still hands
+        // Vercel World gains the same behaviour in a later backend release, and
+        // until that is live it still hands
         // the target back — harmlessly, as the server refuses a second
         // terminal write.
         await resumeHook(token, { message: 'after' });
@@ -5412,6 +5420,32 @@ describe.concurrent('e2e', () => {
       expectElapsedAtLeast(returnValue.endTime - returnValue.startTime, 10_000);
     });
   });
+
+  // https://github.com/vercel/workflow/issues/4897: an `@ai-sdk/openai` model
+  // created only inside the workflow body reaches a step as a serialized
+  // argument. Nothing in the step bundle imports the provider unless discovery
+  // registers it, because the package has no `workflow` dependency.
+  test.skipIf(!isNextJsApp)(
+    'providerModelSerdeWorkflow - an AI SDK model created in the workflow body deserializes in a step',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/provider_model_serde.ts',
+          'providerModelSerdeWorkflow'
+        ),
+        []
+      );
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        provider: 'openai.chat',
+        modelId: 'gpt-4o-mini',
+        isModelInstance: true,
+      });
+    }
+  );
 
   // Regression test for the o2flow v5 upgrade incident (5.0.0-beta.26, fixed
   // by #2752): a plain API route — no workflow directives anywhere in its

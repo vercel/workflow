@@ -28,7 +28,7 @@ import {
 import { filterRunData } from './filters.js';
 import { getObjectCreatedAt, RunRecordSchema } from './helpers.js';
 import {
-  getRunStatusPollIntervalMs,
+  RUN_STATUS_POLL_INTERVAL_MS,
   waitForRunTerminalSignal,
 } from './run-status-signal.js';
 
@@ -158,7 +158,7 @@ export function createRunsStorage(
 
         await waitForRunTerminalSignal(
           id,
-          Math.min(remainingMs, getRunStatusPollIntervalMs()),
+          Math.min(remainingMs, RUN_STATUS_POLL_INTERVAL_MS),
           params?.signal
         );
       }

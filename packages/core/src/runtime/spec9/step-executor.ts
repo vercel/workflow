@@ -822,6 +822,7 @@ export async function executeStep(
                   +(params.firstStartedAt ?? stepStartedAt)
                 ),
                 attempt,
+                maxAttempts: maxRetries + 1,
               },
               workflowMetadata: {
                 workflowName,
