@@ -145,9 +145,13 @@ function open(file: string, wait = true): Connection {
   try {
     raw.exec(`PRAGMA busy_timeout = ${wait ? BUSY_TIMEOUT_MS : 0}`);
     // Pages freed by a delete can be returned to the file system
-    // (`Database.reclaimFreePages`). Takes effect only on a new, empty file,
-    // so it runs before the schema is created; elsewhere it is a no-op.
-    raw.exec('PRAGMA auto_vacuum = INCREMENTAL');
+    // (`Database.reclaimFreePages`). Set before the schema is created.
+    // Reassigning even the current mode takes a write lock, so skip it on
+    // configured files to let readers open while another process writes.
+    const vacuumMode = raw.prepare('PRAGMA auto_vacuum').get();
+    if (Number(vacuumMode?.auto_vacuum) !== 2) {
+      raw.exec('PRAGMA auto_vacuum = INCREMENTAL');
+    }
     // A checkpoint leaves the WAL at most this big (64 MiB), instead of at
     // the size of the largest burst of writes it ever held.
     raw.exec('PRAGMA journal_size_limit = 67108864');
