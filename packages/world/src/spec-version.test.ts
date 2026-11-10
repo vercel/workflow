@@ -173,6 +173,36 @@ describe('spec version constants', () => {
       }
     });
 
+    it('falls back to spec 8 on a fenced World when the value is set but not understood', () => {
+      // The variable is usually set to opt out of spec 9 during a rolling
+      // upgrade, so a typo in it must not create spec 9 runs.
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const fenced = { inBandFence: true };
+        const typos = ['8.0', 'v8', 'spec8', 'eight-fenced', '99'];
+        for (const raw of typos) {
+          expect(
+            mintedSpecVersion({ WORKFLOW_SPEC_VERSION: raw }, fenced)
+          ).toBe(SPEC_VERSION_DEFAULT_MINTED);
+        }
+        expect(warn).toHaveBeenCalledTimes(typos.length);
+        for (const [message] of warn.mock.calls) {
+          expect(String(message)).toContain(
+            `so new runs use spec ${SPEC_VERSION_DEFAULT_MINTED}`
+          );
+        }
+        // Unset or empty still takes the fenced default.
+        expect(mintedSpecVersion({}, fenced)).toBe(
+          SPEC_VERSION_DEFAULT_MINTED_FENCED
+        );
+        expect(mintedSpecVersion({ WORKFLOW_SPEC_VERSION: ' ' }, fenced)).toBe(
+          SPEC_VERSION_DEFAULT_MINTED_FENCED
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it('stamps the single-orchestrator version only for a fenced World', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {

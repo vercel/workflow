@@ -959,10 +959,13 @@ describe.each([
 });
 
 describe.each([
-  '0',
-  'default',
-  undefined,
-] as const)('QuickJS inline race losers (retention: %s)', (retention) => {
+  ['quickjs', '0'],
+  ['quickjs', 'default'],
+  ['quickjs', undefined],
+  ['node', '0'],
+  ['node', 'default'],
+  ['node', undefined],
+] as const)('%s inline race losers (retention: %s)', (engine, retention) => {
   it.each([
     'completed',
     'failed',
@@ -984,7 +987,7 @@ describe.each([
           if (data.eventType === `run_${status}`) terminal.resolve();
         },
       },
-      'quickjs'
+      engine
     );
     const run = await world.asWorld().runs.get(runId);
     run.attributes =

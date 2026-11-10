@@ -201,9 +201,12 @@ export interface MintedSpecVersionOptions {
  * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
  * | `9` | not `true` | {@link SPEC_VERSION_DEFAULT_MINTED} (8), with a warning once per process |
  * | `6` to `8` | any | that version |
- * | anything else | any | the default, with a warning once per process |
+ * | anything else | any | {@link SPEC_VERSION_DEFAULT_MINTED} (8), with a warning once per process |
  *
- * Values are trimmed.
+ * Values are trimmed. A value that is set but not understood falls back to
+ * spec 8 even on a fenced World: the variable is most often set to keep new
+ * runs on spec 8 during a rolling upgrade, and a typo there must not create
+ * the spec 9 runs it was meant to prevent.
  *
  * A call with no options never returns 9. A World written to an earlier
  * "Building a World" guide, which declares `specVersion: mintedSpecVersion()`,
@@ -254,8 +257,9 @@ export function mintedSpecVersion(
     }
     warnOnce(
       `${SPEC_VERSION_ENV_VAR}=${requested}`,
-      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}.`
+      `Ignoring ${SPEC_VERSION_ENV_VAR}=${JSON.stringify(requested)}: expected an integer from ${SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} to ${SPEC_VERSION_MAX_SUPPORTED}, so new runs use spec ${SPEC_VERSION_DEFAULT_MINTED}.`
     );
+    return SPEC_VERSION_DEFAULT_MINTED;
   }
   return fallback;
 }
