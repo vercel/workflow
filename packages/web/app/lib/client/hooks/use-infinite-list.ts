@@ -1,5 +1,5 @@
 import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import useSWRInfinite from 'swr/infinite';
 import {
   unwrapOrThrow,
@@ -23,6 +23,12 @@ export interface InfiniteList<T> {
   reload: () => void;
   /** Alias of reload — cached rows stay visible while revalidating. */
   refresh: () => void;
+  /**
+   * Refetch every loaded page in place: rows stay visible and the page count
+   * is kept. Does nothing until a page has loaded, since the first fetch is
+   * already under way.
+   */
+  revalidate: () => void;
   /** Analytics window metadata from the first page response. */
   pageInfo?: AnalyticsPageInfo;
 }
@@ -36,21 +42,34 @@ export interface InfiniteList<T> {
  * expensive (ClickHouse) — so cached pages are NOT refetched on remount or
  * when loading further pages (`revalidateFirstPage: false`,
  * `revalidateIfStale: false`). Freshness comes from explicit `reload()`/
- * `refresh()` calls (the Refresh button and the tab-visibility auto-reload).
+ * `refresh()` calls (the Refresh button and the tab-visibility auto-reload),
+ * or from `revalidate()` where a caller wants its cached pages read again.
+ *
+ * A `null` key fetches nothing, for a list that is not on screen.
  *
  * Rows are deduped by `getItemKey` when pages are flattened, so cursor drift
  * on live data cannot produce duplicate rows.
  */
 export function useInfiniteList<T>(
-  cacheKey: string,
+  cacheKey: string | null,
   fetchFn: (cursor?: string) => Promise<PaginatedResult<T>>,
-  getItemKey: (item: T) => string
+  getItemKey: (item: T) => string,
+  options: {
+    /**
+     * Keep the previous key's rows visible while a new key loads. Defaults to
+     * true; pass false for a list that should start empty on a new key.
+     */
+    keepPreviousData?: boolean;
+  } = {}
 ): InfiniteList<T> {
+  const { keepPreviousData = true } = options;
+
   const getKey = useCallback(
     (
       _index: number,
       prev: PaginatedResult<T> | null
     ): [string, string | null] | null => {
+      if (!cacheKey) return null;
       if (prev && (!prev.hasMore || !prev.cursor)) return null;
       return [cacheKey, prev?.cursor ?? null];
     },
@@ -72,7 +91,7 @@ export function useInfiniteList<T>(
       revalidateFirstPage: false,
       revalidateIfStale: false,
       revalidateOnFocus: false,
-      keepPreviousData: true,
+      keepPreviousData,
     }
   );
 
@@ -106,6 +125,15 @@ export function useInfiniteList<T>(
     void mutate();
   }, [setSize, mutate]);
 
+  // Read through a ref so `revalidate` keeps its identity when the first page
+  // lands; callers run it from effects. While `isLoading`, `pages` can only
+  // be the previous key's rows.
+  const hasLoadedPages = useRef(false);
+  hasLoadedPages.current = pages !== undefined && !isLoading;
+  const revalidate = useCallback(() => {
+    if (hasLoadedPages.current) void mutate();
+  }, [mutate]);
+
   const normalizedError: Error | null = error
     ? error instanceof Error
       ? error
@@ -121,6 +149,7 @@ export function useInfiniteList<T>(
     loadMore,
     reload,
     refresh: reload,
+    revalidate,
     pageInfo: pages?.[0]?.pageInfo,
   };
 }

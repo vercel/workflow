@@ -1,10 +1,15 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { Event } from '@workflow/world';
+import { createElement, type ReactNode } from 'react';
+import { SWRConfig } from 'swr';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { PaginatedResult, ServerActionResult } from '~/lib/types';
 import { useEventsListData } from './use-events-list-data';
 
+// Marks rows hydrated with a key, so a test can tell which read produced them.
 vi.mock('@workflow/web-shared', () => ({
-  hydrateResourceIOAsync: async <T>(value: T): Promise<T> => value,
+  hydrateResourceIOAsync: async <T>(value: T, key?: Uint8Array): Promise<T> =>
+    key ? { ...value, decrypted: true } : value,
 }));
 
 vi.mock('~/lib/rpc-client', () => ({
@@ -15,23 +20,36 @@ vi.mock('~/lib/rpc-client', () => ({
 
 import { fetchEvents } from '~/lib/rpc-client';
 
+type EventsResponse = ServerActionResult<PaginatedResult<Event>>;
+
+interface Props {
+  enabled?: boolean;
+  sortOrder?: 'asc' | 'desc';
+  encryptionKey?: Uint8Array;
+}
+
 const env = { SOME_VAR: 'test' };
 
-function event(eventId: string, runId = 'run-1'): Event {
+function event(eventId: string): Event {
   return {
     eventId,
-    runId,
+    runId: 'run-1',
     eventType: 'run_created',
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     eventData: {},
   } as Event;
 }
 
-function page(data: Event[], cursor?: string) {
-  return Promise.resolve({
-    success: true as const,
-    data: { data, cursor, hasMore: Boolean(cursor) },
-  });
+/** A page of events; passing a cursor means another page follows. */
+function page(eventIds: string[], cursor?: string): EventsResponse {
+  return {
+    success: true,
+    data: { data: eventIds.map(event), cursor, hasMore: Boolean(cursor) },
+  };
+}
+
+function failure(message: string): EventsResponse {
+  return { success: false, error: { message, layer: 'server' } };
 }
 
 function deferred<T>() {
@@ -42,195 +60,221 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+const ids = (events: Event[]) => events.map((e) => e.eventId);
+
+/** Renders the hook against its own SWR cache, so tests share no pages. */
+function renderEventsList(initialProps: Props = {}) {
+  const cache = new Map();
+  return renderHook((props: Props) => useEventsListData(env, 'run-1', props), {
+    initialProps,
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(SWRConfig, { value: { provider: () => cache } }, children),
+  });
+}
+
 describe('useEventsListData', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
   });
 
-  it('keeps settled rows visible while the same query revalidates', async () => {
-    const firstPage = [event('event-1')];
-    vi.mocked(fetchEvents).mockReturnValue(page(firstPage, 'cursor-1'));
-
-    const { result, rerender } = renderHook(
-      ({ enabled }) =>
-        useEventsListData(env, 'run-1', { enabled, sortOrder: 'asc' }),
-      { initialProps: { enabled: true } }
+  it('keeps the rows on screen while a re-entered tab reads them again', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1'], 'cursor-1'));
+    const { result, rerender } = renderEventsList();
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1'])
     );
 
-    await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.events).toEqual(firstPage);
-    expect(result.current.hasMore).toBe(true);
-
-    const revalidation = deferred<Awaited<ReturnType<typeof fetchEvents>>>();
-    vi.mocked(fetchEvents).mockReturnValue(revalidation.promise);
-
+    const reread = deferred<EventsResponse>();
+    vi.mocked(fetchEvents).mockReturnValueOnce(reread.promise);
     rerender({ enabled: false });
     rerender({ enabled: true });
 
-    expect(result.current.loading).toBe(false);
-    expect(result.current.events).toEqual(firstPage);
-    expect(result.current.hasMore).toBe(true);
     expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(ids(result.current.events)).toEqual(['event-1']);
+    expect(result.current.hasMore).toBe(true);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.loadingMore).toBe(false);
 
-    await act(async () => {
-      revalidation.resolve({
-        success: true,
-        data: { data: [event('event-2')], hasMore: false },
-      });
-    });
+    await act(async () => reread.resolve(page(['event-2'])));
     await waitFor(() =>
-      expect(result.current.events).toEqual([event('event-2')])
+      expect(ids(result.current.events)).toEqual(['event-2'])
     );
+    expect(result.current.hasMore).toBe(false);
   });
 
-  it('cold-resets rows when the query identity changes', async () => {
-    vi.mocked(fetchEvents).mockReturnValue(page([event('event-1')]));
-
-    const { result, rerender } = renderHook(
-      ({ sortOrder }) =>
-        useEventsListData(env, 'run-1', { enabled: true, sortOrder }),
-      { initialProps: { sortOrder: 'asc' as 'asc' | 'desc' } }
+  it('starts empty when the query changes', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1']));
+    const { result, rerender } = renderEventsList({ sortOrder: 'asc' });
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1'])
     );
 
-    await waitFor(() => expect(result.current.loading).toBe(false));
+    const nextQuery = deferred<EventsResponse>();
+    vi.mocked(fetchEvents).mockReturnValueOnce(nextQuery.promise);
+    rerender({ sortOrder: 'desc' });
 
-    const nextQuery = deferred<Awaited<ReturnType<typeof fetchEvents>>>();
-    vi.mocked(fetchEvents).mockReturnValue(nextQuery.promise);
-    rerender({ sortOrder: 'desc' as const });
-
-    await waitFor(() => expect(result.current.loading).toBe(true));
+    expect(result.current.loading).toBe(true);
     expect(result.current.events).toEqual([]);
 
-    await act(async () => {
-      nextQuery.resolve({
-        success: true,
-        data: { data: [event('event-2')], hasMore: false },
-      });
-    });
-  });
-
-  it('refreshes the same number of pages loaded before tab reentry', async () => {
-    vi.mocked(fetchEvents).mockReturnValue(
-      page([event('event-1')], 'cursor-1')
-    );
-    const { result, rerender } = renderHook(
-      ({ enabled }) =>
-        useEventsListData(env, 'run-1', { enabled, sortOrder: 'asc' }),
-      { initialProps: { enabled: true } }
-    );
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    vi.mocked(fetchEvents).mockReturnValue(page([event('event-2')]));
-    await act(async () => result.current.loadMore());
-    expect(result.current.events).toEqual([event('event-1'), event('event-2')]);
-
-    const refreshedFirstPage =
-      deferred<Awaited<ReturnType<typeof fetchEvents>>>();
-    vi.mocked(fetchEvents)
-      .mockReturnValueOnce(refreshedFirstPage.promise)
-      .mockReturnValueOnce(page([event('event-3')]));
-    rerender({ enabled: false });
-    rerender({ enabled: true });
-
-    expect(result.current.loading).toBe(false);
-    expect(result.current.events).toEqual([event('event-1'), event('event-2')]);
-
-    await act(async () => {
-      refreshedFirstPage.resolve({
-        success: true,
-        data: {
-          data: [event('event-1')],
-          cursor: 'refreshed-cursor-1',
-          hasMore: true,
-        },
-      });
-    });
+    await act(async () => nextQuery.resolve(page(['event-2'])));
     await waitFor(() =>
-      expect(result.current.events).toEqual([
-        event('event-1'),
-        event('event-3'),
-      ])
+      expect(ids(result.current.events)).toEqual(['event-2'])
     );
   });
 
-  it('defers pagination until the warm refresh has settled', async () => {
-    vi.mocked(fetchEvents).mockReturnValue(
-      page([event('event-1')], 'cursor-1')
-    );
-    const { result, rerender } = renderHook(
-      ({ enabled }) => useEventsListData(env, 'run-1', { enabled }),
-      { initialProps: { enabled: true } }
-    );
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    const refresh = deferred<Awaited<ReturnType<typeof fetchEvents>>>();
+  it('reads the same number of pages again on re-entry', async () => {
     vi.mocked(fetchEvents)
-      .mockReturnValueOnce(refresh.promise)
-      .mockReturnValueOnce(page([event('event-2')]));
+      .mockResolvedValueOnce(page(['event-1'], 'cursor-1'))
+      .mockResolvedValueOnce(page(['event-2']));
+    const { result, rerender } = renderEventsList();
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1'])
+    );
+    act(() => result.current.loadMore());
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1', 'event-2'])
+    );
+
+    vi.mocked(fetchEvents)
+      .mockResolvedValueOnce(page(['event-1'], 'reread-cursor-1'))
+      .mockResolvedValueOnce(page(['event-3']));
     rerender({ enabled: false });
     rerender({ enabled: true });
 
-    expect(result.current.loadingMore).toBe(true);
-    await act(async () => result.current.loadMore());
-    expect(fetchEvents).toHaveBeenCalledTimes(2);
-    expect(result.current.events).toEqual([event('event-1')]);
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1', 'event-3'])
+    );
+    expect(fetchEvents).toHaveBeenCalledTimes(4);
+  });
 
-    await act(async () => {
-      refresh.resolve({
-        success: true,
-        data: {
-          data: [event('event-1')],
-          cursor: 'refreshed-cursor-1',
-          hasMore: true,
-        },
-      });
-    });
+  it('holds pagination until the re-read settles, then pages from its cursor', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1'], 'cursor-1'));
+    const { result, rerender } = renderEventsList();
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1'])
+    );
+
+    const reread = deferred<EventsResponse>();
+    vi.mocked(fetchEvents)
+      .mockReturnValueOnce(reread.promise)
+      .mockResolvedValueOnce(page(['event-2']));
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+
+    act(() => result.current.loadMore());
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
     expect(result.current.loadingMore).toBe(false);
-    await act(async () => result.current.loadMore());
+
+    await act(async () => reread.resolve(page(['event-1'], 'reread-cursor-1')));
+    act(() => result.current.loadMore());
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1', 'event-2'])
+    );
     expect(fetchEvents).toHaveBeenLastCalledWith(env, 'run-1', {
-      cursor: 'refreshed-cursor-1',
+      cursor: 'reread-cursor-1',
       sortOrder: 'asc',
       limit: 100,
       withData: false,
     });
-    expect(result.current.events).toEqual([event('event-1'), event('event-2')]);
   });
 
-  it('ignores pagination that resolves after the query changes', async () => {
-    vi.mocked(fetchEvents).mockReturnValue(
-      page([event('event-1')], 'cursor-1')
+  it('keeps the rows when the re-read fails', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1'], 'cursor-1'));
+    const { result, rerender } = renderEventsList();
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1'])
     );
 
-    const { result, rerender } = renderHook(
-      ({ sortOrder }) =>
-        useEventsListData(env, 'run-1', { enabled: true, sortOrder }),
-      { initialProps: { sortOrder: 'asc' as 'asc' | 'desc' } }
+    vi.mocked(fetchEvents).mockResolvedValueOnce(failure('boom'));
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+
+    await waitFor(() => expect(result.current.error?.message).toBe('boom'));
+    expect(ids(result.current.events)).toEqual(['event-1']);
+    expect(result.current.hasMore).toBe(true);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('ignores a page that resolves after the query changed', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1'], 'cursor-1'));
+    const { result, rerender } = renderEventsList({ sortOrder: 'asc' });
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['event-1'])
     );
 
-    await waitFor(() => expect(result.current.loading).toBe(false));
-
-    const stalePage = deferred<Awaited<ReturnType<typeof fetchEvents>>>();
-    vi.mocked(fetchEvents).mockReturnValue(stalePage.promise);
-    let staleLoadMore: Promise<void> | undefined;
-    act(() => {
-      staleLoadMore = result.current.loadMore();
-    });
+    const stalePage = deferred<EventsResponse>();
+    vi.mocked(fetchEvents).mockReturnValueOnce(stalePage.promise);
+    act(() => result.current.loadMore());
     await waitFor(() => expect(result.current.loadingMore).toBe(true));
 
-    vi.mocked(fetchEvents).mockReturnValue(page([event('event-2')]));
-    rerender({ sortOrder: 'desc' as const });
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-2']));
+    rerender({ sortOrder: 'desc' });
     await waitFor(() =>
-      expect(result.current.events).toEqual([event('event-2')])
+      expect(ids(result.current.events)).toEqual(['event-2'])
     );
 
-    await act(async () => {
-      stalePage.resolve({
-        success: true,
-        data: { data: [event('stale-event')], hasMore: false },
-      });
-      await staleLoadMore;
-    });
+    await act(async () => stalePage.resolve(page(['stale-event'])));
+    expect(ids(result.current.events)).toEqual(['event-2']);
+    expect(result.current.loadingMore).toBe(false);
+  });
 
-    expect(result.current.events).toEqual([event('event-2')]);
+  it('reports a first load that fails after the tab was left and re-entered', async () => {
+    const firstLoad = deferred<EventsResponse>();
+    vi.mocked(fetchEvents).mockReturnValueOnce(firstLoad.promise);
+    const { result, rerender } = renderEventsList();
+    expect(result.current.loading).toBe(true);
+
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => firstLoad.resolve(failure('boom')));
+    await waitFor(() => expect(result.current.error?.message).toBe('boom'));
+    expect(result.current.loading).toBe(false);
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it('loads one page for a query that never loaded, whatever another had', async () => {
+    vi.mocked(fetchEvents)
+      .mockResolvedValueOnce(page(['asc-1'], 'asc-cursor-1'))
+      .mockResolvedValueOnce(page(['asc-2'], 'asc-cursor-2'));
+    const { result, rerender } = renderEventsList({ sortOrder: 'asc' });
+    await waitFor(() => expect(ids(result.current.events)).toEqual(['asc-1']));
+    act(() => result.current.loadMore());
+    await waitFor(() =>
+      expect(ids(result.current.events)).toEqual(['asc-1', 'asc-2'])
+    );
+
+    vi.mocked(fetchEvents).mockResolvedValueOnce(failure('boom'));
+    rerender({ sortOrder: 'desc' });
+    await waitFor(() => expect(result.current.error?.message).toBe('boom'));
+
+    vi.mocked(fetchEvents).mockResolvedValueOnce(
+      page(['desc-1'], 'desc-cursor-1')
+    );
+    rerender({ sortOrder: 'desc', enabled: false });
+    rerender({ sortOrder: 'desc', enabled: true });
+    expect(result.current.loading).toBe(true);
+
+    await waitFor(() => expect(ids(result.current.events)).toEqual(['desc-1']));
+    expect(fetchEvents).toHaveBeenCalledTimes(4);
+  });
+
+  it('reads the loaded pages again when a decryption key arrives', async () => {
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1']));
+    const { result, rerender } = renderEventsList();
+    await waitFor(() =>
+      expect(result.current.events).toEqual([event('event-1')])
+    );
+
+    vi.mocked(fetchEvents).mockResolvedValueOnce(page(['event-1']));
+    rerender({ encryptionKey: new Uint8Array([1]) });
+
+    await waitFor(() =>
+      expect(result.current.events).toEqual([
+        { ...event('event-1'), decrypted: true },
+      ])
+    );
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
   });
 });
