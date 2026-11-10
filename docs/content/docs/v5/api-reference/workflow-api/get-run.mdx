@@ -210,28 +210,28 @@ export async function POST(req: Request) {
   const { runId } = await req.json();
   const run = getRun(runId);
 
-  const result = await run.purge(); // [!code highlight]
+  const result = await run.deleteData(); // [!code highlight]
   switch (result.outcome) {
-    case "purged":
-    case "already_purged":
+    case "deleted":
+    case "already_deleted":
     case "not_created":
-      return Response.json({ purged: true });
+      return Response.json({ deleted: true });
     case "skipped":
       // The run hasn't finished. Cancel it first to delete its data now.
-      return Response.json({ purged: false, status: result.status }, { status: 409 });
+      return Response.json({ deleted: false, status: result.status }, { status: 409 });
     case "not_found":
-      return Response.json({ purged: false }, { status: 404 });
+      return Response.json({ deleted: false }, { status: 404 });
     case "failed":
-      // Purging is idempotent: a retryable failure can be requested again.
+      // Deletion is idempotent: a retryable failure can be requested again.
       return Response.json(
-        { purged: false, retryable: result.retryable },
+        { deleted: false, retryable: result.retryable },
         { status: 503 }
       );
   }
 }
 ```
 
-`purge()` never cancels a run: a run that hasn't finished answers `skipped` and keeps running. It throws if the configured World doesn't support purging run data.
+`deleteData()` never cancels a run: a run that hasn't finished answers `skipped` and keeps running. It runs as a step, so inside a workflow a retryable failure throws a `RetryableError` and the step retries. It throws if the configured World doesn't support deleting run data. To delete the data of many runs in one call, use [`deleteRunsData()`](/docs/api-reference/workflow-api/delete-runs-data).
 
 ## Spec 9 (experimental)
 

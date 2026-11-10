@@ -94,34 +94,45 @@ missing and you get `WorkflowRunNotFoundError` instead.
 ## Deleting a finished run's data
 
 To delete the data of a run that has already finished, call
-[`run.purge()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data)
-or run `workflow purge` from the [CLI](/docs/configuration/cli-and-web-ui#purge).
-The World deletes the same data a run started with `experimental_retention: 0`
-has deleted when it ends, and keeps the same records listed.
+[`run.deleteData()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data),
+call [`deleteRunsData()`](/docs/api-reference/workflow-api/delete-runs-data)
+for up to 100 runs at once, or run `workflow delete-data` from the
+[CLI](/docs/configuration/cli-and-web-ui#delete-data). The World deletes the
+same data a run started with `experimental_retention: 0` has deleted when it
+ends, and keeps the same records listed.
 
-{/* @skip-typecheck: abbreviated usage; runId is the reader's own */}
+{/* @skip-typecheck: abbreviated usage; runId and runIds are the reader's own */}
 ```typescript lineNumbers
-import { getRun } from 'workflow/api'
+import { deleteRunsData, getRun } from 'workflow/api'
 
-const result = await getRun(runId).purge() // [!code highlight]
+const result = await getRun(runId).deleteData() // [!code highlight]
+const { summary, results } = await deleteRunsData(runIds) // [!code highlight]
 ```
 
 ```bash
-workflow purge wrun_... wrun_... --backend vercel
+workflow delete-data wrun_... wrun_... --backend vercel
 ```
 
-Only finished runs are purged. A run that is still running, sleeping, or
-waiting on a hook is answered `skipped` and left untouched: purging never
-cancels a run. To delete an active run's data now, cancel it first, then purge
-it. Each run gets its own outcome: `purged`, `already_purged` (its data was
-already gone), `skipped`, `not_created`, `not_found`, or `failed`. A `failed`
-outcome with `retryable: true` can be retried, since purging is idempotent.
+Only finished runs have their data deleted. A run that is still running,
+sleeping, or waiting on a hook is answered `skipped` and left untouched:
+deleting data never cancels a run. To delete an active run's data now, cancel
+it first, then delete its data. Each run gets its own outcome: `deleted`,
+`already_deleted` (its data was already gone), `skipped`, `not_created`,
+`not_found`, or `failed`. A `failed` outcome with `retryable: true` can be
+retried, since deletion is idempotent. Inside a step, a retryable failure
+throws a `RetryableError`, so the step retries on its own.
 
-Purging is optional for a World to implement, and there is no fallback: on a
-World that doesn't support it, `run.purge()` throws and `workflow purge` exits
-with an error. The [Vercel World](/worlds/vercel) supports it. Purging doesn't
-change how a run is billed; see the
+Deleting run data is optional for a World to implement, and there is no
+fallback: on a World that doesn't support it, `run.deleteData()` and
+`deleteRunsData()` throw, and `workflow delete-data` exits with an error. The
+[Local World](/worlds/local), the [Postgres World](/worlds/postgres) and the
+[Vercel World](/worlds/vercel) support it. Deleting run data doesn't change
+how a run is billed; see the
 [Vercel Workflows docs](https://vercel.com/docs/workflows/retention).
+
+Nothing records that a run's data was deleted: the run reads back as expired,
+the same as a run whose retention ended. If you need a record of the deletion,
+keep it yourself.
 
 ## Retention is implemented by the World
 

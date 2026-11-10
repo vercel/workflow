@@ -1,7 +1,9 @@
 import {
   EntityConflictError,
   FatalError,
+  RetryableError,
   START_HOOK_CANDIDATE_CANCELLED,
+  ThrottleError,
   WorkflowRunFailedError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
@@ -41,13 +43,13 @@ import {
   getSerializeStream,
   hydrateStepReturnValue,
 } from '../serialization.js';
+import { contextStorage, type StepContext } from '../step/context-storage.js';
 import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
   cancelRun,
   cancelRuns,
+  deleteRunsData,
   pendingWakeUpWaits,
-  purgeRun,
-  purgeRuns,
   recreateRunFromExisting,
   reenqueueRun,
   wakeUpRun,
@@ -1270,18 +1272,19 @@ describe('cancelRuns', () => {
   });
 });
 
-describe('purgeRuns', () => {
-  const summary = {
-    requested: 2,
-    purged: 1,
-    alreadyPurged: 0,
-    skipped: 1,
+describe('deleteRunsData', () => {
+  const emptySummary = {
+    requested: 0,
+    deleted: 0,
+    alreadyDeleted: 0,
+    skipped: 0,
     notCreated: 0,
     notFound: 0,
     failed: 0,
   };
+  const summary = { ...emptySummary, requested: 2, deleted: 1, skipped: 1 };
   const results = [
-    { runId: 'a', outcome: 'purged' },
+    { runId: 'a', outcome: 'deleted' },
     {
       runId: 'b',
       outcome: 'skipped',
@@ -1289,114 +1292,219 @@ describe('purgeRuns', () => {
       status: 'running',
     },
   ];
+  const retryableFailure = {
+    summary: { ...emptySummary, requested: 2, deleted: 1, failed: 1 },
+    results: [
+      { runId: 'a', outcome: 'deleted' },
+      {
+        runId: 'b',
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      },
+    ],
+  };
 
-  it('delegates the whole batch to world.runs.purgeMany once, and writes no event', async () => {
-    const purgeMany = vi.fn().mockResolvedValue({ summary, results });
+  /** Runs `fn` as if inside a step body. */
+  function inStep<T>(fn: () => Promise<T>): Promise<T> {
+    return contextStorage.run({} as StepContext, fn);
+  }
+
+  it('delegates the whole batch to world.runs.deleteDataMany once, and writes no event', async () => {
+    const deleteDataMany = vi.fn().mockResolvedValue({ summary, results });
     const world = {
-      runs: { get: vi.fn(), purgeMany },
+      runs: { get: vi.fn(), deleteDataMany },
       events: { create: vi.fn() },
     } as unknown as World;
 
-    const result = await purgeRuns(world, ['a', 'b']);
+    const result = await deleteRunsData(world, ['a', 'b']);
 
-    expect(purgeMany).toHaveBeenCalledTimes(1);
-    expect(purgeMany).toHaveBeenCalledWith({ runIds: ['a', 'b'] });
-    // Purging never cancels: an unfinished run is the World's to skip.
+    expect(deleteDataMany).toHaveBeenCalledTimes(1);
+    expect(deleteDataMany).toHaveBeenCalledWith({ runIds: ['a', 'b'] });
+    // Deleting never cancels: an unfinished run is the World's to skip.
     expect(world.events.create).not.toHaveBeenCalled();
     expect(result).toEqual({ summary, results });
   });
 
-  it('throws when the World cannot purge, rather than reporting success', async () => {
+  it('answers results in request order', async () => {
+    const deleteDataMany = vi
+      .fn()
+      .mockResolvedValue({ summary, results: [...results].reverse() });
+    const world = { runs: { deleteDataMany } } as unknown as World;
+
+    const result = await deleteRunsData(world, ['a', 'b']);
+    expect(result.results.map((r) => r.runId)).toEqual(['a', 'b']);
+  });
+
+  it.each([
+    ['no result', []],
+    ['a result for a different run', [{ runId: 'other', outcome: 'deleted' }]],
+    [
+      'two results for the run',
+      [
+        { runId: 'a', outcome: 'deleted' },
+        { runId: 'a', outcome: 'deleted' },
+      ],
+    ],
+  ])('throws when the World answers %s', async (_, answered) => {
+    const deleteDataMany = vi.fn().mockResolvedValue({
+      summary: { ...emptySummary, requested: 1 },
+      results: answered,
+    });
+    const world = { runs: { deleteDataMany } } as unknown as World;
+
+    await expect(deleteRunsData(world, ['a'])).rejects.toThrow(
+      /The World did not answer the deletion of the data of run a/
+    );
+  });
+
+  it('throws when the World cannot delete run data, rather than reporting success', async () => {
     const world = {
       runs: { get: vi.fn() },
       events: { create: vi.fn() },
     } as unknown as World;
 
-    const error = await purgeRuns(world, ['a']).catch((cause) => cause);
+    const error = await deleteRunsData(world, ['a']).catch((cause) => cause);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(
-      'The configured World does not support purging run data.'
+      'The configured World does not support deleting run data.'
     );
-    // Fatal, so `Run.purge()` (a step) fails at once instead of retrying.
+    // Fatal, so `Run.deleteData()` (a step) fails at once instead of retrying.
     expect(FatalError.is(error)).toBe(true);
   });
 
   it('rejects an empty, duplicated, or oversized list before calling the World', async () => {
-    const purgeMany = vi.fn();
-    const world = { runs: { purgeMany } } as unknown as World;
+    const deleteDataMany = vi.fn();
+    const world = { runs: { deleteDataMany } } as unknown as World;
 
-    await expect(purgeRuns(world, [])).rejects.toSatisfy(
+    await expect(deleteRunsData(world, [])).rejects.toSatisfy(
       (error: unknown) =>
         FatalError.is(error) && /at least one run ID/.test(error.message)
     );
-    await expect(purgeRuns(world, ['a', 'a'])).rejects.toThrow(
+    await expect(deleteRunsData(world, ['a', 'a'])).rejects.toThrow(
       'unique run IDs'
     );
     await expect(
-      purgeRuns(
+      deleteRunsData(
         world,
         Array.from({ length: 101 }, (_, index) => `wrun_${index}`)
       )
     ).rejects.toThrow('at most 100 run IDs');
-    expect(purgeMany).not.toHaveBeenCalled();
+    expect(deleteDataMany).not.toHaveBeenCalled();
   });
 
-  it('purgeRun answers the outcome of its one run', async () => {
-    const purgeMany = vi.fn().mockResolvedValue({
-      summary: {
-        ...summary,
-        requested: 1,
-        purged: 0,
-        alreadyPurged: 1,
-        skipped: 0,
-      },
-      results: [{ runId: 'a', outcome: 'already_purged' }],
-    });
-    const world = { runs: { purgeMany } } as unknown as World;
+  it('returns retryable failures outside a step', async () => {
+    const deleteDataMany = vi.fn().mockResolvedValue(retryableFailure);
+    const world = { runs: { deleteDataMany } } as unknown as World;
 
-    await expect(purgeRun(world, 'a')).resolves.toEqual({
-      runId: 'a',
-      outcome: 'already_purged',
-    });
-    expect(purgeMany).toHaveBeenCalledWith({ runIds: ['a'] });
+    await expect(deleteRunsData(world, ['a', 'b'])).resolves.toEqual(
+      retryableFailure
+    );
+  });
+
+  it('throws RetryableError for a retryable failure inside a step', async () => {
+    const deleteDataMany = vi.fn().mockResolvedValue(retryableFailure);
+    const world = { runs: { deleteDataMany } } as unknown as World;
+
+    const error = await inStep(() => deleteRunsData(world, ['a', 'b'])).catch(
+      (cause) => cause
+    );
+    expect(RetryableError.is(error)).toBe(true);
+    expect((error as Error).message).toContain('run b failed (internal_error)');
+  });
+
+  it('returns a non-retryable failure inside a step', async () => {
+    const answer = {
+      summary: { ...emptySummary, requested: 1, failed: 1 },
+      results: [
+        { runId: 'a', outcome: 'failed', code: 'forbidden', retryable: false },
+      ],
+    };
+    const deleteDataMany = vi.fn().mockResolvedValue(answer);
+    const world = { runs: { deleteDataMany } } as unknown as World;
+
+    await expect(inStep(() => deleteRunsData(world, ['a']))).resolves.toEqual(
+      answer
+    );
+  });
+
+  it("turns a rate limit inside a step into RetryableError honouring the World's retryAfter", async () => {
+    const deleteDataMany = vi
+      .fn()
+      .mockRejectedValue(new ThrottleError('429', { retryAfter: 30 }));
+    const world = { runs: { deleteDataMany } } as unknown as World;
+
+    const before = Date.now();
+    const error = await inStep(() => deleteRunsData(world, ['a'])).catch(
+      (cause) => cause
+    );
+    expect(RetryableError.is(error)).toBe(true);
+    const delayMs = (error as RetryableError).retryAfter.getTime() - before;
+    expect(delayMs).toBeGreaterThanOrEqual(30_000);
+    expect(delayMs).toBeLessThan(31_000);
+  });
+
+  it('rethrows a rate limit outside a step as the ThrottleError', async () => {
+    const throttle = new ThrottleError('429', { retryAfter: 30 });
+    const deleteDataMany = vi.fn().mockRejectedValue(throttle);
+    const world = { runs: { deleteDataMany } } as unknown as World;
+
+    await expect(deleteRunsData(world, ['a'])).rejects.toBe(throttle);
   });
 });
 
-describe('Run.purge', () => {
+describe('Run.deleteData', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
   });
 
-  it('purges the run through the World and answers its outcome', async () => {
-    const purgeMany = vi.fn().mockResolvedValue({
+  function worldAnswering(results: unknown[]) {
+    const deleteDataMany = vi.fn().mockResolvedValue({
       summary: {
         requested: 1,
-        purged: 0,
-        alreadyPurged: 0,
-        skipped: 1,
+        deleted: 0,
+        alreadyDeleted: 0,
+        skipped: 0,
         notCreated: 0,
         notFound: 0,
         failed: 0,
       },
-      results: [
-        {
-          runId: 'wrun_123',
-          outcome: 'skipped',
-          reason: 'run_not_terminal',
-          status: 'running',
-        },
-      ],
+      results,
     });
     const world = createMockWorld();
-    Object.assign(world.runs, { purgeMany });
+    Object.assign(world.runs, { deleteDataMany });
     setWorld(world);
+    return deleteDataMany;
+  }
 
-    await expect(new Run('wrun_123').purge()).resolves.toEqual({
+  it("deletes the run's data through the World and answers its outcome", async () => {
+    const deleteDataMany = worldAnswering([
+      {
+        runId: 'wrun_123',
+        outcome: 'skipped',
+        reason: 'run_not_terminal',
+        status: 'running',
+      },
+    ]);
+
+    await expect(new Run('wrun_123').deleteData()).resolves.toEqual({
       runId: 'wrun_123',
       outcome: 'skipped',
       reason: 'run_not_terminal',
       status: 'running',
     });
-    expect(purgeMany).toHaveBeenCalledWith({ runIds: ['wrun_123'] });
+    expect(deleteDataMany).toHaveBeenCalledWith({ runIds: ['wrun_123'] });
+  });
+
+  it('throws when the World answers no result, or one for another run', async () => {
+    worldAnswering([]);
+    await expect(new Run('wrun_123').deleteData()).rejects.toThrow(
+      /did not answer the deletion of the data of run wrun_123/
+    );
+
+    worldAnswering([{ runId: 'wrun_other', outcome: 'deleted' }]);
+    await expect(new Run('wrun_123').deleteData()).rejects.toThrow(
+      /did not answer the deletion of the data of run wrun_123/
+    );
   });
 });

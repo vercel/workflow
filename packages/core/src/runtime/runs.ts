@@ -1,8 +1,10 @@
 import {
   EntityConflictError,
   FatalError,
+  RetryableError,
   START_HOOK_CANDIDATE_CANCELLED,
   StreamError,
+  ThrottleError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -10,11 +12,11 @@ import {
 import { globalSingleton } from '@workflow/utils';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
-  BULK_PURGE_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
   type BulkCancelWorkflowRunsResult,
-  type BulkPurgeWorkflowRunResult,
-  type BulkPurgeWorkflowRunsResult,
+  DELETE_RUNS_DATA_MAX_RUN_IDS,
+  type DeleteRunDataResult,
+  type DeleteRunsDataResult,
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
@@ -26,6 +28,7 @@ import {
 import { runtimeLogger } from '../logger.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
+import { contextStorage } from '../step/context-storage.js';
 import { afterRunCancelled } from './after-terminal-write.js';
 import { readDynamicWorkflowMetadata } from './dynamic-workflow.js';
 import { getWorkflowQueueName } from './helpers.js';
@@ -411,60 +414,111 @@ export async function cancelRuns(
  * reading back as expired. Deletion cannot be undone.
  *
  * Runs that have not finished are answered `skipped` and left untouched:
- * purging never cancels a run. Cancel it first (see {@link cancelRuns}) to
- * purge it. Every outcome is reported per run, in the order of `runIds`; a
- * `failed` outcome with `retryable: true` can be retried, since purging is
- * idempotent.
+ * this never cancels a run. Cancel it first (see {@link cancelRuns}) to
+ * delete its data. Every outcome is reported per run, in the order of
+ * `runIds`.
  *
- * Delegates to the World's `runs.purgeMany`. There is no fallback: a World
- * that cannot purge would otherwise report success while keeping the data.
+ * Retrying is safe, since deletion is idempotent. Inside a step, a `failed`
+ * outcome with `retryable: true`, or the World rate-limiting the request,
+ * throws a `RetryableError` (honouring the World's `retryAfter` when it gives
+ * one), so the step retries the whole batch; runs already handled then
+ * answer `already_deleted`. Outside a step, retryable failures are returned
+ * for the caller to retry, and a rate limit throws the World's
+ * `ThrottleError`.
+ *
+ * Delegates to the World's `runs.deleteDataMany`. There is no fallback: a
+ * World that cannot delete run data would otherwise report success while
+ * keeping the data.
  *
  * @throws if `runIds` is empty, contains duplicates, or exceeds
- *   {@link BULK_PURGE_MAX_RUN_IDS}, or if the configured World does not
- *   support purging run data.
+ *   {@link DELETE_RUNS_DATA_MAX_RUN_IDS}; if the configured World does not
+ *   support deleting run data; or if the World does not answer exactly one
+ *   result per run.
  */
-export async function purgeRuns(
+export async function deleteRunsData(
   world: World,
   runIds: string[]
-): Promise<BulkPurgeWorkflowRunsResult> {
+): Promise<DeleteRunsDataResult> {
   if (runIds.length === 0) {
-    throw new FatalError('purgeRuns requires at least one run ID.');
+    throw new FatalError('deleteRunsData requires at least one run ID.');
   }
-  if (runIds.length > BULK_PURGE_MAX_RUN_IDS) {
+  if (runIds.length > DELETE_RUNS_DATA_MAX_RUN_IDS) {
     throw new FatalError(
-      `purgeRuns accepts at most ${BULK_PURGE_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
+      `deleteRunsData accepts at most ${DELETE_RUNS_DATA_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
     );
   }
   if (new Set(runIds).size !== runIds.length) {
     throw new FatalError(
-      'purgeRuns requires unique run IDs (duplicates found).'
+      'deleteRunsData requires unique run IDs (duplicates found).'
     );
   }
-  if (!world.runs.purgeMany) {
-    // Fatal: `Run.purge()` is a step, and retrying cannot add the method.
+  if (!world.runs.deleteDataMany) {
+    // Fatal: inside a step, retrying cannot add the method.
     throw new FatalError(
-      'The configured World does not support purging run data.'
+      'The configured World does not support deleting run data.'
     );
   }
-  return world.runs.purgeMany({ runIds });
+
+  const inStep = contextStorage.getStore() !== undefined;
+  let response: DeleteRunsDataResult;
+  try {
+    response = await world.runs.deleteDataMany({ runIds });
+  } catch (err) {
+    if (inStep && ThrottleError.is(err)) {
+      throw new RetryableError(
+        `The World rate-limited deleting the data of ${describeRunIds(runIds)}.`,
+        typeof err.retryAfter === 'number'
+          ? { retryAfter: err.retryAfter * 1000 }
+          : {}
+      );
+    }
+    throw err;
+  }
+
+  // Exactly one result per requested run, in request order. Anything else
+  // would leave a run's fate unknown, so it is not reported as success.
+  const resultByRunId = new Map(
+    response.results.map((result) => [result.runId, result])
+  );
+  if (
+    resultByRunId.size !== response.results.length ||
+    response.results.length !== runIds.length ||
+    !runIds.every((runId) => resultByRunId.has(runId))
+  ) {
+    const unanswered = runIds.filter((runId) => !resultByRunId.has(runId));
+    throw new Error(
+      `The World did not answer the deletion of the data of ${describeRunIds(
+        unanswered.length > 0 ? unanswered : runIds
+      )} with exactly one result per run (requested ${runIds.length}, received ${response.results.length}).`
+    );
+  }
+  const results = runIds.map(
+    (runId) => resultByRunId.get(runId) as DeleteRunDataResult
+  );
+
+  if (inStep) {
+    const retryable = results.filter(
+      (result): result is Extract<DeleteRunDataResult, { outcome: 'failed' }> =>
+        result.outcome === 'failed' && result.retryable
+    );
+    if (retryable.length > 0) {
+      const codes = [...new Set(retryable.map((result) => result.code))];
+      throw new RetryableError(
+        `Deleting the data of ${describeRunIds(
+          retryable.map((result) => result.runId)
+        )} failed (${codes.join(', ')}) and will be retried.`
+      );
+    }
+  }
+
+  return { summary: response.summary, results };
 }
 
-/**
- * Delete the stored data of one finished run. See {@link purgeRuns}.
- *
- * @returns the run's outcome: `purged`, `already_purged`, `skipped` (the run
- *   has not finished), `not_created`, `not_found`, or `failed`.
- */
-export async function purgeRun(
-  world: World,
-  runId: string
-): Promise<BulkPurgeWorkflowRunResult> {
-  const { results } = await purgeRuns(world, [runId]);
-  const result = results[0];
-  if (!result || result.runId !== runId) {
-    throw new Error(`The World did not answer the purge of run ${runId}.`);
-  }
-  return result;
+/** `run wrun_a`, or `runs wrun_a, wrun_b and 3 more`, for error messages. */
+function describeRunIds(runIds: string[]): string {
+  const shown = runIds.slice(0, 3).join(', ');
+  const more = runIds.length > 3 ? ` and ${runIds.length - 3} more` : '';
+  return `${runIds.length === 1 ? 'run' : 'runs'} ${shown}${more}`;
 }
 
 /**

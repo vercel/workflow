@@ -9,7 +9,7 @@ import {
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
-  type BulkPurgeWorkflowRunResult,
+  type DeleteRunDataResult,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -36,8 +36,8 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
+  deleteRunsData,
   isSingleOrchestratorRun,
-  purgeRun,
   type StopSleepOptions,
   type StopSleepResult,
   wakeRunAfterOutOfBandWrite,
@@ -400,19 +400,29 @@ export class Run<TResult> {
    * `experimental_retention: 0`. The run stays listed, with its payloads
    * reading back as expired. This cannot be undone.
    *
-   * Only a finished run is purged. A run that has not finished is answered
-   * `skipped` and left running: cancel it first (see {@link Run.cancel}) to
-   * purge it now.
+   * Only a finished run has its data deleted. A run that has not finished
+   * is answered `skipped` and left running: cancel it first (see
+   * {@link Run.cancel}) to delete its data now.
    *
-   * @returns the run's outcome: `purged`, `already_purged` (its data was
+   * Runs as a step. Inside a workflow, a retryable failure (or the World
+   * rate-limiting the request) throws a `RetryableError`, so the step
+   * retries; deletion is idempotent, so a retry finishes what the failed
+   * attempt left. Called outside a workflow, a `failed` result is returned
+   * as is.
+   *
+   * @returns the run's outcome: `deleted`, `already_deleted` (its data was
    *   already gone), `skipped` (with the run's `status`), `not_created`,
    *   `not_found`, or `failed` (with `code`, and `retryable` when retrying
    *   can succeed).
-   * @throws if the configured World does not support purging run data.
+   * @throws if the configured World does not support deleting run data.
    */
-  async purge(): Promise<BulkPurgeWorkflowRunResult> {
+  async deleteData(): Promise<DeleteRunDataResult> {
     'use step';
-    return purgeRun(await this.#lazyWorldPromise, this.runId);
+    const { results } = await deleteRunsData(await this.#lazyWorldPromise, [
+      this.runId,
+    ]);
+    // `deleteRunsData` guarantees exactly one result, for this run.
+    return results[0] as DeleteRunDataResult;
   }
 
   /**

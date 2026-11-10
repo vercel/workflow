@@ -7,7 +7,7 @@ import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
 } from '../lib/inspect/errors.js';
-import { cliFlags } from '../lib/inspect/flags.js';
+import { targetFlags } from '../lib/inspect/flags.js';
 import { getCurrentGitBranch } from '../lib/inspect/git-branch.js';
 import { startRun } from '../lib/inspect/run.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
@@ -49,7 +49,7 @@ export default class Start extends BaseCommand {
   } as const;
 
   static flags = {
-    ...cliFlags,
+    ...targetFlags,
     deployment: Flags.string({
       description: [
         'Deployment ID to start the run on, or `latest` for the newest ready deployment in --env.',

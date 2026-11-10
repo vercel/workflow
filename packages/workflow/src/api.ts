@@ -8,13 +8,15 @@
 import '@workflow/core/runtime/world-init';
 
 export type {
-  BulkPurgeWorkflowRunResult,
   CancelRunOptions,
+  DeleteRunDataResult,
+  DeleteRunsDataResult,
   Event,
   StopSleepOptions,
   StopSleepResult,
   WorkflowRun,
 } from '@workflow/core/runtime';
+export { deleteRunsData } from '@workflow/core/runtime/delete-runs-data';
 export {
   type RunCompletedHookParams,
   type RunFailedHookParams,

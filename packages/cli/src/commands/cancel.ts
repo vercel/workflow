@@ -14,7 +14,7 @@ import {
 } from '../lib/bulk-cancel.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import { reportActionableApiError } from '../lib/inspect/errors.js';
-import { cliFlags } from '../lib/inspect/flags.js';
+import { targetFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
 export default class Cancel extends BaseCommand {
@@ -62,7 +62,7 @@ export default class Cancel extends BaseCommand {
   } as const;
 
   static flags = {
-    ...cliFlags,
+    ...targetFlags,
     status: Flags.string({
       // Only cancellable statuses are offered: cancelling a terminal run
       // (completed / failed / cancelled) is a no-op, so pinning one would list

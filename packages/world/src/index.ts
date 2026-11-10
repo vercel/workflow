@@ -134,13 +134,13 @@ export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
   BULK_CANCEL_MAX_RUN_IDS,
-  BULK_PURGE_MAX_RUN_IDS,
   BulkCancelWorkflowRunResultSchema,
   BulkCancelWorkflowRunsRequestSchema,
   BulkCancelWorkflowRunsResultSchema,
-  BulkPurgeWorkflowRunResultSchema,
-  BulkPurgeWorkflowRunsRequestSchema,
-  BulkPurgeWorkflowRunsResultSchema,
+  DELETE_RUNS_DATA_MAX_RUN_IDS,
+  DeleteRunDataResultSchema,
+  DeleteRunsDataRequestSchema,
+  DeleteRunsDataResultSchema,
   isTerminalWorkflowRunStatus,
   TERMINAL_WORKFLOW_RUN_STATUSES,
   TerminalWorkflowRunStatusSchema,

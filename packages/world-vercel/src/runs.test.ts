@@ -1,12 +1,13 @@
+import { ThrottleError, WorkflowWorldError } from '@workflow/errors';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
 import {
   cancelWorkflowRuns,
+  deleteWorkflowRunsData,
   getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
-  purgeWorkflowRuns,
 } from './runs.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
@@ -328,8 +329,10 @@ describe('cancelWorkflowRuns', () => {
   });
 });
 
-describe('purgeWorkflowRuns', () => {
-  const emptySummary = {
+describe('deleteWorkflowRunsData', () => {
+  // world-vercel's wire format names the outcomes `purged` and
+  // `already_purged`; the client translates them.
+  const emptyWireSummary = {
     requested: 0,
     purged: 0,
     alreadyPurged: 0,
@@ -339,7 +342,9 @@ describe('purgeWorkflowRuns', () => {
     failed: 0,
   };
 
-  it('issues a single POST /v4/runs/purge with the run IDs', async () => {
+  const cbor = { headers: { 'content-type': 'application/cbor' } };
+
+  it('issues a single POST /v4/runs/purge and translates the outcomes', async () => {
     const agent = new MockAgent();
     agent.disableNetConnect();
 
@@ -355,11 +360,18 @@ describe('purgeWorkflowRuns', () => {
           requestCount++;
           capturedBody = decode(new Uint8Array(opts.body as ArrayBufferLike));
           return encode({
-            summary: { ...emptySummary, requested: 2, purged: 1, skipped: 1 },
+            summary: {
+              ...emptyWireSummary,
+              requested: 3,
+              purged: 1,
+              alreadyPurged: 1,
+              skipped: 1,
+            },
             results: [
               { runId: 'wrun_a', outcome: 'purged' },
+              { runId: 'wrun_b', outcome: 'already_purged' },
               {
-                runId: 'wrun_b',
+                runId: 'wrun_c',
                 outcome: 'skipped',
                 reason: 'run_not_terminal',
                 status: 'running',
@@ -367,26 +379,37 @@ describe('purgeWorkflowRuns', () => {
             ],
           });
         },
-        { headers: { 'content-type': 'application/cbor' } }
+        cbor
       );
 
-    const result = await purgeWorkflowRuns(
-      { runIds: ['wrun_a', 'wrun_b'] },
+    const result = await deleteWorkflowRunsData(
+      { runIds: ['wrun_a', 'wrun_b', 'wrun_c'] },
       { token: 'test-token', dispatcher: agent }
     );
 
     expect(requestCount).toBe(1);
-    expect(capturedBody).toEqual({ runIds: ['wrun_a', 'wrun_b'] });
-    expect(result.summary.purged).toBe(1);
-    expect(result.results).toEqual([
-      { runId: 'wrun_a', outcome: 'purged' },
-      {
-        runId: 'wrun_b',
-        outcome: 'skipped',
-        reason: 'run_not_terminal',
-        status: 'running',
+    expect(capturedBody).toEqual({ runIds: ['wrun_a', 'wrun_b', 'wrun_c'] });
+    expect(result).toEqual({
+      summary: {
+        requested: 3,
+        deleted: 1,
+        alreadyDeleted: 1,
+        skipped: 1,
+        notCreated: 0,
+        notFound: 0,
+        failed: 0,
       },
-    ]);
+      results: [
+        { runId: 'wrun_a', outcome: 'deleted' },
+        { runId: 'wrun_b', outcome: 'already_deleted' },
+        {
+          runId: 'wrun_c',
+          outcome: 'skipped',
+          reason: 'run_not_terminal',
+          status: 'running',
+        },
+      ],
+    });
     agent.assertNoPendingInterceptors();
   });
 
@@ -401,17 +424,22 @@ describe('purgeWorkflowRuns', () => {
         200,
         () =>
           encode({
-            summary: { ...emptySummary, requested: 2, purged: 1, notFound: 1 },
+            summary: {
+              ...emptyWireSummary,
+              requested: 2,
+              purged: 1,
+              notFound: 1,
+            },
             // Intentionally reversed relative to the request.
             results: [
               { runId: 'wrun_b', outcome: 'not_found' },
               { runId: 'wrun_a', outcome: 'purged' },
             ],
           }),
-        { headers: { 'content-type': 'application/cbor' } }
+        cbor
       );
 
-    const result = await purgeWorkflowRuns(
+    const result = await deleteWorkflowRunsData(
       { runIds: ['wrun_a', 'wrun_b'] },
       { token: 'test-token', dispatcher: agent }
     );
@@ -431,14 +459,14 @@ describe('purgeWorkflowRuns', () => {
         200,
         () =>
           encode({
-            summary: { ...emptySummary, requested: 2, purged: 1 },
+            summary: { ...emptyWireSummary, requested: 2, purged: 1 },
             results: [{ runId: 'wrun_a', outcome: 'purged' }],
           }),
-        { headers: { 'content-type': 'application/cbor' } }
+        cbor
       );
 
     await expect(
-      purgeWorkflowRuns(
+      deleteWorkflowRunsData(
         { runIds: ['wrun_a', 'wrun_b'] },
         { token: 'test-token', dispatcher: agent }
       )
@@ -456,7 +484,7 @@ describe('purgeWorkflowRuns', () => {
       Array.from({ length: 101 }, (_, index) => `wrun_${index}`),
     ]) {
       await expect(
-        purgeWorkflowRuns(
+        deleteWorkflowRunsData(
           { runIds },
           { token: 'test-token', dispatcher: agent }
         )
@@ -465,6 +493,61 @@ describe('purgeWorkflowRuns', () => {
 
     // No interceptors registered — a network attempt would throw a distinct
     // "not mocked" error, so reaching here means no request was made.
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('surfaces a 400 from world-vercel as a clear error with its status and message', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    // world-vercel enforces the batch limit itself, whatever the client sends.
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v4/runs/purge', method: 'POST' })
+      .reply(
+        400,
+        { message: 'runIds must contain between 1 and 100 unique run IDs.' },
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const error = await deleteWorkflowRunsData(
+      { runIds: ['wrun_a'] },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect((error as WorkflowWorldError).status).toBe(400);
+    expect((error as Error).message).toContain(
+      'runIds must contain between 1 and 100 unique run IDs.'
+    );
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('surfaces a 429 as a ThrottleError carrying retryAfter', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v4/runs/purge', method: 'POST' })
+      .reply(
+        429,
+        { message: 'Too many requests' },
+        {
+          headers: {
+            'content-type': 'application/json',
+            'Retry-After': '7',
+          },
+        }
+      );
+
+    const error = await deleteWorkflowRunsData(
+      { runIds: ['wrun_a'] },
+      { token: 'test-token', dispatcher: agent }
+    ).catch((err: unknown) => err);
+
+    expect(ThrottleError.is(error)).toBe(true);
+    expect((error as ThrottleError).retryAfter).toBe(7);
     agent.assertNoPendingInterceptors();
   });
 });

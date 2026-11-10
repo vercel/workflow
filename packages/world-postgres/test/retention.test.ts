@@ -392,6 +392,87 @@ describe('Retention ($retention: 0)', () => {
    * purge that does not fire — it is a purge that fires on a value nobody
    * meant as "delete my data".
    */
+  describe('runs.deleteDataMany', () => {
+    it("deletes a finished run's data, keeping its rows", async () => {
+      const { runId } = await seedRun();
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      const rowsBefore = await rowCounts(runId);
+      expect(await countRemainingPayloads(runId)).toBeGreaterThan(0);
+      const before = Date.now();
+
+      const result = await runs.deleteDataMany?.({ runIds: [runId] });
+
+      expect(result).toEqual({
+        summary: {
+          requested: 1,
+          deleted: 1,
+          alreadyDeleted: 0,
+          skipped: 0,
+          notCreated: 0,
+          notFound: 0,
+          failed: 0,
+        },
+        results: [{ runId, outcome: 'deleted' }],
+      });
+      expect(await countRemainingPayloads(runId)).toBe(0);
+      expect(await rowCounts(runId)).toEqual(rowsBefore);
+      const run = await runs.get(runId);
+      expect(run.status).toBe('completed');
+      expect(run.expiredAt?.getTime()).toBeGreaterThanOrEqual(before);
+    });
+
+    it('answers already_deleted on a second call, keeping the first expiredAt', async () => {
+      const { runId } = await seedRun();
+      await events.create(runId, {
+        eventType: 'run_completed',
+        eventData: { output: new Uint8Array([12, 13]) },
+      });
+      await runs.deleteDataMany?.({ runIds: [runId] });
+      const { expiredAt } = await runs.get(runId);
+
+      const again = await runs.deleteDataMany?.({ runIds: [runId] });
+
+      expect(again?.results).toEqual([{ runId, outcome: 'already_deleted' }]);
+      expect((await runs.get(runId)).expiredAt).toEqual(expiredAt);
+    });
+
+    it('skips an unfinished run and answers not_found for an unknown one, in request order', async () => {
+      const { runId } = await seedRun();
+      const payloadsBefore = await countRemainingPayloads(runId);
+      const missing = `wrun_${ulid()}`;
+
+      const result = await runs.deleteDataMany?.({
+        runIds: [missing, runId],
+      });
+
+      expect(result?.results).toEqual([
+        { runId: missing, outcome: 'not_found' },
+        {
+          runId,
+          outcome: 'skipped',
+          reason: 'run_not_terminal',
+          status: 'running',
+        },
+      ]);
+      expect(result?.summary).toMatchObject({
+        requested: 2,
+        skipped: 1,
+        notFound: 1,
+      });
+      expect(await countRemainingPayloads(runId)).toBe(payloadsBefore);
+      // Read raw: the fixture's legacy output twin makes a running run fail
+      // `runs.get`'s schema.
+      const { rows } = await pool.query(
+        'SELECT status, expired_at FROM workflow.workflow_runs WHERE id = $1',
+        [runId]
+      );
+      expect(rows[0]).toEqual({ status: 'running', expired_at: null });
+    });
+  });
+
   describe('every other value keeps the data', () => {
     const cases: Array<[string, Record<string, string> | undefined]> = [
       ['no attribute at all', undefined],

@@ -3,6 +3,9 @@ import { WorkflowRunNotFoundError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import type {
   AttributeChange,
+  DeleteRunDataResult,
+  DeleteRunsDataRequest,
+  DeleteRunsDataResult,
   ExperimentalSetAttributesResult,
   ListWorkflowRunsParams,
   PaginatedResponse,
@@ -13,6 +16,7 @@ import type {
 import {
   AttributeValidationError,
   applyAttributeChanges,
+  DeleteRunsDataRequestSchema,
   isTerminalWorkflowRunStatus,
   validateAttributeChanges,
 } from '@workflow/world';
@@ -27,6 +31,7 @@ import {
 } from '../fs.js';
 import { filterRunData } from './filters.js';
 import { getObjectCreatedAt, RunRecordSchema } from './helpers.js';
+import { purgeRunEntityData, withRunPayloadsPurged } from './run-retention.js';
 import {
   RUN_STATUS_POLL_INTERVAL_MS,
   waitForRunTerminalSignal,
@@ -62,6 +67,7 @@ export interface LocalRunsStorage {
     changes: AttributeChange[],
     options?: { allowReservedAttributes?: boolean }
   ): Promise<ExperimentalSetAttributesResult>;
+  deleteDataMany: NonNullable<Storage['runs']['deleteDataMany']>;
 }
 
 /**
@@ -133,6 +139,60 @@ export function createRunsStorage(
     const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
     return filterRunData(run, resolveData);
   }) as Storage['runs']['get'];
+
+  /**
+   * Delete one finished run's data, as a zero-retention run's is deleted
+   * when it finishes: the run's own payloads and its `expiredAt` boundary in
+   * one write under the run's lock, then its steps', events', hooks' and
+   * streams' payloads. A run that has not finished is left untouched.
+   */
+  async function deleteRunData(runId: string): Promise<DeleteRunDataResult> {
+    try {
+      assertSafeEntityId('runId', runId);
+    } catch {
+      // No run can be stored under an ID that is unsafe as a file name.
+      return { runId, outcome: 'not_found' };
+    }
+    const outcome = await withRunFileLock(runId, async () => {
+      const run = await readJSONWithFallback(
+        basedir,
+        'runs',
+        runId,
+        RunRecordSchema,
+        tag
+      );
+      if (!run) return { runId, outcome: 'not_found' } as const;
+      if (!isTerminalWorkflowRunStatus(run.status)) {
+        return {
+          runId,
+          outcome: 'skipped',
+          reason: 'run_not_terminal',
+          status: run.status,
+        } as const;
+      }
+      const now = new Date();
+      if (run.expiredAt && run.expiredAt.getTime() <= now.getTime()) {
+        return { runId, outcome: 'already_deleted' } as const;
+      }
+      await writeJSON(
+        taggedPath(basedir, 'runs', runId, tag),
+        withRunPayloadsPurged(run, now),
+        { overwrite: true }
+      );
+      return { runId, outcome: 'deleted' } as const;
+    });
+    if (
+      outcome.outcome === 'deleted' ||
+      outcome.outcome === 'already_deleted'
+    ) {
+      // Also for `already_deleted`: whatever an earlier pass left behind goes
+      // too. Never throws; a file it cannot scrub is logged and skipped. No
+      // event cache to clear: a run's cached events are released when its
+      // terminal event lands.
+      await purgeRunEntityData(basedir, runId, tag);
+    }
+    return outcome;
+  }
 
   return {
     get,
@@ -274,6 +334,42 @@ export function createRunsStorage(
 
         return { attributes: nextAttributes };
       });
+    },
+
+    /**
+     * Delete the data of many finished runs. See
+     * `Storage['runs'].deleteDataMany`.
+     */
+    deleteDataMany: async (
+      request: DeleteRunsDataRequest
+    ): Promise<DeleteRunsDataResult> => {
+      const { runIds } = DeleteRunsDataRequestSchema.parse(request);
+      const results = await Promise.all(
+        runIds.map((runId) =>
+          deleteRunData(runId).catch(
+            (): DeleteRunDataResult => ({
+              runId,
+              outcome: 'failed',
+              code: 'internal_error',
+              retryable: true,
+            })
+          )
+        )
+      );
+      const count = (outcome: DeleteRunDataResult['outcome']) =>
+        results.filter((result) => result.outcome === outcome).length;
+      return {
+        summary: {
+          requested: runIds.length,
+          deleted: count('deleted'),
+          alreadyDeleted: count('already_deleted'),
+          skipped: count('skipped'),
+          notCreated: count('not_created'),
+          notFound: count('not_found'),
+          failed: count('failed'),
+        },
+        results,
+      };
     },
   };
 }

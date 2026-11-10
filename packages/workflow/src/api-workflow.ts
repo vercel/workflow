@@ -1,5 +1,7 @@
 export type {
   CancelRunOptions,
+  DeleteRunDataResult,
+  DeleteRunsDataResult,
   Event,
   StartOptions,
   StopSleepOptions,
@@ -19,6 +21,7 @@ const workflowStub = (item: string) => {
 };
 
 export const getRun = () => workflowStub('getRun');
+export const deleteRunsData = () => workflowStub('deleteRunsData');
 export const getHookByToken = () => workflowStub('getHookByToken');
 export const resumeHook = () => workflowStub('resumeHook');
 export const resumeWebhook = () => workflowStub('resumeWebhook');

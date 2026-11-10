@@ -6,12 +6,12 @@ import {
   BulkCancelWorkflowRunsRequestSchema,
   type BulkCancelWorkflowRunsResult,
   BulkCancelWorkflowRunsResultSchema,
-  type BulkPurgeWorkflowRunsRequest,
-  BulkPurgeWorkflowRunsRequestSchema,
-  type BulkPurgeWorkflowRunsResult,
-  BulkPurgeWorkflowRunsResultSchema,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
+  type DeleteRunDataResult,
+  type DeleteRunsDataRequest,
+  DeleteRunsDataRequestSchema,
+  type DeleteRunsDataResult,
   type ExperimentalSetAttributesResult,
   type GetWorkflowRunParams,
   type ListWorkflowRunsParams,
@@ -590,25 +590,80 @@ export async function cancelWorkflowRuns(
 }
 
 /**
+ * Wire response of world-vercel's run-data deletion endpoint, which names
+ * the outcomes `purged` / `already_purged`. Translated to the SDK's
+ * `deleted` / `already_deleted` by {@link deleteRunsDataFromWire}.
+ */
+const DeleteRunsDataWireResultSchema = z.object({
+  summary: z.object({
+    requested: z.number(),
+    purged: z.number(),
+    alreadyPurged: z.number(),
+    skipped: z.number(),
+    notCreated: z.number(),
+    notFound: z.number(),
+    failed: z.number(),
+  }),
+  results: z.array(
+    z.discriminatedUnion('outcome', [
+      z.object({ runId: z.string(), outcome: z.literal('purged') }),
+      z.object({ runId: z.string(), outcome: z.literal('already_purged') }),
+      z.object({
+        runId: z.string(),
+        outcome: z.literal('skipped'),
+        reason: z.string(),
+        status: z.string(),
+      }),
+      z.object({ runId: z.string(), outcome: z.literal('not_created') }),
+      z.object({ runId: z.string(), outcome: z.literal('not_found') }),
+      z.object({
+        runId: z.string(),
+        outcome: z.literal('failed'),
+        code: z.string(),
+        retryable: z.boolean(),
+      }),
+    ])
+  ),
+});
+type DeleteRunsDataWireResult = z.infer<typeof DeleteRunsDataWireResultSchema>;
+
+function deleteRunDataResultFromWire(
+  result: DeleteRunsDataWireResult['results'][number]
+): DeleteRunDataResult {
+  switch (result.outcome) {
+    case 'purged':
+      return { runId: result.runId, outcome: 'deleted' };
+    case 'already_purged':
+      return { runId: result.runId, outcome: 'already_deleted' };
+    default:
+      return result;
+  }
+}
+
+/**
  * Delete the stored data of many finished runs in a single request.
  *
- * world-vercel only purges runs that have finished and answers every other
- * run `skipped`, so this never cancels anything. The request is validated
- * client-side (1–100 unique IDs), and the results are reordered to match the
- * requested `runIds`.
+ * world-vercel only deletes the data of runs that have finished and answers
+ * every other run `skipped`, so this never cancels anything. The request is
+ * checked client-side (1–100 unique IDs) as a convenience; world-vercel
+ * enforces the same limit and answers a `400` otherwise. The results are
+ * reordered to match the requested `runIds`.
+ *
+ * @throws ThrottleError, carrying `retryAfter` (seconds) when known, if
+ *   world-vercel rate-limits the request.
  */
-export async function purgeWorkflowRuns(
-  request: BulkPurgeWorkflowRunsRequest,
+export async function deleteWorkflowRunsData(
+  request: DeleteRunsDataRequest,
   config?: APIConfig
-): Promise<BulkPurgeWorkflowRunsResult> {
-  const { runIds } = BulkPurgeWorkflowRunsRequestSchema.parse(request);
+): Promise<DeleteRunsDataResult> {
+  const { runIds } = DeleteRunsDataRequestSchema.parse(request);
 
   const response = await makeRequest({
     endpoint: '/v4/runs/purge',
     options: { method: 'POST' },
     data: { runIds },
     config,
-    schema: BulkPurgeWorkflowRunsResultSchema,
+    schema: DeleteRunsDataWireResultSchema,
   });
 
   // Exactly one result per requested ID, as for bulk cancel: anything else is
@@ -622,15 +677,26 @@ export async function purgeWorkflowRuns(
     runIds.every((runId) => resultByRunId.has(runId));
   if (!isBijection) {
     throw new WorkflowWorldError(
-      `Purge response did not contain exactly one result per requested run ID ` +
+      `Delete-data response did not contain exactly one result per requested run ID ` +
         `(requested ${runIds.length}, received ${response.results.length}).`
     );
   }
 
+  const { purged, alreadyPurged, ...summary } = response.summary;
   return {
-    summary: response.summary,
-    results: runIds.map(
-      (runId) => resultByRunId.get(runId) as (typeof response.results)[number]
+    summary: {
+      requested: summary.requested,
+      deleted: purged,
+      alreadyDeleted: alreadyPurged,
+      skipped: summary.skipped,
+      notCreated: summary.notCreated,
+      notFound: summary.notFound,
+      failed: summary.failed,
+    },
+    results: runIds.map((runId) =>
+      deleteRunDataResultFromWire(
+        resultByRunId.get(runId) as DeleteRunsDataWireResult['results'][number]
+      )
     ),
   };
 }
