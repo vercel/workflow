@@ -796,7 +796,6 @@ export function RunDetailView({
                     isLoading={eventsListLoading}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
-                    hasEncryptedData={hasEncryptedData}
                     onExactIdSearch={searchByExactId}
                     onViewInTrace={handleViewInTrace}
                   />

@@ -63,8 +63,6 @@ interface EventsListProps {
   isDecryptDisabled?: boolean;
   /** Explains why decryption is unavailable. */
   decryptDisabledReason?: string;
-  /** @deprecated Decrypt is offered on the encrypted payload itself; ignored. */
-  hasEncryptedData?: boolean;
   /** Fetch events for an exact correlation or event ID. */
   onExactIdSearch?: (
     id: string,
