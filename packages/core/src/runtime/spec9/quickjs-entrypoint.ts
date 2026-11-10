@@ -1619,6 +1619,8 @@ export async function runWorkflowWithQuickJS(params: {
   const inFlightInline = new Map<string, Promise<void>>();
   const settledInline: InlineSettled[] = [];
   let inlineFeed: LiveLogFeed | undefined;
+  /** Removes the live feed's listener on the writer's commits. */
+  let stopInlineFeedActivity: (() => void) | undefined;
   /** Events the live feed delivered so far in this invocation. */
   let fedEventCount = 0;
   /**
@@ -1654,6 +1656,12 @@ export async function runWorkflowWithQuickJS(params: {
       onFeedDown: () => notifyProgress(),
     });
     inlineFeed.start();
+    // Without a push, the poll's backoff starts over on each write of this
+    // delivery (see `LiveLogFeed.noteActivity`).
+    const feed = inlineFeed;
+    stopInlineFeedActivity = writer?.addCommitListener(() =>
+      feed.noteActivity()
+    );
   };
   let progressDirty = false;
   let progressWaiter: (() => void) | undefined;
@@ -2496,6 +2504,8 @@ export async function runWorkflowWithQuickJS(params: {
     // Speculative writes settle before the delivery ends, whichever way it
     // ends.
     await settleRunAhead();
+    stopInlineFeedActivity?.();
+    stopInlineFeedActivity = undefined;
     inlineFeed?.stop();
     inlineFeed = undefined;
   };
@@ -2615,7 +2625,13 @@ export async function runWorkflowWithQuickJS(params: {
     ) {
       return 'step';
     }
-    const logged = externalWorkOf(fullLog());
+    const observedHookIds = new Set(
+      session
+        .openHooks?.()
+        .filter((hook) => hook.observed)
+        .map((hook) => hook.correlationId) ?? []
+    );
+    const logged = externalWorkOf(fullLog(), observedHookIds);
     if (logged !== undefined) return logged;
     if (pendingOperations.some((op) => op.type === 'hook')) return 'hook';
     return undefined;

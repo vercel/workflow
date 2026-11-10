@@ -1175,7 +1175,9 @@ export const __steps_registered = ${stepsRegistered};
       treeShaking: true,
       keepNames: true,
       minify: false,
-      jsx: 'preserve',
+      // A directly loaded steps bundle (Nitro dev) is not compiled again, so
+      // compile JSX here. 'automatic' still honors the tsconfig's `jsxImportSource`.
+      jsx: bundleTransitiveLocalStepDependencies ? 'automatic' : 'preserve',
       logLevel: 'error',
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.

@@ -301,7 +301,7 @@ Integration tests in `world-postgres`:
 - Upsert, merge across calls, unset via `null` (the SQL `jsonb_set` / `-` chain is exercised through these)
 - Atomic cap enforcement inside the `UPDATE`'s `WHERE` clause; concurrent writers cannot collectively push past the per-run cap
 
-End-to-end in `workbench/nextjs-turbopack` (exercises the full SWC plugin + workflow VM + step worker + `world-vercel` wire path against the production workflow-server `/v2/runs/:runId/attributes` endpoint):
+End-to-end in `workbench/nextjs-turbopack` (exercises the full SWC plugin + workflow VM + step worker + `world-vercel` wire path against the production `world-vercel` backend `/v2/runs/:runId/attributes` endpoint):
 
 - Awaited workflow-body calls dispatch through the `__builtin_set_attributes` step bridge and merge correctly (the test inspects the run's event log to confirm a `step_created` / `step_completed` pair was emitted)
 - Fire-and-forget (`void experimental_setAttributes`) attributes land before the run terminates

@@ -284,13 +284,14 @@ jobs:
           APP_NAME: "nextjs-turbopack"
 
   vitest-plugin:
-    name: Vitest Plugin Tests (${{ matrix.vm }})
+    name: Vitest Plugin Tests (v${{ matrix.vitest }}, ${{ matrix.vm }})
     runs-on: ubuntu-latest
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     strategy:
       fail-fast: false
       matrix:
+        vitest: [3, 4, 5]
         # Workflow VM engines: node:vm (default) and the opt-in QuickJS
         # WASM engine (WORKFLOW_VM=quickjs).
         vm: [node, quickjs]
@@ -307,10 +308,17 @@ jobs:
           setup-rust: 'true'
           build-packages: 'false'
 
+      - name: Install supported Vitest version
+        # The plugin setup files and workbench must resolve the same Vitest instance.
+        run: pnpm --filter @workflow/vitest --filter @workflow/vitest-workbench add --save-dev vitest@${{ matrix.vitest }}
+
       - name: Build packages
         run: pnpm turbo run build --filter='!./workbench/*'
 
-      - name: Run Vitest Plugin Tests
+      - name: Test Vitest plugin
+        run: pnpm --filter @workflow/vitest test
+
+      - name: Test workflow execution
         run: pnpm test
         working-directory: workbench/vitest
         env:
@@ -447,7 +455,7 @@ jobs:
           # suites keep a fresh token throughout the run instead of using
           # a single pre-minted token that would expire mid-suite.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
-          # Preview deployments are wired to the protected workflow-server
+          # Preview deployments are wired to the protected world-vercel backend
           # preview and production deployments to the public
           # vercel-workflow.com server; the harness has to read run state
           # from the same server the app writes it to.

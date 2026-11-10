@@ -437,6 +437,11 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     token: z.string().optional(),
+    // The target run's workflow name, sent by `resumeHook()` on a spec 9 run
+    // so a backend that keys payload refs by workflow name can build the key
+    // without reading the run first (as on `step_completed`). Optional:
+    // older runtimes and older runs omit it.
+    workflowName: z.string().optional(),
     payload: SerializedDataSchema,
   }),
 });

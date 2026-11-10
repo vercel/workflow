@@ -400,7 +400,7 @@ export function computeStepLatencyEventData(params: {
   // finalSchedulingReplay duplicates what OTEL already captures on the
   // run/invocation span, but is deliberately collected as client telemetry
   // so the server can emit it as an UNSAMPLED, full-population metric:
-  // workflow-server's server spans are heavily sampled in production (~7%),
+  // the backend's server spans are sampled in production,
   // so they cannot serve as the dashboard's exact TTFS decomposition.
   const rsfs =
     tracking.rsfsAnchorMs !== undefined &&
