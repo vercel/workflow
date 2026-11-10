@@ -13,6 +13,8 @@ import type { Span } from './types';
 
 interface ActiveSpanContextValue {
   activeSpanId: string | null;
+  /** Span to flash once on arrival (from the Events tab's View in Trace). */
+  flashSpanId: string | null;
   activeSpan: Span | null;
   /** The full span list the selection lives in (ordered as rendered). */
   spans: Span[];
@@ -25,12 +27,18 @@ ActiveSpanContext.displayName = 'ActiveSpanContext';
 
 export function ActiveSpanProvider({
   spans,
+  initialActiveSpanId,
   children,
 }: {
   spans: Span[];
+  /** Span to select on mount, e.g. when arriving from the Events tab. */
+  initialActiveSpanId?: string;
   children: ReactNode;
 }) {
-  const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
+  const [activeSpanId, setActiveSpanId] = useState<string | null>(
+    initialActiveSpanId ?? null
+  );
+  const [flashSpanId] = useState<string | null>(initialActiveSpanId ?? null);
 
   useEffect(() => {
     setActiveSpanId((currentSpanId) => {
@@ -68,12 +76,20 @@ export function ActiveSpanProvider({
   const value = useMemo<ActiveSpanContextValue>(
     () => ({
       activeSpanId,
+      flashSpanId,
       activeSpan,
       spans,
       setActiveSpan,
       clearActiveSpan,
     }),
-    [activeSpanId, activeSpan, spans, setActiveSpan, clearActiveSpan]
+    [
+      activeSpanId,
+      flashSpanId,
+      activeSpan,
+      spans,
+      setActiveSpan,
+      clearActiveSpan,
+    ]
   );
 
   return (

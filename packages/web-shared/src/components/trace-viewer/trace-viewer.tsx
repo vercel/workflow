@@ -47,6 +47,8 @@ interface TraceViewerProps {
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
+  /** Span to select on mount. */
+  initialSelectedSpanId?: string;
 }
 
 const MIN_VIEWPORT_MS = 0.001;
@@ -133,10 +135,14 @@ export function TraceViewer({
   onLoadMore,
   hasMore,
   isLoadingMore,
+  initialSelectedSpanId,
 }: TraceViewerProps): ReactNode {
   return (
     <TooltipProvider delayDuration={300}>
-      <ActiveSpanProvider spans={trace.spans}>
+      <ActiveSpanProvider
+        spans={trace.spans}
+        initialActiveSpanId={initialSelectedSpanId}
+      >
         <TraceViewerContent
           trace={trace}
           onLoadMore={onLoadMore}

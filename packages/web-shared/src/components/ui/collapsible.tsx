@@ -191,6 +191,8 @@ type CollapsibleProps = {
   disabled?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /** Controls at the right of the header, e.g. a copy button. */
+  actions?: ReactNode;
 };
 
 /**
@@ -205,6 +207,7 @@ export function Collapsible({
   disabled,
   defaultOpen,
   onOpenChange,
+  actions,
 }: CollapsibleProps) {
   return (
     <CollapsibleRoot
@@ -212,7 +215,23 @@ export function Collapsible({
       defaultOpen={defaultOpen}
       onOpenChange={onOpenChange}
     >
-      <CollapsibleTrigger>{label}</CollapsibleTrigger>
+      <CollapsibleTrigger>
+        {actions ? (
+          <span className="flex items-center gap-2">
+            <span className="min-w-0 flex-1">{label}</span>
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: keeps action clicks from toggling the section */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: the actions handle their own keys */}
+            <span
+              className="flex shrink-0 items-center gap-1 font-normal"
+              onClickCapture={(e) => e.preventDefault()}
+            >
+              {actions}
+            </span>
+          </span>
+        ) : (
+          label
+        )}
+      </CollapsibleTrigger>
       {children != null && <CollapsibleContent>{children}</CollapsibleContent>}
     </CollapsibleRoot>
   );

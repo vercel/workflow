@@ -1,15 +1,12 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import { ChevronDown, ChevronUp, X } from 'lucide-react';
 import {
   type ReactNode,
   type RefObject,
   useCallback,
   useEffect,
   useMemo,
-  useRef,
-  useState,
 } from 'react';
 import { filterSpanRawEvents } from '../../../lib/trace-builder';
 import { ErrorBoundary } from '../../error-boundary';
@@ -18,20 +15,8 @@ import {
   type SelectedSpanInfo,
 } from '../../sidebar/entity-detail-panel';
 import { useSidebarData } from '../../sidebar/sidebar-data-context';
-import { IconButton } from '../../ui/icon-button';
-import { Kbd } from '../../ui/kbd';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
 import { useActiveSpan } from '../context';
-import {
-  clampPanelWidth,
-  computeMaxPanelWidth,
-  PANEL_DEFAULT_WIDTH,
-  PANEL_MIN_WIDTH,
-  readStoredPanelWidth,
-  writeStoredPanelWidth,
-} from './detail-panel-width';
-import { DraggableBorder } from './draggable-border';
-import { useElementWidth } from './use-element-width';
+import { DetailPanelShell } from './detail-panel-shell';
 
 const DETAIL_PANEL_ID = 'trace-detail-panel';
 
@@ -80,27 +65,6 @@ export function TraceDetailPanel({
   const sidebar = useSidebarData();
   const selectedSpan = useSelectedSpanInfo();
   const isOpen = Boolean(activeSpan);
-
-  const [storedWidth, setStoredWidth] = useState<number>(() =>
-    readStoredPanelWidth()
-  );
-  const containerWidth = useElementWidth(containerRef, isOpen);
-  const asideRef = useRef<HTMLDivElement | null>(null);
-
-  const handleResize = useCallback(
-    (next: number) => {
-      const clamped = clampPanelWidth(next, containerWidth);
-      setStoredWidth(clamped);
-      writeStoredPanelWidth(clamped);
-    },
-    [containerWidth]
-  );
-
-  const panelWidth = clampPanelWidth(storedWidth, containerWidth);
-  const panelMaxWidth = Math.max(
-    PANEL_MIN_WIDTH,
-    computeMaxPanelWidth(containerWidth)
-  );
 
   const { prevSpanId, nextSpanId } = useMemo(() => {
     if (!activeSpanId) return { prevSpanId: null, nextSpanId: null };
@@ -175,102 +139,36 @@ export function TraceDetailPanel({
   if (!activeSpan) return null;
 
   return (
-    <aside
-      ref={asideRef}
+    <DetailPanelShell
       id={DETAIL_PANEL_ID}
-      className="relative flex flex-col h-full max-h-full shrink-0 bg-background-100 border-l border-gray-alpha-400"
-      style={{ width: panelWidth }}
+      containerRef={containerRef}
+      title={<span className="truncate block">{selectedSpanName}</span>}
+      itemLabel="span"
+      onPrev={prevSpanId ? handleSelectPrev : undefined}
+      onNext={nextSpanId ? handleSelectNext : undefined}
+      onClose={onClose}
     >
-      <DraggableBorder
-        element={asideRef}
-        position="left"
-        onWidthChange={handleResize}
-        onReset={() => handleResize(PANEL_DEFAULT_WIDTH)}
-        aria-label="Resize span details panel"
-        aria-controls={DETAIL_PANEL_ID}
-        aria-valuemin={PANEL_MIN_WIDTH}
-        aria-valuemax={panelMaxWidth}
-        aria-valuenow={Math.min(
-          Math.max(Math.round(panelWidth), PANEL_MIN_WIDTH),
-          panelMaxWidth
-        )}
-      />
-      {/* Panel header */}
-      <div className="flex items-center justify-between gap-2 shrink-0 px-4 py-[7.5px]">
-        <span className="text-label-14 font-medium text-gray-1000 truncate block">
-          {selectedSpanName}
-        </span>
-        <div className="flex items-center gap-0.5 shrink-0">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <IconButton
-                aria-label="Navigate up"
-                aria-keyshortcuts="K"
-                onClick={handleSelectPrev}
-                disabled={!prevSpanId}
-              >
-                <ChevronUp className="w-4 h-4" />
-              </IconButton>
-            </TooltipTrigger>
-            {prevSpanId ? (
-              <TooltipContent>
-                Navigate up
-                <Kbd>K</Kbd>
-              </TooltipContent>
-            ) : null}
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <IconButton
-                aria-label="Navigate down"
-                aria-keyshortcuts="J"
-                onClick={handleSelectNext}
-                disabled={!nextSpanId}
-              >
-                <ChevronDown className="w-4 h-4" />
-              </IconButton>
-            </TooltipTrigger>
-            {nextSpanId ? (
-              <TooltipContent>
-                Navigate down
-                <Kbd>J</Kbd>
-              </TooltipContent>
-            ) : null}
-          </Tooltip>
-          <div aria-hidden className="w-px h-4 bg-gray-alpha-400 mx-1" />
-          <IconButton
-            aria-label="Close span details"
-            aria-keyshortcuts="Escape"
-            onClick={onClose}
-          >
-            <X className="w-4 h-4" />
-          </IconButton>
-        </div>
-      </div>
-      {/* Panel body */}
-      <div className="flex-1 overflow-y-auto">
-        <ErrorBoundary>
-          <EntityDetailPanel
-            run={sidebar.run}
-            onStreamClick={sidebar.onStreamClick}
-            onRunClick={sidebar.onRunClick}
-            fetchSpanDetail={sidebar.fetchSpanDetail}
-            onWakeUpSleep={sidebar.onWakeUpSleep}
-            onLoadEventData={sidebar.onLoadEventData}
-            onResolveHook={sidebar.onResolveHook}
-            encryptionKey={sidebar.encryptionKey}
-            onDecrypt={sidebar.onDecrypt}
-            isDecrypting={sidebar.isDecrypting}
-            isDecryptDisabled={sidebar.isDecryptDisabled}
-            decryptDisabledReason={sidebar.decryptDisabledReason}
-            selectedSpan={selectedSpan}
-            showSeparateEventOccurrenceTimestamps={
-              sidebar.showSeparateEventOccurrenceTimestamps
-            }
-            getModuleSourceUrl={sidebar.getModuleSourceUrl}
-          />
-        </ErrorBoundary>
-      </div>
-    </aside>
+      <ErrorBoundary>
+        <EntityDetailPanel
+          run={sidebar.run}
+          onStreamClick={sidebar.onStreamClick}
+          onRunClick={sidebar.onRunClick}
+          fetchSpanDetail={sidebar.fetchSpanDetail}
+          onWakeUpSleep={sidebar.onWakeUpSleep}
+          onLoadEventData={sidebar.onLoadEventData}
+          onResolveHook={sidebar.onResolveHook}
+          encryptionKey={sidebar.encryptionKey}
+          onDecrypt={sidebar.onDecrypt}
+          isDecrypting={sidebar.isDecrypting}
+          isDecryptDisabled={sidebar.isDecryptDisabled}
+          decryptDisabledReason={sidebar.decryptDisabledReason}
+          selectedSpan={selectedSpan}
+          showSeparateEventOccurrenceTimestamps={
+            sidebar.showSeparateEventOccurrenceTimestamps
+          }
+          getModuleSourceUrl={sidebar.getModuleSourceUrl}
+        />
+      </ErrorBoundary>
+    </DetailPanelShell>
   );
 }

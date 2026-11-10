@@ -218,6 +218,8 @@ export function RunDetailView({
   // Empty env object - server actions read from process.env
   const env: EnvMap = useMemo(() => ({}), []);
 
+  // Span the Trace tab opens on when arriving from an event's "View in Trace".
+  const [traceSpanId, setTraceSpanId] = useState<string | undefined>();
   // Read tab and streamId from URL search params (graph tab is hidden for now)
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
@@ -342,7 +344,6 @@ export function RunDetailView({
   encryptionKeyRef.current = encryptionKey;
 
   // Separate event fetching for the Events tab with user-controlled sort order
-  const [eventsSortOrder, setEventsSortOrder] = useState<'asc' | 'desc'>('asc');
   const {
     events: eventsListData,
     loading: eventsListLoading,
@@ -351,7 +352,6 @@ export function RunDetailView({
     loadMore: loadMoreEventsTab,
     searchByExactId,
   } = useEventsListData(env, runId, {
-    sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
     enabled: activeTab === 'events',
   });
@@ -729,7 +729,10 @@ export function RunDetailView({
         <div className="mt-4 flex-1 flex flex-col min-h-0">
           <Tabs
             value={activeTab}
-            onValueChange={(v) => setActiveTab(v as Tab)}
+            onValueChange={(v) => {
+              if (v !== 'trace') setTraceSpanId(undefined);
+              setActiveTab(v as Tab);
+            }}
             className="flex-1 flex flex-col min-h-0"
           >
             <TabsList className="mb-4 flex-none">
@@ -765,6 +768,7 @@ export function RunDetailView({
                     onLoadMore={loadMoreTraceData}
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
+                    initialSelectedSpanId={traceSpanId}
                   />
                 </div>
               </ErrorBoundary>
@@ -772,7 +776,7 @@ export function RunDetailView({
 
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
-                <div className="h-full">
+                <div className="relative h-full -mx-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <EventListView
                     events={eventsListData}
                     run={run}
@@ -782,12 +786,14 @@ export function RunDetailView({
                     onLoadMoreEvents={loadMoreEventsTab}
                     encryptionKey={encryptionKey ?? undefined}
                     isLoading={eventsListLoading}
-                    sortOrder={eventsSortOrder}
-                    onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
                     onExactIdSearch={searchByExactId}
+                    onViewInTrace={(spanId) => {
+                      setTraceSpanId(spanId);
+                      setActiveTab('trace');
+                    }}
                   />
                 </div>
               </ErrorBoundary>
