@@ -32,8 +32,8 @@
     "@workflow/rollup": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
-    "exsolve": "^1.0.8",
-    "fs-extra": "^11.3.2",
+    "exsolve": "^1.2.0",
+    "fs-extra": "^11.4.1",
     "pathe": "^2.0.3"
   },
   "devDependencies": {

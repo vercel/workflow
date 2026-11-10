@@ -18,12 +18,12 @@
     "ai": "catalog:ai-sdk-v7",
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
-    "openai": "^6.1.0",
-    "rollup": "^4.67.4",
+    "openai": "^6.49.0",
+    "rollup": "^4.68.0",
     "workflow": "workspace:*",
     "zod": "catalog:"
   },
   "dependencies": {
-    "@node-rs/xxhash": "1.7.6"
+    "@node-rs/xxhash": "1.7.8"
   }
 }

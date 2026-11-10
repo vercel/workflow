@@ -30,12 +30,12 @@
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "exsolve": "1.0.7"
+    "exsolve": "1.2.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "rollup": "^4.67.4",
+    "rollup": "^4.68.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

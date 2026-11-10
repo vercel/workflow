@@ -34,7 +34,7 @@
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
     "@workflow/web": "workspace:*",
-    "exsolve": "1.0.8",
+    "exsolve": "1.2.0",
     "pathe": "2.0.3"
   },
   "devDependencies": {
