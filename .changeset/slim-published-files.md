@@ -16,6 +16,7 @@
 "@workflow/utils": patch
 "@workflow/vite": patch
 "@workflow/vitest": patch
+"@workflow/web-shared": patch
 "workflow": patch
 "@workflow/world": patch
 "@workflow/world-local": patch
@@ -24,4 +25,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column.
+Publish smaller packages: compiled tests and declaration maps are no longer included, `@workflow/world` no longer ships its TypeScript sources, and the inline source maps no longer embed the original sources. Stack traces still map to the original file, line and column, but since `src/` is not published, debuggers and dev-server error overlays no longer show source code for frames inside `@workflow/*` packages. `@workflow/web-shared` also stops publishing its tests.
