@@ -191,6 +191,37 @@ describe('runs.deleteDataMany (world-local)', () => {
     });
   });
 
+  it('answers a retryable failure when a payload cannot be scrubbed, and a retry finishes the job', async () => {
+    const run = await finishedRun();
+    const stepsDir = path.join(testDir, 'steps', run.runId);
+    const [stepFile] = (await fs.readdir(stepsDir)).filter((f) =>
+      f.endsWith('.json')
+    );
+    if (!stepFile) throw new Error('Expected a step file');
+    const stepPath = path.join(stepsDir, stepFile);
+    const original = await fs.readFile(stepPath, 'utf8');
+    await fs.writeFile(stepPath, '{ not json');
+
+    const first = await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
+    expect(first?.results).toEqual([
+      {
+        runId: run.runId,
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      },
+    ]);
+    expect(first?.summary.failed).toBe(1);
+
+    await fs.writeFile(stepPath, original);
+    const retry = await storage.runs.deleteDataMany?.({ runIds: [run.runId] });
+    expect(retry?.results).toEqual([
+      { runId: run.runId, outcome: 'already_deleted' },
+    ]);
+    const steps = await storage.steps.list({ runId: run.runId });
+    expect(steps.data[0].output).toBeUndefined();
+  });
+
   it('rejects an empty, duplicated or oversized request', async () => {
     for (const runIds of [
       [],
