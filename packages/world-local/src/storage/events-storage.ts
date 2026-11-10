@@ -117,6 +117,13 @@ function startHookRejected(
   });
 }
 
+/**
+ * The most bytes (as stored) one `events.list` page holds before it ends early
+ * with `hasMore`: a page of 1,000 events with 64 KiB payloads would otherwise
+ * hold the thread for about a quarter of a second while it decodes.
+ */
+const MAX_EVENT_PAGE_BYTES = 8 * 1024 * 1024;
+
 /** Thrown inside a create to commit what it wrote, then refuse. */
 class RecordedRefusal extends Error {
   readonly refusal: unknown;
@@ -1253,11 +1260,11 @@ export function createEventsStorage(
   }
 
   /** One create, fenced when it is an in-band write. */
-  function create(
+  async function create(
     runId: string | null,
     data: AnyEventRequest,
     params?: CreateEventParams
-  ): EventResult {
+  ): Promise<EventResult> {
     validateRequest(runId, data);
     const fenced =
       params?.inBand === true && !!runId && data.eventType !== 'run_created';
@@ -1275,7 +1282,8 @@ export function createEventsStorage(
       }
     }
     const effects: Array<() => void> = [];
-    const result = db.transact(() => {
+    // Waits for another process's write lock without blocking the thread.
+    const result = await db.transactAsync(() => {
       try {
         if (fenced) {
           const current = store.getRun(runId!);
@@ -1386,6 +1394,7 @@ export function createEventsStorage(
         cursor: params.pagination?.cursor,
         limit: params.pagination?.limit ?? getMaxEventsPerRun(),
         sortOrder: params.pagination?.sortOrder ?? 'asc',
+        maxBytes: MAX_EVENT_PAGE_BYTES,
       });
       return {
         ...result,
@@ -1408,6 +1417,7 @@ export function createEventsStorage(
         cursor: params.pagination?.cursor,
         limit: params.pagination?.limit,
         sortOrder: params.pagination?.sortOrder ?? 'asc',
+        maxBytes: MAX_EVENT_PAGE_BYTES,
       });
       return {
         ...result,

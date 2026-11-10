@@ -245,7 +245,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     },
     async clear() {
       const db = databaseFor(mergedConfig.dataDir);
-      db.transact(() => {
+      await db.transactAsync(() => {
         if (tag === undefined) {
           for (const table of [
             'events',
@@ -287,6 +287,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         db.run('DELETE FROM stream_chunks WHERE tag = ?', tag);
         db.run('DELETE FROM runs WHERE tag = ?', tag);
       });
+      // Shrink the file: `@workflow/vitest` clears in every worker, and the
+      // freed pages would otherwise keep the database at its largest size.
+      await db.reclaimFreePages();
     },
   };
 }

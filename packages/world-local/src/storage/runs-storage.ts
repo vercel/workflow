@@ -169,7 +169,7 @@ export function createRunsStorage(
 
     experimentalSetAttributes: async (runId, changes, options) => {
       assertSafeEntityId('runId', runId);
-      return db.transact(() => {
+      return db.transactAsync(() => {
         const row = store.getRun(runId);
         if (!row) throw new WorkflowRunNotFoundError(runId);
         // The SDK validates before sending, but the World is the final

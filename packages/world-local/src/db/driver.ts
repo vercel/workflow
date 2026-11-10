@@ -105,6 +105,41 @@ function loadModule<T>(specifier: string): T {
   return createRequire(base)(specifier) as T;
 }
 
+/**
+ * Runs `fn` (loading `node:sqlite`) without the `ExperimentalWarning` Node.js
+ * 22.13 to 22.x print for it, which every dev server, script and test worker
+ * would otherwise show (Node.js 24 prints none). Only that warning is
+ * dropped, and only while `fn` runs; any other warning goes through.
+ */
+function withoutSqliteExperimentalWarning<T>(fn: () => T): T {
+  const emitWarning = process.emitWarning;
+  process.emitWarning = function (
+    this: typeof process,
+    warning: string | Error,
+    ...rest: unknown[]
+  ) {
+    const type =
+      typeof rest[0] === 'string'
+        ? rest[0]
+        : ((rest[0] as { type?: string } | undefined)?.type ??
+          (warning instanceof Error ? warning.name : undefined));
+    const message = warning instanceof Error ? warning.message : warning;
+    if (type === 'ExperimentalWarning' && /sqlite/i.test(String(message))) {
+      return;
+    }
+    return (emitWarning as (...args: unknown[]) => void).call(
+      this,
+      warning,
+      ...rest
+    );
+  } as typeof process.emitWarning;
+  try {
+    return fn();
+  } finally {
+    process.emitWarning = emitWarning;
+  }
+}
+
 /** Bind parameters: `undefined` becomes NULL, booleans become 0/1. */
 function bind(params: unknown[]): unknown[] {
   for (let i = 0; i < params.length; i++) {
@@ -147,7 +182,9 @@ export function openRawDatabase(filePath: string): RawDatabase {
       const { Database } = loadModule<BunSqliteModule>('bun:sqlite');
       db = new Database(filePath, { create: true });
     } else {
-      const { DatabaseSync } = loadModule<NodeSqliteModule>('node:sqlite');
+      const { DatabaseSync } = withoutSqliteExperimentalWarning(() =>
+        loadModule<NodeSqliteModule>('node:sqlite')
+      );
       db = new DatabaseSync(filePath);
     }
   } catch (error) {

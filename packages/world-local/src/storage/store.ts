@@ -205,6 +205,13 @@ export class Store {
       limit?: number;
       sortOrder?: 'asc' | 'desc';
       correlationId?: string;
+      /**
+       * Ends the page early, with `hasMore`, once the events in it hold this
+       * many bytes as stored (at least one event is always returned). Decoding
+       * a page is synchronous, so this bounds how long one call holds the
+       * thread when payloads are large; callers follow the cursor.
+       */
+      maxBytes?: number;
     }
   ): PaginatedResponse<Event> {
     const sortOrder = options.sortOrder ?? 'asc';
@@ -226,10 +233,21 @@ export class Store {
       ...params,
       limit + 1
     );
-    const hasMore = rows.length > limit;
-    const data = (hasMore ? rows.slice(0, limit) : rows).map((row) =>
-      decode<Event>(row.doc)
-    );
+    let hasMore = rows.length > limit;
+    const data: Event[] = [];
+    let bytes = 0;
+    for (const row of hasMore ? rows.slice(0, limit) : rows) {
+      if (
+        options.maxBytes !== undefined &&
+        data.length > 0 &&
+        bytes + row.doc.length > options.maxBytes
+      ) {
+        hasMore = true;
+        break;
+      }
+      bytes += row.doc.length;
+      data.push(decode<Event>(row.doc));
+    }
     const last = data.at(-1);
     return {
       data,

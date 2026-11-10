@@ -131,17 +131,31 @@ function retryWhileBusy<T>(fn: () => T): T {
   }
 }
 
-function open(file: string): Connection {
+/**
+ * Opens a connection and sets it up. With `wait` false, its setup does not
+ * wait for another process's lock (`busy_timeout = 0`): a busy file throws a
+ * busy error, for the caller to retry without blocking the thread (see
+ * `Database.transactAsync`).
+ */
+function open(file: string, wait = true): Connection {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const created = !fs.existsSync(file);
   const raw = openRawDatabase(file);
+  const whileBusy: <T>(fn: () => T) => T = wait ? retryWhileBusy : (fn) => fn();
   try {
-    raw.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    raw.exec(`PRAGMA busy_timeout = ${wait ? BUSY_TIMEOUT_MS : 0}`);
+    // Pages freed by a delete can be returned to the file system
+    // (`Database.reclaimFreePages`). Takes effect only on a new, empty file,
+    // so it runs before the schema is created; elsewhere it is a no-op.
+    raw.exec('PRAGMA auto_vacuum = INCREMENTAL');
+    // A checkpoint leaves the WAL at most this big (64 MiB), instead of at
+    // the size of the largest burst of writes it ever held.
+    raw.exec('PRAGMA journal_size_limit = 67108864');
     // Switching to WAL needs a lock SQLite does not wait for (no busy
     // handler), and is a no-op once the file is in WAL mode, which is
     // persistent: so it is only attempted when needed, and retried while
     // another connection holds the file (opening or closing it).
-    retryWhileBusy(() => {
+    whileBusy(() => {
       const mode = raw.prepare('PRAGMA journal_mode').get() as
         | { journal_mode?: string }
         | undefined;
@@ -154,7 +168,8 @@ function open(file: string): Connection {
     // linger in the file.
     raw.exec('PRAGMA secure_delete = ON');
     raw.exec('PRAGMA foreign_keys = ON');
-    retryWhileBusy(() => migrate(raw));
+    whileBusy(() => migrate(raw));
+    if (!wait) raw.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
   } catch (error) {
     raw.close();
     throw error;
@@ -198,7 +213,7 @@ function emptyDatabase(): Connection {
   return state.empty;
 }
 
-function acquire(file: string): Connection {
+function acquire(file: string, wait = true): Connection {
   const existing = state.connections.get(file);
   if (existing) {
     if (existing.depth > 0) {
@@ -214,7 +229,15 @@ function acquire(file: string): Connection {
     }
     closeConnection(existing);
   }
-  return open(file);
+  return open(file, wait);
+}
+
+/** Waits for the lock between attempts without blocking the thread. */
+function yieldForLock(attempt: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (attempt < 4) setImmediate(resolve);
+    else setTimeout(resolve, 1 + Math.random());
+  });
 }
 
 /** A handle to one data directory's database. Cheap; holds no connection. */
@@ -294,14 +317,71 @@ export class Database {
    */
   transact<T>(fn: () => T): T {
     const connection = this.connection();
+    if (connection.depth > 0) return this.runInTransaction(connection, fn);
+    const waitStarted = Date.now();
+    retryWhileBusy(() => connection.raw.exec('BEGIN IMMEDIATE'));
+    reportLockWait(this.file, Date.now() - waitStarted);
+    return this.runInTransaction(connection, fn);
+  }
+
+  /**
+   * {@link transact}, but waits for another process's write lock without
+   * blocking the thread. `BEGIN IMMEDIATE` waits for the lock synchronously
+   * (SQLite's busy handler sleeps), so under contention from other processes
+   * on the data directory one write could freeze the event loop for hundreds
+   * of milliseconds: no timers, no requests served. Here the lock is tried
+   * without waiting (`busy_timeout = 0`), and retried after yielding to the
+   * event loop. Once it is held, `fn` runs and commits in the same tick, as
+   * in {@link transact}: nothing awaits while the lock is held.
+   */
+  async transactAsync<T>(fn: () => T): Promise<T> {
+    const started = Date.now();
+    for (let attempt = 0; ; attempt++) {
+      let connection: Connection;
+      try {
+        // Opening a connection sets it up (WAL mode, the schema version),
+        // which can also find the file busy: no waiting there either.
+        connection = acquire(this.file, false);
+      } catch (error) {
+        if (!isBusyError(error) || Date.now() - started >= BUSY_TIMEOUT_MS) {
+          throw error;
+        }
+        await yieldForLock(attempt);
+        continue;
+      }
+      if (connection.depth > 0) return this.runInTransaction(connection, fn);
+      let busy: unknown;
+      connection.raw.exec('PRAGMA busy_timeout = 0');
+      try {
+        connection.raw.exec('BEGIN IMMEDIATE');
+      } catch (error) {
+        if (!isBusyError(error)) {
+          connection.raw.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+          this.afterOperation();
+          throw error;
+        }
+        busy = error;
+      }
+      connection.raw.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+      if (busy === undefined) {
+        reportLockWait(this.file, Date.now() - started);
+        return this.runInTransaction(connection, fn);
+      }
+      // Not holding anything: the connection may be released meanwhile.
+      this.afterOperation();
+      if (Date.now() - started >= BUSY_TIMEOUT_MS) throw busy;
+      await yieldForLock(attempt);
+    }
+  }
+
+  /**
+   * Runs `fn` on `connection`, which holds the write lock (or is inside a
+   * transaction already, when `fn` runs in a savepoint), then commits.
+   */
+  private runInTransaction<T>(connection: Connection, fn: () => T): T {
     const nested = connection.depth > 0;
     const savepoint = `sp_${connection.depth}`;
     if (nested) connection.raw.exec(`SAVEPOINT ${savepoint}`);
-    else {
-      const waitStarted = Date.now();
-      retryWhileBusy(() => connection.raw.exec('BEGIN IMMEDIATE'));
-      reportLockWait(this.file, Date.now() - waitStarted);
-    }
     connection.depth++;
     let result: T;
     try {
@@ -394,10 +474,33 @@ export class Database {
   checkpoint(): void {
     if (!fs.existsSync(this.file)) return;
     try {
-      this.released(() =>
-        this.connection().raw.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-      );
+      this.released(() => {
+        const { raw } = this.connection();
+        // Does not wait for other processes' readers (that would block the
+        // thread): a busy checkpoint copies what it can, and the next one,
+        // or the WAL size limit, does the rest.
+        raw.exec('PRAGMA busy_timeout = 0');
+        try {
+          raw.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        } finally {
+          raw.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
+        }
+      });
     } catch {}
+  }
+
+  /**
+   * Returns the pages deletes freed to the file system, then checkpoints, so
+   * the database and its WAL shrink instead of staying at their high-water
+   * mark. For the rare large delete (`clear()`); the write lock is taken
+   * without blocking the thread.
+   */
+  async reclaimFreePages(): Promise<void> {
+    if (!fs.existsSync(this.file)) return;
+    await this.transactAsync(() => {
+      this.all('PRAGMA incremental_vacuum');
+    });
+    this.checkpoint();
   }
 
   /** Closes this process's connection to the file, if one is open. */

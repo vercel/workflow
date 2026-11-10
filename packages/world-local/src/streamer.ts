@@ -77,19 +77,37 @@ export function createStreamer(
     return next;
   }
 
-  /** Appends chunks (and optionally the end marker) in one transaction. */
-  function append(
+  /**
+   * The stream's last row: one primary-key seek, however long the stream.
+   * The end marker is always the last row (see `append`), so this is also
+   * how a reader learns the stream has ended.
+   */
+  function lastRow(name: string): { idx: number; eof: boolean } | undefined {
+    const row = db.get<{ idx: number; eof: number }>(
+      'SELECT idx, eof FROM stream_chunks WHERE name = ? ORDER BY idx DESC LIMIT 1',
+      name
+    );
+    return row
+      ? { idx: Number(row.idx), eof: Number(row.eof) === 1 }
+      : undefined;
+  }
+
+  /**
+   * Appends chunks (and optionally the end marker) in one transaction. A
+   * stream that has ended takes nothing more, so its end marker stays its
+   * last row.
+   */
+  async function append(
     runId: string,
     name: string,
     chunks: Uint8Array[],
     eof: boolean
-  ): void {
-    db.transact(() => {
-      const top = db.get<{ idx: number | null }>(
-        'SELECT MAX(idx) AS idx FROM stream_chunks WHERE name = ?',
-        name
-      );
-      let idx = Number(top?.idx ?? 0);
+  ): Promise<void> {
+    // Waits for another process's write lock without blocking the thread.
+    const appended = await db.transactAsync(() => {
+      const last = lastRow(name);
+      if (last?.eof) return false;
+      let idx = last?.idx ?? 0;
       for (const chunk of chunks) {
         idx++;
         db.run(
@@ -111,8 +129,9 @@ export function createStreamer(
           tag ?? null
         );
       }
+      return true;
     });
-    signals.emitter.emit(signalKey(db, name));
+    if (appended) signals.emitter.emit(signalKey(db, name));
   }
 
   function rowsAfter(
@@ -137,13 +156,13 @@ export function createStreamer(
 
   /** Data chunks so far, and whether the stream has ended. */
   function info(name: string): { count: number; done: boolean } {
-    const row = db.get<{ count: number; done: number | null }>(
-      'SELECT SUM(CASE WHEN eof = 0 THEN 1 ELSE 0 END) AS count, MAX(eof) AS done FROM stream_chunks WHERE name = ?',
-      name
-    );
+    // Data chunks are numbered from 1 with no gaps, and the end marker comes
+    // right after the last one (a purged stream has only its marker, at 0).
+    const last = lastRow(name);
+    if (!last) return { count: 0, done: false };
     return {
-      count: Number(row?.count ?? 0),
-      done: Number(row?.done ?? 0) === 1,
+      count: Math.max(0, last.eof ? last.idx - 1 : last.idx),
+      done: last.eof,
     };
   }
 
@@ -155,7 +174,7 @@ export function createStreamer(
         const bytes = toBytes(chunk);
         await inTurn(name, async () => {
           const runId = await _runId;
-          append(runId, name, [bytes], false);
+          await append(runId, name, [bytes], false);
         });
       },
 
@@ -168,7 +187,7 @@ export function createStreamer(
         const bytes = chunks.map(toBytes);
         await inTurn(name, async () => {
           const runId = await _runId;
-          append(runId, name, bytes, false);
+          await append(runId, name, bytes, false);
         });
       },
 
@@ -177,7 +196,7 @@ export function createStreamer(
           const runId = await _runId;
           // Closing twice records one end.
           if (info(name).done) return;
-          append(runId, name, [], true);
+          await append(runId, name, [], true);
         });
       },
 
@@ -287,11 +306,10 @@ export function createStreamer(
                 failures = 0;
                 // Ended below the read position: started past the tail of a
                 // finished stream, or a purged one (its end sits at index 0).
-                const end = db.get<{ idx: number }>(
-                  'SELECT idx FROM stream_chunks WHERE name = ? AND eof = 1',
-                  name
-                );
-                if (end && Number(end.idx) <= lastIdx) finish();
+                // One seek, not a scan of the stream: an idle reader at the
+                // tail of a long stream costs the same as at a short one.
+                const last = lastRow(name);
+                if (last?.eof && last.idx <= lastIdx) finish();
               } catch (error) {
                 // A transient read failure (the database busy with another
                 // process's recovery, say): the next poll reads from the
