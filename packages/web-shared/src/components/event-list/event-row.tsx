@@ -1,7 +1,7 @@
 'use client';
 
 import type { Event } from '@workflow/world';
-import { CircleX, TriangleAlert } from 'lucide-react';
+import { ChevronDown, ChevronUp, CircleX, TriangleAlert } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import {
@@ -88,21 +88,79 @@ function LevelIcon({ level }: { level: EventLevel }) {
   return null;
 }
 
+export type EventSortOrder = 'asc' | 'desc';
+
+/**
+ * The sort chevrons from the dashboard's Sonar tables: the active direction's
+ * chevron slides to the middle and the other fades out.
+ */
+function SortIndicator({ order }: { order: EventSortOrder }) {
+  return (
+    <span aria-hidden className="flex flex-col gap-px">
+      <span
+        className={cn(
+          '-my-0.5 flex size-3 items-center justify-center rounded-full transition-all duration-[280ms] ease-in-out',
+          order === 'asc'
+            ? 'translate-y-1 bg-gray-300 text-gray-900'
+            : '-translate-y-1 opacity-0'
+        )}
+      >
+        <ChevronUp className="size-2" strokeWidth={3} />
+      </span>
+      <span
+        className={cn(
+          '-my-0.5 flex size-3 items-center justify-center rounded-full transition-all duration-[280ms] ease-in-out',
+          order === 'desc'
+            ? '-translate-y-1 bg-gray-300 text-gray-900'
+            : 'opacity-0'
+        )}
+      >
+        <ChevronDown className="size-2 translate-y-[0.5px]" strokeWidth={3} />
+      </span>
+    </span>
+  );
+}
+
 export function EventListHeader({
   showOccurred,
+  sortOrder,
+  onSortOrderChange,
 }: {
   showOccurred: boolean;
+  sortOrder: EventSortOrder;
+  onSortOrderChange: (order: EventSortOrder) => void;
 }): ReactNode {
+  // Rows sort by occurredAt when it is set, so the chevron sits on the first
+  // time column either way.
+  const sortButton = (label: string) => (
+    <button
+      type="button"
+      aria-label={`${label}, ${sortOrder === 'asc' ? 'oldest' : 'newest'} first`}
+      onClick={() => onSortOrderChange(sortOrder === 'asc' ? 'desc' : 'asc')}
+      className={cn(
+        CELL,
+        COL.time,
+        'cursor-pointer gap-1.5 border-0 bg-transparent text-left font-sans text-label-14 text-gray-900 hover:text-gray-1000'
+      )}
+    >
+      {label}
+      <SortIndicator order={sortOrder} />
+    </button>
+  );
   return (
     <div
       role="row"
       className="mx-1 flex h-10 shrink-0 items-center border-b border-gray-alpha-200 font-sans text-label-14 text-gray-900"
     >
       <div className={cn(CELL, COL.level)} />
-      {showOccurred && <div className={cn(CELL, COL.time)}>Occurred</div>}
-      <div className={cn(CELL, COL.time)}>
-        {showOccurred ? 'Created' : 'Time'}
-      </div>
+      {showOccurred ? (
+        <>
+          {sortButton('Occurred')}
+          <div className={cn(CELL, COL.time)}>Created</div>
+        </>
+      ) : (
+        sortButton('Time')
+      )}
       <div className={cn(CELL, COL.since)} />
       <div className={cn(CELL, COL.event)}>Event</div>
       <div className={cn(CELL, COL.name)}>Name</div>
@@ -132,27 +190,6 @@ export function IdleGapRow({ ms, reason }: { ms: number; reason: string }) {
 // Event row
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Marks every case-insensitive match of `query`. */
-function HighlightText({ text, query }: { text: string; query?: string }) {
-  if (!query) return <>{text}</>;
-  const lower = text.toLowerCase();
-  const parts: ReactNode[] = [];
-  let from = 0;
-  let at = lower.indexOf(query, from);
-  while (at !== -1) {
-    if (at > from) parts.push(text.slice(from, at));
-    parts.push(
-      <mark key={at} className="rounded-xs bg-amber-200 text-amber-900">
-        {text.slice(at, at + query.length)}
-      </mark>
-    );
-    from = at + query.length;
-    at = lower.indexOf(query, from);
-  }
-  if (from < text.length) parts.push(text.slice(from));
-  return <>{parts}</>;
-}
-
 export interface EventRowProps {
   row: EventListRow;
   /** Position among events (not gap rows); drives zebra striping. */
@@ -165,8 +202,6 @@ export interface EventRowProps {
   onSelect: (event: Event) => void;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
-  /** Lowercased search text to mark in the row. */
-  highlight?: string;
 }
 
 export function EventRow({
@@ -177,7 +212,6 @@ export function EventRow({
   isRelated,
   onSelect,
   showSeparateEventOccurrenceTimestamps = false,
-  highlight,
 }: EventRowProps) {
   const { event, level, name, message, notice } = row;
   const occurredAt = parseEventDate(event.occurredAt);
@@ -230,7 +264,7 @@ export function EventRow({
             className={cn('truncate', notice && 'line-through')}
             title={event.eventType}
           >
-            <HighlightText text={event.eventType} query={highlight} />
+            {event.eventType}
           </span>
         </EventNoticeTooltip>
       </div>
@@ -250,7 +284,7 @@ export function EventRow({
               isRelated && 'bg-blue-100 text-blue-900'
             )}
           >
-            <HighlightText text={name} query={highlight} />
+            {name}
           </span>
         ) : null}
       </div>
@@ -262,9 +296,7 @@ export function EventRow({
         )}
         title={message || undefined}
       >
-        <span className="truncate">
-          <HighlightText text={message} query={highlight} />
-        </span>
+        <span className="truncate">{message}</span>
       </div>
       <div className={cn(CELL, COL.duration, 'tabular-nums')}>
         {row.durationMs !== undefined

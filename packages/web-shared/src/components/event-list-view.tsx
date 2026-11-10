@@ -10,13 +10,11 @@ import {
   buildEventRow,
   buildEventRows,
   buildListItems,
-  filterEventRows,
   getEmptyMessage,
   getEventEntity,
   getExactSearchEvents,
   getFooterLabel,
   getStepSegments,
-  getTextFilter,
   mergeEventsById,
   sortEventsByTime,
 } from '../lib/event-list-model';
@@ -31,6 +29,7 @@ import {
   EventListHeader,
   EventRow,
   EventRowsSkeleton,
+  type EventSortOrder,
   IdleGapRow,
 } from './event-list/event-row';
 import { useEventSearch } from './event-list/use-event-search';
@@ -51,10 +50,10 @@ interface EventsListProps {
   encryptionKey?: Uint8Array;
   /** When true, shows a loading state instead of "No events found" for empty lists */
   isLoading?: boolean;
-  /** Sort order for events. Defaults to 'asc'. */
-  sortOrder?: 'asc' | 'desc';
-  /** @deprecated The Events tab has no sort control; ignored. */
-  onSortOrderChange?: (order: 'asc' | 'desc') => void;
+  /** Sort order for events. Uncontrolled (starting at 'asc') when unset. */
+  sortOrder?: EventSortOrder;
+  /** Called when the Time header's sort is toggled. */
+  onSortOrderChange?: (order: EventSortOrder) => void;
   /** Called when the user clicks the Decrypt button. */
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched. */
@@ -82,7 +81,8 @@ function EventListViewInner({
   onLoadMoreEvents,
   encryptionKey,
   isLoading = false,
-  sortOrder = 'asc',
+  sortOrder: sortOrderProp,
+  onSortOrderChange,
   onDecrypt,
   isDecrypting = false,
   isDecryptDisabled = false,
@@ -90,6 +90,10 @@ function EventListViewInner({
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
 }: EventsListProps) {
+  const [internalSortOrder, setInternalSortOrder] =
+    useState<EventSortOrder>('asc');
+  const sortOrder = sortOrderProp ?? internalSortOrder;
+  const handleSortOrderChange = onSortOrderChange ?? setInternalSortOrder;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
@@ -123,7 +127,6 @@ function EventListViewInner({
   });
   const exactEvents = getExactSearchEvents(search);
   const isExactSearchActive = exactEvents !== null;
-  const textFilter = getTextFilter(search);
 
   // Rows come from the list on display: the exact-search results, else the
   // loaded page. Names and timings come from every event on hand.
@@ -156,17 +159,13 @@ function EventListViewInner({
     () => buildEventRows(sortedEvents, lookups),
     [sortedEvents, lookups]
   );
-  const visibleRows = useMemo(
-    () => filterEventRows(rows, textFilter),
-    [rows, textFilter]
-  );
   const listItems = useMemo(
     () =>
-      buildListItems(visibleRows, {
-        showGaps: !isExactSearchActive && !textFilter,
+      buildListItems(rows, {
+        showGaps: !isExactSearchActive,
         hookNameMap: lookups.names.hookNameMap,
       }),
-    [visibleRows, isExactSearchActive, textFilter, lookups]
+    [rows, isExactSearchActive, lookups]
   );
 
   const selectEvent = useCallback((event: Event | undefined) => {
@@ -201,21 +200,18 @@ function EventListViewInner({
     isLoading && hasHadEventsRef.current && sortedEvents.length === 0;
 
   const selectedIndex = selectedEventId
-    ? visibleRows.findIndex((row) => row.event.eventId === selectedEventId)
+    ? rows.findIndex((row) => row.event.eventId === selectedEventId)
     : -1;
 
   // Move the selection by one event, keeping the row in view and focused.
   const moveSelection = useCallback(
     (delta: 1 | -1) => {
-      if (visibleRows.length === 0) return;
+      if (rows.length === 0) return;
       const nextIndex =
         selectedIndex === -1
           ? 0
-          : Math.min(
-              Math.max(selectedIndex + delta, 0),
-              visibleRows.length - 1
-            );
-      const next = visibleRows[nextIndex].event;
+          : Math.min(Math.max(selectedIndex + delta, 0), rows.length - 1);
+      const next = rows[nextIndex].event;
       selectEvent(next);
       const itemIndex = listItems.findIndex(
         (item) =>
@@ -232,7 +228,7 @@ function EventListViewInner({
           ?.focus();
       });
     },
-    [selectedIndex, selectEvent, visibleRows, listItems]
+    [selectedIndex, selectEvent, rows, listItems]
   );
 
   // With no listed row selected, Up/Down or J/K select the first one. Once a
@@ -262,7 +258,11 @@ function EventListViewInner({
     return (
       <div className="flex h-full flex-col overflow-hidden bg-background-100">
         {toolbar}
-        <EventListHeader showOccurred={showSeparateEventOccurrenceTimestamps} />
+        <EventListHeader
+          showOccurred={showSeparateEventOccurrenceTimestamps}
+          sortOrder={sortOrder}
+          onSortOrderChange={handleSortOrderChange}
+        />
         <EventRowsSkeleton />
       </div>
     );
@@ -291,11 +291,13 @@ function EventListViewInner({
           >
             <EventListHeader
               showOccurred={showSeparateEventOccurrenceTimestamps}
+              sortOrder={sortOrder}
+              onSortOrderChange={handleSortOrderChange}
             />
 
             {isRefetching || search.status === 'loading' ? (
               <EventRowsSkeleton />
-            ) : visibleRows.length === 0 ? (
+            ) : rows.length === 0 ? (
               <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-900">
                 {getEmptyMessage(search)}
               </div>
@@ -342,7 +344,6 @@ function EventListViewInner({
                         row.entity.key === relatedKey
                       }
                       onSelect={toggleSelectedEvent}
-                      highlight={textFilter || undefined}
                       showSeparateEventOccurrenceTimestamps={
                         showSeparateEventOccurrenceTimestamps
                       }
@@ -357,7 +358,6 @@ function EventListViewInner({
               <span>
                 {getFooterLabel(search, {
                   total: sortedEvents.length,
-                  shown: visibleRows.length,
                   hasMoreEvents,
                 })}
               </span>
@@ -397,7 +397,7 @@ function EventListViewInner({
               width={panelWidth}
               onPrev={selectedIndex > 0 ? () => moveSelection(-1) : undefined}
               onNext={
-                selectedIndex >= 0 && selectedIndex < visibleRows.length - 1
+                selectedIndex >= 0 && selectedIndex < rows.length - 1
                   ? () => moveSelection(1)
                   : undefined
               }

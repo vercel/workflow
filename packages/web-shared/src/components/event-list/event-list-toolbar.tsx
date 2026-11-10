@@ -26,7 +26,7 @@ export function EventListToolbar({
         type="text"
         name="event-list-search"
         aria-label="Search events"
-        placeholder="Search events..."
+        placeholder="Search by step ID, wait ID, hook ID, or event ID…"
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}
         onKeyDown={(e) => {

@@ -342,6 +342,7 @@ export function RunDetailView({
   encryptionKeyRef.current = encryptionKey;
 
   // Separate event fetching for the Events tab with user-controlled sort order
+  const [eventsSortOrder, setEventsSortOrder] = useState<'asc' | 'desc'>('asc');
   const {
     events: eventsListData,
     loading: eventsListLoading,
@@ -350,6 +351,7 @@ export function RunDetailView({
     loadMore: loadMoreEventsTab,
     searchByExactId,
   } = useEventsListData(env, runId, {
+    sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
     enabled: activeTab === 'events',
   });
@@ -780,6 +782,8 @@ export function RunDetailView({
                     onLoadMoreEvents={loadMoreEventsTab}
                     encryptionKey={encryptionKey ?? undefined}
                     isLoading={eventsListLoading}
+                    sortOrder={eventsSortOrder}
+                    onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
                     onExactIdSearch={searchByExactId}
