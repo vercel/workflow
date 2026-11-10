@@ -35,6 +35,6 @@
     "react": "^19.0.0",
     "typescript": "catalog:",
     "vitest": "catalog:",
-    "vite": "^7.3.2"
+    "vite": "^7.3.7"
   }
 }
