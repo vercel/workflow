@@ -2373,6 +2373,10 @@ The orchestrator runs ahead only at an inert boundary (`observation.inert`, `pac
 
 An unawaited hook is inert: on the node engine its payload is buffered as an unarmed delivery and moves neither step results nor `Date.now()`, so a `hook_received` for it may land anywhere below speculative writes (`admitBelowSpeculation`, `packages/core/src/runtime/spec9/run-ahead.ts`). The first `then()` on the hook marks it observed (`observedHookIds`), and from that boundary on, run-ahead waits for its writes.
 
+Registering a hook does not turn run-ahead off, whatever its shape (`createHook`, `createWebhook`, several hooks, a taken but unadvanced async iterator). The boundary that registers one commits its `hook_created` before the steps it starts, so a step can hand the token out and have it resumed at once. That is one sync point at that boundary, and the boundaries after it run ahead again. Only acting on the hook stops run-ahead: an `await`, a `for await` iteration that is waiting, or a `.then`, even one whose result nobody awaits.
+
+A `Promise.race` the hook lost leaves its `.then` attached. That abandoned awaiter still takes the hook's next payload, so the hook stays observed and every later boundary drains while it is open. Disposing the hook once the race is decided (`hook.dispose()`, or `using`) ends that. The tests for these cases are in `packages/core/src/runtime/spec9/run-ahead.runtime.test.ts`.
+
 `sensitiveHookIds` (`runAheadContextFor`, `packages/core/src/runtime/spec9/run-ahead.ts`) keeps, per run-ahead context, the hooks a hazard check names. A hook event for one of them below an unconfirmed speculative write stops run-ahead (`runAheadHazard`, `packages/core/src/runtime/spec9/run-ahead.ts`). The code comment on that check says the classification and the fence rule this case out, so it is a guard (`packages/core/src/runtime/spec9/delivery.ts`). What a stop does is on [Run-ahead and turbo](#run-ahead).
 
 {/* @skip-typecheck - illustrative workflow */}
