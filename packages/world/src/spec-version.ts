@@ -5,7 +5,7 @@
  * from @workflow/world rather than using arbitrary numbers.
  */
 
-import { envFlag, warnOnce } from './env-config.js';
+import { warnOnce } from './env-config.js';
 
 declare const SpecVersionBrand: unique symbol;
 
@@ -173,12 +173,10 @@ export const SPEC_VERSION_DEFAULT_MINTED_FENCED =
 export const SPEC_VERSION_ENV_VAR = 'WORKFLOW_SPEC_VERSION';
 
 /**
- * Environment variable that opts new runs out of the sealed log: `0` or
- * `false` creates runs at {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY}, as it
- * did before {@link SPEC_VERSION_ENV_VAR} existed. Read only while
- * {@link SPEC_VERSION_ENV_VAR} is unset.
+ * Environment variable that used to opt new runs out of the sealed log. It is
+ * no longer read: set {@link SPEC_VERSION_ENV_VAR} to `6` instead.
  *
- * @deprecated Set {@link SPEC_VERSION_ENV_VAR} instead.
+ * @deprecated No longer read. Set {@link SPEC_VERSION_ENV_VAR} instead.
  */
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
@@ -198,15 +196,14 @@ export interface MintedSpecVersionOptions {
  *
  * | `WORKFLOW_SPEC_VERSION` | `inBandFence` | returns |
  * |---|---|---|
- * | unset | `true` | {@link SPEC_VERSION_DEFAULT_MINTED_FENCED} (9), or {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} (6) with `WORKFLOW_SEALED_LOG=0` |
- * | unset | not `true` | {@link SPEC_VERSION_DEFAULT_MINTED} (8), or {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} (6) with `WORKFLOW_SEALED_LOG=0` |
+ * | unset | `true` | {@link SPEC_VERSION_DEFAULT_MINTED_FENCED} (9) |
+ * | unset | not `true` | {@link SPEC_VERSION_DEFAULT_MINTED} (8) |
  * | `9` | `true` | {@link SPEC_VERSION_SINGLE_ORCHESTRATOR} |
  * | `9` | not `true` | {@link SPEC_VERSION_DEFAULT_MINTED} (8), with a warning once per process |
  * | `6` to `8` | any | that version |
  * | anything else | any | the default, with a warning once per process |
  *
- * Values are trimmed. When both variables are set, `WORKFLOW_SPEC_VERSION`
- * wins and a warning is logged once.
+ * Values are trimmed.
  *
  * A call with no options never returns 9. A World written to an earlier
  * "Building a World" guide, which declares `specVersion: mintedSpecVersion()`,
@@ -234,10 +231,10 @@ export function mintedSpecVersion(
   env: Record<string, string | undefined> = process.env,
   options: MintedSpecVersionOptions = {}
 ): SpecVersion {
-  const sealedLogRaw = env[SEALED_LOG_ENV_VAR];
-  const sealedLogSet = sealedLogRaw !== undefined && sealedLogRaw !== '';
   const fenced = options.inBandFence === true;
-  const fallback = defaultMintedSpecVersion(env, fenced);
+  const fallback = fenced
+    ? SPEC_VERSION_DEFAULT_MINTED_FENCED
+    : SPEC_VERSION_DEFAULT_MINTED;
   const requested = env[SPEC_VERSION_ENV_VAR]?.trim();
   if (requested !== undefined && requested !== '') {
     const version = Number(requested);
@@ -246,12 +243,6 @@ export function mintedSpecVersion(
       version >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
       version <= SPEC_VERSION_MAX_SUPPORTED
     ) {
-      if (sealedLogSet) {
-        warnOnce(
-          `${SEALED_LOG_ENV_VAR}+${SPEC_VERSION_ENV_VAR}`,
-          `${SPEC_VERSION_ENV_VAR} and ${SEALED_LOG_ENV_VAR} are both set; new runs use ${SPEC_VERSION_ENV_VAR}=${version} and ${SEALED_LOG_ENV_VAR} is ignored.`
-        );
-      }
       if (version >= SPEC_VERSION_SINGLE_ORCHESTRATOR && !fenced) {
         warnOnce(
           `${SPEC_VERSION_ENV_VAR}=${requested}:no-fence`,
@@ -267,25 +258,6 @@ export function mintedSpecVersion(
     );
   }
   return fallback;
-}
-
-/**
- * What {@link mintedSpecVersion} returns when `WORKFLOW_SPEC_VERSION` does not
- * decide: {@link SPEC_VERSION_DEFAULT_MINTED_FENCED} for a World with the
- * in-band fence, {@link SPEC_VERSION_DEFAULT_MINTED} for one without, and
- * {@link SPEC_VERSION_SUPPORTS_SLOT_IDENTITY} for either with
- * `WORKFLOW_SEALED_LOG=0`.
- */
-function defaultMintedSpecVersion(
-  env: Record<string, string | undefined>,
-  fenced: boolean
-): SpecVersion {
-  if (!envFlag(SEALED_LOG_ENV_VAR, true, env)) {
-    return SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
-  }
-  return fenced
-    ? SPEC_VERSION_DEFAULT_MINTED_FENCED
-    : SPEC_VERSION_DEFAULT_MINTED;
 }
 
 /**

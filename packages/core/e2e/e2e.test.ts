@@ -1046,7 +1046,7 @@ describe.concurrent('e2e', () => {
   });
 
   // vercel/workflow#4457. Early advance is implemented by the Node.js VM
-  // engine's inline loop only (see WORKFLOW_INLINE_EARLY_ADVANCE), and needs
+  // engine's inline loop only, and needs
   // both steps inline in one invocation.
   test.skipIf(
     process.env.WORKFLOW_VM === 'quickjs' ||
@@ -5420,6 +5420,32 @@ describe.concurrent('e2e', () => {
     });
   });
 
+  // https://github.com/vercel/workflow/issues/4897: an `@ai-sdk/openai` model
+  // created only inside the workflow body reaches a step as a serialized
+  // argument. Nothing in the step bundle imports the provider unless discovery
+  // registers it, because the package has no `workflow` dependency.
+  test.skipIf(!isNextJsApp)(
+    'providerModelSerdeWorkflow - an AI SDK model created in the workflow body deserializes in a step',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'workflows/provider_model_serde.ts',
+          'providerModelSerdeWorkflow'
+        ),
+        []
+      );
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        provider: 'openai.chat',
+        modelId: 'gpt-4o-mini',
+        isModelInstance: true,
+      });
+    }
+  );
+
   // Regression test for the o2flow v5 upgrade incident (5.0.0-beta.26, fixed
   // by #2752): a plain API route — no workflow directives anywhere in its
   // module graph — importing a `defineHook()` hook from a shared module and
@@ -6537,6 +6563,27 @@ describe.concurrent('e2e', () => {
       const returnValue = await run1.returnValue;
       expect(returnValue.aborted).toBe(true);
       expect(returnValue.reason).toBe('Test complete');
+    }
+  );
+
+  testJsOnly(
+    'stateRefsWorkflow - workflow/state stored by reference through a retry, a replay and a wide fan-out',
+    { timeout: 120_000 },
+    async () => {
+      const token = `state-refs-${Math.random().toString(36).slice(2)}`;
+      const run = await start(await e2e('stateRefsWorkflow'), [token, 8, 8]);
+      await waitForHook(token, { runId: run.runId });
+      const text =
+        'A long user message that later state refers to instead of storing again. '.repeat(
+          3
+        );
+      await resumeHook(token, { text });
+      await expect(run.returnValue).resolves.toEqual({
+        turns: 8,
+        first: text,
+        last: 'Turn 7:',
+        fan: Array.from({ length: 8 }, (_, i) => `${i}:8:16`),
+      });
     }
   );
 

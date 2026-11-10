@@ -127,11 +127,11 @@ export function createWorld(): World {
 
 The runtime checks the declaration against a supported range before it creates or replays anything, and refuses a World outside it, naming both the range and what the World declared. The floor is the version that introduced slot-numbered IDs, because a World below it allocates IDs the runtime cannot read positions out of. The ceiling is the highest version the runtime can read.
 
-`mintedSpecVersion()` is a function because the version a World stamps is a deployment choice: it answers with the current version (8) by default, and with the slot-identity version (6) when `WORKFLOW_SEALED_LOG=0` opts new runs out. Both are inside the accepted range. Call it inside `createWorld()` rather than caching it at module load, so one process can create Worlds in both modes.
+`mintedSpecVersion()` is a function because the version a World stamps is a deployment choice: it answers with the current version (8) by default, and with the version `WORKFLOW_SPEC_VERSION` selects (such as the slot-identity version, 6) when that is set. Every version it accepts is inside the accepted range. Call it inside `createWorld()` rather than caching it at module load, so one process can create Worlds with different settings.
 
 Its parameter defaults to `process.env`. Where `process` does not exist (a browser, a Worker without `nodejs_compat`) the bare call throws a `ReferenceError`. Pass the environment explicitly: `mintedSpecVersion(config.env ?? globalThis.process?.env ?? {})`.
 
-When an event or run arrives without a `specVersion` and the World fills one in, use the version the World declared, not `SPEC_VERSION_CURRENT`, which ignores `WORKFLOW_SEALED_LOG`.
+When an event or run arrives without a `specVersion` and the World fills one in, use the version the World declared, not `SPEC_VERSION_CURRENT`, which ignores `WORKFLOW_SPEC_VERSION`.
 
 If `@workflow/world` is only a type-level or peer dependency and the World reimplements `mintedSpecVersion()` locally to avoid a runtime import, the local copy pins a number by another route and falls behind on the next bump. Report it as a finding.
 
@@ -385,7 +385,7 @@ Fail the migration if any of these are true:
 
 ## Spec 9 (experimental)
 
-A World does not implement the in-band fence to migrate to v5. Spec 9 is opt-in (`WORKFLOW_SPEC_VERSION=9`), and `mintedSpecVersion()` called with no options never returns 9. A World that opts in declares `capabilities.inBandFence: true`, calls `mintedSpecVersion(process.env, { inBandFence: true })`, and tells its users to upgrade the whole fleet first and not to roll back below that release once spec 9 runs exist. See <https://workflow.dev/docs/changelog/spec-9#implementing-spec-9-in-a-world>.
+A World does not implement the in-band fence to migrate to v5: `mintedSpecVersion()` called with no options never returns 9. A World that supports spec 9 declares `capabilities.inBandFence: true` and calls `mintedSpecVersion(process.env, { inBandFence: true })`, which then creates spec 9 runs by default (`WORKFLOW_SPEC_VERSION=8` opts out). It tells its users to upgrade the whole fleet together, with `WORKFLOW_SPEC_VERSION=8` on the upgraded deployments until all of them run that release, and not to roll back below that release once spec 9 runs exist. See <https://workflow.dev/docs/changelog/spec-9#implementing-spec-9-in-a-world>.
 
 ## Reference
 

@@ -34,7 +34,7 @@
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
     "@workflow/web": "workspace:*",
-    "exsolve": "1.0.8",
+    "exsolve": "1.2.0",
     "pathe": "2.0.3"
   },
   "devDependencies": {
@@ -42,7 +42,7 @@
     "@workflow/tsconfig": "workspace:*",
     "nitro": "catalog:",
     "typescript": "catalog:",
-    "vite": "7.3.6",
+    "vite": "7.3.7",
     "vitest": "catalog:"
   }
 }

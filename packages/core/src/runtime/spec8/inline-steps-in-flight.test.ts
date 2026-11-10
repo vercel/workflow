@@ -37,13 +37,13 @@ describe('InlineStepsInFlight', () => {
     b.start.resolve();
     a.execution.resolve({ type: 'completed' });
 
-    const round = await steps.settle(true, isClean);
+    const round = await steps.settle(isClean);
     expect(round.early).toBe(true);
     expect(round.settled.map((s) => s.step.correlationId)).toEqual(['a']);
     expect([...steps.ids]).toEqual(['b']);
 
     b.execution.resolve({ type: 'completed' });
-    const last = await steps.settle(true, isClean);
+    const last = await steps.settle(isClean);
     expect(last.early).toBe(false);
     expect(last.settled.map((s) => s.step.correlationId)).toEqual(['b']);
     expect(steps.size).toBe(0);
@@ -56,7 +56,7 @@ describe('InlineStepsInFlight', () => {
     a.execution.resolve({ type: 'completed' });
 
     let returned = false;
-    const round = steps.settle(true, isClean).then((r) => {
+    const round = steps.settle(isClean).then((r) => {
       returned = true;
       return r;
     });
@@ -75,7 +75,7 @@ describe('InlineStepsInFlight', () => {
     a.execution.resolve({ type: 'retry' });
     setTimeout(() => b.execution.resolve({ type: 'completed' }), 5);
 
-    const round = await steps.settle(true, isClean);
+    const round = await steps.settle(isClean);
     expect(round.early).toBe(false);
     expect(round.settled.map((s) => s.step.correlationId)).toEqual(['a', 'b']);
   });
@@ -88,22 +88,9 @@ describe('InlineStepsInFlight', () => {
     a.execution.reject(new Error('boom'));
     setTimeout(() => b.execution.resolve({ type: 'completed' }), 5);
 
-    const round = await steps.settle(true, isClean);
+    const round = await steps.settle(isClean);
     expect(round.early).toBe(false);
     expect(round.settled[0].outcome.status).toBe('rejected');
-  });
-
-  it('never returns early when disabled', async () => {
-    const steps = new InlineStepsInFlight<{ correlationId: string }, Result>();
-    const a = trackStep(steps, 'a');
-    const b = trackStep(steps, 'b');
-    b.start.resolve();
-    a.execution.resolve({ type: 'completed' });
-    setTimeout(() => b.execution.resolve({ type: 'completed' }), 5);
-
-    const round = await steps.settle(false, isClean);
-    expect(round.early).toBe(false);
-    expect(round.settled).toHaveLength(2);
   });
 });
 
@@ -204,7 +191,7 @@ async function runScenario(outcome: Outcome[], order: StepEvent[]) {
   const startRound = () => {
     open = true;
     void steps
-      .settle(true, (r) => r.status === 'fulfilled' && r.value === 'clean')
+      .settle((r) => r.status === 'fulfilled' && r.value === 'clean')
       .then((r) => {
         round = r;
       });

@@ -61,8 +61,8 @@ One knob, `WORKFLOW_SPEC_VERSION`, gates minting only: the version a World stamp
 
 | `WORKFLOW_SPEC_VERSION` | World passes `inBandFence: true` | Minted |
 |---|---|---|
-| unset | yes | 9 (6 when `WORKFLOW_SEALED_LOG=0`) |
-| unset | no | 8 (6 when `WORKFLOW_SEALED_LOG=0`) |
+| unset | yes | 9 |
+| unset | no | 8 |
 | `9` | yes | 9 |
 | `9` | no | 8, with a one-time warning ("the World does not declare the in-band writer fence") |
 | `6` to `8` | any | that value |
@@ -117,18 +117,16 @@ Settings that apply to every run, read differently on spec 9 runs:
 - **`WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`**: the same window decides a different thing: an open wait due within the inline window plus this allowance makes [run-ahead](#workflow_run_ahead_depth) wait for its writes at that boundary.
 - **`WORKFLOW_MAX_INLINE_STEPS`**: clamped to `0` to `16`. `0` enqueues every step, each on its own message, and a step's execution mode is fixed when its `step_created` is written: an inline step runs in the orchestrator (and runs again in the next orchestrator delivery if that invocation dies), and an enqueued step never runs inline. An inline step whose retry is due moves to the background. On spec 8 runs `0` is read as unset.
 - **`WORKFLOW_OPTIMISTIC_INLINE_START`**: only `0` or `false` has an effect: it keeps step bodies waiting for their start to commit on turbo's first delivery, under run-ahead, and for background steps under [`WORKFLOW_OPTIMISTIC_BACKGROUND_START`](#workflow_optimistic_background_start). A step declared with `maxRetries: 0` always waits for its start to commit there, whatever this is set to.
-- **`WORKFLOW_SEALED_LOG`**: deprecated in favour of [`WORKFLOW_SPEC_VERSION`](#workflow_spec_version), and read only while that is unset.
-- **Not read for spec 9 runs**: `WORKFLOW_INLINE_OWNERSHIP`, `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`, `WORKFLOW_BATCH_TRANSITIONS` (which writes a suspension's step creations in batches on spec 8 runs, `0` or `false` writing one event at a time), and the `WORKFLOW_PRECONDITION_*` settings. Spec 9 runs have no precondition guard (the 412 on a stale snapshot, with in-process restarts and re-invocations, that spec 8 runs keep). The fence replaces it.
+- **Not read for spec 9 runs**: `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` and the `WORKFLOW_PRECONDITION_*` settings. Spec 9 runs have no precondition guard (the 412 on a stale snapshot, with in-process restarts and re-invocations, that spec 8 runs keep). The fence replaces it.
 
 Settings that exist only for spec 9 runs:
 
 #### `WORKFLOW_SPEC_VERSION`
 
-- Default: unset. New runs use spec version 9 on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do) and 8 on one that does not, or 6 with [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log).
+- Default: unset. New runs use spec version 9 on a World that declares the in-band fence (the Vercel, Local and Postgres Worlds do) and 8 on one that does not.
 - Values: an integer from `6` to `9` (surrounding whitespace is ignored). Any other value is ignored, and the runtime logs a one-time warning naming it.
 - Spec 9 runs are driven by the single orchestrator: one orchestrator invocation per run makes every decision, and the World's in-band fence keeps the run to one writer. Set `8` to keep creating spec 8 runs. A World that does not declare the fence (`capabilities.inBandFence`) creates spec 8 runs even with `9`, and the runtime logs a one-time warning.
 - A run keeps the version it was created with, so the setting changes only what new runs get. Everything that reads, routes or writes to an existing run follows that run's version, never this setting. A run in flight keeps its orchestrator either way: the Vercel World may raise a running run's version only across versions that change no log format, never from 8 to 9.
-- When it is set, it takes precedence over [`WORKFLOW_SEALED_LOG`](/docs/configuration/runtime-tuning#workflow_sealed_log), and the runtime logs a one-time warning if both are set.
 - On the Vercel World, the events of a spec 9 run go through version 5 of the events API; every other run's events stay on the routes earlier releases use, whatever this is set to.
 - A custom World chooses the versions it can create by what it declares as `specVersion` (see [Building a World](#implementing-spec-9-in-a-world)).
 

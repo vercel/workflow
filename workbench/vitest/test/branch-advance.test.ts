@@ -29,8 +29,8 @@ const lockstepEngine = process.env.WORKFLOW_VM === 'quickjs';
 
 /**
  * Runs pinned to spec 8. New runs are spec 9 by default, and the tests that
- * cover spec 8 settings (`WORKFLOW_INLINE_EARLY_ADVANCE=0`, the precondition
- * guard) start their runs at spec 8, which keeps them covered.
+ * pin spec 8 behavior (a race loser that retries after the run ended, the
+ * precondition guard) start their runs at spec 8, which keeps them covered.
  */
 const SPEC_8 = { specVersion: 8 };
 
@@ -81,7 +81,6 @@ async function stepsCompletedBeforeTerminal(
 }
 
 afterEach(() => {
-  delete process.env.WORKFLOW_INLINE_EARLY_ADVANCE;
   delete process.env.WORKFLOW_REPLAY_TIMEOUT_MS;
   delete process.env.WORKFLOW_REPLAY_TIMEOUT_MAX_RETRIES;
 });
@@ -132,24 +131,6 @@ describe('parallel branches advance independently (#4457)', () => {
     60_000
   );
 
-  it('runs in lockstep with WORKFLOW_INLINE_EARLY_ADVANCE=0', async () => {
-    process.env.WORKFLOW_INLINE_EARLY_ADVANCE = '0';
-    const markerPath = await markerFile();
-    const run = await start(
-      parallelChainsWorkflow,
-      [
-        [
-          { prefix: 'fast', ms: FAST_MS, length: 2 },
-          { prefix: 'slow', ms: SLOW_MS, length: 1 },
-        ],
-        markerPath,
-      ],
-      SPEC_8
-    );
-    const [fast, slow] = await run.returnValue;
-    expect(fast[1].start).toBeGreaterThanOrEqual(slow[0].end);
-  }, 60_000);
-
   it.skipIf(lockstepEngine)(
     'completes a race without waiting for the loser, which still runs once',
     async () => {
@@ -195,53 +176,39 @@ describe('parallel branches advance independently (#4457)', () => {
     60_000
   );
 
-  // Pins the current behavior. With early advance on, the run ends over the
-  // loser, so its retry is never attempted (the World refuses a step start on
-  // a terminal run) and the step is left pending after the terminal event.
-  // With it off, node:vm waits for the loser to retry and complete; the
-  // QuickJS loop waits for its first attempt only, then ends the run with the
-  // step still pending.
-  for (const earlyAdvance of ['1', '0']) {
-    it.skipIf(lockstepEngine && earlyAdvance === '1')(
-      `a race loser that retries after the run ended (early advance ${earlyAdvance})`,
-      async () => {
-        process.env.WORKFLOW_INLINE_EARLY_ADVANCE = earlyAdvance;
-        const markerPath = await markerFile();
-        const run = await start(
-          raceLoserRetriesWorkflow,
-          [FAST_MS, FAST_MS * 4, markerPath],
-          SPEC_8
-        );
-        await expect(run.returnValue).resolves.toBe('fast');
-        // Past the loser's first attempt and its 100ms retryAfter.
-        await new Promise((resolve) => setTimeout(resolve, FAST_MS * 10));
-
-        const types = await eventsThroughTerminal(run.runId, 'run_completed');
-        const world = await getWorld();
-        const { data: steps } = await world.steps.list({
-          runId: run.runId,
-          resolveData: 'none',
-        });
-        const slow = steps.find((s) => s.stepName.endsWith('retryOnceStep'));
-        if (earlyAdvance === '1') {
-          expect(types.slice(types.indexOf('run_completed') + 1)).toEqual([
-            'step_retrying',
-          ]);
-          expect(slow?.status).toBe('pending');
-          expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
-        } else if (lockstepEngine) {
-          expect(types.slice(-2)).toEqual(['step_retrying', 'run_completed']);
-          expect(slow?.status).toBe('pending');
-          expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
-        } else {
-          expect(types.at(-1)).toBe('run_completed');
-          expect(slow?.status).toBe('completed');
-          expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 2 });
-        }
-      },
-      60_000
+  // Pins the current behavior. The node:vm loop ends the run over the loser,
+  // so its retry is never attempted (the World refuses a step start on a
+  // terminal run) and the step is left pending after the terminal event. The
+  // QuickJS loop waits for the loser's first attempt only, then ends the run
+  // with the step still pending.
+  it('a race loser that retries after the run ended', async () => {
+    const markerPath = await markerFile();
+    const run = await start(
+      raceLoserRetriesWorkflow,
+      [FAST_MS, FAST_MS * 4, markerPath],
+      SPEC_8
     );
-  }
+    await expect(run.returnValue).resolves.toBe('fast');
+    // Past the loser's first attempt and its 100ms retryAfter.
+    await new Promise((resolve) => setTimeout(resolve, FAST_MS * 10));
+
+    const types = await eventsThroughTerminal(run.runId, 'run_completed');
+    const world = await getWorld();
+    const { data: steps } = await world.steps.list({
+      runId: run.runId,
+      resolveData: 'none',
+    });
+    const slow = steps.find((s) => s.stepName.endsWith('retryOnceStep'));
+    if (lockstepEngine) {
+      expect(types.slice(-2)).toEqual(['step_retrying', 'run_completed']);
+    } else {
+      expect(types.slice(types.indexOf('run_completed') + 1)).toEqual([
+        'step_retrying',
+      ]);
+    }
+    expect(slow?.status).toBe('pending');
+    expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
+  }, 60_000);
 
   it('registers a hook in one branch while the other branch is still running a step', async () => {
     const markerPath = await markerFile();
@@ -296,26 +263,22 @@ describe('parallel branches advance independently (#4457)', () => {
     expect(await bodyEntries(markerPath)).toEqual({ fast: 1, slow: 1 });
   }, 90_000);
 
-  for (const earlyAdvance of ['1', '0']) {
-    it(`ends a race won by a sleep without waiting for the losing step (early advance ${earlyAdvance})`, async () => {
-      process.env.WORKFLOW_INLINE_EARLY_ADVANCE = earlyAdvance;
-      const startedAt = Date.now();
-      const run = await start(sleepTimeoutWorkflow, [8_000]);
-      await expect(run.returnValue).resolves.toBe('timeout');
-      expect(Date.now() - startedAt).toBeLessThan(6_000);
-    }, 60_000);
+  it('ends a race won by a sleep without waiting for the losing step', async () => {
+    const startedAt = Date.now();
+    const run = await start(sleepTimeoutWorkflow, [8_000]);
+    await expect(run.returnValue).resolves.toBe('timeout');
+    expect(Date.now() - startedAt).toBeLessThan(6_000);
+  }, 60_000);
 
-    it(`ends a race won by a hook without waiting for the losing step (early advance ${earlyAdvance})`, async () => {
-      process.env.WORKFLOW_INLINE_EARLY_ADVANCE = earlyAdvance;
-      const token = `branch-advance-${Math.random().toString(36).slice(2)}`;
-      const run = await start(hookVsStepWorkflow, [token, 8_000]);
-      await waitForHook(run, { token });
-      const resumedAt = Date.now();
-      await resumeHook(token, { v: 'hook' });
-      await expect(run.returnValue).resolves.toBe('hook');
-      expect(Date.now() - resumedAt).toBeLessThan(5_000);
-    }, 60_000);
-  }
+  it('ends a race won by a hook without waiting for the losing step', async () => {
+    const token = `branch-advance-${Math.random().toString(36).slice(2)}`;
+    const run = await start(hookVsStepWorkflow, [token, 8_000]);
+    await waitForHook(run, { token });
+    const resumedAt = Date.now();
+    await resumeHook(token, { v: 'hook' });
+    await expect(run.returnValue).resolves.toBe('hook');
+    expect(Date.now() - resumedAt).toBeLessThan(5_000);
+  }, 60_000);
 
   it.skipIf(lockstepEngine)(
     "keeps a running sibling's retry backoff when a stale write re-invokes the run",

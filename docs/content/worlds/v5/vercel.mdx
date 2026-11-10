@@ -406,10 +406,6 @@ Below the floor the deadline starts canceling requests that would have succeeded
 
 The same deadline bounds the [events WebSocket](#workflow_events_transport): opening the socket, including resolving the token it is opened with, and each event write over it.
 
-### `WORKFLOW_MAX_CHUNKS_PER_REQUEST`
-
-Maximum stream chunks written in one Vercel World request. Larger batches are split across multiple requests. Default: `1000`. Minimum: `1`.
-
 ### `WORKFLOW_STREAMS_TRANSPORT`
 
 Stream writes upgrade to a WebSocket (`workflow-stream-ws/v1`) instead of one HTTP request per write group. Default: `ws`.
@@ -458,6 +454,8 @@ try {
 
 `openEventsChannel()` returns `undefined`, and writes stay on HTTP, when the transport is disabled or the World cannot hold a socket, such as a `projectConfig` World.
 
+A write issued while the channel's socket is still connecting waits for the handshake, except `run_started`, which goes over HTTP instead. It is a delivery's first write, and every later write of the delivery waits for it.
+
 If the first connect fails, or opening the socket or a write over it gets no answer within [`WORKFLOW_REQUEST_TIMEOUT_MS`](#workflow_request_timeout_ms), the channel closes. The write that failed is retried over HTTP where the event type allows a retry, and every later event write for that run goes over HTTP until a new channel is opened, which the next delivery does. The channel is shared by every concurrent invocation of the run in the same process, so one timed out write moves all of them to HTTP, and releasing it afterwards has nothing left to close.
 
 Tracing is unaffected by the choice. Each event write emits an `http POST` client span against the same `url.full`, regardless of which transport carries it. On the WebSocket path, the span is synthesized around the frame because no HTTP request is made. Attributes distinguish the transports:
@@ -465,6 +463,7 @@ Tracing is unaffected by the choice. Each event write emits an `http POST` clien
 | Attribute | HTTP | WebSocket |
 | --- | --- | --- |
 | `workflow.events.transport` | `http` | `ws` |
+| `workflow.events.transport_fallback` | why a write that tried the socket went over HTTP: `no_channel` (no socket for the run) or `connecting` (a `run_started` during the handshake). Absent when the write never tried the socket, and through a `projectConfig` World. | — |
 | `workflow.event.type` | the event type, e.g. `step_started` | same |
 | `network.protocol.name` | — | `websocket` |
 | `workflow.events.ws.url` | — | the socket the frame went over |
