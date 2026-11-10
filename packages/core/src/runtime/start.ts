@@ -17,6 +17,7 @@ import {
 } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type {
+  QueueOptions,
   RunRetention,
   StartHook,
   WorkflowInvokePayload,
@@ -90,6 +91,10 @@ import {
   type HealthCheckResult,
   healthCheck,
 } from './helpers.js';
+import {
+  decideInline,
+  sendOrchestratorMessage,
+} from './inline-orchestrator.js';
 import { Run } from './run.js';
 import { wakePendingStartHookHolder } from './start-hook-holder.js';
 import {
@@ -584,6 +589,36 @@ export interface StartOptionsBase {
    * retention, Hook retention). Not supported for dynamic workflows.
    */
   experimental_hook?: StartHookOptions;
+
+  /**
+   * **Experimental.** Run the new run's first orchestrator delivery in this
+   * process, in the request that called `start()`, instead of waiting for
+   * the queue to deliver it to the flow route. Cuts the queue hop off the
+   * time to the first step.
+   *
+   * Takes effect only when every one of these holds; otherwise the run is
+   * queued exactly as without the option:
+   *
+   * - the World supports send-and-hold (`capabilities.experimental_queueHold`,
+   *   `@workflow/world-vercel`) and the queue holds the message for this
+   *   process;
+   * - this process loaded the app's flow entry (with Next.js,
+   *   `import 'workflow/next/inline'` in the calling route), which bundles the
+   *   app's workflows and steps into the route;
+   * - the run targets this deployment, in this function's region, and the
+   *   call is not made from inside a step;
+   * - the start is not a dynamic workflow, an `experimental_hook` start, or
+   *   one with a custom `world`;
+   * - `WORKFLOW_EXPERIMENTAL_INLINE` is not `0` (the kill switch).
+   *
+   * The delivery runs under `waitUntil`, so `start()` still returns as soon
+   * as the run is accepted. It hands off to the queue before this route's own
+   * deadline (`maxDuration`), and if this invocation dies mid-run the queue
+   * redelivers the message to the flow route once its hold lapses.
+   *
+   * @experimental
+   */
+  experimental_inline?: boolean;
 
   /**
    * The world to use for the workflow run creation,
@@ -1547,7 +1582,7 @@ export async function start<TArgs extends unknown[], TResult>(
           },
           { v1Compat, inBand: false }
         );
-      const enqueueRun = () =>
+      const enqueueRun = (extra?: QueueOptions) =>
         world.queue(
           queueName,
           {
@@ -1573,6 +1608,7 @@ export async function start<TArgs extends unknown[], TResult>(
             // matching queue. Worlds without a regional dimension ignore
             // this field.
             ...(opts.region !== undefined ? { region: opts.region } : {}),
+            ...extra,
           }
         );
 
@@ -1607,6 +1643,14 @@ export async function start<TArgs extends unknown[], TResult>(
         // registered their gated pipes in `ops` and pipe only once admitted.
         flushArgumentStreams();
         span?.setAttributes(Attribute.DeploymentId(deploymentId));
+        if (opts.experimental_inline === true) {
+          // Admission decides the run after its message is published, which
+          // a hold (consumed as soon as it is taken) cannot wait for.
+          span?.setAttributes({
+            ...Attribute.WorkflowInlineOutcome('skipped'),
+            ...Attribute.WorkflowInlineSkipReason('unsupported_start'),
+          });
+        }
         let createdRunStatus: WorkflowRunStatus;
         try {
           let enqueueFailure: { error: unknown } | undefined;
@@ -1783,9 +1827,42 @@ export async function start<TArgs extends unknown[], TResult>(
       // run, the create has already succeeded above).
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
+      //
+      // With `experimental_inline` the message is sent with a hold, and a
+      // held message starts running here as soon as the send returns, beside
+      // the `run_created` write: its first delivery's fast path creates the
+      // run from `runInput` if that write has not landed yet (resilient
+      // start), exactly as a queue delivery that outruns it does.
+      const enqueue =
+        opts.experimental_inline === true
+          ? sendOrchestratorMessage({
+              decision: decideInline({
+                world,
+                queueName,
+                runId,
+                sameDeployment: !crossDeployment,
+                // The inline handler drives the process's configured World.
+                unsupported:
+                  dynamicWorkflow !== undefined ||
+                  (opts.world !== undefined &&
+                    opts.world !== (await getWorldLazy())),
+              }),
+              runId,
+              span,
+              // One key for the held attempt and a plain resend after it
+              // throws, so a held attempt that did enqueue is not delivered
+              // twice. A fresh run ID has no other message to collide with.
+              send: (hold, inlineAttempt) =>
+                enqueueRun(
+                  inlineAttempt
+                    ? { idempotencyKey: `wkf-start-${runId}`, ...hold }
+                    : undefined
+                ),
+            })
+          : enqueueRun();
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         runCreated,
-        enqueueRun(),
+        enqueue,
       ]);
 
       // Queue failure is always fatal: the run was not enqueued

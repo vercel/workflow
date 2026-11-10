@@ -225,6 +225,50 @@ A child canceled without the SDK (by a tool that writes the cancellation to the 
 
 `returnValue` still polls when the waiting code is not the parent: a step, an API route, or another workflow handed the `Run`. It also polls for a child on another deployment (`deploymentId`) that predates the system hook, and for every child while `WORKFLOW_CHILD_RUN_COMPLETION_HOOK=0` is set. A polling step holds its worker slot until the child finishes.
 
+### Run the first delivery in the calling route
+
+<Callout type="warning">
+Experimental and off by default. The API may change without a major version bump. It takes effect only on a World that supports send-and-hold (`@workflow/world-vercel`); everywhere else the run is queued as usual.
+</Callout>
+
+By default, `start()` queues the run and the queue delivers its first orchestrator message to the generated flow route, a separate invocation. With `experimental_inline: true`, the route that called `start()` runs that first delivery itself, right after `start()` returns, so the first step doesn't wait for a queue hop. The queue still backs the run up: it holds the message for the calling route ([send-and-hold](/docs/api-reference/workflow-runtime/world/queue#running-a-message-in-the-request-that-sent-it-experimental)) and delivers it to the flow route as usual if the route stops before finishing it.
+
+The calling route needs the workflow code and steps to run the delivery, which usually live only in the flow route. Import the flow entry to bundle them into the route. With Next.js, that's `workflow/next/inline`, which `withWorkflow()` resolves to the generated flow route:
+
+{/* @skip-typecheck: depends on a Next.js app's generated flow route */}
+```typescript title="app/api/signup/route.ts" lineNumbers
+import "workflow/next/inline"; // bundles this app's workflows and steps into this route // [!code highlight]
+import { start } from "workflow/api";
+import { onboardUser } from "@/workflows/onboard-user";
+
+export async function POST(request: Request) {
+  const { email } = await request.json();
+  const run = await start(onboardUser, [email], {
+    experimental_inline: true, // [!code highlight]
+  });
+  return Response.json({ runId: run.runId });
+}
+```
+
+The route returns as soon as the run is accepted. The delivery keeps running under `waitUntil`, with the same semantics as a queue delivery: steps run inline until the workflow suspends, and longer work continues on the queue.
+
+The run is queued exactly as without the option when any of these is true:
+
+* The World doesn't support send-and-hold, or the queue didn't hold the message for this route.
+* The route didn't import the flow entry.
+* The run targets another deployment (`deploymentId`), or its data lives in a region other than the route's.
+* `start()` runs inside a workflow (a child run), is a dynamic workflow or an `experimental_hook` start, or passes its own `world`.
+* `WORKFLOW_EXPERIMENTAL_INLINE=0` is set. Use it as a kill switch.
+
+Things to know before you turn it on:
+
+* **Bundle size.** The route bundles every workflow and step of the app, the same code as the flow route. Import the flow entry only in the routes that start or resume runs inline.
+* **Duration.** The delivery is bounded by the calling route's `maxDuration`, not the flow route's. It hands off to the queue before the route's deadline. A step body that outlives the route is stopped with it and retried on the queue, as after any crash.
+* **Two copies of module state.** Your workflow and step modules load in the calling route as well as the flow route. Module-level state (caches, clients, counters) exists once per route.
+* **Observability.** The `workflow.start` span records `workflow.inline.outcome` (`held`, `not_held`, `skipped`, `hold_failed` or `no_hold_result`) and the reason when the run was queued. The delivery's spans are part of the calling request's trace.
+
+`resumeHook()` takes the same option. See [Resume in the calling route](/docs/api-reference/workflow-api/resume-hook#resume-in-the-calling-route).
+
 ### Dynamic Workflow Source
 
 <Callout type="warning">

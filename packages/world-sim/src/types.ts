@@ -425,6 +425,17 @@ export interface ScenarioApi {
    */
   expireLease(options?: { redeliver?: boolean }): number;
   /**
+   * Let the hold of the run's in-flight held delivery lapse (one a sender
+   * runs itself; see `ScenarioSpec.startOptions` and
+   * `QueueOptions.experimental_hold`), as when the sender stops renewing it:
+   * the message is pending again and the queue delivers it. Without `crash`
+   * the sender's delivery keeps running alongside the redelivery, which the
+   * in-band fence must keep apart; with `crash` the sender died: none of its
+   * later world calls takes effect, and one in flight commits but answers with
+   * an error. Returns how many holds lapsed.
+   */
+  lapseHeldDeliveries(options?: { crash?: boolean }): number;
+  /**
    * Hide the next event this scenario commits from the following `reads`
    * event-log reads, modeling one concurrent writer the reader missed.
    *

@@ -12,6 +12,7 @@ import { workflowDisplayName } from '@workflow/utils/parse-name';
 import {
   type Event,
   getQueueTopicPrefix,
+  type QueueHandler,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
@@ -34,6 +35,7 @@ import {
   parseHealthCheckPayload,
   withHealthCheck,
 } from './runtime/helpers.js';
+import { registerInlineOrchestrator } from './runtime/inline-orchestrator.js';
 import { withRunInputs } from './runtime/invocations.js';
 import {
   authorizeQueueDelivery,
@@ -99,6 +101,7 @@ export {
   getHookByToken,
   type Hook,
   type ResumedHook,
+  type ResumeHookOptions,
   resumeHook,
   resumeWebhook,
 } from './runtime/resume-hook.js';
@@ -305,351 +308,351 @@ export function workflowEntrypoint(
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
 
-  const handler = (worldHandlers: World) =>
-    worldHandlers.createQueueHandler(
-      workflowPrefix,
-      withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
-        // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
-        // the instant this consumer began, before message parsing. Only used
-        // when the message turns out to carry resume timing; taking it
-        // unconditionally keeps it honest for the deliveries that do.
-        const handlerEnteredAtMs = Date.now();
-        // Check if this is a health check message. It is a queue delivery
-        // like any other, so it passed the route's queue auth check (the
-        // World's queue sends it with the key). It only writes a status
-        // response to a stream named by a correlationId the caller knows.
-        const healthCheck = parseHealthCheckPayload(message_);
-        if (healthCheck) {
-          await handleHealthCheckMessage(
-            healthCheck,
-            worldHandlers.specVersion
-          );
-          return;
-        }
+  // The orchestrator's queue handler: the flow route passes it to
+  // `createQueueHandler()`, and an inline delivery (see
+  // `runtime/inline-orchestrator.ts`) runs a held message with it.
+  const orchestratorHandler = (worldHandlers: World): QueueHandler =>
+    withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
+      // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
+      // the instant this consumer began, before message parsing. Only used
+      // when the message turns out to carry resume timing; taking it
+      // unconditionally keeps it honest for the deliveries that do.
+      const handlerEnteredAtMs = Date.now();
+      // Check if this is a health check message. It is a queue delivery
+      // like any other, so it passed the route's queue auth check (the
+      // World's queue sends it with the key). It only writes a status
+      // response to a stream named by a correlationId the caller knows.
+      const healthCheck = parseHealthCheckPayload(message_);
+      if (healthCheck) {
+        await handleHealthCheckMessage(healthCheck, worldHandlers.specVersion);
+        return;
+      }
 
-        const message = WorkflowInvokePayloadSchema.parse(message_);
-        const {
-          runId,
-          traceCarrier: incomingTraceCarrier,
-          requestedAt,
-          stepId: incomingStepId,
-          runInput,
-          hookResumeTiming,
-        } = message;
+      const message = WorkflowInvokePayloadSchema.parse(message_);
+      const {
+        runId,
+        traceCarrier: incomingTraceCarrier,
+        requestedAt,
+        stepId: incomingStepId,
+        runInput,
+        hookResumeTiming,
+      } = message;
 
-        // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
-        // Threaded through this invocation and CONSUMED by the first durable
-        // step that follows the resumption, cleared at that point so a later
-        // step, a retry, or a redelivery never re-reports the same resume.
-        //
-        // Two delivery shapes carry timing:
-        //  - the resume's own invocation (no `stepId`): the producer's T0/T1
-        //    ride the message and this handler's entry is T2.
-        //  - a step this invocation handed to another invocation (`stepId`
-        //    present): the resuming invocation already stamped T2..T4 onto
-        //    the message, so they are read back verbatim.
-        let resumeTracking = resumeTrackingFromMessage(
-          hookResumeTiming,
-          incomingStepId !== undefined ? 'dispatched' : 'inline'
+      // --- Hook-resume TTR telemetry (runtime/resume-latency.ts) ---
+      // Threaded through this invocation and CONSUMED by the first durable
+      // step that follows the resumption, cleared at that point so a later
+      // step, a retry, or a redelivery never re-reports the same resume.
+      //
+      // Two delivery shapes carry timing:
+      //  - the resume's own invocation (no `stepId`): the producer's T0/T1
+      //    ride the message and this handler's entry is T2.
+      //  - a step this invocation handed to another invocation (`stepId`
+      //    present): the resuming invocation already stamped T2..T4 onto
+      //    the message, so they are read back verbatim.
+      let resumeTracking = resumeTrackingFromMessage(
+        hookResumeTiming,
+        incomingStepId !== undefined ? 'dispatched' : 'inline'
+      );
+      if (resumeTracking && incomingStepId === undefined) {
+        resumeTracking.consumerStartedAtMs = handlerEnteredAtMs;
+      }
+      if (
+        resumeTracking &&
+        !Number.isFinite(resumeTracking.consumerStartedAtMs)
+      ) {
+        // A step message from a producer that forwarded timing without the
+        // consumer boundaries. Nothing additive can be reported.
+        resumeTracking = undefined;
+      }
+      // `start()` always attaches a trace carrier, but
+      // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
+      // or no span is active, so treat an empty carrier the same as an
+      // absent one so linked mode falls back to a fresh origin instead of
+      // forwarding a useless `{}` forever.
+      const traceContext = isUsableTraceCarrier(incomingTraceCarrier)
+        ? incomingTraceCarrier
+        : undefined;
+      const { requestId } = metadata;
+      const workflowName = metadata.queueName.slice(workflowPrefix.length);
+
+      // --- Max delivery check ---
+      // Enforce max delivery limit before any infrastructure calls.
+      // This prevents runaway workflows from consuming infinite queue deliveries.
+      // Scoped logger for this run: attaches runId/workflowName to every
+      // log line and child loggers below, so callers don't repeat it.
+      const runLogger = runtimeLogger.forRun(runId, workflowName);
+
+      // The orchestrator of the run's spec version: a run keeps the one it
+      // was created with (see `runtime/delivery.ts`).
+      const runSpec = await resolveRunSpec(message);
+      const maxQueueDeliveries = getMaxQueueDeliveries();
+      let orchestrator: Orchestrator;
+      try {
+        orchestrator = await orchestratorForSpecVersion(runSpec.specVersion);
+      } catch (err) {
+        // The spec 9 orchestrator is loaded on demand, so a bundle whose
+        // spec 9 chunk cannot load fails here on every delivery, before the
+        // max-deliveries check below (which needs the orchestrator to write
+        // the run's failure). Each failure is logged, and the delivery cap
+        // still bounds it: past the cap the message is acknowledged, leaving
+        // the run in its current state, instead of redelivering until the
+        // queue's retention expires.
+        const pastCap = metadata.attempt > maxQueueDeliveries;
+        runLogger.error(
+          pastCap
+            ? `Failed to load the orchestrator for spec version ${runSpec.specVersion} after ${metadata.attempt} delivery attempts. ` +
+                'The message is being acknowledged, and the run will remain in its current state until manually resolved. ' +
+                'This points to a broken deployment bundle.'
+            : `Failed to load the orchestrator for spec version ${runSpec.specVersion}; retrying via queue redelivery ` +
+                `(${metadata.attempt}/${maxQueueDeliveries})`,
+          {
+            attempt: metadata.attempt,
+            specVersion: runSpec.specVersion,
+            errorName: err instanceof Error ? err.name : 'UnknownError',
+            errorMessage: err instanceof Error ? err.message : String(err),
+            errorStack: err instanceof Error ? err.stack : undefined,
+          }
         );
-        if (resumeTracking && incomingStepId === undefined) {
-          resumeTracking.consumerStartedAtMs = handlerEnteredAtMs;
-        }
-        if (
-          resumeTracking &&
-          !Number.isFinite(resumeTracking.consumerStartedAtMs)
-        ) {
-          // A step message from a producer that forwarded timing without the
-          // consumer boundaries. Nothing additive can be reported.
-          resumeTracking = undefined;
-        }
-        // `start()` always attaches a trace carrier, but
-        // serializeTraceCarrier() returns `{}` when no OTEL SDK is registered
-        // or no span is active, so treat an empty carrier the same as an
-        // absent one so linked mode falls back to a fresh origin instead of
-        // forwarding a useless `{}` forever.
-        const traceContext = isUsableTraceCarrier(incomingTraceCarrier)
-          ? incomingTraceCarrier
-          : undefined;
-        const { requestId } = metadata;
-        const workflowName = metadata.queueName.slice(workflowPrefix.length);
+        if (pastCap) return;
+        throw err;
+      }
 
-        // --- Max delivery check ---
-        // Enforce max delivery limit before any infrastructure calls.
-        // This prevents runaway workflows from consuming infinite queue deliveries.
-        // Scoped logger for this run: attaches runId/workflowName to every
-        // log line and child loggers below, so callers don't repeat it.
-        const runLogger = runtimeLogger.forRun(runId, workflowName);
-
-        // The orchestrator of the run's spec version: a run keeps the one it
-        // was created with (see `runtime/delivery.ts`).
-        const runSpec = await resolveRunSpec(message);
-        const maxQueueDeliveries = getMaxQueueDeliveries();
-        let orchestrator: Orchestrator;
+      if (
+        metadata.attempt > maxQueueDeliveries &&
+        orchestrator.countsTowardMaxDeliveries(message)
+      ) {
+        const maxDeliveriesDescription = describeError(
+          undefined,
+          RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
+        );
+        runLogger.error(
+          `Workflow handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
+          {
+            attempt: metadata.attempt,
+            errorCode: maxDeliveriesDescription.errorCode,
+            errorAttribution: maxDeliveriesDescription.attribution,
+          }
+        );
+        let encryptionKey: PayloadKey | undefined;
+        let dehydratedError: Uint8Array;
+        // No run is loaded past the ceiling; the terminal write returns it.
+        let failedRun: WorkflowRun | undefined;
+        const fenceRefused = new Error(
+          `Max-deliveries failure of run "${runId}" was refused by the in-band fence; redelivering to retry it`
+        );
         try {
-          orchestrator = await orchestratorForSpecVersion(runSpec.specVersion);
+          const world = await getWorld();
+          const getEncryptionKey = memoizeEncryptionKey(world, runId);
+          const err = new FatalError(
+            `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
+          );
+          encryptionKey = await getEncryptionKey();
+          dehydratedError = await dehydrateRunError(err, runId, encryptionKey);
+          const written = await orchestrator.writeMaxDeliveriesFailure(
+            world,
+            runId,
+            {
+              error: dehydratedError,
+              errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+            },
+            requestId
+          );
+          if (written === 'superseded') {
+            // A refusal does not prove that another orchestrator is
+            // running: the World also refuses a write whose own position it
+            // sealed, and then nothing else is queued for the run. Throw so
+            // the queue redelivers this message. The redelivery is still
+            // past the ceiling, so it only retries this terminal write from
+            // a fresh load, and finds the run terminal (and acknowledges) if
+            // a live orchestrator did finish it. A fresh wake would restart
+            // the delivery count instead.
+            runLogger.warn(
+              'Max-deliveries failure refused by the in-band fence; retrying via queue redelivery',
+              { attempt: metadata.attempt }
+            );
+            throw fenceRefused;
+          }
+          failedRun = written.run;
         } catch (err) {
-          // The spec 9 orchestrator is loaded on demand, so a bundle whose
-          // spec 9 chunk cannot load fails here on every delivery, before the
-          // max-deliveries check below (which needs the orchestrator to write
-          // the run's failure). Each failure is logged, and the delivery cap
-          // still bounds it: past the cap the message is acknowledged, leaving
-          // the run in its current state, instead of redelivering until the
-          // queue's retention expires.
-          const pastCap = metadata.attempt > maxQueueDeliveries;
+          if (err === fenceRefused) throw err;
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            // Run already finished, consume the message silently
+            return;
+          }
+          // A transient backend failure (429 / 5xx / transport) must not
+          // abandon the run: acking here leaves it `running` with no message
+          // left to drive it. Throw so the queue redelivers with its backoff
+          // (honoring a 429's Retry-After); the redelivery is still past the
+          // ceiling, so it only retries this terminal write, never the replay.
+          // This relies on the World redelivering past the ceiling: VQS and
+          // world-local do, while world-postgres currently caps its jobs at
+          // exactly this delivery (#4427, fixed by #4428).
+          if (isRetryableWorldError(err)) {
+            runLogger.warn(
+              'Transient error marking run as failed after max deliveries, retrying via queue redelivery',
+              {
+                attempt: metadata.attempt,
+                errorName: err instanceof Error ? err.name : 'UnknownError',
+                errorMessage: err instanceof Error ? err.message : String(err),
+              }
+            );
+            throw err;
+          }
           runLogger.error(
-            pastCap
-              ? `Failed to load the orchestrator for spec version ${runSpec.specVersion} after ${metadata.attempt} delivery attempts. ` +
-                  'The message is being acknowledged, and the run will remain in its current state until manually resolved. ' +
-                  'This points to a broken deployment bundle.'
-              : `Failed to load the orchestrator for spec version ${runSpec.specVersion}; retrying via queue redelivery ` +
-                  `(${metadata.attempt}/${maxQueueDeliveries})`,
+            `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
+              `A persistent error is preventing the run from being terminated. ` +
+              `The run will remain in its current state until manually resolved. ` +
+              `This is most likely due to a persistent outage of the workflow backend ` +
+              `or a bug in the workflow runtime and should be reported to the Workflow team.`,
             {
               attempt: metadata.attempt,
-              specVersion: runSpec.specVersion,
               errorName: err instanceof Error ? err.name : 'UnknownError',
               errorMessage: err instanceof Error ? err.message : String(err),
               errorStack: err instanceof Error ? err.stack : undefined,
             }
           );
-          if (pastCap) return;
-          throw err;
-        }
-
-        if (
-          metadata.attempt > maxQueueDeliveries &&
-          orchestrator.countsTowardMaxDeliveries(message)
-        ) {
-          const maxDeliveriesDescription = describeError(
-            undefined,
-            RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
-          );
-          runLogger.error(
-            `Workflow handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
-            {
-              attempt: metadata.attempt,
-              errorCode: maxDeliveriesDescription.errorCode,
-              errorAttribution: maxDeliveriesDescription.attribution,
-            }
-          );
-          let encryptionKey: PayloadKey | undefined;
-          let dehydratedError: Uint8Array;
-          // No run is loaded past the ceiling; the terminal write returns it.
-          let failedRun: WorkflowRun | undefined;
-          const fenceRefused = new Error(
-            `Max-deliveries failure of run "${runId}" was refused by the in-band fence; redelivering to retry it`
-          );
-          try {
-            const world = await getWorld();
-            const getEncryptionKey = memoizeEncryptionKey(world, runId);
-            const err = new FatalError(
-              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
-            );
-            encryptionKey = await getEncryptionKey();
-            dehydratedError = await dehydrateRunError(
-              err,
-              runId,
-              encryptionKey
-            );
-            const written = await orchestrator.writeMaxDeliveriesFailure(
-              world,
-              runId,
-              {
-                error: dehydratedError,
-                errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
-              },
-              requestId
-            );
-            if (written === 'superseded') {
-              // A refusal does not prove that another orchestrator is
-              // running: the World also refuses a write whose own position it
-              // sealed, and then nothing else is queued for the run. Throw so
-              // the queue redelivers this message. The redelivery is still
-              // past the ceiling, so it only retries this terminal write from
-              // a fresh load, and finds the run terminal (and acknowledges) if
-              // a live orchestrator did finish it. A fresh wake would restart
-              // the delivery count instead.
-              runLogger.warn(
-                'Max-deliveries failure refused by the in-band fence; retrying via queue redelivery',
-                { attempt: metadata.attempt }
-              );
-              throw fenceRefused;
-            }
-            failedRun = written.run;
-          } catch (err) {
-            if (err === fenceRefused) throw err;
-            if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
-              // Run already finished, consume the message silently
-              return;
-            }
-            // A transient backend failure (429 / 5xx / transport) must not
-            // abandon the run: acking here leaves it `running` with no message
-            // left to drive it. Throw so the queue redelivers with its backoff
-            // (honoring a 429's Retry-After); the redelivery is still past the
-            // ceiling, so it only retries this terminal write, never the replay.
-            // This relies on the World redelivering past the ceiling: VQS and
-            // world-local do, while world-postgres currently caps its jobs at
-            // exactly this delivery (#4427, fixed by #4428).
-            if (isRetryableWorldError(err)) {
-              runLogger.warn(
-                'Transient error marking run as failed after max deliveries, retrying via queue redelivery',
-                {
-                  attempt: metadata.attempt,
-                  errorName: err instanceof Error ? err.name : 'UnknownError',
-                  errorMessage:
-                    err instanceof Error ? err.message : String(err),
-                }
-              );
-              throw err;
-            }
-            runLogger.error(
-              `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
-                `A persistent error is preventing the run from being terminated. ` +
-                `The run will remain in its current state until manually resolved. ` +
-                `This is most likely due to a persistent outage of the workflow backend ` +
-                `or a bug in the workflow runtime and should be reported to the Workflow team.`,
-              {
-                attempt: metadata.attempt,
-                errorName: err instanceof Error ? err.name : 'UnknownError',
-                errorMessage: err instanceof Error ? err.message : String(err),
-                errorStack: err instanceof Error ? err.stack : undefined,
-              }
-            );
-            return;
-          }
-          await afterRunFailed(
-            await getWorld(),
-            failedRun ?? runId,
-            workflowName,
-            dehydratedError,
-            encryptionKey,
-            RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
-          );
           return;
         }
-
-        // --- Trace correlation mode ---
-        // 'linked' (default): the workflow.execute span below stays a CHILD
-        // of the local delivery (flow-route) context, so one invocation
-        // (route handler, workflow replay, inline steps, event writes) is a
-        // single bounded trace. The run-origin context travels as a span
-        // LINK (not a parent), and re-enqueues forward the original carrier
-        // unchanged, so a (potentially hours-long) run is never stitched
-        // into one giant trace across invocations.
-        // 'continuous': legacy behavior, where the restored run-origin context
-        // becomes the parent of this invocation's spans.
-        const traceMode = getWorkflowTraceMode();
-
-        // Trace carrier to attach to messages this invocation enqueues.
-        // See getNextTraceCarrier for the linked/continuous semantics.
-        const nextTraceCarrier = (): Promise<Record<string, string>> =>
-          getNextTraceCarrier(traceMode, traceContext);
-
-        // Span links to the incoming delivery context and (in linked mode)
-        // the run-origin context from the trace carrier.
-        const spanLinks = await buildInvocationSpanLinks(
-          traceMode,
-          traceContext
+        await afterRunFailed(
+          await getWorld(),
+          failedRun ?? runId,
+          workflowName,
+          dehydratedError,
+          encryptionKey,
+          RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
         );
+        return;
+      }
 
-        // The replay budget covers orchestration work between steps, not inline
-        // step bodies. It is checked between loop iterations; step bodies use
-        // the platform timeout and NO_INLINE_REPLAY_AFTER_MS guard instead.
-        const replayBudget = new ReplayBudget();
+      // --- Trace correlation mode ---
+      // 'linked' (default): the workflow.execute span below stays a CHILD
+      // of the local delivery (flow-route) context, so one invocation
+      // (route handler, workflow replay, inline steps, event writes) is a
+      // single bounded trace. The run-origin context travels as a span
+      // LINK (not a parent), and re-enqueues forward the original carrier
+      // unchanged, so a (potentially hours-long) run is never stitched
+      // into one giant trace across invocations.
+      // 'continuous': legacy behavior, where the restored run-origin context
+      // becomes the parent of this invocation's spans.
+      const traceMode = getWorkflowTraceMode();
 
-        // In linked mode the run-origin context is NOT restored as the
-        // active (parent) context: passing `undefined` makes
-        // withTraceContext a passthrough, so the workflow.execute span below
-        // stays a child of the local delivery (flow-route) context and the
-        // run-origin travels as a span link instead.
-        const parentTraceCarrier =
-          traceMode === 'continuous' ? traceContext : undefined;
-        // Queue-delivered invocation: CONSUMER kind, matching the
-        // queue-delivered step.execute span.
-        const spanKind = await getSpanKind('CONSUMER');
-        return await withTraceContext(parentTraceCarrier, async () => {
-          return await withWorkflowBaggage(
-            { workflowRunId: runId, workflowName },
-            async () => {
-              const world = await trace('workflow.route.get_world', async () =>
-                getWorld()
-              );
-              // Both checks below look at `runInput`, so both are no-ops on a
-              // re-enqueued message (which carries none): they only ever run on
-              // a first delivery, the one that could create the run.
-              //
-              // Returning acks the message. That is deliberate: the mismatch is
-              // baked into this message, so every redelivery would reach the
-              // same verdict, and throwing would hot-loop the handler until
-              // MAX_QUEUE_DELIVERIES with the same error each time. It matches
-              // how the run_started path already discards deliveries whose
-              // verdict cannot change (EntityConflictError, RunExpiredError).
-              if (
-                refuseCrossEnvironmentDelivery({
-                  world,
-                  runInput,
-                  runId,
-                  runLogger,
-                })
-              ) {
-                return;
-              }
-              // Diagnostic only. See the helper for why this warns instead of
-              // refusing the invocation.
-              await warnOnDeploymentPinningMismatch({
+      // Trace carrier to attach to messages this invocation enqueues.
+      // See getNextTraceCarrier for the linked/continuous semantics.
+      const nextTraceCarrier = (): Promise<Record<string, string>> =>
+        getNextTraceCarrier(traceMode, traceContext);
+
+      // Span links to the incoming delivery context and (in linked mode)
+      // the run-origin context from the trace carrier.
+      const spanLinks = await buildInvocationSpanLinks(traceMode, traceContext);
+
+      // The replay budget covers orchestration work between steps, not inline
+      // step bodies. It is checked between loop iterations; step bodies use
+      // the platform timeout and NO_INLINE_REPLAY_AFTER_MS guard instead.
+      const replayBudget = new ReplayBudget();
+
+      // In linked mode the run-origin context is NOT restored as the
+      // active (parent) context: passing `undefined` makes
+      // withTraceContext a passthrough, so the workflow.execute span below
+      // stays a child of the local delivery (flow-route) context and the
+      // run-origin travels as a span link instead.
+      const parentTraceCarrier =
+        traceMode === 'continuous' ? traceContext : undefined;
+      // Queue-delivered invocation: CONSUMER kind, matching the
+      // queue-delivered step.execute span.
+      const spanKind = await getSpanKind('CONSUMER');
+      return await withTraceContext(parentTraceCarrier, async () => {
+        return await withWorkflowBaggage(
+          { workflowRunId: runId, workflowName },
+          async () => {
+            const world = await trace('workflow.route.get_world', async () =>
+              getWorld()
+            );
+            // Both checks below look at `runInput`, so both are no-ops on a
+            // re-enqueued message (which carries none): they only ever run on
+            // a first delivery, the one that could create the run.
+            //
+            // Returning acks the message. That is deliberate: the mismatch is
+            // baked into this message, so every redelivery would reach the
+            // same verdict, and throwing would hot-loop the handler until
+            // MAX_QUEUE_DELIVERIES with the same error each time. It matches
+            // how the run_started path already discards deliveries whose
+            // verdict cannot change (EntityConflictError, RunExpiredError).
+            if (
+              refuseCrossEnvironmentDelivery({
                 world,
                 runInput,
                 runId,
                 runLogger,
-              });
-              return trace(
-                `workflow.execute ${workflowDisplayName(workflowName)}`,
-                { kind: spanKind, links: spanLinks },
-                async (span) => {
-                  span?.setAttributes({
-                    ...Attribute.WorkflowName(workflowName),
-                    ...Attribute.WorkflowOperation('execute_v2'),
-                    ...Attribute.MessagingSystem('vercel-queue'),
-                    ...Attribute.MessagingDestinationName(metadata.queueName),
-                    ...Attribute.MessagingMessageId(metadata.messageId),
-                    ...Attribute.MessagingOperationType('process'),
-                    ...getQueueOverhead({ requestedAt }),
-                    ...Attribute.WorkflowRunId(runId),
-                    ...Attribute.WorkflowTracePropagated(!!traceContext),
-                    ...Attribute.WorkflowTraceMode(traceMode),
-                    // Which orchestrator handles the delivery, and how the
-                    // queue counts it: a coalesced re-run or a handoff
-                    // keeps `attempt` and advances `deliveryCount`.
-                    ...Attribute.WorkflowRunSpecVersion(runSpec.specVersion),
-                    ...Attribute.WorkflowDeliveryAttempt(metadata.attempt),
-                    ...(metadata.deliveryCount !== undefined
-                      ? Attribute.WorkflowDeliveryCount(metadata.deliveryCount)
-                      : {}),
-                  });
-                  return orchestrator.runDelivery({
-                    message,
-                    metadata,
-                    activity,
-                    workflowCode,
-                    namespace,
-                    world,
-                    span,
-                    runLogger,
-                    workflowName,
-                    requestId,
-                    resumeTracking,
-                    nextTraceCarrier,
-                    replayBudget,
-                    prefetchedRun: runSpec.run,
-                    runSpecVersion: runSpec.specVersion,
-                  });
-                }
-              );
+              })
+            ) {
+              return;
             }
-          );
-        });
-      })
+            // Diagnostic only. See the helper for why this warns instead of
+            // refusing the invocation.
+            await warnOnDeploymentPinningMismatch({
+              world,
+              runInput,
+              runId,
+              runLogger,
+            });
+            return trace(
+              `workflow.execute ${workflowDisplayName(workflowName)}`,
+              { kind: spanKind, links: spanLinks },
+              async (span) => {
+                span?.setAttributes({
+                  ...Attribute.WorkflowName(workflowName),
+                  ...Attribute.WorkflowOperation('execute_v2'),
+                  ...Attribute.MessagingSystem('vercel-queue'),
+                  ...Attribute.MessagingDestinationName(metadata.queueName),
+                  ...Attribute.MessagingMessageId(metadata.messageId),
+                  ...Attribute.MessagingOperationType('process'),
+                  ...getQueueOverhead({ requestedAt }),
+                  ...Attribute.WorkflowRunId(runId),
+                  ...Attribute.WorkflowTracePropagated(!!traceContext),
+                  ...Attribute.WorkflowTraceMode(traceMode),
+                  // Which orchestrator handles the delivery, and how the
+                  // queue counts it: a coalesced re-run or a handoff
+                  // keeps `attempt` and advances `deliveryCount`.
+                  ...Attribute.WorkflowRunSpecVersion(runSpec.specVersion),
+                  ...Attribute.WorkflowDeliveryAttempt(metadata.attempt),
+                  ...(metadata.deliveryCount !== undefined
+                    ? Attribute.WorkflowDeliveryCount(metadata.deliveryCount)
+                    : {}),
+                });
+                return orchestrator.runDelivery({
+                  message,
+                  metadata,
+                  activity,
+                  workflowCode,
+                  namespace,
+                  world,
+                  span,
+                  runLogger,
+                  workflowName,
+                  requestId,
+                  resumeTracking,
+                  nextTraceCarrier,
+                  replayBudget,
+                  prefetchedRun: runSpec.run,
+                  runSpecVersion: runSpec.specVersion,
+                });
+              }
+            );
+          }
+        );
+      });
+    });
+
+  const handler = (worldHandlers: World) =>
+    worldHandlers.createQueueHandler(
+      workflowPrefix,
+      orchestratorHandler(worldHandlers)
     );
+
+  // Lets `start()` / `resumeHook()` with `experimental_inline` run this
+  // entry's orchestrator in a process that loaded it outside the flow route
+  // (an API route that imports the flow entry). Building nothing until then.
+  registerInlineOrchestrator(workflowPrefix, orchestratorHandler);
 
   // The handler, with the World it was built for (which declares how its
   // deliveries are authenticated) and the refusal log (process-wide; see

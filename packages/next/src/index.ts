@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import {
   generatedWorkflowPathPattern,
   resolveConfiguredProjectRoot,
@@ -16,6 +16,7 @@ import {
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
+import { INLINE_ENTRY_SPECIFIER, inlineEntryTarget } from './inline-entry.js';
 import {
   joinWorkflowBasePath,
   normalizeWorkflowRoutePrefix,
@@ -732,6 +733,19 @@ export function withWorkflow(
       };
     }
 
+    // `workflow/next/inline` (for `start(..., { experimental_inline: true })`)
+    // is the generated flow route, so a route that imports it bundles the
+    // app's workflows, steps and orchestrator handler. Nothing else changes
+    // for routes that do not import it, which resolve nothing new.
+    const inlineEntry = inlineEntryTarget(workingDir, experimentalRoutePrefix);
+    if (inlineEntry) {
+      nextConfig.turbopack.resolveAlias = {
+        ...nextConfig.turbopack.resolveAlias,
+        // Turbopack resolves a relative alias against the project directory.
+        [INLINE_ENTRY_SPECIFIER]: `./${relative(workingDir, inlineEntry).replace(/\\/g, '/')}`,
+      };
+    }
+
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
     nextConfig.webpack = (...args) => {
@@ -751,6 +765,13 @@ export function withWorkflow(
 
       if (args[1]?.isServer) {
         externalizeWsNativeAccelerators(webpackConfig);
+        if (inlineEntry) {
+          webpackConfig.resolve ??= {};
+          webpackConfig.resolve.alias = {
+            ...webpackConfig.resolve.alias,
+            [`${INLINE_ENTRY_SPECIFIER}$`]: inlineEntry,
+          };
+        }
       }
 
       return existingWebpackModify

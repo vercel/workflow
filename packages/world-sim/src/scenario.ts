@@ -128,6 +128,20 @@ export interface ScenarioSpec {
   expect?: ScenarioExpectation;
   limits?: ScenarioLimits;
   /**
+   * Options for the scenario's `start()` call, for example
+   * `{ experimental_inline: true }` to run the run's first orchestrator
+   * delivery in the starting process, through a held send (see
+   * `QueueOptions.experimental_hold`), instead of a delivery from the loop.
+   */
+  startOptions?: { experimental_inline?: boolean; specVersion?: number };
+  /**
+   * Deliver hooks (`deliverHook`) with `resumeHook(..., { experimental_inline:
+   * true })`, so a held wake runs in the resuming call. Such a resume is not
+   * attributed to the scenario: its inline delivery is the run's
+   * orchestrator, and must stay a call point.
+   */
+  inlineResume?: boolean;
+  /**
    * Runtime environment variables set for this scenario only (for example a
    * runtime fast path the scenario's premise rules out), restored when it
    * ends.
@@ -268,6 +282,10 @@ export async function runScenario(
       // to the `external` writer and are not themselves call points, so a
       // script that delivers a hook while holding a writer cannot trip one of
       // its own holds.
+      if (spec.inlineResume) {
+        await resumeHook(token, payload, { experimental_inline: true });
+        return;
+      }
       await world.asExternal(() => resumeHook(token, payload));
     },
     async beginHookDelivery(token, payload) {
@@ -306,6 +324,20 @@ export async function runScenario(
             : 'expireLease: no orchestrator delivery of the run is in flight',
       });
       return expired.length;
+    },
+    lapseHeldDeliveries(options) {
+      const lapsed = world.simQueue.lapseHolds({
+        runId,
+        crash: options?.crash,
+      });
+      world.pushTrace({
+        kind: 'note',
+        message:
+          lapsed.length > 0
+            ? `hold lapsed: ${lapsed.map((h) => h.message.messageId).join(', ')} is pending again; its sender ${options?.crash ? 'died' : 'keeps running'}`
+            : 'lapseHeldDeliveries: no held delivery of the run is in flight',
+      });
+      return lapsed.length;
     },
     async deliverQueued(select) {
       const pending = world.simQueue.view();
@@ -377,7 +409,11 @@ export async function runScenario(
   setWorld(world);
 
   try {
-    const run = await start({ workflowId }, (spec.input ?? []) as unknown[]);
+    const run = await start(
+      { workflowId },
+      (spec.input ?? []) as unknown[],
+      spec.startOptions
+    );
     runId = run.runId;
 
     const drain = await driveQueue({

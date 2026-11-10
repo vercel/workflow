@@ -13,6 +13,7 @@ import {
   HookSchema,
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
+  type QueueOptions,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_SINGLE_ORCHESTRATOR,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
@@ -40,6 +41,10 @@ import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { publishHookWakeWithRetry } from './hook-wake.js';
+import {
+  decideInline,
+  sendOrchestratorMessage,
+} from './inline-orchestrator.js';
 import { HookInvocationResultSchema } from './invocations.js';
 import { specVersionForRunWrite } from './run-spec-version.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -344,6 +349,22 @@ async function lookupByToken(
   }
 }
 
+/**
+ * Whether `deploymentId` is the World's current deployment. `false` when
+ * either is unknown: a resume is only inlined into a run of this deployment.
+ */
+async function isCurrentDeployment(
+  world: World,
+  deploymentId: string | undefined
+): Promise<boolean> {
+  if (!deploymentId) return false;
+  try {
+    return (await world.getDeploymentId()) === deploymentId;
+  } catch {
+    return false;
+  }
+}
+
 /** Records a by-token lookup's `not_found` answer on `span`. */
 function recordLookupFailure(span: Span | undefined, error: unknown): void {
   if (HookNotFoundError.is(error)) {
@@ -411,8 +432,14 @@ export type ResumedHook = Hook & {
 export async function resumeHook<T = any>(
   tokenOrHook: string | ResumableHook,
   payload: T,
-  encryptionKeyOverride?: PayloadKey
+  encryptionKeyOrOptions?: PayloadKey | ResumeHookOptions
 ): Promise<ResumedHook> {
+  const options = isResumeHookOptions(encryptionKeyOrOptions)
+    ? encryptionKeyOrOptions
+    : undefined;
+  const encryptionKeyOverride = options
+    ? undefined
+    : (encryptionKeyOrOptions as PayloadKey | undefined);
   // Caller-supplied hooks never attest live capabilities. Resolved handles
   // instead require an endpoint whose write contract enforces deduplication;
   // older servers and the kill switch reject that route before writing.
@@ -424,7 +451,38 @@ export async function resumeHook<T = any>(
     payload,
     encryptionKeyOverride,
     false,
-    Date.now()
+    Date.now(),
+    false,
+    undefined,
+    options?.experimental_inline === true
+  );
+}
+
+/** Options for {@link resumeHook}. */
+export interface ResumeHookOptions {
+  /**
+   * **Experimental.** Run the woken orchestrator delivery in this process, in
+   * the request that called `resumeHook()`, instead of waiting for the queue
+   * to deliver the wake to the flow route. The same conditions as
+   * `start(..., { experimental_inline: true })` apply (a World that supports
+   * send-and-hold, the flow entry loaded in this process, a run of this
+   * deployment in this region); in every other case the wake is queued as
+   * usual. A run of another deployment is never woken inline. On a single-
+   * orchestrator run (spec 9) whose orchestrator is already running, the
+   * queue coalesces the wake into that delivery instead.
+   *
+   * @experimental
+   */
+  experimental_inline?: boolean;
+}
+
+function isResumeHookOptions(value: unknown): value is ResumeHookOptions {
+  // A PayloadKey is a CryptoKey, a SealTarget or RunPayloadKeys, none of
+  // which has this field.
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'experimental_inline' in value
   );
 }
 
@@ -504,7 +562,8 @@ async function resumeHookImpl<T = any>(
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
   webhookOnly = false,
-  worldOverride?: World
+  worldOverride?: World,
+  inline = false
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -555,7 +614,11 @@ async function resumeHookImpl<T = any>(
       // per-run (runId, resumeId) claim then dedups a retry of the redirected
       // write exactly as it dedups a retry of a plain one.
       const resumeId = generateResumeId();
-      const routeState = { resolvedFallback: false };
+      const routeState: ResumeRouteState = {
+        resolvedFallback: false,
+        // The inline handler drives the process's configured World.
+        inline: inline && worldOverride === undefined,
+      };
       const assertResendable = (cause: unknown): void => {
         if (
           payload instanceof Request &&
@@ -702,6 +765,13 @@ async function resumeHookImpl<T = any>(
   });
 }
 
+/** State one logical resume carries across its attempts. */
+interface ResumeRouteState {
+  resolvedFallback: boolean;
+  /** `experimental_inline` was requested for this resume. */
+  inline: boolean;
+}
+
 async function resumeHookAttempt<T = any>(
   world: Awaited<ReturnType<typeof getWorldLazy>>,
   span: Span | undefined,
@@ -714,7 +784,7 @@ async function resumeHookAttempt<T = any>(
   webhookOnly: boolean,
   /** Whether a takeover redirected this resume to the token's new owner. */
   redirected = false,
-  routeState = { resolvedFallback: false }
+  routeState: ResumeRouteState = { resolvedFallback: false, inline: false }
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
@@ -1166,39 +1236,65 @@ async function resumeHookAttempt<T = any>(
     // resolution, serialization, and the awaited hook_received write,
     // which is genuinely serial here).
     const queuePublishRequestedAtMs = Date.now();
-    await publishHookWakeWithRetry(
-      () =>
-        world.queue(
-          queueName,
-          {
-            runId: hook.runId,
-            ...(resumeContext.runSpecVersion !== undefined && {
-              runSpecVersion: resumeContext.runSpecVersion,
+    const publishWake = (extra?: Pick<QueueOptions, 'experimental_hold'>) =>
+      world.queue(
+        queueName,
+        {
+          runId: hook.runId,
+          ...(resumeContext.runSpecVersion !== undefined && {
+            runSpecVersion: resumeContext.runSpecVersion,
+          }),
+          traceCarrier: resumeContext.traceCarrier ?? undefined,
+          hookResumeTiming: {
+            resumeRequestedAtMs,
+            queuePublishRequestedAtMs,
+            strategy: 'sequential',
+          },
+        } satisfies WorkflowInvokePayload,
+        {
+          ...queueOptions,
+          // A spec 9 wake carries no idempotency key: a key could be
+          // absorbed by an orchestrator delivery that is already exiting
+          // and lose the wakeup, and a duplicate wake from a retried
+          // publish only costs a cheap delivery. An older run replays in
+          // full on every delivery, so its retried publishes whose
+          // response was lost dedupe on the resume (claim-less writes have
+          // no resumeId and keep the previous behavior).
+          ...(resumeId &&
+            queueOptions.specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR && {
+              idempotencyKey: `hook-${resumeId}`,
             }),
-            traceCarrier: resumeContext.traceCarrier ?? undefined,
-            hookResumeTiming: {
-              resumeRequestedAtMs,
-              queuePublishRequestedAtMs,
-              strategy: 'sequential',
-            },
-          } satisfies WorkflowInvokePayload,
-          {
-            ...queueOptions,
-            // A spec 9 wake carries no idempotency key: a key could be
-            // absorbed by an orchestrator delivery that is already exiting
-            // and lose the wakeup, and a duplicate wake from a retried
-            // publish only costs a cheap delivery. An older run replays in
-            // full on every delivery, so its retried publishes whose
-            // response was lost dedupe on the resume (claim-less writes have
-            // no resumeId and keep the previous behavior).
-            ...(resumeId &&
-              queueOptions.specVersion < SPEC_VERSION_SINGLE_ORCHESTRATOR && {
-                idempotencyKey: `hook-${resumeId}`,
-              }),
-          }
-        ),
-      world.isDeploymentUnavailableError?.bind(world)
-    );
+          ...extra,
+        }
+      );
+    const publishWithRetry = () =>
+      publishHookWakeWithRetry(
+        () => publishWake(),
+        world.isDeploymentUnavailableError?.bind(world)
+      );
+    if (routeState.inline) {
+      // `experimental_inline`: one held attempt, then (if it throws) the
+      // usual publish with its retries.
+      await sendOrchestratorMessage({
+        decision: decideInline({
+          world,
+          queueName,
+          runId: hook.runId,
+          sameDeployment: await isCurrentDeployment(
+            world,
+            resumeContext.deploymentId
+          ),
+        }),
+        runId: hook.runId,
+        span,
+        send: (hold) =>
+          hold.experimental_hold
+            ? publishWake(hold)
+            : publishWithRetry().then(() => ({ messageId: null })),
+      });
+    } else {
+      await publishWithRetry();
+    }
     span?.setAttributes(Attribute.HookWakePublished(true));
 
     return asLazyMetadataHook(hook) satisfies ResumedHook;

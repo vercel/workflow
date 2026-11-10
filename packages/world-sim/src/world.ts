@@ -35,7 +35,12 @@ import {
 } from '@workflow/world';
 import { createVirtualClock, type VirtualClock } from './clock.js';
 import { createIdFactory, type IdFactory } from './ids.js';
-import { createSimQueue, type DirectHandler, type SimQueue } from './queue.js';
+import {
+  createSimQueue,
+  type DirectHandler,
+  heldDeliveryContext,
+  type SimQueue,
+} from './queue.js';
 import { createSimStore, type SimStore } from './store.js';
 import { createSimStreamer, type SimStreamer } from './streams.js';
 import type {
@@ -120,6 +125,16 @@ type TraceInput =
 
 /** Any async world method. */
 type AsyncFn = (...args: never[]) => Promise<unknown>;
+
+/** A world call made by, or answered to, a held delivery whose sender died. */
+export class SimulatedCrashError extends Error {
+  constructor(call: string) {
+    super(
+      `simulated crash: the held delivery's sender died before ${call} returned`
+    );
+    this.name = 'SimulatedCrashError';
+  }
+}
 
 export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   const clock = options.clock ?? createVirtualClock();
@@ -507,6 +522,16 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       record(base);
       await fireWatches(base);
 
+      // A held delivery whose sender died (`lapseHolds({ crash: true })`)
+      // has no more effects: a call it makes from now on is refused before
+      // it reaches the world, and one it was in commits but answers with an
+      // error. They reject rather than hang so this process' own caches and
+      // single-flight slots, which a real crash would take down with it, do
+      // not hold the redelivery up: that sharing is the simulation's, since
+      // the queue redelivers to another process.
+      const heldDelivery = heldDeliveryContext.getStore();
+      if (heldDelivery?.crashed) throw new SimulatedCrashError(call);
+
       let result: unknown;
       let error: unknown;
       let threw = false;
@@ -516,6 +541,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
         error = err;
         threw = true;
       }
+      if (heldDelivery?.crashed) throw new SimulatedCrashError(call);
 
       const after: CallContext = {
         ...base,
@@ -552,6 +578,9 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
       record(after);
       await fireWatches(after);
+      // The sender died while this call was in flight: its effect stands,
+      // its answer is lost.
+      if (heldDelivery?.crashed) throw new SimulatedCrashError(call);
 
       if (threw) throw error;
       return result;
@@ -582,6 +611,9 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // (see queue.ts), and the store fences in-band writes.
       maxConcurrency: true,
       inBandFence: true,
+      // `queue()` holds a message for its sender (`experimental_hold`), as
+      // Vercel Queues' send-and-hold does (see queue.ts).
+      experimental_queueHold: true,
     },
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()

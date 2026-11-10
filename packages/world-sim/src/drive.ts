@@ -111,7 +111,12 @@ export async function driveQueue(options: {
       // loop's own deliveries have all returned by now). That is not
       // quiescence: wait until the lease frees or that delivery enqueues
       // something, and look again.
-      if (world.simQueue.gated().length > 0) {
+      // So may a message its sender holds and is still running
+      // (`experimental_hold`): it can enqueue, or hand the message back.
+      if (
+        world.simQueue.gated().length > 0 ||
+        world.simQueue.heldInFlight().length > 0
+      ) {
         await world.simQueue.nextChange();
         continue;
       }
