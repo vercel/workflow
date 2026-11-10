@@ -1,5 +1,17 @@
 # @workflow/world-testing
 
+## 4.1.32
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- Updated dependencies [[`d945101`](https://github.com/vercel/workflow/commit/d945101b65e11d6c9555fd5396d2dc4f7c6e6f6f), [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964)]:
+  - @workflow/cli@4.3.21
+  - @workflow/core@4.8.17
+  - @workflow/world@4.5.2
+  - workflow@4.8.17
+
 ## 4.1.31
 
 ### Patch Changes

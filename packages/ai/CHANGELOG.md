@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.2.2
+
+### Patch Changes
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- Updated dependencies []:
+  - workflow@4.8.17
+
 ## 4.2.1
 
 ### Patch Changes

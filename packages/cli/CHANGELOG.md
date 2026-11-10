@@ -1,5 +1,22 @@
 # @workflow/cli
 
+## 4.3.21
+
+### Patch Changes
+
+- [#5328](https://github.com/vercel/workflow/pull/5328) [`d945101`](https://github.com/vercel/workflow/commit/d945101b65e11d6c9555fd5396d2dc4f7c6e6f6f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix CLI inspect and stream output for BigInt values by preserving their precision as decimal strings.
+
+- [#5330](https://github.com/vercel/workflow/pull/5330) [`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Bump `zod` to 4.6.7 and `undici` to 7.30.2 to pick up security fixes.
+
+- Updated dependencies [[`f665a0e`](https://github.com/vercel/workflow/commit/f665a0eb80a3d5c3faa83dc6569134f4294b9964)]:
+  - @workflow/core@4.8.17
+  - @workflow/world@4.5.2
+  - @workflow/world-local@4.4.6
+  - @workflow/world-vercel@4.7.9
+  - @workflow/builders@4.1.22
+  - @workflow/web@4.1.33
+  - @workflow/errors@4.2.2
+
 ## 4.3.20
 
 ### Patch Changes
