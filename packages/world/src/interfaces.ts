@@ -339,9 +339,8 @@ export interface Storage {
 
     /**
      * Delete the stored data of many finished runs in a single operation,
-     * the same data a run started with `experimental_retention: 0` has
-     * deleted when it finishes: its inputs, outputs and errors, its steps'
-     * and events' payloads, its hook payloads, and its stream contents. The
+     * including inputs, outputs and errors, its steps and events' payloads
+     * its hook payloads, and its stream contents. The
      * runs, steps and events themselves stay listed, with their payloads
      * reading back as expired.
      *
