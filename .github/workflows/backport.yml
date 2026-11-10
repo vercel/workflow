@@ -216,7 +216,7 @@ jobs:
           echo "Resolved commit SHA: $SHA"
 
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ steps.resolve.outputs.sha }}
@@ -306,7 +306,7 @@ jobs:
 
       - name: Setup pnpm
         if: steps.existing-pr.outputs.exists != 'true'
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           install: false
           runtime: node@24

@@ -50,7 +50,7 @@ jobs:
       fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Classify changed files
         id: scope
@@ -101,7 +101,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
@@ -157,7 +157,7 @@ jobs:
 
     steps:
       - name: Checkout Repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Download size results
         continue-on-error: true

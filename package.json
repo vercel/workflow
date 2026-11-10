@@ -22,7 +22,7 @@
   "engines": {
     "node": "^24.0.0"
   },
-  "packageManager": "pnpm@11.24.0",
+  "packageManager": "pnpm@11.28.11",
   "scripts": {
     "prepare": "husky",
     "build": "turbo build --filter='./packages/*'",
