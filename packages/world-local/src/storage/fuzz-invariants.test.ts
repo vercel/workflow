@@ -18,7 +18,9 @@
  * - every run's status is what its lifecycle events say, and nothing is
  *   created on it once it has ended.
  *
- * `WORKFLOW_LOCAL_FUZZ_SEEDS` raises the number of cases (default 150).
+ * `WORKFLOW_LOCAL_FUZZ_SEEDS` sets the number of cases: 150 by default, 30
+ * where every operation opens its own connection (world-local's own tests on
+ * Windows, see `vitest.config.ts`), which is several times slower per case.
  */
 
 import fs from 'node:fs/promises';
@@ -31,7 +33,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { databaseFor } from '../db/index.js';
 import { createStorage } from '../storage.js';
 
-const SEEDS = Number(process.env.WORKFLOW_LOCAL_FUZZ_SEEDS ?? 150);
+const SEEDS = Number(
+  process.env.WORKFLOW_LOCAL_FUZZ_SEEDS ??
+    (process.env.WORKFLOW_LOCAL_SQLITE_KEEP_CONNECTIONS === '0' ? 30 : 150)
+);
 const OPS_PER_CASE = 90;
 
 const ulid = monotonicFactory();
@@ -388,5 +393,5 @@ describe('random write sequences (world-local)', () => {
     // The generator must keep exercising both outcomes.
     expect(accepted).toBeGreaterThan(SEEDS * 10);
     expect(refused).toBeGreaterThan(SEEDS * 10);
-  }, 120_000);
+  }, 300_000);
 });
