@@ -196,6 +196,7 @@ describe('performPurge', () => {
     const purgeMany = vi.fn().mockResolvedValue(mixedResult);
     const promptConfirm = vi.fn();
     const { logger, logs, warns } = makeLogger();
+    const stdout = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
 
     await performPurge({
       world: makeWorld(purgeMany),
@@ -207,7 +208,11 @@ describe('performPurge', () => {
     });
 
     expect(promptConfirm).not.toHaveBeenCalled();
-    expect(JSON.parse(logs[0] ?? '')).toEqual(mixedResult);
+    expect(stdout).toHaveBeenCalledWith(
+      `${JSON.stringify(mixedResult, null, 2)}\n`
+    );
+    stdout.mockRestore();
+    expect(logs).toEqual([]);
     expect(warns).toEqual([]);
   });
 

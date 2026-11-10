@@ -136,7 +136,7 @@ export async function performPurge(params: PurgeParams): Promise<PurgeOutcome> {
   const result = await purgeRuns(world, runIds);
 
   if (json) {
-    logger.log(JSON.stringify(result, null, 2));
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } else {
     for (const line of purgeFailureLines(result)) {
       logger.warn(line);
