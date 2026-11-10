@@ -540,8 +540,6 @@ export interface EventListRow {
   sinceStartMs?: number;
   /** The event repeats a class already in the log, so the runtime ignored it. */
   isDuplicate: boolean;
-  /** Lowercased text the filter matches against. */
-  searchText: string;
 }
 
 export function buildEventRow(
@@ -575,15 +573,6 @@ export function buildEventRow(
         ? undefined
         : getEffectiveEventTime(event) - lookups.runStartMs,
     isDuplicate,
-    searchText: [
-      event.eventType,
-      event.eventId,
-      event.correlationId ?? '',
-      name,
-      message,
-    ]
-      .join('\n')
-      .toLowerCase(),
   };
 }
 
@@ -592,15 +581,6 @@ export function buildEventRows(
   lookups: EventListLookups
 ): EventListRow[] {
   return events.map((event) => buildEventRow(event, lookups));
-}
-
-/** Rows whose text contains `filter` (already lowercased); all when empty. */
-export function filterEventRows(
-  rows: EventListRow[],
-  filter: string
-): EventListRow[] {
-  if (!filter) return rows;
-  return rows.filter((row) => row.searchText.includes(filter));
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -658,13 +638,13 @@ export function buildListItems(
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * What the search box is doing. `query` is the trimmed input. Text that is
- * not a complete ID filters the loaded events; a complete ID is looked up on
- * the server.
+ * What the search box is doing. `query` is the trimmed input. A complete
+ * ID is looked up on the server; anything else leaves the loaded events as
+ * they are, since a local filter would miss events on unloaded pages.
  */
 export type EventSearchState =
   | { status: 'idle' }
-  | { status: 'text'; query: string; filter: string }
+  | { status: 'incomplete'; query: string }
   | { status: 'unavailable'; query: string }
   | { status: 'loading'; query: string; id: ExactWorkflowSearchId }
   | {
@@ -700,11 +680,6 @@ export function getExactSearchEvents(search: EventSearchState): Event[] | null {
   }
 }
 
-/** The lowercased text filter, or '' when the search is not filtering. */
-export function getTextFilter(search: EventSearchState): string {
-  return search.status === 'text' ? search.filter : '';
-}
-
 function countEvents(n: number): string {
   return `${n} event${n !== 1 ? 's' : ''}`;
 }
@@ -718,8 +693,6 @@ export function getEmptyMessage(search: EventSearchState): string {
       return search.message;
     case 'unavailable':
       return 'Exact ID search is unavailable in this view.';
-    case 'text':
-      return `No loaded events match "${search.query}"`;
     default:
       return 'No events found';
   }
@@ -730,12 +703,10 @@ export function getFooterLabel(
   counts: {
     /** Events the list draws its rows from. */
     total: number;
-    /** Rows left after the text filter. */
-    shown: number;
     hasMoreEvents: boolean;
   }
 ): string {
-  const { total, shown, hasMoreEvents } = counts;
+  const { total, hasMoreEvents } = counts;
   switch (search.status) {
     case 'ok':
       return `${countEvents(total)} for ${search.query}${search.truncated ? ' (results may be truncated)' : ''}`;
@@ -743,8 +714,8 @@ export function getFooterLabel(
       return `No events found for ${search.query}`;
     case 'error':
       return search.message;
-    case 'text':
-      return `${shown} of ${total} ${hasMoreEvents ? 'loaded ' : ''}event${total !== 1 ? 's' : ''} match`;
+    case 'incomplete':
+      return 'Enter a full step ID, wait ID, hook ID, or event ID';
     default:
       return `${countEvents(total)}${hasMoreEvents ? ' loaded' : ''}`;
   }

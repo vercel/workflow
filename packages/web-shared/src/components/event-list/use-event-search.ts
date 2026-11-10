@@ -127,7 +127,7 @@ export function useEventSearch({
   const search = useMemo((): EventSearchState => {
     if (!trimmed) return { status: 'idle' };
     if (!parsed) {
-      return { status: 'text', query: trimmed, filter: trimmed.toLowerCase() };
+      return { status: 'incomplete', query: trimmed };
     }
     if (!onExactIdSearch) return { status: 'unavailable', query: trimmed };
     if (outcome?.query !== trimmed) {
