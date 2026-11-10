@@ -17,7 +17,7 @@ import { replayWorkflow, resumeWorkflow, runWorkflow } from './workflow.js';
 afterEach(() => vi.unstubAllEnvs());
 
 describe('hook registration delivery ordering', () => {
-  describe.each(['1', '0'])('WORKFLOW_LOG_ORDER_DRAWS=%s', (logOrderDraws) => {
+  describe('log-order draws', () => {
     it.each([
       { eventType: 'hook_created', awaitHook: false, buffered: 'none' },
       { eventType: 'hook_created', awaitHook: false, buffered: 'unread' },
@@ -29,7 +29,6 @@ describe('hook registration delivery ordering', () => {
       awaitHook,
       buffered,
     }) => {
-      vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', logOrderDraws);
       vi.stubEnv('VERCEL_URL', 'localhost');
       const runId = 'wrun_hook_registration_ordering';
       const startedAt = new Date('2025-01-01T00:00:00Z');

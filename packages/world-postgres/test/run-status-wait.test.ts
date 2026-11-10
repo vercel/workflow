@@ -4,13 +4,13 @@ import { RunExpiredError, WorkflowRunNotFoundError } from '@workflow/errors';
 import type { WorkflowRun } from '@workflow/world';
 import {
   afterAll,
-  afterEach,
   beforeAll,
   beforeEach,
   describe,
   expect,
   it,
   test,
+  vi,
 } from 'vitest';
 import { createClient } from '../src/drizzle/index.js';
 import {
@@ -19,6 +19,20 @@ import {
 } from '../src/run-status.js';
 import { createEventsStorage, createRunsStorage } from '../src/storage.js';
 import { TestPool } from './pool.js';
+
+// The backstop re-read interval, overridden per test so a wait that resolves
+// quickly can only have been woken by the notification.
+const backstop = vi.hoisted(() => ({ ms: 10_000 }));
+vi.mock('../src/run-status.js', async (importOriginal) => {
+  const original =
+    await importOriginal<typeof import('../src/run-status.js')>();
+  return {
+    ...original,
+    get RUN_STATUS_POLL_INTERVAL_MS() {
+      return backstop.ms;
+    },
+  };
+});
 
 /**
  * `runs.waitForTerminalStatus` on world-postgres.
@@ -33,9 +47,6 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
     test.skip('skipped on Windows since it relies on a docker container', () => {});
     return;
   }
-
-  const pollIntervalEnv = 'WORKFLOW_POSTGRES_RUN_STATUS_POLL_INTERVAL_MS';
-  const originalPollInterval = process.env[pollIntervalEnv];
 
   let container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
   let pool: TestPool;
@@ -67,18 +78,10 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
 
   beforeEach(async () => {
     // Only the NOTIFY can wake a wait this quickly.
-    process.env[pollIntervalEnv] = '10000';
+    backstop.ms = 10_000;
     await pool.query(
       'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_event_slots, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs RESTART IDENTITY CASCADE'
     );
-  });
-
-  afterEach(() => {
-    if (originalPollInterval === undefined) {
-      delete process.env[pollIntervalEnv];
-    } else {
-      process.env[pollIntervalEnv] = originalPollInterval;
-    }
   });
 
   afterAll(async () => {
@@ -243,7 +246,7 @@ describe('runs.waitForTerminalStatus (Postgres integration)', () => {
     // A runs storage built without the shared LISTEN subscription (a direct
     // caller, or a pool that cannot host one) must still resolve — just on its
     // re-read interval instead of on the notification.
-    process.env[pollIntervalEnv] = '50';
+    backstop.ms = 50;
     const pollingRuns = createRunsStorage(drizzle);
     const run = await startRun();
 

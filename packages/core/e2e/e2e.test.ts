@@ -1046,7 +1046,7 @@ describe.concurrent('e2e', () => {
   });
 
   // vercel/workflow#4457. Early advance is implemented by the Node.js VM
-  // engine's inline loop only (see WORKFLOW_INLINE_EARLY_ADVANCE), and needs
+  // engine's inline loop only, and needs
   // both steps inline in one invocation.
   test.skipIf(
     process.env.WORKFLOW_VM === 'quickjs' ||

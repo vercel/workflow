@@ -1483,8 +1483,7 @@ const BatchItemFailureSchema = z.object({
  * run is rejected with a 400. There is NO automatic fallback to single-event
  * posts on either: the runtime never sends a batch for a pre-slot run (it
  * gates on the run's spec version), and against a backend without the route
- * the batch fails and the suspension redelivers until the operator disables
- * batching via `WORKFLOW_BATCH_TRANSITIONS=0`. Ambiguous failures (timeouts,
+ * the batch fails and the suspension redelivers. Ambiguous failures (timeouts,
  * resets, 5xx, malformed responses) never convert to single posts either;
  * the wrapper either re-sends the SAME batch (only when its shape is
  * retry-convergent; see `createWorkflowRunEventBatch`) or surfaces the error

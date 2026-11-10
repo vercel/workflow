@@ -8,8 +8,7 @@ description: Why inline step_started now records its owning queue message ID, wh
 > Fixes [#2780](https://github.com/vercel/workflow/issues/2780) (duplicate
 > inline step execution when a hook or wait wakes a run mid-step). This page
 > is the design defense for the change: what it does, why each choice was
-> made, and why the alternatives were rejected. Kill switch:
-> `WORKFLOW_INLINE_OWNERSHIP=0`; lease tuning:
+> made, and why the alternatives were rejected. Lease tuning:
 > `WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS` (see
 > [Runtime tuning](/docs/configuration/runtime-tuning)).
 
@@ -301,9 +300,6 @@ heartbeat machinery rejected above.
   ship into.
 - **Version skew is a non-issue**: runs are pinned to their deployment, and old events
   lack the field → unowned → current behavior. Nothing to migrate.
-- **Kill switch**: `WORKFLOW_INLINE_OWNERSHIP=0` reverts dispatch to the unconditional
-  immediate requeue. Stamping continues (it is inert data), so the switch is purely a
-  dispatch-behavior toggle.
 - **Degraded modes are all "today's behavior", never worse**: unstable message IDs (owner
   check never matches → backstop-lease recovery), missing/unusable event timestamps
   (lease remaining 0 → immediate enqueue), old backend (field dropped → unowned).
@@ -336,8 +332,7 @@ heartbeat machinery rejected above.
 ## How the design is protected by tests
 
 - The **#2780 repro** (`workbench/vitest/test/inline-step-ownership.test.ts`): hook
-  resume mid-inline-step → side-effect marker fires exactly once. Verified bidirectional:
-  with `WORKFLOW_INLINE_OWNERSHIP=0` the marker fires twice.
+  resume mid-inline-step → side-effect marker fires exactly once.
 - **Unit**: the ownership state machine (stamp → wake sees owner → retrying clears → bare
   start clears → re-stamp restores), lease math including the clock-skew clamp, and the
   backstop key's epoch behavior, including a regression test walking the full

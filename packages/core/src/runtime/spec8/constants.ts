@@ -20,27 +20,6 @@ import {
 export const SPEC8_EVENT_SPEC_VERSION = SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM;
 
 /**
- * Whether batched event transitions are enabled: the suspension handler folds
- * a clean fan-out's `step_created` + `wait_created` writes into one
- * `world.events.createBatch` call (one durable write, per-event outcomes)
- * instead of one write per event. Only engages when the World implements the
- * optional `events.createBatch` AND the run is on slot identity
- * (specVersion >= 6) AND the suspension carries no attribute writes. Hook writes in the same suspension go through the
- * single-event path concurrently with the batch. Everything else keeps the
- * single-event path byte-for-byte.
- *
- * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
- * disabled only by an explicit `'0'` / `'false'` (case-insensitive), the
- * operator escape hatch that restores the exact prior one-write-per-event
- * path, mirroring `WORKFLOW_TURBO`'s kill-switch shape.
- */
-export function isBatchTransitionsEnabled(): boolean {
-  const raw = process.env.WORKFLOW_BATCH_TRANSITIONS;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
-}
-
-/**
  * Ceiling on events per `createBatch` call from the batched fan-out fold.
  * The server's transaction budgets are the hard limit: each fan-out event
  * costs 2 transaction items server-side (entity + event row) against the
@@ -100,48 +79,6 @@ export function isOptimisticInlineStartEnabled(): boolean {
   const raw = process.env.WORKFLOW_OPTIMISTIC_INLINE_START;
   if (raw === undefined || raw === '') return false;
   return raw === '1' || raw.toLowerCase() === 'true';
-}
-
-/**
- * Whether inline step ownership is enabled (default ON). When on, the lazy
- * `step_started` that creates an inline step records the owning queue
- * message ID, and wake replays that observe an actively-owned step enqueue a
- * *delayed backstop* message instead of immediately requeueing it, fixing
- * duplicate inline step execution when a hook/wait wakes a run mid-step
- * (vercel/workflow#2780).
- *
- * `WORKFLOW_INLINE_OWNERSHIP=0` (or `false`) is the kill switch: dispatch
- * reverts to the unconditional immediate requeue. Stamping is unaffected:
- * the recorded ownerMessageId is inert data when the switch is off.
- */
-export function isInlineOwnershipEnabled(): boolean {
-  const raw = process.env.WORKFLOW_INLINE_OWNERSHIP;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
-}
-
-/**
- * Whether the Node.js inline loop advances the workflow as each inline step
- * settles, instead of waiting for every step of the batch (default ON).
- *
- * When one inline step of a parallel batch completes or fails while its
- * siblings are still running, the loop replays right away in the same
- * invocation, with the siblings still in flight. A branch whose step settled
- * can then start its next step without waiting for the slowest sibling. The
- * siblings stay owned by this invocation: the replay neither creates, queues
- * nor recovers them. A pass that ends the workflow writes the run's terminal
- * event right away; the invocation still waits for the siblings' bodies
- * before it returns, and their later step events are the World's to accept or
- * refuse against the terminal run.
- *
- * Reads `process.env.WORKFLOW_INLINE_EARLY_ADVANCE` lazily. Default **ON**;
- * disabled only by an explicit `'0'` / `'false'` (case-insensitive), which
- * restores waiting for the whole batch.
- */
-export function isInlineEarlyAdvanceEnabled(): boolean {
-  const raw = process.env.WORKFLOW_INLINE_EARLY_ADVANCE;
-  if (raw === undefined || raw === '') return true;
-  return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
 /**
