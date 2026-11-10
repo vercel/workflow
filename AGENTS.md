@@ -74,7 +74,12 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 
 # Step 1: Start the dev server in background
 # NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
-cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+# NOTE: WORKFLOW_QUEUE_AUTH=off matches the e2e-local CI lanes, which keep
+# queue auth off until the team decides to run them with it on. It is refused
+# while dynamic workflows are enabled; the dynamic-workflow e2e runs with auth
+# on and starts its runs through the app (see the header of
+# packages/core/e2e/e2e-dynamic-workflow.test.ts).
+cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 WORKFLOW_QUEUE_AUTH=off pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
 # Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
@@ -166,7 +171,10 @@ world-postgres it first brings up the container and applies migrations, and
 leaves Postgres running for the next iteration unless `--teardown` is passed;
 the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
 under `--world local`, whose only state is a data directory the script clears
-before each run.
+before each run. Under `--world local` it also exports `WORKFLOW_QUEUE_AUTH=off`,
+as the e2e-local CI lanes do until the team decides to run them with queue auth
+on. world-postgres needs no such setting: it declares
+`queueAuthMode: 'skip'`, so its flow route is not checked.
 
 Run both worlds because neither subsumes the other: world-postgres
 arbitrates event slots inside one SQL statement, while world-local arbitrates
@@ -575,8 +583,8 @@ process), `web` and `web-shared` (the observability UI), `vitest` (the test
 runner's process), and private packages such as `world-sim`.
 
 ### Trace context propagation (world-vercel HTTP requests)
-Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists. `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
+Every outgoing HTTP request from `@workflow/world-vercel` to the backend (or the queue) MUST explicitly inject W3C trace context so the server can parent its spans to the caller and traces stay correlated end to end. Call `injectTraceContextIntoHeaders(headers)` (from `packages/world-vercel/src/telemetry.ts`) on the outgoing headers, inside the client span when one exists. `makeRequest` in `utils.ts` is the reference implementation. It is a no-op when no OpenTelemetry SDK is registered.
 
-Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step. Workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
+Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step. Backend spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
 
 The same rule covers a request path that is not an HTTP request. A non-`fetch` transport must still open the client span callers read a trace through: use `withHttpClientSpan` (`http-core.ts`), the envelope `instrumentedFetch` is built on, so the span carries the same name, kind, and attributes rather than a hand-rolled parallel shape. The WS events transport is the worked example. `postEventFrameOverWs` synthesizes an `http POST` span per frame and tags it `workflow.events.transport: 'ws'`, and the handshake gets its own `workflow.events.ws.connect` span (`ws-transport-spans.test.ts`). Adding a transport that writes events without one silently deletes the per-event view of a run.

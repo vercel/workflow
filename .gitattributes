@@ -6,3 +6,8 @@ packages/swc-plugin-workflow/transform/tests/**/*.stderr text eol=lf
 
 # Canonical cross-repository protocol fixtures are hashed byte-for-byte
 packages/world-vercel/src/__fixtures__/*.json text eol=lf
+
+# Package bin scripts keep LF on every platform: a CRLF shebang breaks them on
+# Unix (`/usr/bin/env: 'node\r'`), and `pnpm pack` rejects them
+# (ERR_PNPM_BIN_CRLF) when a Windows checkout converts them.
+packages/*/bin/** text eol=lf

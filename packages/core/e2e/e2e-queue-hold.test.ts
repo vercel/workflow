@@ -59,7 +59,12 @@ const answerStream = (correlationId: string) => ({
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Sends a health check with a hold, under a fresh correlation ID. */
-async function sendHeldHealthCheck(world: World) {
+async function sendHeldHealthCheck(
+  world: World,
+  hold: true | { visibilityTimeoutSeconds: number } = {
+    visibilityTimeoutSeconds: LEASE_SECONDS,
+  }
+) {
   // Region-tagged where the World tags IDs, so the probe's stream resolves to
   // the same backend on both sides (see `healthCheck`).
   const correlationId =
@@ -72,7 +77,7 @@ async function sendHeldHealthCheck(world: World) {
       // The JSON transport, as `healthCheck` sends.
       specVersion: SPEC_VERSION_LEGACY,
       idempotencyKey: `e2e-queue-hold-${correlationId}`,
-      experimental_hold: { visibilityTimeoutSeconds: LEASE_SECONDS },
+      experimental_hold: hold,
     }
   );
   return { correlationId, sent };
@@ -80,7 +85,9 @@ async function sendHeldHealthCheck(world: World) {
 
 /**
  * The flow route's answer to the probe, or `undefined` if it has not
- * answered within `withinMs`.
+ * answered within `withinMs`. Every wait, opening the stream included, is
+ * bounded by the window: a stream that only opens once data arrives would
+ * otherwise hand back an answer that landed after it.
  */
 async function flowAnswer(
   world: World,
@@ -91,7 +98,19 @@ async function flowAnswer(
   const deadline = Date.now() + withinMs;
   while (Date.now() < deadline) {
     try {
-      const stream = await world.streams.get(runId, name);
+      const opening = world.streams.get(runId, name);
+      const stream = await Promise.race([
+        opening,
+        sleep(Math.max(1, deadline - Date.now())).then(() => undefined),
+      ]);
+      if (!stream) {
+        // Still opening when the window closed: whatever it yields is late.
+        void opening.then(
+          (late) => late.cancel().catch(() => {}),
+          () => {}
+        );
+        break;
+      }
       const reader = stream.getReader();
       const remaining = Math.max(1, deadline - Date.now());
       const chunk = await Promise.race([
@@ -268,7 +287,8 @@ describe
       'a released held message is delivered at once',
       { timeout: 120_000 },
       async () => {
-        const { correlationId, sent } = await sendHeldHealthCheck(world);
+        // `true`: the default hold (a 30 s lease, like LEASE_SECONDS).
+        const { correlationId, sent } = await sendHeldHealthCheck(world, true);
         const held = heldOrFallback(sent.experimental_hold);
         if (held) await held.release();
         // Released (or never held): delivered without waiting out a lease.

@@ -19,6 +19,7 @@ import {
   type Queue,
   type QueueBatchResult,
   type QueueHandler,
+  type QueueHoldOptions,
   type QueueHoldResult,
   type QueueOptions,
   type QueuePayload,
@@ -898,8 +899,10 @@ export function resolveHoldOptions(
   opts: QueueOptions | undefined,
   lifetime: { delaySeconds?: number; retentionSeconds?: number }
 ): ExperimentalHoldOptions | undefined {
-  const hold = opts?.experimental_hold;
-  if (!hold) return undefined;
+  const requestedHold = opts?.experimental_hold;
+  if (!requestedHold) return undefined;
+  // `true` is shorthand for the defaults.
+  const hold: QueueHoldOptions = requestedHold === true ? {} : requestedHold;
   if (lifetime.delaySeconds !== undefined) {
     throw new TypeError(
       'experimental_hold cannot be combined with delaySeconds: a held message runs in the process that sent it, now'
@@ -1475,6 +1478,12 @@ export function createQueue(config?: APIConfig): Queue {
   ) => error instanceof ConsumerDiscoveryError;
 
   return {
+    // The runtime does not check deliveries with a key, because two layers
+    // protect the route: only Vercel Queues can trigger it, and the handler
+    // takes a message ID and retrieves and leases the message through the
+    // queue, so a request cannot carry its own payload. Do not copy 'skip'
+    // into a World that lacks either layer.
+    queueAuthMode: 'skip',
     queue,
     queueBatch,
     createQueueHandler,

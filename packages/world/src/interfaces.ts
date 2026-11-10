@@ -840,7 +840,7 @@ export interface WorldCapabilities {
    *      the re-pointing if the claimer had not, so `resumeHook()` can follow
    *      the token to its new owner and retry with the same `resumeId`.
    *
-   * Formalised in `workflow-server/specs/HookForceClaim.tla`. A World that
+   * A World that
    * cannot give these guarantees must leave this unset; the runtime then
    * rejects `experimental_force` at `createHook()` time.
    */
@@ -946,6 +946,11 @@ export interface World extends Queue, Streamer, Storage {
    * determines the latest deployment that shares the same environment (e.g., same
    * "production" target or same git branch for "preview" deployments) as the
    * current deployment.
+   *
+   * The CLI's `workflow start` uses it too, so a process that is not itself a
+   * deployment resolves "latest" the same way `start()` does. Such a process
+   * has no current deployment, so an implementation that supports it resolves
+   * relative to the environment it was configured for.
    *
    * Not all World implementations support this: it is only implemented by
    * world-vercel where deployment routing is meaningful.

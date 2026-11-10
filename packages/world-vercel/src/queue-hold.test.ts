@@ -96,6 +96,25 @@ describe('send-and-hold (experimental_hold)', () => {
     });
   });
 
+  it('sends the default hold for `experimental_hold: true`', async () => {
+    mockSend.mockResolvedValue({
+      messageId: 'msg_1',
+      experimental_notHeld: { reason: 'unsupported' },
+    });
+    const result = await createQueue().queue(
+      '__wkf_workflow_test',
+      { runId: 'wrun_1' },
+      { idempotencyKey: 'k', experimental_hold: true }
+    );
+    expect(sendOptionsOf().experimental_hold).toEqual({
+      consumerGroup: HOLD_CONSUMER_GROUP,
+    });
+    expect(result.experimental_hold).toEqual({
+      status: 'not_held',
+      reason: 'unsupported',
+    });
+  });
+
   it('refuses a hold with a delay before anything is sent', async () => {
     await expect(
       createQueue().queue(
@@ -268,6 +287,15 @@ describe('resolveHoldOptions', () => {
     expect(resolveHoldOptions({ experimental_hold: {} }, {})).toEqual({
       consumerGroup: HOLD_CONSUMER_GROUP,
     });
+  });
+
+  it('takes `true` as shorthand for the defaults', () => {
+    expect(resolveHoldOptions({ experimental_hold: true }, {})).toEqual(
+      resolveHoldOptions({ experimental_hold: {} }, {})
+    );
+    expect(() =>
+      resolveHoldOptions({ experimental_hold: true }, { delaySeconds: 1 })
+    ).toThrow(TypeError);
   });
 
   it('clamps the lease to what Vercel Queues accepts', () => {

@@ -23,6 +23,7 @@ import {
   releaseOrphanedSteps,
 } from './orphaned-steps.js';
 import { createQueue, type DirectHandler } from './queue.js';
+import { createQueueAuthKey } from './queue-auth-key.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
@@ -121,6 +122,9 @@ async function clearTaggedLocks(basedir: string, tag: string): Promise<void> {
  * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`; falls back to the `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS` env var when unset)
  * @param args.tag - Optional tag to scope files (e.g., `vitest-0`). When set, files are written
  *   as `{id}.{tag}.json` and `clear()` only deletes files matching this tag.
+ * @param args.queueAuthKey - `'regenerate'` (default) writes a new queue auth key to the data
+ *   directory when the World is created; `'read'` only reads the key a running app wrote (the
+ *   CLI, the web UI). See `Config.queueAuthKey`.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
  * @throws {DataDirVersionError} If the data directory version is incompatible
  */
@@ -133,7 +137,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   warnIfRunningInVercelDeployment(mergedConfig.dataDir);
   const tag = mergedConfig.tag;
-  const queue = createQueue(mergedConfig);
+  // Before the queue, which waits for it: a regenerating World writes the
+  // app's new key before it sends anything.
+  const queueAuthKey = createQueueAuthKey(
+    mergedConfig.dataDir,
+    mergedConfig.queueAuthKey ?? 'regenerate'
+  );
+  const queue = createQueue(mergedConfig, { queueAuthKey });
   const { clearCache: clearStorageCache, ...storage } = createStorage(
     mergedConfig.dataDir,
     tag
@@ -389,6 +399,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         resetHookIndexEnsureCache();
         await rm(mergedConfig.dataDir, { recursive: true, force: true });
         await initDataDir(mergedConfig.dataDir);
+        // That removed the queue auth key too: a World that wrote it writes
+        // it again, so the CLI and the app's other processes can still send.
+        await queueAuthKey.restore();
       }
       // The stream indexes are gone, so forget which streams were registered.
       clearStreamerCache();

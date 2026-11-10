@@ -77,7 +77,7 @@ import { waitUntil } from "@vercel/functions";
 if (world.capabilities?.experimental_queueHold) {
   const { messageId, experimental_hold: hold } = await world.queue(queueName, payload, {
     idempotencyKey, // always send one with a hold
-    experimental_hold: {}, // [!code highlight]
+    experimental_hold: true, // [!code highlight]
   });
 
   if (hold?.status === "held") { // [!code highlight]
@@ -99,7 +99,7 @@ if (world.capabilities?.experimental_queueHold) {
 | `held` | `messageId`, `leaseExpiresAt`, `consume(handler)`, `release(delaySeconds?)` | Call `consume(handler)` right away and keep the invocation alive until it settles (for example with `waitUntil`). Or call `release()` to hand the message back to the queue without running it. |
 | `not_held` | `reason` | Nothing. The queue, or a delivery that's already running, takes care of the message. |
 
-**Options** (`experimental_hold`):
+**Options**: pass `experimental_hold: true` for the defaults, or an object with any of:
 
 | Option | Default | Description |
 |--------|---------|-------------|

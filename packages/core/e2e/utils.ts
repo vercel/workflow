@@ -4,10 +4,9 @@ import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { getCurrentTest } from '@vitest/runner';
 import { createWorkflowUrl } from '@workflow/utils';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
-import { onTestFailed } from 'vitest';
+import { onTestFailed, TestRunner } from 'vitest';
 import { fetchWithTrustedSources } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
@@ -940,7 +939,7 @@ interface TrackedRun {
  *
  * Concurrent suites bind one of these per test via {@link runInTestState}
  * (AsyncLocalStorage), so tests interleaving on the event loop cannot
- * clobber each other's attribution — `getCurrentTest()` is a plain module
+ * clobber each other's attribution — `TestRunner.getCurrentTest()` is a plain module
  * variable in vitest and is wrong after any `await` under concurrency.
  * Sequential suites (dev.test.ts, e2e-agent.test.ts, e2e-region.test.ts)
  * keep the classic path: {@link setupRunTracking} resets a module-level
@@ -952,7 +951,7 @@ interface PerTestState {
   /**
    * The test's own `ctx.skip`, captured where the context is unambiguous
    * (the fixture), so conformance gates called mid-test-body can skip the
-   * right test — `getCurrentTest()?.context.skip` would target whichever
+   * right test — `TestRunner.getCurrentTest()?.context.skip` would target whichever
    * test most recently started.
    */
   skip?: (note?: string) => void;
@@ -975,7 +974,8 @@ export function createPerTestState(
 
 /** ALS-bound skip when available, vitest's global otherwise. */
 const currentSkip = (): ((note?: string) => void) | undefined =>
-  testStateStorage.getStore()?.skip ?? getCurrentTest()?.context.skip;
+  testStateStorage.getStore()?.skip ??
+  TestRunner.getCurrentTest()?.context.skip;
 
 /** Run `fn` with `state` bound as the ambient per-test state. */
 export function runInTestState<T>(

@@ -518,7 +518,7 @@ describe('healthCheck response parsing', () => {
 
   it('returns unhealthy within the timeout when streams.get never resolves', async () => {
     // Regression test: some worlds hold the stream GET open until data is
-    // written (workflow-server holds unwritten streams for ~2 minutes).
+    // written (world-vercel holds unwritten streams for ~2 minutes).
     // The timeout must bound that call too, not just the poll loop.
     const world = {
       queue: vi.fn().mockResolvedValue(undefined),
@@ -562,9 +562,9 @@ describe('loadWorkflowRunEvents', () => {
   // Regression test for the "Event cursor missing after initial load" warning.
   //
   // A World may legitimately return `{ data: [], cursor: null, hasMore: false }`
-  // on a trailing empty page — workflow-server does this whenever the previous
-  // page's DynamoDB query hit `Limit` exactly and DynamoDB returned a
-  // `LastEvaluatedKey` "just in case." If the pagination loop overwrites the
+  // on a trailing empty page — the world-vercel backend does this whenever
+  // the previous page filled its limit exactly and the backend could not yet
+  // tell whether more rows follow. If the pagination loop overwrites the
   // cursor with `null` on that trailing page, the runtime's incremental-load
   // path can't proceed and falls back to a full reload on every replay
   // iteration, logging "Event cursor missing after initial load" each time.

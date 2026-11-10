@@ -90,11 +90,16 @@ interface PendingRequest {
  */
 export interface WsPushSubscriber {
   onPush(frame: DecodedFrame): void;
+  /** A live feed's `run_heartbeat` frame (only sent to a client that lists `run-heartbeat`). */
+  onHeartbeat?(frame: DecodedFrame): void;
   onClose(error: WsTransportError): void;
 }
 
 /** Frame type of a live-feed push. */
 export const RUN_EVENT_FRAME_TYPE = 'run_event';
+
+/** Frame type of a live feed's heartbeat. */
+export const RUN_HEARTBEAT_FRAME_TYPE = 'run_heartbeat';
 
 /**
  * Everything scoped to one socket. `nextReqId` and `pending` live here rather
@@ -202,7 +207,7 @@ class WsEventsTransport {
       // here instead would recreate the socket nobody owns that the explicit
       // open/close pair exists to rule out.
       throw new WsTransportError(
-        `workflow-server events WS channel for ${this.wsUrl} is closed`
+        `world-vercel events WS channel for ${this.wsUrl} is closed`
       );
     }
     const conn = await this.ensureConnected();
@@ -226,7 +231,7 @@ class WsEventsTransport {
           if (!conn.pending.delete(reqId)) return;
           reject(
             new WsTransportError(
-              `workflow-server events WS request ${reqId} to ${this.wsUrl} ` +
+              `world-vercel events WS request ${reqId} to ${this.wsUrl} ` +
                 `timed out after ${timeoutMs}ms with no reply`
             )
           );
@@ -234,9 +239,10 @@ class WsEventsTransport {
           // the next write should be handed.
           this.failConnection(
             conn,
-            `workflow-server events WS connection to ${this.wsUrl} ` +
+            `world-vercel events WS connection to ${this.wsUrl} ` +
               `abandoned after request ${reqId} timed out`
           );
+          this.close('request timed out');
         }, timeoutMs);
         deadline.unref?.();
         const onSent = (err?: Error) => {
@@ -248,7 +254,7 @@ class WsEventsTransport {
           if (conn.pending.delete(reqId)) {
             reject(
               new WsTransportError(
-                `workflow-server events WS send failed: ${describeError(err)}`,
+                `world-vercel events WS send failed: ${describeError(err)}`,
                 { cause: err }
               )
             );
@@ -309,10 +315,7 @@ class WsEventsTransport {
    * HTTP: writes resolve no channel and take the pooled HTTP route instead of
    * paying another handshake attempt each.
    *
-   * That de-opt covers the handshake only. A channel that connects and then
-   * fails every write stays registered and keeps taking the WS path, so the
-   * fallback is per-invocation rather than a circuit breaker. Tolerable while
-   * the transport is opt-in; defaulting it on needs a write-failure de-opt too.
+   * A write that times out closes the channel too; other failed writes leave it registered.
    */
   open(): void {
     if (this.closed) return;
@@ -362,10 +365,19 @@ class WsEventsTransport {
     const conn = this.connection;
     this.connection = null;
     this.closePushSubscribers(
-      `workflow-server events WS channel for ${this.wsUrl} closed (${reason})`
+      `world-vercel events WS channel for ${this.wsUrl} closed (${reason})`
     );
     // Normal closure: a clean client-side release, not an aborted run.
     conn?.ws.close(1000, reason);
+  }
+
+  /**
+   * Whether a request now would go out at once: the socket finished its
+   * handshake and is open. False while the first handshake (or a reconnect)
+   * is still in flight, when a request would wait for it.
+   */
+  isConnected(): boolean {
+    return !this.closed && this.connection?.ws.readyState === WebSocket.OPEN;
   }
 
   private ensureConnected(): Promise<Connection> {
@@ -406,7 +418,7 @@ class WsEventsTransport {
       // reconnect; queue redelivery recovers this by landing in a new
       // invocation with a new token.
       throw new WsTransportError(
-        `workflow-server events WS connection to ${this.wsUrl} drained for ` +
+        `world-vercel events WS connection to ${this.wsUrl} drained for ` +
           `auth expiry, but re-resolving the bearer produced the same token. ` +
           `Not reconnecting with a token the server has already rejected; ` +
           `the next event write will retry.`
@@ -481,10 +493,28 @@ class WsEventsTransport {
   private connect(): Promise<Connection> {
     return new Promise<Connection>((resolve, reject) => {
       void (async () => {
+        const handshakeTimeoutMs = getRequestTimeoutMs();
+        let timedOut = false;
+        let socket: WebSocket | undefined;
+        const handshakeDeadline = setTimeout(() => {
+          timedOut = true;
+          const message =
+            `world-vercel events WS handshake to ${this.wsUrl} timed out ` +
+            `after ${handshakeTimeoutMs}ms`;
+          const log = this.closed ? debugLog : console.error;
+          log(`world-vercel: ws events transport ${message}`);
+          reject(new WsTransportError(message));
+          socket?.terminate();
+          this.close('handshake timed out');
+        }, handshakeTimeoutMs);
+        handshakeDeadline.unref?.();
+
         let conn: Connection;
         try {
           const headers = await this.resolveUpgradeHeaders();
+          if (timedOut) return;
           const ws = new WebSocket(this.wsUrl, { headers });
+          socket = ws;
           ws.binaryType = 'nodebuffer';
           const pending = new Map<number, PendingRequest>();
           conn = {
@@ -504,6 +534,8 @@ class WsEventsTransport {
             }),
           };
         } catch (err) {
+          clearTimeout(handshakeDeadline);
+          if (timedOut) return;
           console.error(
             `world-vercel: ws events transport could not open a connection ` +
               `to ${this.wsUrl}: ${describeError(err)}`
@@ -514,7 +546,7 @@ class WsEventsTransport {
             err instanceof WsTransportError
               ? err
               : new WsTransportError(
-                  `workflow-server events WS connection to ${this.wsUrl} ` +
+                  `world-vercel events WS connection to ${this.wsUrl} ` +
                     `could not be opened: ${describeError(err)}`,
                   { cause: err }
                 )
@@ -527,6 +559,7 @@ class WsEventsTransport {
 
         ws.on('open', () => {
           opened = true;
+          clearTimeout(handshakeDeadline);
           if (this.closed) {
             // Released while this handshake was in flight: `close()` could
             // only null out the connection it could see. Adopting this one now
@@ -534,7 +567,7 @@ class WsEventsTransport {
             ws.close(1000, 'released while connecting');
             reject(
               new WsTransportError(
-                `workflow-server events WS connection to ${this.wsUrl} was ` +
+                `world-vercel events WS connection to ${this.wsUrl} was ` +
                   `released while connecting`
               )
             );
@@ -550,6 +583,7 @@ class WsEventsTransport {
         });
 
         ws.on('error', (err) => {
+          if (timedOut) return;
           console.error(
             `world-vercel: ws events transport socket error ` +
               `(${this.wsUrl}): ${describeError(err)}`
@@ -564,6 +598,7 @@ class WsEventsTransport {
         });
 
         ws.on('close', (code: number) => {
+          clearTimeout(handshakeDeadline);
           const wasActive = this.connection === conn;
           if (wasActive) this.connection = null;
 
@@ -574,7 +609,7 @@ class WsEventsTransport {
             // waiting forever. Rejecting an already-settled promise is a no-op.
             reject(
               new WsTransportError(
-                `workflow-server events WS connection to ${this.wsUrl} ` +
+                `world-vercel events WS connection to ${this.wsUrl} ` +
                   `closed before opening (code ${code})`
               )
             );
@@ -583,7 +618,7 @@ class WsEventsTransport {
           // Subscriptions live on the connection, so they end with it.
           if (wasActive) {
             this.closePushSubscribers(
-              `workflow-server events WS connection closed (code ${code})`
+              `world-vercel events WS connection closed (code ${code})`
             );
           }
 
@@ -595,7 +630,7 @@ class WsEventsTransport {
           this.failAllPending(
             conn,
             new WsTransportError(
-              `workflow-server events WS connection closed (code ${code})`
+              `world-vercel events WS connection closed (code ${code})`
             )
           );
 
@@ -662,10 +697,7 @@ class WsEventsTransport {
         `could not decode a ${raw.byteLength}-byte reply frame from ` +
         `${this.wsUrl}: ${describeError(err)}`;
       console.error(`world-vercel: ws events transport ${detail}`);
-      this.failConnection(
-        conn,
-        `workflow-server events WS transport ${detail}`
-      );
+      this.failConnection(conn, `world-vercel events WS transport ${detail}`);
       return;
     }
 
@@ -693,6 +725,20 @@ class WsEventsTransport {
           `(reason: ${reason}, graceMs: ${decoded.meta.graceMs ?? 'unspecified'}); ` +
           `connection will close soon.`
       );
+      return;
+    }
+
+    if (decoded.meta.type === RUN_HEARTBEAT_FRAME_TYPE) {
+      // Unsolicited, like a push: it answers no pending request.
+      for (const subscriber of [...this.pushSubscribers]) {
+        try {
+          subscriber.onHeartbeat?.(decoded);
+        } catch (err) {
+          console.error(
+            `world-vercel: ws live-feed subscriber threw on a heartbeat: ${describeError(err)}`
+          );
+        }
+      }
       return;
     }
 
@@ -724,10 +770,7 @@ class WsEventsTransport {
         `${errorFrameMessage(decoded.body)}. The server could not parse a ` +
         `frame this client sent, so the originating write cannot be identified`;
       console.error(`world-vercel: ws events transport ${detail}.`);
-      this.failConnection(
-        conn,
-        `workflow-server events WS transport ${detail}`
-      );
+      this.failConnection(conn, `world-vercel events WS transport ${detail}`);
       return;
     }
 
@@ -736,10 +779,7 @@ class WsEventsTransport {
         `received a reply frame with no numeric reqId from ${this.wsUrl} ` +
         `(type: ${String(decoded.meta.type ?? 'absent')})`;
       console.error(`world-vercel: ws events transport ${detail}.`);
-      this.failConnection(
-        conn,
-        `workflow-server events WS transport ${detail}`
-      );
+      this.failConnection(conn, `world-vercel events WS transport ${detail}`);
       return;
     }
 
@@ -780,10 +820,7 @@ class WsEventsTransport {
           ? `received a split reply from ${this.wsUrl} that breaks the part protocol: ${err.message}`
           : `could not assemble a split reply from ${this.wsUrl}: ${describeError(err)}`;
       console.error(`world-vercel: ws events transport ${detail}`);
-      this.failConnection(
-        conn,
-        `workflow-server events WS transport ${detail}`
-      );
+      this.failConnection(conn, `world-vercel events WS transport ${detail}`);
       return undefined;
     }
     if (frame === undefined) return undefined;
@@ -1055,7 +1092,7 @@ function resolveChannelUrl(
   if (usingProxy) {
     // `usingProxy` resolves `baseUrl` to `api.vercel.com/v1/workflow`, an
     // HTTP-only REST gateway that does not forward a raw WebSocket upgrade to
-    // the workflow-server target: it either rejects the upgrade or hands the
+    // the backend target: it either rejects the upgrade or hands the
     // route a plain forwarded request that never went through Vercel's
     // platform-level upgrade path, which is what surfaces as
     // "experimental_upgradeWebSocket is not available in the current runtime
@@ -1081,9 +1118,25 @@ function resolveChannelUrl(
 }
 
 /**
- * The write path's question: is there an open channel for this run? `null` means
- * write over HTTP, because the transport is disabled, because this World can't
- * hold a socket, or because nothing opened a channel for this invocation.
+ * What {@link resolveWsTransport} found for a run, each reason it knows named
+ * where it knows it, so no caller has to work out why there is no socket:
+ *
+ * - `open`: a channel is open for the run here.
+ * - `proxy`: this World cannot hold a socket at all (a `projectConfig` World,
+ *   routed through the HTTP-only api-workflow proxy). Its writes are on HTTP
+ *   by configuration.
+ * - `no_channel`: nothing opened a channel for this run in this process, or
+ *   the one it had closed (a timed out write, a failed connect).
+ */
+export type WsTransportResolution =
+  | { kind: 'open'; transport: WsEventsTransport; wsUrl: string }
+  | { kind: 'proxy' }
+  | { kind: 'no_channel' };
+
+/**
+ * The write path's question: is there an open channel for this run? Anything
+ * but `open` means write over HTTP (see {@link WsTransportResolution}). The
+ * transport gate itself is checked by the caller.
  *
  * A lookup, never a create. Lazily connecting here is what made the socket's
  * lifetime a property of the *last write* rather than of the caller, and left a
@@ -1092,12 +1145,11 @@ function resolveChannelUrl(
 export function resolveWsTransport(
   runId: string,
   config: APIConfig | undefined
-): {
-  transport: WsEventsTransport;
-  wsUrl: string;
-} | null {
+): WsTransportResolution {
   const wsUrl = resolveChannelUrl(runId, config);
-  if (!wsUrl) return null;
+  if (!wsUrl) return { kind: 'proxy' };
   const transport = wsState.transports.get(wsUrl);
-  return transport ? { transport, wsUrl } : null;
+  return transport
+    ? { kind: 'open', transport, wsUrl }
+    : { kind: 'no_channel' };
 }

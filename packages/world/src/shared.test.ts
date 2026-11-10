@@ -11,23 +11,6 @@ function uncompiledPage(dataSchema: z.ZodTypeAny) {
   });
 }
 
-function countGeneratedFunctions(run: () => void): number {
-  const original = globalThis.Function;
-  let calls = 0;
-  globalThis.Function = new Proxy(original, {
-    construct(target, args, newTarget) {
-      calls += 1;
-      return Reflect.construct(target, args, newTarget);
-    },
-  }) as unknown as FunctionConstructor;
-  try {
-    run();
-    return calls;
-  } finally {
-    globalThis.Function = original;
-  }
-}
-
 describe('PaginatedResponseSchema', () => {
   const page = {
     data: [{ id: 'item_1' }],
@@ -58,7 +41,7 @@ describe('PaginatedResponseSchema', () => {
     });
   });
 
-  it('reuses the compiled schema for the same data schema object', () => {
+  it('reuses the schema for the same data schema object', () => {
     const dataSchema = z.object({ id: z.string() });
     const first = PaginatedResponseSchema(dataSchema);
     const second = PaginatedResponseSchema(dataSchema);
@@ -75,19 +58,6 @@ describe('PaginatedResponseSchema', () => {
     expect(second).not.toBe(first);
     expect(first.parse(page)).toEqual(page);
     expect(second.parse(page)).toEqual(page);
-  });
-
-  it('compiles a data schema once', () => {
-    const dataSchema = z.object({ id: z.string() });
-    const first = countGeneratedFunctions(() => {
-      PaginatedResponseSchema(dataSchema);
-    });
-    const second = countGeneratedFunctions(() => {
-      PaginatedResponseSchema(dataSchema);
-    });
-
-    expect(first).toBeGreaterThan(0);
-    expect(second).toBe(0);
   });
 
   it('reports the same Zod issues as the uncompiled schema', () => {

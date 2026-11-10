@@ -14,6 +14,7 @@ import { AppendOnlyWorld } from '../../test-support/append-only-world.js';
 import {
   expectRefusalRedelivery,
   runResult,
+  stepMessagesOf,
 } from '../../test-support/orchestrator-harness.js';
 import { ReplayBudget } from '../replay-budget.js';
 import { setWorld } from '../world.js';
@@ -48,6 +49,24 @@ registerStepFunction('turbo_add', async (a: number, b: number) => {
   hook?.();
   return a + b;
 });
+
+registerStepFunction('turbo_branch', async (n: number) => {
+  bodies.push({
+    listCalls: currentWorld?.listCalls.length ?? -1,
+    eventTypes: currentWorld?.events.map((e) => e.eventType) ?? [],
+  });
+  const hook = onBody;
+  onBody = undefined;
+  hook?.();
+  return n * 2;
+});
+
+/** `n` branches: the first inline slots run here, the rest in the background. */
+const fanOut = `const branch = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_branch");
+  async function workflow(n) {
+    const out = await Promise.all(Array.from({ length: n }, (_, i) => branch(i)));
+    return out.reduce((a, b) => a + b, 0);
+  }${transform('workflow')}`;
 
 const twoSteps = `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_add");
   async function workflow(a, b) {
@@ -333,6 +352,32 @@ describe.each([
     expect(bodies[0]?.listCalls).toBe(0);
   });
 
+  it('completes a resilient start whose run_started the World recorded as the creation, under turbo', async () => {
+    // The World writes the creating `run_started` at the first slot, where
+    // turbo holds a `run_created` it built without loading the log: the two
+    // replay alike, and the write's `allocated` keeps the fence count right.
+    const { world, start } = await setup(
+      twoSteps,
+      [1, 2],
+      { creationOnStart: true },
+      false
+    );
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(world.deliveries).toHaveLength(1);
+    expect(types(world.events)).toEqual([
+      'run_started',
+      'step_started',
+      'step_completed',
+      'step_started',
+      'step_completed',
+      'run_completed',
+    ]);
+    expect(bodies[0]?.listCalls).toBe(0);
+  });
+
   it('starts bodies only after their start commits once the run has a wait', async () => {
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => {
@@ -507,5 +552,132 @@ describe.each([
     expect(bodies).toHaveLength(1);
     expect(bodies[0]?.eventTypes).toContain('step_started');
     expect(world.events.at(-1)?.eventType).toBe('run_completed');
+  });
+});
+
+// The node engine only: QuickJS writes a suspension's creations through its
+// own path (`spec9/quickjs-entrypoint.ts`), which commits them first.
+describe('turbo fan-out on the node engine', () => {
+  beforeEach(() => {
+    currentEngine = 'node';
+  });
+
+  const BRANCHES = 8;
+  const SUM = BRANCHES * (BRANCHES - 1);
+
+  it("starts a fan-out's inline bodies before its creations commit, and its background steps only after", async () => {
+    // Hold the creation batch until an inline body has run: the body can
+    // only run first if it does not wait for its creation to commit.
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+      // Without the early start the batch would wait for a body that
+      // waits for it: let it go, so that fails the assertions below.
+      setTimeout(resolve, 2_000).unref?.();
+    });
+    let stepMessagesAtFirstBody = -1;
+    const { world, start } = await setup(fanOut, [BRANCHES], {
+      fence: true,
+      async beforeCreate(data, _params, source) {
+        if (source?.batch && data.eventType === 'step_created') await held;
+      },
+    });
+    onBody = () => {
+      stepMessagesAtFirstBody = stepMessagesOf(world).length;
+      release();
+    };
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(SUM);
+    // The first body ran before any step's creation was durable, and before
+    // any background step's message went out.
+    expect(
+      bodies[0]?.eventTypes.filter((type) => type.startsWith('step_'))
+    ).toEqual([]);
+    expect(bodies[0]?.listCalls).toBe(0);
+    expect(stepMessagesAtFirstBody).toBe(0);
+    // Every branch ran once: 3 inline, the rest from their messages.
+    expect(bodies).toHaveLength(BRANCHES);
+    expect(stepMessagesOf(world)).toHaveLength(BRANCHES - 3);
+    // Every write still lands after run_started, in decision order.
+    const order = types(world.events);
+    expect(order.indexOf('run_started')).toBe(1);
+    expect(order.filter((t) => t === 'step_completed')).toHaveLength(BRANCHES);
+  });
+
+  it('commits a fan-out first when one of its inline steps allows no retries', async () => {
+    // The first branch takes an inline slot and must not run before its
+    // start is durable.
+    const mixed = `const once = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_once");
+      const branch = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("turbo_branch");
+      async function workflow(n) {
+        const out = await Promise.all([
+          once(0),
+          ...Array.from({ length: n }, (_, i) => branch(i)),
+        ]);
+        return out.reduce((a, b) => a + b, 0);
+      }${transform('workflow')}`;
+    // Hold the creation batch a while: an inline body that started ahead
+    // of it would run in the meantime.
+    let bodiesWhileHeld: number | undefined;
+    const { world, start } = await setup(mixed, [BRANCHES], {
+      fence: true,
+      async beforeCreate(data, _params, source) {
+        if (!source?.batch || data.eventType !== 'step_created') return;
+        if (bodiesWhileHeld !== undefined) return;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        bodiesWhileHeld = bodies.length;
+      },
+    });
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(1 + SUM);
+    expect(bodies).toHaveLength(BRANCHES + 1);
+    // No body ran before the boundary's creations were durable.
+    expect(bodiesWhileHeld).toBe(0);
+  });
+
+  it('commits a fan-out first under WORKFLOW_OPTIMISTIC_INLINE_START=0', async () => {
+    process.env.WORKFLOW_OPTIMISTIC_INLINE_START = '0';
+    const { world, start } = await setup(fanOut, [BRANCHES]);
+
+    await world.deliver(start);
+    await world.runUntilIdle();
+
+    expect(await runResult(world)).toBe(SUM);
+    expect(bodies[0]?.eventTypes).toContain('step_started');
+    expect(bodies[0]?.eventTypes).toContain('step_created');
+  });
+
+  it('redelivers and completes when the creation batch an inline body started ahead of fails', async () => {
+    let refused = false;
+    const { world, start } = await setup(fanOut, [BRANCHES], {
+      fence: true,
+      beforeCreate(data, _params, source) {
+        if (source?.batch && data.eventType === 'step_created' && !refused) {
+          refused = true;
+          throw Object.assign(new Error('unavailable'), { status: 503 });
+        }
+      },
+    });
+
+    // The failed batch fails the delivery once its bodies settled; the
+    // queue redelivers it, and the redelivery decides from the log.
+    await expect(world.deliver(start)).rejects.toThrow('unavailable');
+    await world.runUntilIdle();
+
+    expect(refused).toBe(true);
+    expect(world.deliveries[1]?.deliveryCount).toBe(2);
+    expect(await runResult(world)).toBe(SUM);
+    // Each branch completed exactly once in the log, whatever ran twice.
+    const completed = world.events.filter(
+      (e) => e.eventType === 'step_completed'
+    );
+    expect(new Set(completed.map((e) => e.correlationId)).size).toBe(BRANCHES);
+    expect(completed).toHaveLength(BRANCHES);
   });
 });

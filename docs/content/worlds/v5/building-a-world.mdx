@@ -100,9 +100,9 @@ export function createWorld(): World {
 
 The runtime checks this before it creates or replays anything and throws if the version is outside the range it supports, naming both the range and what your World declared. A version below the range means your World allocates event IDs the runtime cannot read positions out of; above it means your World speaks a protocol this runtime has not learned.
 
-`mintedSpecVersion()` returns the current spec version, or the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) opts new runs out. Call it inside `createWorld()` so a process can create Worlds in both modes. It reads `process.env` by default; in a host without `process`, such as a browser, pass the environment as its argument.
+`mintedSpecVersion()` returns the current spec version, or the version [`WORKFLOW_SPEC_VERSION`](/docs/configuration/runtime-tuning#workflow_spec_version) selects. Call it inside `createWorld()` so a process can create Worlds with different settings. It reads `process.env` by default; in a host without `process`, such as a browser, pass the environment as its argument.
 
-Calling it keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number, or `SPEC_VERSION_CURRENT`, which does not follow `WORKFLOW_SEALED_LOG`, leaves your World out of step. Keep `@workflow/world` in the same release channel as the `workflow` version your users install. See [Spec versions](/worlds/upgrading-to-v5#spec-versions) for what each version requires of a World.
+Calling it keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a spec bump raises your declaration and the runtime's requirement together. A hard-coded number, or `SPEC_VERSION_CURRENT`, which does not follow `WORKFLOW_SPEC_VERSION`, leaves your World out of step. Keep `@workflow/world` in the same release channel as the `workflow` version your users install. See [Spec versions](/worlds/upgrading-to-v5#spec-versions) for what each version requires of a World.
 
 ## The event log model
 
@@ -237,7 +237,7 @@ Spec version 7 supports one alternative to allocate-at-commit for Worlds whose s
 
 The runtime skips `noop` events during replay. It never delivers them to a consumer or uses them to advance the deterministic clock, so a sealed log replays identically to one whose writers filled the holes. `noop` isn't user-creatable and is never sent to `events.create()`. Only your read path may write one. Worlds that allocate at the commit, through a synchronous counter or unique-constraint append, maintain perfect density and don't need sealing. `world-local` and `world-postgres` never seal, and a World that allocates at the commit is spec 7 compliant without additional work.
 
-The version a World stamps comes from `mintedSpecVersion()`: 8 by default or the slot-identity version (6) when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
+The version a World stamps comes from `mintedSpecVersion()`: 8 by default, or the version [`WORKFLOW_SPEC_VERSION`](/docs/configuration/runtime-tuning#workflow_spec_version) selects, such as the slot-identity version (6). Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
@@ -322,6 +322,10 @@ The Queue interface handles asynchronous workflow execution, including queued st
 interface Queue {
   getDeploymentId(): Promise<string>;
 
+  // How the runtime authenticates deliveries to the flow route. Optional:
+  // omitted means not checked. Required in SDK v6.
+  queueAuthMode?: 'loopback' | 'skip';
+
   queue(
     queueName: ValidQueueName,
     message: QueuePayload,
@@ -354,6 +358,17 @@ interface Queue {
 ```
 
 `meta.messageId` should be stable across redeliveries of one message. The optional `meta.deliveryCount` is 1 on a message's first delivery and increments on every redelivery; leave it `undefined` when your queue cannot say. The optional `meta.createdAt` is when the message was first enqueued, unchanged across its redeliveries.
+
+### Authenticating deliveries
+
+The Workflow SDK's flow route is mounted in the app like any other route, so a request from outside the app can reach it. Before it reads the body or touches any run, the runtime checks every request to that route against the World's `queueAuthMode` mode. The check runs in the flow route handler `@workflow/core` generates, not in `createQueueHandler()`, so a queue consumer's own route (served with `createQueueHandler()` and registered with `registerRoute()`) is not checked and must authenticate deliveries itself. The modes:
+
+- `'loopback'`: for a queue that delivers back to the app's own flow route. The delivery must carry the app's queue key in the `QUEUE_AUTH_HEADER` (`x-workflow-auth`) header; a request without it gets a `401`, and no run is touched. "Loopback" means sent by the app's own processes, which share the key, not any request from `localhost`. The queue attaches the key to every delivery it sends, over HTTP or to an in-process handler, on every attempt. Set it when the delivery is sent, never store it with the message, and replace any copy a caller supplied in `opts.headers`. The runtime checks the key against the sources Worlds register with `setQueueAuthKeySource()` from `@workflow/utils`, one per data directory, accepting a key that matches any of them; when none is registered, it checks `getQueueAuthKey()`, a key held in memory by one process. `@workflow/world-local` registers the key in its data directory, which the app, the CLI and the web UI share (see [the Local World](/worlds/local#workflow_queue_auth)). A World whose queue reuses `@workflow/world-local`'s gets this for free. The mode is temporary: it exists while the Local World's queue delivers over the app's own HTTP route.
+- `'skip'`: the runtime does not check. For a World whose platform guarantees that only its queue reaches the route, as the [Vercel World](/worlds/vercel#security) does with two layers: the route can be triggered only by Vercel Queues, and the handler receives only a message ID, and retrieves and leases the message through Vercel Queues. Declare `'skip'` only when both hold. `@workflow/world-postgres` declares it for now, until its messages are delivered in-process ([#5258](https://github.com/vercel/workflow/issues/5258)); its flow route accepts any well-formed request, so protect it at the network edge (see [the Postgres World](/worlds/postgres#protect-the-queue-route)).
+
+A World that declares nothing is not checked, and the runtime logs a warning when its flow route starts (once, then at most once a minute when routes restart), saying the route is not authenticated and has to be protected at the network edge. The mode becomes required in SDK v6, so declare one now: `'loopback'` if the World's queue attaches the key, `'skip'` only when the route is protected as described above. Operators can turn the check off with [`WORKFLOW_QUEUE_AUTH=off`](/docs/configuration/runtime-tuning#workflow_queue_auth), except while dynamic workflows are enabled.
+
+The runtime's `401` is marked: it carries the `x-workflow-auth-refused: 1` header (`QUEUE_AUTH_REFUSED_HEADER`) and `"code": "QUEUE_AUTH_REFUSED"` in its JSON body. A refused delivery carried a key other than the route's, for example one from before another process of the app wrote a new key. A queue that sees the marker (`isQueueAuthRefusal(response)` from `@workflow/utils`) should reload its key and retry at once if it changed, and otherwise retry a few times with a short backoff, then give the message up and log it once, rather than retry it for hours. A refused delivery reached no handler and touched no run, so retrying is safe, and it should not count as an attempt. `@workflow/world-local` gives up after 5 refusals its reload did not fix; a refusal followed by a new key is retried at once without counting, up to 16 times per message, after which it counts like any other. A `401` without the marker comes from something else in front of the app, such as a proxy, so keep retrying that one.
 
 ### Queue prefixes and delivery routes
 
@@ -442,6 +457,7 @@ Every message targets one logical `queueName`, but you may split the batch inter
 
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
+// QueueOptions.experimental_hold?: true | QueueHoldOptions (`true` means `{}`)
 interface QueueHoldOptions {
   consumerGroup?: string; // the group that would otherwise receive it
   visibilityTimeoutSeconds?: number; // the hold's lease
@@ -467,6 +483,7 @@ interface NotHeldQueueMessage {
 
 When you implement it:
 
+- **Accept `true` as `{}`.** `experimental_hold: true` asks for a hold with your defaults.
 - **Return exactly one outcome per hold request.** Return `held` only when this process now owns the message's first delivery. In every other case return `not_held` with a reason, and make sure the message still gets delivered (or is covered by a delivery that's running).
 - **Run `consume(handler)` as a delivery.** Use the same code path `createQueueHandler()` uses: the same `meta` (`deliveryCount: 1`), the same result rules (`{ timeoutSeconds }` redelivers the same message, a rejection retries), lease renewal while the handler runs, and an acknowledgment when it resolves.
 - **Deliver a lapsed hold as usual.** If nothing renews the lease, deliver the message to `consumerGroup` about `visibilityTimeoutSeconds` after the last renewal, with the same `messageId` and the next `deliveryCount`.

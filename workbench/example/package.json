@@ -20,7 +20,7 @@
     "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@opentelemetry/api": "^1.9.0",
     "@vercel/functions": "catalog:",
-    "@vercel/otel": "^1.13.0",
+    "@vercel/otel": "^1.14.2",
     "workflow": "workspace:*",
     "ai": "catalog:ai-sdk-v7",
     "lodash.chunk": "^4.2.0",

@@ -1,5 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import type { PayloadKey } from './serialization/encryption.js';
+import { StateContext } from './serialization/state-refs.js';
 import {
   type PreparedReplayPayload,
   prepareReplayPayload,
@@ -42,6 +43,9 @@ function isMemoizablePrimitive(value: unknown): boolean {
  * runs or queue deliveries.
  */
 export class ReplayPayloadCache {
+  /** frozen state versions and sources this invocation's replay has seen. */
+  stateContext = new StateContext();
+
   private readonly preparedPayloads = new Map<
     string,
     Promise<PreparedReplayPayload>

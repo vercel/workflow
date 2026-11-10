@@ -34,6 +34,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   classifyEntityEvent,
   type Event,
+  isRunCreationEvent,
   isSealedNoopEvent,
   type RunInput,
   type SnapshotMetadata,
@@ -1701,12 +1702,45 @@ export interface QuickJSWorkflowSession {
    * when the VM frees memory, so it is the signal for heap growth.
    */
   memoryUsage(): QuickJSMemoryUsage;
+  /**
+   * The VM's open hooks, and whether workflow code is waiting on each one's
+   * next payload right now. Only valid while the last result was
+   * `suspended`. The suspension's `pendingOperations` leave out a created
+   * hook nothing awaits, so a run-ahead classification reads its hooks from
+   * here (see `runtime/out-of-band-observation.ts`).
+   */
+  openHooks(): QuickJSOpenHook[];
+  /**
+   * How many times code in the VM has read the clock so far (the WASI
+   * clock behind `Date.now()` and `new Date()`; QuickJS may read it on its
+   * own too, which only over-counts). This engine advances the clock to
+   * every event it reads, an unread hook payload included, so a run-ahead
+   * delivery uses this to tell whether a decision may depend on where
+   * another writer's event landed (see `spec9/quickjs-entrypoint.ts`).
+   */
+  clockReads(): number;
   /** Dispose the VM if it is still alive. Safe to call multiple times. */
   dispose(): void;
 }
 
 /** See {@link QuickJSWorkflowSession.memoryUsage}. */
 export type QuickJSMemoryUsage = ReturnType<QuickJS['getMemoryUsage']>;
+
+/** One open hook of a suspended VM (see {@link QuickJSWorkflowSession.openHooks}). */
+export interface QuickJSOpenHook {
+  correlationId: string;
+  token: string;
+  isSystem?: boolean;
+  /** A disposal of the hook is pending in this suspension. */
+  disposed?: boolean;
+  /**
+   * Workflow code is waiting on the hook's next payload: a resolver is
+   * registered for it. Over-reports for an awaiter a lost `Promise.race`
+   * abandoned, which only costs run-ahead; a payload landing for a hook with
+   * no resolver is buffered and changes nothing until something awaits.
+   */
+  observed: boolean;
+}
 
 /**
  * Run a workflow invocation to its first settled state and dispose the
@@ -1787,6 +1821,14 @@ export async function startQuickJSWorkflow(
     runIdCreatedAt(workflowRun.runId) ?? (+workflowRun.createdAt || startedAt);
   const advanceClock = (ms: number) => {
     if (Number.isFinite(ms)) vmNowMs = Math.max(vmNowMs, ms);
+  };
+  // Every read of the clock by code in the VM (`Date.now()`, `new Date()`,
+  // a `sleep()` computing its deadline): see
+  // `QuickJSWorkflowSession.clockReads`.
+  let clockReads = 0;
+  const readClock = (): number => {
+    clockReads++;
+    return vmNowMs;
   };
 
   const interruptBudget: InterruptBudget = { start: Date.now() };
@@ -1946,7 +1988,7 @@ export async function startQuickJSWorkflow(
     }
     const vm = await restoreWorkflowVM(
       options.existingSnapshot.data,
-      () => vmNowMs,
+      readClock,
       interruptBudget
     );
     try {
@@ -2031,6 +2073,7 @@ export async function startQuickJSWorkflow(
         }),
         historicalAttributeIds,
         () => lastUlid,
+        () => clockReads,
         options.encryptionKey
       );
     } catch (err) {
@@ -2085,10 +2128,10 @@ export async function startQuickJSWorkflow(
       memoryLimit: 256 * 1024 * 1024,
       interruptHandler: createInterruptHandler(interruptBudget),
       extensions: assets.extensions,
-      wasi: makeDeterministicClockWasi(() => vmNowMs),
+      wasi: makeDeterministicClockWasi(readClock),
     });
   } else {
-    vm = await initWorkflowVM(() => vmNowMs, interruptBudget);
+    vm = await initWorkflowVM(readClock, interruptBudget);
   }
 
   // Host-side serde: captures the VM's intrinsics (bootstrap included)
@@ -2189,13 +2232,15 @@ export async function startQuickJSWorkflow(
       }
     }
 
-    // Extract workflow arguments. Prefer the run_created event; fall back
-    // to the queue message's runInput if the event log is incomplete
+    // Extract workflow arguments. Prefer the run's creation event (its
+    // `run_created`, or on spec >= 9 the `run_started` that created it and
+    // holds the first slot: `isRunCreationEvent`); fall back to the queue
+    // message's runInput if the event log is incomplete
     // (eventually-consistent read after start()). Failing to find input
     // for a first invocation is fatal: running the workflow function
     // with no args would silently turn typed arguments into `undefined`
     // and, for recursive workflows, produce exponential fan-out.
-    const runCreatedEvent = events.find((e) => e.eventType === 'run_created');
+    const runCreatedEvent = events.find(isRunCreationEvent);
     const runCreatedInput =
       runCreatedEvent && 'eventData' in runCreatedEvent
         ? (runCreatedEvent.eventData as Record<string, unknown>)?.input
@@ -2211,7 +2256,9 @@ export async function startQuickJSWorkflow(
       runtimeLogger.debug('QuickJS runtime: run input format', {
         prefix: new TextDecoder().decode(decryptedInput.subarray(0, 4)),
         byteLength: decryptedInput.byteLength,
-        source: runCreatedInput ? 'run_created' : 'queueMessage.runInput',
+        source: runCreatedInput
+          ? runCreatedEvent?.eventType
+          : 'queueMessage.runInput',
       });
       // Build the argument value directly in the VM via the host-side
       // serde (guest code never sees the wire bytes).
@@ -2220,7 +2267,7 @@ export async function startQuickJSWorkflow(
       inputHandle.dispose();
     } else if (runInput === undefined && events.length > 0) {
       // The event log is non-empty (we got run_started or similar) but
-      // no run_created event was found and no queue-provided runInput is
+      // no creation event was found and no queue-provided runInput is
       // available. This is the race condition observed during the fib
       // incident: silently dropping arguments would turn `n` into
       // `undefined` and, for recursive workflows, cause exponential
@@ -2368,6 +2415,7 @@ export async function startQuickJSWorkflow(
       }),
       historicalAttributeIds,
       () => lastUlid,
+      () => clockReads,
       options.encryptionKey
     );
   }
@@ -2392,6 +2440,12 @@ function makeSettledSession(
     memoryUsage: () => {
       throw new Error(
         'QuickJS workflow session is settled — memoryUsage is only valid while suspended'
+      );
+    },
+    clockReads: () => 0,
+    openHooks: () => {
+      throw new Error(
+        'QuickJS workflow session is settled — openHooks is only valid while suspended'
       );
     },
     dispose: () => {},
@@ -2424,6 +2478,8 @@ function makeLiveSession(
   historicalAttributeIds: Set<string>,
   /** The last correlation-id ULID the VM drew (see isConsumedTerminal). */
   getLastUlid: () => string | undefined,
+  /** See {@link QuickJSWorkflowSession.clockReads}. */
+  getClockReads: () => number,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -2510,6 +2566,33 @@ function makeLiveSession(
         );
       }
       return vm.getMemoryUsage();
+    },
+    clockReads(): number {
+      return getClockReads();
+    },
+    openHooks(): QuickJSOpenHook[] {
+      if (!alive) {
+        throw new Error(
+          'QuickJS workflow session is not alive — openHooks is only valid while suspended'
+        );
+      }
+      using h = vm.evalCode(`(function(){
+        var list = globalThis.__pendingList();
+        var disposed = {};
+        list.forEach(function(p){
+          if (p.type === "hook_dispose") disposed[p.correlationId] = true;
+        });
+        return list.filter(function(p){ return p.type === "hook"; }).map(function(p){
+          return {
+            correlationId: p.correlationId,
+            token: String(p.token),
+            isSystem: p.isSystem === true,
+            disposed: disposed[p.correlationId] === true,
+            observed: !!globalThis.__resolvers[p.correlationId]
+          };
+        });
+      })()`);
+      return vm.dump(h) as QuickJSOpenHook[];
     },
     dispose(): void {
       if (alive) {

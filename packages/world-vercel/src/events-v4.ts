@@ -82,6 +82,7 @@ import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
+  type EventsTransportFallback,
   NetworkProtocolName,
   StepLatencyOptimizations,
   StepStsoMs,
@@ -89,6 +90,7 @@ import {
   WorkflowEventExpectedSeqInBand,
   WorkflowEventInBand,
   WorkflowEventsTransport,
+  WorkflowEventsTransportFallback,
   WorkflowEventType,
   WorkflowStepStartMode,
   WorkflowStepStartOwnerStamped,
@@ -99,7 +101,7 @@ import {
 } from './telemetry.js';
 import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
 import { version } from './version.js';
-import type { WsFrameReply } from './ws-transport.js';
+import type { WsFrameReply, WsTransportResolution } from './ws-transport.js';
 import {
   isWsEventsTransportEnabled,
   isWsEventsTransportPossible,
@@ -495,56 +497,54 @@ export interface PreconditionFailureDetails {
  * responses with the same omitted-payload tolerance the v4 sites use.
  */
 const OMITTED_EVENT_PAYLOAD = Symbol('omitted event payload');
-export const VercelEventWireSchema = z.compile(
-  z
-    .preprocess((value) => {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return value;
-      }
+export const VercelEventWireSchema = z
+  .preprocess((value) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return value;
+    }
 
-      const event = value as Record<string, unknown>;
-      const payloadField =
-        typeof event.eventType === 'string'
-          ? getEventDataPayloadField(event.eventType)
-          : undefined;
-      const eventData = event.eventData as Record<string, unknown> | undefined;
-      if (
-        !payloadField ||
-        typeof eventData !== 'object' ||
-        eventData === null ||
-        Array.isArray(eventData) ||
-        Object.hasOwn(eventData, payloadField)
-      ) {
-        return value;
-      }
+    const event = value as Record<string, unknown>;
+    const payloadField =
+      typeof event.eventType === 'string'
+        ? getEventDataPayloadField(event.eventType)
+        : undefined;
+    const eventData = event.eventData as Record<string, unknown> | undefined;
+    if (
+      !payloadField ||
+      typeof eventData !== 'object' ||
+      eventData === null ||
+      Array.isArray(eventData) ||
+      Object.hasOwn(eventData, payloadField)
+    ) {
+      return value;
+    }
 
-      return {
-        ...event,
-        eventData: {
-          ...eventData,
-          [payloadField]: OMITTED_EVENT_PAYLOAD,
-        },
-      };
-    }, EventSchema)
-    .transform((event) => {
-      const payloadField = getEventDataPayloadField(event.eventType);
-      if (!payloadField || !('eventData' in event)) return event;
+    return {
+      ...event,
+      eventData: {
+        ...eventData,
+        [payloadField]: OMITTED_EVENT_PAYLOAD,
+      },
+    };
+  }, EventSchema)
+  .transform((event) => {
+    const payloadField = getEventDataPayloadField(event.eventType);
+    if (!payloadField || !('eventData' in event)) return event;
 
-      const eventData = event.eventData as Record<string, unknown> | undefined;
-      if (
-        typeof eventData !== 'object' ||
-        eventData === null ||
-        Array.isArray(eventData) ||
-        eventData[payloadField] !== OMITTED_EVENT_PAYLOAD
-      ) {
-        return event;
-      }
+    const eventData = event.eventData as Record<string, unknown> | undefined;
+    if (
+      typeof eventData !== 'object' ||
+      eventData === null ||
+      Array.isArray(eventData) ||
+      eventData[payloadField] !== OMITTED_EVENT_PAYLOAD
+    ) {
+      return event;
+    }
 
-      const parsedEventData = { ...eventData };
-      delete parsedEventData[payloadField];
-      return { ...event, eventData: parsedEventData } as Event;
-    })
-);
+    const parsedEventData = { ...eventData };
+    delete parsedEventData[payloadField];
+    return { ...event, eventData: parsedEventData } as Event;
+  });
 
 const CreateEventV4BodyBaseSchema = z.object({
   event: VercelEventWireSchema,
@@ -626,7 +626,7 @@ const CreateEventV4BodySchemas: {
   noop: CreateEventV4BodySchema,
 };
 
-const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
+const MaxEventsHeaderSchema = z.coerce.number().int().positive();
 
 /**
  * The in-band fence's counters as a list response carries them
@@ -635,15 +635,13 @@ const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
  * every slot up to `seq`. Sent by a backend that reads them; absent
  * otherwise.
  */
-const EventLogSnapshotWireSchema = z.compile(
-  z
-    .object({
-      seq: z.number().int().nonnegative(),
-      seqInBand: z.number().int().nonnegative(),
-    })
-    // In-band positions are a subset of all positions.
-    .refine(({ seq, seqInBand }) => seqInBand <= seq)
-);
+const EventLogSnapshotWireSchema = z
+  .object({
+    seq: z.number().int().nonnegative(),
+    seqInBand: z.number().int().nonnegative(),
+  })
+  // In-band positions are a subset of all positions.
+  .refine(({ seq, seqInBand }) => seqInBand <= seq);
 
 const SNAPSHOT_SEQ_HEADER = 'x-wf-snapshot-seq';
 const SNAPSHOT_SEQ_IN_BAND_HEADER = 'x-wf-snapshot-seq-in-band';
@@ -682,29 +680,25 @@ function snapshotFromEnd(snapshot: unknown): EventLogSnapshot | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-const EventStreamEndSchema = z.compile(
-  z.object({
-    _end: z.literal(1),
-    next: z.string().optional(),
-    hasMore: z.boolean(),
-    // Read on its own (`snapshotFromEnd`): a malformed snapshot lists none
-    // rather than failing the page.
-    snapshot: z.unknown().optional(),
-  })
-);
+const EventStreamEndSchema = z.object({
+  _end: z.literal(1),
+  next: z.string().optional(),
+  hasMore: z.boolean(),
+  // Read on its own (`snapshotFromEnd`): a malformed snapshot lists none
+  // rather than failing the page.
+  snapshot: z.unknown().optional(),
+});
 
 /**
  * Terminal error frame. The backend sends this when it cannot finish a frame
  * stream and retrying will not help — the response already committed to `200`
  * with its first byte, so there is no status code left to carry the failure.
  */
-const EventStreamErrorSchema = z.compile(
-  z.object({
-    _error: z.literal(1),
-    code: z.string(),
-    message: z.string().optional(),
-  })
-);
+const EventStreamErrorSchema = z.object({
+  _error: z.literal(1),
+  code: z.string(),
+  message: z.string().optional(),
+});
 
 /**
  * An event's payload object is gone from the backend's blob storage. The
@@ -1133,7 +1127,9 @@ async function postWorkflowRunEventV4(
     skipPreload?: true;
   },
   responseType: 'materialized' | 'event-stream',
-  config?: APIConfig
+  config?: APIConfig,
+  /** Why the write tried the socket first and did not take it. */
+  fallback?: EventsTransportFallback
 ) {
   const { baseUrl, headers: baseHeaders } = await getHttpConfig(config);
   const headers = new Headers(baseHeaders);
@@ -1157,6 +1153,7 @@ async function postWorkflowRunEventV4(
     'createEvent',
     {
       ...WorkflowEventsTransport('http'),
+      ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
       ...inBandFenceAttributes(input),
@@ -1235,16 +1232,27 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
+  let fallback: EventsTransportFallback | undefined;
   if (!input.requireHookResumeDedup && isWsEventsTransportPossible()) {
-    // Absent means no socket was resolvable for this run, not that the write
-    // failed, so fall through to HTTP. Under a per-workflow override that is
-    // every run of a workflow that isn't listed.
-    const reply = await postEventFrameOverWs(input, config);
-    if (reply) return decodeCreateEventResponse(reply, input.eventType);
+    // Anything but a reply means no socket was taken for this write, not that
+    // the write failed, so fall through to HTTP. Under a per-workflow override
+    // that is every run of a workflow that isn't listed.
+    const overWs = await postEventFrameOverWs(input, config, {
+      requireOpenSocket: input.eventType === 'run_started',
+    });
+    if (overWs.kind === 'reply') {
+      return decodeCreateEventResponse(overWs.reply, input.eventType);
+    }
+    fallback = fallbackReasonOf(overWs);
     assertWsFallbackAllowed(input.eventType);
   }
 
-  const response = await postWorkflowRunEventV4(input, 'materialized', config);
+  const response = await postWorkflowRunEventV4(
+    input,
+    'materialized',
+    config,
+    fallback
+  );
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1259,17 +1267,16 @@ export async function createWorkflowRunEventV4<T extends EventType>(
 // Workflow SDK schema cache for v4 create-event responses. Every consumer of
 // @workflow/world-vercel uses it.
 //
-// One compiled schema per event type, per module copy. Several event types
-// share a base schema, and the refinement still differs, so the cache key is
-// the event type. A compiled schema closes over this copy's Zod objects.
-// The map stores schemas only, never response bodies or request data.
-// per-copy-ok: each bundler layer compiles an event type once, on first decode.
+// One schema per event type, per module copy, built on first decode. Several
+// event types share a base schema but the refinement differs, so the cache key
+// is the event type. The map stores schemas only, never response bodies or
+// request data.
+// per-copy-ok: each bundler layer builds an event type's schema once.
 const createEventResponseSchemas = new Map<
   EventType,
   z.ZodType<EventResult & { event: Event }>
 >();
 
-/** Uncompiled response schema. The cached schema is `z.compile` of this. */
 export function createEventResponseSchema<T extends EventType>(
   eventType: T
 ): z.ZodType<EventResult<T> & { event: Event }> {
@@ -1289,9 +1296,8 @@ export function getCreateEventResponseSchema<T extends EventType>(
     | undefined;
   if (cached) return cached;
 
-  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
-    createEventResponseSchema(eventType)
-  );
+  const schema: z.ZodType<EventResult<T> & { event: Event }> =
+    createEventResponseSchema(eventType);
   createEventResponseSchemas.set(eventType, schema);
   return schema;
 }
@@ -1450,23 +1456,19 @@ export interface CreateEventBatchV4Result {
   allocated?: number;
 }
 
-const BatchReportSchema = z.compile(
-  z.object({
-    events: z.array(VercelEventWireSchema).optional(),
-    cursor: z.string().nullable().optional(),
-    hasMore: z.boolean().optional(),
-    reportIncomplete: z.boolean().optional(),
-    allocated: z.number().int().nonnegative().optional(),
-  })
-);
+const BatchReportSchema = z.object({
+  events: z.array(VercelEventWireSchema).optional(),
+  cursor: z.string().nullable().optional(),
+  hasMore: z.boolean().optional(),
+  reportIncomplete: z.boolean().optional(),
+  allocated: z.number().int().nonnegative().optional(),
+});
 
-const BatchItemFailureSchema = z.compile(
-  z.object({
-    status: z.number().int(),
-    error: z.string(),
-    message: z.string(),
-  })
-);
+const BatchItemFailureSchema = z.object({
+  status: z.number().int(),
+  error: z.string(),
+  message: z.string(),
+});
 
 /**
  * POST /api/v4/runs/:runId/events/batch
@@ -1481,8 +1483,7 @@ const BatchItemFailureSchema = z.compile(
  * run is rejected with a 400. There is NO automatic fallback to single-event
  * posts on either: the runtime never sends a batch for a pre-slot run (it
  * gates on the run's spec version), and against a backend without the route
- * the batch fails and the suspension redelivers until the operator disables
- * batching via `WORKFLOW_BATCH_TRANSITIONS=0`. Ambiguous failures (timeouts,
+ * the batch fails and the suspension redelivers. Ambiguous failures (timeouts,
  * resets, 5xx, malformed responses) never convert to single posts either;
  * the wrapper either re-sends the SAME batch (only when its shape is
  * retry-convergent; see `createWorkflowRunEventBatch`) or surfaces the error
@@ -1533,13 +1534,15 @@ export async function createWorkflowRunEventsBatchV4(
     apiVersion === 'v5' && isWsEventsTransportPossible()
       ? await postEventBatchOverWs(input.runId, body, url, config)
       : undefined;
+  const wsReply = overWs?.kind === 'reply' ? overWs.reply : undefined;
+  const fallback = overWs ? fallbackReasonOf(overWs) : undefined;
   // Batch identity attributes (size, per-type shape) live on the
   // world.events.createBatch span (see instrumentObject); this transport
   // span carries only wire-level facts. workflow.event.type is deliberately
   // absent, since it names a single event write, and tagging a batch with its
   // first event's type misclassifies the traffic.
   const response: FrameResponseLike =
-    overWs ??
+    wsReply ??
     (await fetchV4(
       url,
       { method: 'POST', headers, body },
@@ -1547,6 +1550,7 @@ export async function createWorkflowRunEventsBatchV4(
       'createEventBatch',
       {
         ...WorkflowEventsTransport('http'),
+        ...(fallback ? WorkflowEventsTransportFallback(fallback) : {}),
         'workflow.batch.bytes': body.byteLength,
         // Every frame of a batch carries the same fence.
         ...inBandFenceAttributes(input.events[0]),
@@ -1686,7 +1690,8 @@ function replyMetaToHeaderRecord(
  * defaults `methods` to GET/HEAD/OPTIONS/PUT/DELETE/TRACE, which is why
  * event-retry.ts exists at all. So `postEventFrameOverWs` makes exactly one
  * attempt and reports in that policy's vocabulary; a retry from it re-enters
- * `transport.request()`, which reconnects on the way through.
+ * `transport.request()`, which reconnects on the way through, or goes over HTTP
+ * once a timeout has closed the channel.
  */
 
 /** Part count for a write whose reply was split; see `ws-parts.ts`. Absent
@@ -1727,18 +1732,53 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * the batch decoder reads exactly as it reads the HTTP one. `undefined` when
  * no socket is resolvable for the run, so the caller sends it over HTTP.
  */
+/**
+ * What a write's attempt over the run's events socket came to:
+ *
+ * - `reply`: the socket carried it.
+ * - `http_by_config`: this World cannot hold a socket (a `projectConfig`
+ *   World); HTTP is its transport, not a fallback.
+ * - `fallback`: the socket was not taken, for `reason`, and the write goes
+ *   over HTTP instead.
+ */
+type WsWriteAttempt =
+  | { kind: 'reply'; reply: FrameResponseLike }
+  | { kind: 'http_by_config' }
+  | { kind: 'fallback'; reason: EventsTransportFallback };
+
+/** A write's attempt for a run whose socket {@link resolveWsTransport} did not find open. */
+function attemptWithoutSocket(
+  resolved: Exclude<WsTransportResolution, { kind: 'open' }>
+): WsWriteAttempt {
+  switch (resolved.kind) {
+    case 'proxy':
+      return { kind: 'http_by_config' };
+    case 'no_channel':
+      return { kind: 'fallback', reason: 'no_channel' };
+    default:
+      return resolved satisfies never;
+  }
+}
+
+/** The reason to put on the HTTP span, when the attempt fell back. */
+function fallbackReasonOf(
+  attempt: WsWriteAttempt
+): EventsTransportFallback | undefined {
+  return attempt.kind === 'fallback' ? attempt.reason : undefined;
+}
+
 async function postEventBatchOverWs(
   runId: string,
   body: Uint8Array,
   restUrl: string,
   config: APIConfig | undefined
-): Promise<FrameResponseLike | undefined> {
+): Promise<WsWriteAttempt> {
   const { resolveWsTransport } = await import('./ws-transport.js');
   const resolved = resolveWsTransport(runId, config);
-  if (!resolved) return undefined;
+  if (resolved.kind !== 'open') return attemptWithoutSocket(resolved);
   const { transport, wsUrl } = resolved;
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events/batch`;
-  return withHttpClientSpan(
+  const reply = await withHttpClientSpan(
     {
       method: 'POST',
       url: restUrl,
@@ -1806,6 +1846,7 @@ async function postEventBatchOverWs(
       };
     }
   );
+  return { kind: 'reply', reply };
 }
 
 /**
@@ -1850,8 +1891,22 @@ async function postEventFrameOverWs(
     eventType: EventType;
     skipPreload?: true;
   },
-  config: APIConfig | undefined
-): Promise<FrameResponseLike | undefined> {
+  config: APIConfig | undefined,
+  options: {
+    /**
+     * Take the socket only once its handshake is done; while it is still
+     * connecting, answer `undefined` so the write goes over HTTP instead of
+     * waiting for it. For `run_started`: a delivery writes it first, as the
+     * flow route's unawaited `openWsChannel` is still connecting, and every
+     * later write of the delivery waits for it (on spec 9 it is the in-band
+     * writer's first write, and turbo's barrier). The pooled HTTP connection
+     * is usually warm by then; the handshake keeps going for the writes after
+     * it. The in-band writer sends one write at a time, so the two transports
+     * never reorder its writes.
+     */
+    requireOpenSocket?: boolean;
+  } = {}
+): Promise<WsWriteAttempt> {
   // Dynamic so `ws` initializes only on a deployment that opted in. The gate
   // at the call site lives in its own import-free module for exactly this
   // reason. The module is cached after the first write, and on the queue path
@@ -1859,17 +1914,20 @@ async function postEventFrameOverWs(
   const { resolveWsTransport } = await import('./ws-transport.js');
   const { runId } = input;
   const resolved = resolveWsTransport(runId, config);
-  // No span: resolving nothing means no write was attempted here at all. The
-  // caller falls through to HTTP, which opens its own.
-  if (!resolved) return undefined;
+  // No span: without an open channel no write was attempted here at all. The
+  // caller falls through to HTTP, which opens its own and says why.
+  if (resolved.kind !== 'open') return attemptWithoutSocket(resolved);
   const { transport, wsUrl } = resolved;
+  if (options.requireOpenSocket && !transport.isConnected()) {
+    return { kind: 'fallback', reason: 'connecting' };
+  }
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
-  // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
-  // returned null for the proxy World, so this is always the direct
-  // workflow-server origin the socket itself points at.
+  // Same helper the HTTP path builds its URL with. `resolveWsTransport` never
+  // finds a channel open for the proxy World, so this is always the direct
+  // backend origin the socket itself points at.
   const restUrl = eventsV4Url(getHttpUrl(config).baseUrl, input);
 
-  return withHttpClientSpan(
+  const reply = await withHttpClientSpan(
     {
       method: 'POST',
       url: restUrl,
@@ -1988,6 +2046,7 @@ async function postEventFrameOverWs(
       };
     }
   );
+  return { kind: 'reply', reply };
 }
 
 /**
