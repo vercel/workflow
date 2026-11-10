@@ -1,6 +1,7 @@
 'use client';
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
+import { ChartGantt } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { cn } from '../../lib/cn';
@@ -13,6 +14,7 @@ import {
   parseEventDate,
   type TimingSegment,
 } from '../../lib/event-list-model';
+import { getEventSpanId } from '../../lib/trace-builder';
 import { formatDurationPrecise } from '../../lib/utils';
 import {
   AttrSetEventBlock,
@@ -29,7 +31,9 @@ import {
   isStructuredError,
   type StructuredErrorRecord,
 } from '../ui/error-stack-block';
+import { IconButton } from '../ui/icon-button';
 import { Skeleton } from '../ui/skeleton';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -365,6 +369,8 @@ export interface EventDetailsPanelProps extends EventDetailsBodyProps {
   onPrev?: () => void;
   onNext?: () => void;
   onClose: () => void;
+  /** Shows "View in Trace", called with the trace span ID to select. */
+  onViewInTrace?: (spanId: string) => void;
 }
 
 /**
@@ -383,6 +389,7 @@ export function EventDetailsPanel({
   onPrev,
   onNext,
   onClose,
+  onViewInTrace,
 }: EventDetailsPanelProps) {
   const { event } = row;
   // The payload the body loaded, for the header's copy button. Tagged with
@@ -414,7 +421,22 @@ export function EventDetailsPanel({
       itemLabel="event"
       title={<span className="truncate">{row.name || event.eventType}</span>}
       headerActions={
-        <CopyButton copyText={rawEvent} ariaLabel="Copy event as JSON" />
+        <>
+          <CopyButton copyText={rawEvent} ariaLabel="Copy event as JSON" />
+          {onViewInTrace ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <IconButton
+                  aria-label="View in Trace"
+                  onClick={() => onViewInTrace(getEventSpanId(event))}
+                >
+                  <ChartGantt className="h-4 w-4" />
+                </IconButton>
+              </TooltipTrigger>
+              <TooltipContent>View in Trace</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </>
       }
       onPrev={onPrev}
       onNext={onNext}

@@ -218,10 +218,14 @@ export function RunDetailView({
   // Empty env object - server actions read from process.env
   const env: EnvMap = useMemo(() => ({}), []);
 
-  // Read tab and streamId from URL search params (graph tab is hidden for now)
+  // Read tab, streamId and spanId from URL search params (graph tab is hidden
+  // for now)
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
+  // Span the Trace tab selects when it opens, set by an event's "View in
+  // Trace". Selecting another span afterwards does not rewrite it.
+  const initialSelectedSpanId = searchParams.get('spanId') ?? undefined;
 
   // Helper to update URL search params
   const updateSearchParams = useCallback(
@@ -242,12 +246,21 @@ export function RunDetailView({
   const setActiveTab = useCallback(
     (tab: Tab) => {
       // When switching away from streams tab, clear streamId so
-      // useStreamReader stops fetching/polling in the background.
+      // useStreamReader stops fetching/polling in the background. spanId only
+      // belongs to the Trace visit "View in Trace" opened, so any tab change
+      // clears it.
       if (tab !== 'streams') {
-        updateSearchParams({ tab, streamId: null });
+        updateSearchParams({ tab, streamId: null, spanId: null });
       } else {
-        updateSearchParams({ tab });
+        updateSearchParams({ tab, spanId: null });
       }
+    },
+    [updateSearchParams]
+  );
+
+  const handleViewInTrace = useCallback(
+    (spanId: string) => {
+      updateSearchParams({ tab: 'trace', spanId });
     },
     [updateSearchParams]
   );
@@ -262,7 +275,7 @@ export function RunDetailView({
   // Handler for clicking on stream refs in the trace viewer
   const handleStreamClick = useCallback(
     (streamId: string) => {
-      updateSearchParams({ tab: 'streams', streamId });
+      updateSearchParams({ tab: 'streams', streamId, spanId: null });
     },
     [updateSearchParams]
   );
@@ -763,6 +776,7 @@ export function RunDetailView({
                     onLoadMore={loadMoreTraceData}
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
+                    initialSelectedSpanId={initialSelectedSpanId}
                   />
                 </div>
               </ErrorBoundary>
@@ -784,6 +798,7 @@ export function RunDetailView({
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
                     onExactIdSearch={searchByExactId}
+                    onViewInTrace={handleViewInTrace}
                   />
                 </div>
               </ErrorBoundary>

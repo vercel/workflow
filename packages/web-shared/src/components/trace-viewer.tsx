@@ -19,6 +19,7 @@ const TraceViewer = ({
   isLoadingMore,
   loading = false,
   getStepAttributes,
+  initialSelectedSpanId,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -29,6 +30,11 @@ const TraceViewer = ({
   loading?: boolean;
   /** Adds product-specific attributes to event-derived step span data. */
   getStepAttributes?: GetStepAttributes;
+  /**
+   * Span to select, and highlight once, when the viewer mounts (step, hook,
+   * wait or run ID).
+   */
+  initialSelectedSpanId?: string;
 }) => {
   const trace: TraceWithMeta | undefined = useMemo(() => {
     if (!run?.runId) {
@@ -63,6 +69,7 @@ const TraceViewer = ({
           onLoadMore={onLoadMore}
           hasMore={hasMore}
           isLoadingMore={isLoadingMore}
+          initialSelectedSpanId={initialSelectedSpanId}
         />
       </div>
     </SidebarDataProvider>

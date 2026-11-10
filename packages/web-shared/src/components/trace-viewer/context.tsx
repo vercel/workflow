@@ -25,12 +25,17 @@ ActiveSpanContext.displayName = 'ActiveSpanContext';
 
 export function ActiveSpanProvider({
   spans,
+  initialSelectedSpanId,
   children,
 }: {
   spans: Span[];
+  /** Span to select on mount, e.g. when arriving from the Events tab. */
+  initialSelectedSpanId?: string;
   children: ReactNode;
 }) {
-  const [activeSpanId, setActiveSpanId] = useState<string | null>(null);
+  const [activeSpanId, setActiveSpanId] = useState<string | null>(
+    initialSelectedSpanId ?? null
+  );
 
   useEffect(() => {
     setActiveSpanId((currentSpanId) => {

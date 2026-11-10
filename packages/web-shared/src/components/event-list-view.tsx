@@ -74,6 +74,8 @@ interface EventsListProps {
   ) => Promise<ExactIdSearchResult>;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Shows "View in Trace" in the details panel, with the trace span ID to select. */
+  onViewInTrace?: (spanId: string) => void;
 }
 
 function EventListViewInner({
@@ -93,6 +95,7 @@ function EventListViewInner({
   hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
+  onViewInTrace,
 }: EventsListProps) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -427,6 +430,7 @@ function EventListViewInner({
                   : undefined
               }
               onClose={() => selectEvent(undefined)}
+              onViewInTrace={onViewInTrace}
             />
           ) : null}
         </div>

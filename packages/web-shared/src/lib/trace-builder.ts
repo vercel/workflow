@@ -58,6 +58,16 @@ export function filterSpanRawEvents(
   return events.filter((e) => e.correlationId === spanId);
 }
 
+/**
+ * The ID of the span an event is drawn under: the run's root span for
+ * run-level events (see {@link isRunLevelEvent}), else the child span that
+ * shares the event's correlationId.
+ */
+export function getEventSpanId(event: Event): string {
+  const { correlationId } = event;
+  return correlationId && !isRunLevelEvent(event) ? correlationId : event.runId;
+}
+
 // ---------------------------------------------------------------------------
 // Event grouping
 // ---------------------------------------------------------------------------
