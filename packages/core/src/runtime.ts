@@ -10,6 +10,7 @@ import {
 } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import {
+  type BulkPurgeWorkflowRunResult,
   type Event,
   getQueueTopicPrefix,
   type RunInput,
@@ -62,7 +63,7 @@ import {
   withWorkflowBaggage,
 } from './telemetry.js';
 
-export type { Event, WorkflowRun };
+export type { BulkPurgeWorkflowRunResult, Event, WorkflowRun };
 
 // per-copy-ok: caches this copy's own dynamic import of its spec 9 module,
 // which is per-copy as well.
@@ -115,6 +116,8 @@ export {
   cancelRuns,
   listStreams,
   pendingWakeUpWaits,
+  purgeRun,
+  purgeRuns,
   type ReadStreamOptions,
   type RecreateRunOptions,
   type ReenqueueRunOptions,

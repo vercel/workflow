@@ -6,6 +6,10 @@ import {
   BulkCancelWorkflowRunsRequestSchema,
   type BulkCancelWorkflowRunsResult,
   BulkCancelWorkflowRunsResultSchema,
+  type BulkPurgeWorkflowRunsRequest,
+  BulkPurgeWorkflowRunsRequestSchema,
+  type BulkPurgeWorkflowRunsResult,
+  BulkPurgeWorkflowRunsResultSchema,
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
   type ExperimentalSetAttributesResult,
@@ -583,6 +587,52 @@ export async function cancelWorkflowRuns(
   );
 
   return { summary: response.summary, results: orderedResults };
+}
+
+/**
+ * Delete the stored data of many finished runs in a single request.
+ *
+ * world-vercel only purges runs that have finished and answers every other
+ * run `skipped`, so this never cancels anything. The request is validated
+ * client-side (1–100 unique IDs), and the results are reordered to match the
+ * requested `runIds`.
+ */
+export async function purgeWorkflowRuns(
+  request: BulkPurgeWorkflowRunsRequest,
+  config?: APIConfig
+): Promise<BulkPurgeWorkflowRunsResult> {
+  const { runIds } = BulkPurgeWorkflowRunsRequestSchema.parse(request);
+
+  const response = await makeRequest({
+    endpoint: '/v4/runs/purge',
+    options: { method: 'POST' },
+    data: { runIds },
+    config,
+    schema: BulkPurgeWorkflowRunsResultSchema,
+  });
+
+  // Exactly one result per requested ID, as for bulk cancel: anything else is
+  // a protocol violation, not a run to report as `not_found`.
+  const resultByRunId = new Map(
+    response.results.map((result) => [result.runId, result])
+  );
+  const isBijection =
+    resultByRunId.size === response.results.length &&
+    response.results.length === runIds.length &&
+    runIds.every((runId) => resultByRunId.has(runId));
+  if (!isBijection) {
+    throw new WorkflowWorldError(
+      `Purge response did not contain exactly one result per requested run ID ` +
+        `(requested ${runIds.length}, received ${response.results.length}).`
+    );
+  }
+
+  return {
+    summary: response.summary,
+    results: runIds.map(
+      (runId) => resultByRunId.get(runId) as (typeof response.results)[number]
+    ),
+  };
 }
 
 /**

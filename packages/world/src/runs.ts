@@ -333,3 +333,88 @@ export const BulkCancelWorkflowRunsResultSchema = z.object({
 export type BulkCancelWorkflowRunsResult = z.infer<
   typeof BulkCancelWorkflowRunsResultSchema
 >;
+
+/**
+ * Maximum number of run IDs that a single purge request may carry.
+ */
+export const BULK_PURGE_MAX_RUN_IDS = 100;
+
+/**
+ * Request payload for deleting the data of many finished runs in a single
+ * operation. `runIds` must contain 1–{@link BULK_PURGE_MAX_RUN_IDS} unique
+ * IDs.
+ */
+export const BulkPurgeWorkflowRunsRequestSchema = z.object({
+  runIds: z
+    .array(z.string())
+    .min(1)
+    .max(BULK_PURGE_MAX_RUN_IDS)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'runIds must not contain duplicates',
+    }),
+});
+export type BulkPurgeWorkflowRunsRequest = z.infer<
+  typeof BulkPurgeWorkflowRunsRequestSchema
+>;
+
+/**
+ * Per-run outcome of a purge.
+ *
+ * - `purged`: the run's data was deleted by this request.
+ * - `already_purged`: the run's data was already gone (an earlier purge, a
+ *   run started with `experimental_retention: 0`, or a World-side deletion).
+ *   Anything an earlier pass left behind is deleted too.
+ * - `skipped`: the run has not finished, so nothing was deleted; `reason` is
+ *   machine-readable (`run_not_terminal`) and `status` reports the observed
+ *   status. Cancel the run first to purge it.
+ * - `not_created`: the ID named a run that was cancelled before it was ever
+ *   created (a `start()` with a start Hook); what it held is deleted.
+ * - `not_found`: no run exists for this ID.
+ * - `failed`: the purge did not complete; `code` is a machine-readable error
+ *   code and `retryable` indicates whether retrying may succeed. Purging is
+ *   idempotent, so a retry finishes what this one left.
+ */
+export const BulkPurgeWorkflowRunResultSchema = z.discriminatedUnion(
+  'outcome',
+  [
+    z.object({ runId: z.string(), outcome: z.literal('purged') }),
+    z.object({ runId: z.string(), outcome: z.literal('already_purged') }),
+    z.object({
+      runId: z.string(),
+      outcome: z.literal('skipped'),
+      reason: z.string(),
+      status: z.string(),
+    }),
+    z.object({ runId: z.string(), outcome: z.literal('not_created') }),
+    z.object({ runId: z.string(), outcome: z.literal('not_found') }),
+    z.object({
+      runId: z.string(),
+      outcome: z.literal('failed'),
+      code: z.string(),
+      retryable: z.boolean(),
+    }),
+  ]
+);
+export type BulkPurgeWorkflowRunResult = z.infer<
+  typeof BulkPurgeWorkflowRunResultSchema
+>;
+
+/**
+ * Aggregate result of a purge. `results` preserves the order of the
+ * requested `runIds`; `summary` counts each outcome.
+ */
+export const BulkPurgeWorkflowRunsResultSchema = z.object({
+  summary: z.object({
+    requested: z.number(),
+    purged: z.number(),
+    alreadyPurged: z.number(),
+    skipped: z.number(),
+    notCreated: z.number(),
+    notFound: z.number(),
+    failed: z.number(),
+  }),
+  results: z.array(BulkPurgeWorkflowRunResultSchema),
+});
+export type BulkPurgeWorkflowRunsResult = z.infer<
+  typeof BulkPurgeWorkflowRunsResultSchema
+>;

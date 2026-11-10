@@ -46,6 +46,8 @@ import {
   cancelRun,
   cancelRuns,
   pendingWakeUpWaits,
+  purgeRun,
+  purgeRuns,
   recreateRunFromExisting,
   reenqueueRun,
   wakeUpRun,
@@ -1265,5 +1267,129 @@ describe('cancelRuns', () => {
     const world = { runs: {}, events: {} } as unknown as World;
     const runIds = Array.from({ length: 501 }, (_, i) => `wrun_${i}`);
     await expect(cancelRuns(world, runIds)).rejects.toThrow(/at most 500/i);
+  });
+});
+
+describe('purgeRuns', () => {
+  const summary = {
+    requested: 2,
+    purged: 1,
+    alreadyPurged: 0,
+    skipped: 1,
+    notCreated: 0,
+    notFound: 0,
+    failed: 0,
+  };
+  const results = [
+    { runId: 'a', outcome: 'purged' },
+    {
+      runId: 'b',
+      outcome: 'skipped',
+      reason: 'run_not_terminal',
+      status: 'running',
+    },
+  ];
+
+  it('delegates the whole batch to world.runs.purgeMany once, and writes no event', async () => {
+    const purgeMany = vi.fn().mockResolvedValue({ summary, results });
+    const world = {
+      runs: { get: vi.fn(), purgeMany },
+      events: { create: vi.fn() },
+    } as unknown as World;
+
+    const result = await purgeRuns(world, ['a', 'b']);
+
+    expect(purgeMany).toHaveBeenCalledTimes(1);
+    expect(purgeMany).toHaveBeenCalledWith({ runIds: ['a', 'b'] });
+    // Purging never cancels: an unfinished run is the World's to skip.
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(result).toEqual({ summary, results });
+  });
+
+  it('throws when the World cannot purge, rather than reporting success', async () => {
+    const world = {
+      runs: { get: vi.fn() },
+      events: { create: vi.fn() },
+    } as unknown as World;
+
+    await expect(purgeRuns(world, ['a'])).rejects.toThrow(
+      'The configured World does not support purging run data.'
+    );
+  });
+
+  it('rejects an empty, duplicated, or oversized list before calling the World', async () => {
+    const purgeMany = vi.fn();
+    const world = { runs: { purgeMany } } as unknown as World;
+
+    await expect(purgeRuns(world, [])).rejects.toThrow('at least one run ID');
+    await expect(purgeRuns(world, ['a', 'a'])).rejects.toThrow(
+      'unique run IDs'
+    );
+    await expect(
+      purgeRuns(
+        world,
+        Array.from({ length: 101 }, (_, index) => `wrun_${index}`)
+      )
+    ).rejects.toThrow('at most 100 run IDs');
+    expect(purgeMany).not.toHaveBeenCalled();
+  });
+
+  it('purgeRun answers the outcome of its one run', async () => {
+    const purgeMany = vi.fn().mockResolvedValue({
+      summary: {
+        ...summary,
+        requested: 1,
+        purged: 0,
+        alreadyPurged: 1,
+        skipped: 0,
+      },
+      results: [{ runId: 'a', outcome: 'already_purged' }],
+    });
+    const world = { runs: { purgeMany } } as unknown as World;
+
+    await expect(purgeRun(world, 'a')).resolves.toEqual({
+      runId: 'a',
+      outcome: 'already_purged',
+    });
+    expect(purgeMany).toHaveBeenCalledWith({ runIds: ['a'] });
+  });
+});
+
+describe('Run.purge', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('purges the run through the World and answers its outcome', async () => {
+    const purgeMany = vi.fn().mockResolvedValue({
+      summary: {
+        requested: 1,
+        purged: 0,
+        alreadyPurged: 0,
+        skipped: 1,
+        notCreated: 0,
+        notFound: 0,
+        failed: 0,
+      },
+      results: [
+        {
+          runId: 'wrun_123',
+          outcome: 'skipped',
+          reason: 'run_not_terminal',
+          status: 'running',
+        },
+      ],
+    });
+    const world = createMockWorld();
+    Object.assign(world.runs, { purgeMany });
+    setWorld(world);
+
+    await expect(new Run('wrun_123').purge()).resolves.toEqual({
+      runId: 'wrun_123',
+      outcome: 'skipped',
+      reason: 'run_not_terminal',
+      status: 'running',
+    });
+    expect(purgeMany).toHaveBeenCalledWith({ runIds: ['wrun_123'] });
   });
 });

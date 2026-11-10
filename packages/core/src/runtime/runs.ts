@@ -9,8 +9,11 @@ import {
 import { globalSingleton } from '@workflow/utils';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
+  BULK_PURGE_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
   type BulkCancelWorkflowRunsResult,
+  type BulkPurgeWorkflowRunResult,
+  type BulkPurgeWorkflowRunsResult,
   type Event,
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
@@ -397,6 +400,65 @@ export async function cancelRuns(
   }
 
   return { summary, results };
+}
+
+/**
+ * Delete the stored data of many finished runs in one call: their inputs,
+ * outputs and errors, their steps' and events' payloads, their hook payloads,
+ * and their stream contents, as if each had been started with
+ * `experimental_retention: 0`. The runs stay listed, with their payloads
+ * reading back as expired. Deletion cannot be undone.
+ *
+ * Runs that have not finished are answered `skipped` and left untouched:
+ * purging never cancels a run. Cancel it first (see {@link cancelRuns}) to
+ * purge it. Every outcome is reported per run, in the order of `runIds`; a
+ * `failed` outcome with `retryable: true` can be retried, since purging is
+ * idempotent.
+ *
+ * Delegates to the World's `runs.purgeMany`. There is no fallback: a World
+ * that cannot purge would otherwise report success while keeping the data.
+ *
+ * @throws if `runIds` is empty, contains duplicates, or exceeds
+ *   {@link BULK_PURGE_MAX_RUN_IDS}, or if the configured World does not
+ *   support purging run data.
+ */
+export async function purgeRuns(
+  world: World,
+  runIds: string[]
+): Promise<BulkPurgeWorkflowRunsResult> {
+  if (runIds.length === 0) {
+    throw new Error('purgeRuns requires at least one run ID.');
+  }
+  if (runIds.length > BULK_PURGE_MAX_RUN_IDS) {
+    throw new Error(
+      `purgeRuns accepts at most ${BULK_PURGE_MAX_RUN_IDS} run IDs (received ${runIds.length}).`
+    );
+  }
+  if (new Set(runIds).size !== runIds.length) {
+    throw new Error('purgeRuns requires unique run IDs (duplicates found).');
+  }
+  if (!world.runs.purgeMany) {
+    throw new Error('The configured World does not support purging run data.');
+  }
+  return world.runs.purgeMany({ runIds });
+}
+
+/**
+ * Delete the stored data of one finished run. See {@link purgeRuns}.
+ *
+ * @returns the run's outcome: `purged`, `already_purged`, `skipped` (the run
+ *   has not finished), `not_created`, `not_found`, or `failed`.
+ */
+export async function purgeRun(
+  world: World,
+  runId: string
+): Promise<BulkPurgeWorkflowRunResult> {
+  const { results } = await purgeRuns(world, [runId]);
+  const result = results[0];
+  if (!result || result.runId !== runId) {
+    throw new Error(`The World did not answer the purge of run ${runId}.`);
+  }
+  return result;
 }
 
 /**

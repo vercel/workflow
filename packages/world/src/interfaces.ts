@@ -23,6 +23,8 @@ import type { Queue } from './queue.js';
 import type {
   BulkCancelWorkflowRunsRequest,
   BulkCancelWorkflowRunsResult,
+  BulkPurgeWorkflowRunsRequest,
+  BulkPurgeWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
   WaitForTerminalRunStatusParams,
@@ -334,6 +336,27 @@ export interface Storage {
     cancelMany?(
       request: BulkCancelWorkflowRunsRequest
     ): Promise<BulkCancelWorkflowRunsResult>;
+
+    /**
+     * Delete the stored data of many finished runs in a single operation,
+     * the same data a run started with `experimental_retention: 0` has
+     * deleted when it finishes: its inputs, outputs and errors, its steps'
+     * and events' payloads, its hook payloads, and its stream contents. The
+     * runs, steps and events themselves stay listed, with their payloads
+     * reading back as expired.
+     *
+     * Only finished runs are purged. A run that has not finished is answered
+     * `skipped` and left untouched; the World must never cancel it. Returns a
+     * per-run outcome for each requested ID (order preserved) plus an
+     * aggregate summary.
+     *
+     * OPTIONAL. There is no fallback: the SDK helper `purgeRuns` in
+     * `@workflow/core` throws when the configured World does not implement
+     * it.
+     */
+    purgeMany?(
+      request: BulkPurgeWorkflowRunsRequest
+    ): Promise<BulkPurgeWorkflowRunsResult>;
   };
 
   steps: {

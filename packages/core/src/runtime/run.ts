@@ -9,6 +9,7 @@ import {
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import {
+  type BulkPurgeWorkflowRunResult,
   isTerminalWorkflowRunStatus,
   SPEC_VERSION_CURRENT,
   type WorkflowRun,
@@ -36,6 +37,7 @@ import { specVersionForRunWrite } from './run-spec-version.js';
 import {
   type CancelRunOptions,
   isSingleOrchestratorRun,
+  purgeRun,
   type StopSleepOptions,
   type StopSleepResult,
   wakeRunAfterOutOfBandWrite,
@@ -389,6 +391,28 @@ export class Run<TResult> {
     }
     await wakeRunAfterOutOfBandWrite(world, run);
     await afterRunCancelled(world, run);
+  }
+
+  /**
+   * Deletes the stored data of the finished run: its input, output and
+   * error, its steps' and events' payloads, its hook payloads, and its
+   * stream contents, as if it had been started with
+   * `experimental_retention: 0`. The run stays listed, with its payloads
+   * reading back as expired. This cannot be undone.
+   *
+   * Only a finished run is purged. A run that has not finished is answered
+   * `skipped` and left running: cancel it first (see {@link Run.cancel}) to
+   * purge it now.
+   *
+   * @returns the run's outcome: `purged`, `already_purged` (its data was
+   *   already gone), `skipped` (with the run's `status`), `not_created`,
+   *   `not_found`, or `failed` (with `code`, and `retryable` when retrying
+   *   can succeed).
+   * @throws if the configured World does not support purging run data.
+   */
+  async purge(): Promise<BulkPurgeWorkflowRunResult> {
+    'use step';
+    return purgeRun(await this.#lazyWorldPromise, this.runId);
   }
 
   /**

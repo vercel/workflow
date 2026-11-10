@@ -2,7 +2,7 @@
 title: CLI and Web UI
 description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
 type: reference
-summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, and observability tooling.
+summary: Configure workflow inspect, workflow cancel, workflow purge, workflow web, workflow health, and observability tooling.
 related:
   - /docs/observability
   - /docs/configuration/worlds
@@ -210,9 +210,22 @@ per flag.
 
 ### `--confirm` / `-y`
 
-- Command: `workflow cancel`
+- Command: `workflow cancel`, `workflow purge`
 - Default: disabled
 - Skips the interactive confirmation prompt.
+
+## Purge
+
+`workflow purge <run-id>...` deletes the stored data of up to 100 finished runs: their inputs, outputs and errors, their steps' and events' payloads, their hook payloads, and their stream contents. The runs stay listed, with their payloads reading back as expired. This cannot be undone, so the command asks for confirmation unless you pass [`--confirm` / `-y`](#--confirm---y), and aborts without a terminal to ask on.
+
+```bash
+workflow purge wrun_... wrun_... --backend vercel
+```
+
+- Only finished runs are purged. A run that hasn't finished is reported as skipped and keeps running; cancel it first to purge it now.
+- The command prints a line for each run that was skipped, not found, or failed, then a summary. With `--json`, it prints the per-run results instead.
+- It exits with `1` when a run failed to purge, and `0` otherwise. A failure marked retryable can be retried by running the command again.
+- The configured World must support purging run data; see [Data retention](/docs/observability/retention#deleting-a-finished-runs-data).
 
 ## Health checks
 

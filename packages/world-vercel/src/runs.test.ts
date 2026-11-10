@@ -6,6 +6,7 @@ import {
   getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
+  purgeWorkflowRuns,
 } from './runs.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
@@ -320,6 +321,147 @@ describe('cancelWorkflowRuns', () => {
         { token: 'test-token', dispatcher: agent }
       )
     ).rejects.toThrow();
+
+    // No interceptors registered — a network attempt would throw a distinct
+    // "not mocked" error, so reaching here means no request was made.
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('purgeWorkflowRuns', () => {
+  const emptySummary = {
+    requested: 0,
+    purged: 0,
+    alreadyPurged: 0,
+    skipped: 0,
+    notCreated: 0,
+    notFound: 0,
+    failed: 0,
+  };
+
+  it('issues a single POST /v4/runs/purge with the run IDs', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    let requestCount = 0;
+    let capturedBody: unknown;
+
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v4/runs/purge', method: 'POST' })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          requestCount++;
+          capturedBody = decode(new Uint8Array(opts.body as ArrayBufferLike));
+          return encode({
+            summary: { ...emptySummary, requested: 2, purged: 1, skipped: 1 },
+            results: [
+              { runId: 'wrun_a', outcome: 'purged' },
+              {
+                runId: 'wrun_b',
+                outcome: 'skipped',
+                reason: 'run_not_terminal',
+                status: 'running',
+              },
+            ],
+          });
+        },
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    const result = await purgeWorkflowRuns(
+      { runIds: ['wrun_a', 'wrun_b'] },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(requestCount).toBe(1);
+    expect(capturedBody).toEqual({ runIds: ['wrun_a', 'wrun_b'] });
+    expect(result.summary.purged).toBe(1);
+    expect(result.results).toEqual([
+      { runId: 'wrun_a', outcome: 'purged' },
+      {
+        runId: 'wrun_b',
+        outcome: 'skipped',
+        reason: 'run_not_terminal',
+        status: 'running',
+      },
+    ]);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('reorders backend results to match the requested runId order', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v4/runs/purge', method: 'POST' })
+      .reply(
+        200,
+        () =>
+          encode({
+            summary: { ...emptySummary, requested: 2, purged: 1, notFound: 1 },
+            // Intentionally reversed relative to the request.
+            results: [
+              { runId: 'wrun_b', outcome: 'not_found' },
+              { runId: 'wrun_a', outcome: 'purged' },
+            ],
+          }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    const result = await purgeWorkflowRuns(
+      { runIds: ['wrun_a', 'wrun_b'] },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.results.map((r) => r.runId)).toEqual(['wrun_a', 'wrun_b']);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('rejects a response without exactly one result per requested runId', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v4/runs/purge', method: 'POST' })
+      .reply(
+        200,
+        () =>
+          encode({
+            summary: { ...emptySummary, requested: 2, purged: 1 },
+            results: [{ runId: 'wrun_a', outcome: 'purged' }],
+          }),
+        { headers: { 'content-type': 'application/cbor' } }
+      );
+
+    await expect(
+      purgeWorkflowRuns(
+        { runIds: ['wrun_a', 'wrun_b'] },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow(/exactly one result per requested run ID/);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('rejects invalid requests client-side without issuing a request', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    for (const runIds of [
+      [],
+      ['dup', 'dup'],
+      Array.from({ length: 101 }, (_, index) => `wrun_${index}`),
+    ]) {
+      await expect(
+        purgeWorkflowRuns(
+          { runIds },
+          { token: 'test-token', dispatcher: agent }
+        )
+      ).rejects.toThrow();
+    }
 
     // No interceptors registered — a network attempt would throw a distinct
     // "not mocked" error, so reaching here means no request was made.

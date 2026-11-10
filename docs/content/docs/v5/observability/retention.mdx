@@ -91,6 +91,38 @@ caller can tell a successful run whose result is gone from a failed one whose
 error is gone. If the run's metadata is gone too, the World reports the run as
 missing and you get `WorkflowRunNotFoundError` instead.
 
+## Deleting a finished run's data
+
+To delete the data of a run that has already finished, call
+[`run.purge()`](/docs/api-reference/workflow-api/get-run#delete-a-finished-runs-data)
+or run `workflow purge` from the [CLI](/docs/configuration/cli-and-web-ui#purge).
+The World deletes the same data a run started with `experimental_retention: 0`
+has deleted when it ends, and keeps the same records listed.
+
+{/* @skip-typecheck: abbreviated usage; runId is the reader's own */}
+```typescript lineNumbers
+import { getRun } from 'workflow/api'
+
+const result = await getRun(runId).purge() // [!code highlight]
+```
+
+```bash
+workflow purge wrun_... wrun_... --backend vercel
+```
+
+Only finished runs are purged. A run that is still running, sleeping, or
+waiting on a hook is answered `skipped` and left untouched: purging never
+cancels a run. To delete an active run's data now, cancel it first, then purge
+it. Each run gets its own outcome: `purged`, `already_purged` (its data was
+already gone), `skipped`, `not_created`, `not_found`, or `failed`. A `failed`
+outcome with `retryable: true` can be retried, since purging is idempotent.
+
+Purging is optional for a World to implement, and there is no fallback: on a
+World that doesn't support it, `run.purge()` throws and `workflow purge` exits
+with an error. The [Vercel World](/worlds/vercel) supports it. Purging doesn't
+change how a run is billed; see the
+[Vercel Workflows docs](https://vercel.com/docs/workflows/retention).
+
 ## Retention is implemented by the World
 
 The SDK records your preference; it does not enforce it. `start()` writes the

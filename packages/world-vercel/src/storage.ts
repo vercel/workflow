@@ -23,6 +23,7 @@ import {
   getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
+  purgeWorkflowRuns,
   waitForWorkflowRunTerminalStatus,
 } from './runs.js';
 import { createSnapshotsStorage } from './snapshots.js';
@@ -49,6 +50,7 @@ export function createStorage(config?: APIConfig): Storage {
       experimentalSetAttributes: (runId, changes, options) =>
         experimentalSetAttributes(runId, changes, options, config),
       cancelMany: (request) => cancelWorkflowRuns(request, config),
+      purgeMany: (request) => purgeWorkflowRuns(request, config),
     },
     steps: {
       get: ((runId: string, stepId: string, params?: any) =>
