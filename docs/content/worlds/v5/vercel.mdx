@@ -288,6 +288,8 @@ vercel inspect https://my-app-abc123.vercel.app
 
 Reads such as [`getRun()`](/docs/api-reference/workflow-api/get-run) do not need it. `start(..., { deploymentId: "latest" })` does: it resolves the newest deployment sharing that deployment's environment, so it needs one to start from.
 
+The [`workflow start`](/docs/configuration/cli-and-web-ui#start-runs) CLI command does not need it either. It starts the run on the newest ready deployment of the configured project and environment, or on the one you pass with `--deployment`. For `--env preview`, it uses the newest ready deployment on the current git branch, or on the branch you pass with `--branch`.
+
 <Callout type="warn">
   The environment you authenticate as and the deployment you target must
   agree. A client that creates a run in `preview` but points it at a
