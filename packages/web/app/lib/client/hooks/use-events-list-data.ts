@@ -50,10 +50,7 @@ export function useEventsListData(
   const [cursor, setCursor] = useState<string | undefined>();
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  // Bumped per query fetch so responses from a superseded query are dropped.
-  const generationRef = useRef(0);
-  const pagesLoadedRef = useRef(0);
-  const loadedQueryRef = useRef<unknown>(null);
+  const isFetchingRef = useRef(false);
 
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
@@ -63,72 +60,41 @@ export function useEventsListData(
     return Promise.all(rawEvents.map((ev) => hydrateResourceIOAsync(ev, key)));
   }, []);
 
-  /**
-   * Fetches `pageCount` pages from the start. A cold fetch clears the list
-   * and shows the loading state; a warm one (tab re-entry for the same query)
-   * keeps the current rows on screen and swaps them in when done.
-   */
-  const fetchPages = useCallback(
-    async (pageCount: number, cold: boolean) => {
-      const generation = ++generationRef.current;
-      const isCurrent = () => generation === generationRef.current;
-      if (cold) {
-        setLoading(true);
-        setError(null);
-        setEvents([]);
-        setCursor(undefined);
-        setHasMore(false);
+  const fetchInitial = useCallback(async () => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    setLoading(true);
+    setError(null);
+    setEvents([]);
+    setCursor(undefined);
+    setHasMore(false);
+
+    try {
+      const { error: fetchError, result } = await unwrapServerActionResult(
+        fetchEvents(env, runId, {
+          sortOrder,
+          limit: INITIAL_PAGE_SIZE,
+          withData: false,
+        })
+      );
+      if (fetchError) {
+        setError(fetchError);
+      } else {
+        setEvents(await hydrateEvents(result.data));
+        setCursor(result.hasMore ? result.cursor : undefined);
+        setHasMore(Boolean(result.hasMore));
       }
+    } catch (err) {
+      setError(err as Error);
+    } finally {
+      setLoading(false);
+      isFetchingRef.current = false;
+    }
+  }, [env, runId, sortOrder, hydrateEvents]);
 
-      try {
-        const collected: Event[] = [];
-        let nextCursor: string | undefined;
-        let more = false;
-        let pages = 0;
-        do {
-          const { error: fetchError, result } = await unwrapServerActionResult(
-            fetchEvents(env, runId, {
-              cursor: nextCursor,
-              sortOrder,
-              limit: pages === 0 ? INITIAL_PAGE_SIZE : LOAD_MORE_PAGE_SIZE,
-              withData: false,
-            })
-          );
-          if (!isCurrent()) return;
-          if (fetchError) {
-            // A failed background refresh keeps the rows already shown.
-            if (cold) setError(fetchError);
-            return;
-          }
-          collected.push(...(await hydrateEvents(result.data)));
-          if (!isCurrent()) return;
-          pages += 1;
-          more = Boolean(result.hasMore);
-          nextCursor = more ? result.cursor : undefined;
-        } while (pages < pageCount && nextCursor);
-
-        pagesLoadedRef.current = pages;
-        setError(null);
-        setEvents(collected);
-        setCursor(nextCursor);
-        setHasMore(more);
-      } catch (err) {
-        if (isCurrent() && cold) setError(err as Error);
-      } finally {
-        if (isCurrent()) setLoading(false);
-      }
-    },
-    [env, runId, sortOrder, hydrateEvents]
-  );
-
-  // fetchPages' identity is the query (env, run, sort). Re-enabling the same
-  // query revalidates in place; a new query starts cold.
   useEffect(() => {
-    if (!enabled) return;
-    const warm = loadedQueryRef.current === fetchPages;
-    loadedQueryRef.current = fetchPages;
-    fetchPages(warm ? Math.max(1, pagesLoadedRef.current) : 1, !warm);
-  }, [fetchPages, enabled]);
+    if (enabled) fetchInitial();
+  }, [fetchInitial, enabled]);
 
   // Re-hydrate loaded events with decryption when encryption key becomes available
   useEffect(() => {
@@ -147,7 +113,6 @@ export function useEventsListData(
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !cursor) return;
-    const generation = generationRef.current;
     setLoadingMore(true);
     try {
       const { error: fetchError, result } = await unwrapServerActionResult(
@@ -158,19 +123,18 @@ export function useEventsListData(
           withData: false,
         })
       );
-      if (generation !== generationRef.current) return;
       if (fetchError) {
         setError(fetchError);
       } else {
-        const hydrated = await hydrateEvents(result.data);
-        if (generation !== generationRef.current) return;
-        if (hydrated.length > 0) setEvents((prev) => [...prev, ...hydrated]);
-        pagesLoadedRef.current += 1;
+        if (result.data.length > 0) {
+          const hydrated = await hydrateEvents(result.data);
+          setEvents((prev) => [...prev, ...hydrated]);
+        }
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
       }
     } catch (err) {
-      if (generation === generationRef.current) setError(err as Error);
+      setError(err as Error);
     } finally {
       setLoadingMore(false);
     }

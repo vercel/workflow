@@ -218,8 +218,6 @@ export function RunDetailView({
   // Empty env object - server actions read from process.env
   const env: EnvMap = useMemo(() => ({}), []);
 
-  // Span the Trace tab opens on when arriving from an event's "View in Trace".
-  const [traceSpanId, setTraceSpanId] = useState<string | undefined>();
   // Read tab and streamId from URL search params (graph tab is hidden for now)
   const rawTab = (searchParams.get('tab') as Tab) || 'trace';
   const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
@@ -729,10 +727,7 @@ export function RunDetailView({
         <div className="mt-4 flex-1 flex flex-col min-h-0">
           <Tabs
             value={activeTab}
-            onValueChange={(v) => {
-              if (v !== 'trace') setTraceSpanId(undefined);
-              setActiveTab(v as Tab);
-            }}
+            onValueChange={(v) => setActiveTab(v as Tab)}
             className="flex-1 flex flex-col min-h-0"
           >
             <TabsList className="mb-4 flex-none">
@@ -768,7 +763,6 @@ export function RunDetailView({
                     onLoadMore={loadMoreTraceData}
                     hasMore={hasMoreTraceData}
                     isLoadingMore={isLoadingMoreTraceData}
-                    initialSelectedSpanId={traceSpanId}
                   />
                 </div>
               </ErrorBoundary>
@@ -790,10 +784,6 @@ export function RunDetailView({
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
                     onExactIdSearch={searchByExactId}
-                    onViewInTrace={(spanId) => {
-                      setTraceSpanId(spanId);
-                      setActiveTab('trace');
-                    }}
                   />
                 </div>
               </ErrorBoundary>

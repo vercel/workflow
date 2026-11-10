@@ -2,4 +2,4 @@
 '@workflow/web': minor
 ---
 
-Keep the Events tab's rows on screen when the tab is re-entered, revalidating the loaded pages in place, and open the Trace tab on an event's span from View in Trace.
+Lay the Events tab out edge to edge under the tab bar, without its sort control.

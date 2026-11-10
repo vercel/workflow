@@ -2,7 +2,6 @@ import { Circle } from 'lucide-react';
 import { useRef } from 'react';
 import { cn } from '../../../lib/cn';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
-import { useActiveSpan } from '../context';
 import {
   SleepIcon,
   StepForwardIcon,
@@ -97,8 +96,6 @@ const EventRow = ({
   isDimmed?: boolean;
   onSelectSpan: (spanId: string) => void;
 }) => {
-  const { flashSpanId } = useActiveSpan();
-  const isFlashing = flashSpanId === span.spanId;
   const durationMs = getSpanDurationMs(span);
   const isErrored = isSpanErrored(span);
   const isCancelled = isSpanCancelled(span);
@@ -115,12 +112,7 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div
-        className={cn(
-          'h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200',
-          isFlashing && 'wf-span-flash'
-        )}
-      >
+      <div className="h-full hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200">
         <div className="flex h-full min-w-0 items-center pl-4 pr-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <ResourceIcon

@@ -1,6 +1,6 @@
 import type { Event } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { buildDurationMap } from '../src/components/event-list-view.js';
+import { buildEventTiming } from '../src/lib/event-list-model.js';
 
 /**
  * Regression tests for the "Queued for" duration shown in the Events tab.
@@ -18,9 +18,10 @@ function ev(
   createdAt: string,
   occurredAt?: string
 ): Event {
-  // Only the fields buildDurationMap reads are required; the rest of Event
+  // Only the fields buildEventTiming reads are required; the rest of Event
   // is opaque to it.
   return {
+    eventId: `evnt_${eventType}_${createdAt}`,
     eventType,
     correlationId,
     createdAt,
@@ -28,7 +29,7 @@ function ev(
   } as unknown as Event;
 }
 
-describe('buildDurationMap → queued duration', () => {
+describe('buildEventTiming → queued duration', () => {
   it('uses the first step_started, not the last, for steps with retries', () => {
     const events: Event[] = [
       ev('step_created', 'step-1', '2026-01-01T00:00:00.000Z'),
@@ -39,9 +40,9 @@ describe('buildDurationMap → queued duration', () => {
       ev('step_completed', 'step-1', '2026-01-01T00:00:11.000Z'),
     ];
 
-    const map = buildDurationMap(events);
+    const { queued } = buildEventTiming(events);
     // 1s between step_created and the first step_started.
-    expect(map.get('step-1')?.queued).toBe(1000);
+    expect(queued.get('step-1')).toBe(1000);
   });
 
   it('handles events in descending order (newest first)', () => {
@@ -54,8 +55,8 @@ describe('buildDurationMap → queued duration', () => {
     ];
     const descending = [...ascending].reverse();
 
-    expect(buildDurationMap(ascending).get('step-1')?.queued).toBe(1000);
-    expect(buildDurationMap(descending).get('step-1')?.queued).toBe(1000);
+    expect(buildEventTiming(ascending).queued.get('step-1')).toBe(1000);
+    expect(buildEventTiming(descending).queued.get('step-1')).toBe(1000);
   });
 
   it('still works for a step with a single start (no retry)', () => {
@@ -65,10 +66,16 @@ describe('buildDurationMap → queued duration', () => {
       ev('step_completed', 'step-2', '2026-01-01T00:00:02.000Z'),
     ];
 
-    expect(buildDurationMap(events).get('step-2')?.queued).toBe(500);
+    expect(buildEventTiming(events).queued.get('step-2')).toBe(500);
   });
 
   it('prefers occurredAt over createdAt when measuring durations', () => {
+    const completed = ev(
+      'step_completed',
+      'step-occurred',
+      '2026-01-01T00:00:12.000Z',
+      '2026-01-01T00:00:01.000Z'
+    );
     const events: Event[] = [
       ev(
         'step_created',
@@ -82,17 +89,12 @@ describe('buildDurationMap → queued duration', () => {
         '2026-01-01T00:00:11.000Z',
         '2026-01-01T00:00:00.250Z'
       ),
-      ev(
-        'step_completed',
-        'step-occurred',
-        '2026-01-01T00:00:12.000Z',
-        '2026-01-01T00:00:01.000Z'
-      ),
+      completed,
     ];
 
-    const duration = buildDurationMap(events).get('step-occurred');
-    expect(duration?.queued).toBe(250);
-    expect(duration?.ran).toBe(750);
+    const timing = buildEventTiming(events);
+    expect(timing.queued.get('step-occurred')).toBe(250);
+    expect(timing.eventDurations.get(completed.eventId)).toBe(750);
   });
 
   it('falls back to the started time when no created event is seen', () => {
@@ -101,6 +103,33 @@ describe('buildDurationMap → queued duration', () => {
       ev('step_completed', 'step-3', '2026-01-01T00:00:06.000Z'),
     ];
 
-    expect(buildDurationMap(events).get('step-3')?.queued).toBe(0);
+    expect(buildEventTiming(events).queued.get('step-3')).toBe(0);
+  });
+});
+
+describe('buildEventTiming → retried step', () => {
+  it('measures each attempt from its own start and splits the step into segments', () => {
+    const retrying = ev('step_retrying', 'step-1', '2026-01-01T00:00:03.000Z');
+    const completed = ev(
+      'step_completed',
+      'step-1',
+      '2026-01-01T00:00:08.500Z'
+    );
+    const { eventDurations, stepSegments } = buildEventTiming([
+      ev('step_created', 'step-1', '2026-01-01T00:00:00.000Z'),
+      ev('step_started', 'step-1', '2026-01-01T00:00:01.000Z'),
+      retrying,
+      ev('step_started', 'step-1', '2026-01-01T00:00:08.000Z'),
+      completed,
+    ]);
+
+    expect(eventDurations.get(retrying.eventId)).toBe(2000);
+    expect(eventDurations.get(completed.eventId)).toBe(500);
+    expect(stepSegments.get('step-1')).toEqual([
+      { kind: 'queued', label: 'Queued', ms: 1000 },
+      { kind: 'failed', label: 'Attempt 1 · failed', ms: 2000 },
+      { kind: 'backoff', label: 'Backoff', ms: 5000 },
+      { kind: 'ok', label: 'Attempt 2 · ok', ms: 500 },
+    ]);
   });
 });

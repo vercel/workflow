@@ -1,6 +1,6 @@
 import type { Event } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { buildNameMaps } from '../src/components/event-list-view.js';
+import { buildNameMaps } from '../src/lib/event-list-model.js';
 
 describe('buildNameMaps', () => {
   it('shortens workflow-prefixed step names', () => {

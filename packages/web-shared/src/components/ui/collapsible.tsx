@@ -191,7 +191,7 @@ type CollapsibleProps = {
   disabled?: boolean;
   defaultOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
-  /** Controls at the right of the header, e.g. a copy button. */
+  /** Controls at the right of the header while open, e.g. a copy button. */
   actions?: ReactNode;
 };
 
@@ -214,24 +214,16 @@ export function Collapsible({
       disabled={disabled}
       defaultOpen={defaultOpen}
       onOpenChange={onOpenChange}
+      className={actions ? 'relative' : undefined}
     >
-      <CollapsibleTrigger>
-        {actions ? (
-          <span className="flex items-center gap-2">
-            <span className="min-w-0 flex-1">{label}</span>
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: keeps action clicks from toggling the section */}
-            {/* biome-ignore lint/a11y/useKeyWithClickEvents: the actions handle their own keys */}
-            <span
-              className="flex shrink-0 items-center gap-1 font-normal"
-              onClickCapture={(e) => e.preventDefault()}
-            >
-              {actions}
-            </span>
-          </span>
-        ) : (
-          label
-        )}
-      </CollapsibleTrigger>
+      <CollapsibleTrigger>{label}</CollapsibleTrigger>
+      {actions ? (
+        // A sibling of the trigger, laid over the right end of its row (h-9),
+        // so a click on an action does not toggle the section.
+        <div className="absolute top-0 right-0 flex h-9 items-center gap-1">
+          {actions}
+        </div>
+      ) : null}
       {children != null && <CollapsibleContent>{children}</CollapsibleContent>}
     </CollapsibleRoot>
   );

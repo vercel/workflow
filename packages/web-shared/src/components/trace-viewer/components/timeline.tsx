@@ -12,7 +12,6 @@ import {
   useState,
 } from 'react';
 import { cn } from '../../../lib/cn';
-import { useActiveSpan } from '../context';
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
 import { formatDurationPrecise, getHighResInMs } from '../util/timing';
@@ -470,8 +469,6 @@ const TimelineBar = memo(function TimelineBar({
   const handleClick = useCallback(() => {
     onSelect(span.spanId);
   }, [onSelect, span.spanId]);
-  const { flashSpanId } = useActiveSpan();
-  const isFlashing = flashSpanId === span.spanId;
 
   return (
     <div
@@ -481,8 +478,7 @@ const TimelineBar = memo(function TimelineBar({
       aria-level={1}
       className={cn(
         'group/timeline-row h-10 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200 transition-opacity',
-        isDimmed && 'opacity-35',
-        isFlashing && 'wf-span-flash'
+        isDimmed && 'opacity-35'
       )}
       onClick={handleClick}
     >

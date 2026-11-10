@@ -1,13 +1,7 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import {
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useEffect,
-  useMemo,
-} from 'react';
+import { type ReactNode, type RefObject, useCallback, useMemo } from 'react';
 import { filterSpanRawEvents } from '../../../lib/trace-builder';
 import { ErrorBoundary } from '../../error-boundary';
 import {
@@ -17,6 +11,7 @@ import {
 import { useSidebarData } from '../../sidebar/sidebar-data-context';
 import { useActiveSpan } from '../context';
 import { DetailPanelShell } from './detail-panel-shell';
+import { useDetailPanelWidth } from './use-detail-panel-width';
 
 const DETAIL_PANEL_ID = 'trace-detail-panel';
 
@@ -46,11 +41,11 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
 }
 
 /**
- * The span detail aside: content, prev/next/close header, J/K navigation, and
- * the resizable left border with its width model (see detail-panel-width.ts).
+ * The span detail aside: the selected span's details in `DetailPanelShell`,
+ * which supplies the header, its J/K/Escape shortcuts and the resizable border.
  *
- * Always mounted (it renders null without a selection) so the panel width
- * survives closing and reopening within a session.
+ * Always mounted (it renders null without a selection) and holds the panel
+ * width, so the width survives closing and reopening within a session.
  */
 export function TraceDetailPanel({
   containerRef,
@@ -64,7 +59,7 @@ export function TraceDetailPanel({
   const { activeSpan, activeSpanId, spans } = useActiveSpan();
   const sidebar = useSidebarData();
   const selectedSpan = useSelectedSpanInfo();
-  const isOpen = Boolean(activeSpan);
+  const panelWidth = useDetailPanelWidth(containerRef, Boolean(activeSpan));
 
   const { prevSpanId, nextSpanId } = useMemo(() => {
     if (!activeSpanId) return { prevSpanId: null, nextSpanId: null };
@@ -83,38 +78,6 @@ export function TraceDetailPanel({
   const handleSelectNext = useCallback(() => {
     if (nextSpanId) onNavigateToSpan(nextSpanId);
   }, [nextSpanId, onNavigateToSpan]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (
-        e.key !== 'j' &&
-        e.key !== 'k' &&
-        e.key !== 'ArrowDown' &&
-        e.key !== 'ArrowUp'
-      ) {
-        return;
-      }
-      const target = e.target as HTMLElement | null;
-      if (
-        target instanceof HTMLInputElement ||
-        target instanceof HTMLTextAreaElement ||
-        target?.isContentEditable
-      ) {
-        return;
-      }
-      const targetId =
-        e.key === 'k' || e.key === 'ArrowUp' ? prevSpanId : nextSpanId;
-      if (targetId) {
-        e.preventDefault();
-        onNavigateToSpan(targetId);
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, prevSpanId, nextSpanId, onNavigateToSpan]);
 
   // Derive the selected span name for the panel header
   const selectedSpanName = useMemo(() => {
@@ -141,7 +104,7 @@ export function TraceDetailPanel({
   return (
     <DetailPanelShell
       id={DETAIL_PANEL_ID}
-      containerRef={containerRef}
+      width={panelWidth}
       title={<span className="truncate block">{selectedSpanName}</span>}
       itemLabel="span"
       onPrev={prevSpanId ? handleSelectPrev : undefined}

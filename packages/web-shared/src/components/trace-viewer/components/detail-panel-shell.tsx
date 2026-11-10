@@ -1,36 +1,26 @@
 'use client';
 
 import { ChevronDown, ChevronUp, X } from 'lucide-react';
-import {
-  type ReactNode,
-  type RefObject,
-  useCallback,
-  useRef,
-  useState,
-} from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { IconButton } from '../../ui/icon-button';
 import { Kbd } from '../../ui/kbd';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/tooltip';
-import {
-  clampPanelWidth,
-  computeMaxPanelWidth,
-  PANEL_DEFAULT_WIDTH,
-  PANEL_MIN_WIDTH,
-  readStoredPanelWidth,
-  writeStoredPanelWidth,
-} from './detail-panel-width';
+import { PANEL_DEFAULT_WIDTH, PANEL_MIN_WIDTH } from './detail-panel-width';
 import { DraggableBorder } from './draggable-border';
-import { useElementWidth } from './use-element-width';
+import { isTypingTarget } from './use-alt-held';
+import type { DetailPanelWidth } from './use-detail-panel-width';
 
 /**
  * The right-hand details aside shared by the Trace and Events tabs: resizable
- * left border with the persisted width model (see detail-panel-width.ts), a
- * header with the title, prev/next (J/K) and close, and a scrolling body.
- * Owners handle selection and keyboard navigation; this is layout only.
+ * left border, a header with the title, prev/next and close, and a scrolling
+ * body. While mounted it handles the shortcuts its header advertises (K or
+ * ArrowUp, J or ArrowDown, Escape) anywhere on the page, so mount it only
+ * while an item is selected. The width lives with the owner
+ * (`useDetailPanelWidth`), which stays mounted while the panel comes and goes.
  */
 export function DetailPanelShell({
   id,
-  containerRef,
+  width,
   title,
   headerActions,
   itemLabel,
@@ -40,8 +30,7 @@ export function DetailPanelShell({
   children,
 }: {
   id: string;
-  /** The element the panel shares width with; bounds the maximum width. */
-  containerRef: RefObject<HTMLElement | null>;
+  width: DetailPanelWidth;
   title: ReactNode;
   /** Extra header controls, rendered before prev/next. */
   headerActions?: ReactNode;
@@ -52,46 +41,50 @@ export function DetailPanelShell({
   onClose: () => void;
   children: ReactNode;
 }): ReactNode {
-  const [storedWidth, setStoredWidth] = useState<number>(() =>
-    readStoredPanelWidth()
-  );
-  const containerWidth = useElementWidth(containerRef);
   const asideRef = useRef<HTMLElement | null>(null);
 
-  const handleResize = useCallback(
-    (next: number) => {
-      const clamped = clampPanelWidth(next, containerWidth);
-      setStoredWidth(clamped);
-      writeStoredPanelWidth(clamped);
-    },
-    [containerWidth]
-  );
-
-  const panelWidth = clampPanelWidth(storedWidth, containerWidth);
-  const panelMaxWidth = Math.max(
-    PANEL_MIN_WIDTH,
-    computeMaxPanelWidth(containerWidth)
-  );
+  // Read through a ref so the listener is registered once, whatever the
+  // identity of the callbacks the owner passes on each render.
+  const handlersRef = useRef({ onPrev, onNext, onClose });
+  handlersRef.current = { onPrev, onNext, onClose };
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      // Leave keys typed into a field, and presses another handler took (a
+      // tree row moving focus, a search box clearing itself).
+      if (e.defaultPrevented || isTypingTarget(e.target)) return;
+      const handlers = handlersRef.current;
+      let handler: (() => void) | undefined;
+      if (e.key === 'k' || e.key === 'ArrowUp') handler = handlers.onPrev;
+      else if (e.key === 'j' || e.key === 'ArrowDown')
+        handler = handlers.onNext;
+      else if (e.key === 'Escape') handler = handlers.onClose;
+      if (!handler) return;
+      e.preventDefault();
+      handler();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   return (
     <aside
       ref={asideRef}
       id={id}
       className="relative flex flex-col h-full max-h-full shrink-0 bg-background-100 border-l border-gray-alpha-400"
-      style={{ width: panelWidth }}
+      style={{ width: width.width }}
     >
       <DraggableBorder
         element={asideRef}
         position="left"
-        onWidthChange={handleResize}
-        onReset={() => handleResize(PANEL_DEFAULT_WIDTH)}
+        onWidthChange={width.resize}
+        onReset={() => width.resize(PANEL_DEFAULT_WIDTH)}
         aria-label={`Resize ${itemLabel} details panel`}
         aria-controls={id}
         aria-valuemin={PANEL_MIN_WIDTH}
-        aria-valuemax={panelMaxWidth}
+        aria-valuemax={width.maxWidth}
         aria-valuenow={Math.min(
-          Math.max(Math.round(panelWidth), PANEL_MIN_WIDTH),
-          panelMaxWidth
+          Math.max(Math.round(width.width), PANEL_MIN_WIDTH),
+          width.maxWidth
         )}
       />
       {/* Panel header */}

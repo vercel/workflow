@@ -47,8 +47,6 @@ interface TraceViewerProps {
   onLoadMore?: () => void | Promise<void>;
   hasMore?: boolean;
   isLoadingMore?: boolean;
-  /** Span to select on mount. */
-  initialSelectedSpanId?: string;
 }
 
 const MIN_VIEWPORT_MS = 0.001;
@@ -135,14 +133,10 @@ export function TraceViewer({
   onLoadMore,
   hasMore,
   isLoadingMore,
-  initialSelectedSpanId,
 }: TraceViewerProps): ReactNode {
   return (
     <TooltipProvider delayDuration={300}>
-      <ActiveSpanProvider
-        spans={trace.spans}
-        initialActiveSpanId={initialSelectedSpanId}
-      >
+      <ActiveSpanProvider spans={trace.spans}>
         <TraceViewerContent
           trace={trace}
           onLoadMore={onLoadMore}
@@ -378,16 +372,6 @@ function TraceViewerContent({
   );
 
   const { altHeld } = useAltHeld();
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        handleClearActiveSpan();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handleClearActiveSpan]);
 
   const timelineRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<TimelineHover | null>(null);

@@ -6,7 +6,7 @@ function isAltModifierKey(key: string): boolean {
   return key === 'Alt' || key === 'AltGraph';
 }
 
-function isTypingTarget(target: EventTarget | null): boolean {
+export function isTypingTarget(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
