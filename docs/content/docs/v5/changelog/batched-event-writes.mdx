@@ -72,8 +72,6 @@ Per-event `409`s are tolerated the same way the single path tolerates `EntityCon
 
 `createBatch` is optional, so today only the Vercel World folds at all: every other World keeps the single-event path and never sends a pair.
 
-**Escape hatch**: Set `WORKFLOW_BATCH_TRANSITIONS=0` (or `false`) to disable batching and restore the exact prior one-write-per-event path. See [`WORKFLOW_BATCH_TRANSITIONS`](/docs/configuration/worlds#workflow_batch_transitions).
-
 ## Follow-up
 
 The deferred sequential transition (holding `step_completed(N)` across the replay turn and committing `[step_completed(N), step_created(N+1), step_started(N+1)]` as one batch at the next lazy start) builds on this contract and ships separately.

@@ -10,6 +10,7 @@ import {
   detectWorkflowPatterns,
   stripCommentsFromSource,
 } from './transform-utils.js';
+import { resolveTsconfigExtendsPath } from './tsconfig-extends.js';
 
 const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
   '.ts',
@@ -32,6 +33,8 @@ const fastDiscoveryResolve = promisify(
   })
 );
 const require = createRequire(import.meta.url);
+// What resolving an import returns for a package discovery does not follow.
+const UNFOLLOWED_PACKAGE = Symbol('unfollowed package');
 
 const FAST_DISCOVERY_READ_CONCURRENCY = 32;
 const FAST_DISCOVERY_RESOLVE_CONCURRENCY = 32;
@@ -441,53 +444,6 @@ async function loadTsconfigPathAliasConfig(
   }
 }
 
-async function resolveTsconfigExtendsPath(
-  extendsValue: string,
-  tsconfigPath: string
-): Promise<string | undefined> {
-  const configDir = dirname(tsconfigPath);
-  if (extendsValue.startsWith('.') || isAbsolute(extendsValue)) {
-    const resolved = isAbsolute(extendsValue)
-      ? extendsValue
-      : resolve(configDir, extendsValue);
-    return findExistingTsconfigPath(resolved);
-  }
-
-  try {
-    return require.resolve(extendsValue, { paths: [configDir] });
-  } catch {}
-
-  try {
-    return require.resolve(`${extendsValue}/tsconfig.json`, {
-      paths: [configDir],
-    });
-  } catch {
-    return undefined;
-  }
-}
-
-async function findExistingTsconfigPath(
-  candidatePath: string
-): Promise<string | undefined> {
-  const candidates =
-    extname(candidatePath) === ''
-      ? [
-          `${candidatePath}.json`,
-          join(candidatePath, 'tsconfig.json'),
-          candidatePath,
-        ]
-      : [candidatePath];
-
-  for (const candidate of candidates) {
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {}
-  }
-
-  return undefined;
-}
-
 async function findPackageInfo(
   filePath: string,
   packageInfoCache: Map<string, Promise<PackageInfo | null>>
@@ -550,7 +506,12 @@ export async function fastDiscoverEntries({
 }: FastDiscoverEntriesOptions): Promise<void> {
   const readLimit = createLimiter(FAST_DISCOVERY_READ_CONCURRENCY);
   const resolveLimit = createLimiter(FAST_DISCOVERY_RESOLVE_CONCURRENCY);
-  const resolveCache = new Map<string, Promise<string | null>>();
+  const resolveCache = new Map<
+    string,
+    Promise<string | typeof UNFOLLOWED_PACKAGE | null>
+  >();
+  const unfollowedPackageSerdeChecks = new Map<string, Promise<void>>();
+  const checkedUnfollowedPackageFiles = new Set<string>();
   const fileExistsCache = new Map<string, Promise<boolean>>();
   const tsconfigPathByDirCache = new Map<string, Promise<string | undefined>>();
   const tsconfigAliasesCache = new Map<string, Promise<TsconfigPathAlias[]>>();
@@ -840,7 +801,7 @@ export async function fastDiscoverEntries({
   const resolveImport = (
     importer: string,
     specifier: string
-  ): Promise<string | null> => {
+  ): Promise<string | typeof UNFOLLOWED_PACKAGE | null> => {
     const cacheKey = `${dirname(importer)}\0${specifier}`;
     const cached = resolveCache.get(cacheKey);
     if (cached) {
@@ -860,7 +821,7 @@ export async function fastDiscoverEntries({
       // An installed package discovery chooses not to follow is resolved as
       // far as the graph is concerned, even under a catch-all alias like `*`.
       if (!(await shouldResolveBareSpecifier(specifier))) {
-        return null;
+        return UNFOLLOWED_PACKAGE;
       }
 
       const resolved = await resolveBareSpecifier(importer, specifier);
@@ -888,6 +849,67 @@ export async function fastDiscoverEntries({
     return packageInfo?.hasWorkflowDependency === true;
   };
 
+  /**
+   * Discovery does not walk packages with no `workflow` dependency, but such a
+   * package can still define serde classes. AI SDK providers mark their models
+   * with `static [WORKFLOW_SERIALIZE]` using symbols from
+   * `@ai-sdk/provider-utils`, and depend on nothing from workflow.
+   *
+   * Those classes must be registered in the step bundle too. A model created
+   * inside a `"use workflow"` body reaches a step as a serialized argument,
+   * but the step-mode transform drops imports only the workflow body used, so
+   * nothing in the step bundle imports the provider unless it is a serde file.
+   *
+   * So the one file the import resolves to is read, and recorded as a serde
+   * file when it defines a serde class. Its own imports are not followed.
+   */
+  const discoverSerdeInUnfollowedPackage = (
+    importer: string,
+    specifier: string
+  ): Promise<void> => {
+    // Same opt-out as processImportSpecifier: application code reads nothing
+    // from installed packages when descent into node_modules is disabled.
+    if (!discoverWorkflowsInNodeModules && !isNodeModulesPath(importer)) {
+      return Promise.resolve();
+    }
+
+    // The same specifier can resolve to different installed package versions
+    // depending on the importer. Deduplicate reads by resolved path below.
+    const cacheKey = `${dirname(importer)}\0${specifier}`;
+    const cached = unfollowedPackageSerdeChecks.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const checkPromise = (async () => {
+      const resolved = await resolveLimit(() =>
+        resolveBareSpecifier(importer, specifier)
+      );
+      if (
+        !resolved ||
+        !isJsTsFile(resolved) ||
+        isGeneratedBuildArtifactPath(resolved) ||
+        checkedUnfollowedPackageFiles.has(resolved)
+      ) {
+        return;
+      }
+      checkedUnfollowedPackageFiles.add(resolved);
+
+      const source = await readSource(resolved);
+      if (source === null) {
+        return;
+      }
+      if (
+        detectWorkflowPatterns(source).hasSerde &&
+        hasLikelySerdeClass(source)
+      ) {
+        state.discoveredSerdeFiles.add(resolved);
+      }
+    })();
+    unfollowedPackageSerdeChecks.set(cacheKey, checkPromise);
+    return checkPromise;
+  };
+
   const processImportSpecifier = async (
     filePath: string,
     specifier: string,
@@ -901,6 +923,10 @@ export async function fastDiscoverEntries({
     }
 
     const resolved = await resolveImport(filePath, specifier);
+    if (resolved === UNFOLLOWED_PACKAGE) {
+      await discoverSerdeInUnfollowedPackage(filePath, specifier);
+      return;
+    }
     if (!resolved) {
       return;
     }
@@ -921,11 +947,6 @@ export async function fastDiscoverEntries({
 
     addImportParent(filePath, resolved);
     if (!isJsTsFile(resolved) || isGeneratedBuildArtifactPath(resolved)) {
-      return;
-    }
-
-    if (specifier.startsWith('.')) {
-      enqueueFile(resolved);
       return;
     }
 

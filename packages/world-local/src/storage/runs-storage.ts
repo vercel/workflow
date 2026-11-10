@@ -19,7 +19,7 @@ import type { Database } from '../db/index.js';
 import { assertSafeEntityId } from '../ids.js';
 import { filterRunData } from './filters.js';
 import {
-  getRunStatusPollIntervalMs,
+  RUN_STATUS_POLL_INTERVAL_MS,
   waitForRunTerminalSignal,
 } from './run-status-signal.js';
 import {
@@ -95,7 +95,7 @@ export function createRunsStorage(
         if (remainingMs <= 0 || params?.signal?.aborted) return run;
         await waitForRunTerminalSignal(
           id,
-          Math.min(remainingMs, getRunStatusPollIntervalMs()),
+          Math.min(remainingMs, RUN_STATUS_POLL_INTERVAL_MS),
           params?.signal
         );
       }

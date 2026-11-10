@@ -1,5 +1,7 @@
 import {
+  createRunStateHydrator,
   hydrateResourceIOAsync,
+  type RunStateHydrator,
   waitEventsToWaitEntity,
 } from '@workflow/web-shared';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
@@ -54,6 +56,29 @@ async function fetchResourceWithCorrelationId(
   return { data: resourceData, correlationId };
 }
 
+/**
+ * Rebuilds a run's frozen state inputs and outputs from its history, read
+ * once on first need. Keep one per run on screen.
+ */
+export function createRunStateHydratorForEnv(
+  env: EnvMap,
+  runId: string
+): RunStateHydrator {
+  return createRunStateHydrator({
+    loadRunInput: async () =>
+      (await unwrapOrThrow(fetchRun(env, runId, 'all'))).input,
+    loadEvents: async (cursor) =>
+      unwrapOrThrow(
+        fetchEvents(env, runId, {
+          cursor,
+          sortOrder: 'asc',
+          limit: 1000,
+          withData: true,
+        })
+      ),
+  });
+}
+
 export async function fetchSpanDetailResource(
   env: EnvMap,
   selection: {
@@ -61,12 +86,14 @@ export async function fetchSpanDetailResource(
     resourceId: string;
     runId?: string;
   },
-  options: { encryptionKey?: Uint8Array } = {}
+  options: { encryptionKey?: Uint8Array; stateHydrator?: RunStateHydrator } = {}
 ): Promise<WorkflowRun | Step | Hook | Event> {
   const { resource, resourceId, runId } = selection;
-  const { encryptionKey } = options;
+  const { encryptionKey, stateHydrator } = options;
   const hydrate = async <T>(value: T): Promise<T> =>
-    hydrateResourceIOAsync(value, encryptionKey);
+    stateHydrator
+      ? stateHydrator.hydrate(value, encryptionKey)
+      : hydrateResourceIOAsync(value, encryptionKey);
 
   if (resource === 'hook') {
     const result = await unwrapOrThrow(fetchHook(env, resourceId, 'all'));

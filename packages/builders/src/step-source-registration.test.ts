@@ -114,8 +114,48 @@ describe('step source registration', () => {
 
     expect(generated).toContain('import "workflow/internal/builtins";');
     expect(generated).toContain('import "../src/step.ts";');
-    expect(generated).toContain('import "../src/serde.ts";');
+    // A bare import of a `"sideEffects": false` package is dropped by the
+    // framework bundler, so serde-only files are namespaces the sentinel
+    // export references.
+    expect(generated).toContain(
+      'import * as __wf_serde_0 from "../src/serde.ts";'
+    );
+    expect(generated).toContain(
+      'export const __steps_registered = [__wf_serde_0];'
+    );
     expect(Object.keys(manifest.classes ?? {})).toContain('src/serde.ts');
+  });
+
+  it('keeps a plain sentinel when there are no serde-only files', async () => {
+    const entryFile = join(testRoot, 'src', 'entry.ts');
+    const stepFile = join(testRoot, 'src', 'step.ts');
+    const outfile = join(testRoot, '.workflow', 'steps.js');
+
+    mkdirSync(dirname(outfile), { recursive: true });
+    writeFile(entryFile, `export { runStep } from './step';\n`);
+    writeFile(
+      stepFile,
+      `export async function runStep() {
+  'use step';
+  return 1;
+}
+`
+    );
+
+    await createBuilder(testRoot).createSourceStepRegistrations(
+      [entryFile],
+      outfile,
+      {
+        discoveredSteps: new Set([stepFile]),
+        discoveredWorkflows: new Set(),
+        discoveredSerdeFiles: new Set(),
+      }
+    );
+    const generated = readFileSync(outfile, 'utf-8');
+
+    expect(generated).toContain('import "../src/step.ts";');
+    expect(generated).not.toContain('__wf_serde_');
+    expect(generated).toContain('export const __steps_registered = true;');
   });
 
   /**

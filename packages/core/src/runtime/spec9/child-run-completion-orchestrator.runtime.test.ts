@@ -208,10 +208,25 @@ describe.each([
   'node',
   'quickjs',
 ] as const)('orchestrator linger beside the completion hook (%s engine)', (engine) => {
+  /**
+   * The test that expects a linger checks that the delivery took at least
+   * this long, which a slow machine cannot break.
+   */
   const LINGER_MS = 700;
+  /**
+   * The test that expects no linger uses a longer window, and checks that
+   * the delivery ended before it; a delivery that lingers takes at least the
+   * whole window. A delivery that does not linger can still be slow: the
+   * first QuickJS delivery in a worker builds the engine, and on a loaded CI
+   * runner that alone took over 700 ms.
+   */
+  const LONG_LINGER_MS = 3_000;
 
-  async function firstDelivery(body: string) {
-    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', String(LINGER_MS));
+  async function firstDelivery(body: string, lingerMs = LINGER_MS) {
+    // A hook's window is the shorter of the two (see
+    // `getOrchestratorLingerMsFor`), so both are set.
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_LINGER_MS', String(lingerMs));
+    vi.stubEnv('WORKFLOW_ORCHESTRATOR_HOOK_LINGER_MS', String(lingerMs));
     const setup = await setupOrchestratorRun(
       workflowCode(body),
       [0],
@@ -225,17 +240,20 @@ describe.each([
 
   it('does not linger on an idle completion hook', async () => {
     finished = ['wrun_child'];
-    const { world, ms } = await firstDelivery(`
+    const { world, ms } = await firstDelivery(
+      `
       const id = await startChild();
       await returnValue(id);
       await globalThis[Symbol.for("WORKFLOW_SLEEP")]("1d");
       return 1;
-    `);
+    `,
+      LONG_LINGER_MS
+    );
     // Waited, then parked on a day-long sleep with the hook still open.
     expect(eventsOf(world, 'hook_created')).toHaveLength(1);
     expect(eventsOf(world, 'hook_disposed')).toHaveLength(0);
     expect(eventsOf(world, 'wait_created').length).toBeGreaterThan(0);
-    expect(ms).toBeLessThan(LINGER_MS);
+    expect(ms).toBeLessThan(LONG_LINGER_MS);
   });
 
   it('lingers while a child is awaited', async () => {

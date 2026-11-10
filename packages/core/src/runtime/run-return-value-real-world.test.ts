@@ -23,8 +23,7 @@ const WAIT_FOR_READ = { timeout: 10_000 };
  * The sibling `run-return-value-long-poll.test.ts` pins the *pacing* against a
  * mocked `runs` on fake timers, and each World's own suite exercises
  * `waitForTerminalStatus` directly. Neither covers them composed: the real
- * `isReturnValueLongPollEnabled()` gate, the real bound method, and a real
- * World.
+ * bound method and a real World.
  *
  * So these assert which path reported the terminal status, with world-local
  * standing in for "a World that can wait": the long poll is one
@@ -34,8 +33,6 @@ const WAIT_FOR_READ = { timeout: 10_000 };
  * outcome depends on how fast the runner is.
  */
 describe('run.returnValue over a real World', () => {
-  const envName = 'WORKFLOW_RETURN_VALUE_LONG_POLL';
-  const original = process.env[envName];
   let dir: string;
   let world: World;
 
@@ -47,8 +44,6 @@ describe('run.returnValue over a real World', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    if (original === undefined) delete process.env[envName];
-    else process.env[envName] = original;
     setWorld(undefined as unknown as World);
     await rm(dir, {
       recursive: true,
@@ -147,25 +142,5 @@ describe('run.returnValue over a real World', () => {
     await outcome;
     expect(wait).toHaveBeenCalledOnce();
     expect(metadataReads()).toHaveLength(0);
-  });
-
-  it('restores fixed-interval polling under the kill switch', async () => {
-    process.env[envName] = '0';
-    const runId = await startRun();
-    const { wait, metadataReads } = spyOnReads();
-
-    const pending = getRun<string>(runId).returnValue;
-    // Let the first poll observe the run still running before finishing it,
-    // so only a later tick can report it.
-    await vi.waitFor(
-      () => expect(metadataReads()).toHaveLength(1),
-      WAIT_FOR_READ
-    );
-    await metadataReads()[0]?.value;
-    await complete(runId);
-
-    await expect(pending).resolves.toBe('done');
-    expect(wait).not.toHaveBeenCalled();
-    expect(metadataReads().length).toBeGreaterThanOrEqual(2);
   });
 });

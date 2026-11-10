@@ -47,8 +47,8 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "@radix-ui/react-slot": "1.1.1",
-    "@radix-ui/react-tooltip": "1.2.8",
+    "@radix-ui/react-slot": "1.5.0",
+    "@radix-ui/react-tooltip": "1.4.1",
     "@tailwindcss/postcss": "4",
     "@tootallnate/zstd-wasm": "0.0.2",
     "@workflow/core": "workspace:*",
@@ -56,15 +56,15 @@
     "@workflow/world": "workspace:*",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "date-fns": "4.1.0",
+    "date-fns": "4.4.0",
     "lucide-react": "0.575.0",
-    "react": "19.1.0",
-    "react-dom": "19.1.0",
-    "react-use-measure": "2.1.1",
-    "react-virtuoso": "4.18.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-use-measure": "2.1.7",
+    "react-virtuoso": "4.18.20",
     "shiki": "4.0.0",
-    "sonner": "2.0.7",
-    "streamdown": "2.3.0",
+    "sonner": "2.0.8",
+    "streamdown": "2.7.1",
     "tailwind-merge": "3.5.0",
     "tailwindcss": "4"
   },
@@ -75,7 +75,8 @@
     "@types/react-dom": "19",
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
-    "ai": "catalog:",
+    "ai": "catalog:ai-sdk-v7",
+    "immer": "10.1.1",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

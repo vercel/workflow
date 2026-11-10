@@ -1,0 +1,56 @@
+---
+title: createStateResolver
+description: Rebuild frozen state that a run stored by reference, so inspection tools show actual values.
+type: reference
+summary: Use createStateResolver to show the actual values of step inputs and outputs that hold frozen state stored by reference.
+related:
+  - /docs/api-reference/workflow-observability/hydrate-data
+  - /docs/api-reference/workflow-observability/observability-revivers
+  - /docs/foundations/serialization
+---
+
+Deeply frozen values passed between steps are stored by reference: a step input that holds one is written as a reference to an earlier step's output, and a step output as its change from the value it was made from. See [Serialization](/docs/foundations/serialization). Workflow rebuilds them during replay, so your code always receives whole values. An inspection tool reading the stored payloads directly has to rebuild them too, from the run's earlier records.
+
+Create one resolver per run, feed it the run's persisted payloads once, in event-log order, and merge its revivers over the ones you hydrate with:
+
+```typescript lineNumbers
+import { createStateResolver, hydrateData, observabilityRevivers, stateSourceId } from "workflow/observability"; // [!code highlight]
+declare const runInput: unknown; // @setup
+declare const events: { eventId: string; eventType: string; eventData?: { payload?: unknown; result?: unknown } }[]; // @setup
+declare const stepInput: unknown; // @setup
+
+const resolver = createStateResolver(observabilityRevivers); // [!code highlight]
+resolver.add(runInput, stateSourceId("run-input"));
+for (const event of events) {
+  if (event.eventType === "hook_received") resolver.add(event.eventData?.payload, stateSourceId(event));
+  if (event.eventType === "step_completed") resolver.add(event.eventData?.result);
+}
+
+const input = hydrateData(stepInput, { ...observabilityRevivers, ...resolver.revivers }); // [!code highlight]
+```
+
+Pass decrypted payloads. Keep the resolver for the run and reuse it across inspections, so the history is read once.
+
+A web inspector built on `@workflow/web-shared` can use `createRunStateHydrator()` instead. It reads the run's history through loaders you give it, only as far as the inspected value needs, and handles encrypted and compressed payloads. The Workflow web UI uses it for its span details, and `workflow inspect` rebuilds values the same way.
+
+## API signature
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `revivers` | `Revivers` | Optional. Revivers for the other types inside the stored payloads. Use [`observabilityRevivers`](/docs/api-reference/workflow-observability/observability-revivers) for standard use. |
+
+### Returns
+
+A `StateResolver`:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `add(data, source?)` | `(data: unknown, source?: string) => void` | Reads one persisted payload. Pass `stateSourceId(event)` for a `hook_received` payload and `stateSourceId("run-input")` for the run input, so state can refer to their strings. A step output with no state records is skipped. |
+| `revivers` | `Revivers` | Revivers that rebuild state records from what has been added. Merge them over your own. |
+| `unresolved` | `number` | How many records referred to history that hasn't been added yet. Those show as `<state …>` placeholders; add more of the history and hydrate again. |
+
+## stateSourceId
+
+`stateSourceId(event)` returns the id a `hook_received` event's payload is registered under, and `stateSourceId("run-input")` the id for the run input. Use the same ids the runtime uses, or state that refers to those payloads' strings stays unresolved.
