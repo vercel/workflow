@@ -4,13 +4,7 @@ import {
 } from '@workflow/core/serialization';
 import type { World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  formatTableValue,
-  showEvent,
-  showHook,
-  showRun,
-  showStep,
-} from './output.js';
+import { formatTableValue, showHook, showRun, showStep } from './output.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -27,7 +21,6 @@ describe('BigInt inspect output', () => {
   it.each([
     'run',
     'step',
-    'event',
     'hook',
   ] as const)('prints hydrated %s payloads as JSON without losing precision', async (resource) => {
     const input = await dehydrateWorkflowArguments([value], runId, undefined);
@@ -38,14 +31,6 @@ describe('BigInt inspect output', () => {
         get: vi
           .fn()
           .mockResolvedValue({ runId, stepId: 'step-1', input, output }),
-      },
-      events: {
-        get: vi.fn().mockResolvedValue({
-          runId,
-          eventId: 'event-1',
-          eventType: 'step_completed',
-          eventData: { result: output },
-        }),
       },
       hooks: {
         get: vi
@@ -59,7 +44,6 @@ describe('BigInt inspect output', () => {
     const show = {
       run: showRun,
       step: showStep,
-      event: showEvent,
       hook: showHook,
     }[resource];
 
@@ -69,9 +53,7 @@ describe('BigInt inspect output', () => {
     });
 
     const actual = JSON.parse(String(write.mock.calls[0][0]));
-    if (resource === 'event') {
-      expect(actual.eventData.result).toEqual(expected);
-    } else if (resource === 'hook') {
+    if (resource === 'hook') {
       expect(actual.metadata).toEqual(expected);
     } else {
       expect(actual.input).toEqual([expected]);

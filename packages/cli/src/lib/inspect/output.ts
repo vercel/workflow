@@ -277,7 +277,7 @@ const formatIdField = (
   return idStr;
 };
 
-const formatTableValue = (
+export const formatTableValue = (
   prop: string,
   value: unknown,
   opts: InspectCLIOptions = {},
