@@ -9,6 +9,8 @@ prerequisites:
 
 Retrieves the World instance for direct access to workflow storage, queuing, and streaming backends. This async function returns a `Promise<World>` which provides low-level access to manage workflow runs, steps, events, and hooks.
 
+The first call resolves `WORKFLOW_TARGET_WORLD` from the process environment, constructs the World, and caches it; later calls return the cached instance. Changing `WORKFLOW_TARGET_WORLD` in a running process does not replace a cached instance — restart the process, or use [`setWorld()`](/docs/api-reference/workflow-runtime/set-world) to override the cache or clear it so the next call re-resolves the target.
+
 Use this function when you need direct access to the underlying workflow infrastructure, such as listing all runs, querying events, or implementing custom workflow management logic.
 
 ```typescript lineNumbers
